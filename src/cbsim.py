@@ -18,41 +18,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Condition, RLock
-from typing import Generic, List, Optional, Sequence, TypeVar
+from typing import Generic, List, Optional, Sequence, TypeVar, Annotated
+from pydantic import validate_call, Field
 
 T = TypeVar("T")
 
-# Runtime-enforced types
-class PositiveInt(int):
-    def __new__(cls, value: int):
-        if value <= 0:
-            raise ValueError("value must be a positive integer (> 0)")
-        return super().__new__(cls, value)
-
-class NaturalInt(int):
-    def __new__(cls, value: int):
-        if value < 0:
-            raise ValueError("value must be a positive integer or 0 (>= 0)")
-        return super().__new__(cls, value)
-
-class Size(PositiveInt):
-    pass
-
-class Index(NaturalInt):
-    pass
-
-class Count(NaturalInt):
-    pass
-
-class CBID(NaturalInt):
-    def __new__(cls, value: NaturalInt):
-        if value >= MAX_CBS:
-            raise ValueError(f"id must be in range 0..{MAX_CBS-1}")
-        return super().__new__(cls, value)
-    pass
-
 # ---------------- Constants ----------------
 MAX_CBS = 32  # Fixed pool of circular buffers
+
+# Type aliases with Pydantic constraints for runtime validation
+PositiveInt = Annotated[int, Field(gt=0)]
+NaturalInt = Annotated[int, Field(ge=0)]
+Size = PositiveInt
+Index = NaturalInt
+Count = NaturalInt
+CBID = Annotated[int, Field(ge=0, lt=MAX_CBS)]
+
 # Global timeout (seconds) used internally by blocking waits; set to None to
 # block indefinitely
 # This is useful in the context of a simulator in that it avoid infinite loops
@@ -62,11 +43,10 @@ MAX_CBS = 32  # Fixed pool of circular buffers
 # to deactivate the timeout. 
 GLOBAL_WAIT_TIMEOUT: float | None = 5.0
 
-def set_global_timeout(seconds: float | None) -> None:
+@validate_call
+def set_global_timeout(seconds: Optional[Annotated[float, Field(gt=0)]] ) -> None:
     """Set the module-wide timeout for cb_wait_front / cb_reserve_back."""
     global GLOBAL_WAIT_TIMEOUT
-    if seconds is not None and seconds <= 0:
-        raise ValueError("timeout must be positive or None")
     GLOBAL_WAIT_TIMEOUT = seconds
 
 
@@ -147,14 +127,14 @@ class _CBState(Generic[T]):
 
     def __init__(self):
         # Not configured until host_configure_cb is called.
-        self.cap: Size = Size(1)
+        self.cap: Size = 1
         self.buf: List[Optional[T]] = []
-        self.head: Index = Index(0)
-        self.visible: Count = Count(0)
-        self.reserved: Count = Count(0)
+        self.head: Index = 0
+        self.visible: Count = 0
+        self.reserved: Count = 0
         self.step: Optional[Size] = None
-        self.last_wait_target: Count = Count(0)
-        self.last_reserve_target: Count = Count(0)
+        self.last_wait_target: Count = 0
+        self.last_reserve_target: Count = 0
         self.configured = False
         self.lock = RLock()
         self.can_consume = Condition(self.lock)
@@ -193,17 +173,18 @@ _pool: List[_CBState] = [_CBState() for _ in range(MAX_CBS)]
 
 # ---------------- Host-side helpers ----------------
 
+@validate_call
 def host_configure_cb(cb_id: CBID, capacity_tiles: Size) -> None:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s.cap = capacity_tiles
         s.buf = [None] * capacity_tiles
-        s.head = Index(0)
-        s.visible = Count(0)
-        s.reserved = Count(0)
+        s.head = 0
+        s.visible = 0
+        s.reserved = 0
         s.step = None
-        s.last_wait_target = Count(0)
-        s.last_reserve_target = Count(0)
+        s.last_wait_target = 0
+        s.last_reserve_target = 0
         s.configured = True
         with s.can_consume:
             s.can_consume.notify_all()
@@ -211,26 +192,28 @@ def host_configure_cb(cb_id: CBID, capacity_tiles: Size) -> None:
             s.can_produce.notify_all()
 
 
+@validate_call
 def host_reset_cb(cb_id: CBID) -> None:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         if not s.configured:
             return
         s.buf[:] = [None] * s.cap
-        s.head = Index(0)
-        s.visible = Count(0)
-        s.reserved = Count(0)
+        s.head = 0
+        s.visible = 0
+        s.reserved = 0
         s.step = None
-        s.last_wait_target = Count(0)
-        s.last_reserve_target = Count(0)
+        s.last_wait_target = 0
+        s.last_reserve_target = 0
         with s.can_consume:
             s.can_consume.notify_all()
         with s.can_produce:
             s.can_produce.notify_all()
 
 
+@validate_call
 def cb_stats(cb_id: CBID) -> dict:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
         return {
@@ -244,16 +227,18 @@ def cb_stats(cb_id: CBID) -> dict:
 
 # ---------------- Non-blocking queries ----------------
 
+@validate_call
 def cb_pages_available_at_front(cb_id: CBID, num_tiles: Size) -> bool:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
         s._check_step(num_tiles)
         return s.visible >= num_tiles
 
 
+@validate_call
 def cb_pages_reservable_at_back(cb_id: CBID, num_tiles: Size) -> bool:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
         s._check_step(num_tiles)
@@ -261,11 +246,12 @@ def cb_pages_reservable_at_back(cb_id: CBID, num_tiles: Size) -> bool:
 
 # ---------------- Blocking calls ----------------
 
+@validate_call
 def cb_wait_front(cb_id: CBID, num_tiles: Size) -> None:
     """Block until num_tiles are visible; enforce cumulative waiting.
     Raises CBTimeoutError if the global timeout expires.
     """
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.can_consume:
         s._require_configured()
         s._check_step(num_tiles)
@@ -278,11 +264,12 @@ def cb_wait_front(cb_id: CBID, num_tiles: Size) -> None:
         s.last_wait_target = num_tiles
 
 
+@validate_call
 def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
     """Block until num_tiles can be reserved; then reserve them.
     Raises CBTimeoutError if the global timeout expires.
     """
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.can_produce:
         s._require_configured()
         s._check_step(num_tiles)
@@ -297,8 +284,9 @@ def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
 
 # ---------------- State-mutating ops ----------------
 
+@validate_call
 def cb_push_back(cb_id: CBID, num_tiles: Size) -> None:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
         s._check_step(num_tiles)
@@ -312,8 +300,9 @@ def cb_push_back(cb_id: CBID, num_tiles: Size) -> None:
         with s.can_consume:
             s.can_consume.notify_all()
 
+@validate_call
 def cb_pop_front(cb_id: CBID, num_tiles: Size) -> None:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
         s._check_step(num_tiles)
@@ -332,8 +321,9 @@ def cb_pop_front(cb_id: CBID, num_tiles: Size) -> None:
 
 # ---------------- Pointer-style helpers ----------------
 
+@validate_call
 def get_read_ptr(cb_id: CBID) -> _RingView[Optional[T]]:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
         if s.last_wait_target <= 0:
@@ -344,8 +334,9 @@ def get_read_ptr(cb_id: CBID) -> _RingView[Optional[T]]:
         return _RingView(s.buf, s.cap, span)
 
 
+@validate_call
 def get_write_ptr(cb_id: CBID, length: Optional[Size] = None) -> _RingView[Optional[T]]:
-    s = _pool[cb_id]
+    s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
         if s.reserved <= 0:
