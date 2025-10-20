@@ -13,6 +13,7 @@ Semantics enforced:
 - Thread-safe producer/consumer behavior (RLock + Condition vars).
 
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -146,14 +147,14 @@ class _CBState(Generic[T]):
 
     def __init__(self):
         # Not configured until host_configure_cb is called.
-        self.cap = Size(1)
+        self.cap: Size = Size(1)
         self.buf: List[Optional[T]] = []
-        self.head = Index(0)
-        self.visible = Count(0)
-        self.reserved = Count(0)
+        self.head: Index = Index(0)
+        self.visible: Count = Count(0)
+        self.reserved: Count = Count(0)
         self.step: Optional[Size] = None
-        self.last_wait_target = Count(0)
-        self.last_reserve_target = Count(0)
+        self.last_wait_target: Count = Count(0)
+        self.last_reserve_target: Count = Count(0)
         self.configured = False
         self.lock = RLock()
         self.can_consume = Condition(self.lock)
@@ -296,25 +297,20 @@ def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
 
 # ---------------- State-mutating ops ----------------
 
-def cb_push_back(cb_id: CBID, num_tiles: Size, data: Optional[Sequence[Optional[T]]] = None) -> None:
+def cb_push_back(cb_id: CBID, num_tiles: Size) -> None:
     s = _pool[cb_id]
     with s.lock:
         s._require_configured()
         s._check_step(num_tiles)
         if num_tiles > s.reserved:
             raise CBContractError(
-                f"cb_push_back({num_tiles}) exceeds reserved={s.reserved}")
-        span = s._back_span(num_tiles)
-        view = _RingView(s.buf, s.cap, span)
-        if data is not None:
-            if len(data) != num_tiles:
-                raise ValueError("data length must match num_tiles")
-            view.fill(data)
+                f"cb_push_back({num_tiles}) exceeds reserved={s.reserved}"
+            )
+        # Pointer-style semantics: data must have already been written via get_write_ptr()
         s.reserved -= num_tiles
         s.visible += num_tiles
         with s.can_consume:
             s.can_consume.notify_all()
-
 
 def cb_pop_front(cb_id: CBID, num_tiles: Size) -> None:
     s = _pool[cb_id]
