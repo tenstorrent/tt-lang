@@ -24,36 +24,15 @@ if __name__ == "__main__" and __package__ is None:
     sys.path[0] = str(pkg_root)
     __package__ = "cbsim"
 
-from dataclasses import dataclass
-from threading import Condition, RLock
-from typing import Generic, List, Optional, Sequence, TypeVar, Annotated
-from pydantic import validate_call, Field
-from .errors import CBContractError, CBNotConfigured, CBTimeoutError
-from .typedefs import Size, Index, Count, CBID, MAX_CBS
-from .ringview import _RingView, _Span
+from typing import List, Optional, TypeVar
+from pydantic import validate_call
+from .errors import CBContractError, CBTimeoutError
+from .typedefs import Size, CBID, MAX_CBS
+from .ringview import _RingView
 from .cbstate import _CBState
+from .timeout import set_global_timeout, get_global_timeout
 
 T = TypeVar("T")
-
-# Global timeout (seconds) used internally by blocking waits; set to None to
-# block indefinitely
-# This is useful in the context of a simulator in that it avoid infinite loops
-# and fails the simulation when the timeout is reached. The danger here is that
-# if the timeout is too tight, we might hit cases where the simulation fails for
-# legitimate input that is just causing slow execution. But the option is there
-# to deactivate the timeout. 
-GLOBAL_WAIT_TIMEOUT: float | None = 5.0
-
-@validate_call
-def set_global_timeout(seconds: Optional[Annotated[float, Field(gt=0)]] ) -> None:
-    """Set the module-wide timeout for cb_wait_front / cb_reserve_back."""
-    global GLOBAL_WAIT_TIMEOUT
-    GLOBAL_WAIT_TIMEOUT = seconds
-
-
-def get_global_timeout() -> float | None:
-    """Return the current module-wide timeout used for waits."""
-    return GLOBAL_WAIT_TIMEOUT
 
 # ---------------- Global static pool ----------------
 _pool: List[_CBState] = [_CBState() for _ in range(MAX_CBS)]
@@ -150,9 +129,9 @@ def cb_wait_front(cb_id: CBID, num_tiles: Size) -> None:
                 raise CBContractError(
                     "cb_wait_front must be cumulative with an increment of the initial number of tiles"
                     " requested until a pop occurs")
-        ok = s.can_consume.wait_for(lambda: s.visible >= num_tiles, timeout=GLOBAL_WAIT_TIMEOUT)
+        ok = s.can_consume.wait_for(lambda: s.visible >= num_tiles, timeout=get_global_timeout())
         if not ok:
-            raise CBTimeoutError(f"cb_wait_front timed out after {GLOBAL_WAIT_TIMEOUT}s")
+            raise CBTimeoutError(f"cb_wait_front timed out after {get_global_timeout()}s")
         s.last_wait_target = num_tiles
 
 @validate_call
@@ -167,9 +146,9 @@ def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
         target = s.reserved + num_tiles
         if target < s.last_reserve_target:
             raise CBContractError("reserve target cannot regress within epoch")
-        ok = s.can_produce.wait_for(lambda: s._free() >= num_tiles, timeout=GLOBAL_WAIT_TIMEOUT)
+        ok = s.can_produce.wait_for(lambda: s._free() >= num_tiles, timeout=get_global_timeout())
         if not ok:
-            raise CBTimeoutError(f"cb_reserve_back timed out after {GLOBAL_WAIT_TIMEOUT}s")
+            raise CBTimeoutError(f"cb_reserve_back timed out after {get_global_timeout()}s")
         s.reserved += num_tiles
         s.last_reserve_target = target
 

@@ -9,6 +9,8 @@ from .ringview import _Span
 
 T = TypeVar("T")
 
+# It is a deliberate design choice to use any generic type here to avoid dealing
+# with byte arrays as would be the case in the C++ API.
 class _CBState(Generic[T]):
     __slots__ = (
         "cap", "buf", "head", "visible", "reserved",
