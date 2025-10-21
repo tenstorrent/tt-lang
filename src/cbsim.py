@@ -6,7 +6,7 @@ https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_ap
 
 
 Semantics enforced:
-- The first num_tiles used in wait/reserve sets the **step size**; it must
+- The first num_tiles used in wait sets the **step size**; it must
   evenly divide the capacity. Later ops must be multiples of that step size.
 - Repeated cb_wait_front calls are **cumulative** until a cb_pop_front occurs.
 - Reserve → write (via get_write_ptr) → push; wait → read (via get_read_ptr) → pop.
@@ -130,8 +130,8 @@ class _CBState(Generic[T]):
         self.cap: Size = 1
         self.buf: List[Optional[T]] = []
         self.head: Index = 0
-        self.visible: Count = 0
-        self.reserved: Count = 0
+        self.visible: Count = 0 # number of tiles visible to consumer
+        self.reserved: Count = 0 # number of tiles reserved for producer
         self.step: Optional[Size] = None
         self.last_wait_target: Count = 0
         self.last_reserve_target: Count = 0
@@ -145,28 +145,20 @@ class _CBState(Generic[T]):
         if not self.configured:
             raise CBNotConfigured("CB not configured; call host_configure_cb")
 
-    def _check_step(self, n: Size) -> None:
-        if self.step is None:
-            if self.cap % n != 0:
-                raise CBContractError(
-                    f"First num_tiles={n} must evenly divide capacity={self.cap}")
-            self.step = n
-        else:
-            if n % self.step != 0:
-                raise CBContractError(
-                    f"num_tiles={n} must be a multiple of step size {self.step}")
-        if n > self.cap:
+    def _check_num_tiles(self, num_tiles: Size) -> None:
+        if num_tiles > self.cap:
             raise CBContractError("num_tiles must be <= capacity")
+        
+        # Number of tiles used in all cb_* calls must evenly divide the cb size
+        if self.cap % num_tiles != 0:
+            raise CBContractError(
+                f"First num_tiles={num_tiles} must evenly divide capacity={self.cap}")
 
     def _free(self) -> Size:
         return self.cap - (self.visible + self.reserved)
 
     def _front_span(self, length: Size) -> _Span:
-        return _Span((self.head) % self.cap, length)
-
-    def _back_span(self, length: Size) -> _Span:
-        start = (self.head + self.visible + self.reserved) % self.cap
-        return _Span(start, length)
+        return _Span(self.head, length)
 
 # ---------------- Global static pool ----------------
 _pool: List[_CBState] = [_CBState() for _ in range(MAX_CBS)]
@@ -223,6 +215,7 @@ def cb_stats(cb_id: CBID) -> dict:
             "free": s._free(),
             "step": s.step,
             "head": s.head,
+            "list": s.buf,
         }
 
 # ---------------- Non-blocking queries ----------------
@@ -232,7 +225,7 @@ def cb_pages_available_at_front(cb_id: CBID, num_tiles: Size) -> bool:
     s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
-        s._check_step(num_tiles)
+        s._check_num_tiles(num_tiles)
         return s.visible >= num_tiles
 
 
@@ -241,7 +234,7 @@ def cb_pages_reservable_at_back(cb_id: CBID, num_tiles: Size) -> bool:
     s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
-        s._check_step(num_tiles)
+        s._check_num_tiles(num_tiles)
         return s._free() >= num_tiles
 
 # ---------------- Blocking calls ----------------
@@ -254,15 +247,18 @@ def cb_wait_front(cb_id: CBID, num_tiles: Size) -> None:
     s = _pool[int(cb_id)]
     with s.can_consume:
         s._require_configured()
-        s._check_step(num_tiles)
-        if num_tiles < s.last_wait_target:
-            raise CBContractError(
-                "cb_wait_front must be cumulative until a pop occurs")
+        s._check_num_tiles(num_tiles)
+        if s.step is None:
+            s.step = num_tiles
+        else:
+            if num_tiles != s.last_wait_target + s.step:
+                raise CBContractError(
+                    "cb_wait_front must be cumulative with an increment of the initial number of tiles"
+                    " requested until a pop occurs")
         ok = s.can_consume.wait_for(lambda: s.visible >= num_tiles, timeout=GLOBAL_WAIT_TIMEOUT)
         if not ok:
             raise CBTimeoutError(f"cb_wait_front timed out after {GLOBAL_WAIT_TIMEOUT}s")
         s.last_wait_target = num_tiles
-
 
 @validate_call
 def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
@@ -272,7 +268,7 @@ def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
     s = _pool[int(cb_id)]
     with s.can_produce:
         s._require_configured()
-        s._check_step(num_tiles)
+        s._check_num_tiles(num_tiles)
         target = s.reserved + num_tiles
         if target < s.last_reserve_target:
             raise CBContractError("reserve target cannot regress within epoch")
@@ -289,7 +285,7 @@ def cb_push_back(cb_id: CBID, num_tiles: Size) -> None:
     s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
-        s._check_step(num_tiles)
+        s._check_num_tiles(num_tiles)
         if num_tiles > s.reserved:
             raise CBContractError(
                 f"cb_push_back({num_tiles}) exceeds reserved={s.reserved}"
@@ -305,7 +301,7 @@ def cb_pop_front(cb_id: CBID, num_tiles: Size) -> None:
     s = _pool[int(cb_id)]
     with s.lock:
         s._require_configured()
-        s._check_step(num_tiles)
+        s._check_num_tiles(num_tiles)
         if num_tiles > s.visible:
             raise CBContractError(
                 f"cb_pop_front({num_tiles}) exceeds visible={s.visible}")
@@ -344,27 +340,38 @@ def get_write_ptr(cb_id: CBID, length: Optional[Size] = None) -> _RingView[Optio
         L = s.reserved if length is None else length
         if not (0 < L <= s.reserved):
             raise ValueError("length must be in 1..reserved inclusive")
-        span = s._back_span(L)
+        span = s._front_span(L)
         return _RingView(s.buf, s.cap, span)
 
 # ---------------- Minimal demo ----------------
 if __name__ == "__main__":
     cb0 = 0
-    host_configure_cb(cb0, 8)
-
-    # Optional: change global timeout (seconds) or set to None to block forever
-    # set_global_timeout(2.0)
-
+    host_configure_cb(cb0, 8)    
+    
     # Producer reserves 4 tiles and writes
     cb_reserve_back(cb0, 4)
     get_write_ptr(cb0).fill([10, 11, 12, 13])
     cb_push_back(cb0, 4)
+    print("stats:", cb_stats(cb0))
+
+    # Consumer waits and reads
+    cb_wait_front(cb0, 4)
+    print("Front1:", get_read_ptr(cb0).to_list())
+    cb_pop_front(cb0, 4)
+    print("stats:", cb_stats(cb0))
+
+    # Producer reserves another 8 tiles and writes
+    cb_reserve_back(cb0, 8)
+    get_write_ptr(cb0).fill([14, 15, 16, 17, 18, 19, 20, 21])
+    cb_push_back(cb0, 8)
+    print("stats:", cb_stats(cb0))
 
     # Consumer waits cumulatively and reads
-    cb_wait_front(cb0, 2)
-    print("Front2:", get_read_ptr(cb0).to_list())
     cb_wait_front(cb0, 4)
-    print("Front4:", get_read_ptr(cb0).to_list())
-    cb_pop_front(cb0, 4)
-
+    cb_wait_front(cb0, 8)
+    print("Front2:", get_read_ptr(cb0).to_list())
+    cb_pop_front(cb0, 8)
     print("stats:", cb_stats(cb0))
+    
+    cb_wait_front(cb0, 4)
+    
