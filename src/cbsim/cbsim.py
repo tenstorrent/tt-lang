@@ -15,11 +15,20 @@ Semantics enforced:
 """
 
 from __future__ import annotations
+import sys
+from pathlib import Path
+
+# Allow running as script:
+if __name__ == "__main__" and __package__ is None:
+    pkg_root = Path(__file__).parent.parent
+    sys.path[0] = str(pkg_root)
+    __package__ = "cbsim"
 
 from dataclasses import dataclass
 from threading import Condition, RLock
 from typing import Generic, List, Optional, Sequence, TypeVar, Annotated
 from pydantic import validate_call, Field
+from .errors import CBError, CBContractError, CBNotConfigured, CBOutOfRange, CBTimeoutError
 
 T = TypeVar("T")
 
@@ -54,21 +63,6 @@ def get_global_timeout() -> float | None:
     """Return the current module-wide timeout used for waits."""
     return GLOBAL_WAIT_TIMEOUT
 
-# ---------------- Errors ----------------
-class CBError(RuntimeError):
-    pass
-
-class CBContractError(CBError):
-    pass
-
-class CBNotConfigured(CBError):
-    pass
-
-class CBOutOfRange(CBError):
-    pass
-
-class CBTimeoutError(CBError):
-    pass
 
 # ---------------- Internal structures ----------------
 @dataclass(frozen=True)
@@ -372,6 +366,4 @@ if __name__ == "__main__":
     print("Front2:", get_read_ptr(cb0).to_list())
     cb_pop_front(cb0, 8)
     print("stats:", cb_stats(cb0))
-    
-    cb_wait_front(cb0, 4)
     
