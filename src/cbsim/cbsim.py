@@ -31,6 +31,7 @@ from pydantic import validate_call, Field
 from .errors import CBContractError, CBNotConfigured, CBTimeoutError
 from .typedefs import Size, Index, Count, CBID, MAX_CBS
 from .ringview import _RingView, _Span
+from .cbstate import _CBState
 
 T = TypeVar("T")
 
@@ -53,52 +54,6 @@ def set_global_timeout(seconds: Optional[Annotated[float, Field(gt=0)]] ) -> Non
 def get_global_timeout() -> float | None:
     """Return the current module-wide timeout used for waits."""
     return GLOBAL_WAIT_TIMEOUT
-
-
-
-# The C API is pointer-based and type-agnostic; we simulate this with a
-# generic class.
-class _CBState(Generic[T]):
-    __slots__ = (
-        "cap", "buf", "head", "visible", "reserved",
-        "step", "last_wait_target", "last_reserve_target",
-        "configured", "lock", "can_consume", "can_produce"
-    )
-
-    def __init__(self):
-        # Not configured until host_configure_cb is called.
-        self.cap: Size = 1
-        self.buf: List[Optional[T]] = []
-        self.head: Index = 0
-        self.visible: Count = 0 # number of tiles visible to consumer
-        self.reserved: Count = 0 # number of tiles reserved for producer
-        self.step: Optional[Size] = None
-        self.last_wait_target: Count = 0
-        self.last_reserve_target: Count = 0
-        self.configured = False
-        self.lock = RLock()
-        self.can_consume = Condition(self.lock)
-        self.can_produce = Condition(self.lock)
-
-    # helpers
-    def _require_configured(self) -> None:
-        if not self.configured:
-            raise CBNotConfigured("CB not configured; call host_configure_cb")
-
-    def _check_num_tiles(self, num_tiles: Size) -> None:
-        if num_tiles > self.cap:
-            raise CBContractError("num_tiles must be <= capacity")
-        
-        # Number of tiles used in all cb_* calls must evenly divide the cb size
-        if self.cap % num_tiles != 0:
-            raise CBContractError(
-                f"First num_tiles={num_tiles} must evenly divide capacity={self.cap}")
-
-    def _free(self) -> Size:
-        return self.cap - (self.visible + self.reserved)
-
-    def _front_span(self, length: Size) -> _Span:
-        return _Span(self.head, length)
 
 # ---------------- Global static pool ----------------
 _pool: List[_CBState] = [_CBState() for _ in range(MAX_CBS)]

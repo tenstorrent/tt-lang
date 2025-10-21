@@ -7,6 +7,13 @@ from .typedefs import Size, Index
 
 T = TypeVar("T")
 
+# Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not
+# necessarily make sense in a python context. So we need something that can
+# access the elements of the cb (as a pointer would) from the position the
+# pointer points. To hide needless index arithmetic, we also add the ability to
+# wrap around. Notice also that it handles a list and a capacity, instead of a
+# _CBState, a deliberate choice to make it closer in spirit to a pointer and
+# minimizing the state that is exposed.
 @dataclass(frozen=True)
 class _Span:
     start: Index  # inclusive index in underlying ring
