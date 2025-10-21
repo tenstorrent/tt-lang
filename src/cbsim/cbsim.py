@@ -28,20 +28,10 @@ from dataclasses import dataclass
 from threading import Condition, RLock
 from typing import Generic, List, Optional, Sequence, TypeVar, Annotated
 from pydantic import validate_call, Field
-from .errors import CBError, CBContractError, CBNotConfigured, CBOutOfRange, CBTimeoutError
+from .errors import CBContractError, CBNotConfigured, CBTimeoutError
+from .typedefs import Size, Index, Count, CBID, MAX_CBS
 
 T = TypeVar("T")
-
-# ---------------- Constants ----------------
-MAX_CBS = 32  # Fixed pool of circular buffers
-
-# Type aliases with Pydantic constraints for runtime validation
-PositiveInt = Annotated[int, Field(gt=0)]
-NaturalInt = Annotated[int, Field(ge=0)]
-Size = PositiveInt
-Index = NaturalInt
-Count = NaturalInt
-CBID = Annotated[int, Field(ge=0, lt=MAX_CBS)]
 
 # Global timeout (seconds) used internally by blocking waits; set to None to
 # block indefinitely
