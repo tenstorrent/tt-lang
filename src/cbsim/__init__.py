@@ -14,4 +14,4 @@ from .api import (
     get_read_ptr,
     get_write_ptr,
 )
-from .timeout import set_global_timeout, get_global_timeout
+
