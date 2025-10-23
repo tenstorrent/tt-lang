@@ -164,3 +164,22 @@ def test_get_write_ptr_requires_reserve():
     api.host_configure_cb(cb, 4)
     with pytest.raises(CBContractError, match="get_write_ptr requires prior cb_reserve_back"):
         api.get_write_ptr(cb)
+
+def test_multiple_consumers_error():
+    api = CBAPI(timeout=0.1)
+    cb = 0
+    api.host_configure_cb(cb, 4)
+    errors = []
+    def consumer():
+        try:
+            api.cb_wait_front(cb, 4)
+        except (CBContractError, CBTimeoutError) as e:
+            errors.append(str(e))
+    t1 = threading.Thread(target=consumer)
+    t2 = threading.Thread(target=consumer)
+    t1.start()
+    time.sleep(0.05)  # ensure t1 acquires lock and waits
+    t2.start()
+    t1.join()
+    t2.join()
+    assert any("Only one consumer may wait on a CB at a time" in msg for msg in errors)

@@ -94,20 +94,26 @@ class CBAPI:
         with s.can_consume:
             s._require_configured()
             s._check_num_tiles(num_tiles)
-            if s.step is None:
-                s.step = num_tiles
-            else:
-                if num_tiles != s.last_wait_target + s.step:
-                    raise CBContractError(
-                        "cb_wait_front must be cumulative with an increment of the initial number of tiles"
-                        " requested until a pop occurs"
-                    )
-            ok = s.can_consume.wait_for(
-                lambda: s.visible >= num_tiles, timeout=self._timeout
-            )
-            if not ok:
-                raise CBTimeoutError(f"cb_wait_front timed out after {self._timeout}s")
-            s.last_wait_target = num_tiles
+            if s.consumer_waiting:
+                raise CBContractError("Only one consumer may wait on a CB at a time")
+            s.consumer_waiting = True
+            try:
+                if s.step is None:
+                    s.step = num_tiles
+                else:
+                    if num_tiles != s.last_wait_target + s.step:
+                        raise CBContractError(
+                            "cb_wait_front must be cumulative with an increment of the initial number of tiles"
+                            " requested until a pop occurs"
+                        )
+                ok = s.can_consume.wait_for(
+                    lambda: s.visible >= num_tiles, timeout=self._timeout
+                )
+                if not ok:
+                    raise CBTimeoutError(f"cb_wait_front timed out after {self._timeout}s")
+                s.last_wait_target = num_tiles
+            finally:
+                s.consumer_waiting = False
 
     @validate_call
     def cb_reserve_back(self, cb_id: CBID, num_tiles: Size) -> None:
