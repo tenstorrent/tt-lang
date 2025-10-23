@@ -15,7 +15,8 @@ class _CBState(Generic[T]):
     __slots__ = (
         "cap", "buf", "head", "visible", "reserved",
         "step", "last_wait_target", "last_reserve_target",
-        "configured", "lock", "can_consume", "can_produce"
+        "configured", "lock", "can_consume", "can_produce",
+        "consumer_waiting"
     )
 
     def __init__(self):
@@ -31,6 +32,7 @@ class _CBState(Generic[T]):
         self.lock = RLock()
         self.can_consume = Condition(self.lock)
         self.can_produce = Condition(self.lock)
+        self.consumer_waiting = False
 
     def _require_configured(self) -> None:
         if not self.configured:
