@@ -11,9 +11,13 @@ from .cbstate import _CBState
 T = TypeVar("T")
 
 class CBAPI:
-    """Circular buffer simulator API interface with its own state pool."""
+    """Circular buffer simulator API interface with its own state pool.
+       The simulator is based on the following API:
+       https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
+    """
     def __init__(self, timeout: Optional[float] = 5.0):
         """Initialize simulator with optional per-instance timeout (seconds)."""
+
         self._pool: List[_CBState] = [_CBState() for _ in range(MAX_CBS)]
         self._timeout: Optional[float] = timeout
 
