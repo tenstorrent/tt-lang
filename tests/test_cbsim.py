@@ -6,17 +6,34 @@ from cbsim.errors import CBContractError
 from cbsim.api import CBAPI
 from cbsim.errors import CBContractError, CBTimeoutError
 
-# Create an instance of the API for each test
-api = CBAPI()
+# Pytest fixtures to reduce redundant setup code
+@pytest.fixture
+def api():
+    """Create a fresh CBAPI instance for each test."""
+    return CBAPI()
+
+@pytest.fixture
+def configured_cb(api):
+    """Provide a configured CB with capacity 4 on CB ID 0."""
+    cb_id = 0
+    api.host_configure_cb(cb_id, 4)
+    return api, cb_id
+
+@pytest.fixture
+def configured_cb8(api):
+    """Provide a configured CB with capacity 8 on CB ID 0."""
+    cb_id = 0
+    api.host_configure_cb(cb_id, 8)
+    return api, cb_id
+
+@pytest.fixture
+def timeout_api():
+    """Create a CBAPI instance with short timeout for testing timeouts."""
+    return CBAPI(timeout=0.1)
 
 
-def test_circular_buffer_basic_flow():
-    cb0 = 0
-    # Use class-based API instance
-    # api = CBAPI()
-
-    # Configure CB with capacity 8
-    api.host_configure_cb(cb0, 8)
+def test_circular_buffer_basic_flow(configured_cb8):
+    api, cb0 = configured_cb8
     stats = api.cb_stats(cb0)
     assert stats.capacity == 8
     assert stats.visible == 0
@@ -66,10 +83,8 @@ def test_per_instance_timeout_effect():
     elapsed = time.time() - start
     assert elapsed < 0.1
 
-def test_threaded_produce_consume():
-    cb0 = 1
-
-    api.host_configure_cb(cb0, 4)
+def test_threaded_produce_consume(configured_cb):
+    api, cb0 = configured_cb
     result = []
 
     def consumer():
@@ -91,9 +106,8 @@ def test_threaded_produce_consume():
     t.join(timeout=1)
     assert result == [[100, 200, 300, 400]]
 
-def test_cb_pages_nonblocking():
-    cb2 = 2
-    api.host_configure_cb(cb2, 8)
+def test_cb_pages_nonblocking(configured_cb8):
+    api, cb2 = configured_cb8
 
     # No pages initially; test non-error behavior
     assert not api.cb_pages_available_at_front(cb2, 1)
@@ -118,31 +132,23 @@ def test_cb_pages_nonblocking():
     assert not api.cb_pages_available_at_front(cb2, 1)
 
 # Focused error tests for page operations
-def test_cb_pages_available_out_of_range_error():
-    api = CBAPI()
-    cb = 0
-    api.host_configure_cb(cb, 4)
+def test_cb_pages_available_out_of_range_error(configured_cb):
+    api, cb = configured_cb
     with pytest.raises(CBContractError, match="num_tiles must be <= capacity"):
         api.cb_pages_available_at_front(cb, 5)
 
-def test_cb_pages_reservable_out_of_range_error():
-    api = CBAPI()
-    cb = 0
-    api.host_configure_cb(cb, 4)
+def test_cb_pages_reservable_out_of_range_error(configured_cb):
+    api, cb = configured_cb
     with pytest.raises(CBContractError, match="num_tiles must be <= capacity"):
         api.cb_pages_reservable_at_back(cb, 5)
 
-def test_cb_pages_reservable_divisibility_error():
-    api = CBAPI()
-    cb = 0
-    api.host_configure_cb(cb, 8)
+def test_cb_pages_reservable_divisibility_error(configured_cb8):
+    api, cb = configured_cb8
     with pytest.raises(CBContractError, match="First num_tiles=5 must evenly divide capacity=8"):
         api.cb_pages_reservable_at_back(cb, 5)
 
-def test_cb_pages_available_divisibility_error():
-    api = CBAPI()
-    cb = 0
-    api.host_configure_cb(cb, 8)
+def test_cb_pages_available_divisibility_error(configured_cb8):
+    api, cb = configured_cb8
     api.cb_reserve_back(cb, 4)
     ptr = api.get_write_ptr(cb)
     ptr.fill([1, 2, 3, 4])
@@ -151,22 +157,18 @@ def test_cb_pages_available_divisibility_error():
         api.cb_pages_available_at_front(cb, 3)
 
 # Pointer requirement error tests
-def test_get_read_ptr_requires_wait():
-    api = CBAPI()
-    cb = 0
-    api.host_configure_cb(cb, 4)
+def test_get_read_ptr_requires_wait(configured_cb):
+    api, cb = configured_cb
     with pytest.raises(CBContractError, match="get_read_ptr requires prior cb_wait_front"):
         api.get_read_ptr(cb)
 
-def test_get_write_ptr_requires_reserve():
-    api = CBAPI()
-    cb = 0
-    api.host_configure_cb(cb, 4)
+def test_get_write_ptr_requires_reserve(configured_cb):
+    api, cb = configured_cb
     with pytest.raises(CBContractError, match="get_write_ptr requires prior cb_reserve_back"):
         api.get_write_ptr(cb)
 
-def test_multiple_consumers_error():
-    api = CBAPI(timeout=0.1)
+def test_multiple_consumers_error(timeout_api):
+    api = timeout_api
     cb = 0
     api.host_configure_cb(cb, 4)
     errors = []
@@ -183,8 +185,8 @@ def test_multiple_consumers_error():
     t2.join()
     assert any("Only one consumer thread may wait on a CB at a time" in msg for msg in errors)
 
-def test_multiple_producers_error():
-    api = CBAPI(timeout=0.1)
+def test_multiple_producers_error(timeout_api):
+    api = timeout_api
     cb = 0
     api.host_configure_cb(cb, 4)
     errors = []
