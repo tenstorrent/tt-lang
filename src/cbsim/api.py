@@ -2,7 +2,7 @@
 Public API for cbsim: a class-based interface with a singleton default.
 """
 import threading
-from typing import List, Optional, TypeVar, Dict, Annotated
+from typing import List, Optional, TypeVar, Annotated, NamedTuple
 from pydantic import validate_call, Field
 from .errors import CBContractError, CBTimeoutError
 from .constants import MAX_CBS
@@ -11,6 +11,16 @@ from .ringview import _RingView
 from .cbstate import _CBState
 
 T = TypeVar("T")
+
+class CBStats(NamedTuple):
+    """Statistics for a circular buffer."""
+    capacity: int
+    visible: int
+    reserved: int
+    free: int
+    step: Optional[int]
+    head: int
+    list: List
 
 class CBAPI:
     """Circular buffer simulator API interface with its own state pool.
@@ -40,19 +50,19 @@ class CBAPI:
 
 
     @validate_call
-    def cb_stats(self, cb_id: CBID) -> Dict[str, int]:
+    def cb_stats(self, cb_id: CBID) -> CBStats:
         s = self._pool[int(cb_id)]
         with s.lock:
             s._require_configured()
-            return {
-                "capacity": s.cap,
-                "visible": s.visible,
-                "reserved": s.reserved,
-                "free": s._free(),
-                "step": s.step,
-                "head": s.head,
-                "list": s.buf,
-            }
+            return CBStats(
+                capacity=s.cap,
+                visible=s.visible,
+                reserved=s.reserved,
+                free=s._free(),
+                step=s.step,
+                head=s.head,
+                list=s.buf,
+            )
 
     @validate_call
     def cb_pages_available_at_front(self, cb_id: CBID, num_tiles: Size) -> bool:

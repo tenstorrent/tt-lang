@@ -2,6 +2,7 @@
 cbsim package: public API for the circular buffer simulator.
 """
 from .api import (
+    CBStats,
     host_configure_cb,
     host_reset_cb,
     cb_stats,
