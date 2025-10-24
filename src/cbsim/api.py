@@ -1,6 +1,7 @@
 """
 Public API for cbsim: a class-based interface with a singleton default.
 """
+import threading
 from typing import List, Optional, TypeVar, Dict, Annotated
 from pydantic import validate_call, Field
 from .errors import CBContractError, CBTimeoutError
@@ -26,36 +27,16 @@ class CBAPI:
         s = self._pool[int(cb_id)]
         with s.lock:
             s.cap = capacity_tiles
-            s.buf = [None] * capacity_tiles
-            s.head = 0
-            s.visible = 0
-            s.reserved = 0
-            s.step = None
-            s.last_wait_target = 0
-            s.last_reserve_target = 0
-            s.configured = True
-            with s.can_consume:
-                s.can_consume.notify_all()
-            with s.can_produce:
-                s.can_produce.notify_all()
+            s._reset()
 
     @validate_call
     def host_reset_cb(self, cb_id: CBID) -> None:
         s = self._pool[int(cb_id)]
         with s.lock:
             if not s.configured:
-                return
-            s.buf[:] = [None] * s.cap
-            s.head = 0
-            s.visible = 0
-            s.reserved = 0
-            s.step = None
-            s.last_wait_target = 0
-            s.last_reserve_target = 0
-            with s.can_consume:
-                s.can_consume.notify_all()
-            with s.can_produce:
-                s.can_produce.notify_all()
+                raise CBContractError("CB not configured; cannot reset")
+            s._reset()
+
 
     @validate_call
     def cb_stats(self, cb_id: CBID) -> Dict[str, int]:
@@ -94,43 +75,43 @@ class CBAPI:
         with s.can_consume:
             s._require_configured()
             s._check_num_tiles(num_tiles)
-            if s.consumer_waiting:
-                raise CBContractError("Only one consumer may wait on a CB at a time")
-            s.consumer_waiting = True
-            try:
-                if s.step is None:
-                    s.step = num_tiles
-                else:
-                    if num_tiles != s.last_wait_target + s.step:
-                        raise CBContractError(
-                            "cb_wait_front must be cumulative with an increment of the initial number of tiles"
-                            " requested until a pop occurs"
-                        )
-                ok = s.can_consume.wait_for(
-                    lambda: s.visible >= num_tiles, timeout=self._timeout
-                )
-                if not ok:
-                    raise CBTimeoutError(f"cb_wait_front timed out after {self._timeout}s")
-                s.last_wait_target = num_tiles
-            finally:
-                s.consumer_waiting = False
-
+            thread = threading.current_thread()
+            if (s.consumer_waiting is not None) and (s.consumer_waiting != thread):
+                raise CBContractError("Only one consumer thread may wait on a CB at a time")
+            s.consumer_waiting = thread
+            if s.step is None:
+                s.step = num_tiles
+            else:
+                if num_tiles != s.last_wait_target + s.step:
+                    raise CBContractError(
+                        "cb_wait_front must be cumulative with an increment of the initial number of tiles"
+                        " requested until a pop occurs"
+                    )
+            ok = s.can_consume.wait_for(
+                lambda: s.visible >= num_tiles, timeout=self._timeout
+            )
+            if not ok:
+                raise CBTimeoutError(f"cb_wait_front timed out after {self._timeout}s")
+            s.last_wait_target = num_tiles
+                
     @validate_call
     def cb_reserve_back(self, cb_id: CBID, num_tiles: Size) -> None:
         s = self._pool[int(cb_id)]
         with s.can_produce:
             s._require_configured()
             s._check_num_tiles(num_tiles)
-            target = s.reserved + num_tiles
-            if target < s.last_reserve_target:
+            thread = threading.current_thread()
+            if (s.producer_reserving is not None) and (s.producer_reserving != thread):
+                raise CBContractError("Only one producer thread may reserve on a CB at a time")
+            s.producer_reserving = thread
+            if num_tiles < s.reserved:
                 raise CBContractError("reserve target cannot regress within epoch")
             ok = s.can_produce.wait_for(
                 lambda: s._free() >= num_tiles, timeout=self._timeout
             )
             if not ok:
                 raise CBTimeoutError(f"cb_reserve_back timed out after {self._timeout}s")
-            s.reserved += num_tiles
-            s.last_reserve_target = target
+            s.reserved = num_tiles
 
     @validate_call
     def cb_push_back(self, cb_id: CBID, num_tiles: Size) -> None:
@@ -144,6 +125,8 @@ class CBAPI:
                 )
             s.reserved -= num_tiles
             s.visible += num_tiles
+            if s.reserved == 0:
+                s.producer_reserving = None
             with s.can_consume:
                 s.can_consume.notify_all()
 
@@ -164,6 +147,8 @@ class CBAPI:
             s.head = (s.head + num_tiles) % s.cap
             s.visible -= num_tiles
             s.last_wait_target = 0
+            if s.visible == 0:
+                s.consumer_waiting = None
             with s.can_produce:
                 s.can_produce.notify_all()
 
