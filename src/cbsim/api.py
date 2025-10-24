@@ -5,7 +5,8 @@ import threading
 from typing import List, Optional, TypeVar, Dict, Annotated
 from pydantic import validate_call, Field
 from .errors import CBContractError, CBTimeoutError
-from .typedefs import Size, CBID, MAX_CBS
+from .constants import MAX_CBS
+from .typedefs import Size, CBID
 from .ringview import _RingView
 from .cbstate import _CBState
 
