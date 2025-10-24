@@ -178,8 +178,25 @@ def test_multiple_consumers_error():
     t1 = threading.Thread(target=consumer)
     t2 = threading.Thread(target=consumer)
     t1.start()
-    time.sleep(0.05)  # ensure t1 acquires lock and waits
     t2.start()
     t1.join()
     t2.join()
-    assert any("Only one consumer may wait on a CB at a time" in msg for msg in errors)
+    assert any("Only one consumer thread may wait on a CB at a time" in msg for msg in errors)
+
+def test_multiple_producers_error():
+    api = CBAPI(timeout=0.1)
+    cb = 0
+    api.host_configure_cb(cb, 4)
+    errors = []
+    def producer():
+        try:
+            api.cb_reserve_back(cb, 4)
+        except (CBContractError, CBTimeoutError) as e:
+            errors.append(str(e))
+    t1 = threading.Thread(target=producer)
+    t2 = threading.Thread(target=producer)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert any("Only one producer thread may reserve on a CB at a time" in msg for msg in errors)
