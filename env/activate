@@ -1,0 +1,36 @@
+# tt-lang environment activation
+# This script sources tt-mlir's environment and adds tt-lang specific paths
+
+# Step 1: Find and source tt-mlir environment
+if [ -z "${TT_MLIR_HOME}" ]; then
+  # Try to find tt-mlir in common locations
+  if [ -d "/Users/bnorris/tt/tt-mlir" ]; then
+    export TT_MLIR_HOME="/Users/bnorris/tt/tt-mlir"
+  elif [ -d "../tt-mlir" ]; then
+    export TT_MLIR_HOME="$(cd ../tt-mlir && pwd)"
+  else
+    echo "ERROR: TT_MLIR_HOME not set and tt-mlir not found in common locations."
+    echo "Please set TT_MLIR_HOME to point to your tt-mlir installation."
+    echo "Example: export TT_MLIR_HOME=/path/to/tt-mlir"
+    return 1
+  fi
+fi
+
+if [ ! -f "${TT_MLIR_HOME}/env/activate" ]; then
+  echo "ERROR: tt-mlir activate script not found at ${TT_MLIR_HOME}/env/activate"
+  echo "Please ensure TT_MLIR_HOME points to a valid tt-mlir installation."
+  return 1
+fi
+
+# Source tt-mlir environment (this sets up TTMLIR_TOOLCHAIN_DIR, TTMLIR_VENV_DIR, etc.)
+source "${TT_MLIR_HOME}/env/activate"
+
+# Step 2: Add tt-lang specific environment variables and paths
+export TT_LANG_HOME="$(pwd)"
+
+# Prepend tt-lang build directories to PATH and PYTHONPATH
+export PATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/bin:$PATH"
+export PYTHONPATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/python_packages:$PYTHONPATH"
+
+echo "tt-lang environment activated (using tt-mlir from ${TT_MLIR_HOME})"
+
