@@ -43,6 +43,7 @@ jobs:
         pip install pytest 'pydantic<3'
 
     - name: Run Python tests
+      shell: bash
       env:
         PYTHONPATH: ${{ github.workspace }}/sim
       run: |

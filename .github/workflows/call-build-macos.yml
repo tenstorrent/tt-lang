@@ -64,9 +64,10 @@ jobs:
 
     - name: Configure and build tt-mlir
       if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+      shell: bash
       run: |
         cd tt-mlir
-        . env/activate
+        source env/activate
         cmake -G Ninja \
           -B build \
           -DCMAKE_CXX_COMPILER=clang++ \
@@ -77,9 +78,10 @@ jobs:
         cmake --build build --config Release
 
     - name: Configure tt-lang
+      shell: bash
       run: |
         cd tt-mlir
-        . env/activate
+        source env/activate
         cd $GITHUB_WORKSPACE
         cmake -G Ninja \
           -B build \
@@ -90,16 +92,19 @@ jobs:
           -S .
 
     - name: Build tt-lang
+      shell: bash
       run: |
-        cd tt-lang
-        . env/activate
+        cd tt-mlir
+        source env/activate
         cd $GITHUB_WORKSPACE
         cmake --build build --config Release
 
     - name: Run simulator tests
+      shell: bash
       run: |
-        cd $GITHUB_WORKSPACE/tt-lang
-        . env/activate
+        cd tt-mlir
+        source env/activate
+        cd $GITHUB_WORKSPACE
         pytest test/sim/ -v
 
     - name: Upload build artifacts
