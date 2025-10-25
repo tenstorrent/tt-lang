@@ -75,7 +75,7 @@ class CMakeBuild(build_ext):
                         "cd",
                         str(cwd.parent),
                         "&&",
-                        "source",
+                        ".",
                         "env/activate",
                         "&&",
                         "cmake",
