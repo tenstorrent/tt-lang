@@ -19,23 +19,23 @@ jobs:
   pre-commit:
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
-    
+
   build-ubuntu:
     if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-build-ubuntu.yml
     secrets: inherit
-    
+
   build-macos:
     if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-build-macos.yml
     secrets: inherit
-    
+
   test:
     if: github.event.pull_request.draft == false
     needs: [build-ubuntu, build-macos]
     uses: ./.github/workflows/call-test.yml
     secrets: inherit
-    
+
   check-all-green:
     if: always()
     needs:
@@ -50,4 +50,3 @@ jobs:
         with:
           allowed-skips: build-ubuntu, build-macos, test
           jobs: ${{ toJSON(needs) }}
-

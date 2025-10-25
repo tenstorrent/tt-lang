@@ -33,4 +33,3 @@ set -gx PATH "$TT_LANG_HOME/build/bin" $PATH
 set -gx PYTHONPATH "$TT_LANG_HOME/build/python_packages" $PYTHONPATH
 
 echo "tt-lang environment activated (using tt-mlir from $TT_MLIR_HOME)"
-

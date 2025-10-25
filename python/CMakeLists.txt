@@ -91,4 +91,3 @@ add_mlir_python_modules(TTLangPythonModules
 
 # PyWheel Component to create install directives for the packaged ttlang bindings wheel
 install(DIRECTORY ${CMAKE_BINARY_DIR}/python_packages/ DESTINATION . COMPONENT TTLangPythonWheel EXCLUDE_FROM_ALL)
-

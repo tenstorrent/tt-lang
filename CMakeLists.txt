@@ -101,4 +101,3 @@ if(MLIR_ENABLE_BINDINGS_PYTHON AND TTLANG_ENABLE_BINDINGS_PYTHON)
 endif()
 
 add_subdirectory(test)
-

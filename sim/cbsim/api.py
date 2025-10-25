@@ -2,6 +2,7 @@
 Public API for cbsim.
 Contains host and client functions to configure and use the circular buffer simulator.
 """
+
 from typing import List, Optional, TypeVar
 from pydantic import validate_call
 from .errors import CBContractError, CBTimeoutError
@@ -14,6 +15,7 @@ T = TypeVar("T")
 
 # Global static pool of CBState instances
 _pool: List[_CBState] = [_CBState() for _ in range(MAX_CBS)]
+
 
 @validate_call
 def host_configure_cb(cb_id: CBID, capacity_tiles: Size) -> None:
@@ -33,6 +35,7 @@ def host_configure_cb(cb_id: CBID, capacity_tiles: Size) -> None:
         with s.can_produce:
             s.can_produce.notify_all()
 
+
 @validate_call
 def host_reset_cb(cb_id: CBID) -> None:
     s = _pool[int(cb_id)]
@@ -51,6 +54,7 @@ def host_reset_cb(cb_id: CBID) -> None:
         with s.can_produce:
             s.can_produce.notify_all()
 
+
 @validate_call
 def cb_stats(cb_id: CBID) -> dict:
     s = _pool[int(cb_id)]
@@ -66,6 +70,7 @@ def cb_stats(cb_id: CBID) -> dict:
             "list": s.buf,
         }
 
+
 @validate_call
 def cb_pages_available_at_front(cb_id: CBID, num_tiles: Size) -> bool:
     s = _pool[int(cb_id)]
@@ -74,6 +79,7 @@ def cb_pages_available_at_front(cb_id: CBID, num_tiles: Size) -> bool:
         s._check_num_tiles(num_tiles)
         return s.visible >= num_tiles
 
+
 @validate_call
 def cb_pages_reservable_at_back(cb_id: CBID, num_tiles: Size) -> bool:
     s = _pool[int(cb_id)]
@@ -81,6 +87,7 @@ def cb_pages_reservable_at_back(cb_id: CBID, num_tiles: Size) -> bool:
         s._require_configured()
         s._check_num_tiles(num_tiles)
         return s._free() >= num_tiles
+
 
 @validate_call
 def cb_wait_front(cb_id: CBID, num_tiles: Size) -> None:
@@ -94,11 +101,17 @@ def cb_wait_front(cb_id: CBID, num_tiles: Size) -> None:
             if num_tiles != s.last_wait_target + s.step:
                 raise CBContractError(
                     "cb_wait_front must be cumulative with an increment of the initial number of tiles"
-                    " requested until a pop occurs")
-        ok = s.can_consume.wait_for(lambda: s.visible >= num_tiles, timeout=get_global_timeout())
+                    " requested until a pop occurs"
+                )
+        ok = s.can_consume.wait_for(
+            lambda: s.visible >= num_tiles, timeout=get_global_timeout()
+        )
         if not ok:
-            raise CBTimeoutError(f"cb_wait_front timed out after {get_global_timeout()}s")
+            raise CBTimeoutError(
+                f"cb_wait_front timed out after {get_global_timeout()}s"
+            )
         s.last_wait_target = num_tiles
+
 
 @validate_call
 def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
@@ -109,11 +122,16 @@ def cb_reserve_back(cb_id: CBID, num_tiles: Size) -> None:
         target = s.reserved + num_tiles
         if target < s.last_reserve_target:
             raise CBContractError("reserve target cannot regress within epoch")
-        ok = s.can_produce.wait_for(lambda: s._free() >= num_tiles, timeout=get_global_timeout())
+        ok = s.can_produce.wait_for(
+            lambda: s._free() >= num_tiles, timeout=get_global_timeout()
+        )
         if not ok:
-            raise CBTimeoutError(f"cb_reserve_back timed out after {get_global_timeout()}s")
+            raise CBTimeoutError(
+                f"cb_reserve_back timed out after {get_global_timeout()}s"
+            )
         s.reserved += num_tiles
         s.last_reserve_target = target
+
 
 @validate_call
 def cb_push_back(cb_id: CBID, num_tiles: Size) -> None:
@@ -130,6 +148,7 @@ def cb_push_back(cb_id: CBID, num_tiles: Size) -> None:
         with s.can_consume:
             s.can_consume.notify_all()
 
+
 @validate_call
 def cb_pop_front(cb_id: CBID, num_tiles: Size) -> None:
     s = _pool[int(cb_id)]
@@ -138,7 +157,8 @@ def cb_pop_front(cb_id: CBID, num_tiles: Size) -> None:
         s._check_num_tiles(num_tiles)
         if num_tiles > s.visible:
             raise CBContractError(
-                f"cb_pop_front({num_tiles}) exceeds visible={s.visible}")
+                f"cb_pop_front({num_tiles}) exceeds visible={s.visible}"
+            )
         span = s._front_span(num_tiles)
         view = _RingView(s.buf, s.cap, span)
         for i in range(len(view)):
@@ -148,6 +168,7 @@ def cb_pop_front(cb_id: CBID, num_tiles: Size) -> None:
         s.last_wait_target = 0  # reset cumulative wait epoch
         with s.can_produce:
             s.can_produce.notify_all()
+
 
 @validate_call
 def get_read_ptr(cb_id: CBID) -> _RingView[Optional[T]]:
@@ -160,6 +181,7 @@ def get_read_ptr(cb_id: CBID) -> _RingView[Optional[T]]:
             raise CBContractError("read window invalidated; call cb_wait_front again")
         span = s._front_span(s.last_wait_target)
         return _RingView(s.buf, s.cap, span)
+
 
 @validate_call
 def get_write_ptr(cb_id: CBID, length: Optional[Size] = None) -> _RingView[Optional[T]]:

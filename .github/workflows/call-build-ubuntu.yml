@@ -8,24 +8,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        
+
     - name: Setup Python 3.11
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        
+
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build clang-15
         python -m pip install --upgrade pip
-        
+
     - name: Cache tt-mlir build
       id: cache-ttmlir
       uses: actions/cache@v4
@@ -36,7 +36,7 @@ jobs:
         key: ubuntu-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}
         restore-keys: |
           ubuntu-ttlang-ttmlir-
-          
+
     - name: Configure CMake
       run: |
         cmake -G Ninja \
@@ -45,11 +45,11 @@ jobs:
           -DCMAKE_C_COMPILER=clang-15 \
           -DCMAKE_BUILD_TYPE=Release \
           -S .
-          
+
     - name: Build
       run: |
         cmake --build build --config Release
-        
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -58,4 +58,3 @@ jobs:
           build/python_packages
           sim/
         retention-days: 1
-

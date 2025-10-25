@@ -17,4 +17,3 @@ install(DIRECTORY ttlang-c/
   FILES_MATCHING
   PATTERN "*.h"
 )
-

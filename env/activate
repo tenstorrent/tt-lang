@@ -36,4 +36,3 @@ export PATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/bin:$PATH"
 export PYTHONPATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/python_packages:$PYTHONPATH"
 
 echo "tt-lang environment activated (using tt-mlir from ${TT_MLIR_HOME})"
-

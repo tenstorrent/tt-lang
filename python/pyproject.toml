@@ -29,4 +29,3 @@ Issues = "https://github.com/tenstorrent/tt-lang/issues"
 build = "cp311-manylinux_x86_64*"
 skip = "*-musllinux_*"
 build-verbosity = 2
-

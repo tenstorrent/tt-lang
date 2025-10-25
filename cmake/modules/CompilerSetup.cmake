@@ -21,4 +21,3 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     endif()
   endif()
 endif()
-

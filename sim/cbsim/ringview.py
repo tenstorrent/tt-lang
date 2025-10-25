@@ -1,11 +1,13 @@
 """
 _RingView and supporting Span for cbsim.
 """
+
 from dataclasses import dataclass
 from typing import Generic, List, Optional, Sequence, TypeVar
 from .typedefs import Size, Index
 
 T = TypeVar("T")
+
 
 # Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not
 # necessarily make sense in a python context. So we need something that can
@@ -19,10 +21,12 @@ class _Span:
     start: Index  # inclusive index in underlying ring
     length: Size  # number of tiles
 
+
 class _RingView(Generic[T]):
     """A logically contiguous window into the ring, possibly wrapping.
     Provides list-like access to elements while respecting wrap-around.
     """
+
     __slots__ = ("_buf", "_capacity", "_span")
 
     def __init__(self, buf: List[Optional[T]], capacity: Size, span: _Span):

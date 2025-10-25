@@ -21,13 +21,13 @@ else()
   set(TTMLIR_COMMIT_FILE "${CMAKE_SOURCE_DIR}/third-party/tt-mlir.commit")
   file(READ "${TTMLIR_COMMIT_FILE}" TTMLIR_GIT_TAG)
   string(STRIP "${TTMLIR_GIT_TAG}" TTMLIR_GIT_TAG)
-  
+
   if("${TTMLIR_GIT_TAG}" STREQUAL "")
     message(FATAL_ERROR "tt-mlir.commit file does not contain a valid commit hash")
   endif()
-  
+
   message(STATUS "Fetching and building tt-mlir version: ${TTMLIR_GIT_TAG}")
-  
+
   include(FetchContent)
   FetchContent_Declare(
       tt-mlir
@@ -38,7 +38,7 @@ else()
       BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build"
   )
   FetchContent_MakeAvailable(tt-mlir)
-  
+
   # After building, find the package
   find_package(TTMLIR REQUIRED CONFIG)
   message(STATUS "Built and using tt-mlir from: ${TTMLIR_CMAKE_DIR}")

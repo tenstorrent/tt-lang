@@ -7,4 +7,3 @@
 #   COMMAND ${LLVM_TOOLS_DIR}/llvm-lit -v ${CMAKE_CURRENT_BINARY_DIR}
 #   DEPENDS ttlang-opt ttlang-translate
 # )
-

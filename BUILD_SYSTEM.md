@@ -21,14 +21,14 @@ The build system supports:
    cd /Users/bnorris/tt
    git clone https://github.com/tenstorrent/tt-mlir.git
    cd tt-mlir
-   
+
    # Build tt-mlir's toolchain (LLVM/MLIR, etc.)
    cmake -GNinja -Bbuild-env env/
    cmake --build build-env
-   
+
    # Activate tt-mlir environment
    source env/activate
-   
+
    # Build tt-mlir
    cmake -GNinja -Bbuild .
    cmake --build build
@@ -325,7 +325,7 @@ As the project grows, you can add:
 ### Error: "TTLANG_ENV_ACTIVATED not set"
 **Solution:** Run `source env/activate`
 
-### Error: "TTMLIR_ENV_ACTIVATED not set"  
+### Error: "TTMLIR_ENV_ACTIVATED not set"
 **Solution:** Ensure tt-mlir environment is properly sourced. The tt-lang activate script should do this automatically, but verify `TT_MLIR_HOME` is set correctly.
 
 ### Error: "TT_MLIR_HOME not set and tt-mlir not found"
