@@ -13,41 +13,60 @@ jobs:
       image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
     steps:
-    - name: Checkout code
+    - name: Checkout tt-lang
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+
+    - name: Read tt-mlir version
+      id: ttmlir-version
+      run: |
+        TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+        echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
+
+    - name: Checkout tt-mlir
+      uses: actions/checkout@v4
+      with:
+        repository: tenstorrent/tt-mlir
+        ref: ${{ steps.ttmlir-version.outputs.commit }}
+        path: tt-mlir
+        submodules: recursive
 
     - name: Cache tt-mlir build
       id: cache-ttmlir
       uses: actions/cache@v4
       with:
-        path: |
-          build/_deps/tt-mlir-src
-          build/_deps/tt-mlir-build
+        path: tt-mlir/build
         key: ubuntu-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}
-        restore-keys: |
-          ubuntu-ttlang-ttmlir-
 
-    - name: Setup environment
+    - name: Configure and build tt-mlir
+      if: steps.cache-ttmlir.outputs.cache-hit != 'true'
       run: |
-        export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
-        export TTMLIR_VENV_DIR=/opt/ttmlir-toolchain/venv
-        export TTMLIR_ENV_ACTIVATED=1
-        echo "TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain" >> $GITHUB_ENV
-        echo "TTMLIR_VENV_DIR=/opt/ttmlir-toolchain/venv" >> $GITHUB_ENV
-        echo "TTMLIR_ENV_ACTIVATED=1" >> $GITHUB_ENV
-        echo "PATH=/opt/ttmlir-toolchain/bin:/opt/ttmlir-toolchain/venv/bin:$PATH" >> $GITHUB_ENV
-
-    - name: Configure CMake
-      run: |
+        cd tt-mlir
+        . env/activate
         cmake -G Ninja \
           -B build \
           -DCMAKE_BUILD_TYPE=Release \
+          -DTTMLIR_ENABLE_RUNTIME=OFF \
+          -S .
+        cmake --build build --config Release
+
+    - name: Configure tt-lang
+      run: |
+        cd tt-mlir
+        . env/activate
+        cd $GITHUB_WORKSPACE
+        cmake -G Ninja \
+          -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DTTMLIR_DIR=$GITHUB_WORKSPACE/tt-mlir/build/lib/cmake/ttmlir \
           -S .
 
-    - name: Build
+    - name: Build tt-lang
       run: |
+        cd tt-mlir
+        . env/activate
+        cd $GITHUB_WORKSPACE
         cmake --build build --config Release
 
     - name: Upload build artifacts
