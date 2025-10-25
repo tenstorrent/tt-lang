@@ -1,11 +1,11 @@
-name: Test
+name: Test Simulation
 
 on:
   workflow_dispatch:
   workflow_call:
 
 jobs:
-  test:
+  test-sim:
     strategy:
       fail-fast: false
       matrix:
@@ -42,7 +42,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install pytest 'pydantic<3'
 
-    - name: Run Python tests
+    - name: Run Python simulation tests
       shell: bash
       env:
         PYTHONPATH: ${{ github.workspace }}/sim
