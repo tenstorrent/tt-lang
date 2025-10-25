@@ -30,10 +30,10 @@ jobs:
     uses: ./.github/workflows/call-build-macos.yml
     secrets: inherit
 
-  test:
+  test-sim:
     if: github.event.pull_request.draft == false
     needs: [build-ubuntu, build-macos]
-    uses: ./.github/workflows/call-test.yml
+    uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   check-all-green:
@@ -42,11 +42,11 @@ jobs:
       - pre-commit
       - build-ubuntu
       - build-macos
-      - test
+      - test-sim
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build-ubuntu, build-macos, test
+          allowed-skips: build-ubuntu, build-macos, test-sim
           jobs: ${{ toJSON(needs) }}

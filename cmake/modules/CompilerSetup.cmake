@@ -10,6 +10,9 @@ else()
   message(STATUS "ccache not found - builds will not be cached")
 endif()
 
+# Enable compilation database for clangd support
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Compiler flags
 add_compile_options(-Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter --system-header-prefix=ENV{TTMLIR_TOOLCHAIN_DIR})
 

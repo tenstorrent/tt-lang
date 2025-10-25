@@ -1,6 +1,3 @@
-# tt-lang C++ libraries
-# This is where MLIR dialects, passes, and transformations will be implemented
+# tt-lang C++ libraries for MLIR dialects, passes, and transformations
 
-# Example: add_subdirectory(Dialect)
-# Example: add_subdirectory(Transforms)
-# Example: add_subdirectory(CAPI)
+add_subdirectory(Dialect)

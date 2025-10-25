@@ -26,9 +26,9 @@ jobs:
     uses: ./.github/workflows/call-build-macos.yml
     secrets: inherit
 
-  test:
+  test-sim:
     needs: [build-ubuntu, build-macos]
-    uses: ./.github/workflows/call-test.yml
+    uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   check-all-green:
@@ -37,7 +37,7 @@ jobs:
       - pre-commit
       - build-ubuntu
       - build-macos
-      - test
+      - test-sim
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
