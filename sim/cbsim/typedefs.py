@@ -4,8 +4,7 @@ Type aliases with Pydantic constraints for runtime validation.
 
 from typing import Annotated
 from pydantic import Field
-
-MAX_CBS = 32  # Fixed pool of circular buffers
+from .constants import MAX_CBS
 
 PositiveInt = Annotated[int, Field(gt=0)]
 NaturalInt = Annotated[int, Field(ge=0)]

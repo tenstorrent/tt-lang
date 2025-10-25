@@ -2,7 +2,7 @@
 _CState and related internal state management for cbsim.
 """
 
-from threading import Condition, RLock
+from threading import Condition, RLock, Thread
 from typing import Generic, List, Optional, TypeVar
 from .typedefs import Size, Index, Count
 from .errors import CBContractError, CBNotConfigured
@@ -27,6 +27,8 @@ class _CBState(Generic[T]):
         "lock",
         "can_consume",
         "can_produce",
+        "consumer_waiting",
+        "producer_reserving",
     )
 
     def __init__(self):
@@ -42,6 +44,8 @@ class _CBState(Generic[T]):
         self.lock = RLock()
         self.can_consume = Condition(self.lock)
         self.can_produce = Condition(self.lock)
+        self.consumer_waiting: Optional[Thread] = None
+        self.producer_reserving: Optional[Thread] = None
 
     def _require_configured(self) -> None:
         if not self.configured:
@@ -60,3 +64,18 @@ class _CBState(Generic[T]):
 
     def _front_span(self, length: Size) -> _Span:
         return _Span(self.head, length)
+
+    def _reset(self) -> None:
+        self.buf[:] = [None] * self.cap
+        self.head = 0
+        self.visible = 0
+        self.reserved = 0
+        self.step = None
+        self.last_wait_target = 0
+        self.consumer_waiting = None
+        self.producer_reserving = None
+        self.configured = True
+        with self.can_consume:
+            self.can_consume.notify_all()
+        with self.can_produce:
+            self.can_produce.notify_all()
