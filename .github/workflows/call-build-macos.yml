@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 240
 
     steps:
     - name: Checkout tt-lang
