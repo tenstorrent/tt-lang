@@ -5,8 +5,8 @@ on:
   workflow_call:
 
 jobs:
-  build:
-    runs-on: macos-latest
+  build-macos:
+    runs-on: macos-26
     timeout-minutes: 360
 
     steps:
@@ -33,7 +33,7 @@ jobs:
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -56,65 +56,73 @@ jobs:
           cmake -B env/build env
           cmake --build env/build
 
-      # - name: Cache tt-mlir build
-      #   id: cache-ttmlir
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: tt-mlir/build
-      #     key: >-
-      #       macos-ttlang-ttmlir-${{
-      #       hashFiles('third-party/tt-mlir.commit') }}
+      - name: Setup ccache for tt-lang
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}
+          max-size: 200M
 
-      # - name: Configure and build tt-mlir
-      #   if: steps.cache-ttmlir.outputs.cache-hit != 'true'
-      #   shell: bash
-      #   run: |
-      #     cd tt-mlir
-      #     source env/activate
-      #     cmake -G Ninja \
-      #       -B build \
-      #       -DCMAKE_CXX_COMPILER=clang++ \
-      #       -DCMAKE_C_COMPILER=clang \
-      #       -DCMAKE_BUILD_TYPE=Release \
-      #       -DTTMLIR_ENABLE_RUNTIME=OFF \
-      #       -S .
-      #     cmake --build build --config Release
+      - name: Cache tt-mlir build
+        id: cache-ttmlir
+        uses: actions/cache@v4
+        with:
+          path: tt-mlir/build
+          key: >-
+            macos-ttlang-ttmlir-${{
+            hashFiles('third-party/tt-mlir.commit') }}
 
-      # - name: Configure tt-lang
-      #   shell: bash
-      #   run: |
-      #     cd tt-mlir
-      #     source env/activate
-      #     cd $GITHUB_WORKSPACE
-      #     cmake -G Ninja \
-      #       -B build \
-      #       -DCMAKE_CXX_COMPILER=clang++ \
-      #       -DCMAKE_C_COMPILER=clang \
-      #       -DCMAKE_BUILD_TYPE=Release \
-      #       -DTTMLIR_DIR=$GITHUB_WORKSPACE/tt-mlir/build/lib/cmake/ttmlir \
-      #       -S .
+      - name: Configure and build tt-mlir
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cd tt-mlir
+          source env/activate
+          cmake -G Ninja \
+            -B build \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_ENABLE_RUNTIME=OFF \
+            -DCMAKE_BUILD_PARALLEL_LEVEL=2 \
+            -S .
+          cmake --build build --config Release
 
-      # - name: Build tt-lang
-      #   shell: bash
-      #   run: |
-      #     cd tt-mlir
-      #     source env/activate
-      #     cd $GITHUB_WORKSPACE
-      #     cmake --build build --config Release
+      - name: Configure tt-lang
+        shell: bash
+        run: |
+          cd tt-mlir
+          source env/activate
+          cd $GITHUB_WORKSPACE
+          cmake -G Ninja \
+            -B build \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_DIR=$GITHUB_WORKSPACE/tt-mlir/build/lib/cmake/ttmlir \
+            -DTTLANG_ENABLE_BINDINGS_PYTHON=OFF \
+            -S .
 
-      # - name: Run simulator tests
-      #   shell: bash
-      #   run: |
-      #     cd tt-mlir
-      #     source env/activate
-      #     cd $GITHUB_WORKSPACE
-      #     pytest test/sim/ -v
+      - name: Build tt-lang
+        shell: bash
+        run: |
+          cd tt-mlir
+          source env/activate
+          cd $GITHUB_WORKSPACE
+          cmake --build build --config Release
 
-      # - name: Upload build artifacts
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: build-macos
-      #     path: |
-      #       build/python_packages
-      #       sim/
-      #     retention-days: 1
+      - name: Run simulator tests
+        shell: bash
+        run: |
+          cd tt-mlir
+          source env/activate
+          cd $GITHUB_WORKSPACE
+          pytest test/sim/ -v
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-macos
+          path: |
+            build/python_packages
+            sim/
+          retention-days: 1

@@ -54,6 +54,7 @@ set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttlang")
 # Generate packages and shared library
 ################################################################################
 
+# NOTE: Python bindings are DISABLED by default (TTLANG_ENABLE_BINDINGS_PYTHON=OFF)
 set(TTLANG_PYTHON_SOURCES
   MLIRPythonSources.Core
   MLIRPythonSources.Dialects.affine

@@ -5,7 +5,7 @@ on:
   workflow_call:
 
 jobs:
-  build:
+  build-ubuntu:
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -55,6 +55,12 @@ jobs:
             -S .
           cmake --build build --config Release
 
+      - name: Setup ccache for tt-lang
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}
+          max-size: 200M
+
       - name: Configure tt-lang
         shell: bash
         run: |
@@ -65,6 +71,7 @@ jobs:
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_DIR=$GITHUB_WORKSPACE/tt-mlir/build/lib/cmake/ttmlir \
+            -DTTLANG_ENABLE_BINDINGS_PYTHON=OFF \
             -S .
 
       - name: Build tt-lang

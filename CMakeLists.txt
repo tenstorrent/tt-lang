@@ -15,7 +15,7 @@ if (NOT DEFINED ENV{TTMLIR_ENV_ACTIVATED})
 endif()
 
 # Build options
-option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" ON)
+option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" OFF)
 option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 
