@@ -1,7 +1,23 @@
 # Compiler and linker configuration for tt-lang
 
+# ccache support - automatically enable if found
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+  message(STATUS "Found ccache: ${CCACHE_PROGRAM}")
+  set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "C compiler launcher")
+  set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "CXX compiler launcher")
+else()
+  message(STATUS "ccache not found - builds will not be cached")
+endif()
+
 # Compiler flags
 add_compile_options(-Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter --system-header-prefix=ENV{TTMLIR_TOOLCHAIN_DIR})
+
+# Suppress redundant -U option warning on macOS when building Python extensions
+if(APPLE)
+  string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,-w")
+  string(APPEND CMAKE_MODULE_LINKER_FLAGS " -Wl,-w")
+endif()
 
 # LLD linker detection and setup
 set(CMAKE_LINKER_TYPE DEFAULT)
