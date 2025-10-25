@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
 
     steps:
     - name: Checkout tt-lang
@@ -47,7 +47,7 @@ jobs:
         path: /opt/ttmlir-toolchain
         key: macos-ttmlir-toolchain-${{ hashFiles('tt-mlir/env/**') }}
 
-    - name: Build tt-mlir toolchain
+    - name: Build tt-mlir toolchain (LLVM/MLIR, etc.)
       if: steps.cache-toolchain.outputs.cache-hit != 'true'
       run: |
         sudo mkdir -p /opt/ttmlir-toolchain
