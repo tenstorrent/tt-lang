@@ -9,22 +9,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
+    container:
+      image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-
-    - name: Setup Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake ninja-build clang-15
-        python -m pip install --upgrade pip
 
     - name: Cache tt-mlir build
       id: cache-ttmlir
@@ -37,12 +29,20 @@ jobs:
         restore-keys: |
           ubuntu-ttlang-ttmlir-
 
+    - name: Setup environment
+      run: |
+        export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+        export TTMLIR_VENV_DIR=/opt/ttmlir-toolchain/venv
+        export TTMLIR_ENV_ACTIVATED=1
+        echo "TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain" >> $GITHUB_ENV
+        echo "TTMLIR_VENV_DIR=/opt/ttmlir-toolchain/venv" >> $GITHUB_ENV
+        echo "TTMLIR_ENV_ACTIVATED=1" >> $GITHUB_ENV
+        echo "PATH=/opt/ttmlir-toolchain/bin:/opt/ttmlir-toolchain/venv/bin:$PATH" >> $GITHUB_ENV
+
     - name: Configure CMake
       run: |
         cmake -G Ninja \
           -B build \
-          -DCMAKE_CXX_COMPILER=clang++-15 \
-          -DCMAKE_C_COMPILER=clang-15 \
           -DCMAKE_BUILD_TYPE=Release \
           -S .
 

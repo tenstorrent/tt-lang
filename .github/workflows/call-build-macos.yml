@@ -10,10 +10,24 @@ jobs:
     timeout-minutes: 90
 
     steps:
-    - name: Checkout code
+    - name: Checkout tt-lang
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+
+    - name: Read tt-mlir version
+      id: ttmlir-version
+      run: |
+        TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+        echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
+
+    - name: Checkout tt-mlir
+      uses: actions/checkout@v4
+      with:
+        repository: tenstorrent/tt-mlir
+        ref: ${{ steps.ttmlir-version.outputs.commit }}
+        path: tt-mlir
+        submodules: recursive
 
     - name: Setup Python 3.11
       uses: actions/setup-python@v5
@@ -25,16 +39,30 @@ jobs:
         brew install cmake ninja
         python -m pip install --upgrade pip
 
-    - name: Cache tt-mlir build
-      id: cache-ttmlir
+    - name: Cache tt-mlir toolchain
+      id: cache-toolchain
       uses: actions/cache@v4
       with:
-        path: |
-          build/_deps/tt-mlir-src
-          build/_deps/tt-mlir-build
-        key: macos-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}
-        restore-keys: |
-          macos-ttlang-ttmlir-
+        path: /opt/ttmlir-toolchain
+        key: macos-ttmlir-toolchain-${{ hashFiles('tt-mlir/env/**') }}
+
+    - name: Build tt-mlir toolchain
+      if: steps.cache-toolchain.outputs.cache-hit != 'true'
+      run: |
+        sudo mkdir -p /opt/ttmlir-toolchain
+        sudo chown -R $USER /opt/ttmlir-toolchain
+        cd tt-mlir
+        cmake -B env/build env
+        cmake --build env/build
+
+    - name: Setup environment
+      run: |
+        echo "TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain" >> $GITHUB_ENV
+        echo "TTMLIR_VENV_DIR=/opt/ttmlir-toolchain/venv" >> $GITHUB_ENV
+        echo "TTMLIR_ENV_ACTIVATED=1" >> $GITHUB_ENV
+        echo "TT_MLIR_HOME=$GITHUB_WORKSPACE/tt-mlir" >> $GITHUB_ENV
+        echo "/opt/ttmlir-toolchain/bin" >> $GITHUB_PATH
+        echo "/opt/ttmlir-toolchain/venv/bin" >> $GITHUB_PATH
 
     - name: Configure CMake
       run: |
