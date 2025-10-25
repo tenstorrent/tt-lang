@@ -65,18 +65,12 @@ endif()
 # Set Python3 executable explicitly (from tt-mlir's venv)
 set(Python3_EXECUTABLE $ENV{TTMLIR_VENV_DIR}/bin/python3)
 
+# Handle tt-mlir dependency (reads version from third-party/tt-mlir.commit)
+# This will either find pre-built tt-mlir or fetch and build it
+include(ExternTTMLIR)
+
 # Find MLIR (using tt-mlir's FindMLIR module)
 include(FindMLIR)
-
-# Find tt-mlir (it provides TTMLIRConfig.cmake)
-set(TTMLIR_HINTS "$ENV{TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir" "$ENV{TT_MLIR_HOME}/build/lib/cmake/ttmlir")
-find_package(TTMLIR REQUIRED CONFIG HINTS ${TTMLIR_HINTS})
-message(STATUS "Using TTMLIRConfig.cmake in: ${TTMLIR_CMAKE_DIR}")
-message(STATUS "TTMLIR include directories: ${TTMLIR_INCLUDE_DIRS}")
-message(STATUS "TTMLIR library directories: ${TTMLIR_LIBRARY_DIRS}")
-
-# Code coverage configuration
-include(CodeCoverage)
 
 set(TTLANG_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(TTLANG_BINARY_DIR ${PROJECT_BINARY_DIR})

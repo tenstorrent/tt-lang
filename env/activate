@@ -22,11 +22,14 @@ if [ ! -f "${TT_MLIR_HOME}/env/activate" ]; then
   return 1
 fi
 
-# Source tt-mlir environment (this sets up TTMLIR_TOOLCHAIN_DIR, TTMLIR_VENV_DIR, etc.)
-source "${TT_MLIR_HOME}/env/activate"
-
 # Step 2: Add tt-lang specific environment variables and paths
 export TT_LANG_HOME="$(pwd)"
+
+# Source tt-mlir environment (this sets up TTMLIR_TOOLCHAIN_DIR, TTMLIR_VENV_DIR, etc.)
+# We need to cd to tt-mlir first so its activate script sets TT_MLIR_HOME correctly
+pushd "${TT_MLIR_HOME}" > /dev/null
+source env/activate
+popd > /dev/null
 
 # Prepend tt-lang build directories to PATH and PYTHONPATH
 export PATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/bin:$PATH"

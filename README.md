@@ -15,14 +15,29 @@ tt-lang depends on tt-mlir. The required tt-mlir commit is tracked in `third-par
 
 ### Setup and Build
 
+CMake will automatically handle the tt-mlir dependency:
+- If tt-mlir is already built and found, it will use it
+- If not found, it will fetch and build from the version specified in `third-party/tt-mlir.commit`
+
+**Basic build:**
+
 ```bash
-# 1. Sync tt-mlir to the required version and build it
-./scripts/sync-tt-mlir.sh
+# Configure and build
+cmake -GNinja -Bbuild .
+cmake --build build
+```
 
-# 2. Activate environment (sources tt-mlir's environment)
+**Specify tt-mlir location explicitly:**
+
+```bash
+cmake -GNinja -Bbuild . -DTTMLIR_DIR=/path/to/tt-mlir/build/lib/cmake/ttmlir
+cmake --build build
+```
+
+**With environment activation (if using pre-built tt-mlir):**
+
+```bash
 source env/activate
-
-# 3. Configure and build tt-lang
 cmake -GNinja -Bbuild .
 cmake --build build
 ```
