@@ -40,6 +40,11 @@ jobs:
           brew install cmake ninja
           python -m pip install --upgrade pip
 
+      - name: Create toolchain directory
+        run: |
+          sudo mkdir -p /opt/ttmlir-toolchain
+          sudo chown -R $USER /opt/ttmlir-toolchain
+
       - name: Cache tt-mlir toolchain
         id: cache-toolchain
         uses: actions/cache@v4
@@ -50,8 +55,6 @@ jobs:
       - name: Build tt-mlir toolchain (LLVM/MLIR, etc.)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          sudo mkdir -p /opt/ttmlir-toolchain
-          sudo chown -R $USER /opt/ttmlir-toolchain
           cd tt-mlir
           cmake -B env/build env
           cmake --build env/build
