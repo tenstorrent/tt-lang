@@ -91,10 +91,16 @@ jobs:
 
     - name: Build tt-lang
       run: |
-        cd tt-mlir
+        cd tt-lang
         . env/activate
         cd $GITHUB_WORKSPACE
         cmake --build build --config Release
+
+    - name: Run simulator tests
+      run: |
+        cd $GITHUB_WORKSPACE/tt-lang
+        . env/activate
+        pytest test/sim/ -v
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4

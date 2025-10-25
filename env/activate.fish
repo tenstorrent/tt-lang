@@ -30,6 +30,6 @@ set -gx TT_LANG_HOME (pwd)
 
 # Prepend tt-lang build directories to PATH and PYTHONPATH
 set -gx PATH "$TT_LANG_HOME/build/bin" $PATH
-set -gx PYTHONPATH "$TT_LANG_HOME/build/python_packages" $PYTHONPATH
+set -gx PYTHONPATH "$TT_LANG_HOME/build/python_packages" "$TT_LANG_HOME/sim" $PYTHONPATH
 
 echo "tt-lang environment activated (using tt-mlir from $TT_MLIR_HOME)"

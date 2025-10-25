@@ -44,6 +44,6 @@ jobs:
 
     - name: Run Python tests
       env:
-        PYTHONPATH: ${{ github.workspace }}/sim/src
+        PYTHONPATH: ${{ github.workspace }}/sim
       run: |
         pytest test/sim/ -v
