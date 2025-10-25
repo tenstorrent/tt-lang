@@ -3,7 +3,7 @@ name: On Push
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 permissions:
   checks: write

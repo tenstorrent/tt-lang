@@ -13,71 +13,73 @@ jobs:
       image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
     steps:
-    - name: Checkout tt-lang
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout tt-lang
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Read tt-mlir version
-      id: ttmlir-version
-      run: |
-        TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-        echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
+      - name: Read tt-mlir version
+        id: ttmlir-version
+        run: |
+          TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
 
-    - name: Checkout tt-mlir
-      uses: actions/checkout@v4
-      with:
-        repository: tenstorrent/tt-mlir
-        ref: ${{ steps.ttmlir-version.outputs.commit }}
-        path: tt-mlir
-        submodules: recursive
-        fetch-depth: 0
+      - name: Checkout tt-mlir
+        uses: actions/checkout@v4
+        with:
+          repository: tenstorrent/tt-mlir
+          ref: ${{ steps.ttmlir-version.outputs.commit }}
+          path: tt-mlir
+          submodules: recursive
+          fetch-depth: 0
 
-    - name: Cache tt-mlir build
-      id: cache-ttmlir
-      uses: actions/cache@v4
-      with:
-        path: tt-mlir/build
-        key: ubuntu-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}
+      - name: Cache tt-mlir build
+        id: cache-ttmlir
+        uses: actions/cache@v4
+        with:
+          path: tt-mlir/build
+          key: >-
+            ubuntu-ttlang-ttmlir-${{
+            hashFiles('third-party/tt-mlir.commit') }}
 
-    - name: Configure and build tt-mlir
-      if: steps.cache-ttmlir.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        cd tt-mlir
-        source env/activate
-        cmake -G Ninja \
-          -B build \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DTTMLIR_ENABLE_RUNTIME=OFF \
-          -S .
-        cmake --build build --config Release
+      - name: Configure and build tt-mlir
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cd tt-mlir
+          source env/activate
+          cmake -G Ninja \
+            -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_ENABLE_RUNTIME=OFF \
+            -S .
+          cmake --build build --config Release
 
-    - name: Configure tt-lang
-      shell: bash
-      run: |
-        cd tt-mlir
-        source env/activate
-        cd $GITHUB_WORKSPACE
-        cmake -G Ninja \
-          -B build \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DTTMLIR_DIR=$GITHUB_WORKSPACE/tt-mlir/build/lib/cmake/ttmlir \
-          -S .
+      - name: Configure tt-lang
+        shell: bash
+        run: |
+          cd tt-mlir
+          source env/activate
+          cd $GITHUB_WORKSPACE
+          cmake -G Ninja \
+            -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_DIR=$GITHUB_WORKSPACE/tt-mlir/build/lib/cmake/ttmlir \
+            -S .
 
-    - name: Build tt-lang
-      shell: bash
-      run: |
-        cd tt-mlir
-        source env/activate
-        cd $GITHUB_WORKSPACE
-        cmake --build build --config Release
+      - name: Build tt-lang
+        shell: bash
+        run: |
+          cd tt-mlir
+          source env/activate
+          cd $GITHUB_WORKSPACE
+          cmake --build build --config Release
 
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-ubuntu
-        path: |
-          build/python_packages
-          sim/
-        retention-days: 1
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-ubuntu
+          path: |
+            build/python_packages
+            sim/
+          retention-days: 1
