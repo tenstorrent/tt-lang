@@ -9,6 +9,9 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 360
 
+    env:
+      TT_LANG_HOME: ${{ github.workspace }}
+
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v4

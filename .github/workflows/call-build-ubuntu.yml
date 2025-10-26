@@ -12,6 +12,9 @@ jobs:
     container:
       image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
+    env:
+      TT_LANG_HOME: ${{ github.workspace }}
+
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v4
