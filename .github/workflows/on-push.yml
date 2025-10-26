@@ -18,16 +18,12 @@ jobs:
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
-  build-ubuntu:
-    uses: ./.github/workflows/call-build-ubuntu.yml
-    secrets: inherit
-
-  build-macos:
-    uses: ./.github/workflows/call-build-macos.yml
+  build:
+    uses: ./.github/workflows/call-build.yml
     secrets: inherit
 
   test-sim:
-    needs: [build-ubuntu, build-macos]
+    needs: [build]
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
@@ -35,8 +31,7 @@ jobs:
     if: always()
     needs:
       - pre-commit
-      - build-ubuntu
-      - build-macos
+      - build
       - test-sim
     runs-on: ubuntu-latest
     steps:

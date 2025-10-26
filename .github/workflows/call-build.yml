@@ -1,0 +1,110 @@
+name: Build
+
+on:
+    workflow_dispatch:
+    workflow_call:
+
+jobs:
+    build:
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: ubuntu-latest
+                      timeout: 90
+                      use-container: true
+                    - os: macos-26
+                      timeout: 360
+                      use-container: false
+
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: ${{ matrix.timeout }}
+
+        container: ${{ matrix.use-container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
+
+        defaults:
+            run:
+                shell: bash
+
+        env:
+            TT_LANG_HOME: ${{ github.workspace }}
+            TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
+
+        steps:
+            - name: Checkout tt-lang
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Read tt-mlir version
+              id: ttmlir-version
+              run: |
+                  TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+                  echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
+
+            - name: Checkout tt-mlir
+              uses: actions/checkout@v4
+              with:
+                  repository: tenstorrent/tt-mlir
+                  ref: ${{ steps.ttmlir-version.outputs.commit }}
+                  path: tt-mlir
+                  submodules: recursive
+                  fetch-depth: 0 # Fetch full history and tags
+
+            # macOS-specific: Setup toolchain
+            - name: Setup macOS toolchain
+              if: runner.os == 'macOS'
+              uses: ./.github/actions/setup-macos-toolchain
+              with:
+                  tt-mlir-path: tt-mlir
+
+            # Common steps (MacOS and Ubuntu) from here down
+            - name: Cache tt-mlir build
+              id: cache-ttmlir
+              uses: actions/cache@v4
+              with:
+                  path: tt-mlir/build
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}
+
+            - name: Configure and build tt-mlir
+              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              run: |
+                  cd tt-mlir
+                  source env/activate
+                  cmake -G Ninja \
+                    -B build \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DTTMLIR_ENABLE_RUNTIME=OFF \
+                    ${{ runner.os == 'macOS' && '-DCMAKE_BUILD_PARALLEL_LEVEL=2' || '' }} \
+                    -S .
+                  cmake --build build --config Release
+
+            - name: Setup ccache for tt-lang
+              uses: hendrikmuhs/ccache-action@v1.2
+              with:
+                  key: ${{ github.job }}-${{ runner.os }}
+                  max-size: 200M
+
+            - name: Configure tt-lang
+              run: |
+                  source env/activate
+                  cmake -G Ninja \
+                    -B build \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DTTMLIR_DIR=$GITHUB_WORKSPACE/tt-mlir/build/lib/cmake/ttmlir \
+                    -DTTLANG_ENABLE_BINDINGS_PYTHON=OFF \
+                    -S .
+
+            - name: Build tt-lang
+              run: |
+                  source env/activate
+                  cmake --build build --config Release
+
+            - name: Upload build artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+                  path: |
+                      build/python_packages
+                      sim/
+                  retention-days: 1
