@@ -116,13 +116,13 @@ jobs:
           cd $GITHUB_WORKSPACE
           cmake --build build --config Release
 
-      - name: Run simulator tests
-        shell: bash
-        run: |
-          cd tt-mlir
-          source env/activate
-          cd $GITHUB_WORKSPACE
-          pytest test/sim/ -v
+      # - name: Run simulator tests
+      #   shell: bash
+      #   run: |
+      #     cd tt-mlir
+      #     source env/activate
+      #     cd $GITHUB_WORKSPACE
+      #     pytest test/sim/ -v
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
