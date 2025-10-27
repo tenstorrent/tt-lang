@@ -12,33 +12,19 @@ The build system supports:
 - Python bindings using nanobind
 - tt-mlir as a dependency (links against tt-mlir libraries and uses its Python bindings)
 
-## Prerequisites
+## Prerequisites and Build Instructions
 
-**tt-mlir must be built first!** tt-lang depends on tt-mlir and reuses its toolchain.
+See the [README Quick Start](README.md#quick-start) section for prerequisites and build instructions.
 
-1. Clone and build tt-mlir:
-   ```bash
-   cd /Users/bnorris/tt
-   git clone https://github.com/tenstorrent/tt-mlir.git
-   cd tt-mlir
+## How It Works
 
-   # Build tt-mlir's toolchain (LLVM/MLIR, etc.)
-   cmake -GNinja -Bbuild-env env/
-   cmake --build build-env
+The `ExternTTMLIR.cmake` module finds your pre-built tt-mlir installation:
 
-   # Activate tt-mlir environment
-   source env/activate
+1. Reads the reference version from `third-party/tt-mlir.commit`
+2. Looks for pre-built tt-mlir via `$TT_MLIR_HOME` or `$TTMLIR_TOOLCHAIN_DIR`
+3. Links against the found tt-mlir libraries
 
-   # Build tt-mlir
-   cmake -GNinja -Bbuild .
-   cmake --build build
-   ```
-
-2. Verify tt-mlir is working:
-   ```bash
-   source env/activate
-   ttmlir-opt --version
-   ```
+**Note:** The `third-party/tt-mlir.commit` file contains a reference tt-mlir version for compatibility. Ensure your installed tt-mlir is compatible.
 
 ## Directory Structure
 
@@ -50,18 +36,22 @@ tt-lang/
 ├── requirements.txt               # Python runtime requirements
 ├── dev-requirements.txt           # Development requirements
 ├── pytest.ini                     # Pytest configuration
+├── cmake/
+│   └── modules/                   # CMake helper modules
+│       ├── CompilerSetup.cmake
+│       └── ExternTTMLIR.cmake     # tt-mlir dependency management
 ├── env/
-│   ├── activate                   # Environment activation (sources tt-mlir's env)
-│   └── activate.fish              # Fish shell activation script
+│   └── activate                   # Environment activation (sources tt-mlir's env)
 ├── sim/
-│   └── src/
-│       └── cbsim/                 # Simulator code (Python)
+│   └── cbsim/                     # Simulator code (Python)
 ├── include/
 │   ├── CMakeLists.txt
-│   ├── ttlang/                    # Public C++ headers (for future dialects)
+│   ├── ttlang/                    # Public C++ headers
+│   │   └── Dialect/TTMetal/Pipelines/
 │   └── ttlang-c/                  # Public C API headers
 ├── lib/
-│   └── CMakeLists.txt             # C++ libraries (for future dialects/passes)
+│   ├── CMakeLists.txt
+│   └── Dialect/TTMetal/Pipelines/ # TTMetal pipeline implementations
 ├── python/
 │   ├── CMakeLists.txt             # Python bindings build
 │   ├── pyproject.toml             # Python project configuration
@@ -69,11 +59,15 @@ tt-lang/
 │   └── ttlang/                    # Python package
 │       └── __init__.py
 ├── third-party/
-│   └── CMakeLists.txt             # Third-party dependencies
+│   ├── CMakeLists.txt
+│   └── tt-mlir.commit             # Reference tt-mlir version
+├── tools/
+│   └── ttlang-opt/                # Command-line tool
 ├── test/
-│   └── CMakeLists.txt             # Lit test configuration (placeholder)
+│   └── CMakeLists.txt             # Lit test configuration
 └── tests/
-    └── test_cbsim.py              # Existing Python tests
+    └── sim/
+        └── test_cbsim.py          # Simulator tests
 ```
 
 ## Build Process
@@ -83,12 +77,12 @@ tt-lang/
 The tt-lang environment sources tt-mlir's environment and adds tt-lang-specific paths:
 
 ```bash
-cd /Users/bnorris/tt/tt-lang
+cd /path/to/tt-lang
 source env/activate
 ```
 
 **What this does:**
-- Sets `TT_MLIR_HOME` (auto-detects if in `/Users/bnorris/tt/tt-mlir` or `../tt-mlir`)
+- Sets `TT_MLIR_HOME` (auto-detects if tt-mlir is in `../tt-mlir` relative to tt-lang)
 - Sources tt-mlir's `env/activate` (sets up `TTMLIR_TOOLCHAIN_DIR`, `TTMLIR_VENV_DIR`, Python venv, etc.)
 - Sets `TT_LANG_HOME` to tt-lang project root
 - Sets `TTLANG_ENV_ACTIVATED=1`
@@ -193,27 +187,6 @@ target_link_libraries(MyTarget
 )
 ```
 
-### Using tt-mlir Python Bindings
-
-tt-mlir's Python bindings are available in the shared Python environment:
-
-```python
-# Both tt-mlir and tt-lang bindings are available
-import ttlang  # tt-lang bindings
-import ttmlir  # tt-mlir bindings (from shared environment)
-```
-
-## Build Types
-
-The build system supports tt-mlir's custom build types:
-
-- **Debug** - Debug symbols, assertions enabled, debug logs enabled
-- **Release** - Optimized, no debug symbols (default)
-- **RelWithDebInfo** - Optimized with debug symbols
-- **Asan** - Address Sanitizer enabled for memory debugging
-- **Coverage** - Code coverage instrumentation enabled
-- **Assert** - Release build with assertions
-
 ## Environment Variables
 
 ### Set by tt-mlir's environment:
@@ -235,16 +208,12 @@ The build system supports tt-mlir's custom build types:
 ### First-time Setup
 
 ```bash
-# 1. Ensure tt-mlir is built (see Prerequisites section)
-cd /Users/bnorris/tt/tt-mlir
-source env/activate
-cmake -GNinja -Bbuild .
-cmake --build build
+# See Prerequisites section for tt-mlir setup
 
-# 2. Set up tt-lang
-cd /Users/bnorris/tt/tt-lang
+# Build tt-lang
+cd /path/to/tt-lang
 source env/activate  # This sources tt-mlir's env automatically
-cmake -GNinja -Bbuild .
+cmake -GNinja -Bbuild .  # Will find or fetch tt-mlir
 cmake --build build
 ```
 
@@ -252,7 +221,7 @@ cmake --build build
 
 ```bash
 # In each new shell session:
-cd /Users/bnorris/tt/tt-lang
+cd /path/to/tt-lang
 source env/activate
 
 # Build
@@ -265,7 +234,7 @@ pytest tests/
 ### Rebuilding After Changes
 
 ```bash
-# After CMakeLists.txt changes:
+# After CMakeLists.txt or other CMake changes:
 cmake -GNinja -Bbuild .
 
 # After C++ code changes:
@@ -275,20 +244,6 @@ cmake --build build
 # Python files are used directly from source or build/python_packages
 ```
 
-### Updating tt-mlir Dependency
-
-```bash
-# 1. Update tt-mlir
-cd /Users/bnorris/tt/tt-mlir
-git pull  # or checkout specific commit/tag
-cmake --build build
-
-# 2. Rebuild tt-lang (might need reconfigure if tt-mlir APIs changed)
-cd /Users/bnorris/tt/tt-lang
-source env/activate
-cmake -GNinja -Bbuild .  # Reconfigure to pick up new tt-mlir
-cmake --build build
-```
 
 ## Future Additions
 
@@ -316,7 +271,7 @@ As the project grows, you can add:
 - Declare in `python/CMakeLists.txt` using `declare_mlir_python_extension`
 
 ### Tests
-- Add lit tests in `test/` directory
+- Add lit tests in `test/` directory (TODO: add more details)
 - Add unit tests for C++ code
 - Add Python tests in `tests/`
 
@@ -362,12 +317,3 @@ cd $TT_MLIR_HOME
 cmake -GNinja -Bbuild-env env/
 cmake --build build-env
 ```
-
-## Benefits of This Approach
-
-1. **Faster setup** - No need to build LLVM/MLIR separately
-2. **Disk space** - Saves ~50GB by not duplicating LLVM/MLIR builds
-3. **Consistency** - Same compiler, same LLVM version, same Python packages
-4. **Simplified maintenance** - One toolchain to update/maintain
-5. **Easy upgrades** - Update tt-mlir, rebuild, done
-6. **Shared Python environment** - Can use both tt-mlir and tt-lang bindings together
