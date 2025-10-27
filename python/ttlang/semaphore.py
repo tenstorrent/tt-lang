@@ -7,7 +7,7 @@
 from ttmlir.dialects import d2m
 
 from ._src.d2m_ast import syntax
-from ._src.utils import _asindex
+from pykernel._src.utils import _asindex
 
 
 @syntax("!d2m.semaphore")
