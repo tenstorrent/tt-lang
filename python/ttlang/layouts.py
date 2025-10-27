@@ -4,7 +4,7 @@
 
 """Layout creation and manipulation utilities for tensor distribution across cores."""
 
-from typing import List
+from typing import List, Optional
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m
@@ -12,7 +12,7 @@ from ttmlir.dialects import ttcore, d2m
 from .constants import DEFAULT_TILE_SHAPE, SUPPORTED_MEMORY_SPACES
 
 
-def compute_device_shape(layout, grid: List[int], logical_shape: List[int], tile_shape: List[int] = None) -> List[int]:
+def compute_device_shape(layout, grid: List[int], logical_shape: List[int], tile_shape: Optional[List[int]] = None) -> List[int]:
     """
     Compute device shape from layout attributes and grid configuration.
 

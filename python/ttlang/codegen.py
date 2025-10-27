@@ -5,15 +5,16 @@
 """Code generation utilities for creating D2M generic functions and MLIR operations."""
 
 import inspect
-from typing import List
+from typing import List, Callable, Any, Dict
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func
 
 from .layouts import create_metal_layout, create_stream_layout_for_input, compute_device_shape
+from .constants import DEFAULT_TILE_SHAPE
 
 
-def affine_map_from_lambda(fn):
+def affine_map_from_lambda(fn: Callable) -> AffineMap:
     """
     Convert a Python lambda function to an MLIR AffineMap.
 
@@ -106,7 +107,7 @@ def create_generic_func(
         dtype = F32Type.get(ctx)
 
         layout = create_metal_layout(ctx, shape, grid, tiled, memory_space)
-        tile_shape = [32, 32] if tiled else [1, 1]
+        tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
         device_shape = compute_device_shape(layout, grid, shape, tile_shape)
 
         element_type = (
@@ -173,7 +174,7 @@ def create_generic_func(
         func.ReturnOp(generic.results)
 
 
-def copy_symbol_table_globals(module_symbol_table, compiled_threads, f_params):
+def copy_symbol_table_globals(module_symbol_table: SymbolTable, compiled_threads: List[Any], f_params: Dict[str, Any]) -> None:
     """
     Copy global symbols from compiled threads to the module symbol table.
 
