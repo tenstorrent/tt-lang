@@ -10,7 +10,7 @@ import ast
 import inspect
 import functools
 import os
-from typing import List, Optional
+from typing import List, Optional, NamedTuple
 
 try:
     import torch
@@ -158,23 +158,22 @@ def datamovement(verbose: bool = False):
     )
 
 
-class Program:
+class Program(NamedTuple):
     """
-    Container for kernel threads and their arguments.
+    Immutable container for kernel threads and their arguments.
 
     A Program encapsulates compute and data movement threads along with
     the arguments to be passed during execution.
     """
+    threads: tuple
+    args: tuple = ()
+    kwargs: dict = {}
 
-    def __init__(self, *threads):
-        self.threads = threads
-        self.args = None
-        self.kwargs = None
+    def __new__(cls, *threads):
+        return super().__new__(cls, threads, (), {})
 
     def __call__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
-        return self
+        return Program(self.threads, args, {**self.kwargs, **kwargs})
 
 
 _g_current_system_desc = None
