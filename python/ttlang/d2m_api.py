@@ -182,6 +182,143 @@ class Program(NamedTuple):
 _g_current_system_desc = None
 
 
+def _compile_and_run_kernel(
+    f: Callable,
+    args: tuple,
+    kwargs: dict,
+    grid: tuple,
+    block_factors: List,
+    indexing_maps: List[Callable],
+    iterator_types: List[str],
+    num_outs: int,
+    memory_space: str,
+    tiled: bool,
+) -> None:
+    """
+    Compile kernel function to MLIR and execute compilation pipeline.
+
+    Args:
+        f: User kernel function
+        args: Positional arguments for the kernel
+        kwargs: Keyword arguments for the kernel
+        grid: Grid dimensions
+        block_factors: Block factors for each argument
+        indexing_maps: List of lambda functions for indexing
+        iterator_types: List of iterator type strings
+        num_outs: Number of output arguments
+        memory_space: "L1" or "DRAM"
+        tiled: Whether to use tiled layout
+    """
+    f_params = inspect.signature(f).parameters
+
+    for param_name, arg in zip(f_params, args):
+        arg._global_name = param_name
+
+    inject_kwargs = [
+        ("block_factors", block_factors),
+        ("grid", grid),
+        ("memory_space", memory_space),
+        ("tiled", tiled),
+    ]
+    for injected_kwarg, val in inject_kwargs:
+        if injected_kwarg in f_params:
+            kwargs[injected_kwarg] = val
+
+    program = f(*args, **kwargs)
+    if not isinstance(program, Program):
+        raise TypeError(f"Kernel function must return a Program, got {type(program).__name__}")
+
+    injected_program_kwargs = {
+        "grid": grid,
+        "memory_space": memory_space,
+        "tiled": tiled,
+    }
+    program = Program(program.threads, program.args, {**injected_program_kwargs, **program.kwargs})
+
+    ctx = Context()
+    loc = Location.unknown(ctx)
+    with ctx, loc:
+        compiled_threads = []
+        for compile_thread in program.threads:
+            compiled_threads.append(
+                compile_thread(*program.args, **program.kwargs)
+            )
+
+        module = Module.create(loc)
+
+        module_symbol_table = SymbolTable(module.operation)
+        with InsertionPoint.at_block_begin(module.body):
+            copy_symbol_table_globals(
+                module_symbol_table, compiled_threads, f_params
+            )
+
+        streams = set().union(*[ct.streams for ct in compiled_threads])
+        positional_arg_names = list(f_params.keys())[: len(args)]
+        stream_func_arg_attrs = [
+            DictAttr.get({"d2m.stream": BoolAttr.get(p in streams)})
+            for p in positional_arg_names
+        ]
+        if positional_arg_names[-num_outs] in streams:
+            raise ValueError("Output streaming is not supported")
+
+        with InsertionPoint(module.body):
+            create_generic_func(
+                ctx,
+                f.__name__,
+                stream_func_arg_attrs,
+                grid,
+                block_factors,
+                indexing_maps,
+                iterator_types,
+                compiled_threads,
+                num_outs,
+                args,
+                tiled,
+                memory_space,
+            )
+
+        print(module)
+        with open("tmp.mlir", "w") as fd:
+            print(module, file=fd)
+
+        print_ir = True
+        device_register_options = f"system-desc-path={_g_current_system_desc}"
+        verify = True
+        use_tile_matmul = True
+        pipeline = f"d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{{use-tile-matmul={1 if use_tile_matmul else 0}}}"
+
+        register_device = "ttcore-register-device"
+        if device_register_options:
+            register_device = f"{register_device}{{{device_register_options}}}"
+
+        pipeline_str = (
+            f"builtin.module({','.join([register_device, pipeline])})"
+        )
+        pm = PassManager.parse(pipeline_str)
+        pm.enable_verifier(verify)
+
+        try:
+            from ttmlir._mlir_libs._ttmlir import enable_pretty_stack_traces
+            enable_pretty_stack_traces(pm._CAPIPtr)
+        except Exception as e:
+            print(f"Warning: Could not enable pass tracking: {e}")
+
+        print("Running custom pipeline:", pm)
+        if print_ir:
+            print_ir_path = print_ir if isinstance(print_ir, str) else None
+            ctx.enable_multithreading(False)
+            pm.enable_ir_printing(
+                print_after_all=True,
+                print_before_all=True,
+                print_after_failure=True,
+                enable_debug_info=True,
+            )
+        pm.run(module.operation)
+
+        print(module)
+        bin = ttmetal_to_flatbuffer_bin(module)
+
+
 def pykernel_gen(
     grid: Optional[Union[tuple, Callable]] = None,
     block_factors: Optional[Union[List, Callable]] = None,
@@ -258,14 +395,6 @@ def pykernel_gen(
         def _wrapper(*args, **kwargs):
             nonlocal grid
             nonlocal block_factors
-            nonlocal indexing_maps
-            nonlocal iterator_types
-            nonlocal kernel_source_dir
-
-            f_params = inspect.signature(f).parameters
-
-            for param_name, arg in zip(f_params, args):
-                arg._global_name = param_name
 
             if callable(grid):
                 grid = grid(*args, **kwargs)
@@ -276,109 +405,11 @@ def pykernel_gen(
             if block_factors is None:
                 block_factors = [1] * len(grid)
 
-            inject_kwargs = [
-                ("block_factors", block_factors),
-                ("grid", grid),
-                ("memory_space", memory_space),
-                ("tiled", tiled),
-            ]
-            for injected_kwarg, val in inject_kwargs:
-                if injected_kwarg in f_params:
-                    kwargs[injected_kwarg] = val
-
-            program = f(*args, **kwargs)
-            if not isinstance(program, Program):
-                raise TypeError(f"Kernel function must return a Program, got {type(program).__name__}")
-
-            injected_program_kwargs = {
-                "grid": grid,
-                "memory_space": memory_space,
-                "tiled": tiled,
-            }
-            program.kwargs = {**injected_program_kwargs, **program.kwargs}
-
-            ctx = Context()
-            loc = Location.unknown(ctx)
-            with ctx, loc:
-                compiled_threads = []
-                for compile_thread in program.threads:
-                    compiled_threads.append(
-                        compile_thread(*program.args, **program.kwargs)
-                    )
-
-                module = Module.create(loc)
-
-                module_symbol_table = SymbolTable(module.operation)
-                with InsertionPoint.at_block_begin(module.body):
-                    copy_symbol_table_globals(
-                        module_symbol_table, compiled_threads, f_params
-                    )
-
-                streams = set().union(*[ct.streams for ct in compiled_threads])
-                positional_arg_names = list(f_params.keys())[: len(args)]
-                stream_func_arg_attrs = [
-                    DictAttr.get({"d2m.stream": BoolAttr.get(p in streams)})
-                    for p in positional_arg_names
-                ]
-                if positional_arg_names[-num_outs] in streams:
-                    raise ValueError("Output streaming is not supported")
-
-                with InsertionPoint(module.body):
-                    create_generic_func(
-                        ctx,
-                        f.__name__,
-                        stream_func_arg_attrs,
-                        grid,
-                        block_factors,
-                        indexing_maps,
-                        iterator_types,
-                        compiled_threads,
-                        num_outs,
-                        args,
-                        tiled,
-                        memory_space,
-                    )
-
-                print(module)
-                with open("tmp.mlir", "w") as fd:
-                    print(module, file=fd)
-
-                print_ir = True
-                device_register_options = f"system-desc-path={_g_current_system_desc}"
-                verify = True
-                use_tile_matmul = True
-                pipeline = f"d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{{use-tile-matmul={1 if use_tile_matmul else 0}}}"
-
-                register_device = "ttcore-register-device"
-                if device_register_options:
-                    register_device = f"{register_device}{{{device_register_options}}}"
-
-                pipeline_str = (
-                    f"builtin.module({','.join([register_device, pipeline])})"
-                )
-                pm = PassManager.parse(pipeline_str)
-                pm.enable_verifier(verify)
-
-                try:
-                    from ttmlir._mlir_libs._ttmlir import enable_pretty_stack_traces
-                    enable_pretty_stack_traces(pm._CAPIPtr)
-                except Exception as e:
-                    print(f"Warning: Could not enable pass tracking: {e}")
-
-                print("Running custom pipeline:", pm)
-                if print_ir:
-                    print_ir_path = print_ir if isinstance(print_ir, str) else None
-                    ctx.enable_multithreading(False)
-                    pm.enable_ir_printing(
-                        print_after_all=True,
-                        print_before_all=True,
-                        print_after_failure=True,
-                        enable_debug_info=True,
-                    )
-                pm.run(module.operation)
-
-                print(module)
-                bin = ttmetal_to_flatbuffer_bin(module)
+            _compile_and_run_kernel(
+                f, args, kwargs, grid, block_factors,
+                indexing_maps, iterator_types, num_outs,
+                memory_space, tiled
+            )
 
         return _wrapper
 
