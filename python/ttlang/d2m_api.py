@@ -372,9 +372,6 @@ def pykernel_gen(
                 print(module)
                 bin = ttmetal_to_flatbuffer_bin(module)
 
-                print("RUNTIME DISABLED")
-                return
-
         return _wrapper
 
     return _decorator
