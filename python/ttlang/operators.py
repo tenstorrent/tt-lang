@@ -105,14 +105,17 @@ class TensorBlock:
 
     def __sub__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """Element-wise subtraction."""
+        # TODO: Generate linalg.generic with d2m.tile_sub instead of arith.subf
         return arith.subf(ast_self, rhs)
 
     def __mul__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """Element-wise multiplication."""
+        # TODO: Generate linalg.generic with d2m.tile_mul instead of arith.mulf
         return arith.mulf(ast_self, rhs)
 
     def __truediv__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """Element-wise division."""
+        # TODO: Generate linalg.generic with d2m.tile_div instead of arith.divf
         return arith.divf(ast_self, rhs)
 
     def __matmul__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
