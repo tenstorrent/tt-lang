@@ -9,6 +9,8 @@ from typing import List
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m
 
+from .constants import DEFAULT_TILE_SHAPE, SUPPORTED_MEMORY_SPACES
+
 
 def compute_device_shape(layout, grid: List[int], logical_shape: List[int], tile_shape: List[int] = None) -> List[int]:
     """
@@ -32,7 +34,7 @@ def compute_device_shape(layout, grid: List[int], logical_shape: List[int], tile
         RuntimeError: If layout cannot be downcast to MetalLayoutAttr
     """
     if tile_shape is None:
-        tile_shape = [32, 32]
+        tile_shape = DEFAULT_TILE_SHAPE
 
     logical_rank = len(logical_shape)
     if len(grid) == 2 and logical_rank == 2:
