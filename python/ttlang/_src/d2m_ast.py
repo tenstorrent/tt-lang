@@ -69,14 +69,14 @@ class D2MGenericCompiler(TTCompilerBase):
                 dtype = F32Type.get(self.ctx)
 
                 layout = create_metal_layout(
-                    self.ctx, shape, self.grid, self.tiled, self.memory_space
+                    self.ctx, shape, self.context.grid, self.context.tiled, self.context.memory_space
                 )
-                tile_shape = [32, 32] if self.tiled else [1, 1]
-                device_shape = compute_device_shape(layout, self.grid, shape, tile_shape)
+                tile_shape = [32, 32] if self.context.tiled else [1, 1]
+                device_shape = compute_device_shape(layout, self.context.grid, shape, tile_shape)
 
                 element_type = (
                     ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore.DataType.Float32)
-                    if self.tiled
+                    if self.context.tiled
                     else dtype
                 )
                 tensor_type = RankedTensorType.get(device_shape, element_type, layout)
