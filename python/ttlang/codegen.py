@@ -158,6 +158,10 @@ def create_generic_func(
                 for ct in compiled_threads
             ]
         )
+
+        # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
+        # Low-level DSL provides explicit grid/block_factors and manual thread logic.
+        # High-level DSL will need to infer these from operation semantics.
         generic = d2m.GenericOp(
             [ret_type],
             wrapped_inputs,
