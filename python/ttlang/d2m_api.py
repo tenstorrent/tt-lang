@@ -36,6 +36,7 @@ from .operators import TensorBlock, CircularBuffer, MemTx, Semaphore, dma
 from .layouts import create_metal_layout
 from .codegen import create_generic_func, copy_symbol_table_globals
 from .dtype_utils import to_data_type, from_data_type
+from .constants import SUPPORTED_MEMORY_SPACES
 
 
 def _collect_captures(f):
@@ -215,10 +216,7 @@ def pykernel_gen(
     """
     assert grid is not None
     assert num_outs == 1
-    assert memory_space in [
-        "L1",
-        "DRAM",
-    ], f"memory_space must be 'L1' or 'DRAM', got '{memory_space}'"
+    assert memory_space in SUPPORTED_MEMORY_SPACES, f"memory_space must be one of {SUPPORTED_MEMORY_SPACES}, got '{memory_space}'"
     assert isinstance(tiled, bool), f"tiled must be a boolean, got {type(tiled)}"
     assert (iterator_types is None) or (
         indexing_maps is not None
