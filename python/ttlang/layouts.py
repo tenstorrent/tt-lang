@@ -10,6 +10,43 @@ from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m
 
 
+def compute_device_shape(layout, grid: List[int], logical_shape: List[int], tile_shape: List[int] = None) -> List[int]:
+    """
+    Compute device shape from layout attributes and grid configuration.
+
+    The device shape combines grid dimensions with shard dimensions to represent
+    how a tensor is distributed across cores. For a 2D tensor with grid [2, 2],
+    the device shape will be [2, 2, shard_y, shard_x] where shard dimensions
+    represent tiles per core.
+
+    Args:
+        layout: MetalLayoutAttr containing layout information
+        grid: Grid dimensions [grid_y, grid_x]
+        logical_shape: Logical tensor shape in elements
+        tile_shape: Tile dimensions (default [32, 32])
+
+    Returns:
+        Device shape as list of integers
+
+    Raises:
+        RuntimeError: If layout cannot be downcast to MetalLayoutAttr
+    """
+    if tile_shape is None:
+        tile_shape = [32, 32]
+
+    logical_rank = len(logical_shape)
+    if len(grid) == 2 and logical_rank == 2:
+        grid_shape = list(grid)
+    else:
+        grid_shape = list(grid) + [1] * (logical_rank - len(grid))
+
+    typed_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(layout)
+    if typed_layout is None:
+        raise RuntimeError("Failed to downcast MetalLayoutAttr")
+
+    return typed_layout.getDeviceShape(grid_shape, tile_shape)
+
+
 def create_metal_layout(
     ctx,
     logical_shape: List[int],

@@ -60,27 +60,13 @@ class D2MGenericCompiler(TTCompilerBase):
             elif arg.annotation.id == "TensorBlock":
                 shape = self.args[i].shape
                 dtype = F32Type.get(self.ctx)
-                from ..layouts import create_metal_layout
+                from ..layouts import create_metal_layout, compute_device_shape
 
                 layout = create_metal_layout(
                     self.ctx, shape, self.grid, self.tiled, self.memory_space
                 )
                 tile_shape = [32, 32] if self.tiled else [1, 1]
-
-                # Create grid shape that matches logical rank (like builder_utils.py)
-                logical_rank = len(shape)
-                if len(self.grid) == 2 and logical_rank == 2:
-                    # For 2D tensors with 2D grid, use the grid as-is
-                    grid_shape = list(self.grid)
-                else:
-                    # For other cases, pad grid with 1s to match logical rank
-                    grid_shape = list(self.grid) + [1] * (logical_rank - len(self.grid))
-
-                # Downcast to properly typed MetalLayoutAttr for getDeviceShape
-                typed_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(layout)
-                if typed_layout is None:
-                    raise RuntimeError("Failed to downcast MetalLayoutAttr")
-                device_shape = typed_layout.getDeviceShape(grid_shape, tile_shape)
+                device_shape = compute_device_shape(layout, self.grid, shape, tile_shape)
 
                 element_type = (
                     ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore.DataType.Float32)
@@ -92,28 +78,14 @@ class D2MGenericCompiler(TTCompilerBase):
             elif arg.annotation.id == "CircularBuffer":
                 shape = self.args[i].shape
                 dtype = F32Type.get(self.ctx)
-                from ..layouts import create_metal_layout
+                from ..layouts import create_metal_layout, compute_device_shape
 
-                # Create layout to compute device shape (for shard calculation)
                 layout = create_metal_layout(
                     self.ctx, shape, self.grid, self.tiled, self.memory_space
                 )
                 tile_shape = [32, 32] if self.tiled else [1, 1]
+                device_shape = compute_device_shape(layout, self.grid, shape, tile_shape)
 
-                # Create grid shape that matches logical rank
-                logical_rank = len(shape)
-                if len(self.grid) == 2 and logical_rank == 2:
-                    grid_shape = list(self.grid)
-                else:
-                    grid_shape = list(self.grid) + [1] * (logical_rank - len(self.grid))
-
-                # Get full device shape to extract shard portion
-                typed_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(layout)
-                if typed_layout is None:
-                    raise RuntimeError("Failed to downcast MetalLayoutAttr")
-                device_shape = typed_layout.getDeviceShape(grid_shape, tile_shape)
-
-                # CircularBuffer is LOCAL per-core - use only shard shape (second half)
                 shard_shape = device_shape[len(device_shape) // 2:]
 
                 element_type = (
@@ -161,7 +133,7 @@ class D2MGenericCompiler(TTCompilerBase):
                     )
                 elif isinstance(val, Stream):
                     with InsertionPoint.at_block_begin(self.module.body):
-                        from ..layouts import create_metal_layout
+                        from ..layouts import create_metal_layout, compute_device_shape
 
                         layout = create_metal_layout(
                             self.ctx,
@@ -171,25 +143,7 @@ class D2MGenericCompiler(TTCompilerBase):
                             self.memory_space,
                         )
                         tile_shape = [32, 32] if self.tiled else [1, 1]
-
-                        # Create grid shape that matches logical rank (like builder_utils.py)
-                        logical_rank = len(val.shape)
-                        if len(self.grid) == 2 and logical_rank == 2:
-                            # For 2D tensors with 2D grid, use the grid as-is
-                            grid_shape = list(self.grid)
-                        else:
-                            # For other cases, pad grid with 1s to match logical rank
-                            grid_shape = list(self.grid) + [1] * (
-                                logical_rank - len(self.grid)
-                            )
-
-                        # Downcast to properly typed MetalLayoutAttr for getDeviceShape
-                        typed_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(layout)
-                        if typed_layout is None:
-                            raise RuntimeError("Failed to downcast MetalLayoutAttr")
-                        device_shape = typed_layout.getDeviceShape(
-                            grid_shape, tile_shape
-                        )
+                        device_shape = compute_device_shape(layout, self.grid, val.shape, tile_shape)
 
                         element_type = (
                             ttcore.ir.TileType.get(

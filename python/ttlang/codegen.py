@@ -10,7 +10,7 @@ from typing import List
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func
 
-from .layouts import create_metal_layout, create_stream_layout_for_input
+from .layouts import create_metal_layout, create_stream_layout_for_input, compute_device_shape
 
 
 def affine_map_from_lambda(fn):
@@ -107,17 +107,7 @@ def create_generic_func(
 
         layout = create_metal_layout(ctx, shape, grid, tiled, memory_space)
         tile_shape = [32, 32] if tiled else [1, 1]
-
-        logical_rank = len(shape)
-        if len(grid) == 2 and logical_rank == 2:
-            grid_shape = list(grid)
-        else:
-            grid_shape = list(grid) + [1] * (logical_rank - len(grid))
-
-        typed_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(layout)
-        if typed_layout is None:
-            raise RuntimeError("Failed to downcast MetalLayoutAttr")
-        device_shape = typed_layout.getDeviceShape(grid_shape, tile_shape)
+        device_shape = compute_device_shape(layout, grid, shape, tile_shape)
 
         element_type = (
             ttcore.ir.TileType.get(ctx, 32, 32, ttcore.DataType.Float32)
