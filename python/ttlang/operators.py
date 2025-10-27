@@ -4,12 +4,73 @@
 
 """DSL operators for tensor operations, circular buffers, DMA, and semaphores."""
 
+from typing import List, Callable
+
 from ttmlir.ir import *
 from ttmlir.dialects import d2m, arith, linalg
 from ttmlir.dialects._linalg_ops_gen import GenericOp
 
 from ._src.d2m_ast import syntax
 from ._src.utils import _asindex
+
+
+def _create_linalg_generic(
+    lhs,
+    rhs,
+    output_shape: List[int],
+    affine_maps: List[AffineMap],
+    iterator_types: List[str],
+    tile_op_builder: Callable,
+) -> "TensorBlock":
+    """
+    Create a linalg.generic operation with a D2M tile operation in the body.
+
+    This helper encapsulates the common pattern for creating linalg.generic
+    operations with D2M tile operations for elementwise and reduction operations.
+
+    Args:
+        lhs: Left-hand side operand
+        rhs: Right-hand side operand
+        output_shape: Shape of the output tensor
+        affine_maps: List of AffineMap objects for indexing
+        iterator_types: List of iterator type strings ("parallel" or "reduction")
+        tile_op_builder: Function that takes (result_type, *block_args) and creates tile op
+
+    Returns:
+        Result of the linalg.generic operation
+    """
+    ctx = lhs.type.context
+
+    out_type = RankedTensorType.get(
+        output_shape, lhs.type.element_type, lhs.type.encoding
+    )
+    empty = d2m.empty(out_type)
+
+    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(m) for m in affine_maps])
+
+    iter_types_attr = ArrayAttr.get([
+        Attribute.parse(f'#linalg.iterator_type<{it}>', ctx) for it in iterator_types
+    ])
+
+    num_inputs = len(affine_maps) - 1
+    inputs = [lhs, rhs] if num_inputs == 2 else [lhs] + [rhs] * (num_inputs - 1)
+
+    generic_op = GenericOp(
+        result_tensors=[out_type],
+        inputs=inputs[:num_inputs],
+        outputs=[empty],
+        indexing_maps=affine_maps_attr,
+        iterator_types=iter_types_attr
+    )
+
+    block_arg_types = [inp.type.element_type for inp in inputs[:num_inputs]] + [empty.type.element_type]
+    block = generic_op.regions[0].blocks.append(*block_arg_types)
+
+    with InsertionPoint(block):
+        tile_result = tile_op_builder(lhs.type.element_type, *block.arguments)
+        linalg.YieldOp([tile_result])
+
+    return generic_op.result
 
 
 @syntax("!tensor")
@@ -30,41 +91,17 @@ class TensorBlock:
         lhs = ast_self
         assert isinstance(lhs.type, RankedTensorType)
 
-        out_type = lhs.type
-        empty = d2m.empty(out_type)
-
         ctx = lhs.type.context
         rank = len(lhs.type.shape)
         identity_map = AffineMap.get_identity(rank, ctx)
-        affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(identity_map)] * 3)
 
-        iter_types_attr = ArrayAttr.get([
-            Attribute.parse('#linalg.iterator_type<parallel>', ctx) for _ in range(rank)
-        ])
-
-        generic_op = GenericOp(
-            result_tensors=[out_type],
-            inputs=[lhs, rhs],
-            outputs=[empty],
-            indexing_maps=affine_maps_attr,
-            iterator_types=iter_types_attr
+        return _create_linalg_generic(
+            lhs, rhs,
+            output_shape=list(lhs.type.shape),
+            affine_maps=[identity_map] * 3,
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, out_arg: d2m.tile_add(result_type, lhs_arg, rhs_arg)
         )
-
-        block = generic_op.regions[0].blocks.append(
-            lhs.type.element_type,
-            rhs.type.element_type,
-            empty.type.element_type
-        )
-
-        with InsertionPoint(block):
-            tile_result = d2m.tile_add(
-                lhs.type.element_type,
-                block.arguments[0],
-                block.arguments[1]
-            )
-            linalg.YieldOp([tile_result])
-
-        return generic_op.result
 
     def __sub__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """Element-wise subtraction."""
@@ -86,49 +123,20 @@ class TensorBlock:
         out_shape = list(lhs.type.shape)
         out_shape[-1] = rhs.type.shape[-1]
 
-        out_type = RankedTensorType.get(
-            out_shape, lhs.type.element_type, lhs.type.encoding
-        )
-        empty = d2m.empty(out_type)
-
         ctx = lhs.type.context
         matmul_maps = [
             AffineMap.get(3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(2, ctx)], ctx),
             AffineMap.get(3, 0, [AffineDimExpr.get(2, ctx), AffineDimExpr.get(1, ctx)], ctx),
             AffineMap.get(3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx),
         ]
-        affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(m) for m in matmul_maps])
 
-        iter_types_attr = ArrayAttr.get([
-            Attribute.parse('#linalg.iterator_type<parallel>', ctx),
-            Attribute.parse('#linalg.iterator_type<parallel>', ctx),
-            Attribute.parse('#linalg.iterator_type<reduction>', ctx)
-        ])
-
-        generic_op = GenericOp(
-            result_tensors=[out_type],
-            inputs=[lhs, rhs],
-            outputs=[empty],
-            indexing_maps=affine_maps_attr,
-            iterator_types=iter_types_attr
+        return _create_linalg_generic(
+            lhs, rhs,
+            output_shape=out_shape,
+            affine_maps=matmul_maps,
+            iterator_types=["parallel", "parallel", "reduction"],
+            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, acc_arg: d2m.tile_matmul(result_type, lhs_arg, rhs_arg, acc_arg)
         )
-
-        block = generic_op.regions[0].blocks.append(
-            lhs.type.element_type,
-            rhs.type.element_type,
-            empty.type.element_type
-        )
-
-        with InsertionPoint(block):
-            tile_result = d2m.tile_matmul(
-                lhs.type.element_type,
-                block.arguments[0],
-                block.arguments[1],
-                block.arguments[2]
-            )
-            linalg.YieldOp([tile_result])
-
-        return generic_op.result
 
     def store(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """Store operation for writing tensor data."""
