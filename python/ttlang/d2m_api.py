@@ -245,7 +245,7 @@ def _compile_and_run_kernel(
         "memory_space": memory_space,
         "tiled": tiled,
     }
-    program = Program(program.threads, program.args, {**injected_program_kwargs, **program.kwargs})
+    program = Program(*program.threads, args=program.args, kwargs={**injected_program_kwargs, **program.kwargs})
 
     ctx = Context()
     loc = Location.unknown(ctx)
