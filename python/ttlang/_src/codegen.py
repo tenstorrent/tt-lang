@@ -10,8 +10,8 @@ from typing import List, Callable, Any, Dict
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func
 
-from .layouts import create_metal_layout, create_stream_layout_for_input, compute_device_shape, StreamLayoutConfig, MetalLayoutConfig
-from .constants import DEFAULT_TILE_SHAPE
+from ..layouts import create_metal_layout, create_stream_layout_for_input, compute_device_shape, StreamLayoutConfig, MetalLayoutConfig
+from ..constants import DEFAULT_TILE_SHAPE
 
 
 def affine_map_from_lambda(fn: Callable) -> AffineMap:
