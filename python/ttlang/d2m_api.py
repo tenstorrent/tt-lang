@@ -2,12 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Main API for the D2M dialect Python DSL."""
+
 from __future__ import annotations
 
 import ast
 import inspect
 import functools
-import json
 import os
 from typing import List, Optional
 
@@ -24,265 +25,32 @@ except ModuleNotFoundError:
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
-from ttmlir.dialects import (
-    ttcore,
-    d2m,
-    func,
-    arith,
-)
+from ttmlir.dialects import ttcore, d2m, func
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
-from ._src.utils import _discover_dialect_ops, _asindex, _cleanup_source_code
-from ._src.d2m_ast import D2MGenericCompiler, syntax
+from ._src.utils import _cleanup_source_code
+from ._src.d2m_ast import D2MGenericCompiler
 from ._src.stream import Stream
 
-
-# TODO: add support for collapse intervals and dimension alignments
-def create_metal_layout(
-    ctx,
-    logical_shape: List[int],
-    grid: List[int],
-    tiled: bool = True,
-    memory_space: str = "L1",
-    sharded: bool = True,
-) -> "ttcore.MetalLayoutAttr":
-    """
-    Create a MetalLayoutAttr with user-friendly parameters.
-
-    Args:
-        ctx: MLIR context
-        logical_shape: List of logical tensor dimensions
-        grid: Grid shape (e.g., [2, 2])
-        tiled: Whether to use tiled layout (default True)
-        memory_space: "L1" or "DRAM" (default "L1")
-        sharded: Whether to use sharded memory layout (default True)
-
-    Returns:
-        ttcore.MetalLayoutAttr with computed device shape
-    """
-    from ttmlir.dialects import ttcore
-
-    # Convert memory_space string to enum
-    if memory_space == "L1":
-        mem_space = ttcore.MemorySpace.DeviceL1
-    elif memory_space == "DRAM":
-        mem_space = ttcore.MemorySpace.DeviceDRAM
-    else:
-        raise ValueError(
-            f"Invalid memory_space: {memory_space}. Must be 'L1' or 'DRAM'"
-        )
-
-    # Convert sharded bool to enum
-    if sharded:
-        memory_layout = ttcore.TensorMemoryLayout.Sharded
-    else:
-        memory_layout = ttcore.TensorMemoryLayout.Interleaved
-
-    # Validate that logical dimensions are divisible by grid dimensions
-    for i in range(len(logical_shape)):
-        if logical_shape[i] % grid[i] != 0:
-            raise ValueError(
-                f"Logical dimension {i} ({logical_shape[i]}) must be evenly divisible by grid dimension {i} ({grid[i]})"
-            )
-
-    # Use the simple version without collapse intervals
-    # This will create default collapse intervals based on the grid rank
-    layout = ttcore.ir.MetalLayoutAttr.get(
-        ctx,
-        logical_shape,
-        grid,
-        int(ttcore.OOBVal.Undef),
-        int(mem_space),
-        int(ttcore.TensorMemoryLayout.Sharded),
-    )
-
-    return layout
-
-
-@syntax("!tensor")
-class TensorBlock:
-    def __init__(self, shape, dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def __add__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        from ttmlir.dialects import linalg
-        from ttmlir.dialects._linalg_ops_gen import GenericOp
-
-        lhs = ast_self
-        assert isinstance(lhs.type, RankedTensorType)
-
-        # Output has same shape as inputs (elementwise)
-        out_type = lhs.type
-        empty = d2m.empty(out_type)
-
-        # Create affine maps: identity for elementwise
-        ctx = lhs.type.context
-        rank = len(lhs.type.shape)
-        identity_map = AffineMap.get_identity(rank, ctx)
-        affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(identity_map)] * 3)
-
-        # Iterator types: all parallel
-        iter_types_attr = ArrayAttr.get([
-            Attribute.parse('#linalg.iterator_type<parallel>', ctx) for _ in range(rank)
-        ])
-
-        # Create linalg.generic op
-        generic_op = GenericOp(
-            result_tensors=[out_type],
-            inputs=[lhs, rhs],
-            outputs=[empty],
-            indexing_maps=affine_maps_attr,
-            iterator_types=iter_types_attr
-        )
-
-        # Build the region body
-        block = generic_op.regions[0].blocks.append(
-            lhs.type.element_type,  # tile arg
-            rhs.type.element_type,  # tile arg
-            empty.type.element_type  # tile out arg
-        )
-
-        with InsertionPoint(block):
-            # d2m.tile_add signature: tile_add(result_type, lhs, rhs)
-            tile_result = d2m.tile_add(
-                lhs.type.element_type,   # result type (tile type)
-                block.arguments[0],      # tile lhs
-                block.arguments[1]       # tile rhs
-            )
-            linalg.YieldOp([tile_result])
-
-        return generic_op.result
-
-    def __sub__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        return arith.subf(ast_self, rhs)
-
-    def __mul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        return arith.mulf(ast_self, rhs)
-
-    def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        return arith.divf(ast_self, rhs)
-
-    def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        from ttmlir.dialects import linalg
-        from ttmlir.dialects._linalg_ops_gen import GenericOp
-
-        lhs = ast_self
-        assert isinstance(lhs.type, RankedTensorType)
-
-        # Output shape: [M, N] where LHS is [M, K] and RHS is [K, N]
-        out_shape = list(lhs.type.shape)
-        out_shape[-1] = rhs.type.shape[-1]
-
-        out_type = RankedTensorType.get(
-            out_shape, lhs.type.element_type, lhs.type.encoding
-        )
-        empty = d2m.empty(out_type)
-
-        # Create affine maps for matrix multiply
-        # LHS: (d0, d1, d2) -> (d0, d2)  [M, K]
-        # RHS: (d0, d1, d2) -> (d2, d1)  [K, N]
-        # OUT: (d0, d1, d2) -> (d0, d1)  [M, N]
-        ctx = lhs.type.context
-        matmul_maps = [
-            AffineMap.get(3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(2, ctx)], ctx),  # LHS
-            AffineMap.get(3, 0, [AffineDimExpr.get(2, ctx), AffineDimExpr.get(1, ctx)], ctx),  # RHS
-            AffineMap.get(3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx),  # OUT
-        ]
-        affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(m) for m in matmul_maps])
-
-        # Iterator types: [parallel, parallel, reduction]
-        iter_types_attr = ArrayAttr.get([
-            Attribute.parse('#linalg.iterator_type<parallel>', ctx),
-            Attribute.parse('#linalg.iterator_type<parallel>', ctx),
-            Attribute.parse('#linalg.iterator_type<reduction>', ctx)
-        ])
-
-        # Create linalg.generic op
-        generic_op = GenericOp(
-            result_tensors=[out_type],
-            inputs=[lhs, rhs],
-            outputs=[empty],
-            indexing_maps=affine_maps_attr,
-            iterator_types=iter_types_attr
-        )
-
-        # Build the region body
-        block = generic_op.regions[0].blocks.append(
-            lhs.type.element_type,    # tile lhs
-            rhs.type.element_type,    # tile rhs
-            empty.type.element_type   # tile acc
-        )
-
-        with InsertionPoint(block):
-            # d2m.tile_matmul signature: tile_matmul(result_type, lhs, rhs, acc)
-            tile_result = d2m.tile_matmul(
-                lhs.type.element_type,   # result type (tile type)
-                block.arguments[0],      # tile lhs
-                block.arguments[1],      # tile rhs
-                block.arguments[2]       # tile acc
-            )
-            linalg.YieldOp([tile_result])
-
-        return generic_op.result
-
-    def store(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        return d2m.store(ast_self, rhs)
-
-
-@syntax("!d2m.cb")
-class CircularBuffer:
-    def pop(ast_self) -> TensorBlock:
-        # Note: 'pop' is an alias for 'wait' (main uses 'wait', stash-hacking-on-layout used 'pop')
-        return d2m.wait(d2m.ir.CBType.cast(ast_self.type).getUnderlying(), ast_self)
-
-    def reserve(ast_self) -> TensorBlock:
-        return d2m.reserve(d2m.ir.CBType.cast(ast_self.type).getUnderlying(), ast_self)
-
-
-@syntax("!d2m.mem_tx")
-class MemTx:
-    def wait(ast_self):
-        return d2m.dma_wait(ast_self)
-
-
-@syntax("dma")
-def dma(src, dst, core=None, mcast=None) -> MemTx:
-    src_indices = None
-    dst_indices = None
-    if isinstance(src, tuple):
-        src, src_indices = src
-    if isinstance(dst, tuple):
-        dst, dst_indices = dst
-    return d2m.dma(
-        src,
-        _asindex(src_indices),
-        dst,
-        _asindex(dst_indices),
-        _asindex(core),
-        _asindex(mcast),
-    )
-
-
-@syntax("!d2m.semaphore")
-class Semaphore:
-    def set(ast_self, value, core=None, mcast=None):
-        return d2m.semaphore_set(
-            ast_self, _asindex(value), _asindex(core), _asindex(mcast)
-        )
-
-    def inc(ast_self, value, core=None, mcast=None):
-        return d2m.semaphore_inc(
-            ast_self, _asindex(value), _asindex(core), _asindex(mcast)
-        )
-
-    def wait(ast_self, value, reset=None):
-        return d2m.semaphore_wait(
-            ast_self, _asindex(value), reset_value=_asindex(reset)
-        )
+from .operators import TensorBlock, CircularBuffer, MemTx, Semaphore, dma
+from .layouts import create_metal_layout
+from .codegen import create_generic_func, copy_symbol_table_globals
+from .dtype_utils import to_data_type, from_data_type
 
 
 def _collect_captures(f):
+    """
+    Collect and convert captured variables from function closure.
+
+    Args:
+        f: Function with closure to inspect
+
+    Returns:
+        Dictionary mapping variable names to converted values
+
+    Raises:
+        TypeError: If closure contains unsupported variable types
+    """
     if f.__closure__ is None:
         return {}
 
@@ -305,14 +73,23 @@ def _compile(
     verbose: bool = False,
     optimize: bool = False,
 ):
+    """
+    Internal decorator for compiling kernel threads.
+
+    Args:
+        kernel_type: Type of kernel ("compute" or "datamovement")
+        verbose: Enable verbose compilation output
+        optimize: Enable optimization passes
+
+    Returns:
+        Decorator function for kernel compilation
+    """
     def _decorator(f):
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
-            # Code to deal with identation issues
             source_code = _cleanup_source_code(f)
 
             if verbose:
-                # Create easily index-able object to store source code:
                 kwargs["_source_code"] = source_code.splitlines()
                 kwargs["_verbose"] = True
 
@@ -330,7 +107,6 @@ def _compile(
 
             b.visit(m)
 
-            # Check if generated IR is valid
             if verbose:
                 print(b.module)
 
@@ -338,7 +114,6 @@ def _compile(
 
             return b
 
-        # Make the decorator apply staticmethod for class methods defined using op.py
         _wrapper._decorator_name = kernel_type + "_thread"
         if inspect.ismethod(f):
             return staticmethod(_wrapper)
@@ -348,6 +123,17 @@ def _compile(
 
 
 def compute(verbose: bool = False):
+    """
+    Decorator for compute thread functions.
+
+    Compute threads execute on Tensix cores and perform mathematical operations.
+
+    Args:
+        verbose: Enable verbose compilation output
+
+    Returns:
+        Decorator for compute kernel compilation
+    """
     return _compile(
         kernel_type="compute",
         verbose=verbose,
@@ -355,6 +141,17 @@ def compute(verbose: bool = False):
 
 
 def datamovement(verbose: bool = False):
+    """
+    Decorator for data movement thread functions.
+
+    Data movement threads handle DMA operations between memory hierarchies.
+
+    Args:
+        verbose: Enable verbose compilation output
+
+    Returns:
+        Decorator for data movement kernel compilation
+    """
     return _compile(
         kernel_type="datamovement",
         verbose=verbose,
@@ -362,6 +159,13 @@ def datamovement(verbose: bool = False):
 
 
 class Program:
+    """
+    Container for kernel threads and their arguments.
+
+    A Program encapsulates compute and data movement threads along with
+    the arguments to be passed during execution.
+    """
+
     def __init__(self, *threads):
         self.threads = threads
         self.args = None
@@ -371,286 +175,6 @@ class Program:
         self.args = args
         self.kwargs = kwargs
         return self
-
-
-def _affine_map_from_lambda(fn):
-    class Dim:
-        def __init__(self, position, name):
-            self.position = position
-            self.name = name
-
-    dims = tuple(
-        Dim(name, i) for name, i in enumerate(inspect.signature(fn).parameters)
-    )
-    num_dims = len(dims)
-    results = fn(*dims)
-    exprs = []
-    for result in results:
-        if isinstance(result, Dim):
-            exprs.append(AffineDimExpr.get(result.position))
-        elif isinstance(result, int):
-            assert (
-                result == 0
-            ), "The only integer constant allowed in an indexing_map is 0"
-            exprs.append(AffineConstantExpr.get(result))
-        else:
-            raise TypeError(
-                "Unsupported indexing_map result type `{type(result)}` for result `{result}`"
-            )
-    num_syms = 0
-    return AffineMap.get(num_dims, num_syms, exprs)
-
-
-def _create_stream_layout_for_input(ctx, input_arg, logical_shape, grid, tiled, memory_space):
-    """
-    Create a stream_layout op for the given input argument.
-
-    Key insight from D2M_LAYOUT_ARCHITECTURE.md:
-    - Storage: MetalLayoutAttr WITHOUT index_map (becomes ShardLayoutAttr after bufferization)
-    - Result: MetalLayoutAttr WITH identity index_map (becomes ViewLayoutAttr after bufferization)
-
-    This creates a placeholder storage buffer. The d2m-allocate pass will create
-    new L1 allocations and use the stream as a data source via stream_layout ops.
-    """
-    input_type = input_arg.type
-
-    # Extract layout info from input type
-    input_tensor_type = RankedTensorType(input_type)
-    device_shape = list(input_tensor_type.shape)
-    element_type = input_tensor_type.element_type
-    encoding = input_tensor_type.encoding
-
-    # Verify the input has MetalLayoutAttr
-    metal_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(encoding)
-    if metal_layout is None:
-        raise RuntimeError("Input argument must have MetalLayoutAttr encoding")
-
-    # Create storage with MetalLayoutAttr WITHOUT index_map
-    # (will become ShardLayoutAttr after bufferization)
-    storage_layout = create_metal_layout(ctx, logical_shape, grid, tiled, memory_space)
-    storage_type = RankedTensorType.get(device_shape, element_type, storage_layout)
-    storage = d2m.EmptyOp(storage_type)
-
-    # Create result with MetalLayoutAttr WITH identity index_map
-    # (will become ViewLayoutAttr after bufferization)
-    # We need to add an identity index_map to the base layout
-    rank = len(device_shape)
-    identity_map = AffineMap.get_identity(rank, ctx)
-
-    # TODO: Expose Python API on MetalLayoutAttr to extract these properties
-    # so we can copy them from the existing metal_layout instead of reconstructing.
-    # For now, we manually reconstruct with the same parameters as create_metal_layout.
-
-    # Create layout with identity index_map using the C++ API signature:
-    # get(ctx, logical_shape, grid, oob_val, mem_space, memory_layout, index_map)
-    result_layout = ttcore.ir.MetalLayoutAttr.get(
-        ctx,
-        logical_shape,
-        grid,  # Second parameter is grid, not dim_alignments!
-        int(ttcore.OOBVal.Undef),
-        int(ttcore.MemorySpace.DeviceL1 if memory_space == "L1" else ttcore.MemorySpace.DeviceDRAM),
-        int(ttcore.TensorMemoryLayout.Sharded),
-        identity_map  # Add identity index_map for view
-    )
-    result_type = RankedTensorType.get(device_shape, element_type, result_layout)
-
-    # Create stream_layout op
-    stream = d2m.StreamLayoutOp(result_type, input_arg, storage.result)
-    return stream.result
-
-
-def _create_generic_func(
-    ctx,
-    name,
-    stream_func_arg_attrs,
-    grid,
-    block_factors,
-    indexing_maps,
-    iterator_types,
-    compiled_threads,
-    num_outs,
-    user_args,  # Original torch tensor arguments
-    tiled,
-    memory_space,
-):
-    # Flatten the block factors if need be.
-    if (
-        isinstance(block_factors, list)
-        and len(block_factors) > 0
-        and isinstance(block_factors[0], tuple)
-    ):
-        assert isinstance(block_factors, list)
-        assert isinstance(block_factors[0], tuple)
-        block_factors = [b for bs in block_factors for b in bs]
-
-    # Some passes still rely on the compute thread being last.
-    compiled_threads.sort(key=lambda ct: ct.kernel_type == "compute")
-
-    # Create proper function argument types from original user arguments
-    # instead of extracting from CircularBuffer types
-    ordered_tensor_args = []
-    for arg in user_args:
-        shape = arg.shape
-        dtype = F32Type.get(ctx)
-
-        # Create MetalLayoutAttr for distributed tensor
-        layout = create_metal_layout(ctx, shape, grid, tiled, memory_space)
-        tile_shape = [32, 32] if tiled else [1, 1]
-
-        logical_rank = len(shape)
-        if len(grid) == 2 and logical_rank == 2:
-            grid_shape = list(grid)
-        else:
-            grid_shape = list(grid) + [1] * (logical_rank - len(grid))
-
-        typed_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(layout)
-        if typed_layout is None:
-            raise RuntimeError("Failed to downcast MetalLayoutAttr")
-        device_shape = typed_layout.getDeviceShape(grid_shape, tile_shape)
-
-        element_type = (
-            ttcore.ir.TileType.get(ctx, 32, 32, ttcore.DataType.Float32)
-            if tiled
-            else dtype
-        )
-
-        tensor_type = RankedTensorType.get(device_shape, element_type, layout)
-        ordered_tensor_args.append(tensor_type)
-
-    arg_types = ordered_tensor_args
-    ret_type = ordered_tensor_args[-1]
-    func_entry = func.FuncOp(name=name, type=(arg_types, [ret_type]))
-    func_entry.arg_attrs = stream_func_arg_attrs
-    func_bb = func_entry.add_entry_block()
-    with InsertionPoint(func_bb):
-        inputs = func_bb.arguments[:-num_outs]
-        outputs = func_bb.arguments[-num_outs:]
-
-        # Extract which inputs are streams from stream_func_arg_attrs
-        is_stream = []
-        for attr in stream_func_arg_attrs[:-num_outs]:  # Exclude outputs
-            attr_dict = DictAttr(attr)
-            stream_attr = attr_dict["d2m.stream"]
-            is_stream.append(BoolAttr(stream_attr).value)
-
-        # Wrap stream inputs with stream_layout ops
-        # Note: user_args contains the original torch tensors with logical shapes
-        wrapped_inputs = [
-            _create_stream_layout_for_input(
-                ctx, inp, list(user_args[i].shape), grid, tiled, memory_space
-            )
-            if is_stream[i]
-            else inp
-            for i, inp in enumerate(inputs)
-        ]
-
-        threads = ArrayAttr.get(
-            [
-                ct.func_entry.attributes[d2m.ir.ThreadAttr.name]
-                for ct in compiled_threads
-            ]
-        )
-        generic = d2m.GenericOp(
-            [ret_type],
-            wrapped_inputs,  # Use wrapped inputs instead of raw inputs
-            outputs,
-            ttcore.ir.GridAttr.get(ctx, grid),
-            block_factors,
-            list(map(_affine_map_from_lambda, indexing_maps)),
-            ArrayAttr.get(
-                list(
-                    ttcore.ir.IteratorTypeAttr.get(
-                        ctx, ttcore.IteratorType[i.title()].value
-                    )
-                    for i in iterator_types
-                )
-            ),
-            threads,
-            len(compiled_threads),
-        )
-        for compiled_thread, generic_region in zip(compiled_threads, generic.regions):
-            compiled_thread.func_entry.entry_block.append_to(generic_region)
-            if generic_region.blocks[0].operations[-1].name == "func.return":
-                generic_region.blocks[0].operations[-1].erase()
-        func.ReturnOp(generic.results)
-
-
-def _copy_symbol_table_globals(module_symbol_table, compiled_threads, f_params):
-    f_params_list = list(f_params.keys())
-    for ct in compiled_threads:
-        for op in ct.module.body:
-            if "sym_name" not in op.attributes:
-                continue
-            sym_name = op.attributes["sym_name"]
-            if sym_name.value in f_params and sym_name.value in ct.module_symbol_table:
-                clone = op.clone()
-                clone.index = IntegerAttr.get(
-                    IntegerType.get_signed(32), f_params_list.index(sym_name.value)
-                )
-                module_symbol_table.insert(clone)
-
-
-def to_data_type(dtype):
-    if dtype == torch.float32:
-        return runtime.DataType.Float32
-    if dtype == torch.float16:
-        return runtime.DataType.Float16
-    if dtype == torch.bfloat16:
-        return runtime.DataType.BFloat16
-    if dtype == torch.uint32:
-        return runtime.DataType.UInt32
-    if dtype == torch.uint16:
-        return runtime.DataType.UInt16
-    if dtype == torch.uint8:
-        return runtime.DataType.UInt8
-    if dtype == torch.int32:
-        return runtime.DataType.Int32
-    # Data types which are unsupported on ttnn
-    if dtype == torch.float64:
-        return runtime.DataType.Float64
-    if dtype == torch.int64:
-        return runtime.DataType.Int64
-    if dtype == torch.uint64:
-        return runtime.DataType.UInt64
-    if dtype == torch.int16:
-        return runtime.DataType.Int16
-    if dtype == torch.int8:
-        return runtime.DataType.Int8
-    if dtype == torch.bool:
-        return runtime.DataType.Bool
-    raise ValueError(f"Torch dtype: {dtype} has no runtime DataType equivalent")
-
-
-def from_data_type(dtype):
-    if dtype == "Float32":
-        return torch.float32
-    if dtype == "Float16":
-        return torch.float16
-    if dtype == "BFloat16":
-        return torch.bfloat16
-    if dtype == "UInt32":
-        return torch.uint32
-    if dtype == "UInt16":
-        return torch.uint16
-    if dtype == "UInt8":
-        return torch.uint8
-    if dtype == "Int32":
-        return torch.int32
-    # Data types which are unsupported on ttnn
-    if dtype == "Float64":
-        return torch.float64
-    if dtype == "Int64":
-        return torch.int64
-    if dtype == "UInt64":
-        return torch.uint64
-    if dtype == "Int16":
-        return torch.int16
-    if dtype == "Int8":
-        return torch.int8
-    if dtype == "Bool":
-        return torch.bool
-
-    raise ValueError(f"unsupported dtype: {dtype}")
 
 
 _g_current_system_desc = None
@@ -663,10 +187,33 @@ def pykernel_gen(
     iterator_types=None,
     num_outs=1,
     kernel_source_dir=None,
-    kernel_source_mode=None,  # Literal["store", "load"]
-    memory_space="L1",  # "L1" or "DRAM"
-    tiled=True,  # bool for tiled layout
+    kernel_source_mode=None,
+    memory_space="L1",
+    tiled=True,
 ):
+    """
+    Decorator for generating D2M kernels from Python functions.
+
+    This decorator compiles Python functions into D2M dialect operations,
+    handling thread compilation, stream creation, and pipeline execution.
+
+    Args:
+        grid: Grid dimensions as tuple (e.g., (2, 2)) or callable
+        block_factors: Block factors for each argument or callable
+        indexing_maps: List of lambda functions for indexing (optional)
+        iterator_types: List of iterator types ("parallel", "reduction")
+        num_outs: Number of output arguments
+        kernel_source_dir: Directory for kernel source files
+        kernel_source_mode: "store" or "load" for kernel sources
+        memory_space: "L1" or "DRAM"
+        tiled: Whether to use tiled layout
+
+    Returns:
+        Decorated function that compiles and executes the kernel
+
+    Raises:
+        AssertionError: If required parameters are missing or invalid
+    """
     assert grid is not None
     assert num_outs == 1
     assert memory_space in [
@@ -737,8 +284,6 @@ def pykernel_gen(
             program = f(*args, **kwargs)
             assert isinstance(program, Program)
 
-            # Inject decorator parameters into program.kwargs so threads receive them
-            # Merge with user-provided kwargs (user kwargs take precedence)
             injected_program_kwargs = {
                 "grid": grid,
                 "memory_space": memory_space,
@@ -757,10 +302,9 @@ def pykernel_gen(
 
                 module = Module.create(loc)
 
-                # Join all compiled_threads' symbol tables into top level.
                 module_symbol_table = SymbolTable(module.operation)
                 with InsertionPoint.at_block_begin(module.body):
-                    _copy_symbol_table_globals(
+                    copy_symbol_table_globals(
                         module_symbol_table, compiled_threads, f_params
                     )
 
@@ -775,7 +319,7 @@ def pykernel_gen(
                 ), "Output streaming not supported"
 
                 with InsertionPoint(module.body):
-                    _create_generic_func(
+                    create_generic_func(
                         ctx,
                         f.__name__,
                         stream_func_arg_attrs,
@@ -785,7 +329,7 @@ def pykernel_gen(
                         iterator_types,
                         compiled_threads,
                         num_outs,
-                        args,  # Pass original user arguments
+                        args,
                         tiled,
                         memory_space,
                     )
@@ -810,7 +354,6 @@ def pykernel_gen(
                 pm = PassManager.parse(pipeline_str)
                 pm.enable_verifier(verify)
 
-                # Enable pass tracking for crash diagnostics
                 try:
                     from ttmlir._mlir_libs._ttmlir import enable_pretty_stack_traces
                     enable_pretty_stack_traces(pm._CAPIPtr)
@@ -822,7 +365,6 @@ def pykernel_gen(
                     print_ir_path = print_ir if isinstance(print_ir, str) else None
                     ctx.enable_multithreading(False)
                     pm.enable_ir_printing(
-                        # tree_printing_dir_path=print_ir_path,
                         print_after_all=True,
                         print_before_all=True,
                         print_after_failure=True,
@@ -836,145 +378,23 @@ def pykernel_gen(
                 print("RUNTIME DISABLED")
                 return
 
-                if runtime is None or binary is None:
-                    print("Warning: runtime not enabled, returning compiled object")
-                    return bin
-
-                #
-                # Runtime
-                #
-                fbb = binary.load_binary_from_capsule(bin)
-                program_index = 0
-                device_options = runtime.MeshDeviceOptions()
-                device_options.mesh_shape = fbb.get_program_mesh_shape(program_index)
-                runtime.set_compatible_device_runtime(fbb)
-
-                if kernel_source_dir is None:
-                    kernel_source_dir = f".pykernel_gen/{f.__name__}/"
-                if kernel_source_mode == "store":
-                    os.makedirs(kernel_source_dir, exist_ok=True)
-
-                debug_env = runtime.DebugEnv.get(
-                    kernel_source_mode == "store",  # dump_kernels_to_disk
-                    kernel_source_mode == "load",  # load_kernels_from_disk
-                    True,  # use_loc_for_kernel_name
-                    kernel_source_dir,
-                    False,  # disable_device_address_validation
-                    False,  # blocking_cq
-                )
-                print(f"setting tt runtime debug env={debug_env}")
-
-                inputs = []
-                for tensor in args:
-                    inputs.append(
-                        runtime.create_borrowed_host_tensor(
-                            tensor.data_ptr(),
-                            list(tensor.shape),
-                            list(tensor.stride()),
-                            tensor.element_size(),
-                            to_data_type(tensor.dtype),
-                        )
-                    )
-
-                outputs = []
-                outputs_torch = args[-num_outs:]
-                output_descs = json.loads(
-                    fbb.get_program_outputs_as_json(program_index)
-                )
-                for tensor in outputs_torch:
-                    outputs.append(
-                        runtime.create_borrowed_host_tensor(
-                            tensor.data_ptr(),
-                            list(tensor.shape),
-                            list(tensor.stride()),
-                            tensor.element_size(),
-                            to_data_type(tensor.dtype),
-                        )
-                    )
-
-                device = runtime.open_mesh_device(device_options)
-                runtime_outputs = runtime.submit(device, fbb, program_index, inputs)
-                runtime.wait(runtime_outputs)
-                for i, runtime_output_tensor in enumerate(runtime_outputs):
-                    output_host = runtime.to_host(runtime_output_tensor, untilize=True)[
-                        0
-                    ]
-                    runtime.memcpy(outputs[i], output_host)
-                    runtime.deallocate_tensor(runtime_output_tensor, force=True)
-                runtime.close_mesh_device(device)
-                return outputs_torch[i]
-
         return _wrapper
 
     return _decorator
 
 
-matmul_template = {
-    "grid": (1, 1),  # | lambda | "auto" | "automatic"
-    "block_factors": [1, 1, 1],  # | lambda | "auto" | "automatic"
-    "indexing_maps": [
-        lambda m, n, k: (m, k),
-        lambda m, n, k: (k, n),
-        lambda m, n, k: (m, n),
-    ],
-    "iterator_types": [
-        "parallel",
-        "parallel",
-        "reduction",
-    ],
-}
-
-
-def matmul_fused_template(args=3):
-    assert args >= 3
-    return {
-        "grid": (1, 1),  # | lambda | "auto" | "automatic"
-        "block_factors": [1, 1, 1],  # | lambda | "auto" | "automatic"
-        "indexing_maps": [
-            lambda m, n, k: (m, k),
-            lambda m, n, k: (k, n),
-            lambda m, n, k: (m, n),
-        ]
-        + [lambda m, n, k: (m, n)] * (args - 3),
-        "iterator_types": [
-            "parallel",
-            "parallel",
-            "reduction",
-        ],
-    }
-
-
-eltwise_template = {
-    "grid": (1, 1),  # | lambda | "auto" | "automatic"
-    "block_factors": [1, 1],  # | lambda | "auto" | "automatic"
-    "indexing_maps": [
-        lambda m, n: (m, n),
-        lambda m, n: (m, n),
-        lambda m, n: (m, n),
-    ],
-    "iterator_types": [
-        "parallel",
-        "parallel",
-    ],
-}
-
-
-def eltwise_fused_template(args=1):
-    assert args >= 1
-    return {
-        "grid": (1, 1),  # | lambda | "auto" | "automatic"
-        "block_factors": [1, 1],  # | lambda | "auto" | "automatic"
-        "indexing_maps": [lambda m, n: (m, n)] * args,
-        "iterator_types": [
-            "parallel",
-            "parallel",
-        ],
-    }
-
-
-explicit_template = {
-    "grid": (1, 1),  # | lambda | "auto" | "automatic"
-    "block_factors": None,
-    "indexing_maps": None,
-    "iterator_types": None,
-}
+__all__ = [
+    "pykernel_gen",
+    "Program",
+    "compute",
+    "datamovement",
+    "TensorBlock",
+    "CircularBuffer",
+    "MemTx",
+    "Semaphore",
+    "dma",
+    "Stream",
+    "create_metal_layout",
+    "to_data_type",
+    "from_data_type",
+]

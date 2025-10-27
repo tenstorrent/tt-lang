@@ -60,7 +60,7 @@ class D2MGenericCompiler(TTCompilerBase):
             elif arg.annotation.id == "TensorBlock":
                 shape = self.args[i].shape
                 dtype = F32Type.get(self.ctx)
-                from ..d2m_api import create_metal_layout
+                from ..layouts import create_metal_layout
 
                 layout = create_metal_layout(
                     self.ctx, shape, self.grid, self.tiled, self.memory_space
@@ -92,7 +92,7 @@ class D2MGenericCompiler(TTCompilerBase):
             elif arg.annotation.id == "CircularBuffer":
                 shape = self.args[i].shape
                 dtype = F32Type.get(self.ctx)
-                from ..d2m_api import create_metal_layout
+                from ..layouts import create_metal_layout
 
                 # Create layout to compute device shape (for shard calculation)
                 layout = create_metal_layout(
@@ -161,7 +161,7 @@ class D2MGenericCompiler(TTCompilerBase):
                     )
                 elif isinstance(val, Stream):
                     with InsertionPoint.at_block_begin(self.module.body):
-                        from ..d2m_api import create_metal_layout
+                        from ..layouts import create_metal_layout
 
                         layout = create_metal_layout(
                             self.ctx,
