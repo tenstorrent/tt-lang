@@ -10,7 +10,7 @@ import ast
 import inspect
 import functools
 import os
-from typing import List, Optional, NamedTuple
+from typing import List, Optional, NamedTuple, Callable, Dict, Any, Union
 
 try:
     import torch
@@ -39,7 +39,7 @@ from .dtype_utils import to_data_type, from_data_type
 from .constants import SUPPORTED_MEMORY_SPACES
 
 
-def _collect_captures(f):
+def _collect_captures(f: Callable) -> Dict[str, Union[int, Stream]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -70,10 +70,10 @@ def _collect_captures(f):
 
 
 def _compile(
-    kernel_type=None,
+    kernel_type: Optional[str] = None,
     verbose: bool = False,
     optimize: bool = False,
-):
+) -> Callable:
     """
     Internal decorator for compiling kernel threads.
 
@@ -123,7 +123,7 @@ def _compile(
     return _decorator
 
 
-def compute(verbose: bool = False):
+def compute(verbose: bool = False) -> Callable:
     """
     Decorator for compute thread functions.
 
@@ -141,7 +141,7 @@ def compute(verbose: bool = False):
     )
 
 
-def datamovement(verbose: bool = False):
+def datamovement(verbose: bool = False) -> Callable:
     """
     Decorator for data movement thread functions.
 
@@ -181,16 +181,16 @@ _g_current_system_desc = None
 
 
 def pykernel_gen(
-    grid=None,
-    block_factors=None,
-    indexing_maps=None,
-    iterator_types=None,
-    num_outs=1,
-    kernel_source_dir=None,
-    kernel_source_mode=None,
-    memory_space="L1",
-    tiled=True,
-):
+    grid: Optional[Union[tuple, Callable]] = None,
+    block_factors: Optional[Union[List, Callable]] = None,
+    indexing_maps: Optional[List[Callable]] = None,
+    iterator_types: Optional[List[str]] = None,
+    num_outs: int = 1,
+    kernel_source_dir: Optional[str] = None,
+    kernel_source_mode: Optional[str] = None,
+    memory_space: str = "L1",
+    tiled: bool = True,
+) -> Callable:
     """
     Decorator for generating D2M kernels from Python functions.
 

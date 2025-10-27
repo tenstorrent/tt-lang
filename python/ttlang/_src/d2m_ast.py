@@ -5,19 +5,14 @@
 import ast
 import inspect
 from typing import Dict, Any, Optional, List
+
 from ttmlir.ir import *
-from ttmlir.dialects import (
-    ttcore,
-    d2m,
-    func,
-    arith,
-)
+from ttmlir.dialects import ttcore, d2m, func, arith
 from ttmlir.dialects._ods_common import get_default_loc_context
 
 from .kernel_types import *
 from .utils import _discover_dialect_ops, _cast
 from .kernel_ast import TTCompilerBase
-
 from .stream import Stream
 
 
