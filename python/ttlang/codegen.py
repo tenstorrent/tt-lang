@@ -45,7 +45,8 @@ def affine_map_from_lambda(fn: Callable) -> AffineMap:
         if isinstance(result, Dim):
             exprs.append(AffineDimExpr.get(result.position))
         elif isinstance(result, int):
-            assert result == 0, "The only integer constant allowed in an indexing_map is 0"
+            if result != 0:
+                raise ValueError("The only integer constant allowed in an indexing_map is 0")
             exprs.append(AffineConstantExpr.get(result))
         else:
             raise TypeError(
@@ -95,8 +96,6 @@ def create_generic_func(
         and len(block_factors) > 0
         and isinstance(block_factors[0], tuple)
     ):
-        assert isinstance(block_factors, list)
-        assert isinstance(block_factors[0], tuple)
         block_factors = [b for bs in block_factors for b in bs]
 
     compiled_threads.sort(key=lambda ct: ct.kernel_type == "compute")
