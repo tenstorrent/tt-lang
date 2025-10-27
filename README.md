@@ -41,6 +41,31 @@ cmake -GNinja -Bbuild . -DCODE_COVERAGE=ON
 
 **Note:** The `third-party/tt-mlir.commit` file contains the reference tt-mlir version. The build system ensures version compatibility automatically.
 
+## Python Package Structure
+
+The `ttlang` Python package provides a DSL for authoring custom data movement and compute kernels:
+
+```
+python/ttlang/
+├── __init__.py           # Main package exports
+├── d2m_api.py            # Core decorator and compilation orchestration
+├── operators.py          # TensorBlock, CircularBuffer, MemTx, Semaphore, DMA operations
+├── layouts.py            # MetalLayoutAttr creation and stream layout utilities
+├── codegen.py            # D2M generic function creation and code generation
+├── dtype_utils.py        # PyTorch/runtime data type conversions
+├── templates.py          # Common kernel templates (matmul, elementwise)
+├── constants.py          # Shared constants (tile sizes, memory spaces)
+└── _src/                 # Internal implementation modules
+    ├── d2m_ast.py        # D2M dialect AST compiler
+    ├── kernel_ast.py     # Base kernel compilation infrastructure
+    ├── kernel_types.py   # CircularBuffer, Kernel, and other types
+    ├── base_ast.py       # AST base classes
+    ├── stream.py         # Stream type for async data movement
+    └── utils.py          # Utility functions
+```
+
+See [docs/HITCHHIKERS_GUIDE.md](docs/HITCHHIKERS_GUIDE.md) for comprehensive DSL documentation and examples.
+
 ## Developer Guidelines
 
 ### Updating tt-mlir version

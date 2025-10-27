@@ -1,0 +1,12 @@
+=== BEFORE KERNEL ===
+lhs: all 2.0
+rhs: all 3.0
+out: all -999.0
+Expected: all 5.0
+SAVED INITIAL TO /Users/zcarver/Developer/tt-lang/test/temp/python/Output/test_runtime_add.py.tmp.initial.mlir
+SAVED FINAL TO /Users/zcarver/Developer/tt-lang/test/temp/python/Output/test_runtime_add.py.tmp.final.mlir
+
+=== AFTER KERNEL ===
+out[0, 0] = -999.0
+out min/max/mean: -999.0 / -999.0 / -999.0
+FAIL: Expected all 5.0, got values from -999.0 to -999.0

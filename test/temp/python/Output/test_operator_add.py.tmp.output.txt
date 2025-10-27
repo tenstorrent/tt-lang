@@ -1,0 +1,20 @@
+PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/ and include the crash backtrace and instructions to reproduce the bug.
+Stack dump:
+0.	Program arguments: 
+1.	 #0 0x00000001400d0c2c llvm::sys::PrintStackTrace(llvm::raw_ostream&, int) (/Users/zcarver/Developer/tt-mlir/build/python_packages/ttmlir/_mlir_libs/libTTMLIRPythonCAPI.dylib+0xd0c2c)
+ #1 0x00000001400d14e8 SignalHandler(int, __siginfo*, void*) (/Users/zcarver/Developer/tt-mlir/build/python_packages/ttmlir/_mlir_libs/libTTMLIRPythonCAPI.dylib+0xd14e8)
+ #2 0x000000019b21d6a4 (/usr/lib/system/libsystem_platform.dylib+0x1804ad6a4)
+ #3 0x000000010a3cfc70 _object* nanobind::detail::func_create<false, true, void (*&)(tt::runtime::Binary const&), void, tt::runtime::Binary const&, 0ul, nanobind::scope, nanobind::name, nanobind::arg, char [56]>(void (*&)(tt::runtime::Binary const&), void (*)(tt::runtime::Binary const&), std::__1::integer_sequence<unsigned long, 0ul>, nanobind::scope const&, nanobind::name const&, nanobind::arg const&, char const (&) [56])::'lambda'(void*, _object**, unsigned char*, nanobind::rv_policy, nanobind::detail::cleanup_list*)::__invoke(void*, _object**, unsigned char*, nanobind::rv_policy, nanobind::detail::cleanup_list*) (/Users/zcarver/Developer/tt-mlir/build/runtime/python/_ttmlir_runtime.cpython-311-darwin.so+0x43c70)
+ #4 0x000000010a40a330 nanobind::detail::nb_func_vectorcall_complex(_object*, _object* const*, unsigned long, _object*) (/Users/zcarver/Developer/tt-mlir/build/runtime/python/_ttmlir_runtime.cpython-311-darwin.so+0x7e330)
+ #5 0x0000000104b38820 _PyEval_EvalFrameDefault (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x138820)
+ #6 0x0000000104b32960 PyEval_EvalCode (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x132960)
+ #7 0x0000000104b86858 run_eval_code_obj (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x186858)
+ #8 0x0000000104b867bc run_mod (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x1867bc)
+ #9 0x0000000104b865fc pyrun_file (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x1865fc)
+#10 0x0000000104b8604c _PyRun_SimpleFileObject (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x18604c)
+#11 0x0000000104b859d8 _PyRun_AnyFileObject (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x1859d8)
+#12 0x0000000104ba2200 pymain_run_file_obj (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x1a2200)
+#13 0x0000000104ba1b44 pymain_run_file (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x1a1b44)
+#14 0x0000000104ba140c Py_RunMain (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x1a140c)
+#15 0x0000000104ba2574 Py_BytesMain (/opt/homebrew/Cellar/python@3.11/3.11.14/Frameworks/Python.framework/Versions/3.11/Python+0x1a2574)
+#16 0x000000019ae42b98
