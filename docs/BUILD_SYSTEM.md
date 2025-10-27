@@ -35,7 +35,6 @@ tt-lang/
 ├── README.md                      # Project README
 ├── requirements.txt               # Python runtime requirements
 ├── dev-requirements.txt           # Development requirements
-├── pytest.ini                     # Pytest configuration
 ├── cmake/
 │   └── modules/                   # CMake helper modules
 │       ├── CompilerSetup.cmake
@@ -64,10 +63,11 @@ tt-lang/
 ├── tools/
 │   └── ttlang-opt/                # Command-line tool
 ├── test/
-│   └── CMakeLists.txt             # Lit test configuration
-└── tests/
-    └── sim/
-        └── test_cbsim.py          # Simulator tests
+│   ├── CMakeLists.txt             # Lit test configuration
+│   ├── pytest.ini                 # Pytest configuration for tests
+│   └── sim/
+│       └── test_cbsim.py          # Simulator tests
+└── tests/                         # (empty placeholder)
 ```
 
 ## Build Process
