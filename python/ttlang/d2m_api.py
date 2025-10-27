@@ -36,9 +36,9 @@ from .operators import TensorBlock, MemTx, dma
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
-from .codegen import create_generic_func, copy_symbol_table_globals
 from .dtype_utils import to_data_type, from_data_type
 from .constants import SUPPORTED_MEMORY_SPACES
+from ._src.codegen import create_generic_func, copy_symbol_table_globals
 
 
 def _collect_captures(f: Callable) -> Dict[str, Union[int, Stream]]:
