@@ -11,7 +11,7 @@ from ttmlir.dialects import d2m, arith, linalg
 from ttmlir.dialects._linalg_ops_gen import GenericOp
 
 from ._src.d2m_ast import syntax
-from ._src.utils import _asindex
+from pykernel._src.utils import _asindex
 
 
 def _create_linalg_generic(

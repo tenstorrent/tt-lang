@@ -28,9 +28,10 @@ from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore, d2m, func
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
-from ._src.utils import _cleanup_source_code
+from pykernel._src.utils import _cleanup_source_code
+from pykernel._src.stream import Stream
+
 from ._src.d2m_ast import D2MGenericCompiler
-from ._src.stream import Stream
 
 from .operators import TensorBlock, MemTx, dma
 from .circular_buffer import CircularBuffer
