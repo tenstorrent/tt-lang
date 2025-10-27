@@ -6,5 +6,29 @@
 
 __version__ = "0.1.0"
 
-# Python package for tt-lang compiler
-# This will be populated with dialect bindings and utilities
+# Export D2M DSL API
+from ttlang.d2m_api import (
+    pykernel_gen,
+    Program,
+    CircularBuffer,
+    Stream,
+    dma,
+    compute,
+    datamovement,
+    TensorBlock,
+    Semaphore,
+    MemTx,
+)
+
+__all__ = [
+    "pykernel_gen",
+    "Program",
+    "CircularBuffer",
+    "Stream",
+    "dma",
+    "compute",
+    "datamovement",
+    "TensorBlock",
+    "Semaphore",
+    "MemTx",
+]
