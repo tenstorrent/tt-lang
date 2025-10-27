@@ -10,7 +10,7 @@ from typing import List, Callable, Any, Dict
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func
 
-from .layouts import create_metal_layout, create_stream_layout_for_input, compute_device_shape
+from .layouts import create_metal_layout, create_stream_layout_for_input, compute_device_shape, StreamLayoutConfig
 from .constants import DEFAULT_TILE_SHAPE
 
 
@@ -135,7 +135,12 @@ def create_generic_func(
 
         wrapped_inputs = [
             create_stream_layout_for_input(
-                ctx, inp, list(user_args[i].shape), grid, tiled, memory_space
+                ctx, inp, StreamLayoutConfig(
+                    logical_shape=list(user_args[i].shape),
+                    grid=grid,
+                    tiled=tiled,
+                    memory_space=memory_space
+                )
             )
             if is_stream[i]
             else inp
