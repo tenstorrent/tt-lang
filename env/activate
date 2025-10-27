@@ -37,7 +37,7 @@ unset _TTLANG_OLD_PWD
 
 # Prepend tt-lang build directories to PATH and PYTHONPATH
 export PATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/bin:$PATH"
-export PYTHONPATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/python_packages:${TT_LANG_HOME}/sim:$PYTHONPATH"
+export PYTHONPATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/python_packages:${TT_LANG_HOME}/python:$PYTHONPATH"
 
 # Mark environment as activated
 export TTLANG_ENV_ACTIVATED=1

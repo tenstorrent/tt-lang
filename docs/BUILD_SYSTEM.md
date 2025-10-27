@@ -41,8 +41,6 @@ tt-lang/
 │       └── ExternTTMLIR.cmake     # tt-mlir dependency management
 ├── env/
 │   └── activate                   # Environment activation (sources tt-mlir's env)
-├── sim/
-│   └── cbsim/                     # Simulator code (Python)
 ├── include/
 │   ├── CMakeLists.txt
 │   ├── ttlang/                    # Public C++ headers
@@ -55,6 +53,8 @@ tt-lang/
 │   ├── CMakeLists.txt             # Python bindings build
 │   ├── pyproject.toml             # Python project configuration
 │   ├── setup.py                   # Python package setup
+│   ├── sim/                       # Simulator code (Python)
+│   │   └── cbsim/
 │   └── ttlang/                    # Python package
 │       └── __init__.py
 ├── third-party/
@@ -87,7 +87,7 @@ source env/activate
 - Sets `TT_LANG_HOME` to tt-lang project root
 - Sets `TTLANG_ENV_ACTIVATED=1`
 - Prepends `tt-lang/build/bin` to PATH
-- Prepends `tt-lang/build/python_packages` to PYTHONPATH
+- Prepends `tt-lang/build/python_packages` and `tt-lang/python` to PYTHONPATH
 
 **Custom tt-mlir location:**
 If tt-mlir is not in the default location, set `TT_MLIR_HOME`:
