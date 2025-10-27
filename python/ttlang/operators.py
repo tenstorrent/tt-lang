@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""DSL operators for tensor operations, circular buffers, DMA, and semaphores."""
+"""DSL operators for tensor operations, DMA, and memory transactions."""
 
 from typing import List, Callable
 
@@ -146,24 +146,6 @@ class TensorBlock:
         return d2m.store(ast_self, rhs)
 
 
-@syntax("!d2m.cb")
-class CircularBuffer:
-    """
-    Circular buffer for inter-thread communication.
-
-    Circular buffers provide producer-consumer synchronization between
-    compute and data movement threads.
-    """
-
-    def pop(ast_self) -> TensorBlock:
-        """Wait for and consume data from the circular buffer."""
-        return d2m.wait(d2m.ir.CBType.cast(ast_self.type).getUnderlying(), ast_self)
-
-    def reserve(ast_self) -> TensorBlock:
-        """Reserve space in the circular buffer for writing."""
-        return d2m.reserve(d2m.ir.CBType.cast(ast_self.type).getUnderlying(), ast_self)
-
-
 @syntax("!d2m.mem_tx")
 class MemTx:
     """
@@ -208,49 +190,3 @@ def dma(src, dst, core=None, mcast=None) -> MemTx:
     )
 
 
-@syntax("!d2m.semaphore")
-class Semaphore:
-    """
-    Semaphore for multi-core synchronization.
-
-    Semaphores enable coordination between cores through set, increment,
-    and wait operations with optional multicast.
-    """
-
-    def set(ast_self, value, core=None, mcast=None):
-        """
-        Set semaphore value, optionally multicasting to other cores.
-
-        Args:
-            value: Value to set
-            core: Target core coordinates for multicast
-            mcast: Multicast dimensions
-        """
-        return d2m.semaphore_set(
-            ast_self, _asindex(value), _asindex(core), _asindex(mcast)
-        )
-
-    def inc(ast_self, value, core=None, mcast=None):
-        """
-        Increment semaphore value, optionally multicasting to other cores.
-
-        Args:
-            value: Increment amount
-            core: Target core coordinates for multicast
-            mcast: Multicast dimensions
-        """
-        return d2m.semaphore_inc(
-            ast_self, _asindex(value), _asindex(core), _asindex(mcast)
-        )
-
-    def wait(ast_self, value, reset=None):
-        """
-        Wait for semaphore to reach a value, optionally resetting after.
-
-        Args:
-            value: Value to wait for
-            reset: Optional value to reset semaphore to after waiting
-        """
-        return d2m.semaphore_wait(
-            ast_self, _asindex(value), reset_value=_asindex(reset)
-        )

@@ -32,7 +32,9 @@ from ._src.utils import _cleanup_source_code
 from ._src.d2m_ast import D2MGenericCompiler
 from ._src.stream import Stream
 
-from .operators import TensorBlock, CircularBuffer, MemTx, Semaphore, dma
+from .operators import TensorBlock, MemTx, dma
+from .circular_buffer import CircularBuffer
+from .semaphore import Semaphore
 from .layouts import create_metal_layout
 from .codegen import create_generic_func, copy_symbol_table_globals
 from .dtype_utils import to_data_type, from_data_type
