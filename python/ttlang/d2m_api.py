@@ -214,13 +214,19 @@ def pykernel_gen(
     Raises:
         AssertionError: If required parameters are missing or invalid
     """
-    assert grid is not None
-    assert num_outs == 1
-    assert memory_space in SUPPORTED_MEMORY_SPACES, f"memory_space must be one of {SUPPORTED_MEMORY_SPACES}, got '{memory_space}'"
-    assert isinstance(tiled, bool), f"tiled must be a boolean, got {type(tiled)}"
-    assert (iterator_types is None) or (
-        indexing_maps is not None
-    ), "if iterator_types is set, indexing_types must also be set"
+    if grid is None:
+        raise ValueError("grid parameter is required")
+    if num_outs != 1:
+        raise ValueError(f"num_outs must be 1, got {num_outs}")
+    if memory_space not in SUPPORTED_MEMORY_SPACES:
+        raise ValueError(
+            f"Invalid memory_space: {memory_space!r}. "
+            f"Must be one of: {', '.join(sorted(SUPPORTED_MEMORY_SPACES))}"
+        )
+    if not isinstance(tiled, bool):
+        raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
+    if iterator_types is not None and indexing_maps is None:
+        raise ValueError("indexing_maps must be set when iterator_types is set")
 
     global _g_current_system_desc
     if _g_current_system_desc is None:
@@ -279,7 +285,8 @@ def pykernel_gen(
                     kwargs[injected_kwarg] = val
 
             program = f(*args, **kwargs)
-            assert isinstance(program, Program)
+            if not isinstance(program, Program):
+                raise TypeError(f"Kernel function must return a Program, got {type(program).__name__}")
 
             injected_program_kwargs = {
                 "grid": grid,
@@ -311,9 +318,8 @@ def pykernel_gen(
                     DictAttr.get({"d2m.stream": BoolAttr.get(p in streams)})
                     for p in positional_arg_names
                 ]
-                assert (
-                    positional_arg_names[-num_outs] not in streams
-                ), "Output streaming not supported"
+                if positional_arg_names[-num_outs] in streams:
+                    raise ValueError("Output streaming is not supported")
 
                 with InsertionPoint(module.body):
                     create_generic_func(
