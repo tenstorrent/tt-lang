@@ -1,6 +1,7 @@
 """
 Public API for cbsim: a class-based interface with a singleton default.
 """
+
 import threading
 from typing import List, Optional, TypeVar, Annotated, NamedTuple
 from pydantic import validate_call, Field
@@ -12,8 +13,10 @@ from .cbstate import _CBState
 
 T = TypeVar("T")
 
+
 class CBStats(NamedTuple):
     """Statistics for a circular buffer."""
+
     capacity: int
     visible: int
     reserved: int
@@ -22,11 +25,13 @@ class CBStats(NamedTuple):
     head: int
     list: List
 
+
 class CBAPI:
     """Circular buffer simulator API interface with its own state pool.
-       The simulator is based on the following API:
-       https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
+    The simulator is based on the following API:
+    https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
     """
+
     def __init__(self, timeout: Optional[float] = 5.0):
         """Initialize simulator with optional per-instance timeout (seconds)."""
 
@@ -47,7 +52,6 @@ class CBAPI:
             if not cb_state.configured:
                 raise CBContractError("CB not configured; cannot reset")
             cb_state._reset()
-
 
     @validate_call
     def cb_stats(self, cb_id: CBID) -> CBStats:
@@ -87,8 +91,12 @@ class CBAPI:
             cb_state._require_configured()
             cb_state._check_num_tiles(num_tiles)
             thread = threading.current_thread()
-            if (cb_state.consumer_waiting is not None) and (cb_state.consumer_waiting != thread):
-                raise CBContractError("Only one consumer thread may wait on a CB at a time")
+            if (cb_state.consumer_waiting is not None) and (
+                cb_state.consumer_waiting != thread
+            ):
+                raise CBContractError(
+                    "Only one consumer thread may wait on a CB at a time"
+                )
             cb_state.consumer_waiting = thread
             if cb_state.step is None:
                 cb_state.step = num_tiles
@@ -104,7 +112,7 @@ class CBAPI:
             if not ok:
                 raise CBTimeoutError(f"cb_wait_front timed out after {self._timeout}s")
             cb_state.last_wait_target = num_tiles
-                
+
     @validate_call
     def cb_reserve_back(self, cb_id: CBID, num_tiles: Size) -> None:
         cb_state: _CBState = self._pool[int(cb_id)]
@@ -112,8 +120,12 @@ class CBAPI:
             cb_state._require_configured()
             cb_state._check_num_tiles(num_tiles)
             thread = threading.current_thread()
-            if (cb_state.producer_reserving is not None) and (cb_state.producer_reserving != thread):
-                raise CBContractError("Only one producer thread may reserve on a CB at a time")
+            if (cb_state.producer_reserving is not None) and (
+                cb_state.producer_reserving != thread
+            ):
+                raise CBContractError(
+                    "Only one producer thread may reserve on a CB at a time"
+                )
             cb_state.producer_reserving = thread
             if num_tiles < cb_state.reserved:
                 raise CBContractError("reserve target cannot regress within epoch")
@@ -121,7 +133,9 @@ class CBAPI:
                 lambda: cb_state._free() >= num_tiles, timeout=self._timeout
             )
             if not ok:
-                raise CBTimeoutError(f"cb_reserve_back timed out after {self._timeout}s")
+                raise CBTimeoutError(
+                    f"cb_reserve_back timed out after {self._timeout}s"
+                )
             cb_state.reserved = num_tiles
 
     @validate_call
@@ -171,12 +185,16 @@ class CBAPI:
             if cb_state.last_wait_target <= 0:
                 raise CBContractError("get_read_ptr requires prior cb_wait_front")
             if cb_state.visible < cb_state.last_wait_target:
-                raise CBContractError("read window invalidated; call cb_wait_front again")
+                raise CBContractError(
+                    "read window invalidated; call cb_wait_front again"
+                )
             span = cb_state._front_span(cb_state.last_wait_target)
             return _RingView(cb_state.buf, cb_state.cap, span)
 
     @validate_call
-    def get_write_ptr(self, cb_id: CBID, length: Optional[Size] = None) -> _RingView[Optional[T]]:
+    def get_write_ptr(
+        self, cb_id: CBID, length: Optional[Size] = None
+    ) -> _RingView[Optional[T]]:
         cb_state: _CBState = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state._require_configured()
@@ -196,6 +214,7 @@ class CBAPI:
     def get_timeout(self) -> Optional[float]:
         """Return this simulator instance's timeout."""
         return self._timeout
+
 
 # Default global API instance and module-level aliases
 _default_api = CBAPI()

@@ -1,6 +1,7 @@
 """
 _CState and related internal state management for cbsim.
 """
+
 from threading import Condition, RLock, Thread
 from typing import Generic, List, Optional, TypeVar
 from .typedefs import Size, Index, Count
@@ -9,14 +10,25 @@ from .ringview import _Span
 
 T = TypeVar("T")
 
+
 # It is a deliberate design choice to use any generic type here to avoid dealing
 # with byte arrays as would be the case in the C++ API.
 class _CBState(Generic[T]):
     __slots__ = (
-        "cap", "buf", "head", "visible", "reserved",
-        "step", "last_wait_target", "last_reserve_target",
-        "configured", "lock", "can_consume", "can_produce",
-        "consumer_waiting", "producer_reserving"
+        "cap",
+        "buf",
+        "head",
+        "visible",
+        "reserved",
+        "step",
+        "last_wait_target",
+        "last_reserve_target",
+        "configured",
+        "lock",
+        "can_consume",
+        "can_produce",
+        "consumer_waiting",
+        "producer_reserving",
     )
 
     def __init__(self):
@@ -44,7 +56,8 @@ class _CBState(Generic[T]):
             raise CBContractError("num_tiles must be <= capacity")
         if self.cap % num_tiles != 0:
             raise CBContractError(
-                f"First num_tiles={num_tiles} must evenly divide capacity={self.cap}")
+                f"First num_tiles={num_tiles} must evenly divide capacity={self.cap}"
+            )
 
     def _free(self) -> Size:
         return self.cap - (self.visible + self.reserved)

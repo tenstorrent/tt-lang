@@ -1,0 +1,39 @@
+name: Test Simulation
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  test-sim:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest 'pydantic<3'
+
+      - name: Run Python simulation tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/python/sim
+        run: |
+          pytest test/sim/ -v
