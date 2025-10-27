@@ -49,11 +49,11 @@ The `ttlang` Python package provides a DSL for authoring custom data movement an
 python/ttlang/
 ├── __init__.py           # Main package exports
 ├── d2m_api.py            # Core decorator and compilation orchestration
-├── operators.py          # TensorBlock, CircularBuffer, MemTx, Semaphore, DMA operations
+├── operators.py          # TensorBlock, MemTx, DMA operations
+├── circular_buffer.py    # CircularBuffer for inter-thread communication
+├── semaphore.py          # Semaphore for multi-core synchronization
 ├── layouts.py            # MetalLayoutAttr creation and stream layout utilities
-├── codegen.py            # D2M generic function creation and code generation
 ├── dtype_utils.py        # PyTorch/runtime data type conversions
-├── templates.py          # Common kernel templates (matmul, elementwise)
 ├── constants.py          # Shared constants (tile sizes, memory spaces)
 └── _src/                 # Internal implementation modules
     ├── d2m_ast.py        # D2M dialect AST compiler
@@ -61,7 +61,8 @@ python/ttlang/
     ├── kernel_types.py   # CircularBuffer, Kernel, and other types
     ├── base_ast.py       # AST base classes
     ├── stream.py         # Stream type for async data movement
-    └── utils.py          # Utility functions
+    ├── utils.py          # Utility functions
+    └── codegen.py        # D2M generic function creation and code generation
 ```
 
 See [docs/HITCHHIKERS_GUIDE.md](docs/HITCHHIKERS_GUIDE.md) for comprehensive DSL documentation and examples.
