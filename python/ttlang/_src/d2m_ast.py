@@ -15,6 +15,7 @@ from .kernel_types import *
 from .utils import _discover_dialect_ops, _cast
 from .kernel_ast import TTCompilerBase
 from .stream import Stream
+from ..layouts import create_metal_layout, compute_device_shape
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,6 @@ class D2MGenericCompiler(TTCompilerBase):
             elif arg.annotation.id == "TensorBlock":
                 shape = self.args[i].shape
                 dtype = F32Type.get(self.ctx)
-                from ..layouts import create_metal_layout, compute_device_shape
 
                 layout = create_metal_layout(
                     self.ctx, shape, self.grid, self.tiled, self.memory_space
@@ -84,7 +84,6 @@ class D2MGenericCompiler(TTCompilerBase):
             elif arg.annotation.id == "CircularBuffer":
                 shape = self.args[i].shape
                 dtype = F32Type.get(self.ctx)
-                from ..layouts import create_metal_layout, compute_device_shape
 
                 layout = create_metal_layout(
                     self.ctx, shape, self.context.grid, self.context.tiled, self.context.memory_space
@@ -139,8 +138,6 @@ class D2MGenericCompiler(TTCompilerBase):
                     )
                 elif isinstance(val, Stream):
                     with InsertionPoint.at_block_begin(self.module.body):
-                        from ..layouts import create_metal_layout, compute_device_shape
-
                         layout = create_metal_layout(
                             self.ctx,
                             val.shape,
