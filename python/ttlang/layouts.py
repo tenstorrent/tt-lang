@@ -5,11 +5,21 @@
 """Layout creation and manipulation utilities for tensor distribution across cores."""
 
 from typing import List, Optional
+from dataclasses import dataclass
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m
 
 from .constants import DEFAULT_TILE_SHAPE, SUPPORTED_MEMORY_SPACES
+
+
+@dataclass(frozen=True)
+class StreamLayoutConfig:
+    """Immutable configuration for stream layout creation."""
+    logical_shape: List[int]
+    grid: List[int]
+    tiled: bool
+    memory_space: str
 
 
 def compute_device_shape(layout, grid: List[int], logical_shape: List[int], tile_shape: Optional[List[int]] = None) -> List[int]:
@@ -107,7 +117,7 @@ def create_metal_layout(
     return layout
 
 
-def create_stream_layout_for_input(ctx, input_arg, logical_shape, grid, tiled, memory_space):
+def create_stream_layout_for_input(ctx, input_arg, config: StreamLayoutConfig):
     """
     Create a stream_layout op for the given input argument.
 
@@ -122,10 +132,7 @@ def create_stream_layout_for_input(ctx, input_arg, logical_shape, grid, tiled, m
     Args:
         ctx: MLIR context
         input_arg: Function argument to wrap with stream layout
-        logical_shape: Logical tensor shape
-        grid: Grid dimensions
-        tiled: Whether layout is tiled
-        memory_space: "L1" or "DRAM"
+        config: Immutable configuration containing logical_shape, grid, tiled, memory_space
 
     Returns:
         Stream layout operation result
@@ -144,7 +151,7 @@ def create_stream_layout_for_input(ctx, input_arg, logical_shape, grid, tiled, m
     if metal_layout is None:
         raise RuntimeError("Input argument must have MetalLayoutAttr encoding")
 
-    storage_layout = create_metal_layout(ctx, logical_shape, grid, tiled, memory_space)
+    storage_layout = create_metal_layout(ctx, config.logical_shape, config.grid, config.tiled, config.memory_space)
     storage_type = RankedTensorType.get(device_shape, element_type, storage_layout)
     storage = d2m.EmptyOp(storage_type)
 
@@ -153,10 +160,10 @@ def create_stream_layout_for_input(ctx, input_arg, logical_shape, grid, tiled, m
 
     result_layout = ttcore.ir.MetalLayoutAttr.get(
         ctx,
-        logical_shape,
-        grid,
+        config.logical_shape,
+        config.grid,
         int(ttcore.OOBVal.Undef),
-        int(ttcore.MemorySpace.DeviceL1 if memory_space == "L1" else ttcore.MemorySpace.DeviceDRAM),
+        int(ttcore.MemorySpace.DeviceL1 if config.memory_space == "L1" else ttcore.MemorySpace.DeviceDRAM),
         int(ttcore.TensorMemoryLayout.Sharded),
         identity_map
     )
