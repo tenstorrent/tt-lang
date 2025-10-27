@@ -4,7 +4,8 @@
 
 import ast
 import inspect
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
+from dataclasses import dataclass
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func, arith
@@ -16,6 +17,14 @@ from .kernel_ast import TTCompilerBase
 from .stream import Stream
 
 
+@dataclass(frozen=True)
+class CompilerContext:
+    """Immutable compilation context for D2M kernels."""
+    grid: List[int]
+    memory_space: str
+    tiled: bool
+
+
 class D2MGenericCompiler(TTCompilerBase):
     _syntax = {}
 
@@ -23,12 +32,14 @@ class D2MGenericCompiler(TTCompilerBase):
         super().__init__(name, kernel_type, *args, **kwargs)
         self.loc = Location.name(self.name)
         self.captures = captures
-        self.streams = set()
+        self.streams: Set[str] = set()
         self.supported_nodes.append(ast.AsyncFunctionDef)
 
-        self.grid: List[int] = kwargs.get("grid", [1, 1])
-        self.memory_space: str = kwargs.get("memory_space", "L1")
-        self.tiled: bool = kwargs.get("tiled", True)
+        self.context = CompilerContext(
+            grid=kwargs.get("grid", [1, 1]),
+            memory_space=kwargs.get("memory_space", "L1"),
+            tiled=kwargs.get("tiled", True),
+        )
 
         self._fn_map = {}
         self._fn_map["iter_index"] = (
@@ -76,16 +87,16 @@ class D2MGenericCompiler(TTCompilerBase):
                 from ..layouts import create_metal_layout, compute_device_shape
 
                 layout = create_metal_layout(
-                    self.ctx, shape, self.grid, self.tiled, self.memory_space
+                    self.ctx, shape, self.context.grid, self.context.tiled, self.context.memory_space
                 )
-                tile_shape = [32, 32] if self.tiled else [1, 1]
-                device_shape = compute_device_shape(layout, self.grid, shape, tile_shape)
+                tile_shape = [32, 32] if self.context.tiled else [1, 1]
+                device_shape = compute_device_shape(layout, self.context.grid, shape, tile_shape)
 
                 shard_shape = device_shape[len(device_shape) // 2:]
 
                 element_type = (
                     ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore.DataType.Float32)
-                    if self.tiled
+                    if self.context.tiled
                     else dtype
                 )
 
@@ -133,18 +144,18 @@ class D2MGenericCompiler(TTCompilerBase):
                         layout = create_metal_layout(
                             self.ctx,
                             val.shape,
-                            self.grid,
-                            self.tiled,
-                            self.memory_space,
+                            self.context.grid,
+                            self.context.tiled,
+                            self.context.memory_space,
                         )
-                        tile_shape = [32, 32] if self.tiled else [1, 1]
-                        device_shape = compute_device_shape(layout, self.grid, val.shape, tile_shape)
+                        tile_shape = [32, 32] if self.context.tiled else [1, 1]
+                        device_shape = compute_device_shape(layout, self.context.grid, val.shape, tile_shape)
 
                         element_type = (
                             ttcore.ir.TileType.get(
                                 self.ctx, 32, 32, ttcore.DataType.Float32
                             )
-                            if self.tiled
+                            if self.context.tiled
                             else F32Type.get(self.ctx)
                         )
                         tensor = RankedTensorType.get(
