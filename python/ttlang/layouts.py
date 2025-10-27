@@ -14,6 +14,16 @@ from .constants import DEFAULT_TILE_SHAPE, SUPPORTED_MEMORY_SPACES
 
 
 @dataclass(frozen=True)
+class MetalLayoutConfig:
+    """Immutable configuration for metal layout creation."""
+    logical_shape: List[int]
+    grid: List[int]
+    tiled: bool = True
+    memory_space: str = "L1"
+    sharded: bool = True
+
+
+@dataclass(frozen=True)
 class StreamLayoutConfig:
     """Immutable configuration for stream layout creation."""
     logical_shape: List[int]
@@ -59,24 +69,13 @@ def compute_device_shape(layout, grid: List[int], logical_shape: List[int], tile
     return typed_layout.getDeviceShape(grid_shape, tile_shape)
 
 
-def create_metal_layout(
-    ctx,
-    logical_shape: List[int],
-    grid: List[int],
-    tiled: bool = True,
-    memory_space: str = "L1",
-    sharded: bool = True,
-) -> "ttcore.MetalLayoutAttr":
+def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAttr":
     """
-    Create a MetalLayoutAttr with user-friendly parameters.
+    Create a MetalLayoutAttr from configuration.
 
     Args:
         ctx: MLIR context
-        logical_shape: List of logical tensor dimensions
-        grid: Grid shape (e.g., [2, 2])
-        tiled: Whether to use tiled layout (default True)
-        memory_space: "L1" or "DRAM" (default "L1")
-        sharded: Whether to use sharded memory layout (default True)
+        config: Immutable configuration containing layout parameters
 
     Returns:
         ttcore.MetalLayoutAttr with computed device shape
@@ -85,30 +84,30 @@ def create_metal_layout(
         ValueError: If memory_space is invalid or logical dimensions are not
                    divisible by grid dimensions
     """
-    if memory_space == "L1":
+    if config.memory_space == "L1":
         mem_space = ttcore.MemorySpace.DeviceL1
-    elif memory_space == "DRAM":
+    elif config.memory_space == "DRAM":
         mem_space = ttcore.MemorySpace.DeviceDRAM
     else:
         raise ValueError(
-            f"Invalid memory_space: {memory_space}. Must be 'L1' or 'DRAM'"
+            f"Invalid memory_space: {config.memory_space}. Must be 'L1' or 'DRAM'"
         )
 
-    if sharded:
+    if config.sharded:
         memory_layout = ttcore.TensorMemoryLayout.Sharded
     else:
         memory_layout = ttcore.TensorMemoryLayout.Interleaved
 
-    for i in range(len(logical_shape)):
-        if logical_shape[i] % grid[i] != 0:
+    for i in range(len(config.logical_shape)):
+        if config.logical_shape[i] % config.grid[i] != 0:
             raise ValueError(
-                f"Logical dimension {i} ({logical_shape[i]}) must be evenly divisible by grid dimension {i} ({grid[i]})"
+                f"Logical dimension {i} ({config.logical_shape[i]}) must be evenly divisible by grid dimension {i} ({config.grid[i]})"
             )
 
     layout = ttcore.ir.MetalLayoutAttr.get(
         ctx,
-        logical_shape,
-        grid,
+        config.logical_shape,
+        config.grid,
         int(ttcore.OOBVal.Undef),
         int(mem_space),
         int(ttcore.TensorMemoryLayout.Sharded),
@@ -151,7 +150,12 @@ def create_stream_layout_for_input(ctx, input_arg, config: StreamLayoutConfig):
     if metal_layout is None:
         raise RuntimeError("Input argument must have MetalLayoutAttr encoding")
 
-    storage_layout = create_metal_layout(ctx, config.logical_shape, config.grid, config.tiled, config.memory_space)
+    storage_layout = create_metal_layout(ctx, MetalLayoutConfig(
+        logical_shape=config.logical_shape,
+        grid=config.grid,
+        tiled=config.tiled,
+        memory_space=config.memory_space
+    ))
     storage_type = RankedTensorType.get(device_shape, element_type, storage_layout)
     storage = d2m.EmptyOp(storage_type)
 

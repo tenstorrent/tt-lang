@@ -15,7 +15,7 @@ from .kernel_types import *
 from .utils import _discover_dialect_ops, _cast
 from .kernel_ast import TTCompilerBase
 from .stream import Stream
-from ..layouts import create_metal_layout, compute_device_shape
+from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,12 @@ class D2MGenericCompiler(TTCompilerBase):
                 dtype = F32Type.get(self.ctx)
 
                 layout = create_metal_layout(
-                    self.ctx, shape, self.context.grid, self.context.tiled, self.context.memory_space
+                    self.ctx, MetalLayoutConfig(
+                        logical_shape=shape,
+                        grid=self.context.grid,
+                        tiled=self.context.tiled,
+                        memory_space=self.context.memory_space
+                    )
                 )
                 tile_shape = [32, 32] if self.context.tiled else [1, 1]
                 device_shape = compute_device_shape(layout, self.context.grid, shape, tile_shape)
@@ -86,7 +91,12 @@ class D2MGenericCompiler(TTCompilerBase):
                 dtype = F32Type.get(self.ctx)
 
                 layout = create_metal_layout(
-                    self.ctx, shape, self.context.grid, self.context.tiled, self.context.memory_space
+                    self.ctx, MetalLayoutConfig(
+                        logical_shape=shape,
+                        grid=self.context.grid,
+                        tiled=self.context.tiled,
+                        memory_space=self.context.memory_space
+                    )
                 )
                 tile_shape = [32, 32] if self.context.tiled else [1, 1]
                 device_shape = compute_device_shape(layout, self.context.grid, shape, tile_shape)
@@ -139,11 +149,12 @@ class D2MGenericCompiler(TTCompilerBase):
                 elif isinstance(val, Stream):
                     with InsertionPoint.at_block_begin(self.module.body):
                         layout = create_metal_layout(
-                            self.ctx,
-                            val.shape,
-                            self.context.grid,
-                            self.context.tiled,
-                            self.context.memory_space,
+                            self.ctx, MetalLayoutConfig(
+                                logical_shape=val.shape,
+                                grid=self.context.grid,
+                                tiled=self.context.tiled,
+                                memory_space=self.context.memory_space
+                            )
                         )
                         tile_shape = [32, 32] if self.context.tiled else [1, 1]
                         device_shape = compute_device_shape(layout, self.context.grid, val.shape, tile_shape)
