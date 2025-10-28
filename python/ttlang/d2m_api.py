@@ -293,11 +293,12 @@ def _compile_and_run_kernel(
                 memory_space,
             )
 
-        print(module)
-        with open("tmp.mlir", "w") as fd:
-            print(module, file=fd)
+        initial_mlir_path = os.environ.get("TTLANG_INITIAL_MLIR")
+        if initial_mlir_path:
+            with open(initial_mlir_path, "w") as fd:
+                print(module, file=fd)
+            print(f"SAVED INITIAL TO {initial_mlir_path}")
 
-        print_ir = True
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
         use_tile_matmul = True
@@ -316,11 +317,10 @@ def _compile_and_run_kernel(
 
             enable_pretty_stack_traces(pm._CAPIPtr)
         except Exception as e:
-            print(f"Warning: Could not enable pass tracking: {e}")
+            pass
 
-        print("Running custom pipeline:", pm)
-        if print_ir:
-            print_ir_path = print_ir if isinstance(print_ir, str) else None
+        if os.environ.get("TTLANG_VERBOSE_PASSES"):
+            print("Running custom pipeline:", pm)
             ctx.enable_multithreading(False)
             pm.enable_ir_printing(
                 print_after_all=True,
@@ -328,9 +328,15 @@ def _compile_and_run_kernel(
                 print_after_failure=True,
                 enable_debug_info=True,
             )
+
         pm.run(module.operation)
 
-        print(module)
+        final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
+        if final_mlir_path:
+            with open(final_mlir_path, "w") as fd:
+                print(module, file=fd)
+            print(f"SAVED FINAL TO {final_mlir_path}")
+
         bin = ttmetal_to_flatbuffer_bin(module)
 
 
