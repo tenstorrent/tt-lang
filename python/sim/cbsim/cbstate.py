@@ -10,14 +10,14 @@ from threading import Condition, RLock, Thread
 from typing import Generic, List, Optional, TypeVar
 from .typedefs import Size, Index, Count
 from .errors import CBContractError, CBNotConfigured
-from .ringview import _Span
+from .ringview import Span
 
 T = TypeVar("T")
 
 
 # It is a deliberate design choice to use any generic type here to avoid dealing
 # with byte arrays as would be the case in the C++ API.
-class _CBState(Generic[T]):
+class CBState(Generic[T]):
     __slots__ = (
         "cap",
         "buf",
@@ -51,11 +51,11 @@ class _CBState(Generic[T]):
         self.consumer_waiting: Optional[Thread] = None
         self.producer_reserving: Optional[Thread] = None
 
-    def _require_configured(self) -> None:
+    def require_configured(self) -> None:
         if not self.configured:
             raise CBNotConfigured("CB not configured; call host_configure_cb")
 
-    def _check_num_tiles(self, num_tiles: Size) -> None:
+    def check_num_tiles(self, num_tiles: Size) -> None:
         if num_tiles > self.cap:
             raise CBContractError("num_tiles must be <= capacity")
         if self.cap % num_tiles != 0:
@@ -63,13 +63,13 @@ class _CBState(Generic[T]):
                 f"First num_tiles={num_tiles} must evenly divide capacity={self.cap}"
             )
 
-    def _free(self) -> Size:
+    def free(self) -> Size:
         return self.cap - (self.visible + self.reserved)
 
-    def _front_span(self, length: Size) -> _Span:
-        return _Span(self.head, length)
+    def front_span(self, length: Size) -> Span:
+        return Span(self.head, length)
 
-    def _reset(self) -> None:
+    def reset(self) -> None:
         self.buf[:] = [None] * self.cap
         self.head = 0
         self.visible = 0

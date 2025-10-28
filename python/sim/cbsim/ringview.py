@@ -21,19 +21,19 @@ T = TypeVar("T")
 # _CBState, a deliberate choice to make it closer in spirit to a pointer and
 # minimizing the state that is exposed.
 @dataclass(frozen=True)
-class _Span:
+class Span:
     start: Index  # inclusive index in underlying ring
     length: Size  # number of tiles
 
 
-class _RingView(Generic[T]):
+class RingView(Generic[T]):
     """A logically contiguous window into the ring, possibly wrapping.
     Provides list-like access to elements while respecting wrap-around.
     """
 
     __slots__ = ("_buf", "_capacity", "_span")
 
-    def __init__(self, buf: List[Optional[T]], capacity: Size, span: _Span):
+    def __init__(self, buf: List[Optional[T]], capacity: Size, span: Span):
         self._buf = buf
         self._capacity = capacity
         self._span = span
