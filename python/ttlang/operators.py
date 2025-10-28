@@ -48,9 +48,9 @@ def _create_linalg_generic(
 
     affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(m) for m in affine_maps])
 
-    iter_types_attr = ArrayAttr.get([
-        Attribute.parse(f'#linalg.iterator_type<{it}>', ctx) for it in iterator_types
-    ])
+    iter_types_attr = ArrayAttr.get(
+        [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iterator_types]
+    )
 
     num_inputs = len(affine_maps) - 1
     inputs = [lhs, rhs] if num_inputs == 2 else [lhs] + [rhs] * (num_inputs - 1)
@@ -60,10 +60,12 @@ def _create_linalg_generic(
         inputs=inputs[:num_inputs],
         outputs=[empty],
         indexing_maps=affine_maps_attr,
-        iterator_types=iter_types_attr
+        iterator_types=iter_types_attr,
     )
 
-    block_arg_types = [inp.type.element_type for inp in inputs[:num_inputs]] + [empty.type.element_type]
+    block_arg_types = [inp.type.element_type for inp in inputs[:num_inputs]] + [
+        empty.type.element_type
+    ]
     block = generic_op.regions[0].blocks.append(*block_arg_types)
 
     with InsertionPoint(block):
@@ -96,11 +98,14 @@ class TensorBlock:
         identity_map = AffineMap.get_identity(rank, ctx)
 
         return _create_linalg_generic(
-            lhs, rhs,
+            lhs,
+            rhs,
             output_shape=list(lhs.type.shape),
             affine_maps=[identity_map] * 3,
             iterator_types=["parallel"] * rank,
-            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, out_arg: d2m.tile_add(result_type, lhs_arg, rhs_arg)
+            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, out_arg: d2m.tile_add(
+                result_type, lhs_arg, rhs_arg
+            ),
         )
 
     def __sub__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
@@ -128,17 +133,26 @@ class TensorBlock:
 
         ctx = lhs.type.context
         matmul_maps = [
-            AffineMap.get(3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(2, ctx)], ctx),
-            AffineMap.get(3, 0, [AffineDimExpr.get(2, ctx), AffineDimExpr.get(1, ctx)], ctx),
-            AffineMap.get(3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx),
+            AffineMap.get(
+                3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(2, ctx)], ctx
+            ),
+            AffineMap.get(
+                3, 0, [AffineDimExpr.get(2, ctx), AffineDimExpr.get(1, ctx)], ctx
+            ),
+            AffineMap.get(
+                3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx
+            ),
         ]
 
         return _create_linalg_generic(
-            lhs, rhs,
+            lhs,
+            rhs,
             output_shape=out_shape,
             affine_maps=matmul_maps,
             iterator_types=["parallel", "parallel", "reduction"],
-            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, acc_arg: d2m.tile_matmul(result_type, lhs_arg, rhs_arg, acc_arg)
+            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, acc_arg: d2m.tile_matmul(
+                result_type, lhs_arg, rhs_arg, acc_arg
+            ),
         )
 
     def store(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
@@ -188,5 +202,3 @@ def dma(src, dst, core=None, mcast=None) -> MemTx:
         _asindex(core),
         _asindex(mcast),
     )
-
-

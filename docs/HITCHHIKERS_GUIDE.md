@@ -995,4 +995,3 @@ To save kernel sources, use `kernel_source_mode="store"` parameter in `@pykernel
 **Collapsed Intervals**: Encoding of how logical dims map to device dims.
 
 **OOB Val**: Out-of-bounds value. Usually undef.
-

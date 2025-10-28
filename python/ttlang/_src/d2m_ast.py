@@ -22,6 +22,7 @@ from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConf
 @dataclass(frozen=True)
 class CompilerContext:
     """Immutable compilation context for D2M kernels."""
+
     grid: List[int]
     memory_space: str
     tiled: bool
@@ -70,15 +71,18 @@ class D2MGenericCompiler(TTCompilerBase):
                 dtype = F32Type.get(self.ctx)
 
                 layout = create_metal_layout(
-                    self.ctx, MetalLayoutConfig(
+                    self.ctx,
+                    MetalLayoutConfig(
                         logical_shape=shape,
                         grid=self.context.grid,
                         tiled=self.context.tiled,
-                        memory_space=self.context.memory_space
-                    )
+                        memory_space=self.context.memory_space,
+                    ),
                 )
                 tile_shape = [32, 32] if self.context.tiled else [1, 1]
-                device_shape = compute_device_shape(layout, self.context.grid, shape, tile_shape)
+                device_shape = compute_device_shape(
+                    layout, self.context.grid, shape, tile_shape
+                )
 
                 element_type = (
                     ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore.DataType.Float32)
@@ -92,17 +96,20 @@ class D2MGenericCompiler(TTCompilerBase):
                 dtype = F32Type.get(self.ctx)
 
                 layout = create_metal_layout(
-                    self.ctx, MetalLayoutConfig(
+                    self.ctx,
+                    MetalLayoutConfig(
                         logical_shape=shape,
                         grid=self.context.grid,
                         tiled=self.context.tiled,
-                        memory_space=self.context.memory_space
-                    )
+                        memory_space=self.context.memory_space,
+                    ),
                 )
                 tile_shape = [32, 32] if self.context.tiled else [1, 1]
-                device_shape = compute_device_shape(layout, self.context.grid, shape, tile_shape)
+                device_shape = compute_device_shape(
+                    layout, self.context.grid, shape, tile_shape
+                )
 
-                shard_shape = device_shape[len(device_shape) // 2:]
+                shard_shape = device_shape[len(device_shape) // 2 :]
 
                 element_type = (
                     ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore.DataType.Float32)
@@ -150,15 +157,18 @@ class D2MGenericCompiler(TTCompilerBase):
                 elif isinstance(val, Stream):
                     with InsertionPoint.at_block_begin(self.module.body):
                         layout = create_metal_layout(
-                            self.ctx, MetalLayoutConfig(
+                            self.ctx,
+                            MetalLayoutConfig(
                                 logical_shape=val.shape,
                                 grid=self.context.grid,
                                 tiled=self.context.tiled,
-                                memory_space=self.context.memory_space
-                            )
+                                memory_space=self.context.memory_space,
+                            ),
                         )
                         tile_shape = [32, 32] if self.context.tiled else [1, 1]
-                        device_shape = compute_device_shape(layout, self.context.grid, val.shape, tile_shape)
+                        device_shape = compute_device_shape(
+                            layout, self.context.grid, val.shape, tile_shape
+                        )
 
                         element_type = (
                             ttcore.ir.TileType.get(

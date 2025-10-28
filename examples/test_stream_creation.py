@@ -287,18 +287,18 @@ def test_simple_add_with_streams():
 
 
 if __name__ == "__main__":
-    print("="*60)
+    print("=" * 60)
     print("Testing early stream creation in D2M pipeline")
-    print("="*60)
+    print("=" * 60)
 
     test_simple_add_with_streams()
     # test_simple_add_lhs_stream_only()      # Disabled - requires DSL support for raw tensor captures
     # test_simple_add_rhs_stream_only()      # Disabled - requires DSL support for raw tensor captures
     # test_simple_add_no_streams()           # Disabled - requires DSL support for raw tensor captures
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("All tests passed! Streams are created at pipeline start ✓")
-    print("="*60)
+    print("=" * 60)
     print("\nNote: Edge case tests (single-stream, no-stream) are commented out")
     print("because the D2M Python DSL requires all accessed tensors to be")
     print("wrapped in Stream(). See comments in the file for details.")
