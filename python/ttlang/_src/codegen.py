@@ -10,7 +10,13 @@ from typing import List, Callable, Any, Dict
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func
 
-from ..layouts import create_metal_layout, create_stream_layout_for_input, compute_device_shape, StreamLayoutConfig, MetalLayoutConfig
+from ..layouts import (
+    create_metal_layout,
+    create_stream_layout_for_input,
+    compute_device_shape,
+    StreamLayoutConfig,
+    MetalLayoutConfig,
+)
 from ..constants import DEFAULT_TILE_SHAPE
 
 
@@ -30,6 +36,7 @@ def affine_map_from_lambda(fn: Callable) -> AffineMap:
     Raises:
         TypeError: If lambda result contains unsupported types
     """
+
     class Dim:
         def __init__(self, position, name):
             self.position = position
@@ -46,7 +53,9 @@ def affine_map_from_lambda(fn: Callable) -> AffineMap:
             exprs.append(AffineDimExpr.get(result.position))
         elif isinstance(result, int):
             if result != 0:
-                raise ValueError("The only integer constant allowed in an indexing_map is 0")
+                raise ValueError(
+                    "The only integer constant allowed in an indexing_map is 0"
+                )
             exprs.append(AffineConstantExpr.get(result))
         else:
             raise TypeError(
@@ -105,12 +114,12 @@ def create_generic_func(
         shape = arg.shape
         dtype = F32Type.get(ctx)
 
-        layout = create_metal_layout(ctx, MetalLayoutConfig(
-            logical_shape=shape,
-            grid=grid,
-            tiled=tiled,
-            memory_space=memory_space
-        ))
+        layout = create_metal_layout(
+            ctx,
+            MetalLayoutConfig(
+                logical_shape=shape, grid=grid, tiled=tiled, memory_space=memory_space
+            ),
+        )
         tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
         device_shape = compute_device_shape(layout, grid, shape, tile_shape)
 
@@ -139,16 +148,20 @@ def create_generic_func(
             is_stream.append(BoolAttr(stream_attr).value)
 
         wrapped_inputs = [
-            create_stream_layout_for_input(
-                ctx, inp, StreamLayoutConfig(
-                    logical_shape=list(user_args[i].shape),
-                    grid=grid,
-                    tiled=tiled,
-                    memory_space=memory_space
+            (
+                create_stream_layout_for_input(
+                    ctx,
+                    inp,
+                    StreamLayoutConfig(
+                        logical_shape=list(user_args[i].shape),
+                        grid=grid,
+                        tiled=tiled,
+                        memory_space=memory_space,
+                    ),
                 )
+                if is_stream[i]
+                else inp
             )
-            if is_stream[i]
-            else inp
             for i, inp in enumerate(inputs)
         ]
 
@@ -187,7 +200,11 @@ def create_generic_func(
         func.ReturnOp(generic.results)
 
 
-def copy_symbol_table_globals(module_symbol_table: SymbolTable, compiled_threads: List[Any], f_params: Dict[str, Any]) -> None:
+def copy_symbol_table_globals(
+    module_symbol_table: SymbolTable,
+    compiled_threads: List[Any],
+    f_params: Dict[str, Any],
+) -> None:
     """
     Copy global symbols from compiled threads to the module symbol table.
 

@@ -88,6 +88,7 @@ def _compile(
     Returns:
         Decorator function for kernel compilation
     """
+
     def _decorator(f):
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
@@ -239,31 +240,33 @@ def _compile_and_run_kernel(
 
     program = f(*args, **kwargs)
     if not isinstance(program, Program):
-        raise TypeError(f"Kernel function must return a Program, got {type(program).__name__}")
+        raise TypeError(
+            f"Kernel function must return a Program, got {type(program).__name__}"
+        )
 
     injected_program_kwargs = {
         "grid": grid,
         "memory_space": memory_space,
         "tiled": tiled,
     }
-    program = Program(*program.threads, args=program.args, kwargs={**injected_program_kwargs, **program.kwargs})
+    program = Program(
+        *program.threads,
+        args=program.args,
+        kwargs={**injected_program_kwargs, **program.kwargs},
+    )
 
     ctx = Context()
     loc = Location.unknown(ctx)
     with ctx, loc:
         compiled_threads = []
         for compile_thread in program.threads:
-            compiled_threads.append(
-                compile_thread(*program.args, **program.kwargs)
-            )
+            compiled_threads.append(compile_thread(*program.args, **program.kwargs))
 
         module = Module.create(loc)
 
         module_symbol_table = SymbolTable(module.operation)
         with InsertionPoint.at_block_begin(module.body):
-            copy_symbol_table_globals(
-                module_symbol_table, compiled_threads, f_params
-            )
+            copy_symbol_table_globals(module_symbol_table, compiled_threads, f_params)
 
         streams = set().union(*[ct.streams for ct in compiled_threads])
         positional_arg_names = list(f_params.keys())[: len(args)]
@@ -304,14 +307,13 @@ def _compile_and_run_kernel(
         if device_register_options:
             register_device = f"{register_device}{{{device_register_options}}}"
 
-        pipeline_str = (
-            f"builtin.module({','.join([register_device, pipeline])})"
-        )
+        pipeline_str = f"builtin.module({','.join([register_device, pipeline])})"
         pm = PassManager.parse(pipeline_str)
         pm.enable_verifier(verify)
 
         try:
             from ttmlir._mlir_libs._ttmlir import enable_pretty_stack_traces
+
             enable_pretty_stack_traces(pm._CAPIPtr)
         except Exception as e:
             print(f"Warning: Could not enable pass tracking: {e}")
@@ -419,9 +421,16 @@ def pykernel_gen(
                 block_factors = [1] * len(grid)
 
             _compile_and_run_kernel(
-                f, args, kwargs, grid, block_factors,
-                indexing_maps, iterator_types, num_outs,
-                memory_space, tiled
+                f,
+                args,
+                kwargs,
+                grid,
+                block_factors,
+                indexing_maps,
+                iterator_types,
+                num_outs,
+                memory_space,
+                tiled,
             )
 
         return _wrapper
