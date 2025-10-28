@@ -29,7 +29,7 @@ from ttmlir.dialects import ttcore, d2m, func
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
 from pykernel._src.utils import _cleanup_source_code
-from pykernel._src.stream import Stream
+from ._src.stream import Stream
 
 from ._src.d2m_ast import D2MGenericCompiler
 
