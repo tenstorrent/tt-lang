@@ -415,6 +415,8 @@ sem.wait(1, reset=0)
 sem.inc(1, core=(cy, 0))
 ```
 
+Note: Multicast is supported for `set()` (broadcast value to multiple cores) but not for `inc()` (increments single remote core only).
+
 ---
 
 ## Shape Transformations
