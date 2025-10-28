@@ -14,7 +14,7 @@ from ttmlir.dialects._ods_common import get_default_loc_context
 from pykernel._src.kernel_types import *
 from pykernel._src.utils import _discover_dialect_ops, _cast
 from pykernel._src.kernel_ast import TTCompilerBase
-from pykernel._src.stream import Stream
+from .stream import Stream
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
 
