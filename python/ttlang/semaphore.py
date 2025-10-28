@@ -32,17 +32,16 @@ class Semaphore:
             ast_self, _asindex(value), _asindex(core), _asindex(mcast)
         )
 
-    def inc(ast_self, value, core=None, mcast=None):
+    def inc(ast_self, value, core=None):
         """
-        Increment semaphore value, optionally multicasting to other cores.
+        Increment semaphore value on a remote core.
 
         Args:
             value: Increment amount
-            core: Target core coordinates for multicast
-            mcast: Multicast dimensions
+            core: Target core coordinates
         """
         return d2m.semaphore_inc(
-            ast_self, _asindex(value), _asindex(core), _asindex(mcast)
+            ast_self, _asindex(value), _asindex(core), _asindex(None)
         )
 
     def wait(ast_self, value, reset=None):
