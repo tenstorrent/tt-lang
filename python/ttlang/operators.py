@@ -83,6 +83,57 @@ def _create_linalg_generic(
     return generic_op.result
 
 
+def _create_linalg_generic_unary(
+    inp,
+    output_shape: List[int],
+    affine_maps: List[AffineMap],
+    iterator_types: List[str],
+    tile_op_builder: Callable,
+) -> "TensorBlock":
+    """
+    Create a linalg.generic operation for unary D2M tile operations.
+
+    Args:
+        inp: Input operand
+        output_shape: Shape of the output tensor
+        affine_maps: List of AffineMap objects [input_map, output_map]
+        iterator_types: List of iterator type strings ("parallel" or "reduction")
+        tile_op_builder: Function that takes (result_type, input_arg, output_arg) and creates tile op
+
+    Returns:
+        Result of the linalg.generic operation
+    """
+    ctx = inp.type.context
+
+    out_type = RankedTensorType.get(
+        output_shape, inp.type.element_type, inp.type.encoding
+    )
+    empty = d2m.empty(out_type)
+
+    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(m) for m in affine_maps])
+
+    iter_types_attr = ArrayAttr.get(
+        [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iterator_types]
+    )
+
+    generic_op = GenericOp(
+        result_tensors=[out_type],
+        inputs=[inp],
+        outputs=[empty],
+        indexing_maps=affine_maps_attr,
+        iterator_types=iter_types_attr,
+    )
+
+    block_arg_types = [inp.type.element_type, empty.type.element_type]
+    block = generic_op.regions[0].blocks.append(*block_arg_types)
+
+    with InsertionPoint(block):
+        tile_result = tile_op_builder(inp.type.element_type, *block.arguments)
+        linalg.YieldOp([tile_result])
+
+    return generic_op.result
+
+
 @syntax("!tensor")
 class TensorBlock:
     """
@@ -206,6 +257,54 @@ class TensorBlock:
     def store(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """Store operation for writing tensor data."""
         return d2m.store(ast_self, rhs)
+
+    def transpose(ast_self: "TensorBlock") -> "TensorBlock":
+        """Transpose operation generating linalg.generic with d2m.tile_transpose."""
+        inp = ast_self
+        assert isinstance(inp.type, RankedTensorType)
+
+        ctx = inp.type.context
+        rank = len(inp.type.shape)
+
+        # Output shape is transposed
+        out_shape = list(reversed(inp.type.shape))
+
+        # Identity maps for input and output
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        return _create_linalg_generic_unary(
+            inp,
+            output_shape=out_shape,
+            affine_maps=[identity_map, identity_map],
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, inp_arg, out_arg: d2m.tile_transpose(
+                result_type, inp_arg
+            ),
+        )
+
+    def exp(ast_self: "TensorBlock") -> "TensorBlock":
+        """Exponential operation generating linalg.generic with d2m.tile_exp."""
+        inp = ast_self
+        assert isinstance(inp.type, RankedTensorType)
+
+        ctx = inp.type.context
+        rank = len(inp.type.shape)
+
+        # Output shape is same as input
+        out_shape = list(inp.type.shape)
+
+        # Identity maps for input and output
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        return _create_linalg_generic_unary(
+            inp,
+            output_shape=out_shape,
+            affine_maps=[identity_map, identity_map],
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, inp_arg, out_arg: d2m.tile_exp(
+                result_type, inp_arg
+            ),
+        )
 
 
 @syntax("!d2m.mem_tx")
