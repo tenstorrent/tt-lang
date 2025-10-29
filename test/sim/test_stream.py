@@ -1,0 +1,217 @@
+"""
+Test suite for the Stream class with PyTorch tensors.
+"""
+import pytest
+import torch
+from cbsim import Stream, IndexType, TILE_SIZE
+
+
+class TestStream:
+    """Test the Stream class functionality."""
+    
+    def test_stream_creation(self) -> None:
+        """Test creating a Stream with a properly sized tensor."""
+        # Create a tensor that's a multiple of TILE_SIZE
+        tensor = torch.randn(64, 64)  # type: ignore  # 2x2 tiles
+        stream = Stream(tensor, index_type=IndexType.TILE)
+        
+        assert stream.shape == (64, 64)
+        assert stream.get_tile_shape() == (2, 2)
+        assert stream.tile_size == TILE_SIZE
+    
+    def test_stream_invalid_size(self) -> None:
+        """Test that Stream rejects tensors with invalid sizes."""
+        # Create tensor that's not a multiple of TILE_SIZE
+        tensor = torch.randn(30, 30)  # type: ignore
+        
+        with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+            Stream(tensor, index_type=IndexType.TILE)
+    
+    def test_stream_invalid_index_type(self) -> None:
+        """Test that Stream only accepts IndexType.TILE."""
+        tensor = torch.randn(64, 64)  # type: ignore
+        
+        # This should work
+        stream = Stream(tensor, index_type=IndexType.TILE)
+        assert stream.index_type == IndexType.TILE
+    
+    def test_single_tile_access(self) -> None:
+        """Test accessing a single tile."""
+        # Create test tensor with known values
+        tensor = torch.zeros(64, 64)  # type: ignore
+        # Fill tile (0,0) with ones
+        tensor[0:32, 0:32] = 1.0
+        # Fill tile (1,1) with twos
+        tensor[32:64, 32:64] = 2.0
+        
+        stream = Stream(tensor)
+        
+        # Access tile (0,0) using slice notation
+        tile_00 = stream[slice(0, 1), slice(0, 1)]
+        assert tile_00.shape == (32, 32)
+        assert torch.all(tile_00 == 1.0)  # type: ignore
+        
+        # Access tile (1,1) using slice notation
+        tile_11 = stream[slice(1, 2), slice(1, 2)]
+        assert tile_11.shape == (32, 32)
+        assert torch.all(tile_11 == 2.0)  # type: ignore
+    
+    def test_slice_access(self) -> None:
+        """Test accessing multiple tiles with slices."""
+        # Create 4x4 tile tensor (128x128 elements)
+        tensor = torch.zeros(128, 128)  # type: ignore
+        
+        # Fill first row of tiles with value 1
+        tensor[0:32, :] = 1.0
+        # Fill second row of tiles with value 2  
+        tensor[32:64, :] = 2.0
+        
+        stream = Stream(tensor)
+        
+        # Access first row of tiles (slice 0:1, slice 0:4)
+        first_row = stream[slice(0, 1), slice(0, 4)]
+        assert first_row.shape == (32, 128)
+        assert torch.all(first_row == 1.0)  # type: ignore
+        
+        # Access first two rows (slice 0:2, slice 0:4)
+        first_two_rows = stream[slice(0, 2), slice(0, 4)]
+        assert first_two_rows.shape == (64, 128)
+        assert torch.all(first_two_rows[0:32, :] == 1.0)  # type: ignore
+        assert torch.all(first_two_rows[32:64, :] == 2.0)  # type: ignore
+    
+    def test_mixed_indexing(self) -> None:
+        """Test accessing single tiles and rows of tiles."""
+        tensor = torch.zeros(64, 96)  # type: ignore  # 2x3 tiles
+        tensor[32:64, 32:64] = 5.0  # Fill tile (1,1) with 5s
+        
+        stream = Stream(tensor)
+        
+        # Access row 1, column 1 (single tile)
+        tile = stream[slice(1, 2), slice(1, 2)]
+        assert tile.shape == (32, 32)
+        assert torch.all(tile == 5.0)  # type: ignore
+        
+        # Access row 1, all columns
+        row = stream[slice(1, 2), slice(0, 3)]
+        assert row.shape == (32, 96)
+        assert torch.all(row[:, 32:64] == 5.0)  # type: ignore
+        assert torch.all(row[:, 0:32] == 0.0)  # type: ignore
+        assert torch.all(row[:, 64:96] == 0.0)  # type: ignore
+    
+    def test_setitem(self) -> None:
+        """Test setting values through tile indexing."""
+        tensor = torch.zeros(64, 64)  # type: ignore
+        stream = Stream(tensor)
+        
+        # Set tile (0,0) to ones
+        ones_tile = torch.ones(32, 32)  # type: ignore
+        stream[slice(0, 1), slice(0, 1)] = ones_tile
+        
+        # Verify the change
+        assert torch.all(stream[slice(0, 1), slice(0, 1)] == 1.0)  # type: ignore
+        assert torch.all(stream[slice(0, 1), slice(1, 2)] == 0.0)  # type: ignore  # Other tiles unchanged
+        
+        # Set a slice of tiles
+        twos_block = torch.full((32, 64), 2.0)  # type: ignore
+        stream[slice(1, 2), slice(0, 2)] = twos_block
+        
+        # Verify the slice change
+        assert torch.all(stream[slice(1, 2), slice(0, 2)] == 2.0)  # type: ignore
+        assert torch.all(stream[slice(0, 1), slice(0, 2)] != 2.0)  # type: ignore  # Other rows unchanged
+    
+    def test_validate_tile_coordinates(self) -> None:
+        """Test coordinate validation."""
+        tensor = torch.zeros(64, 96)  # type: ignore  # 2x3 tiles
+        stream = Stream(tensor)
+        
+        # Valid coordinates
+        assert stream.validate_tile_coordinates((slice(0, 1), slice(0, 1)))
+        assert stream.validate_tile_coordinates((slice(1, 2), slice(2, 3)))
+        assert stream.validate_tile_coordinates((slice(0, 2), slice(0, 3)))
+        
+        # Invalid coordinates
+        assert not stream.validate_tile_coordinates((slice(2, 3), slice(0, 1)))  # Row out of bounds
+        assert not stream.validate_tile_coordinates((slice(0, 1), slice(3, 4)))  # Col out of bounds
+        assert not stream.validate_tile_coordinates((slice(0, 3), slice(0, 2)))  # Row slice too big
+    
+    def test_repr(self) -> None:
+        """Test string representation."""
+        tensor = torch.zeros(96, 64)  # type: ignore  # 3x2 tiles
+        stream = Stream(tensor)
+        
+        repr_str = repr(stream)
+        assert "tensor_shape=torch.Size([96, 64])" in repr_str
+        assert "tile_shape=(3, 2)" in repr_str
+        assert f"tile_size={TILE_SIZE}" in repr_str
+    
+    def test_real_usage_pattern(self) -> None:
+        """Test usage pattern from tt-lang code examples."""
+        # Create input tensor like in the examples
+        a_in = torch.randn(128, 128)  # type: ignore  # 4x4 tiles
+        
+        # Create accessor like in colman_fused examples
+        a_accessor = Stream(a_in, index_type=IndexType.TILE)
+        
+        # Test access patterns similar to the code
+        rt = 0  # tile row
+        ct_block = 1  # tile column block
+        granularity = 2  # number of tiles
+        
+        # Access like: a_slice = a_accessor[slice(rt, rt+1), slice(ct_block*granularity, (ct_block+1)*granularity)]
+        a_slice = a_accessor[slice(rt, rt+1), slice(ct_block*granularity, (ct_block+1)*granularity)]
+        
+        # Should get 1 row of tiles, 2 columns of tiles -> 32x64 elements
+        assert a_slice.shape == (32, 64)
+        
+        # Test another pattern
+        rt2 = 2
+        a_slice2 = a_accessor[slice(rt2, rt2+1), slice(0, 4)]  # Full row
+        assert a_slice2.shape == (32, 128)
+    
+    def test_slice_validation(self) -> None:
+        """Test that only supported slice formats are accepted."""
+        tensor = torch.zeros(64, 64)  # type: ignore
+        stream = Stream(tensor)
+        
+        # Valid slice should work
+        result = stream[slice(0, 1), slice(0, 1)]
+        assert result.shape == (32, 32)
+        
+        # slice with None start should fail
+        with pytest.raises(ValueError, match="must have explicit start value"):
+            stream[slice(None, 1), slice(0, 1)]
+        
+        # slice with None stop should fail
+        with pytest.raises(ValueError, match="must have explicit stop value"):
+            stream[slice(0, None), slice(0, 1)]
+        
+        # slice with step should fail
+        with pytest.raises(ValueError, match="must not have step value"):
+            stream[slice(0, 1, 1), slice(0, 1)]
+        
+        # Test validation method
+        assert stream.validate_tile_coordinates((slice(0, 1), slice(0, 1))) is True
+        assert stream.validate_tile_coordinates((slice(None, 1), slice(0, 1))) is False
+        assert stream.validate_tile_coordinates((slice(0, 1, 1), slice(0, 1))) is False
+    
+    def test_tensor_dimension_validation(self) -> None:
+        """Test that only 2D tensors are accepted."""
+        # Valid 2D tensor should work
+        tensor_2d = torch.randn(64, 64)  # type: ignore
+        stream = Stream(tensor_2d)
+        assert stream.get_tile_shape() == (2, 2)
+        
+        # 1D tensor should fail
+        with pytest.raises(ValueError, match="Stream only supports 2D tensors, got 1D tensor"):
+            tensor_1d = torch.randn(64)  # type: ignore
+            Stream(tensor_1d)
+        
+        # 3D tensor should fail
+        with pytest.raises(ValueError, match="Stream only supports 2D tensors, got 3D tensor"):
+            tensor_3d = torch.randn(2, 64, 64)  # type: ignore
+            Stream(tensor_3d)
+        
+        # 4D tensor should fail
+        with pytest.raises(ValueError, match="Stream only supports 2D tensors, got 4D tensor"):
+            tensor_4d = torch.randn(2, 3, 64, 64)  # type: ignore
+            Stream(tensor_4d)

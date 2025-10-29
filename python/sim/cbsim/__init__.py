@@ -20,6 +20,9 @@ from .api import (
     get_read_ptr,
     get_write_ptr,
 )
+from .stream import Stream
+from .index_type import IndexType
+from .constants import TILE_SIZE
 
 __all__ = [
     "CBStats",
@@ -34,4 +37,7 @@ __all__ = [
     "cb_pop_front",
     "get_read_ptr",
     "get_write_ptr",
+    "Stream",
+    "IndexType",
+    "TILE_SIZE",
 ]
