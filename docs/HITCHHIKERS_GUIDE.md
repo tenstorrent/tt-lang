@@ -923,6 +923,42 @@ See: test/pykernel/gen/custom_dm_turn_based_matmul.py
 
 ---
 
+**FPU and SFPU Compute Units**
+
+**FPU (Fused Processing Unit):**
+- Specialized for matrix multiplication and reduction operations
+- Operations: matmul, matmul_block, reduce_sum, reduce_max
+- Ternary operation: `A @ B + C` (fused multiply-add)
+- Higher throughput for dense linear algebra
+
+**SFPU (Special Function Processing Unit):**
+- Specialized for element-wise operations
+- Operations: exp, log, sin, cos, sqrt, add, mul, div, etc.
+- Operates in-place on destination register
+- Lower precision, higher throughput for transcendental functions
+
+**Lowering Differences:**
+
+FPU operations:
+```cpp
+// D2MFPUOpsRewriter generates:
+MatmulInitOp(cbA, cbB, outCB, transpose);
+MatmulInitShortOp(cbA, cbB, transpose);
+MatmulTilesOp(cbA, cbB, tileA, tileB, tileC, transpose);
+```
+
+SFPU operations:
+```cpp
+// D2MSFPUOpsRewriter generates:
+InitSFPUOp(inCB, outCB);      // Initialize SFPU unit
+ExpTileInitOp();              // Initialize exp function
+ExpTileOp(dstIdx);            // Execute on tile at dstIdx (in-place)
+```
+
+SFPU operations modify tiles in-place in the destination register. FPU operations (matmul) also use DST but have different access patterns for accumulation across the K dimension.
+
+---
+
 ## DSL Examples
 
 **Simple Element-Wise Add**
