@@ -17,7 +17,8 @@ from ..layouts import (
     StreamLayoutConfig,
     MetalLayoutConfig,
 )
-from ..constants import DEFAULT_TILE_SHAPE
+from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
+from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
 
 
 def affine_map_from_lambda(fn: Callable) -> AffineMap:
@@ -112,7 +113,7 @@ def create_generic_func(
     ordered_tensor_args = []
     for arg in user_args:
         shape = arg.shape
-        dtype = F32Type.get(ctx)
+        dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
 
         layout = create_metal_layout(
             ctx,
@@ -123,8 +124,11 @@ def create_generic_func(
         tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
         device_shape = compute_device_shape(layout, grid, shape, tile_shape)
 
+        ttcore_dtype = torch_dtype_to_ttcore_datatype(arg.dtype)
         element_type = (
-            ttcore.ir.TileType.get(ctx, 32, 32, ttcore.DataType.Float32)
+            ttcore.ir.TileType.get(
+                ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
+            )
             if tiled
             else dtype
         )
