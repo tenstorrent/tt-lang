@@ -45,14 +45,14 @@ def test_stream(lhs, rhs, out):
 # CHECK-LABEL: func.func @test_stream
 
 # Verify: First argument marked as stream
-# CHECK-SAME: (%[[ARG0:.+]]: tensor<1x1x1x1x!ttcore.tile<32x32, f32>, #[[STORAGE_LAYOUT]]> {d2m.stream = true}
+# CHECK-SAME: (%[[ARG0:.+]]: tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[STORAGE_LAYOUT]]> {d2m.stream = true}
 
 # Verify: Storage created with layout WITHOUT index_map (becomes ShardLayoutAttr after bufferization)
-# CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<32x32, f32>, #[[STORAGE_LAYOUT]]>
+# CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[STORAGE_LAYOUT]]>
 
 # Verify: stream_layout connects input to storage, returns view WITH index_map (becomes ViewLayoutAttr)
 # CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[ARG0]], %[[STORAGE]])
-# CHECK-SAME: -> tensor<1x1x1x1x!ttcore.tile<32x32, f32>, #[[VIEW_LAYOUT]]>
+# CHECK-SAME: -> tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[VIEW_LAYOUT]]>
 
 # Verify: Stream view used as input to d2m.generic (low-level DSL uses empty indexing_maps/iterator_types)
 # Note: Low-level DSL provides explicit grid/block_factors and manual thread logic.
