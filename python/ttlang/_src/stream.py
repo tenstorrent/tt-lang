@@ -2,11 +2,36 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Optional
+"""Stream wrapper for asynchronous data movement in kernels."""
+
+from typing import Optional, Any
 
 
 class Stream:
-    def __init__(self, tensor, num_buffers: Optional[int] = None):
+    """
+    Wraps a tensor argument for streaming data movement between DRAM and L1.
+
+    Streams enable asynchronous DMA operations in kernel code. The tensor must be
+    a top-level function argument (not a local variable).
+
+    Attributes:
+        name: Global name of the wrapped tensor
+        shape: Shape of the tensor
+        dtype: Data type of the tensor (e.g., torch.float32)
+        num_buffers: Number of multi-buffering slots (currently unused)
+    """
+
+    def __init__(self, tensor: Any, num_buffers: Optional[int] = None):
+        """
+        Create a stream from a tensor argument.
+
+        Args:
+            tensor: PyTorch tensor that must have a _global_name attribute
+            num_buffers: Number of buffers for multi-buffering (not yet supported)
+
+        Raises:
+            AssertionError: If tensor is not a top-level argument or if num_buffers is set
+        """
         assert hasattr(
             tensor, "_global_name"
         ), "Stream must be created from a top level tensor argument"
