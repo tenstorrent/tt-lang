@@ -11,14 +11,19 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_thread_types(lhs, rhs, out):
     @datamovement()
-    async def dm_thread(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_thread(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         pass
 
     @compute()
-    async def compute_thread(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def compute_thread(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         l = lhs_cb.pop()
         r = rhs_cb.pop()
         o = out_cb.reserve()
@@ -27,6 +32,7 @@ def test_thread_types(lhs, rhs, out):
         out_cb.pop()
 
     return Program(compute_thread, dm_thread)(lhs, rhs, out)
+
 
 # CHECK: func.func @test_thread_types
 

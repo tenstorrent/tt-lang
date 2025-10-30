@@ -176,7 +176,9 @@ class D2MGenericCompiler(TTCompilerBase):
                                 memory_space=self.context.memory_space,
                             ),
                         )
-                        tile_shape = DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
+                        tile_shape = (
+                            DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
+                        )
                         device_shape = compute_device_shape(
                             layout, self.context.grid, val.shape, tile_shape
                         )

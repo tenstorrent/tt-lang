@@ -11,10 +11,16 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(2, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_sem_ops(lhs, rhs, out):
     @compute()
-    async def comp(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer, sem: Semaphore):
+    async def comp(
+        lhs_cb: CircularBuffer,
+        rhs_cb: CircularBuffer,
+        out_cb: CircularBuffer,
+        sem: Semaphore,
+    ):
         # Semaphore in signature to match datamovement arg count, but unused in compute.
         # Compute threads skip semaphore conversion (D2MToTTKernel.cpp:1300-1301).
         # TODO(#11): Addition required to create linalg.generic with tile ops.
@@ -26,7 +32,12 @@ def test_sem_ops(lhs, rhs, out):
         out_cb.pop()
 
     @datamovement()
-    async def dm(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer, sem: Semaphore):
+    async def dm(
+        lhs_cb: CircularBuffer,
+        rhs_cb: CircularBuffer,
+        out_cb: CircularBuffer,
+        sem: Semaphore,
+    ):
         cy = core_index(0)
         cx = core_index(1)
 
@@ -40,6 +51,7 @@ def test_sem_ops(lhs, rhs, out):
             sem.inc(1, core=(cy, 0))
 
     return Program(comp, dm)(lhs, rhs, out)
+
 
 # CHECK-LABEL: func.func @test_sem_ops
 

@@ -11,10 +11,13 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_generic(lhs, rhs, out):
     @compute()
-    async def comp(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def comp(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         l = lhs_cb.pop()
         r = rhs_cb.pop()
         o = out_cb.reserve()
@@ -23,10 +26,13 @@ def test_generic(lhs, rhs, out):
         out_cb.pop()
 
     @datamovement()
-    async def dm(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         pass
 
     return Program(comp, dm)(lhs, rhs, out)
+
 
 # CHECK: func.func @test_generic(%[[ARG0:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}}, %[[ARG1:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}}, %[[ARG2:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}})
 
