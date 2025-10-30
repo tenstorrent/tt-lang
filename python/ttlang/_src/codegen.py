@@ -67,18 +67,18 @@ def affine_map_from_lambda(fn: Callable) -> AffineMap:
 
 
 def create_generic_func(
-    ctx,
-    name,
-    stream_func_arg_attrs,
-    grid,
-    block_factors,
-    indexing_maps,
-    iterator_types,
-    compiled_threads,
-    num_outs,
-    user_args,
-    tiled,
-    memory_space,
+    ctx: Context,
+    name: str,
+    stream_func_arg_attrs: List[Attribute],
+    grid: List[int],
+    block_factors: List[int],
+    indexing_maps: List[Callable],
+    iterator_types: List[str],
+    compiled_threads: List[Any],
+    num_outs: int,
+    user_args: List[Any],
+    tiled: bool,
+    memory_space: str,
 ):
     """
     Create a D2M generic function from compiled threads.
