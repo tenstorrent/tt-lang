@@ -21,6 +21,48 @@ from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
 
 
+def create_tensor_type(
+    ctx: Context,
+    arg: Any,
+    grid: List[int],
+    tiled: bool,
+    memory_space: str,
+) -> Type:
+    """
+    Create a RankedTensorType for a kernel argument.
+
+    Args:
+        ctx: MLIR context
+        arg: Tensor argument (must have .shape and .dtype attributes)
+        grid: Grid dimensions
+        tiled: Whether to use tiled layout with TileType
+        memory_space: "L1" or "DRAM"
+
+    Returns:
+        RankedTensorType with appropriate layout and element type
+    """
+    shape = arg.shape
+    dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
+
+    layout = create_metal_layout(
+        ctx,
+        MetalLayoutConfig(
+            logical_shape=shape, grid=grid, tiled=tiled, memory_space=memory_space
+        ),
+    )
+    tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
+    device_shape = compute_device_shape(layout, grid, shape, tile_shape)
+
+    ttcore_dtype = torch_dtype_to_ttcore_datatype(arg.dtype)
+    element_type = (
+        ttcore.ir.TileType.get(ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype)
+        if tiled
+        else dtype
+    )
+
+    return RankedTensorType.get(device_shape, element_type, layout)
+
+
 def affine_map_from_lambda(fn: Callable) -> AffineMap:
     """
     Convert a Python lambda function to an MLIR AffineMap.
@@ -112,28 +154,7 @@ def create_generic_func(
 
     ordered_tensor_args = []
     for arg in user_args:
-        shape = arg.shape
-        dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
-
-        layout = create_metal_layout(
-            ctx,
-            MetalLayoutConfig(
-                logical_shape=shape, grid=grid, tiled=tiled, memory_space=memory_space
-            ),
-        )
-        tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
-        device_shape = compute_device_shape(layout, grid, shape, tile_shape)
-
-        ttcore_dtype = torch_dtype_to_ttcore_datatype(arg.dtype)
-        element_type = (
-            ttcore.ir.TileType.get(
-                ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
-            )
-            if tiled
-            else dtype
-        )
-
-        tensor_type = RankedTensorType.get(device_shape, element_type, layout)
+        tensor_type = create_tensor_type(ctx, arg, grid, tiled, memory_space)
         ordered_tensor_args.append(tensor_type)
 
     arg_types = ordered_tensor_args

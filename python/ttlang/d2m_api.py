@@ -344,8 +344,6 @@ def pykernel_gen(
     indexing_maps: Optional[List[Callable]] = None,
     iterator_types: Optional[List[str]] = None,
     num_outs: int = 1,
-    kernel_source_dir: Optional[str] = None,
-    kernel_source_mode: Optional[str] = None,
     memory_space: str = "L1",
     tiled: bool = True,
 ) -> Callable:
@@ -361,8 +359,6 @@ def pykernel_gen(
         indexing_maps: List of lambda functions for indexing (optional)
         iterator_types: List of iterator types ("parallel", "reduction")
         num_outs: Number of output arguments
-        kernel_source_dir: Directory for kernel source files
-        kernel_source_mode: "store" or "load" for kernel sources
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
 

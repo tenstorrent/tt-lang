@@ -4,13 +4,13 @@
 
 """Layout creation and manipulation utilities for tensor distribution across cores."""
 
-from typing import List, Optional
+from typing import List, Optional, Any
 from dataclasses import dataclass
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m
 
-from .constants import DEFAULT_TILE_SHAPE, SUPPORTED_MEMORY_SPACES
+from .constants import DEFAULT_TILE_SHAPE, DEFAULT_TENSOR_MEMORY_LAYOUT
 
 
 @dataclass(frozen=True)
@@ -52,10 +52,10 @@ def compute_device_shape(
         layout: MetalLayoutAttr containing layout information
         grid: Grid dimensions [grid_y, grid_x]
         logical_shape: Logical tensor shape in elements
-        tile_shape: Tile dimensions (default [32, 32])
+        tile_shape: Tile dimensions in elements (default [32, 32])
 
     Returns:
-        Device shape as list of integers
+        Physical device shape as list of integers [grid_y, grid_x, shard_y, shard_x]
 
     Raises:
         RuntimeError: If layout cannot be downcast to MetalLayoutAttr
@@ -101,7 +101,7 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
         )
 
     if config.sharded:
-        memory_layout = ttcore.TensorMemoryLayout.Sharded
+        memory_layout = DEFAULT_TENSOR_MEMORY_LAYOUT
     else:
         memory_layout = ttcore.TensorMemoryLayout.Interleaved
 
@@ -117,13 +117,15 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
         config.grid,
         int(ttcore.OOBVal.Undef),
         int(mem_space),
-        int(ttcore.TensorMemoryLayout.Sharded),
+        int(DEFAULT_TENSOR_MEMORY_LAYOUT),
     )
 
     return layout
 
 
-def create_stream_layout_for_input(ctx, input_arg, config: StreamLayoutConfig):
+def create_stream_layout_for_input(
+    ctx: Context, input_arg: Any, config: StreamLayoutConfig
+):
     """
     Create a stream_layout op for the given input argument.
 
@@ -182,7 +184,7 @@ def create_stream_layout_for_input(ctx, input_arg, config: StreamLayoutConfig):
             if config.memory_space == "L1"
             else ttcore.MemorySpace.DeviceDRAM
         ),
-        int(ttcore.TensorMemoryLayout.Sharded),
+        int(DEFAULT_TENSOR_MEMORY_LAYOUT),
         identity_map,
     )
     result_type = RankedTensorType.get(device_shape, element_type, result_layout)
