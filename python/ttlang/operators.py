@@ -4,7 +4,9 @@
 
 """DSL operators for tensor operations, DMA, and memory transactions."""
 
-from typing import List, Callable
+from __future__ import annotations
+
+from typing import List, Callable, Optional, Tuple, Union
 
 from ttmlir.ir import *
 from ttmlir.dialects import d2m, arith, linalg
@@ -12,15 +14,19 @@ from ttmlir.dialects import d2m, arith, linalg
 from ._src.d2m_ast import syntax
 from pykernel._src.utils import _asindex
 
+# Type aliases for common patterns
+CoreCoordinate = Tuple[int, int]
+IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
+
 
 def _create_linalg_generic(
-    lhs,
-    rhs,
+    lhs: TensorBlock,
+    rhs: TensorBlock,
     output_shape: List[int],
     affine_maps: List[AffineMap],
     iterator_types: List[str],
     tile_op_builder: Callable,
-) -> "TensorBlock":
+) -> TensorBlock:
     """
     Create a linalg.generic operation with a D2M tile operation in the body.
 
@@ -87,8 +93,16 @@ class TensorBlock:
         self.shape = shape
         self.dtype = dtype
 
-    def __add__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Element-wise addition generating linalg.generic with d2m.tile_add."""
+    def __add__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """
+        Element-wise addition generating linalg.generic with d2m.tile_add.
+
+        Args:
+            rhs: Right operand tensor. Must have the same shape as self.
+
+        Returns:
+            Result tensor with the same shape as inputs.
+        """
         lhs = ast_self
         assert isinstance(lhs.type, RankedTensorType)
 
@@ -123,9 +137,40 @@ class TensorBlock:
         return arith.divf(ast_self, rhs)
 
     def __matmul__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Matrix multiplication generating linalg.generic with d2m.tile_matmul."""
+        """
+        Matrix multiplication generating linalg.generic with d2m.tile_matmul.
+
+        Args:
+            rhs: Right operand tensor. Shape must be compatible for matrix multiplication.
+                 For 2D: (M, K) @ (K, N) -> (M, N)
+                 Inner dimensions must match: lhs.shape[-1] == rhs.shape[-2]
+
+        Returns:
+            Result tensor with shape (..., M, N) where M = lhs.shape[-2], N = rhs.shape[-1]
+
+        Raises:
+            TypeError: If operands are not ranked tensors
+            ValueError: If ranks are < 2 or inner dimensions don't match
+        """
         lhs = ast_self
-        assert isinstance(lhs.type, RankedTensorType)
+
+        if not isinstance(lhs.type, RankedTensorType):
+            raise TypeError("lhs must be a ranked tensor")
+        if not isinstance(rhs.type, RankedTensorType):
+            raise TypeError("rhs must be a ranked tensor")
+
+        # Validate ranks and shapes for matmul
+        lhs_rank = len(lhs.type.shape)
+        rhs_rank = len(rhs.type.shape)
+        if lhs_rank < 2 or rhs_rank < 2:
+            raise ValueError(
+                f"matmul requires at least 2D tensors, got lhs rank {lhs_rank}, rhs rank {rhs_rank}"
+            )
+        if lhs.type.shape[-1] != rhs.type.shape[-2]:
+            raise ValueError(
+                f"matmul inner dimensions must match, got lhs[-1]={lhs.type.shape[-1]}, "
+                f"rhs[-2]={rhs.type.shape[-2]}"
+            )
 
         out_shape = list(lhs.type.shape)
         out_shape[-1] = rhs.type.shape[-1]
@@ -168,13 +213,18 @@ class MemTx:
     waited on to ensure DMA completion.
     """
 
-    def wait(ast_self):
+    def wait(ast_self: MemTx):
         """Block until the DMA operation completes."""
         return d2m.dma_wait(ast_self)
 
 
 @syntax("dma")
-def dma(src, dst, core=None, mcast=None) -> MemTx:
+def dma(
+    src: IndexedTensor,
+    dst: IndexedTensor,
+    core: Optional[CoreCoordinate] = None,
+    mcast: Optional[CoreCoordinate] = None,
+) -> MemTx:
     """
     Initiate an asynchronous DMA transfer.
 

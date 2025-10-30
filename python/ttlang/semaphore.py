@@ -4,6 +4,8 @@
 
 """Semaphore operations for multi-core synchronization."""
 
+from typing import Optional, Tuple
+
 from ttmlir.dialects import d2m
 
 from ._src.d2m_ast import syntax
@@ -19,7 +21,12 @@ class Semaphore:
     and wait operations with optional multicast.
     """
 
-    def set(ast_self, value, core=None, mcast=None):
+    def set(
+        ast_self: "Semaphore",
+        value: int,
+        core: Optional[Tuple[int, int]] = None,
+        mcast: Optional[Tuple[int, int]] = None,
+    ):
         """
         Set semaphore value, optionally multicasting to other cores.
 
@@ -32,7 +39,11 @@ class Semaphore:
             ast_self, _asindex(value), _asindex(core), _asindex(mcast)
         )
 
-    def inc(ast_self, value, core=None):
+    def inc(
+        ast_self: "Semaphore",
+        value: int,
+        core: Optional[Tuple[int, int]] = None,
+    ):
         """
         Increment semaphore value on a remote core.
 
@@ -44,7 +55,11 @@ class Semaphore:
             ast_self, _asindex(value), _asindex(core), _asindex(None)
         )
 
-    def wait(ast_self, value, reset=None):
+    def wait(
+        ast_self: "Semaphore",
+        value: int,
+        reset: Optional[int] = None,
+    ):
         """
         Wait for semaphore to reach a value, optionally resetting after.
 

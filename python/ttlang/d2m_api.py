@@ -75,7 +75,6 @@ def _collect_captures(f: Callable) -> Dict[str, Union[int, Stream]]:
 def _compile(
     kernel_type: Optional[str] = None,
     verbose: bool = False,
-    optimize: bool = False,
 ) -> Callable:
     """
     Internal decorator for compiling kernel threads.
@@ -83,7 +82,6 @@ def _compile(
     Args:
         kernel_type: Type of kernel ("compute" or "datamovement")
         verbose: Enable verbose compilation output
-        optimize: Enable optimization passes
 
     Returns:
         Decorator function for kernel compilation
