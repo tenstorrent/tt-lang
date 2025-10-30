@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 from ttlang.d2m_api import *
-from utils import assert_pcc
+from utils import assert_allclose
 import torch
 
 
@@ -131,5 +131,5 @@ out = torch.zeros(128, 128)
 matmul(lhs, rhs, out)
 
 golden = lhs @ rhs
-assert_pcc(golden, out)
+assert_allclose(out, golden, rtol=1e-2, atol=1e-4)
 print("Passed")
