@@ -17,6 +17,7 @@ from pykernel._src.kernel_ast import TTCompilerBase
 from .stream import Stream
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
+from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,8 @@ class D2MGenericCompiler(TTCompilerBase):
                 raise TypeError("All kernel arguments must have a type annotation")
             elif arg.annotation.id == "TensorBlock":
                 shape = self.args[i].shape
-                dtype = F32Type.get(self.ctx)
+                # Get dtype from tensor argument
+                dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
 
                 layout = create_metal_layout(
                     self.ctx,
@@ -84,8 +86,10 @@ class D2MGenericCompiler(TTCompilerBase):
                     layout, self.context.grid, shape, tile_shape
                 )
 
+                # Convert torch dtype to ttcore.DataType for TileType
+                ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
                 element_type = (
-                    ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore.DataType.Float32)
+                    ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore_dtype)
                     if self.context.tiled
                     else dtype
                 )
@@ -111,8 +115,10 @@ class D2MGenericCompiler(TTCompilerBase):
 
                 shard_shape = device_shape[len(device_shape) // 2 :]
 
+                # Convert torch dtype to ttcore.DataType for TileType
+                ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
                 element_type = (
-                    ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore.DataType.Float32)
+                    ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore_dtype)
                     if self.context.tiled
                     else dtype
                 )
