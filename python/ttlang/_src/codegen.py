@@ -195,8 +195,9 @@ def create_generic_func(
         )
         for compiled_thread, generic_region in zip(compiled_threads, generic.regions):
             compiled_thread.func_entry.entry_block.append_to(generic_region)
-            if generic_region.blocks[0].operations[-1].name == "func.return":
-                generic_region.blocks[0].operations[-1].erase()
+            last_op = generic_region.blocks[0].operations[-1]
+            if isinstance(last_op, func.ReturnOp):
+                last_op.erase()
         func.ReturnOp(generic.results)
 
 
