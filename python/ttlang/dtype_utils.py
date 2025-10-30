@@ -4,10 +4,7 @@
 
 """Data type conversion utilities between PyTorch and runtime types."""
 
-try:
-    import torch
-except ModuleNotFoundError:
-    torch = None
+import torch
 
 try:
     from _ttmlir_runtime import runtime
@@ -116,9 +113,6 @@ def torch_dtype_to_mlir_type(torch_dtype, ctx):
     Raises:
         ValueError: If dtype is not supported
     """
-    if torch is None:
-        raise RuntimeError("torch module not available")
-
     if torch_dtype == torch.float32:
         return ir.F32Type.get(ctx)
     if torch_dtype == torch.float16:
@@ -162,9 +156,6 @@ def torch_dtype_to_ttcore_datatype(torch_dtype):
     Raises:
         ValueError: If dtype is not supported
     """
-    if torch is None:
-        raise RuntimeError("torch module not available")
-
     if torch_dtype == torch.float32:
         return ttcore.DataType.Float32
     if torch_dtype == torch.float16:
