@@ -8,7 +8,6 @@ from typing import List, Callable
 
 from ttmlir.ir import *
 from ttmlir.dialects import d2m, arith, linalg
-from ttmlir.dialects._linalg_ops_gen import GenericOp
 
 from ._src.d2m_ast import syntax
 from pykernel._src.utils import _asindex
@@ -55,7 +54,7 @@ def _create_linalg_generic(
     num_inputs = len(affine_maps) - 1
     inputs = [lhs, rhs] if num_inputs == 2 else [lhs] + [rhs] * (num_inputs - 1)
 
-    generic_op = GenericOp(
+    generic_op = linalg.GenericOp(
         result_tensors=[out_type],
         inputs=inputs[:num_inputs],
         outputs=[empty],

@@ -18,6 +18,7 @@ from .stream import Stream
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
 from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
+from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ class D2MGenericCompiler(TTCompilerBase):
                         memory_space=self.context.memory_space,
                     ),
                 )
-                tile_shape = [32, 32] if self.context.tiled else [1, 1]
+                tile_shape = DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
                 device_shape = compute_device_shape(
                     layout, self.context.grid, shape, tile_shape
                 )
@@ -89,7 +90,9 @@ class D2MGenericCompiler(TTCompilerBase):
                 # Convert torch dtype to ttcore.DataType for TileType
                 ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
                 element_type = (
-                    ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore_dtype)
+                    ttcore.ir.TileType.get(
+                        self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
+                    )
                     if self.context.tiled
                     else dtype
                 )
@@ -108,7 +111,7 @@ class D2MGenericCompiler(TTCompilerBase):
                         memory_space=self.context.memory_space,
                     ),
                 )
-                tile_shape = [32, 32] if self.context.tiled else [1, 1]
+                tile_shape = DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
                 device_shape = compute_device_shape(
                     layout, self.context.grid, shape, tile_shape
                 )
@@ -118,7 +121,9 @@ class D2MGenericCompiler(TTCompilerBase):
                 # Convert torch dtype to ttcore.DataType for TileType
                 ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
                 element_type = (
-                    ttcore.ir.TileType.get(self.ctx, 32, 32, ttcore_dtype)
+                    ttcore.ir.TileType.get(
+                        self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
+                    )
                     if self.context.tiled
                     else dtype
                 )
@@ -171,17 +176,23 @@ class D2MGenericCompiler(TTCompilerBase):
                                 memory_space=self.context.memory_space,
                             ),
                         )
-                        tile_shape = [32, 32] if self.context.tiled else [1, 1]
+                        tile_shape = DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
                         device_shape = compute_device_shape(
                             layout, self.context.grid, val.shape, tile_shape
                         )
 
+                        # Get dtype from Stream
+                        stream_dtype = torch_dtype_to_mlir_type(val.dtype, self.ctx)
+                        stream_ttcore_dtype = torch_dtype_to_ttcore_datatype(val.dtype)
                         element_type = (
                             ttcore.ir.TileType.get(
-                                self.ctx, 32, 32, ttcore.DataType.Float32
+                                self.ctx,
+                                DEFAULT_TILE_SIZE,
+                                DEFAULT_TILE_SIZE,
+                                stream_ttcore_dtype,
                             )
                             if self.context.tiled
-                            else F32Type.get(self.ctx)
+                            else stream_dtype
                         )
                         tensor = RankedTensorType.get(
                             device_shape, element_type, layout

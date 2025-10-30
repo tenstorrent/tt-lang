@@ -55,4 +55,4 @@ test/lit.site.cfg.py
 
 # Pykernel Artifacts
 generated/pykernels/*
-test/temp/
+**/temp/
