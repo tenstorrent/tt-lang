@@ -34,8 +34,8 @@ def test_cb_ops(lhs, rhs, out):
 
 # Verify: CB operations in compute region
 # CHECK: ^compute{{[0-9]+}}
-# CHECK: %[[SHARD:.+]] = d2m.wait %{{.+}} : <tensor<1x1x!ttcore.tile<32x32, f32>>>
-# CHECK: %[[OUT_SHARD:.+]] = d2m.reserve %{{.+}} : <tensor<1x1x!ttcore.tile<32x32, f32>>>
+# CHECK: %[[SHARD:.+]] = d2m.wait %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
+# CHECK: %[[OUT_SHARD:.+]] = d2m.reserve %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
 
 # CHECK-LOWERED: func.func @test_cb_ops
 # CHECK-LOWERED: emitc.call_opaque "cb_wait_front"

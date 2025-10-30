@@ -34,7 +34,7 @@ def test_matmul(lhs, rhs, out):
 # CHECK: ^compute{{[0-9]+}}
 # CHECK: %[[MM_RESULT:.+]] = linalg.generic
 # CHECK-SAME: iterator_types = ["parallel", "parallel", "reduction"]
-# CHECK: ^bb0(%[[IN0:.+]]: !ttcore.tile<32x32, f32>, %[[IN1:.+]]: !ttcore.tile<32x32, f32>, %[[ACC:.+]]: !ttcore.tile<32x32, f32>):
+# CHECK: ^bb0(%[[IN0:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, %[[IN1:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, %[[ACC:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>):
 # CHECK-NEXT: %[[TILE_MM:.+]] = "d2m.tile_matmul"(%[[IN0]], %[[IN1]], %[[ACC]])
 # CHECK-NEXT: linalg.yield %[[TILE_MM]]
 

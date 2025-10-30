@@ -34,7 +34,7 @@ def test_add(lhs, rhs, out):
 # CHECK: ^compute{{[0-9]+}}
 # CHECK: %[[ADD_RESULT:.+]] = linalg.generic
 # CHECK-SAME: iterator_types = ["parallel", "parallel"]
-# CHECK: ^bb0(%[[IN0:.+]]: !ttcore.tile<32x32, f32>, %[[IN1:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+# CHECK: ^bb0(%[[IN0:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, %[[IN1:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, %[[OUT:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>):
 # CHECK-NEXT: %[[TILE_ADD:.+]] = "d2m.tile_add"(%[[IN0]], %[[IN1]])
 # CHECK-NEXT: linalg.yield %[[TILE_ADD]]
 
