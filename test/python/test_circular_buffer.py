@@ -11,10 +11,13 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_cb_ops(lhs, rhs, out):
     @compute()
-    async def compute_thread(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def compute_thread(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         # Verify: CB.pop() generates d2m.wait
         shard = lhs_cb.pop()
         shard2 = rhs_cb.pop()
@@ -25,10 +28,13 @@ def test_cb_ops(lhs, rhs, out):
         out_cb.pop()
 
     @datamovement()
-    async def dm_thread(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_thread(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         pass
 
     return Program(compute_thread, dm_thread)(lhs, rhs, out)
+
 
 # CHECK: func.func @test_cb_ops
 

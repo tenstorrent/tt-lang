@@ -15,10 +15,7 @@ ctx = Context()
 
 # Test: Create MetalLayoutConfig with L1 memory space
 config = MetalLayoutConfig(
-    logical_shape=[128, 128],
-    grid=[2, 2],
-    tiled=True,
-    memory_space="L1"
+    logical_shape=[128, 128], grid=[2, 2], tiled=True, memory_space="L1"
 )
 
 layout = create_metal_layout(ctx, config)
@@ -33,10 +30,7 @@ print(f"Device shape: {device_shape}")
 
 # Test: DRAM memory space
 config_dram = MetalLayoutConfig(
-    logical_shape=[64, 64],
-    grid=[1, 1],
-    tiled=True,
-    memory_space="DRAM"
+    logical_shape=[64, 64], grid=[1, 1], tiled=True, memory_space="DRAM"
 )
 layout_dram = create_metal_layout(ctx, config_dram)
 print(layout_dram)

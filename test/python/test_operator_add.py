@@ -11,10 +11,13 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_add(lhs, rhs, out):
     @compute()
-    async def add_compute(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def add_compute(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         l = lhs_cb.pop()
         r = rhs_cb.pop()
         o = out_cb.reserve()
@@ -23,10 +26,13 @@ def test_add(lhs, rhs, out):
         out_cb.pop()
 
     @datamovement()
-    async def dm(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         pass
 
     return Program(add_compute, dm)(lhs, rhs, out)
+
 
 # CHECK: func.func @test_add
 

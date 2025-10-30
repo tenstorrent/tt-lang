@@ -11,12 +11,15 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_dma_ops(lhs, rhs, out):
     lhs_stream = Stream(lhs)
 
     @compute()
-    async def comp(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def comp(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         # TODO(#11): Addition required to create linalg.generic with tile ops.
         # Can simplify to just CB operations once compiler handles regions without tile ops.
         lhs_shard = lhs_cb.pop()
@@ -27,7 +30,9 @@ def test_dma_ops(lhs, rhs, out):
         out_cb.pop()
 
     @datamovement()
-    async def dm0(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm0(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         shard = lhs_cb.reserve()
         # Verify: dma() generates d2m.dma and returns MemTx
         tx = dma(lhs_stream[0, 0], shard)
@@ -35,10 +40,13 @@ def test_dma_ops(lhs, rhs, out):
         tx.wait()
 
     @datamovement()
-    async def dm1(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm1(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         pass
 
     return Program(comp, dm0, dm1)(lhs, rhs, out)
+
 
 # CHECK-LABEL: func.func @test_dma_ops
 
