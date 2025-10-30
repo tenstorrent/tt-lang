@@ -243,9 +243,9 @@ shard = cb.pop()               # Blocks if empty
 result = compute(shard)
 
 # Output pattern (compute writes)
-out_shard = out_cb.reserve()
-out_shard.store(result)
-out_cb.pop()  # Compute MUST pop its outputs
+out_shard = out_cb.reserve()      # Get space to write
+out_shard.store(result)           # Write data
+out_cb.pop()                      # Signal "data ready" for consumption
 ```
 
 **Thread Communication via Circular Buffers**
@@ -280,6 +280,94 @@ Blocking is implicit:
 Only tx.wait() is explicit for DMA completion.
 The CB ensures synchronization automatically.
 ```
+
+**CB Lowering Pipeline**
+
+Circular buffers transform through four levels: Python DSL, D2M dialect, TTKernel dialect, and C++ code generation.
+
+```
+Python DSL
+  input_cb.pop()
+    ↓
+D2M Dialect
+  d2m.wait %cb : !d2m.cb<memref<...>>
+    ↓
+TTKernel Dialect
+  ttkernel.cb_wait_front(%cb, %numPages) : !ttkernel.cb<4, tile>
+  ttkernel.cb_pop_front(%cb, %numPages)   (at block end)
+    ↓
+EmitC
+  emitc.call_opaque "cb_wait_front"(%cb, %numPages) : (::tt::CB, i32)
+  emitc.call_opaque "cb_pop_front"(%cb, %numPages)
+    ↓
+C++ Code
+  cb_wait_front(cb, numPages);
+  // ... computation ...
+  cb_pop_front(cb, numPages);
+    ↓
+tt-metal Runtime
+  Hardware semaphores + L1 buffer management
+```
+
+Single D2M operation expands into acquire/release pair at TTKernel level.
+
+| D2M Operation | TTKernel Acquire | TTKernel Release |
+|---------------|------------------|------------------|
+| `d2m.wait` (consumer) | `cb_wait_front` | `cb_pop_front` |
+| `d2m.reserve` (producer) | `cb_reserve_back` | `cb_push_back` |
+
+The `D2MCBOpRewriter` template converts:
+- `d2m.wait` → `ttkernel.cb_wait_front` + `ttkernel.cb_pop_front`
+- `d2m.reserve` → `ttkernel.cb_reserve_back` + `ttkernel.cb_push_back`
+
+**CB Operation Asymmetry**
+
+The same `pop()` method generates `d2m.wait` in both cases, but semantically:
+- On input CB: "wait for producer to provide data"
+- On output CB: "wait for consumer to consume data" (signal production complete)
+
+**Input CB (datamovement writes, compute reads):**
+
+```python
+# Datamovement (producer):
+shard = input_cb.reserve()        # Get space to write
+tx = dma(stream[idx], shard)      # Write data
+tx.wait()
+# Implicit: signal "data ready" at block end
+
+# Compute (consumer):
+shard = input_cb.pop()            # Wait for data + get access
+# ... use shard ...
+# Implicit: signal "consumed" at block end
+```
+
+**Output CB (compute writes, datamovement reads):**
+
+```python
+# Compute (producer):
+out_shard = out_cb.reserve()      # Get space to write
+out_shard.store(result)           # Write data
+out_cb.pop()                      # ⚠️ Signal "data ready" (NOT consuming!)
+
+# Datamovement (consumer):
+shard = out_cb.pop()              # Wait for data + get access
+tx = dma(shard, stream[idx])      # Read data
+tx.wait()
+# Implicit: signal "consumed" at block end
+```
+
+So `pop()` has two different semantic meanings depending on which thread uses it and on which CB. For output CBs, compute needs two operations (`reserve()` + `pop()`) while datamovement only needs one (`pop()`). The second `pop()` in compute ensures the release happens at the right point (immediately after writing), not at the end of the entire block.
+
+**Operation Summary Table:**
+
+| Role | Thread | Input CB | Output CB |
+|------|--------|----------|-----------|
+| Producer | Datamovement | `reserve()` → write → implicit | - |
+| Producer | Compute | - | `reserve()` → write → `pop()` |
+| Consumer | Compute | `pop()` → use → implicit | - |
+| Consumer | Datamovement | - | `pop()` → read → implicit |
+
+Both `pop()` and `reserve()` return memref views (zero-copy). DMA operations perform the actual data movement to/from these views.
 
 **Streams**
 
