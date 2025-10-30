@@ -158,6 +158,7 @@ def create_generic_func(
         ordered_tensor_args.append(tensor_type)
 
     arg_types = ordered_tensor_args
+    # Currently only single output tensor is supported (num_outs=1 enforced in pykernel_gen)
     ret_type = ordered_tensor_args[-1]
     func_entry = func.FuncOp(name=name, type=(arg_types, [ret_type]))
     func_entry.arg_attrs = stream_func_arg_attrs
