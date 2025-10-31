@@ -4,15 +4,13 @@
 
 import ast
 import inspect
-from typing import Dict, Any, Optional, List, Set
+from typing import List, Set
 from dataclasses import dataclass
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func, arith
-from ttmlir.dialects._ods_common import get_default_loc_context
 
 from pykernel._src.kernel_types import *
-from pykernel._src.utils import _discover_dialect_ops, _cast
 from pykernel._src.kernel_ast import TTCompilerBase
 from .stream import Stream
 

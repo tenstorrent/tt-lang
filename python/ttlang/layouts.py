@@ -117,7 +117,7 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
         config.grid,
         int(ttcore.OOBVal.Undef),
         int(mem_space),
-        int(DEFAULT_TENSOR_MEMORY_LAYOUT),
+        int(memory_layout),
     )
 
     return layout
