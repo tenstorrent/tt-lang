@@ -114,7 +114,6 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
     layout = ttcore.ir.MetalLayoutAttr.get(
         ctx,
         config.logical_shape,
-        config.grid,
         int(ttcore.OOBVal.Undef),
         int(mem_space),
         int(memory_layout),
@@ -177,7 +176,6 @@ def create_stream_layout_for_input(
     result_layout = ttcore.ir.MetalLayoutAttr.get(
         ctx,
         config.logical_shape,
-        config.grid,
         int(ttcore.OOBVal.Undef),
         int(
             ttcore.MemorySpace.DeviceL1
