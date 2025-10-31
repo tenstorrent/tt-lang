@@ -10,7 +10,7 @@ import ast
 import inspect
 import functools
 import os
-from typing import List, Optional, Callable, Dict, Any, Union
+from typing import List, Optional, Callable, Dict, Union
 
 try:
     import torch
@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
-from ttmlir.dialects import ttcore, d2m, func
+from ttmlir.dialects import ttcore
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
 from pykernel._src.utils import _cleanup_source_code
@@ -314,7 +314,8 @@ def _compile_and_run_kernel(
             from ttmlir._mlir_libs._ttmlir import enable_pretty_stack_traces
 
             enable_pretty_stack_traces(pm._CAPIPtr)
-        except Exception as e:
+        except Exception:
+            # Pretty stack traces are optional, silently continue if unavailable
             pass
 
         if os.environ.get("TTLANG_VERBOSE_PASSES"):
@@ -335,7 +336,7 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
 
-        bin = ttmetal_to_flatbuffer_bin(module)
+        ttmetal_to_flatbuffer_bin(module)
 
 
 def pykernel_gen(
