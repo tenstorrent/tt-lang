@@ -32,11 +32,11 @@ class Stream:
         Raises:
             AssertionError: If tensor is not a top-level argument or if num_buffers is set
         """
-        assert hasattr(
-            tensor, "_global_name"
-        ), "Stream must be created from a top level tensor argument"
+        if not hasattr(tensor, "_global_name"):
+            raise ValueError("Stream must be created from a top level tensor argument")
         self.name = tensor._global_name
         self.shape = tensor.shape
         self.dtype = tensor.dtype
-        assert num_buffers is None, "Unsupported"
+        if num_buffers is not None:
+            raise NotImplementedError("Multi-buffering (num_buffers) is not yet supported")
         self.num_buffers = num_buffers

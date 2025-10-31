@@ -107,7 +107,8 @@ class TensorBlock:
             Result tensor with the same shape as inputs.
         """
         lhs = ast_self
-        assert isinstance(lhs.type, RankedTensorType)
+        if not isinstance(lhs.type, RankedTensorType):
+            raise TypeError(f"Expected RankedTensorType, got {type(lhs.type).__name__}")
 
         ctx = lhs.type.context
         rank = len(lhs.type.shape)
