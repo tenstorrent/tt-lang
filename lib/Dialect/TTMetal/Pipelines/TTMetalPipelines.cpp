@@ -217,6 +217,75 @@ void createTTIRToTTMetalPipeline(OpPassManager &pm,
   ttir::createTTIRToCPUPipeline(pm, linalgToLLVMOptions);
 }
 
+void createD2MToTTMetalPipeline(OpPassManager &pm,
+                                const TTIRToTTMetalPipelineOptions &options) {
+  pm.addPass(d2m::createD2MLowerToLayout());
+
+  createTTIRBufferizationPipeline(pm, options);
+
+  d2m::D2MAllocateOptions allocateOptions;
+  {
+    allocateOptions.numStreamBuffers = options.numStreamBuffers;
+    allocateOptions.allowL1OutputSpilling = options.allowL1OutputSpilling;
+  }
+  pm.addPass(d2m::createD2MAllocate(allocateOptions));
+
+  // Apply tiling and register access transformation passes.
+  d2m::D2MGenericTileComputeLoopsOptions tileComputeLoopsOptions;
+  {
+    tileComputeLoopsOptions.maxDstPhysicalSizeTiles =
+        options.maxDstPhysicalSizeTiles;
+  }
+  pm.addPass(d2m::createD2MGenericTileComputeLoops(tileComputeLoopsOptions));
+  d2m::D2MInsertDstRegisterAccessOptions insertDstRegisterAccessOptions;
+  {
+    insertDstRegisterAccessOptions.useTileMatmul = options.useTileMatmul;
+    insertDstRegisterAccessOptions.maxDstPhysicalSizeTiles =
+        options.maxDstPhysicalSizeTiles;
+  }
+  pm.addPass(
+      d2m::createD2MInsertDstRegisterAccess(insertDstRegisterAccessOptions));
+
+  // Canonicalize with normal simplification mode.
+  pm.addPass(createCanonicalizerPassWithOptions(options));
+
+  // Lower affine operations and linearize memref types.
+  pm.addPass(mlir::createLowerAffinePass());
+  pm.addPass(d2m::createD2MGenericLinearizeMemref());
+  pm.addPass(mlir::createLowerAffinePass());
+
+  // Lower DMAs and generate computation loops.
+  pm.addPass(d2m::createD2MGenericLowerDMAs());
+  pm.addPass(d2m::createD2MGenericHWThreadSelection());
+  pm.addPass(d2m::createD2MGenericGenerateLoops());
+
+  // Canonicalize with aggressive simplification mode.
+  pm.addPass(createCanonicalizerPassWithOptions(options));
+
+  pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+  pm.addPass(mlir::createSCCPPass());
+  pm.addPass(mlir::createCSEPass());
+
+  pm.addPass(d2m::createD2MGenericRegionsToFuncs());
+
+  d2m::ConvertD2MToTTKernelOptions D2MToTTKernelOptions;
+  { D2MToTTKernelOptions.ttnnMode = options.ttnnMode; }
+  pm.addPass(::mlir::tt::createConvertD2MToTTKernelPass(D2MToTTKernelOptions));
+
+  // Apply TTKernel control transformations and additional optimizations.
+  pm.addPass(ttkernel::createTTKernelControlDstSection());
+  pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+  pm.addPass(mlir::createSCCPPass());
+  pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::arith::createIntRangeOptimizationsPass());
+
+  d2m::ConvertD2MToTTMetalOptions d2mToTTMetalOptions;
+  { d2mToTTMetalOptions.mathFidelity = options.mathFidelity; }
+  pm.addPass(::mlir::tt::createConvertD2MToTTMetalPass(d2mToTTMetalOptions));
+
+  pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
+}
+
 //===----------------------------------------------------------------------===//
 // Pipeline registration.
 //===----------------------------------------------------------------------===//
