@@ -1,39 +1,39 @@
 """
-Test suite for the Stream class with PyTorch tensors.
+Test suite for the TensorAccessor class with PyTorch tensors.
 """
 import pytest
 import torch
-from cbsim import Stream, IndexType, TILE_SIZE
+from cbsim import TensorAccessor, IndexType, TILE_SIZE
 
 
-class TestStream:
-    """Test the Stream class functionality."""
+class TestTensorAccessor:
+    """Test the TensorAccessor class functionality."""
     
-    def test_stream_creation(self) -> None:
-        """Test creating a Stream with a properly sized tensor."""
+    def test_tensor_accessor_creation(self) -> None:
+        """Test creating a TensorAccessor with a properly sized tensor."""
         # Create a tensor that's a multiple of TILE_SIZE
         tensor = torch.randn(64, 64)  # type: ignore  # 2x2 tiles
-        stream = Stream(tensor, index_type=IndexType.TILE)
+        accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
         
-        assert stream.shape == (64, 64)
-        assert stream.get_tile_shape() == (2, 2)
-        assert stream.tile_size == TILE_SIZE
+        assert accessor.shape == (64, 64)
+        assert accessor.get_tile_shape() == (2, 2)
+        assert accessor.tile_size == TILE_SIZE
     
-    def test_stream_invalid_size(self) -> None:
-        """Test that Stream rejects tensors with invalid sizes."""
+    def test_tensor_accessor_invalid_size(self) -> None:
+        """Test that TensorAccessor rejects tensors with invalid sizes."""
         # Create tensor that's not a multiple of TILE_SIZE
         tensor = torch.randn(30, 30)  # type: ignore
         
         with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
-            Stream(tensor, index_type=IndexType.TILE)
+            TensorAccessor(tensor, index_type=IndexType.TILE)
     
-    def test_stream_invalid_index_type(self) -> None:
-        """Test that Stream only accepts IndexType.TILE."""
+    def test_tensor_accessor_invalid_index_type(self) -> None:
+        """Test that TensorAccessor only accepts IndexType.TILE."""
         tensor = torch.randn(64, 64)  # type: ignore
         
         # This should work
-        stream = Stream(tensor, index_type=IndexType.TILE)
-        assert stream.index_type == IndexType.TILE
+        accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
+        assert accessor.index_type == IndexType.TILE
     
     def test_single_tile_access(self) -> None:
         """Test accessing a single tile."""
@@ -44,7 +44,7 @@ class TestStream:
         # Fill tile (1,1) with twos
         tensor[32:64, 32:64] = 2.0
         
-        stream = Stream(tensor)
+        stream = TensorAccessor(tensor)
         
         # Access tile (0,0) using slice notation
         tile_00 = stream[slice(0, 1), slice(0, 1)]
@@ -66,7 +66,7 @@ class TestStream:
         # Fill second row of tiles with value 2  
         tensor[32:64, :] = 2.0
         
-        stream = Stream(tensor)
+        stream = TensorAccessor(tensor)
         
         # Access first row of tiles (slice 0:1, slice 0:4)
         first_row = stream[slice(0, 1), slice(0, 4)]
@@ -84,7 +84,7 @@ class TestStream:
         tensor = torch.zeros(64, 96)  # type: ignore  # 2x3 tiles
         tensor[32:64, 32:64] = 5.0  # Fill tile (1,1) with 5s
         
-        stream = Stream(tensor)
+        stream = TensorAccessor(tensor)
         
         # Access row 1, column 1 (single tile)
         tile = stream[slice(1, 2), slice(1, 2)]
@@ -101,7 +101,7 @@ class TestStream:
     def test_setitem(self) -> None:
         """Test setting values through tile indexing."""
         tensor = torch.zeros(64, 64)  # type: ignore
-        stream = Stream(tensor)
+        stream = TensorAccessor(tensor)
         
         # Set tile (0,0) to ones
         ones_tile = torch.ones(32, 32)  # type: ignore
@@ -122,7 +122,7 @@ class TestStream:
     def test_validate_tile_coordinates(self) -> None:
         """Test coordinate validation."""
         tensor = torch.zeros(64, 96)  # type: ignore  # 2x3 tiles
-        stream = Stream(tensor)
+        stream = TensorAccessor(tensor)
         
         # Valid coordinates
         assert stream.validate_tile_coordinates((slice(0, 1), slice(0, 1)))
@@ -137,7 +137,7 @@ class TestStream:
     def test_repr(self) -> None:
         """Test string representation."""
         tensor = torch.zeros(96, 64)  # type: ignore  # 3x2 tiles
-        stream = Stream(tensor)
+        stream = TensorAccessor(tensor)
         
         repr_str = repr(stream)
         assert "tensor_shape=torch.Size([96, 64])" in repr_str
@@ -150,7 +150,7 @@ class TestStream:
         a_in = torch.randn(128, 128)  # type: ignore  # 4x4 tiles
         
         # Create accessor like in colman_fused examples
-        a_accessor = Stream(a_in, index_type=IndexType.TILE)
+        a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
         
         # Test access patterns similar to the code
         rt = 0  # tile row
@@ -171,7 +171,7 @@ class TestStream:
     def test_slice_validation(self) -> None:
         """Test that only supported slice formats are accepted."""
         tensor = torch.zeros(64, 64)  # type: ignore
-        stream = Stream(tensor)
+        stream = TensorAccessor(tensor)
         
         # Valid slice should work
         result = stream[slice(0, 1), slice(0, 1)]
@@ -198,20 +198,20 @@ class TestStream:
         """Test that only 2D tensors are accepted."""
         # Valid 2D tensor should work
         tensor_2d = torch.randn(64, 64)  # type: ignore
-        stream = Stream(tensor_2d)
+        stream = TensorAccessor(tensor_2d)
         assert stream.get_tile_shape() == (2, 2)
         
         # 1D tensor should fail
-        with pytest.raises(ValueError, match="Stream only supports 2D tensors, got 1D tensor"):
+        with pytest.raises(ValueError, match="TensorAccessor only supports 2D tensors, got 1D tensor"):
             tensor_1d = torch.randn(64)  # type: ignore
-            Stream(tensor_1d)
+            TensorAccessor(tensor_1d)
         
         # 3D tensor should fail
-        with pytest.raises(ValueError, match="Stream only supports 2D tensors, got 3D tensor"):
+        with pytest.raises(ValueError, match="TensorAccessor only supports 2D tensors, got 3D tensor"):
             tensor_3d = torch.randn(2, 64, 64)  # type: ignore
-            Stream(tensor_3d)
+            TensorAccessor(tensor_3d)
         
         # 4D tensor should fail
-        with pytest.raises(ValueError, match="Stream only supports 2D tensors, got 4D tensor"):
+        with pytest.raises(ValueError, match="TensorAccessor only supports 2D tensors, got 4D tensor"):
             tensor_4d = torch.randn(2, 3, 64, 64)  # type: ignore
-            Stream(tensor_4d)
+            TensorAccessor(tensor_4d)

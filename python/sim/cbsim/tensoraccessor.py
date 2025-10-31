@@ -1,5 +1,5 @@
 """
-Stream implementation for PyTorch tensor access with tile-based indexing.
+TensorAccessor implementation for PyTorch tensor access with tile-based indexing.
 """
 
 from typing import Tuple
@@ -12,28 +12,28 @@ from .index_type import IndexType
 # support colman_fused_eltwise_bcast.py and colman_fused_muladd(2).py examples
 # from here:
 # https://github.com/tenstorrent/tt-mlir/commit/26df1ac1228c7a620981c81e6f1ded6a8cca6cdf#diff-ed227ec06efacdd4fad2d2a4f282428074d6e9b609ad1a2b948d804b1de85441R28
-class Stream:
+class TensorAccessor:
     """
-    A stream provides tile-indexed access to 2D PyTorch tensors.
+    A TensorAccessor provides tile-indexed access to 2D PyTorch tensors.
     
-    Streams abstract tensor access and enforce tile-aligned reads. All indexing
+    TensorAccessors abstract tensor access and enforce tile-aligned reads. All indexing
     is done in tile coordinates, where each tile is TILE_SIZE x TILE_SIZE
     (currently 32 x 32). Only 2D tensors are supported currently.
     
     Usage:
         tensor = torch.randn(128, 128)  # 4x4 tiles, must be 2D
-        stream = Stream(tensor, index_type=IndexType.TILE)
+        accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
         
         # Access using row and column slices in tile coordinates
-        tile_data = stream[slice(0, 1), slice(0, 1)]  # Single tile
-        row_data = stream[slice(0, 1), slice(1, 4)]   # Row of tiles
+        tile_data = accessor[slice(0, 1), slice(0, 1)]  # Single tile
+        row_data = accessor[slice(0, 1), slice(1, 4)]   # Row of tiles
     """
     
     def __init__(self, tensor: torch.Tensor, index_type: IndexType = IndexType.TILE):
-        """Initialize a stream with a PyTorch tensor.
+        """Initialize a TensorAccessor with a PyTorch tensor.
         
         Args:
-            tensor: The underlying PyTorch tensor to stream from (must be 2D)
+            tensor: The underlying PyTorch tensor to access (must be 2D)
             index_type: Must be IndexType.TILE (only supported mode)
             
         Raises:
@@ -45,7 +45,7 @@ class Stream:
             raise ValueError(f"Only IndexType.TILE is supported, got {index_type}")
         
         if len(tensor.shape) != 2:
-            raise ValueError(f"Stream only supports 2D tensors, got {len(tensor.shape)}D tensor with shape {tensor.shape}")
+            raise ValueError(f"TensorAccessor only supports 2D tensors, got {len(tensor.shape)}D tensor with shape {tensor.shape}")
             
         self.tensor = tensor
         self.index_type = index_type
@@ -93,8 +93,8 @@ class Stream:
             Tensor data corresponding to the requested tiles
             
         Examples:
-            stream[slice(0, 1), slice(0, 1)] -> Single tile at (0, 0)
-            stream[slice(0, 1), slice(1, 4)] -> First row, columns 1-3
+            accessor[slice(0, 1), slice(0, 1)] -> Single tile at (0, 0)
+            accessor[slice(0, 1), slice(1, 4)] -> First row, columns 1-3
         """
         row_slice, col_slice = key
         
@@ -170,12 +170,12 @@ class Stream:
     
     @property
     def tile_size(self) -> int:
-        """Get the tile size used by this stream."""
+        """Get the tile size used by this TensorAccessor."""
         return TILE_SIZE
     
     def __repr__(self) -> str:
         return (
-            f"Stream(tensor_shape={self.shape}, "
+            f"TensorAccessor(tensor_shape={self.shape}, "
             f"tile_shape={self.get_tile_shape()}, "
             f"tile_size={TILE_SIZE})"
         )

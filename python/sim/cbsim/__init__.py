@@ -20,7 +20,7 @@ from .api import (
     get_read_ptr,
     get_write_ptr,
 )
-from .stream import Stream
+from .tensoraccessor import TensorAccessor
 from .index_type import IndexType
 from .constants import TILE_SIZE
 
@@ -37,7 +37,7 @@ __all__ = [
     "cb_pop_front",
     "get_read_ptr",
     "get_write_ptr",
-    "Stream",
+    "TensorAccessor",
     "IndexType",
     "TILE_SIZE",
 ]

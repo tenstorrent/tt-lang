@@ -1,5 +1,5 @@
 """
-IndexType enumeration for specifying how streams index into tensors.
+IndexType enumeration for specifying how TensorAccessors index into tensors.
 """
 
 from enum import Enum, auto
@@ -7,7 +7,7 @@ from enum import Enum, auto
 
 class IndexType(Enum):
     """
-    Enumeration of indexing types for stream accessors.
+    Enumeration of indexing types for TensorAccessors.
     
     Currently only supports tile-based indexing.
     """
