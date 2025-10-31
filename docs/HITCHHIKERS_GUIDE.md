@@ -41,21 +41,6 @@ pytest test/python
 python test/pykernel/gen/custom_dm_matmul.py
 ```
 
-**Pretty Printer**
-
-Use `ttc` to view MLIR at any stage:
-
-```bash
-# Compile and view MLIR after each pass
-ttc test.mlir -ttir-to-ttmetal-frontend -print-ir-after-all
-
-# View final MLIR
-ttc test.mlir -ttir-to-ttmetal-backend
-
-# Get flatbuffer binary
-ttc test.mlir -ttir-to-ttmetal-backend -ttmetal-to-flatbuffer-bin -o out.ttb
-```
-
 **Mac Support**
 
 Compilation works on Mac. Runtime requires Linux with Tenstorrent hardware. Use SSH workflow: develop on Mac, test on Linux server.
