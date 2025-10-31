@@ -114,8 +114,13 @@ setup(
         "pydantic<3",
     ],
     # Include ttlang as top-level packages
-    packages=["ttlang"],
-    package_dir={"ttlang": ""},
+    packages=["ttlang", "ttlang._src", "sim", "sim.cbsim"],
+    package_dir={
+        "ttlang": "ttlang",
+        "ttlang._src": "ttlang/_src",
+        "sim": "sim",
+        "sim.cbsim": "sim/cbsim",
+    },
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
