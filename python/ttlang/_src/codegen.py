@@ -86,7 +86,7 @@ def affine_map_from_lambda(fn: Callable) -> AffineMap:
             self.name = name
 
     dims = tuple(
-        Dim(name, i) for name, i in enumerate(inspect.signature(fn).parameters)
+        Dim(i, name) for i, name in enumerate(inspect.signature(fn).parameters)
     )
     num_dims = len(dims)
     results = fn(*dims)
