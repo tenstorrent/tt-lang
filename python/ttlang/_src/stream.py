@@ -38,5 +38,7 @@ class Stream:
         self.shape = tensor.shape
         self.dtype = tensor.dtype
         if num_buffers is not None:
-            raise NotImplementedError("Multi-buffering (num_buffers) is not yet supported")
+            raise NotImplementedError(
+                "Multi-buffering (num_buffers) is not yet supported"
+            )
         self.num_buffers = num_buffers
