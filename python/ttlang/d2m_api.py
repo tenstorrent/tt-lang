@@ -399,11 +399,15 @@ def pykernel_gen(
             num_dims = list(tuple(inspect.signature(indexing_map).parameters))
             if iterator_types is not None:
                 if num_dims != len(iterator_types):
-                    raise ValueError(f"Number of dimensions ({num_dims}) must match iterator_types length ({len(iterator_types)})")
+                    raise ValueError(
+                        f"Number of dimensions ({num_dims}) must match iterator_types length ({len(iterator_types)})"
+                    )
             if block_factors is None:
                 block_factors = [1] * len(num_dims)
             if len(block_factors) != num_dims:
-                raise ValueError(f"block_factors length ({len(block_factors)}) must match number of dimensions ({num_dims})")
+                raise ValueError(
+                    f"block_factors length ({len(block_factors)}) must match number of dimensions ({num_dims})"
+                )
 
     if iterator_types is None:
         iterator_types = []
