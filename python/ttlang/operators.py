@@ -116,7 +116,7 @@ def _create_linalg_generic_unary(
         [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iterator_types]
     )
 
-    generic_op = GenericOp(
+    generic_op = linalg.GenericOp(
         result_tensors=[out_type],
         inputs=[inp],
         outputs=[empty],
@@ -177,19 +177,67 @@ class TensorBlock:
         )
 
     def __sub__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Element-wise subtraction."""
-        # TODO(#10): Generate linalg.generic with d2m.tile_sub instead of arith.subf
-        return arith.subf(ast_self, rhs)
+        """Element-wise subtraction generating linalg.generic with d2m.tile_sub."""
+        lhs = ast_self
+        if not isinstance(lhs.type, RankedTensorType):
+            raise TypeError(f"Expected RankedTensorType, got {type(lhs.type).__name__}")
+
+        ctx = lhs.type.context
+        rank = len(lhs.type.shape)
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        return _create_linalg_generic(
+            lhs,
+            rhs,
+            output_shape=list(lhs.type.shape),
+            affine_maps=[identity_map] * 3,
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, out_arg: d2m.tile_sub(
+                result_type, lhs_arg, rhs_arg
+            ),
+        )
 
     def __mul__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Element-wise multiplication."""
-        # TODO(#10): Generate linalg.generic with d2m.tile_mul instead of arith.mulf
-        return arith.mulf(ast_self, rhs)
+        """Element-wise multiplication generating linalg.generic with d2m.tile_mul."""
+        lhs = ast_self
+        if not isinstance(lhs.type, RankedTensorType):
+            raise TypeError(f"Expected RankedTensorType, got {type(lhs.type).__name__}")
+
+        ctx = lhs.type.context
+        rank = len(lhs.type.shape)
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        return _create_linalg_generic(
+            lhs,
+            rhs,
+            output_shape=list(lhs.type.shape),
+            affine_maps=[identity_map] * 3,
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, out_arg: d2m.tile_mul(
+                result_type, lhs_arg, rhs_arg
+            ),
+        )
 
     def __truediv__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Element-wise division."""
-        # TODO(#10): Generate linalg.generic with d2m.tile_div instead of arith.divf
-        return arith.divf(ast_self, rhs)
+        """Element-wise division generating linalg.generic with d2m.tile_div."""
+        lhs = ast_self
+        if not isinstance(lhs.type, RankedTensorType):
+            raise TypeError(f"Expected RankedTensorType, got {type(lhs.type).__name__}")
+
+        ctx = lhs.type.context
+        rank = len(lhs.type.shape)
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        return _create_linalg_generic(
+            lhs,
+            rhs,
+            output_shape=list(lhs.type.shape),
+            affine_maps=[identity_map] * 3,
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, out_arg: d2m.tile_div(
+                result_type, lhs_arg, rhs_arg
+            ),
+        )
 
     def __matmul__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """
@@ -302,6 +350,46 @@ class TensorBlock:
             affine_maps=[identity_map, identity_map],
             iterator_types=["parallel"] * rank,
             tile_op_builder=lambda result_type, inp_arg, out_arg: d2m.tile_exp(
+                result_type, inp_arg
+            ),
+        )
+
+    def recip(ast_self: "TensorBlock") -> "TensorBlock":
+        """Reciprocal operation (1/x) generating linalg.generic with d2m.tile_recip."""
+        inp = ast_self
+        assert isinstance(inp.type, RankedTensorType)
+
+        ctx = inp.type.context
+        rank = len(inp.type.shape)
+        out_shape = list(inp.type.shape)
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        return _create_linalg_generic_unary(
+            inp,
+            output_shape=out_shape,
+            affine_maps=[identity_map, identity_map],
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, inp_arg, out_arg: d2m.tile_recip(
+                result_type, inp_arg
+            ),
+        )
+
+    def sqrt(ast_self: "TensorBlock") -> "TensorBlock":
+        """Square root operation generating linalg.generic with d2m.tile_sqrt."""
+        inp = ast_self
+        assert isinstance(inp.type, RankedTensorType)
+
+        ctx = inp.type.context
+        rank = len(inp.type.shape)
+        out_shape = list(inp.type.shape)
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        return _create_linalg_generic_unary(
+            inp,
+            output_shape=out_shape,
+            affine_maps=[identity_map, identity_map],
+            iterator_types=["parallel"] * rank,
+            tile_op_builder=lambda result_type, inp_arg, out_arg: d2m.tile_sqrt(
                 result_type, inp_arg
             ),
         )
