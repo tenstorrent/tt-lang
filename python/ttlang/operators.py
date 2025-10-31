@@ -57,18 +57,21 @@ def _create_linalg_generic(
         [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iterator_types]
     )
 
+    # Linalg.generic: affine_maps = [input1_map, input2_map, output_map]
     num_inputs = len(affine_maps) - 1
-    inputs = [lhs, rhs] if num_inputs == 2 else [lhs] + [rhs] * (num_inputs - 1)
+    if num_inputs != 2:
+        raise ValueError(f"Function only supports 2 inputs, got {num_inputs}")
+    inputs = [lhs, rhs]
 
     generic_op = linalg.GenericOp(
         result_tensors=[out_type],
-        inputs=inputs[:num_inputs],
+        inputs=inputs,
         outputs=[empty],
         indexing_maps=affine_maps_attr,
         iterator_types=iter_types_attr,
     )
 
-    block_arg_types = [inp.type.element_type for inp in inputs[:num_inputs]] + [
+    block_arg_types = [inp.type.element_type for inp in inputs] + [
         empty.type.element_type
     ]
     block = generic_op.regions[0].blocks.append(*block_arg_types)
