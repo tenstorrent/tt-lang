@@ -23,6 +23,8 @@ from .api import (
 from .tensoraccessor import TensorAccessor
 from .index_type import IndexType
 from .constants import TILE_SIZE
+from .circular_buffer import CircularBuffer
+from .dma import dma, DMATransaction
 
 __all__ = [
     "CBStats",
@@ -40,4 +42,7 @@ __all__ = [
     "TensorAccessor",
     "IndexType",
     "TILE_SIZE",
+    "CircularBuffer",
+    "dma",
+    "DMATransaction",
 ]
