@@ -3,7 +3,7 @@ Test suite for the TensorAccessor class with PyTorch tensors.
 """
 import pytest
 import torch
-from cbsim import TensorAccessor, IndexType, TILE_SIZE
+from python.sim import TensorAccessor, IndexType, TILE_SIZE
 
 
 class TestTensorAccessor:

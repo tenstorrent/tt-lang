@@ -6,11 +6,11 @@ import pytest
 import threading
 import time
 from typing import List, Tuple, Optional
-from cbsim.errors import CBContractError
+from python.sim.errors import CBContractError
 
-from cbsim.api import CBAPI
-from cbsim.errors import CBContractError, CBTimeoutError
-from cbsim.typedefs import CBID
+from python.sim.api import CBAPI
+from python.sim.errors import CBContractError, CBTimeoutError
+from python.sim.typedefs import CBID
 
 
 # Pytest fixtures to reduce redundant setup code

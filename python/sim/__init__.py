@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-cbsim package: public API for the circular buffer simulator.
+sim package: simulation components for TT-Lang including circular buffers, tensors, and DMA operations.
 """
 
 from .api import (

@@ -7,8 +7,8 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 
 import pytest
 import torch
-from cbsim import CircularBuffer, TensorAccessor, IndexType, TILE_SIZE, dma
-from cbsim.errors import CBContractError
+from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SIZE, dma
+from python.sim.errors import CBContractError
 
 
 def test_circular_buffer_basic():
