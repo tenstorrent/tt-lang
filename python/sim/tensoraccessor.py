@@ -6,7 +6,7 @@ from typing import Tuple
 import torch
 
 from .constants import TILE_SIZE
-from .index_type import IndexType
+from .idxtype import IndexType
 
 # TODO: We only support 2D tensors and 32 x 32 tiles for now, just enough to 
 # support colman_fused_eltwise_bcast.py and colman_fused_muladd(2).py examples

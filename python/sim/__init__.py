@@ -22,9 +22,9 @@ from .cbapi import (
     get_write_ptr,
 )
 from .tensoraccessor import TensorAccessor
-from .index_type import IndexType
+from .idxtype import IndexType
 from .constants import TILE_SIZE
-from .circular_buffer import CircularBuffer
+from .cb import CircularBuffer
 from .dma import dma, DMATransaction
 
 __all__ = [
