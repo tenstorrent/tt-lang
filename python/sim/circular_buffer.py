@@ -11,7 +11,7 @@ from typing import Tuple, Optional
 import torch
 from threading import Lock
 
-from .api import CBAPI
+from .cbapi import CBAPI
 from .ringview import RingView
 from .typedefs import CBID, Size
 from .tensoraccessor import TensorAccessor

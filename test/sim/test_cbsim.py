@@ -8,7 +8,7 @@ import time
 from typing import List, Tuple, Optional
 from python.sim.errors import CBContractError
 
-from python.sim.api import CBAPI
+from python.sim.cbapi import CBAPI
 from python.sim.errors import CBContractError, CBTimeoutError
 from python.sim.typedefs import CBID
 

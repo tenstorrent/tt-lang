@@ -6,7 +6,8 @@
 sim package: simulation components for TT-Lang including circular buffers, tensors, and DMA operations.
 """
 
-from .api import (
+from .cbapi import (
+    CBAPI,
     CBStats,
     host_configure_cb,
     host_reset_cb,
@@ -27,6 +28,7 @@ from .circular_buffer import CircularBuffer
 from .dma import dma, DMATransaction
 
 __all__ = [
+    "CBAPI",
     "CBStats",
     "host_configure_cb",
     "host_reset_cb",
