@@ -134,6 +134,66 @@ def _create_linalg_generic_unary(
     return generic_op.result
 
 
+def _create_linalg_generic_ternary(
+    inp1,
+    inp2,
+    inp3,
+    output_shape: List[int],
+    affine_maps: List[AffineMap],
+    iterator_types: List[str],
+    tile_op_builder: Callable,
+) -> "TensorBlock":
+    """
+    Create a linalg.generic operation for ternary D2M tile operations (e.g., reductions).
+
+    Args:
+        inp1: First input operand
+        inp2: Second input operand
+        inp3: Third input operand (often accumulator for reductions)
+        output_shape: Shape of the output tensor
+        affine_maps: List of AffineMap objects [input1_map, input2_map, input3_map, output_map]
+        iterator_types: List of iterator type strings ("parallel" or "reduction")
+        tile_op_builder: Function that takes (result_type, arg1, arg2, arg3, output_arg) and creates tile op
+
+    Returns:
+        Result of the linalg.generic operation
+    """
+    ctx = inp1.type.context
+
+    out_type = RankedTensorType.get(
+        output_shape, inp1.type.element_type, inp1.type.encoding
+    )
+    empty = d2m.empty(out_type)
+
+    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(m) for m in affine_maps])
+
+    iter_types_attr = ArrayAttr.get(
+        [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iterator_types]
+    )
+
+    generic_op = linalg.GenericOp(
+        result_tensors=[out_type],
+        inputs=[inp1, inp2, inp3],
+        outputs=[empty],
+        indexing_maps=affine_maps_attr,
+        iterator_types=iter_types_attr,
+    )
+
+    block_arg_types = [
+        inp1.type.element_type,
+        inp2.type.element_type,
+        inp3.type.element_type,
+        empty.type.element_type,
+    ]
+    block = generic_op.regions[0].blocks.append(*block_arg_types)
+
+    with InsertionPoint(block):
+        tile_result = tile_op_builder(inp1.type.element_type, *block.arguments)
+        linalg.YieldOp([tile_result])
+
+    return generic_op.result
+
+
 @syntax("!tensor")
 class TensorBlock:
     """
@@ -392,6 +452,96 @@ class TensorBlock:
             tile_op_builder=lambda result_type, inp_arg, out_arg: d2m.tile_sqrt(
                 result_type, inp_arg
             ),
+        )
+
+    def rowmax(ast_self: "TensorBlock", dim: int = -1) -> "TensorBlock":
+        """
+        Row-wise maximum reduction.
+
+        For Flash Attention, reduces attention scores S across columns (dim=-1)
+        to get maximum value per row.
+
+        Uses tile_reduce_max with 3-operand form: max(A * B, C)
+        The reduction happens WITHIN each tile, not across tiles.
+        The linalg.generic iterates over tiles in parallel.
+        """
+        inp = ast_self
+        assert isinstance(inp.type, RankedTensorType)
+
+        ctx = inp.type.context
+        rank = len(inp.type.shape)
+
+        # For now, only support reducing last dimension (columns)
+        if dim != -1 and dim != rank - 1:
+            raise NotImplementedError(f"rowmax only supports dim=-1, got {dim}")
+
+        # Output shape: same as input at tile level
+        # The reduction happens within each tile, not across tiles
+        out_shape = list(inp.type.shape)
+
+        # Affine maps: all identity - iterate over tiles in parallel
+        # The reduction happens inside tile_reduce_max, not in linalg
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        # Iterator types: all parallel (tile-level iteration)
+        iter_types = ["parallel"] * rank
+
+        # For tile_reduce_max(a, b, c, reduce_dim):
+        # Pass input for all three operands (a=b=c=input)
+        # reduce_dim=C means reduce across columns WITHIN each tile
+        return _create_linalg_generic_ternary(
+            inp, inp, inp,  # a=b=c=input
+            output_shape=out_shape,
+            affine_maps=[identity_map, identity_map, identity_map, identity_map],
+            iterator_types=iter_types,
+            tile_op_builder=lambda result_type, a_arg, b_arg, c_arg, out_arg:
+                d2m.tile_reduce_max(
+                    result_type, a_arg, b_arg, c_arg,
+                    reduce_dim=Attribute.parse("#d2m<reduce_dim C>", ctx)
+                ),
+        )
+
+    def rowsum(ast_self: "TensorBlock", dim: int = -1) -> "TensorBlock":
+        """
+        Row-wise sum reduction.
+
+        For Flash Attention, computes sum across columns (dim=-1) for each row.
+        Used for computing normalization factor in softmax.
+
+        Uses tile_reduce_sum with 3-operand form: sum(A * B, C)
+        """
+        inp = ast_self
+        assert isinstance(inp.type, RankedTensorType)
+
+        ctx = inp.type.context
+        rank = len(inp.type.shape)
+
+        # For now, only support reducing last dimension (columns)
+        if dim != -1 and dim != rank - 1:
+            raise NotImplementedError(f"rowsum only supports dim=-1, got {dim}")
+
+        # Output shape: same as input at tile level
+        out_shape = list(inp.type.shape)
+
+        # Affine maps: all identity
+        identity_map = AffineMap.get_identity(rank, ctx)
+
+        # Iterator types: all parallel
+        iter_types = ["parallel"] * rank
+
+        # For tile_reduce_sum(a, b, c, reduce_dim):
+        # Pass input for all three operands (a=b=c=input)
+        # reduce_dim=C means reduce across columns WITHIN each tile
+        return _create_linalg_generic_ternary(
+            inp, inp, inp,  # a=b=c=input
+            output_shape=out_shape,
+            affine_maps=[identity_map, identity_map, identity_map, identity_map],
+            iterator_types=iter_types,
+            tile_op_builder=lambda result_type, a_arg, b_arg, c_arg, out_arg:
+                d2m.tile_reduce_sum(
+                    result_type, a_arg, b_arg, c_arg,
+                    reduce_dim=Attribute.parse("#d2m<reduce_dim C>", ctx)
+                ),
         )
 
 
