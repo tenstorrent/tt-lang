@@ -7,7 +7,7 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from typing import Tuple, Optional
+from typing import Tuple
 import torch
 from threading import Lock
 
@@ -96,7 +96,7 @@ class CircularBuffer:
         self._cb_id = self._allocate_cb_id()
         self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
     
-    def wait(self) -> RingView[Optional[torch.Tensor]]:
+    def wait(self) -> RingView[torch.Tensor]:
         """
         Wait for data to be available and return a read view.
         
@@ -114,7 +114,7 @@ class CircularBuffer:
         self._api.cb_wait_front(self._cb_id, self._tiles_per_operation)
         return self._api.get_read_ptr(self._cb_id)
     
-    def reserve(self) -> RingView[Optional[torch.Tensor]]:
+    def reserve(self) -> RingView[torch.Tensor]:
         """
         Reserve space for writing and return a write view.
         
@@ -130,7 +130,7 @@ class CircularBuffer:
             CBContractError: If called incorrectly (e.g., multiple concurrent reserves)
         """
         self._api.cb_reserve_back(self._cb_id, self._tiles_per_operation)
-        return self._api.get_write_ptr(self._cb_id, self._tiles_per_operation)
+        return self._api.get_write_ptr(self._cb_id)
     
     def push(self) -> None:
         """

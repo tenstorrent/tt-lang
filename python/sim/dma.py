@@ -6,7 +6,7 @@ enabling data transfer operations between tensors and RingViews in the
 CircularBuffer system.
 """
 
-from typing import Union, Optional, List
+from typing import Union, List
 import torch
 from .ringview import RingView
 from .constants import TILE_SIZE
@@ -25,8 +25,8 @@ class DMATransaction:
         tx.wait()  # Wait for transfer to complete
     """
     
-    def __init__(self, src: Union[torch.Tensor, RingView[Optional[torch.Tensor]]], 
-                 dst: Union[torch.Tensor, RingView[Optional[torch.Tensor]]]):
+    def __init__(self, src: Union[torch.Tensor, RingView[torch.Tensor]], 
+                 dst: Union[torch.Tensor, RingView[torch.Tensor]]):
         """
         Initialize a DMA transaction from src to dst.
         
@@ -130,8 +130,8 @@ class DMATransaction:
         return self._completed
 
 
-def dma(src: Union[torch.Tensor, RingView[Optional[torch.Tensor]]], 
-        dst: Union[torch.Tensor, RingView[Optional[torch.Tensor]]]) -> DMATransaction:
+def dma(src: Union[torch.Tensor, RingView[torch.Tensor]], 
+        dst: Union[torch.Tensor, RingView[torch.Tensor]]) -> DMATransaction:
     """
     Create a DMA transaction from source to destination.
     

@@ -69,6 +69,11 @@ class CBState(Generic[T]):
     def front_span(self, length: Size) -> Span:
         return Span(self.head, length)
 
+    def back_span(self, length: Size) -> Span:
+        """Return span at the back of the buffer for writing."""
+        back_start = (self.head + self.visible) % self.cap
+        return Span(back_start, length)
+
     def reset(self) -> None:
         self.buf[:] = [None] * self.cap
         self.head = 0

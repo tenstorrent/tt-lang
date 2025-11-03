@@ -141,6 +141,7 @@ class CBAPI(Generic[T]):
                     f"cb_reserve_back timed out after {self._timeout}s"
                 )
             cb_state.reserved = num_tiles
+            cb_state.last_reserve_target = num_tiles
 
     @validate_call
     def cb_push_back(self, cb_id: CBID, num_tiles: Size) -> None:
@@ -182,7 +183,7 @@ class CBAPI(Generic[T]):
                 cb_state.can_produce.notify_all()
 
     @validate_call
-    def get_read_ptr(self, cb_id: CBID) -> RingView[Optional[T]]:
+    def get_read_ptr(self, cb_id: CBID) -> RingView[T]:
         cb_state: CBState[T] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
@@ -193,22 +194,21 @@ class CBAPI(Generic[T]):
                     "read window invalidated; call cb_wait_front again"
                 )
             span = cb_state.front_span(cb_state.last_wait_target)
-            return RingView[Optional[T]](cb_state.buf, cb_state.cap, span)
+            return RingView[T](cb_state.buf, cb_state.cap, span)
 
     @validate_call
-    def get_write_ptr(
-        self, cb_id: CBID, length: Optional[Size] = None
-    ) -> RingView[Optional[T]]:
+    def get_write_ptr(self, cb_id: CBID) -> RingView[T]:
         cb_state: CBState[T] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
-            if cb_state.reserved <= 0:
+            if cb_state.last_reserve_target <= 0:
                 raise CBContractError("get_write_ptr requires prior cb_reserve_back")
-            L = cb_state.reserved if length is None else length
-            if not (0 < L <= cb_state.reserved):
-                raise ValueError("length must be in 1..reserved inclusive")
-            span = cb_state.front_span(L)
-            return RingView[Optional[T]](cb_state.buf, cb_state.cap, span)
+            if cb_state.reserved < cb_state.last_reserve_target:
+                raise CBContractError(
+                    "write window invalidated; call cb_reserve again"
+                )
+            span = cb_state.back_span(cb_state.last_reserve_target)
+            return RingView[T](cb_state.buf, cb_state.cap, span)
 
     @validate_call
     def set_timeout(self, seconds: Optional[Annotated[float, Field(gt=0)]]) -> None:
