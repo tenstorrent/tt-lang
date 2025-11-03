@@ -14,7 +14,7 @@ os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
     tiled=True,
 )
 def test_double_matmul(Q, K, V, out, block_factors=None, grid=None):
-    """Test two matmuls in same kernel: (Q @ K) @ V"""
+    """Test two matmuls: (Q @ K) @ V"""
     Q_stream = Stream(Q)
     K_stream = Stream(K)
     V_stream = Stream(V)
@@ -27,9 +27,9 @@ def test_double_matmul(Q, K, V, out, block_factors=None, grid=None):
         V_block = V_cb.pop()
         out_block = out_cb.reserve()
 
-        # Two matmuls!
+        # Two matmuls - temp alloc elimination should handle this
         S = Q_block @ K_block    # First matmul
-        O = S @ V_block           # Second matmul - THE TEST
+        O = S @ V_block           # Second matmul
 
         out_block.store(O)
         out_cb.pop()
@@ -45,7 +45,7 @@ def test_double_matmul(Q, K, V, out, block_factors=None, grid=None):
     return Program(comp, dm)(Q, K, V, out)
 
 
-print("Testing double matmul with MemRefProvenance...")
+print("Testing double matmul with temp alloc elimination...")
 Q = torch.randn(32, 32)
 K = torch.randn(32, 32)
 V = torch.randn(32, 32)
@@ -53,7 +53,7 @@ out = torch.zeros(32, 32)
 
 try:
     test_double_matmul(Q, K, V, out)
-    print("✓ Double matmul WORKS with MemRefProvenance!")
+    print("✓ Double matmul WORKS!")
     print("Check /tmp/double_matmul_final.mlir for generated code")
 except Exception as e:
     print(f"✗ Double matmul failed: {e}")

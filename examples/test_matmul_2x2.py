@@ -1,12 +1,18 @@
-# Test 7 operations to find crash point
+# Test 2x2 tiles with full FA kernel
 from ttlang.d2m_api import *
 import torch
 import os
 
 os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 
-@pykernel_gen(grid=(1,1), block_factors=[(1,1),(1,1),(1,1)], memory_space="L1", tiled=True)
-def test_7ops(Q, K, out, block_factors=None, grid=None):
+@pykernel_gen(
+    block_factors=[(2, 2), (2, 2), (2, 2)],  # 2x2 tiles = 64x64 per core
+    grid=(1, 1),
+    memory_space="L1",
+    tiled=True,
+)
+def fa_2x2_tiles(Q, K, out, block_factors=None, grid=None):
+    """Full FA kernel with 2x2 tiles"""
     Q_stream = Stream(Q)
     K_stream = Stream(K)
 
@@ -16,14 +22,13 @@ def test_7ops(Q, K, out, block_factors=None, grid=None):
         K_block = K_cb.pop()
         out_block = out_cb.reserve()
 
-        # Copy EXACT FA pattern plus one more op
+        # Full 6-op FA pattern
         K_T = K_block.transpose()
         S = Q_block @ K_T
         S_stable = S - Q_block
         P = S_stable.exp()
         P_norm = P.sqrt()
-        almost = P_norm.recip()     # 6th op (FA stops here)
-        result = almost.exp()       # 7th op - NEW
+        result = P_norm.recip()
 
         out_block.store(result)
         out_cb.pop()
@@ -36,15 +41,17 @@ def test_7ops(Q, K, out, block_factors=None, grid=None):
 
     return Program(comp, dm)(Q, K, out)
 
-print("Testing 7 ops...")
-Q = torch.randn(32, 32)
-K = torch.randn(32, 32)
-out = torch.zeros(32, 32)
+print("Testing 2x2 tiles with full 6-op FA kernel...")
+Q = torch.randn(64, 64)  # 2x2 tiles
+K = torch.randn(64, 64)
+out = torch.zeros(64, 64)
 
 try:
-    test_7ops(Q, K, out)
-    print("✓ 7 ops compiled!")
+    fa_2x2_tiles(Q, K, out)
+    print("✓ 2x2 TILES WITH FULL FA WORKS!")
+    print("  - 4x more data per core")
+    print("  - Should be ~2-4x faster")
 except Exception as e:
-    print(f"✗ 7 ops failed: {e}")
+    print(f"✗ Failed: {e}")
     import traceback
     traceback.print_exc()
