@@ -6,9 +6,10 @@ enabling data transfer operations between tensors and RingViews in the
 CircularBuffer system.
 """
 
-from typing import Union, Optional
+from typing import Union, Optional, List
 import torch
 from .ringview import RingView
+from .constants import TILE_SIZE
 
 
 class DMATransaction:
@@ -76,21 +77,48 @@ class DMATransaction:
             # In simulation, we perform the copy immediately
             # Type combinations are already validated in __init__
             if isinstance(self._src, torch.Tensor) and isinstance(self._dst, RingView):
-                # Copying from tensor to RingView
+                # Copying from tensor to RingView - split tensor into individual tiles
                 try:
-                    # Fill each slot with the source tensor
-                    self._dst.fill([self._src] * len(self._dst))
+                    # Calculate number of tiles: tensor height / TILE_SIZE
+                    num_tiles = self._src.shape[0] // TILE_SIZE
+                    expected_tiles = len(self._dst)
+                    
+                    if num_tiles != expected_tiles:
+                        raise ValueError(f"Tensor contains {num_tiles} tiles but RingView has {expected_tiles} slots")
+                    
+                    # Split tensor into individual tiles and place each in a RingView slot
+                    for i in range(num_tiles):
+                        start_row = i * TILE_SIZE
+                        end_row = (i + 1) * TILE_SIZE
+                        tile = self._src[start_row:end_row, :]  # Extract one tile
+                        self._dst[i] = tile
+                        
                 except Exception as e:
                     raise ValueError(f"Failed to transfer tensor to RingView: {e}")
             elif isinstance(self._src, RingView) and isinstance(self._dst, torch.Tensor):
-                # Copying from RingView to tensor
+                # Copying from RingView to tensor - combine individual tiles into one tensor
                 try:
-                    # Copy the first valid tensor data
+                    # Collect all tiles from RingView and stack them vertically
+                    tiles: List[torch.Tensor] = []
                     for i in range(len(self._src)):
-                        tensor_data = self._src[i]
-                        if tensor_data is not None:
-                            self._dst[:] = tensor_data
-                            break
+                        tile = self._src[i]
+                        if tile is not None:
+                            tiles.append(tile)
+                        else:
+                            raise ValueError(f"Missing tile at RingView slot {i}")
+                    
+                    if len(tiles) != len(self._src):
+                        raise ValueError(f"Expected {len(self._src)} tiles but found {len(tiles)}")
+                    
+                    # Stack tiles vertically to reconstruct the original tensor
+                    reconstructed_tensor = torch.cat(tiles, dim=0) # type: ignore
+                    
+                    if reconstructed_tensor.shape != self._dst.shape:
+                        raise ValueError(f"Reconstructed tensor shape {reconstructed_tensor.shape} doesn't match destination {self._dst.shape}")
+                    
+                    # Copy reconstructed tensor to destination
+                    self._dst[:] = reconstructed_tensor
+                    
                 except Exception as e:
                     raise ValueError(f"Failed to transfer RingView to tensor: {e}")
             # Note: No else case needed since types are validated in __init__
