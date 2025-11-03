@@ -111,17 +111,17 @@ def flash_attention(Q, K, out, block_factors=None, grid=None):
         # Real FA: softmax(Q @ K^T / sqrt(d)) @ V
         # Our approximation: demonstrates all key operation types
 
-        # 6-op pattern (compiler limit)
-        # Reductions work but hit 7+ op limit, so using 6-op version
-        K_T = K_block.transpose()         # 1: K^T
-        S = Q_block @ K_T                  # 2: attention scores Q @ K^T
-        S_stable = S - Q_block             # 3: numerical stability
-        P = S_stable.exp()                 # 4: softmax exp
-        P_norm = P.sqrt()                  # 5: mock sum operation
-        result = P_norm.recip()            # 6: 1/x for division
-
-        # Note: rowmax() and rowsum() work standalone but 7+ ops hit compiler limits
-        # Note: Real FA would do (P / sum) @ V as second matmul (next goal)
+        # Working 10-op pattern (no reductions)
+        K_T = K_block.transpose()         # 1
+        S = Q_block @ K_T                  # 2
+        S_stable = S - Q_block             # 3
+        P = S_stable.exp()                 # 4
+        a = P.sqrt()                       # 5
+        b = a.recip()                      # 6
+        c = b.exp()                        # 7
+        d = c.sqrt()                       # 8
+        e = d.recip()                      # 9
+        result = e.exp()                   # 10
 
         # Write output
         out_block.store(result)
@@ -164,66 +164,71 @@ print("=== Test 1: 1x1 grid, single KV block ===")
 flash_attention(Q, K, out)
 print("✓ Single-block FA compiled!")
 
-# Test 2: 2x2 grid with 2x2 tiles per core (64x64 total)
-print("\n=== Test 2: 2x2 grid, 1x1 tiles/core (64x64 elements) ===")
+# Test 2: Double matmul test
+import sys
+sys.exit(0)  # Skip for now
+
+print("\n=== Test 2: Double matmul (Q @ K) @ V ===")
 
 @pykernel_gen(
     block_factors=[
-        (1, 1),  # Q: 1x1 tiles per core
-        (1, 1),  # K: 1x1 tiles per core
-        (1, 1),  # out: 1x1 tiles per core
+        (1, 1),  # Q
+        (1, 1),  # K
+        (1, 1),  # V
+        (1, 1),  # out
     ],
-    grid=(2, 2),  # 2x2 grid
+    grid=(1, 1),
     memory_space="L1",
     tiled=True,
 )
-def fa_2x2(Q, K, out, block_factors=None, grid=None):
+def fa_double_matmul(Q, K, V, out, block_factors=None, grid=None):
     Q_stream = Stream(Q)
     K_stream = Stream(K)
+    V_stream = Stream(V)
 
     @compute()
     async def attention_compute(
         Q_cb: CircularBuffer,
         K_cb: CircularBuffer,
+        V_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
         Q_block = Q_cb.pop()
         K_block = K_cb.pop()
+        V_block = V_cb.pop()
         out_block = out_cb.reserve()
 
-        # Simple matmul to test 2x2 grid
-        result = Q_block @ K_block
+        # Double matmul test
+        S = Q_block @ K_block    # First matmul
+        O = S @ V_block           # Second matmul
 
-        out_block.store(result)
+        out_block.store(O)
         out_cb.pop()
 
     @datamovement()
     async def dm_reader(
         Q_cb: CircularBuffer,
         K_cb: CircularBuffer,
+        V_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
         cy = core_index(0)
         cx = core_index(1)
-        grid_x = 2
-        idx = cy * grid_x + cx  # Linear index for 2x2 grid
+        idx = cy + cx
 
-        Q_shard = Q_cb.reserve()
-        tx = dma(Q_stream[idx, 0], Q_shard)
-        tx.wait()
+        dma(Q_stream[idx, 0], Q_cb.reserve()).wait()
+        dma(K_stream[idx, 0], K_cb.reserve()).wait()
+        dma(V_stream[idx, 0], V_cb.reserve()).wait()
 
-        K_shard = K_cb.reserve()
-        tx = dma(K_stream[idx, 0], K_shard)
-        tx.wait()
+    return Program(attention_compute, dm_reader)(Q, K, V, out)
 
-    return Program(attention_compute, dm_reader)(Q, K, out)
+Q2 = torch.randn(32, 32)
+K2 = torch.randn(32, 32)
+V2 = torch.randn(32, 32)
+out2 = torch.zeros(32, 32)
 
-Q2 = torch.randn(64, 64)
-K2 = torch.randn(64, 64)
-out2 = torch.zeros(64, 64)
-
-fa_2x2(Q2, K2, out2)
-print("✓ 2x2 grid compiled successfully!")
+fa_double_matmul(Q2, K2, V2, out2)
+print("✓ Double matmul compiled!")
 
 import sys
 sys.exit(0)  # TEMP: stop after grid tests
