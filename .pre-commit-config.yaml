@@ -18,3 +18,8 @@ repos:
       - id: check-added-large-files
       - id: check-yaml
       - id: check-toml
+  - repo: https://github.com/espressif/check-copyright/
+    rev: v1.0.3
+    hooks:
+      - id: check-copyright
+        args: ['--config', '.github/check-spdx.yaml']
