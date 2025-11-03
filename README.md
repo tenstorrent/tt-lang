@@ -11,72 +11,48 @@ tt-lang uses a CMake-based build system that reuses tt-mlir's environment and to
 
 ### Prerequisites
 
-tt-lang depends on tt-mlir. The required tt-mlir commit is tracked in `third-party/tt-mlir.commit`.
+**tt-mlir must be built first.** tt-lang depends on tt-mlir and reuses its toolchain. Please refer to the [Getting Started Guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) on how to build tt-mlir and its prerequisites. Note that the brief instructions below do not cover all possible build scenarios.
 
-### Setup and Build
-
-CMake will automatically handle the tt-mlir dependency:
-- If tt-mlir is already built and found, it will use it
-- If not found, it will fetch and build from the version specified in `third-party/tt-mlir.commit`
-
-**Basic build:**
+1. Clone the correct version of tt-mlir; make sure to use the version in [third-party/tt-mlir.
+commit](./third-party/tt-mlir.commit) (different versions are not guaranteed to be compatible).
 
 ```bash
-# Configure and build
-cmake -GNinja -Bbuild .
-cmake --build build
+
+git clone https://github.com/tenstorrent/tt-mlir.git
+cd tt-mlir
+git checkout <commit sha from third-party/tt-mlir.commit>
 ```
 
-**Specify tt-mlir location explicitly:**
-
-```bash
-cmake -GNinja -Bbuild . -DTTMLIR_DIR=/path/to/tt-mlir/build/lib/cmake/ttmlir
-cmake --build build
-```
-
-**With environment activation (if using pre-built tt-mlir):**
-
-```bash
+# Activate tt-mlir environment and build tt-mlir
 source env/activate
 cmake -GNinja -Bbuild .
 cmake --build build
 ```
 
-### Updating tt-mlir Version
-
-tt-lang tracks its tt-mlir dependency version in `third-party/tt-mlir.commit`. This file contains a git commit SHA or tag that specifies which version of tt-mlir to use.
-
-To update to a different tt-mlir version:
+2. Configure and build tt-lang.
 
 ```bash
-# 1. Find the desired commit or tag in tt-mlir repo
-cd /Users/bnorris/tt/tt-mlir  # or wherever your tt-mlir is
-git log --oneline -20          # view recent commits
-# or
-git tag                         # view available tags
-
-# 2. Update tt-lang's dependency file with the new SHA or tag
-cd /Users/bnorris/tt/tt-lang
-echo "abc123def456" > third-party/tt-mlir.commit
-# or for a tag:
-echo "v1.2.3" > third-party/tt-mlir.commit
-
-# 3. Sync and rebuild tt-mlir at the new version
-./scripts/sync-tt-mlir.sh
-
-# 4. Rebuild tt-lang
+cd /path/to/tt-lang
 source env/activate
+cmake -GNinja -Bbuild .
 cmake --build build
 ```
 
-**Note:** The `sync-tt-mlir.sh` script will:
-- Check out the specified commit/tag in your tt-mlir installation
-- Warn you if there are uncommitted changes
-- Rebuild tt-mlir automatically
+**Build options:**
+```bash
+cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+```
 
-**Current tt-mlir version:** Check `third-party/tt-mlir.commit` to see which version tt-lang is using.
+**Note:** The `third-party/tt-mlir.commit` file contains a reference tt-mlir version for compatibility. Ensure your installed tt-mlir is compatible.
+
 
 ## Developer Guidelines
+
+### Updating tt-mlir version
+
+Update the `third-party/tt-mlir.commit` file to the desired SHA. Repeat steps 1-3 above after checking out that SHA in your tt-mlir clone.
+
+In future, the tt-lang build will be extended to automatically fetch and build the supported tt-mlir version.
 
 ### Code Formatting with Pre-commit
 
@@ -108,11 +84,11 @@ cd /path/to/tt-lang
 pre-commit install
 ```
 
-This will configure git to run pre-commit checks before each commit.
+This will configure git to run `pre-commit` checks before each commit.
 
 #### Usage
 
-Once installed, pre-commit will automatically run when you commit:
+Once installed, `pre-commit` will automatically run when you commit:
 
 ```bash
 git commit -m "Your commit message"
@@ -126,7 +102,7 @@ Pre-commit will:
 - Check YAML and TOML syntax
 - Check for large files
 
-If pre-commit makes changes, the commit will be stopped. Review the changes, stage them, and commit again:
+If `pre-commit` makes changes, the commit will be stopped. Review the changes, stage them, and commit again:
 
 ```bash
 git add -u

@@ -1,17 +1,19 @@
 # tt-lang environment activation
 # This script sources tt-mlir's environment and adds tt-lang specific paths
 
+# Guard against re-activation (prevents infinite loop)
+if [ -n "${TTLANG_ENV_ACTIVATED}" ]; then
+  return 0
+fi
+
 # Step 1: Find and source tt-mlir environment
 if [ -z "${TT_MLIR_HOME}" ]; then
-  # Try to find tt-mlir in common locations
-  if [ -d "/Users/bnorris/tt/tt-mlir" ]; then
-    export TT_MLIR_HOME="/Users/bnorris/tt/tt-mlir"
-  elif [ -d "../tt-mlir" ]; then
+  # Try to find tt-mlir in default location (sibling directory)
+  if [ -d "../tt-mlir" ]; then
     export TT_MLIR_HOME="$(cd ../tt-mlir && pwd)"
   else
-    echo "ERROR: TT_MLIR_HOME not set and tt-mlir not found in common locations."
-    echo "Please set TT_MLIR_HOME to point to your tt-mlir installation."
-    echo "Example: export TT_MLIR_HOME=/path/to/tt-mlir"
+    echo "ERROR: TT_MLIR_HOME not set and tt-mlir not found at ../tt-mlir"
+    echo "Please set TT_MLIR_HOME: export TT_MLIR_HOME=/path/to/tt-mlir"
     return 1
   fi
 fi
@@ -27,12 +29,17 @@ export TT_LANG_HOME="$(pwd)"
 
 # Source tt-mlir environment (this sets up TTMLIR_TOOLCHAIN_DIR, TTMLIR_VENV_DIR, etc.)
 # We need to cd to tt-mlir first so its activate script sets TT_MLIR_HOME correctly
-pushd "${TT_MLIR_HOME}" > /dev/null
+_TTLANG_OLD_PWD="$(pwd)"
+cd "${TT_MLIR_HOME}"
 . env/activate
-popd > /dev/null
+cd "${_TTLANG_OLD_PWD}"
+unset _TTLANG_OLD_PWD
 
 # Prepend tt-lang build directories to PATH and PYTHONPATH
 export PATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/bin:$PATH"
-export PYTHONPATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/python_packages:${TT_LANG_HOME}/sim:$PYTHONPATH"
+export PYTHONPATH="${TT_LANG_HOME}/${BUILD_DIR:=build}/python_packages:${TT_LANG_HOME}/python:$PYTHONPATH"
+
+# Mark environment as activated
+export TTLANG_ENV_ACTIVATED=1
 
 echo "tt-lang environment activated (using tt-mlir from ${TT_MLIR_HOME})"

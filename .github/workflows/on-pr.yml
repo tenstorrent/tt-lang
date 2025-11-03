@@ -27,7 +27,6 @@ jobs:
 
   test-sim:
     if: github.event.pull_request.draft == false
-    needs: [build]
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
