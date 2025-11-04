@@ -6,15 +6,15 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 """
 
 import pytest
-import torch
 from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SIZE, dma
+from python.sim import torch_utils as tu
 from python.sim.errors import CBContractError
 
 
 def test_circular_buffer_basic():
     """Test basic CircularBuffer operations."""
     # Create a test tensor that's properly tiled
-    tensor = torch.randn(TILE_SIZE * 2, TILE_SIZE * 2) # type: ignore # 2x2 tiles
+    tensor = tu.randn(TILE_SIZE * 2, TILE_SIZE * 2)  # 2x2 tiles
     accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
     
     # Create a circular buffer for single tiles with buffer factor 2
@@ -32,7 +32,7 @@ def test_circular_buffer_basic():
     assert len(write_view) == 1  # Should have space for 1 tile
     
     # Simulate writing data
-    test_data = torch.ones(TILE_SIZE, TILE_SIZE) # type: ignore
+    test_data = tu.ones(TILE_SIZE, TILE_SIZE)
     write_view[0] = test_data
     cb.push()
     
@@ -52,7 +52,7 @@ def test_circular_buffer_basic():
 def test_circular_buffer_multi_tile():
     """Test CircularBuffer with multiple tiles per operation."""
     # Create a test tensor
-    tensor = torch.randn(TILE_SIZE * 4, TILE_SIZE * 2)  # type: ignore # 4x2 tiles
+    tensor = tu.randn(TILE_SIZE * 4, TILE_SIZE * 2)  # 4x2 tiles
     accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
     
     # Create a circular buffer for 2x1 tiles (2 tiles per operation)
@@ -68,7 +68,7 @@ def test_circular_buffer_multi_tile():
     
     # Fill with test data
     for i in range(2):
-        write_view[i] = torch.ones(TILE_SIZE, TILE_SIZE) * (i + 1) # type: ignore
+        write_view[i] = tu.ones(TILE_SIZE, TILE_SIZE) * (i + 1)
     
     cb.push()
     
@@ -89,7 +89,7 @@ def test_circular_buffer_multi_tile():
 def test_dma_operations():
     """Test DMA operations between TensorAccessor and CircularBuffer."""
     # Create test tensors
-    tensor_a = torch.randn(TILE_SIZE * 2, TILE_SIZE * 2)  # type: ignore # 2x2 tiles
+    tensor_a = tu.randn(TILE_SIZE * 2, TILE_SIZE * 2)  # 2x2 tiles
 
     accessor_a = TensorAccessor(tensor_a, index_type=IndexType.TILE)
     
@@ -107,7 +107,7 @@ def test_dma_operations():
     
     # Test DMA from circular buffer to tensor
     cb_read_view = cb_a.wait()
-    output_tensor = torch.zeros(TILE_SIZE, TILE_SIZE)  # type: ignore # Single tile output
+    output_tensor = tu.zeros(TILE_SIZE, TILE_SIZE)  # Single tile output
     
     # Copy through DMA
     tx2 = dma(cb_read_view, output_tensor)
@@ -123,7 +123,7 @@ def test_dma_operations():
 
 def test_error_handling():
     """Test error conditions."""
-    tensor = torch.randn(TILE_SIZE, TILE_SIZE) # type: ignore
+    tensor = tu.randn(TILE_SIZE, TILE_SIZE)
     accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
     
     # Test invalid shape
@@ -150,7 +150,7 @@ def test_error_handling():
     
     # Test unsupported DMA operations with wrong types
     with pytest.raises(ValueError, match="Unsupported DMA transfer"):
-        tx = dma("invalid_source", "invalid_dest")  # type: ignore
+        tx = dma("invalid_source", "invalid_dest") # type: ignore 
     
     print("Error handling test passed!")
 
@@ -161,10 +161,10 @@ def test_example_usage_pattern():
     rows, cols = 128, 128
     granularity = 4
     
-    a_in = torch.randn(rows, cols) # type: ignore
-    b_in = torch.randn(rows, cols) # type: ignore
-    c_in = torch.randn(TILE_SIZE, cols) # type: ignore # Make c_in a full tile height for proper tiling
-    out = torch.zeros(rows, cols) # type: ignore
+    a_in = tu.randn(rows, cols)
+    b_in = tu.randn(rows, cols)
+    c_in = tu.randn(TILE_SIZE, cols) # Make c_in a full tile height for proper tiling
+    out = tu.zeros(rows, cols)
 
     # Create accessors
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)

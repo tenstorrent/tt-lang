@@ -26,6 +26,7 @@ from .idxtype import IndexType
 from .constants import TILE_SIZE
 from .cb import CircularBuffer
 from .dma import dma, DMATransaction
+from . import torch_utils
 
 __all__ = [
     "CBAPI",
@@ -47,4 +48,5 @@ __all__ = [
     "CircularBuffer",
     "dma",
     "DMATransaction",
+    "torch_utils",
 ]

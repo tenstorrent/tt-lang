@@ -254,9 +254,9 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
 out = a + b
 """
 
-a_in = torch.randn(128, 128)
-b_in = torch.randn(128, 128)
-out = torch.zeros(128, 128)
+a_in = torch.randn(128, 128) # type: ignore
+b_in = torch.randn(128, 128) # type: ignore
+out = torch.zeros(128, 128) # type: ignore
 eltwise_add(a_in, b_in, out)
 
 golden = a_in + b_in
