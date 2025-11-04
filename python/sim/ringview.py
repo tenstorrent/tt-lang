@@ -46,7 +46,7 @@ class RingView(Generic[T]):
             raise IndexError(idx)
         return self._buf[(self._span.start + idx) % self._capacity]
 
-    def __setitem__(self, idx: Index, value: Optional[T]) -> None:
+    def __setitem__(self, idx: Index, value: T) -> None:
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         self._buf[(self._span.start + idx) % self._capacity] = value
@@ -54,7 +54,7 @@ class RingView(Generic[T]):
     def to_list(self) -> List[Optional[T]]:
         return [self[i] for i in range(len(self))]
 
-    def fill(self, items: Sequence[Optional[T]]) -> None:
+    def fill(self, items: Sequence[T]) -> None:
         if len(items) != self._span.length:
             raise ValueError("Length mismatch in fill()")
         for i, v in enumerate(items):
