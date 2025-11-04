@@ -170,21 +170,9 @@ def create_stream_layout_for_input(
     storage_type = RankedTensorType.get(device_shape, element_type, storage_layout)
     storage = d2m.EmptyOp(storage_type)
 
-    rank = len(device_shape)
-    identity_map = AffineMap.get_identity(rank, ctx)
-
-    result_layout = ttcore.ir.MetalLayoutAttr.get(
-        ctx,
-        config.logical_shape,
-        int(ttcore.OOBVal.Undef),
-        int(
-            ttcore.MemorySpace.DeviceL1
-            if config.memory_space == "L1"
-            else ttcore.MemorySpace.DeviceDRAM
-        ),
-        int(DEFAULT_TENSOR_MEMORY_LAYOUT),
-        identity_map,
-    )
+    # Use the same layout as storage for the result (no index_map)
+    # This ensures they're compatible during bufferization
+    result_layout = storage_layout
     result_type = RankedTensorType.get(device_shape, element_type, result_layout)
 
     stream = d2m.StreamLayoutOp(result_type, input_arg, storage.result)
