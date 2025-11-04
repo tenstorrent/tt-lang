@@ -2,22 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 from typing import Optional, Any, Callable, Union, Tuple
-import sys
-sys.path.append('../python')
 
 import torch
 import math
 # from pykernel.kernel_ast import *
 # from utils import assert_pcc
-from sim import TILE_SIZE, TensorAccessor, IndexType, CircularBuffer, dma
+from sim import TILE_SIZE, TensorAccessor, IndexType, CircularBuffer, dma, torch_utils as tu
 
 def pykernel_gen(grid: Union[str, Tuple[int, int]] = 'auto', granularity: int = 4):
     """
     Decorator that generates a kernel with specified grid and granularity.
     If grid='auto', defaults to (2, 2).
     """
-    def decorator(func: Callable) -> Callable:
-        def wrapper(*args, **kwargs):
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Set grid to (2, 2) if 'auto'
             actual_grid = (2, 2) if grid == 'auto' else grid
             
@@ -31,49 +29,48 @@ def pykernel_gen(grid: Union[str, Tuple[int, int]] = 'auto', granularity: int = 
             return func(*args, grid=actual_grid, **kwargs)
         
         # Store the decorator parameters for later access
-        wrapper.__pykernel_config__ = {'grid': grid, 'granularity': granularity}
-        wrapper.granularity = granularity  # Make granularity accessible
+        setattr(wrapper, '__pykernel_config__', {'grid': grid, 'granularity': granularity})
+        setattr(wrapper, 'granularity', granularity)  # Make granularity accessible
         return wrapper
     return decorator
 
 def compute():
     """Decorator for compute functions"""
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         return func
     return decorator
 
 def datamovement():
     """Decorator for data movement functions"""
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         return func
     return decorator
 
+# Global state for core management
+_core_state = {'current_core': 0}
+
 def core_index() -> int:
     """Returns the core index in a 2D grid (stays consistent during one program run)"""
-    if not hasattr(core_index, 'current_core'):
-        core_index.current_core = 0
-    return core_index.current_core
+    return _core_state['current_core']
 
 def next_core():
     """Advance to the next core for the next program run"""
-    if not hasattr(core_index, 'current_core'):
-        core_index.current_core = 0
-    core_index.current_core = (core_index.current_core + 1) % 4
+    _core_state['current_core'] = (_core_state['current_core'] + 1) % 4
 
-def Program(*funcs):
+def Program(*funcs: Callable[..., Any]):
     """Program class that combines compute and data movement functions"""
     class ProgramImpl:
-        def __init__(self, *functions):
+        def __init__(self, *functions: Callable[..., Any]):
             self.functions = functions
-            self.context = {}  # Will be populated when __call__ is invoked
+            self.context: dict[str, Any] = {}  # Will be populated when __call__ is invoked
         
-        def __call__(self, *args, **kwargs):
+        def __call__(self, *args: Any, **kwargs: Any) -> None:
             # Capture ALL local variables from the calling function (eltwise_add) automatically
             import inspect
-            frame = inspect.currentframe().f_back
-            if frame:
+            frame = inspect.currentframe()
+            if frame and frame.f_back:
                 # Get all local variables from the calling function
-                self.context = dict(frame.f_locals)
+                self.context = dict(frame.f_back.f_locals)
                 
                 # Also add the function arguments for convenience
                 if len(args) > 0:
@@ -89,7 +86,7 @@ def Program(*funcs):
             compute_func, dm0, dm1 = self.functions
             
             # Helper function to execute a function with context available
-            def execute_with_context(func, func_name):
+            def execute_with_context(func: Callable[..., Any], func_name: str) -> Any:
                 # Make context available to the function by injecting into its globals
                 if hasattr(func, '__globals__'):
                     # Inject context variables into the function's globals
@@ -140,7 +137,7 @@ def assert_pcc(tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> None:
     assert tensor_a.shape == tensor_b.shape, "Tensors must have the same shape"
     assert tensor_a.dtype == tensor_b.dtype, "Tensors must have the same dtype"
     assert tensor_a.device == tensor_b.device, "Tensors must be on the same device"
-    assert torch.allclose(tensor_a, tensor_b), "Tensors values are not close enough"
+    assert tu.allclose(tensor_a, tensor_b), "Tensors values are not close enough"
 
 def is_tiled(tensor: torch.Tensor) -> bool:
     return tensor.shape[0] % TILE_SIZE == 0 and tensor.shape[1] % TILE_SIZE == 0
@@ -254,9 +251,9 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
 out = a + b
 """
 
-a_in = torch.randn(128, 128) # type: ignore
-b_in = torch.randn(128, 128) # type: ignore
-out = torch.zeros(128, 128) # type: ignore
+a_in = tu.randn(128, 128)
+b_in = tu.randn(128, 128)
+out = tu.zeros(128, 128)
 eltwise_add(a_in, b_in, out)
 
 golden = a_in + b_in
