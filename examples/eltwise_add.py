@@ -244,6 +244,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
                 tx = dma(out_block, out_accessor[row_slice, col_slice])
                 tx.wait()
                 out_cb.pop()
+                out_block[0]
     # Execute the program across all cores
     return Program(compute_func, dm0, dm1)(a_in, b_in, out)
 
@@ -251,9 +252,9 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
 out = a + b
 """
 
-a_in = tu.randn(128, 128)
-b_in = tu.randn(128, 128)
-out = tu.zeros(128, 128)
+a_in = torch.randn(128, 128) #type: ignore
+b_in = torch.randn(128, 128) #type: ignore
+out = torch.zeros(128, 128) #type: ignore
 eltwise_add(a_in, b_in, out)
 
 golden = a_in + b_in

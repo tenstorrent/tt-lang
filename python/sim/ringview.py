@@ -41,10 +41,13 @@ class RingView(Generic[T]):
     def __len__(self) -> Size:
         return self._span.length
 
-    def __getitem__(self, idx: Index) -> Optional[T]:
+    def __getitem__(self, idx: Index) -> T:
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
-        return self._buf[(self._span.start + idx) % self._capacity]
+        value = self._buf[(self._span.start + idx) % self._capacity]
+        if value is None:
+            raise ValueError(f"Accessing uninitialized or consumed slot at index {idx}")
+        return value
 
     def __setitem__(self, idx: Index, value: T) -> None:
         if not (0 <= idx < self._span.length):

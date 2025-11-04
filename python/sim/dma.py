@@ -102,10 +102,7 @@ class DMATransaction:
                     tiles: List[torch.Tensor] = []
                     for i in range(len(self._src)):
                         tile = self._src[i]
-                        if tile is not None:
-                            tiles.append(tile)
-                        else:
-                            raise ValueError(f"Missing tile at RingView slot {i}")
+                        tiles.append(tile)
                     
                     if len(tiles) != len(self._src):
                         raise ValueError(f"Expected {len(self._src)} tiles but found {len(tiles)}")
