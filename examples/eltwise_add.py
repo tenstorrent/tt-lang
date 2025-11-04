@@ -244,7 +244,10 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
                 tx = dma(out_block, out_accessor[row_slice, col_slice])
                 tx.wait()
                 out_cb.pop()
-                out_block[0]
+                # (TODO: What if another thread writes to the same positions this RingView points to?)
+                # out_block[0] # using pointer on stale data should fail
+                # out_cb.pop() # double pop should fail
+                # out_block[100] # accessing out of bounds should fail
     # Execute the program across all cores
     return Program(compute_func, dm0, dm1)(a_in, b_in, out)
 

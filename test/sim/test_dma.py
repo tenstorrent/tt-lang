@@ -48,8 +48,6 @@ class TestDMATransaction:
         buf: List[Optional[torch.Tensor]] = [None, None]
         ringview1 = RingView(buf, 2, Span(0, 2))
         ringview2 = RingView(buf, 2, Span(0, 2))
-        
-        # RingView → RingView should not be supported
         with pytest.raises(ValueError, match="Unsupported DMA transfer from RingView to RingView"):
             DMATransaction(ringview1, ringview2)
 
