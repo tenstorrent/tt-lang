@@ -5,7 +5,6 @@ import os
 
 os.environ["TTLANG_INITIAL_MLIR"] = "/tmp/double_matmul_initial.mlir"
 os.environ["TTLANG_FINAL_MLIR"] = "/tmp/double_matmul_final.mlir"
-os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 
 @pykernel_gen(
     grid=(1, 1),

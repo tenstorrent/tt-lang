@@ -1,9 +1,6 @@
 # Demonstrate 6+ operation fusion works
 from ttlang.d2m_api import *
 import torch
-import os
-
-os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 
 @pykernel_gen(
     block_factors=[(1, 1), (1, 1), (1, 1)],

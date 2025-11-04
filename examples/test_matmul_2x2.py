@@ -3,7 +3,6 @@ from ttlang.d2m_api import *
 import torch
 import os
 
-os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 
 @pykernel_gen(
     block_factors=[(2, 2), (2, 2), (2, 2)],  # 2x2 tiles = 64x64 per core

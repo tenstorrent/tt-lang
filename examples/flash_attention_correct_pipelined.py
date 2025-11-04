@@ -23,7 +23,6 @@ from utils import assert_pcc, assert_allclose
 import torch
 import os
 
-os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 
 
 def golden_flash_attention_kernel1(Q, K):

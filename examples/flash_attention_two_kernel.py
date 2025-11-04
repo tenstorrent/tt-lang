@@ -3,7 +3,6 @@ from ttlang.d2m_api import *
 import torch
 import os
 
-os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 
 # Kernel 1: Compute attention scores with softmax
 @pykernel_gen(

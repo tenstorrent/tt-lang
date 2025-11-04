@@ -9,7 +9,6 @@ from ttlang.d2m_api import *
 import torch
 import os
 
-os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 os.environ["TTLANG_INITIAL_MLIR"] = "/tmp/rowsum_initial.mlir"
 os.environ["TTLANG_FINAL_MLIR"] = "/tmp/rowsum_final.mlir"
 

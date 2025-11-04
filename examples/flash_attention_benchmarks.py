@@ -13,13 +13,13 @@ import torch
 import time
 import os
 
-os.environ["SYSTEM_DESC_PATH"] = "/Users/zcarver/Downloads/system_desc.ttsys"
 
 
 # ============================================================================
 # Configuration 1: 512×512 (16 cores, based on 512×64 benchmark)
+# Fixed: 512/32=16 tiles per dim, grid 4x4 = 16 cores, so block_factors=(4,4)
 # ============================================================================
-@pykernel_gen(block_factors=[(2,2), (2,2), (2,2)], grid=(4,4), memory_space="L1", tiled=True)
+@pykernel_gen(block_factors=[(4,4), (4,4), (4,4)], grid=(4,4), memory_space="L1", tiled=True)
 def fa_k1_512(Q, K, out, block_factors=None, grid=None):
     Q_stream, K_stream = Stream(Q), Stream(K)
     @compute()
@@ -39,7 +39,7 @@ def fa_k1_512(Q, K, out, block_factors=None, grid=None):
         dma(K_stream[idx, 0], K_cb.reserve()).wait()
     return Program(comp, dm)(Q, K, out)
 
-@pykernel_gen(block_factors=[(2,2), (2,2), (2,2), (2,2)], grid=(4,4), memory_space="L1", tiled=True)
+@pykernel_gen(block_factors=[(4,4), (4,4), (4,4), (4,4)], grid=(4,4), memory_space="L1", tiled=True)
 def fa_k2_512(Q, K, V, out, block_factors=None, grid=None):
     Q_stream, K_stream, V_stream = Stream(Q), Stream(K), Stream(V)
     @compute()
@@ -64,9 +64,10 @@ def fa_k2_512(Q, K, V, out, block_factors=None, grid=None):
 
 
 # ============================================================================
-# Configuration 2: 1024×1024 (64 cores, based on 1024×128 benchmark)
+# Configuration 2: 1024×1024 (16 cores, based on 1024×128 benchmark)
+# Fixed: 1024/32=32 tiles per dim, grid 4x4 = 16 cores, so block_factors=(8,8)
 # ============================================================================
-@pykernel_gen(block_factors=[(4,4), (4,4), (4,4)], grid=(4,4), memory_space="L1", tiled=True)
+@pykernel_gen(block_factors=[(8,8), (8,8), (8,8)], grid=(4,4), memory_space="L1", tiled=True)
 def fa_k1_1024(Q, K, out, block_factors=None, grid=None):
     Q_stream, K_stream = Stream(Q), Stream(K)
     @compute()
@@ -86,7 +87,7 @@ def fa_k1_1024(Q, K, out, block_factors=None, grid=None):
         dma(K_stream[idx, 0], K_cb.reserve()).wait()
     return Program(comp, dm)(Q, K, out)
 
-@pykernel_gen(block_factors=[(4,4), (4,4), (4,4), (4,4)], grid=(4,4), memory_space="L1", tiled=True)
+@pykernel_gen(block_factors=[(8,8), (8,8), (8,8), (8,8)], grid=(4,4), memory_space="L1", tiled=True)
 def fa_k2_1024(Q, K, V, out, block_factors=None, grid=None):
     Q_stream, K_stream, V_stream = Stream(Q), Stream(K), Stream(V)
     @compute()
@@ -111,9 +112,10 @@ def fa_k2_1024(Q, K, V, out, block_factors=None, grid=None):
 
 
 # ============================================================================
-# Configuration 3: 2048×2048 (64 cores, based on 2048×256 benchmark)
+# Configuration 3: 2048×2048 (16 cores, based on 2048×256 benchmark)
+# Fixed: 2048/32=64 tiles per dim, grid 4x4 = 16 cores, so block_factors=(16,16)
 # ============================================================================
-@pykernel_gen(block_factors=[(8,8), (8,8), (8,8)], grid=(4,4), memory_space="L1", tiled=True)
+@pykernel_gen(block_factors=[(16,16), (16,16), (16,16)], grid=(4,4), memory_space="L1", tiled=True)
 def fa_k1_2048(Q, K, out, block_factors=None, grid=None):
     Q_stream, K_stream = Stream(Q), Stream(K)
     @compute()
@@ -133,7 +135,7 @@ def fa_k1_2048(Q, K, out, block_factors=None, grid=None):
         dma(K_stream[idx, 0], K_cb.reserve()).wait()
     return Program(comp, dm)(Q, K, out)
 
-@pykernel_gen(block_factors=[(8,8), (8,8), (8,8), (8,8)], grid=(4,4), memory_space="L1", tiled=True)
+@pykernel_gen(block_factors=[(16,16), (16,16), (16,16), (16,16)], grid=(4,4), memory_space="L1", tiled=True)
 def fa_k2_2048(Q, K, V, out, block_factors=None, grid=None):
     Q_stream, K_stream, V_stream = Stream(Q), Stream(K), Stream(V)
     @compute()
