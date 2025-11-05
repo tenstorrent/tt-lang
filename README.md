@@ -11,36 +11,63 @@ tt-lang uses a CMake-based build system that reuses tt-mlir's environment and to
 
 ### Prerequisites
 
-**tt-mlir must be built first.** tt-lang depends on tt-mlir and reuses its toolchain. Please refer to the [Getting Started Guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) on how to build tt-mlir and its prerequisites. Note that the brief instructions below do not cover all possible build scenarios.
+tt-lang depends on tt-mlir and can be built in two modes:
 
-1. Clone the correct version of tt-mlir; make sure to use the version in [third-party/tt-mlir.
-commit](./third-party/tt-mlir.commit) (different versions are not guaranteed to be compatible).
+1. Use pre-installed tt-mlir from `/opt/ttmlir-toolchain` (or custom location)
+2. Use prebuilt (not necessarily installed) tt-mlir with environment activation (requires manual tt-mlir build)
+3. Automatically build and install tt-mlir internally in the tt-lang project and use that installed version.
+
+### Standalone Build Mode (Recommended)
+
+If you have tt-mlir pre-installed at `/opt/ttmlir-toolchain` (or another location), you can build tt-lang without manually building tt-mlir:
 
 ```bash
+cd /path/to/tt-lang
+cmake -GNinja -Bbuild .
+cmake --build build
+```
 
+To use a custom tt-mlir installation location:
+
+```bash
+cmake -GNinja -Bbuild . -DTTMLIR_TOOLCHAIN_DIR=/path/to/ttmlir-toolchain
+cmake --build build
+```
+
+If tt-mlir is not found at the specified location, the build system will automatically fetch and build the correct version from `third-party/tt-mlir.commit` and install it to the specified location.
+
+**Build options:**
+```bash
+cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+```
+
+### Traditional Build Mode
+
+If you prefer to manually build tt-mlir first (or if you're developing tt-mlir alongside tt-lang):
+
+1. Clone the correct version of tt-mlir; make sure to use the version in [third-party/tt-mlir.commit](./third-party/tt-mlir.commit) (different versions are not guaranteed to be compatible).
+
+```bash
 git clone https://github.com/tenstorrent/tt-mlir.git
 cd tt-mlir
 git checkout <commit sha from third-party/tt-mlir.commit>
 ```
 
-# Activate tt-mlir environment and build tt-mlir
+2. Activate tt-mlir environment and build tt-mlir:
+
+```bash
 source env/activate
 cmake -GNinja -Bbuild .
 cmake --build build
 ```
 
-2. Configure and build tt-lang.
+3. Configure and build tt-lang:
 
 ```bash
 cd /path/to/tt-lang
 source env/activate
 cmake -GNinja -Bbuild .
 cmake --build build
-```
-
-**Build options:**
-```bash
-cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 ```
 
 **Note:** The `third-party/tt-mlir.commit` file contains a reference tt-mlir version for compatibility. Ensure your installed tt-mlir is compatible.
@@ -50,9 +77,10 @@ cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON
 
 ### Updating tt-mlir version
 
-Update the `third-party/tt-mlir.commit` file to the desired SHA. Repeat steps 1-3 above after checking out that SHA in your tt-mlir clone.
+Update the `third-party/tt-mlir.commit` file to the desired SHA.
 
-In future, the tt-lang build will be extended to automatically fetch and build the supported tt-mlir version.
+- For standalone builds: The build system will automatically fetch and build the new version if not found.
+- For traditional builds: Repeat steps 1-3 above after checking out that SHA in your tt-mlir clone.
 
 ### Code Formatting with Pre-commit
 

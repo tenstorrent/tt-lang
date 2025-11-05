@@ -1,6 +1,9 @@
-# Compiler and linker configuration for tt-lang
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
 
-# ccache support - automatically enable if found
+# Compiler and linker configuration for tt-lang.
+
+# ccache support - automatically enable if found.
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
   message(STATUS "Found ccache: ${CCACHE_PROGRAM}")
@@ -10,13 +13,13 @@ else()
   message(STATUS "ccache not found - builds will not be cached")
 endif()
 
-# Enable compilation database for clangd support
+# Enable compilation database for clangd support.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Compiler flags
 add_compile_options(-Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter --system-header-prefix=ENV{TTMLIR_TOOLCHAIN_DIR})
 
-# Suppress redundant -U option warning on macOS when building Python extensions
+# Suppress redundant -U option warning on macOS when building Python extensions.
 if(APPLE)
   string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,-w")
   string(APPEND CMAKE_MODULE_LINKER_FLAGS " -Wl,-w")

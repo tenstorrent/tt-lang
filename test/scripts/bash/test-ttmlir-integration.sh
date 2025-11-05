@@ -31,7 +31,7 @@ else
     BUILD_DIR="${TEST_BUILD_DIR}/scenario1"
     mkdir -p "${BUILD_DIR}"
     cd "${BUILD_DIR}"
-    
+
     echo "Configuring CMake..."
     if cmake -GNinja "${PROJECT_ROOT}" 2>&1 | tee configure.log; then
         echo "✓ Configuration successful"
@@ -123,4 +123,3 @@ echo ""
 echo "=== All scenario tests completed ==="
 echo "Test build directories: ${TEST_BUILD_DIR}"
 echo "To clean up: rm -rf ${TEST_BUILD_DIR}"
-

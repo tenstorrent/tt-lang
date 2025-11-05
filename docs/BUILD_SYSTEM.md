@@ -16,13 +16,51 @@ The build system supports:
 
 See the [README Quick Start](README.md#quick-start) section for prerequisites and build instructions.
 
+## Build Modes
+
+tt-lang supports two build modes:
+
+### Managed Build Mode (Recommended)
+
+In standalone mode, tt-lang uses a pre-installed tt-mlir from `/opt/ttmlir-toolchain` (or a custom location). This mode:
+- Does not require tt-mlir's environment activation
+- Does not require manually building tt-mlir
+- Automatically fetches and builds tt-mlir if not found at the specified location
+- Uses CMake variables for configuration
+
+**Use this mode when:**
+- You have tt-mlir pre-installed (e.g., in a container or system installation)
+- You want a simpler build process without environment activation
+- You're building in CI/CD environments
+
+###  Custom build mode
+
+In traditional mode, tt-lang uses tt-mlir's environment activation and expects tt-mlir to be manually built first. This mode:
+- Requires `source env/activate` before building
+- Requires manual tt-mlir build
+- Uses environment variables for configuration
+
+**Use this mode when:**
+- You're developing tt-mlir alongside tt-lang
+- You need to use tt-mlir's Python virtual environment
+- You prefer the traditional workflow
+
 ## How It Works
 
-The `ExternTTMLIR.cmake` module finds your pre-built tt-mlir installation:
+The `ExternTTMLIR.cmake` module finds tt-mlir using the following search order:
 
-1. Reads the reference version from `third-party/tt-mlir.commit`
-2. Looks for pre-built tt-mlir via `$TT_MLIR_HOME` or `$TTMLIR_TOOLCHAIN_DIR`
-3. Links against the found tt-mlir libraries
+1. **CMake variable `TTMLIR_DIR`** (if set) → `{TTMLIR_DIR}`
+2. **CMake variable `TTMLIR_TOOLCHAIN_DIR`** (defaults to `/opt/ttmlir-toolchain`) → `{dir}/lib/cmake/ttmlir`
+3. **Environment variable `TTMLIR_TOOLCHAIN_DIR`** → `{dir}/lib/cmake/ttmlir`
+4. **Default location** → `/opt/ttmlir-toolchain/lib/cmake/ttmlir`
+5. **Environment variable `TT_MLIR_HOME`** (for build tree) → `{dir}/build/lib/cmake/ttmlir`
+6. **FetchContent fallback** → Automatically fetches, builds, and installs tt-mlir to `TTMLIR_TOOLCHAIN_DIR`
+
+If tt-mlir is found via `find_package`, it is used directly. If not found, the build system:
+- Fetches the version specified in `third-party/tt-mlir.commit`
+- Configures tt-mlir with platform-specific options (runtime enabled on Linux, disabled on Apple)
+- Builds and installs tt-mlir to the specified `TTMLIR_TOOLCHAIN_DIR`
+- Links against the newly built tt-mlir
 
 **Note:** The `third-party/tt-mlir.commit` file contains a reference tt-mlir version for compatibility. Ensure your installed tt-mlir is compatible.
 
@@ -37,7 +75,7 @@ tt-lang/
 ├── dev-requirements.txt           # Development requirements
 ├── cmake/
 │   └── modules/                   # CMake helper modules
-│       ├── CompilerSetup.cmake
+│       ├── TTLangCompilerSetup.cmake
 │       └── ExternTTMLIR.cmake     # tt-mlir dependency management
 ├── env/
 │   └── activate                   # Environment activation (sources tt-mlir's env)
@@ -105,7 +143,8 @@ cmake -GNinja -Bbuild .
 **Configuration Options:**
 
 - `CMAKE_BUILD_TYPE` (default: Release) - Build type (Debug, Release, RelWithDebInfo, Asan, Coverage, Assert)
-- `TTLANG_ENABLE_BINDINGS_PYTHON` (default: ON) - Enable Python bindings
+- `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`) - Location of pre-installed tt-mlir toolchain
+- `TTLANG_ENABLE_BINDINGS_PYTHON` (default: OFF) - Enable Python bindings
 - `TTLANG_ENABLE_RUNTIME` (default: OFF) - Enable runtime support
 - `CODE_COVERAGE` (default: OFF) - Enable code coverage reporting
 
@@ -189,7 +228,7 @@ target_link_libraries(MyTarget
 
 ## Environment Variables
 
-### Set by tt-mlir's environment:
+### Set by tt-mlir's environment (optional, only for traditional mode):
 - `TTMLIR_TOOLCHAIN_DIR` - Toolchain installation directory (e.g., `/opt/ttmlir-toolchain`)
 - `TTMLIR_VENV_DIR` - Python virtual environment directory
 - `TTMLIR_ENV_ACTIVATED` - Set to 1 when tt-mlir environment is active
@@ -202,6 +241,8 @@ target_link_libraries(MyTarget
 ### Modified by tt-lang:
 - `PATH` - Prepends `$TT_LANG_HOME/build/bin`
 - `PYTHONPATH` - Prepends `$TT_LANG_HOME/build/python_packages`
+
+**Note:** Environment variables are optional in standalone mode. If `TTMLIR_TOOLCHAIN_DIR` is set as an environment variable, it takes precedence over the CMake variable. If not set, the CMake variable defaults to `/opt/ttmlir-toolchain`.
 
 ## Development Workflow
 
@@ -277,20 +318,39 @@ As the project grows, you can add:
 
 ## Troubleshooting
 
-### Error: "TTLANG_ENV_ACTIVATED not set"
+### Standalone Build Issues
+
+#### Warning: "tt-mlir environment not activated"
+**Solution:** This is expected in standalone mode. The build will proceed if tt-mlir is found at `/opt/ttmlir-toolchain` or the location specified by `TTMLIR_TOOLCHAIN_DIR`.
+
+#### Error: "Could not find TTMLIR" (standalone mode)
+**Solution:** The build system will automatically fetch and build tt-mlir. If this fails:
+1. Check that `/opt/ttmlir-toolchain` (or your custom `TTMLIR_TOOLCHAIN_DIR`) is writable
+2. Ensure you have network access to fetch tt-mlir from GitHub
+3. Verify the commit hash in `third-party/tt-mlir.commit` is valid
+4. Check build logs for specific errors during tt-mlir fetch/build
+
+#### Error: "Permission denied" when installing tt-mlir
+**Solution:** The build system needs write access to `TTMLIR_TOOLCHAIN_DIR`. Either:
+- Use a user-writable location: `cmake -GNinja -Bbuild . -DTTMLIR_TOOLCHAIN_DIR=$HOME/ttmlir-toolchain`
+- Or ensure `/opt/ttmlir-toolchain` is writable (may require sudo)
+
+### Traditional Build Issues
+
+#### Error: "TTLANG_ENV_ACTIVATED not set"
 **Solution:** Run `source env/activate`
 
-### Error: "TTMLIR_ENV_ACTIVATED not set"
+#### Error: "TTMLIR_ENV_ACTIVATED not set"
 **Solution:** Ensure tt-mlir environment is properly sourced. The tt-lang activate script should do this automatically, but verify `TT_MLIR_HOME` is set correctly.
 
-### Error: "TT_MLIR_HOME not set and tt-mlir not found"
+#### Error: "TT_MLIR_HOME not set and tt-mlir not found"
 **Solution:** Set `TT_MLIR_HOME` before activating:
 ```bash
 export TT_MLIR_HOME=/path/to/tt-mlir
 source env/activate
 ```
 
-### Error: "Could not find TTMLIR"
+#### Error: "Could not find TTMLIR" (traditional mode)
 **Solution:** Ensure tt-mlir is built and installed:
 ```bash
 cd $TT_MLIR_HOME
@@ -302,7 +362,9 @@ The `TTMLIRConfig.cmake` should be at one of:
 - `$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake` (if installed)
 - `$TT_MLIR_HOME/build/lib/cmake/ttmlir/TTMLIRConfig.cmake` (build tree)
 
-### Python import errors
+### Common Issues
+
+#### Python import errors
 **Solution:** Ensure environment is activated and paths are correct:
 ```bash
 source env/activate
@@ -310,10 +372,16 @@ echo $PYTHONPATH  # Should include both tt-mlir and tt-lang packages
 python3 -c "import ttmlir; import ttlang"
 ```
 
-### Build errors about missing LLVM/MLIR
+#### Build errors about missing LLVM/MLIR
 **Solution:** Ensure tt-mlir's toolchain is built:
 ```bash
 cd $TT_MLIR_HOME
 cmake -GNinja -Bbuild-env env/
 cmake --build build-env
 ```
+
+#### FetchContent build takes too long
+**Solution:** The first build will fetch and build tt-mlir, which can take a long time. Subsequent builds will reuse the cached tt-mlir installation. To speed up:
+- Use a pre-installed tt-mlir at `/opt/ttmlir-toolchain`
+- Ensure ccache is available (automatically detected and used)
+- Use a faster build type: `-DCMAKE_BUILD_TYPE=Release`
