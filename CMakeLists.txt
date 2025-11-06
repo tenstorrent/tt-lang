@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24.0)
+cmake_minimum_required(VERSION 3.28.0)
 
 if(NOT DEFINED CMAKE_C_COMPILER)
   set(CMAKE_C_COMPILER clang CACHE STRING "C Compiler" FORCE)
@@ -33,7 +33,7 @@ endif()
 include(TTLangCompilerSetup)
 include(ExternTTMLIR)
 
-if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. Please make a new directory (called a build directory) and run CMake from there.")
 endif()
 
