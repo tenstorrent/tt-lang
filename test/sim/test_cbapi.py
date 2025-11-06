@@ -51,7 +51,7 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI[int], CBID]):
     # Reserve and write 4 tiles
     api.cb_reserve_back(cb0, 4)
     ptr = api.get_write_ptr(cb0)
-    ptr.fill([1, 2, 3, 4])  # type: ignore[arg-type]
+    ptr.store([1, 2, 3, 4])  # type: ignore[arg-type]
     api.cb_push_back(cb0, 4)
     stats = api.cb_stats(cb0)
     assert stats.visible == 4
@@ -68,7 +68,7 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI[int], CBID]):
     # Reserve full capacity and write
     api.cb_reserve_back(cb0, 8)
     ptr = api.get_write_ptr(cb0)
-    ptr.fill(list(range(8)))  # type: ignore[arg-type]
+    ptr.store(list(range(8)))  # type: ignore[arg-type]
     api.cb_push_back(cb0, 8)
     stats = api.cb_stats(cb0)
     assert stats.visible == 8
@@ -113,7 +113,7 @@ def test_threaded_produce_consume(configured_cb: Tuple[CBAPI[int], CBID]):
     # Producer reserves and writes
     api.cb_reserve_back(cb0, 4)
     ptr = api.get_write_ptr(cb0)
-    ptr.fill([100, 200, 300, 400])  # type: ignore[arg-type]
+    ptr.store([100, 200, 300, 400])  # type: ignore[arg-type]
     api.cb_push_back(cb0, 4)
     t.join(timeout=1)
     assert result == [[100, 200, 300, 400]]
@@ -133,7 +133,7 @@ def test_cb_pages_nonblocking(configured_cb8: Tuple[CBAPI[int], CBID]):
 
     # After initial reserve of 4, push data to make pages available
     ptr = api.get_write_ptr(cb2)
-    ptr.fill([1, 2, 3, 4])  # type: ignore[arg-type]
+    ptr.store([1, 2, 3, 4])  # type: ignore[arg-type]
     api.cb_push_back(cb2, 4)
     # Divisible sizes: 4 and 2 are both valid
     assert api.cb_pages_available_at_front(cb2, 4)
@@ -170,7 +170,7 @@ def test_cb_pages_available_divisibility_error(configured_cb8: Tuple[CBAPI[int],
     api, cb = configured_cb8
     api.cb_reserve_back(cb, 4)
     ptr = api.get_write_ptr(cb)
-    ptr.fill([1, 2, 3, 4])  # type: ignore[arg-type]
+    ptr.store([1, 2, 3, 4])  # type: ignore[arg-type]
     api.cb_push_back(cb, 4)
     with pytest.raises(
         CBContractError, match="First num_tiles=3 must evenly divide capacity=8"

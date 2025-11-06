@@ -1,23 +1,33 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-from typing import Optional, Any, Callable, Union, Tuple
-
+import types
+from typing import Optional, Any, Callable, Union, Tuple, Dict, Protocol, Coroutine
+import copy
 import torch
 import math
+from types import CellType, FunctionType
 # from pykernel.kernel_ast import *
 # from utils import assert_pcc
-from sim import TILE_SIZE, TensorAccessor, IndexType, CircularBuffer, dma, torch_utils as tu
+from sim import TILE_SIZE, TensorAccessor, IndexType, CircularBuffer, dma, CBAPI, torch_utils as tu
 
+MAX_CORES = 4  # assuming a 2x2 core grid for simplicity
+
+# Protocol for templates that have a bind method
+class BindableTemplate(Protocol):
+    __name__: str
+    def bind(self, ctx: Dict[str, Any]) -> Callable[[], Coroutine[Any, Any, Any]]: ...
+
+# TODO: Preamble work should either merge with tt-lang or sim
 def pykernel_gen(grid: Union[str, Tuple[int, int]] = 'auto', granularity: int = 4):
     """
     Decorator that generates a kernel with specified grid and granularity.
-    If grid='auto', defaults to (2, 2).
+    If grid='auto', defaults to (2, 1).
     """
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Set grid to (2, 2) if 'auto'
-            actual_grid = (2, 2) if grid == 'auto' else grid
+            # Set grid to (2, 1) if 'auto'
+            actual_grid = (2, 1) if grid == 'auto' else grid
             
             # Inject granularity into the function's local scope
             import inspect
@@ -34,16 +44,84 @@ def pykernel_gen(grid: Union[str, Tuple[int, int]] = 'auto', granularity: int = 
         return wrapper
     return decorator
 
-def compute():
-    """Decorator for compute functions"""
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        return func
+def _make_cell(value: Any) -> CellType:
+    # create a real closure cell holding `value`
+    def inner() -> Any:
+        return value
+    assert inner.__closure__ is not None
+    return inner.__closure__[0]
+
+def _rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionType:
+    """
+    Create a new function from `func` but with:
+      - globals = func.__globals__ + ctx
+      - closure cells rebuilt from ctx when possible
+    so that names like `out_cb` that were captured will now point to the per-core objects.
+    """
+    freevars = func.__code__.co_freevars
+    orig_closure = func.__closure__ or ()
+    orig_cell_map: Dict[str, CellType] = {name: cell for name, cell in zip(freevars, orig_closure)}
+
+    new_cells: list[CellType] = []
+    for name in freevars:
+        if name in ctx:
+            new_cells.append(_make_cell(ctx[name]))
+        else:
+            # fall back to original cell if we don't have an override
+            new_cells.append(orig_cell_map[name])
+
+    # merge globals with ctx so globals-based lookups also see per-core state
+    new_globals: Dict[str, Any] = dict(func.__globals__)
+    new_globals.update(ctx)
+
+    new_func = types.FunctionType(
+        func.__code__,
+        new_globals,
+        func.__name__,
+        func.__defaults__,
+        tuple(new_cells)
+    )
+    return new_func
+
+def compute() -> Callable[[FunctionType], BindableTemplate]:
+    def decorator(func: FunctionType) -> BindableTemplate:
+        class ComputeTemplate:
+            __name__ = func.__name__
+
+            def bind(self, ctx: Dict[str, Any]) -> Callable[[], Coroutine[Any, Any, Any]]:
+                # rebuild function with per-core closure
+                bound_func = _rebind_func_with_ctx(func, ctx)
+
+                async def runner():
+                    res = bound_func()
+                    import inspect
+                    if inspect.iscoroutine(res):
+                        await res
+                    else:
+                        return res
+                return runner
+
+        return ComputeTemplate()
     return decorator
 
-def datamovement():
-    """Decorator for data movement functions"""
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        return func
+def datamovement() -> Callable[[FunctionType], BindableTemplate]:
+    def decorator(func: FunctionType) -> BindableTemplate:
+        class DMTemplate:
+            __name__ = func.__name__
+
+            def bind(self, ctx: Dict[str, Any]) -> Callable[[], Coroutine[Any, Any, Any]]:
+                bound_func = _rebind_func_with_ctx(func, ctx)
+
+                async def runner():
+                    res = bound_func()
+                    import inspect
+                    if inspect.iscoroutine(res):
+                        await res
+                    else:
+                        return res
+                return runner
+
+        return DMTemplate()
     return decorator
 
 # Global state for core management
@@ -55,82 +133,95 @@ def core_index() -> int:
 
 def next_core():
     """Advance to the next core for the next program run"""
-    _core_state['current_core'] = (_core_state['current_core'] + 1) % 4
+    _core_state['current_core'] = (_core_state['current_core'] + 1) % MAX_CORES
 
-def Program(*funcs: Callable[..., Any]):
+def Program(*funcs: BindableTemplate) -> Any:
     """Program class that combines compute and data movement functions"""
     class ProgramImpl:
-        def __init__(self, *functions: Callable[..., Any]):
+        def __init__(self, *functions: BindableTemplate):
+            # expected order: compute_func, dm0, dm1 (like your code)
             self.functions = functions
-            self.context: dict[str, Any] = {}  # Will be populated when __call__ is invoked
+            self.context: Dict[str, Any] = {}
         
         def __call__(self, *args: Any, **kwargs: Any) -> None:
-            # Capture ALL local variables from the calling function (eltwise_add) automatically
             import inspect
             frame = inspect.currentframe()
             if frame and frame.f_back:
-                # Get all local variables from the calling function
+                # capture locals from the caller (eltwise_add)
                 self.context = dict(frame.f_back.f_locals)
-                
-                # Also add the function arguments for convenience
-                if len(args) > 0:
-                    self.context['_args'] = args
-                if kwargs:
-                    self.context['_kwargs'] = kwargs
-            
-            # Get grid info for multi-core execution
+
             grid = self.context.get('grid', (1, 1))
             total_cores = grid[0] * grid[1]
-            
-            # Execute the functions in proper order: dm0 -> compute_func -> dm1
-            compute_func, dm0, dm1 = self.functions
-            
-            # Helper function to execute a function with context available
-            def execute_with_context(func: Callable[..., Any], func_name: str) -> Any:
-                # Make context available to the function by injecting into its globals
-                if hasattr(func, '__globals__'):
-                    # Inject context variables into the function's globals
-                    # NO restoration - allow functions to modify shared state
-                    for key, value in self.context.items():
-                        func.__globals__[key] = value
-                    
-                    try:
-                        # Execute the function (handling async functions)
-                        result = func()
-                        
-                        # Check if it's a coroutine (async function)
-                        import inspect
-                        import asyncio
-                        if inspect.iscoroutine(result):
-                            # Run the async function using asyncio
-                            asyncio.run(result)
-                        return result
-                    except Exception as e:
-                        print(f"✗ {func_name} failed with error: {e}")
-                        import traceback
-                        traceback.print_exc()
-                    # NO cleanup - preserve state changes between function calls
-                else:
-                    try:
-                        result = func()
-                        return result
-                    except Exception as e:
-                        print(f"✗ {func_name} failed with error: {e}")
-            
-            # Execute the program for each core
+
+            compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
+
+            errors: list[str] = []
+
             for core in range(total_cores):
-                # Execute the functions in the correct order with context available
-                execute_with_context(dm0, "dm0 (data movement in)")
-                execute_with_context(compute_func, "compute_func (computation)")
-                execute_with_context(dm1, "dm1 (data movement out)")
-                
-                # Advance to next core (except for the last core)
+                # build per-core context
+                memo: dict[int, Any] = {}
+                core_context: dict[str, Any] = {}
+                api = CBAPI[torch.Tensor]()  # new CBAPI per core
+
+                for key, value in self.context.items():
+                    if isinstance(value, (torch.Tensor, TensorAccessor)):
+                        core_context[key] = value
+                        memo[id(value)] = value
+                    elif isinstance(value, CircularBuffer):
+                        # create a fresh CB for this core
+                        core_context[key] = CircularBuffer(
+                            accessor=value.accessor,
+                            shape=value.shape,
+                            buffer_factor=value.buffer_factor,
+                            api=api
+                        )
+                    else:
+                        core_context[key] = copy.deepcopy(value, memo)
+
+                # also make the core number visible
+                core_context['core'] = core
+
+                # bind per-core
+                core_dm0 = dm0_tmpl.bind(core_context)
+                core_compute = compute_func_tmpl.bind(core_context)
+                core_dm1 = dm1_tmpl.bind(core_context)
+
+                import asyncio
+
+                # run this core in isolation so one bad core doesn't stop others
+                try:
+                    try:
+                        asyncio.run(core_dm0())
+                        asyncio.run(core_compute())
+                        asyncio.run(core_dm1())
+                    except RuntimeError:
+                        # in case we're already in an event loop
+                        async def _runner():
+                            await core_dm0()
+                            await core_compute()
+                            await core_dm1()
+                        asyncio.run(_runner())
+                except Exception as e:
+                    # record the error but keep going
+                    import traceback
+                    msg = f"core {core} failed: {type(e).__name__}: {e}"
+                    print(f"\n❌ {msg}")
+                    print("Stack trace for this core:")
+                    traceback.print_exc()
+                    print("-" * 50)  # separator line
+                    errors.append(msg)
+
                 if core < total_cores - 1:
                     next_core()
-            
+
+            # after all cores, if any failed, raise something
+            if errors:
+                raise RuntimeError("One or more cores failed:\n" + "\n".join(errors))
+
             return None
-    
+
     return ProgramImpl(*funcs)
+
 
 def assert_pcc(tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> None:
     # tensors should be equal
@@ -146,7 +237,7 @@ def is_tiled(tensor: torch.Tensor) -> bool:
     grid='auto', # NOTE: allow compiler to choose grid
     granularity=4, # compute granularity. could be passed by user, or left for auto-tuning
 )
-def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid: Optional[Any] = None):
+def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid: Optional[Any] = None) -> None:
     assert grid is not None
     
     # Get granularity from decorator (hardcoded for now since decorator system is simplified)
@@ -179,7 +270,8 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
         
-        for _ in range(start_col_tile, end_col_tile):
+        for tile in range(start_col_tile, end_col_tile):
+            print("Compute: ", f"core={core_num}", f"tile={tile}")
             # Reuse C across rows of A, B
             # returns a RingView object as defined in <put up the link>.
             # TODO: Perhaps consider making RingView pointers that come from wait()/reserve() read/write only respectively?
@@ -189,10 +281,9 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
                 b_block = b_in_cb.wait() # blocking
                 # NOTE: Please consider making non-approx the default for eltwise unary, but leave the option for the user to specify approx=True
                 out_block = out_cb.reserve() # blocking
-
                 
-                # Use fill() to properly populate the RingView with computed results
-                out_block.fill([a_block[i] + b_block[i] for i in range(len(a_block))])
+                # Use store() to properly populate the RingView with computed results
+                out_block.store([a_block[i] + b_block[i] for i in range(len(a_block))])
                 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
                 out_cb.push()
@@ -210,6 +301,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
         
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
+                print("dm0: ", f"core={core_num}", f"tile={ct}", f"block={rt_block}")
                 """
                 Since the TensorAccessor indexes by tile, slicing is cleaner
                 """
@@ -233,6 +325,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
         
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
+                print("dm1: ", f"core={core_num}", f"tile={ct}", f"block={rt_block}")
                 """
                 Since the TensorAccessor indexes by tile, slicing is cleaner
                 """
@@ -240,25 +333,31 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
                 col_slice = slice(ct, ct+1)
                 
                 out_block = out_cb.wait()
+                # out_block[100] # accessing out of bounds should fail
                 
                 tx = dma(out_block, out_accessor[row_slice, col_slice])
                 tx.wait()
+                # print(id(out_block), id(out_accessor), id(out_accessor[row_slice, col_slice]))
                 out_cb.pop()
-                # (TODO: What if another thread writes to the same positions this RingView points to?)
+                # TODO: We might want better error messages, most of them come from the underlying CBAPI
+                #       which might be confusing to the higher level CircularBuffer user.
+                # TODO: What if another thread writes to the same positions this RingView points to?
                 # out_block[0] # using pointer on stale data should fail
                 # out_cb.pop() # double pop should fail
-                # out_block[100] # accessing out of bounds should fail
+
     # Execute the program across all cores
     return Program(compute_func, dm0, dm1)(a_in, b_in, out)
 
 """
 out = a + b
 """
-
-a_in = torch.randn(128, 128) #type: ignore
-b_in = torch.randn(128, 128) #type: ignore
-out = torch.zeros(128, 128) #type: ignore
+dim = 128
+a_in = torch.randn(dim, dim) #type: ignore
+b_in = torch.randn(dim, dim) #type: ignore
+out = torch.zeros(dim, dim) #type: ignore
 eltwise_add(a_in, b_in, out)
 
 golden = a_in + b_in
+print(golden)
+print(out)
 assert_pcc(golden, out)

@@ -7,7 +7,7 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from typing import Tuple
+from typing import Tuple, Optional
 import torch
 from threading import Lock
 
@@ -44,10 +44,10 @@ class CircularBuffer:
         cb.pop()  # Free consumed tiles
     """
     
-    # Class-level CB allocator
+    # Class-level CB allocator for default API instance
     _cb_allocator_lock = Lock()
     _next_cb_id = 0
-    _api = CBAPI[torch.Tensor]()
+    _default_api = CBAPI[torch.Tensor]()
     
     @classmethod
     def _allocate_cb_id(cls) -> CBID:
@@ -62,7 +62,8 @@ class CircularBuffer:
     def __init__(self, 
                  accessor: TensorAccessor,
                  shape: Tuple[Size, Size], 
-                 buffer_factor: Size = 2):
+                 buffer_factor: Size = 2,
+                 api: Optional[CBAPI[torch.Tensor]] = None):
         """
         Initialize a CircularBuffer.
         
@@ -70,6 +71,7 @@ class CircularBuffer:
             accessor: TensorAccessor object that provides tensor access methods
             shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
             buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
+            api: Optional CBAPI instance to use. If None, uses the shared default instance.
             
         Raises:
             ValueError: If shape or buffer_factor are invalid
@@ -87,6 +89,9 @@ class CircularBuffer:
         self._accessor = accessor
         self._shape = shape
         self._buffer_factor = buffer_factor
+        
+        # Use provided API instance or default
+        self._api = api if api is not None else self._default_api
         
         # Calculate total capacity in tiles
         self._tiles_per_operation = shape[0] * shape[1]

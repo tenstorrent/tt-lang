@@ -36,7 +36,7 @@ class CBAPI(Generic[T]):
     https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
     """
 
-    def __init__(self, timeout: Optional[float] = 5.0):
+    def __init__(self, timeout: Optional[float] = 1.0):
         """Initialize simulator with optional per-instance timeout (seconds)."""
 
         self._pool: List[CBState[T]] = [CBState[T]() for _ in range(MAX_CBS)]

@@ -57,8 +57,8 @@ class RingView(Generic[T]):
     def to_list(self) -> List[Optional[T]]:
         return [self[i] for i in range(len(self))]
 
-    def fill(self, items: Sequence[T]) -> None:
+    def store(self, items: Sequence[T]) -> None:
         if len(items) != self._span.length:
-            raise ValueError("Length mismatch in fill()")
+            raise ValueError("Length mismatch in store()")
         for i, v in enumerate(items):
             self[i] = v

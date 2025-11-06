@@ -172,7 +172,7 @@ class TensorAccessor:
     def tile_size(self) -> int:
         """Get the tile size used by this TensorAccessor."""
         return TILE_SIZE
-    
+     
     def __repr__(self) -> str:
         return (
             f"TensorAccessor(tensor_shape={self.shape}, "
