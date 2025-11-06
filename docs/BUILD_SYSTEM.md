@@ -114,7 +114,10 @@ tt-lang/
 │       ├── TTLangCompilerSetup.cmake
 │       └── ExternTTMLIR.cmake     # tt-mlir dependency management
 ├── env/
-│   └── activate                   # Environment activation (sources tt-mlir's env)
+│   └── activate.in                # Environment activation template
+├── build/                         # Build directory (created by CMake)
+│   └── env/
+│       └── activate               # Generated activation script
 ├── include/
 │   ├── CMakeLists.txt
 │   ├── ttlang/                    # Public C++ headers
@@ -146,34 +149,36 @@ tt-lang/
 
 ## Build Process
 
-### 1. Activate Environment
+### 1. Configure
 
-The tt-lang environment sources tt-mlir's environment and adds tt-lang-specific paths:
+The CMake configure step generates a `build/env/activate` script tailored to your build scenario:
 
 ```bash
 cd /path/to/tt-lang
-source env/activate
+cmake -GNinja -Bbuild .
+```
+
+This creates `build/env/activate` with the correct paths for whichever tt-mlir scenario was detected.
+
+### 2. Activate Environment
+
+```bash
+source build/env/activate
 ```
 
 **What this does:**
-- Sets `TT_MLIR_HOME` (auto-detects if tt-mlir is in `../tt-mlir` relative to tt-lang)
-- Sources tt-mlir's `env/activate` (sets up `TTMLIR_TOOLCHAIN_DIR`, `TTMLIR_VENV_DIR`, Python venv, etc.)
 - Sets `TT_LANG_HOME` to tt-lang project root
+- Sets `TTMLIR_TOOLCHAIN_DIR` to the detected or configured toolchain directory
+- Activates the Python virtual environment from the toolchain
 - Sets `TTLANG_ENV_ACTIVATED=1`
 - Prepends `tt-lang/build/bin` to PATH
 - Prepends `tt-lang/build/python_packages` and `tt-lang/python` to PYTHONPATH
+- Shows which tt-mlir is being used (build tree, installed, or locally built)
 
-**Custom tt-mlir location:**
-If tt-mlir is not in the default location, set `TT_MLIR_HOME`:
-```bash
-export TT_MLIR_HOME=/path/to/tt-mlir
-source env/activate
-```
-
-### 2. Configure tt-lang
+### 3. Build tt-lang
 
 ```bash
-cmake -GNinja -Bbuild .
+cmake --build build
 ```
 
 **Configuration Options:**
@@ -199,12 +204,6 @@ cmake -GNinja -Bbuild .
 
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
-```
-
-### 3. Build tt-lang
-
-```bash
-cmake --build build
 ```
 
 This builds:
@@ -297,13 +296,11 @@ target_link_libraries(MyTarget
 ### First-time Setup
 
 ```bash
-# See Prerequisites section for tt-mlir setup
-
 # Build tt-lang
 cd /path/to/tt-lang
-source env/activate  # This sources tt-mlir's env automatically
-cmake -GNinja -Bbuild .  # Will find or fetch tt-mlir
-cmake --build build
+cmake -GNinja -Bbuild .      # Configure and generate activation script
+source build/env/activate     # Activate the environment
+cmake --build build           # Build tt-lang
 ```
 
 ### Daily Development
@@ -311,7 +308,7 @@ cmake --build build
 ```bash
 # In each new shell session:
 cd /path/to/tt-lang
-source env/activate
+source build/env/activate
 
 # Build
 cmake --build build

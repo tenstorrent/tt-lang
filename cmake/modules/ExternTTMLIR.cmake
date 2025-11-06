@@ -44,9 +44,6 @@ set(_TOOLCHAIN_Python3_EXECUTABLE "${Python3_EXECUTABLE}")
 find_package(TTMLIR QUIET CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir")
 
 if(TTMLIR_FOUND)
-  get_filename_component(_TTMLIR_ACTUAL_TOOLCHAIN_DIR "${TTMLIR_CMAKE_DIR}/../.." ABSOLUTE)
-  set(TTMLIR_TOOLCHAIN_DIR "${_TTMLIR_ACTUAL_TOOLCHAIN_DIR}" CACHE PATH "tt-mlir toolchain installation directory" FORCE)
-
   if(DEFINED _TTMLIR_BUILD_DIR)
     message(STATUS "Using pre-built tt-mlir from build tree: ${_TTMLIR_BUILD_DIR}")
     load_cache("${_TTMLIR_BUILD_DIR}" READ_WITH_PREFIX _TTMLIR_
@@ -74,13 +71,12 @@ if(TTMLIR_FOUND)
         include(TTMLIRBuildTypes OPTIONAL)
       endif()
     endif()
+    set(TTMLIR_PATH "${_TTMLIR_BUILD_DIR}" PARENT_SCOPE)
+    set(TTMLIR_PYTHON_PACKAGES "${_TTMLIR_BUILD_DIR}/python_packages" PARENT_SCOPE)
   else()
-    message(STATUS "Using installed tt-mlir from: ${TTMLIR_CMAKE_DIR}")
-    set(_TTMLIR_VENV_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
-    if(EXISTS "${_TTMLIR_VENV_DIR}/bin/python3")
-      set(Python3_EXECUTABLE "${_TTMLIR_VENV_DIR}/bin/python3" CACHE FILEPATH "Python 3 executable from tt-mlir" FORCE)
-      message(STATUS "Using Python from tt-mlir installation: ${Python3_EXECUTABLE}")
-    endif()
+    message(STATUS "Using pre-installed tt-mlir from: ${TTMLIR_CMAKE_DIR}")
+    set(TTMLIR_PATH "${TTMLIR_TOOLCHAIN_DIR}" PARENT_SCOPE)
+    set(TTMLIR_PYTHON_PACKAGES "${TTMLIR_CMAKE_DIR}" PARENT_SCOPE)
   endif()
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")
   find_package(LLVM REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm")
@@ -162,8 +158,9 @@ else()
     -DTTMLIR_ENABLE_RUNTIME=${_TTMLIR_ENABLE_RUNTIME}
     -DTTMLIR_ENABLE_RUNTIME_TESTS=${_TTMLIR_ENABLE_RUNTIME_TESTS}
     -DTTMLIR_ENABLE_STABLEHLO=OFF
+    -DTTMLIR_ENABLE_OPMODEL=ON
     -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF
-    -DTTMLIR_ENABLE_BINDINGS_PYTHON=OFF
+    -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON
     -DTTMLIR_ENABLE_DEBUG_STRINGS=ON
     -DTTMLIR_ENABLE_EXPLORER=OFF
     -DBUILD_TESTING=OFF
@@ -172,37 +169,47 @@ else()
   message(STATUS "Configuring tt-mlir...")
   set(ENV{TTMLIR_TOOLCHAIN_DIR} "${TTMLIR_TOOLCHAIN_DIR}")
   string(REPLACE ";" " " _TTMLIR_CMAKE_ARGS_STRING "${_TTMLIR_CMAKE_ARGS}")
-  execute_process(
-    COMMAND /bin/bash -c ". ${_TTMLIR_SOURCE_DIR}/env/activate && ${CMAKE_COMMAND} ${_TTMLIR_CMAKE_ARGS_STRING} -S ${_TTMLIR_SOURCE_DIR} -B ${_TTMLIR_BUILD_DIR}"
-    RESULT_VARIABLE _config_result
-    ERROR_VARIABLE _config_error
+  ttlang_execute_with_env(
+    COMMAND "${CMAKE_COMMAND} ${_TTMLIR_CMAKE_ARGS_STRING} -S ${_TTMLIR_SOURCE_DIR} -B ${_TTMLIR_BUILD_DIR}"
+    ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
     WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
-    COMMAND_ECHO STDOUT
-    COMMAND_ERROR_IS_FATAL ANY
   )
-  if(NOT _config_result EQUAL 0)
-    message(FATAL_ERROR "Failed to configure tt-mlir: ${_config_error}")
-  endif()
 
-  message(STATUS "Building tt-mlir...")
-  execute_process(
-    COMMAND ${CMAKE_COMMAND} --build "${_TTMLIR_BUILD_DIR}" --target install
-    RESULT_VARIABLE _build_result
-    ERROR_VARIABLE _build_error
+  message(STATUS "Building tt-mlir in ${_TTMLIR_BUILD_DIR}...")
+  ttlang_execute_with_env(
+    COMMAND "${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} --target all --target TTMLIRPythonModules"
+    ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
     WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
-    COMMAND_ECHO STDOUT
   )
-  if(NOT _build_result EQUAL 0)
-    message(FATAL_ERROR "Failed to build tt-mlir: ${_build_error}")
-  endif()
 
-  find_package(TTMLIR REQUIRED CONFIG HINTS "${_TTMLIR_INSTALL_PREFIX}/lib/cmake/ttmlir")
+  message(STATUS "Installing tt-mlir...")
+  ttlang_execute_with_env(
+    COMMAND "${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} --target install"
+    ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
+    WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
+  )
+
+  message(STATUS "Installing tt-mlir Python wheel...")
+  ttlang_execute_with_env(
+    COMMAND "${CMAKE_COMMAND} --install ${_TTMLIR_BUILD_DIR} --component TTMLIRPythonWheel"
+    ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
+    WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
+  )
+
+  # Save original toolchain dir before finding the locally built tt-mlir.
+  set(_ORIGINAL_TTMLIR_TOOLCHAIN_DIR "${TTMLIR_TOOLCHAIN_DIR}")
+
+  message(STATUS "Searching for TTMLIRConfig.cmake in: ${_TTMLIR_INSTALL_PREFIX}/lib/cmake/ttmlir")
+  find_package(TTMLIR REQUIRED CONFIG PATHS "${_TTMLIR_INSTALL_PREFIX}/lib/cmake/ttmlir")
   message(STATUS "Built and using private tt-mlir installation from: ${TTMLIR_CMAKE_DIR}")
-  set(TTMLIR_TOOLCHAIN_DIR "${_TTMLIR_INSTALL_PREFIX}" CACHE PATH "tt-mlir toolchain installation directory" FORCE)
+
   if(EXISTS "${_TTMLIR_SOURCE_DIR}/cmake/modules")
     list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_SOURCE_DIR}/cmake/modules")
     include(TTMLIRBuildTypes OPTIONAL)
   endif()
+
+  set(TTMLIR_PATH "${_TTMLIR_INSTALL_PREFIX}")
+  set(TTMLIR_PYTHON_PACKAGES "${_TTMLIR_INSTALL_PREFIX}")
 
   # Set up MLIR and LLVM environment.
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")

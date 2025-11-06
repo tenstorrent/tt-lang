@@ -30,3 +30,38 @@ function(ttlang_get_parent_dir PATH LEVELS OUTPUT_VAR)
   endforeach()
   set(${OUTPUT_VAR} "${_current_path}" PARENT_SCOPE)
 endfunction()
+
+# ttlang_execute_with_env(
+#   COMMAND <command_string>
+#   ENV_SCRIPT <path_to_activate_script>
+#   [WORKING_DIRECTORY <directory>]
+# )
+# Executes a command with an environment activation script sourced.
+# The command is run in a bash shell with the environment script sourced first.
+# Output is echoed to stdout and errors are fatal.
+function(ttlang_execute_with_env)
+  set(options)
+  set(oneValueArgs COMMAND ENV_SCRIPT WORKING_DIRECTORY)
+  set(multiValueArgs)
+  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT ARG_COMMAND)
+    message(FATAL_ERROR "ttlang_execute_with_env: COMMAND is required")
+  endif()
+  if(NOT ARG_ENV_SCRIPT)
+    message(FATAL_ERROR "ttlang_execute_with_env: ENV_SCRIPT is required")
+  endif()
+
+  set(_exec_args
+    COMMAND_ECHO STDOUT
+    COMMAND_ERROR_IS_FATAL ANY
+  )
+  if(ARG_WORKING_DIRECTORY)
+    list(APPEND _exec_args WORKING_DIRECTORY "${ARG_WORKING_DIRECTORY}")
+  endif()
+
+  execute_process(
+    COMMAND /bin/bash -c ". ${ARG_ENV_SCRIPT} && ${ARG_COMMAND}"
+    ${_exec_args}
+  )
+endfunction()

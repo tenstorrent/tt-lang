@@ -41,6 +41,14 @@ set(TTLANG_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(TTLANG_BINARY_DIR ${PROJECT_BINARY_DIR})
 set(LLVM_TOOLS_DIR "${TTMLIR_TOOLCHAIN_DIR}/bin")
 
+set(TT_LANG_HOME "${CMAKE_CURRENT_LIST_DIR}")
+
+configure_file(
+  "${PROJECT_SOURCE_DIR}/env/activate.in"
+  "${PROJECT_BINARY_DIR}/env/activate"
+  @ONLY
+)
+
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 include_directories(SYSTEM ${TTMLIR_INCLUDE_DIRS})
