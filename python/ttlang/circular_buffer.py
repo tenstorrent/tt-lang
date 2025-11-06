@@ -20,8 +20,8 @@ class CircularBuffer:
 
     def pop(ast_self: "CircularBuffer") -> "TensorBlock":
         """Wait for and consume data from the circular buffer."""
-        return d2m.wait(d2m.ir.CBType.cast(ast_self.type).getUnderlying(), ast_self)
+        return d2m.wait(d2m.ir.CBType.cast(ast_self.type).get_underlying(), ast_self)
 
     def reserve(ast_self: "CircularBuffer") -> "TensorBlock":
         """Reserve space in the circular buffer for writing."""
-        return d2m.reserve(d2m.ir.CBType.cast(ast_self.type).getUnderlying(), ast_self)
+        return d2m.reserve(d2m.ir.CBType.cast(ast_self.type).get_underlying(), ast_self)
