@@ -155,9 +155,20 @@ def create_generic_func(
 
     compiled_threads.sort(key=lambda ct: ct.kernel_type == "compute")
 
+    # Create tensor types for arguments
+    # For streamed outputs, use DRAM memory space so they can be accessed by host
     ordered_tensor_args = []
-    for arg in user_args:
-        tensor_type = create_tensor_type(ctx, arg, grid, tiled, memory_space)
+    num_inputs = len(user_args) - num_outs
+    for i, arg in enumerate(user_args):
+        is_output = i >= num_inputs
+        # Check if this arg is marked as stream
+        attr_dict = DictAttr(stream_func_arg_attrs[i])
+        is_stream_arg = BoolAttr(attr_dict["d2m.stream"]).value
+
+        # Streamed outputs need DRAM memory space for host access
+        arg_memory_space = "DRAM" if (is_output and is_stream_arg) else memory_space
+
+        tensor_type = create_tensor_type(ctx, arg, grid, tiled, arg_memory_space)
         ordered_tensor_args.append(tensor_type)
 
     arg_types = ordered_tensor_args
@@ -210,7 +221,10 @@ def create_generic_func(
                         logical_shape=list(user_args[len(inputs) + i].shape),
                         grid=grid,
                         tiled=tiled,
-                        memory_space=memory_space,
+                        # Storage buffer for streamed outputs: L1 (kernel writes here)
+                        # The output argument (%out) is DRAM (set above in create_tensor_type)
+                        # stream_layout bridges: DRAM arg -> L1 storage -> kernel writes -> copy back
+                        memory_space="L1",
                     ),
                 )
                 if is_output_stream[i]
