@@ -37,8 +37,6 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. Please make a new directory (called a build directory) and run CMake from there.")
 endif()
 
-include(FindMLIR)
-
 set(TTLANG_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(TTLANG_BINARY_DIR ${PROJECT_BINARY_DIR})
 set(LLVM_TOOLS_DIR "${TTMLIR_TOOLCHAIN_DIR}/bin")
