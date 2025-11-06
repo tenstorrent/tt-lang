@@ -253,6 +253,9 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
     
     # Parallelizing by columns here to get reuse on C
     cols_per_core = math.ceil(col_tiles / (grid[0] * grid[1]))
+    blocks_per_col = row_tiles // granularity
+    buffer_factor = cols_per_core * blocks_per_col  # this is the key line
+
 
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
     b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
@@ -260,9 +263,9 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
     
     # NOTE: (Kostas) I don't understand why a CircularBuffer needs to be associated with a tensor accessor.
     #                Perhaps we need to know its specific type? Or to prevent mixups of tensors on the same cb?
-    a_in_cb = CircularBuffer(a_accessor, shape=(granularity,1), buffer_factor=2)
-    b_in_cb = CircularBuffer(b_accessor, shape=(granularity,1), buffer_factor=2)
-    out_cb = CircularBuffer(out_accessor, shape=(granularity,1), buffer_factor=2)
+    a_in_cb = CircularBuffer(a_accessor, shape=(granularity,1), buffer_factor=buffer_factor)
+    b_in_cb = CircularBuffer(b_accessor, shape=(granularity,1), buffer_factor=buffer_factor)
+    out_cb = CircularBuffer(out_accessor, shape=(granularity,1), buffer_factor=buffer_factor)
 
     @compute()
     async def compute_func():
@@ -351,7 +354,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
 """
 out = a + b
 """
-dim = 128
+dim = 256
 a_in = torch.randn(dim, dim) #type: ignore
 b_in = torch.randn(dim, dim) #type: ignore
 out = torch.zeros(dim, dim) #type: ignore
