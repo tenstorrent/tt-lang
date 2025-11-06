@@ -149,6 +149,9 @@ def create_generic_func(
         and isinstance(block_factors[0], tuple)
     ):
         block_factors = [b for bs in block_factors for b in bs]
+        
+    # TODO: figure out what this should really be, right now explicit block factors crash.
+    block_factors = []
 
     compiled_threads.sort(key=lambda ct: ct.kernel_type == "compute")
 
