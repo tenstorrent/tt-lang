@@ -7,9 +7,9 @@ repos:
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.7
     hooks:
-    - id: clang-format
-      types_or: [c++, c]
-      args: [-style=file, -i]
+      - id: clang-format
+        types_or: [c++, c]
+        args: [-style=file, -i]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -22,4 +22,6 @@ repos:
     rev: v1.0.3
     hooks:
       - id: check-copyright
-        args: ['--config', '.github/check-spdx.yaml']
+        args: ["--config", ".github/check-spdx.yaml"]
+        types_or: [python, c++, c, shell]
+        files: \.(py|cpp|cc|cxx|h|hpp|hxx|td|sh|cmake)$
