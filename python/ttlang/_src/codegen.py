@@ -194,6 +194,31 @@ def create_generic_func(
             for i, inp in enumerate(inputs)
         ]
 
+        # Wrap output arguments with stream_layout if marked as streams
+        is_output_stream = []
+        for attr in stream_func_arg_attrs[-num_outs:]:
+            attr_dict = DictAttr(attr)
+            stream_attr = attr_dict["d2m.stream"]
+            is_output_stream.append(BoolAttr(stream_attr).value)
+
+        wrapped_outputs = [
+            (
+                create_stream_layout_for_input(
+                    ctx,
+                    out,
+                    StreamLayoutConfig(
+                        logical_shape=list(user_args[len(inputs) + i].shape),
+                        grid=grid,
+                        tiled=tiled,
+                        memory_space=memory_space,
+                    ),
+                )
+                if is_output_stream[i]
+                else out
+            )
+            for i, out in enumerate(outputs)
+        ]
+
         threads = ArrayAttr.get(
             [
                 ct.func_entry.attributes[d2m.ir.ThreadAttr.name]
@@ -207,7 +232,7 @@ def create_generic_func(
         generic = d2m.GenericOp(
             [ret_type],
             wrapped_inputs,
-            outputs,
+            wrapped_outputs,  # Use wrapped_outputs to support output streaming
             ttcore.ir.GridAttr.get(ctx, grid),
             block_factors,
             list(map(affine_map_from_lambda, indexing_maps)),

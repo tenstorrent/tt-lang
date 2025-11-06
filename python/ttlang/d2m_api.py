@@ -272,8 +272,9 @@ def _compile_and_run_kernel(
             DictAttr.get({"d2m.stream": BoolAttr.get(p in streams)})
             for p in positional_arg_names
         ]
-        if positional_arg_names[-num_outs] in streams:
-            raise ValueError("Output streaming is not supported")
+        # NOTE: Enabling output streaming support
+        # if positional_arg_names[-num_outs] in streams:
+        #     raise ValueError("Output streaming is not supported")
 
         with InsertionPoint(module.body):
             create_generic_func(
