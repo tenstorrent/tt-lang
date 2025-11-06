@@ -11,15 +11,34 @@ tt-lang uses a CMake-based build system that reuses tt-mlir's environment and to
 
 ### Prerequisites
 
-tt-lang depends on tt-mlir and can be built in two modes:
+tt-lang depends on tt-mlir. The build system supports three integration scenarios:
 
-1. Use pre-installed tt-mlir from `/opt/ttmlir-toolchain` (or custom location)
-2. Use prebuilt (not necessarily installed) tt-mlir with environment activation (requires manual tt-mlir build)
-3. Automatically build and install tt-mlir internally in the tt-lang project and use that installed version.
+1. **Pre-built tt-mlir** - Use a tt-mlir build tree (for development)
+2. **Pre-installed tt-mlir** - Use an installed tt-mlir toolchain
+3. **Automatic build** - Let the build system fetch and build tt-mlir automatically
 
-### Standalone Build Mode (Recommended)
+### Scenario 1: Using Pre-built tt-mlir (Development Mode)
 
-If you have tt-mlir pre-installed at `/opt/ttmlir-toolchain` (or another location), you can build tt-lang without manually building tt-mlir:
+If you're developing tt-mlir alongside tt-lang, you can point to your tt-mlir build directory:
+
+```bash
+# First, build tt-mlir
+cd /path/to/tt-mlir
+source env/activate
+cmake -GNinja -Bbuild .
+cmake --build build
+
+# Then build tt-lang pointing to the tt-mlir build tree
+cd /path/to/tt-lang
+cmake -GNinja -Bbuild . -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build
+cmake --build build
+```
+
+This mode uses the Python environment and toolchain from the tt-mlir build configuration.
+
+### Scenario 2: Using Pre-installed tt-mlir (Recommended)
+
+If you have tt-mlir installed at `/opt/ttmlir-toolchain` (default) or another location:
 
 ```bash
 cd /path/to/tt-lang
@@ -27,60 +46,53 @@ cmake -GNinja -Bbuild .
 cmake --build build
 ```
 
-To use a custom tt-mlir installation location:
+To use a custom installation location:
 
 ```bash
 cmake -GNinja -Bbuild . -DTTMLIR_TOOLCHAIN_DIR=/path/to/ttmlir-toolchain
 cmake --build build
 ```
 
-If tt-mlir is not found at the specified location, the build system will automatically fetch and build the correct version from `third-party/tt-mlir.commit` and install it to the specified location.
+The build system will find the installed tt-mlir and use its toolchain and Python environment.
 
-**Build options:**
-```bash
-cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
-```
+### Scenario 3: Automatic Build (Fallback)
 
-### Traditional Build Mode
-
-If you prefer to manually build tt-mlir first (or if you're developing tt-mlir alongside tt-lang):
-
-1. Clone the correct version of tt-mlir; make sure to use the version in [third-party/tt-mlir.commit](./third-party/tt-mlir.commit) (different versions are not guaranteed to be compatible).
-
-```bash
-git clone https://github.com/tenstorrent/tt-mlir.git
-cd tt-mlir
-git checkout <commit sha from third-party/tt-mlir.commit>
-```
-
-2. Activate tt-mlir environment and build tt-mlir:
-
-```bash
-source env/activate
-cmake -GNinja -Bbuild .
-cmake --build build
-```
-
-3. Configure and build tt-lang:
+If tt-mlir is not found, the build system will automatically:
+1. Fetch the version specified in `third-party/tt-mlir.commit`
+2. Build it with appropriate platform-specific options
+3. Install it locally in the build directory
 
 ```bash
 cd /path/to/tt-lang
-source env/activate
 cmake -GNinja -Bbuild .
 cmake --build build
 ```
 
-**Note:** The `third-party/tt-mlir.commit` file contains a reference tt-mlir version for compatibility. Ensure your installed tt-mlir is compatible.
+The tt-mlir will be built and installed to `build/tt-mlir-install/`. This process requires:
+- An existing LLVM/MLIR toolchain at `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`)
+- Python 3.11+ in the toolchain's virtual environment
+
+**Build options:**
+```bash
+# Debug build with Python bindings
+cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+
+# Enable code coverage
+cmake -GNinja -Bbuild . -DCODE_COVERAGE=ON
+```
+
+**Note:** The `third-party/tt-mlir.commit` file contains the reference tt-mlir version. The build system ensures version compatibility automatically.
 
 
 ## Developer Guidelines
 
 ### Updating tt-mlir version
 
-Update the `third-party/tt-mlir.commit` file to the desired SHA.
+Update the `third-party/tt-mlir.commit` file to the desired commit SHA.
 
-- For standalone builds: The build system will automatically fetch and build the new version if not found.
-- For traditional builds: Repeat steps 1-3 above after checking out that SHA in your tt-mlir clone.
+- **Scenario 1 (Pre-built)**: Check out the new SHA in your tt-mlir repository and rebuild.
+- **Scenario 2 (Pre-installed)**: Install the new tt-mlir version to your toolchain directory.
+- **Scenario 3 (Automatic)**: The build system will automatically fetch and build the new version on the next clean build.
 
 ### Code Formatting with Pre-commit
 
@@ -129,6 +141,7 @@ Pre-commit will:
 - Ensure files end with a single newline
 - Check YAML and TOML syntax
 - Check for large files
+- Check for valid copyright notice
 
 If `pre-commit` makes changes, the commit will be stopped. Review the changes, stage them, and commit again:
 
