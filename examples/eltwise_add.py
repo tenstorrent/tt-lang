@@ -27,7 +27,7 @@ def pykernel_gen(grid: Union[str, Tuple[int, int]] = 'auto', granularity: int = 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Set grid to (2, 1) if 'auto'
-            actual_grid = (2, 1) if grid == 'auto' else grid
+            actual_grid = (2, 2) if grid == 'auto' else grid
             
             # Inject granularity into the function's local scope
             import inspect
@@ -235,13 +235,13 @@ def is_tiled(tensor: torch.Tensor) -> bool:
 
 @pykernel_gen(
     grid='auto', # NOTE: allow compiler to choose grid
-    granularity=4, # compute granularity. could be passed by user, or left for auto-tuning
+    granularity=2, # compute granularity. could be passed by user, or left for auto-tuning
 )
 def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid: Optional[Any] = None) -> None:
     assert grid is not None
     
     # Get granularity from decorator (hardcoded for now since decorator system is simplified)
-    granularity = 4
+    granularity = 2
     
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
@@ -273,12 +273,12 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
         
-        for tile in range(start_col_tile, end_col_tile):
-            print("Compute: ", f"core={core_num}", f"tile={tile}")
+        for ct in range(start_col_tile, end_col_tile):
             # Reuse C across rows of A, B
             # returns a RingView object as defined in <put up the link>.
             # TODO: Perhaps consider making RingView pointers that come from wait()/reserve() read/write only respectively?
-            for _ in range(row_tiles // granularity):
+            for rt_block in range(row_tiles // granularity):
+                print("Compute: ", f"core={core_num}", f"tile={ct}", f"block={rt_block}")
                 # again, these return RingView pointers:
                 a_block = a_in_cb.wait() # blocking 
                 b_block = b_in_cb.wait() # blocking
