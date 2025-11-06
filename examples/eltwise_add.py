@@ -22,11 +22,11 @@ class BindableTemplate(Protocol):
 def pykernel_gen(grid: Union[str, Tuple[int, int]] = 'auto', granularity: int = 4):
     """
     Decorator that generates a kernel with specified grid and granularity.
-    If grid='auto', defaults to (2, 1).
+    If grid='auto', defaults to (2, 2).
     """
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Set grid to (2, 1) if 'auto'
+            # Set grid to (2, 2) if 'auto'
             actual_grid = (2, 2) if grid == 'auto' else grid
             
             # Inject granularity into the function's local scope
@@ -139,7 +139,6 @@ def Program(*funcs: BindableTemplate) -> Any:
     """Program class that combines compute and data movement functions"""
     class ProgramImpl:
         def __init__(self, *functions: BindableTemplate):
-            # expected order: compute_func, dm0, dm1 (like your code)
             self.functions = functions
             self.context: Dict[str, Any] = {}
         
@@ -155,6 +154,7 @@ def Program(*funcs: BindableTemplate) -> Any:
 
             compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
 
+            # collect user-facing errors here
             errors: list[str] = []
 
             for core in range(total_cores):
@@ -186,42 +186,72 @@ def Program(*funcs: BindableTemplate) -> Any:
                 core_compute = compute_func_tmpl.bind(core_context)
                 core_dm1 = dm1_tmpl.bind(core_context)
 
-                import asyncio
+                # run the three in parallel threads, because CB ops are blocking
+                import threading, asyncio, traceback
 
-                # run this core in isolation so one bad core doesn't stop others
-                try:
+                # we store (stage_name, exception, traceback_str)
+                thread_results: list[Tuple[str, Exception, str]] = []
+                
+                def run_coro_in_thread(name: str, coro_factory: Callable[[], Coroutine[Any, Any, Any]]) -> None:
                     try:
-                        asyncio.run(core_dm0())
-                        asyncio.run(core_compute())
-                        asyncio.run(core_dm1())
-                    except RuntimeError:
-                        # in case we're already in an event loop
-                        async def _runner():
-                            await core_dm0()
-                            await core_compute()
-                            await core_dm1()
-                        asyncio.run(_runner())
-                except Exception as e:
-                    # record the error but keep going
-                    import traceback
-                    msg = f"core {core} failed: {type(e).__name__}: {e}"
-                    print(f"\n❌ {msg}")
-                    print("Stack trace for this core:")
-                    traceback.print_exc()
-                    print("-" * 50)  # separator line
-                    errors.append(msg)
+                        coro = coro_factory()
+                        try:
+                            # normal path
+                            asyncio.run(coro)
+                        except RuntimeError as re:
+                            # only fallback if it's the "event loop is running" case
+                            msg = str(re)
+                            if "event loop is running" in msg:
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                # create a *new* coroutine for this loop
+                                coro2 = coro_factory()
+                                loop.run_until_complete(coro2)
+                                loop.close()
+                            else:
+                                # it's some other runtime error; re-raise to outer except
+                                raise
+                    except Exception as e:
+                        tb_str = traceback.format_exc()
+                        thread_results.append((name, e, tb_str))
+
+                t_dm0 = threading.Thread(target=run_coro_in_thread, args=(f"core{core}-dm0", core_dm0))
+                t_comp = threading.Thread(target=run_coro_in_thread, args=(f"core{core}-compute", core_compute))
+                t_dm1 = threading.Thread(target=run_coro_in_thread, args=(f"core{core}-dm1", core_dm1))
+
+                # start all three
+                t_dm0.start()
+                t_comp.start()
+                t_dm1.start()
+
+                # wait for all to finish
+                t_dm0.join()
+                t_comp.join()
+                t_dm1.join()
+
+                # check if any failed
+                if thread_results:
+                    for name, e, tb_str in thread_results:
+                        # print a user-readable header
+                        print(f"\n❌ {name} failed on core {core}")
+                        print(f"   error type   : {type(e).__name__}")
+                        print(f"   error message: {e}")
+                        print("   traceback:")
+                        print(tb_str)
+                        print("-" * 50)
+
+                        # add to final aggregation (short)
+                        errors.append(f"{name} on core {core}: {type(e).__name__}: {e}")
 
                 if core < total_cores - 1:
                     next_core()
 
-            # after all cores, if any failed, raise something
             if errors:
                 raise RuntimeError("One or more cores failed:\n" + "\n".join(errors))
 
             return None
 
     return ProgramImpl(*funcs)
-
 
 def assert_pcc(tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> None:
     # tensors should be equal
@@ -253,9 +283,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
     
     # Parallelizing by columns here to get reuse on C
     cols_per_core = math.ceil(col_tiles / (grid[0] * grid[1]))
-    blocks_per_col = row_tiles // granularity
-    buffer_factor = cols_per_core * blocks_per_col  # this is the key line
-
+    buffer_factor = 2
 
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
     b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
@@ -278,7 +306,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
             # returns a RingView object as defined in <put up the link>.
             # TODO: Perhaps consider making RingView pointers that come from wait()/reserve() read/write only respectively?
             for rt_block in range(row_tiles // granularity):
-                print("Compute: ", f"core={core_num}", f"tile={ct}", f"block={rt_block}")
+                print("Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
                 # again, these return RingView pointers:
                 a_block = a_in_cb.wait() # blocking 
                 b_block = b_in_cb.wait() # blocking
@@ -304,10 +332,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
         
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
-                print("dm0: ", f"core={core_num}", f"tile={ct}", f"block={rt_block}")
-                """
-                Since the TensorAccessor indexes by tile, slicing is cleaner
-                """
+                print("dm0: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block*granularity, (rt_block+1)*granularity)
                 col_slice = slice(ct, ct+1)
                 # Write the cbs just as above
@@ -328,10 +353,7 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
         
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
-                print("dm1: ", f"core={core_num}", f"tile={ct}", f"block={rt_block}")
-                """
-                Since the TensorAccessor indexes by tile, slicing is cleaner
-                """
+                print("dm1: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block*granularity, (rt_block+1)*granularity)
                 col_slice = slice(ct, ct+1)
                 
@@ -340,7 +362,6 @@ def eltwise_add(a_in: torch.Tensor, b_in: torch.Tensor, out: torch.Tensor, grid:
                 
                 tx = dma(out_block, out_accessor[row_slice, col_slice])
                 tx.wait()
-                # print(id(out_block), id(out_accessor), id(out_accessor[row_slice, col_slice]))
                 out_cb.pop()
                 # TODO: We might want better error messages, most of them come from the underlying CBAPI
                 #       which might be confusing to the higher level CircularBuffer user.
