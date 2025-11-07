@@ -76,7 +76,7 @@ jobs:
                   source env/activate
                   ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
                   cmake -G Ninja \
-                    -B build -DCMAKE_INSTALL_PREFIX=
+                    -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
                     -DCMAKE_BUILD_TYPE=Release \
                     -DTTMLIR_ENABLE_RUNTIME=OFF \
                     -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \

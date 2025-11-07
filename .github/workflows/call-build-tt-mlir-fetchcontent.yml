@@ -46,7 +46,7 @@ jobs:
                   cmake --build build
                   source env/activate
                   python test/python/smoketest.py
-                  
+
             - name: Upload build artifacts
               uses: actions/upload-artifact@v4
               with:
