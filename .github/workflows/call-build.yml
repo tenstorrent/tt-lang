@@ -70,7 +70,7 @@ jobs:
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |
                   cd tt-mlir
-                  . /opt/ttmlir-toolchain/venv/activate
+                  source env/activate
                   ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
                   cmake -G Ninja \
                     -B build \
@@ -95,7 +95,6 @@ jobs:
 
             - name: Configure tt-lang
               run: |
-                  . /opt/ttmlir-toolchain/venv/activate
                   cmake -G Ninja \
                     -B build \
                     -DCMAKE_BUILD_TYPE=Release \
@@ -105,12 +104,12 @@ jobs:
 
             - name: Build tt-lang
               run: |
-                  . build/activate
+                  source build/activate
                   cmake --build build --config Release
 
             - name: Test the build
               run: |
-                  . build/activate
+                  source build/activate
                   python test/python/smoketest.py
 
             - name: Upload build artifacts
