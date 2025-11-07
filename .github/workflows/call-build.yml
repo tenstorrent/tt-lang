@@ -64,75 +64,74 @@ jobs:
         id: llvm-version
         uses: ./.github/actions/get-llvm-version
 
-      # - name: Cache tt-mlir build
-      #   id: cache-ttmlir
-      #   uses: actions/cache@v4
-      #   with:
-      #       path:
-      #         ${{ env.TT_MLIR_HOME }}/build
-      #         ${{ env.TT_MLIR_DIR }}
-      #       key: ${{ runner.os }}-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
+      - name: Cache tt-mlir build
+        id: cache-ttmlir
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TT_MLIR_HOME }}/build
+            ${{ env.TT_MLIR_DIR }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
 
-      # - name: Configure and build tt-mlir
-      #   if: steps.cache-ttmlir.outputs.cache-hit != 'true'
-      #   run: |
-      #       cd tt-mlir
-      #       source env/activate
-      #       ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
-      #       cmake -G Ninja \
-      #         -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
-      #         -DCMAKE_BUILD_TYPE=Release \
-      #         -DTTMLIR_ENABLE_SHARED_LIB=ON \
-      #         -DTTMLIR_ENABLE_RUNTIME=OFF \
-      #         -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
-      #         -DTTMLIR_ENABLE_STABLEHLO=OFF \
-      #         -DTTMLIR_ENABLE_OPMODEL=ON \
-      #         -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
-      #         -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
-      #         -DTTMLIR_ENABLE_DEBUG_STRINGS=ON \
-      #         -DTTMLIR_ENABLE_EXPLORER=OFF \
-      #         -DBUILD_TESTING=OFF \
-      #         -S .
-      #       cmake --build build --target all --target TTMLIRPythonModules
-      #       cmake --install build
-      #       cmake --install build --component TTMLIRPythonWheel
+      - name: Configure and build tt-mlir
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+        run: |
+          cd tt-mlir
+          source env/activate
+          ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
+          cmake -G Ninja \
+            -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_ENABLE_SHARED_LIB=ON \
+            -DTTMLIR_ENABLE_RUNTIME=OFF \
+            -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
+            -DTTMLIR_ENABLE_STABLEHLO=OFF \
+            -DTTMLIR_ENABLE_OPMODEL=ON \
+            -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
+            -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DTTMLIR_ENABLE_DEBUG_STRINGS=ON \
+            -DTTMLIR_ENABLE_EXPLORER=OFF \
+            -DBUILD_TESTING=OFF \
+            -S .
+          cmake --build build --target all --target TTMLIRPythonModules
+          cmake --install build
+          cmake --install build --component TTMLIRPythonWheel
 
-      # - name: Setup ccache for tt-lang
-      #   uses: hendrikmuhs/ccache-action@v1.2
-      #   with:
-      #       key: ${{ github.job }}-${{ runner.os }}-llvm-${{ steps.llvm-version.outputs.version }}
-      #       max-size: 200M
+      - name: Setup ccache for tt-lang
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ runner.os }}-llvm-${{ steps.llvm-version.outputs.version }}
+          max-size: 200M
 
-      # - name: Configure tt-lang
-      #   run: |
-      #       cmake -G Ninja \
-      #         -B build \
-      #         -DCMAKE_BUILD_TYPE=Release \
-      #         -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
-      #         -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
-      #         -S .
+      - name: Configure tt-lang
+        run: |
+          cmake -G Ninja \
+            -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
+            -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
+            -S .
 
-      # - name: Build tt-lang
-      #   run: |
-      #       source build/activate
-      #       cmake --build build --config Release
+      - name: Build tt-lang
+        run: |
+          source build/activate
+          cmake --build build --config Release
 
-      # - name: Test the build
-      #   run: |
-      #       source build/env/activate
-      #       python test/python/smoketest.py
+      - name: Test the build
+        run: |
+          source build/env/activate
+          python test/python/smoketest.py
 
-      # - name: Test building with an installed tt-mlir
-      #   run: |
-      #       cmake -G Ninja -B build-with-installed-ttmlir TTMLIR_DIR=${{ env.TT_MLIR_DIR }}
-      #       cmake --build build-with-installed-ttmlir
-      #       ./build-with-installed-ttmlir/bin/ttlang-opt -v
+      - name: Test building with an installed tt-mlir
+        run: |
+          cmake -G Ninja -B build-with-installed-ttmlir TTMLIR_DIR=${{ env.TT_MLIR_DIR }}
+          cmake --build build-with-installed-ttmlir
+          ./build-with-installed-ttmlir/bin/ttlang-opt -v
 
-      # - name: Upload build artifacts
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #       name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
-      #       path: |
-      #           build/python_packages
-      #           sim/
-      #       retention-days: 1
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          path: |
+            build/python_packages
+            sim/
+          retention-days: 1
