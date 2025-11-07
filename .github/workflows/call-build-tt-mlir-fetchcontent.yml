@@ -27,18 +27,29 @@ jobs:
               with:
                   fetch-depth: 0
 
+            - name: Get LLVM version
+              id: llvm-version
+              uses: ./.github/actions/get-llvm-version
+
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
-                  key: ${{ github.job }}-${{ runner.os }}
+                  key: ${{ github.job }}-${{ runner.os }}-llvm-${{ steps.llvm-version.outputs.version }}
                   max-size: 200M
+
+            - name: Restore cached tt-mlir
+              uses: actions/cache/restore@v4
+              id: cache-ttmlir
+              with:
+                  path: build/tt-mlir-install
+                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Cache built tt-mlir
               uses: actions/cache/save@v4
-              if: always()
+              if: always() && steps.cache-ttmlir.outputs.cache-hit != 'true'
               with:
                   path: build/tt-mlir-install
-                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}
+                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Build tt-lang
               run: |

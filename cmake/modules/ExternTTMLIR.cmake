@@ -11,7 +11,6 @@
 
 
 # Set up Python from the toolchain venv (used by all scenarios).
-set(Python3_FIND_VIRTUALENV ONLY)
 set(Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 message(STATUS "Using Python from toolchain: ${Python3_EXECUTABLE}")
@@ -151,7 +150,6 @@ else()
     -DCMAKE_CXX_COMPILER_LAUNCHER=${_TTMLIR_CXX_LAUNCHER}
     -DPython3_EXECUTABLE=${_TOOLCHAIN_Python3_EXECUTABLE}
     -DPython3_ROOT_DIR=${_TOOLCHAIN_Python3_ROOT_DIR}
-    -DPython3_FIND_VIRTUALENV=ONLY
     -DMLIR_DIR=${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir
     -DLLVM_DIR=${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm
     -DTTMLIR_ENABLE_RUNTIME=${_TTMLIR_ENABLE_RUNTIME}
