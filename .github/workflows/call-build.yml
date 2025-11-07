@@ -11,7 +11,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            timeout: 90
+            timeout: 180
             use-container: true
           - os: macos-26
             timeout: 360
@@ -104,6 +104,7 @@ jobs:
 
       - name: Configure tt-lang
         run: |
+          source ${{ env.TT_MLIR_HOME }}/env/activate
           cmake -G Ninja \
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -113,7 +114,7 @@ jobs:
 
       - name: Build tt-lang
         run: |
-          source build/activate
+          source build/env/activate
           cmake --build build --config Release
 
       - name: Test the build
@@ -125,7 +126,7 @@ jobs:
         run: |
           cmake -G Ninja -B build-with-installed-ttmlir TTMLIR_DIR=${{ env.TT_MLIR_DIR }}
           cmake --build build-with-installed-ttmlir
-          ./build-with-installed-ttmlir/bin/ttlang-opt -v
+          ./build-with-installed-ttmlir/bin/ttlang-opt --version
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

@@ -4,7 +4,7 @@ on:
     workflow_dispatch:
     workflow_call:
     schedule:
-        - cron: '0 12 * * *'  # 6am PST
+        - cron: "0 12 * * *" # 6am PST
 
 jobs:
     build-tt-lang-tt-mlir:
@@ -55,7 +55,7 @@ jobs:
               run: |
                   cmake -G Ninja -B build
                   cmake --build build
-                  source env/activate
+                  source build/env/activate
                   python test/python/smoketest.py
 
             - name: Upload build artifacts

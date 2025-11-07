@@ -10,13 +10,6 @@
 # 3. FetchContent fallback: Build locally when neither is found.
 
 
-# Set up Python from the toolchain venv (used by all scenarios).
-set(Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
-find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-message(STATUS "Using Python from toolchain: ${Python3_EXECUTABLE}")
-set(_TOOLCHAIN_Python3_ROOT_DIR "${Python3_ROOT_DIR}")
-set(_TOOLCHAIN_Python3_EXECUTABLE "${Python3_EXECUTABLE}")
-
 # Scenario 1: Pre-built tt-mlir (build tree)
 if(DEFINED TTMLIR_BUILD_DIR)
   set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
@@ -75,6 +68,13 @@ if(TTMLIR_FOUND)
   else()
     message(STATUS "Using pre-installed tt-mlir from: ${TTMLIR_CMAKE_DIR}")
     set(TTMLIR_PATH "${TTMLIR_TOOLCHAIN_DIR}")
+
+    # Use the Pytnon from the toolchain's virtual environment.
+    set(Python3_FIND_VIRTUALENV ONLY)
+    set(Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
+    set(Python3_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3" CACHE FILEPATH "Python 3 executable")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+    message(STATUS "Using Python from toolchain: ${Python3_EXECUTABLE}")
   endif()
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")
   find_package(LLVM REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm")
@@ -108,6 +108,9 @@ else()
   endif()
 
   message(STATUS "tt-mlir not found. Building private copy version: ${TTMLIR_GIT_TAG}")
+
+  set(_TOOLCHAIN_Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
+  set(_TOOLCHAIN_Python3_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
 
   if(APPLE)
     set(_TTMLIR_ENABLE_RUNTIME OFF)
