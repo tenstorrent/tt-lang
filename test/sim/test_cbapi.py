@@ -158,7 +158,9 @@ def test_cb_pages_reservable_out_of_range_error(configured_cb: Tuple[CBAPI[int],
         api.cb_pages_reservable_at_back(cb, 5)
 
 
-def test_cb_pages_reservable_divisibility_error(configured_cb8: Tuple[CBAPI[int], CBID]):
+def test_cb_pages_reservable_divisibility_error(
+    configured_cb8: Tuple[CBAPI[int], CBID]
+):
     api, cb = configured_cb8
     with pytest.raises(
         CBContractError, match="First num_tiles=5 must evenly divide capacity=8"
@@ -240,6 +242,7 @@ def test_multiple_producers_error(timeout_api: CBAPI[int]):
         "Only one producer thread may reserve on a CB at a time" in msg
         for msg in errors
     )
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

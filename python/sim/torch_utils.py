@@ -1,7 +1,10 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
 """
 PyTorch Type Utilities for Test Code
 
-This module provides wrapper functions around PyTorch operations to avoid 
+This module provides wrapper functions around PyTorch operations to avoid
 '# type: ignore' comments throughout test files.
 
 WHY THIS IS NEEDED:
@@ -10,7 +13,7 @@ WHY THIS IS NEEDED:
 PyTorch has extremely complex function overloads that confuse static type checkers:
 
 1. torch.randn() has 20+ overloads for different parameter combinations
-2. torch.zeros() has similar complexity with device, dtype, requires_grad options  
+2. torch.zeros() has similar complexity with device, dtype, requires_grad options
 3. torch.all() returns Union[Tensor, bool] depending on context
 4. Type checkers can't always infer which overload to use
 
@@ -51,33 +54,35 @@ from typing import Tuple, Union, List
 # Tensor creation utilities
 def randn(*shape: int) -> torch.Tensor:
     """Create a tensor with random normal values. Simplifies torch.randn overloads."""
-    return torch.randn(*shape) # type: ignore
+    return torch.randn(*shape)  # type: ignore
 
 
 def zeros(*shape: int) -> torch.Tensor:
     """Create a tensor filled with zeros. Simplifies torch.zeros overloads."""
-    return torch.zeros(*shape) # type: ignore
+    return torch.zeros(*shape)  # type: ignore
 
 
 def ones(*shape: int) -> torch.Tensor:
     """Create a tensor filled with ones. Simplifies torch.ones overloads."""
-    return torch.ones(*shape) # type: ignore
+    return torch.ones(*shape)  # type: ignore
 
 
 def full(shape: Tuple[int, ...], fill_value: Union[int, float]) -> torch.Tensor:
     """Create a tensor filled with a specific value. Simplifies torch.full overloads."""
-    return torch.full(shape, fill_value) # type: ignore
+    return torch.full(shape, fill_value)  # type: ignore
 
 
 # Assertion utilities for tests
 def all_true(condition: torch.Tensor) -> bool:
     """Check if all elements are True. Simplifies torch.all return type complexity."""
-    result = torch.all(condition) # type: ignore
+    result = torch.all(condition)  # type: ignore
     # torch.all can return Tensor or bool depending on context - ensure we get bool
     return bool(result)
 
 
-def allclose(a: torch.Tensor, b: torch.Tensor, rtol: float = 1e-05, atol: float = 1e-08) -> bool:
+def allclose(
+    a: torch.Tensor, b: torch.Tensor, rtol: float = 1e-05, atol: float = 1e-08
+) -> bool:
     """Check if tensors are element-wise close. Simplifies torch.allclose overloads."""
     return bool(torch.allclose(a, b, rtol=rtol, atol=atol))
 
@@ -90,9 +95,9 @@ def equal(a: torch.Tensor, b: torch.Tensor) -> bool:
 # Common tensor operations
 def cat(tensors: List[torch.Tensor], dim: int = 0) -> torch.Tensor:
     """Concatenate tensors. Simplifies torch.cat overloads."""
-    return torch.cat(tensors, dim=dim) # type: ignore
+    return torch.cat(tensors, dim=dim)  # type: ignore
 
 
 def stack(tensors: List[torch.Tensor], dim: int = 0) -> torch.Tensor:
     """Stack tensors. Simplifies torch.stack overloads."""
-    return torch.stack(tensors, dim=dim) # type: ignore
+    return torch.stack(tensors, dim=dim)  # type: ignore

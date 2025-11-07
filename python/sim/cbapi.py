@@ -204,9 +204,7 @@ class CBAPI(Generic[T]):
             if cb_state.last_reserve_target <= 0:
                 raise CBContractError("get_write_ptr requires prior cb_reserve_back")
             if cb_state.reserved < cb_state.last_reserve_target:
-                raise CBContractError(
-                    "write window invalidated; call cb_reserve again"
-                )
+                raise CBContractError("write window invalidated; call cb_reserve again")
             span = cb_state.back_span(cb_state.last_reserve_target)
             return RingView[T](cb_state.buf, cb_state.cap, span)
 
