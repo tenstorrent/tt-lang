@@ -29,6 +29,7 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
+            TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
 
         steps:
             - name: Checkout tt-lang
@@ -63,7 +64,9 @@ jobs:
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
-                  path: tt-mlir/build
+                  path:
+                    ${{ env.TT_MLIR_HOME }}/build
+                    ${{ env.TT_MLIR_DIR }}
                   key: ${{ runner.os }}-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}
 
             - name: Configure and build tt-mlir
@@ -73,7 +76,7 @@ jobs:
                   source env/activate
                   ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
                   cmake -G Ninja \
-                    -B build \
+                    -B build -DCMAKE_INSTALL_PREFIX=
                     -DCMAKE_BUILD_TYPE=Release \
                     -DTTMLIR_ENABLE_RUNTIME=OFF \
                     -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
@@ -85,7 +88,9 @@ jobs:
                     -DTTMLIR_ENABLE_EXPLORER=OFF \
                     -DBUILD_TESTING=OFF \
                     -S .
-                  cmake --build build --config Release
+                  cmake --build build --target all --target TTMLIRPythonModules
+                  cmake --install build
+                  cmake --install build --component TTMLIRPythonWheel
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
@@ -111,6 +116,12 @@ jobs:
               run: |
                   source build/activate
                   python test/python/smoketest.py
+
+            - name: Test building with an installed tt-mlir
+              run: |
+                  cmake -G Ninja -B build-with-installed-ttmlir TTMLIR_DIR=${{ env.TT_MLIR_DIR }}
+                  cmake --build build-with-installed-ttmlir
+                  ./build-with-installed-ttmlir/bin/ttlang-opt -v
 
             - name: Upload build artifacts
               uses: actions/upload-artifact@v4
