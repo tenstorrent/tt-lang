@@ -27,7 +27,7 @@ fi
 
 # Add tt-lang build directories to PATH and PYTHONPATH.
 export PATH="@CMAKE_BINARY_DIR@/bin:$PATH"
-export PYTHONPATH="@CMAKE_BINARY_DIR@/python_packages:${TT_LANG_HOME}/python:@TTMLIR_PYTHON_PACKAGES@:$PYTHONPATH"
+export PYTHONPATH="@CMAKE_BINARY_DIR@/python_packages:${TT_LANG_HOME}/python:@TTMLIR_PATH@/python_packages:$PYTHONPATH"
 
 # Mark environment as activated.
 export TTLANG_ENV_ACTIVATED=1

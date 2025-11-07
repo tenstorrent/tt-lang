@@ -58,6 +58,8 @@ cmake --build build
 
 The CMake configure step generates an `env/activate` script that finds the installed tt-mlir and uses its toolchain and Python environment.
 
+**Important:** The pre-installed tt-mlir must be built with Python bindings enabled (`-DTTMLIR_ENABLE_BINDINGS_PYTHON=ON`). See the [tt-mlir Getting Started guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) for details on building tt-mlir with Python bindings.
+
 ### Scenario 3: Automatic Build (Fallback)
 
 If tt-mlir is not found, the build system will automatically:

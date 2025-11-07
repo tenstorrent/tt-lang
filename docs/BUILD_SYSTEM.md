@@ -46,6 +46,8 @@ Use a pre-installed tt-mlir toolchain. This mode:
 - You want a stable, reproducible build environment
 - You're building in CI/CD environments
 
+**Important:** The pre-installed tt-mlir must be built with Python bindings enabled (`-DTTMLIR_ENABLE_BINDINGS_PYTHON=ON`). See the [tt-mlir Getting Started guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) for details on building tt-mlir with Python bindings.
+
 ### Scenario 3: Automatic Build (Fallback)
 
 Automatically fetch and build tt-mlir if not found. This mode:
