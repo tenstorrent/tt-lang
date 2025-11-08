@@ -11,7 +11,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            timeout: 180
+            timeout: 240
             use-container: true
           - os: macos-26
             timeout: 360
@@ -68,7 +68,9 @@ jobs:
         id: cache-ttmlir
         uses: actions/cache@v4
         with:
-          path: ${{ env.TT_MLIR_DIR }}
+          path: |
+            ${{ env.TT_MLIR_HOME }}
+            ${{ env.TT_MLIR_DIR }}
           key: ${{ runner.os }}-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
 
       - name: Configure and build tt-mlir
@@ -84,7 +86,7 @@ jobs:
             -DTTMLIR_ENABLE_RUNTIME=OFF \
             -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
             -DTTMLIR_ENABLE_STABLEHLO=OFF \
-            -DTTMLIR_ENABLE_OPMODEL=ON \
+            -DTTMLIR_ENABLE_OPMODEL=OFF \
             -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
             -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DTTMLIR_ENABLE_DEBUG_STRINGS=ON \
@@ -95,37 +97,38 @@ jobs:
           cmake --install build
           cmake --install build --component TTMLIRPythonWheel
 
-      # - name: Setup ccache for tt-lang
-      #   uses: hendrikmuhs/ccache-action@v1.2
-      #   with:
-      #     key: ${{ github.job }}-${{ runner.os }}-llvm-${{ steps.llvm-version.outputs.version }}
-      #     max-size: 200M
+      - name: Setup ccache for tt-lang
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-ttlang-llvm${{ steps.llvm-version.outputs.version }}
+          max-size: 200M
 
-      # - name: Configure tt-lang
-      #   run: |
-      #     source /opt/ttmlir-toolchain/venv/bin/activate
-      #     cmake -G Ninja \
-      #       -B build \
-      #       -DCMAKE_BUILD_TYPE=Release \
-      #       -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
-      #       -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
-      #       -S .
+      - name: Configure tt-lang
+        run: |
+          source /opt/ttmlir-toolchain/venv/bin/activate
+          cmake -G Ninja \
+            -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain \
+            -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
+            -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
+            -S .
 
-      # - name: Build tt-lang
-      #   run: |
-      #     source build/env/activate
-      #     cmake --build build --config Release
+      - name: Build tt-lang
+        run: |
+          source build/env/activate
+          cmake --build build --config Release
 
-      # - name: Test the build
-      #   run: |
-      #     source build/env/activate
-      #     python test/python/smoketest.py
+      - name: Test the build
+        run: |
+          source build/env/activate
+          python test/python/smoketest.py
 
-      # - name: Upload build artifacts
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
-      #     path: |
-      #       build/python_packages
-      #       sim/
-      #     retention-days: 1
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          path: |
+            build/python_packages
+            sim/
+          retention-days: 1
