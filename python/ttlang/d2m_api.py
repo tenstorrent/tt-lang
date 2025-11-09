@@ -375,10 +375,15 @@ def _compile_and_run_kernel(
         except Exception as e:
             print(f"DEBUG: Could not get output JSON: {e}")
 
-        # Wrap PyTorch tensor inputs as runtime.Tensor (all args, including outputs)
+        # Wrap PyTorch tensor inputs as runtime.Tensor
+        # Note: Only wrap actual inputs, NOT outputs (last num_outs tensors)
         print("DEBUG: Creating runtime tensors from PyTorch tensors...")
+        num_inputs = len(args) - num_outs
+        print(f"DEBUG: Total args: {len(args)}, num_outs: {num_outs}, num_inputs: {num_inputs}")
+
         inputs = []
-        for i, tensor in enumerate(args):
+        for i in range(num_inputs):
+            tensor = args[i]
             rt_tensor = runtime.create_borrowed_host_tensor(
                 tensor.data_ptr(),
                 list(tensor.shape),
@@ -386,7 +391,7 @@ def _compile_and_run_kernel(
                 tensor.element_size(),
                 to_data_type(tensor.dtype),
             )
-            print(f"DEBUG:   Created runtime.Tensor[{i}]: shape={list(tensor.shape)}, stride={list(tensor.stride())}, element_size={tensor.element_size()}")
+            print(f"DEBUG:   Created input runtime.Tensor[{i}]: shape={list(tensor.shape)}, stride={list(tensor.stride())}, element_size={tensor.element_size()}")
             inputs.append(rt_tensor)
 
         # Prepare output tensor wrappers for result copying
@@ -413,8 +418,18 @@ def _compile_and_run_kernel(
 
         # Convert inputs to device layout (THIS IS THE MISSING STEP!)
         print("DEBUG: Converting inputs to device layout...")
+
+        # Check how many inputs the program expects
+        try:
+            num_program_inputs = fbb.get_num_program_inputs(program_index)
+            print(f"DEBUG: Program expects {num_program_inputs} inputs, we have {len(inputs)} args")
+        except:
+            # If method doesn't exist, assume all are inputs
+            num_program_inputs = len(inputs)
+            print(f"DEBUG: Cannot determine num_program_inputs, using {num_program_inputs}")
+
         inputs_converted = []
-        for input_index in range(len(inputs)):
+        for input_index in range(num_program_inputs):
             input_layout = runtime.get_layout(fbb, program_index, input_index)
             print(f"DEBUG:   Input[{input_index}] layout from flatbuffer: {input_layout}")
             converted = runtime.to_layout(inputs[input_index], device, input_layout, True)
