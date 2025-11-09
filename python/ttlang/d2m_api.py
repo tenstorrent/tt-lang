@@ -357,23 +357,37 @@ def _compile_and_run_kernel(
         fbb = binary.load_binary_from_capsule(bin)
         program_index = 0
 
+        print(f"DEBUG: Binary loaded, program_index={program_index}")
+        print(f"DEBUG: Number of args: {len(args)}")
+        for i, arg in enumerate(args):
+            print(f"DEBUG:   arg[{i}]: shape={arg.shape}, dtype={arg.dtype}, data_ptr=0x{arg.data_ptr():x}")
+
         # Configure device options
         device_options = runtime.MeshDeviceOptions()
         device_options.mesh_shape = fbb.get_program_mesh_shape(program_index)
+        print(f"DEBUG: Mesh shape from binary: {device_options.mesh_shape}")
         runtime.set_compatible_device_runtime(fbb)
 
+        # Check what the binary expects
+        try:
+            output_json = fbb.get_program_outputs_as_json(program_index)
+            print(f"DEBUG: Program outputs JSON: {output_json}")
+        except Exception as e:
+            print(f"DEBUG: Could not get output JSON: {e}")
+
         # Wrap PyTorch tensor inputs as runtime.Tensor (all args, including outputs)
+        print("DEBUG: Creating runtime tensors from PyTorch tensors...")
         inputs = []
-        for tensor in args:
-            inputs.append(
-                runtime.create_borrowed_host_tensor(
-                    tensor.data_ptr(),
-                    list(tensor.shape),
-                    list(tensor.stride()),
-                    tensor.element_size(),
-                    to_data_type(tensor.dtype),
-                )
+        for i, tensor in enumerate(args):
+            rt_tensor = runtime.create_borrowed_host_tensor(
+                tensor.data_ptr(),
+                list(tensor.shape),
+                list(tensor.stride()),
+                tensor.element_size(),
+                to_data_type(tensor.dtype),
             )
+            print(f"DEBUG:   Created runtime.Tensor[{i}]: shape={list(tensor.shape)}, stride={list(tensor.stride())}, element_size={tensor.element_size()}")
+            inputs.append(rt_tensor)
 
         # Prepare output tensor wrappers for result copying
         outputs = []
@@ -394,6 +408,12 @@ def _compile_and_run_kernel(
 
         # Open device and execute
         device = runtime.open_mesh_device(device_options)
+        print(f"DEBUG: Device opened: {device}")
+        print(f"DEBUG: About to call runtime.submit with {len(inputs)} inputs")
+        print(f"DEBUG:   device: {device}")
+        print(f"DEBUG:   binary: {fbb}")
+        print(f"DEBUG:   program_index: {program_index}")
+        print(f"DEBUG:   inputs: {inputs}")
         runtime_outputs = runtime.submit(device, fbb, program_index, inputs)
         runtime.wait(runtime_outputs)
 
