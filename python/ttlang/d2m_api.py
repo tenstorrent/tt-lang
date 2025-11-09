@@ -10,6 +10,7 @@ import ast
 import inspect
 import functools
 import os
+import json
 from typing import List, Optional, Callable, Dict, Union
 
 try:
@@ -361,7 +362,7 @@ def _compile_and_run_kernel(
         device_options.mesh_shape = fbb.get_program_mesh_shape(program_index)
         runtime.set_compatible_device_runtime(fbb)
 
-        # Wrap PyTorch tensor inputs as runtime.Tensor
+        # Wrap PyTorch tensor inputs as runtime.Tensor (all args, including outputs)
         inputs = []
         for tensor in args:
             inputs.append(
@@ -369,21 +370,24 @@ def _compile_and_run_kernel(
                     tensor.data_ptr(),
                     list(tensor.shape),
                     list(tensor.stride()),
-                    tensor.element_size() * tensor.numel() // (tensor.shape[0] * tensor.shape[1]) if len(tensor.shape) >= 2 else tensor.element_size(),
+                    tensor.element_size(),
                     to_data_type(tensor.dtype),
                 )
             )
 
-        # Wrap output tensors
+        # Prepare output tensor wrappers for result copying
         outputs = []
         outputs_torch = args[-num_outs:]
+        output_descs = json.loads(
+            fbb.get_program_outputs_as_json(program_index)
+        )
         for tensor in outputs_torch:
             outputs.append(
                 runtime.create_borrowed_host_tensor(
                     tensor.data_ptr(),
                     list(tensor.shape),
                     list(tensor.stride()),
-                    tensor.element_size() * tensor.numel() // (tensor.shape[0] * tensor.shape[1]) if len(tensor.shape) >= 2 else tensor.element_size(),
+                    tensor.element_size(),
                     to_data_type(tensor.dtype),
                 )
             )
