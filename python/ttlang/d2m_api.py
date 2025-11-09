@@ -389,6 +389,19 @@ def _compile_and_run_kernel(
             print(f"DEBUG:   Created runtime.Tensor[{i}]: shape={list(tensor.shape)}, stride={list(tensor.stride())}, element_size={tensor.element_size()}")
             inputs.append(rt_tensor)
 
+        # Convert inputs to device layout (THIS IS THE MISSING STEP!)
+        print("DEBUG: Converting inputs to device layout...")
+        inputs_converted = []
+        for input_index in range(len(inputs)):
+            input_layout = runtime.get_layout(fbb, program_index, input_index)
+            print(f"DEBUG:   Input[{input_index}] layout from flatbuffer: {input_layout}")
+            converted = runtime.to_layout(inputs[input_index], device, input_layout, True)
+            print(f"DEBUG:   Converted input[{input_index}] to device layout")
+            inputs_converted.append(converted)
+
+        # Use converted inputs for submit
+        inputs = inputs_converted
+
         # Prepare output tensor wrappers for result copying
         outputs = []
         outputs_torch = args[-num_outs:]
