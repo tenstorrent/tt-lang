@@ -336,7 +336,70 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
 
-        ttmetal_to_flatbuffer_bin(module)
+        # Generate TTMetal flatbuffer
+        bin = ttmetal_to_flatbuffer_bin(module)
+
+        # Runtime execution (ported from nsmith/pykernel_gen4)
+        # Skip runtime execution on macOS or if runtime is not available
+        import platform
+        if platform.system() == "Darwin":
+            print("INFO: Skipping runtime execution on macOS (no hardware available)")
+            return
+
+        if runtime is None or binary is None:
+            print("Warning: runtime not enabled, skipping execution")
+            return
+
+        print("INFO: Starting runtime execution...")
+
+        # Load binary from flatbuffer
+        fbb = binary.load_binary_from_capsule(bin)
+        program_index = 0
+
+        # Configure device options
+        device_options = runtime.MeshDeviceOptions()
+        device_options.mesh_shape = fbb.get_program_mesh_shape(program_index)
+        runtime.set_compatible_device_runtime(fbb)
+
+        # Wrap PyTorch tensor inputs as runtime.Tensor
+        inputs = []
+        for tensor in args:
+            inputs.append(
+                runtime.create_borrowed_host_tensor(
+                    tensor.data_ptr(),
+                    list(tensor.shape),
+                    list(tensor.stride()),
+                    tensor.element_size() * tensor.numel() // (tensor.shape[0] * tensor.shape[1]) if len(tensor.shape) >= 2 else tensor.element_size(),
+                    to_data_type(tensor.dtype),
+                )
+            )
+
+        # Wrap output tensors
+        outputs = []
+        outputs_torch = args[-num_outs:]
+        for tensor in outputs_torch:
+            outputs.append(
+                runtime.create_borrowed_host_tensor(
+                    tensor.data_ptr(),
+                    list(tensor.shape),
+                    list(tensor.stride()),
+                    tensor.element_size() * tensor.numel() // (tensor.shape[0] * tensor.shape[1]) if len(tensor.shape) >= 2 else tensor.element_size(),
+                    to_data_type(tensor.dtype),
+                )
+            )
+
+        # Open device and execute
+        device = runtime.open_mesh_device(device_options)
+        runtime_outputs = runtime.submit(device, fbb, program_index, inputs)
+        runtime.wait(runtime_outputs)
+
+        # Copy results back to output tensors
+        for i, runtime_output_tensor in enumerate(runtime_outputs):
+            output_host = runtime.to_host(runtime_output_tensor, untilize=True)[0]
+            runtime.memcpy(outputs[i], output_host)
+            runtime.deallocate_tensor(runtime_output_tensor, force=True)
+
+        runtime.close_mesh_device(device)
 
 
 def pykernel_gen(
