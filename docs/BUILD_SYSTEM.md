@@ -27,11 +27,21 @@ Use a tt-mlir build tree directly without installation. This mode:
 - Extracts configuration from tt-mlir's CMake cache
 - Uses tt-mlir's Python environment and toolchain settings
 - Does not require tt-mlir installation
+- Respects `TTMLIR_TOOLCHAIN_DIR` if set as an environment variable
 
 **Use this mode when:**
 - You're actively developing tt-mlir alongside tt-lang
 - You want to test tt-lang against unreleased tt-mlir changes
 - You need quick iteration without reinstalling tt-mlir
+
+**Configuration:**
+```bash
+# Set toolchain directory (optional, prevents incorrect derivation from Python path)
+export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+
+# Configure with tt-mlir build directory
+cmake -GNinja -Bbuild . -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build
+```
 
 ### Scenario 2: Pre-installed tt-mlir (Recommended)
 
@@ -71,9 +81,11 @@ If `TTMLIR_BUILD_DIR` is specified:
 2. Loads configuration from tt-mlir's CMake cache using `load_cache`:
    - `CMAKE_HOME_DIRECTORY` → tt-mlir source directory
    - `_Python3_EXECUTABLE` → Python executable used by tt-mlir
-   - `TTMLIR_INSTALL_PREFIX` → Toolchain directory
-3. Derives `TTMLIR_TOOLCHAIN_DIR` from the Python executable path
+3. Sets `TTMLIR_TOOLCHAIN_DIR` from:
+   - Environment variable `TTMLIR_TOOLCHAIN_DIR` (if set, takes precedence)
+   - Otherwise derives from Python executable path (2 levels up)
 4. Adds tt-mlir's CMake modules to the module path
+5. Sets up Python from `${TTMLIR_TOOLCHAIN_DIR}/venv`
 
 ### Scenario 2: Pre-installed tt-mlir
 If `TTMLIR_BUILD_DIR` is not specified:
@@ -93,12 +105,13 @@ If tt-mlir is not found in scenarios 1 or 2:
 3. Configures tt-mlir with platform-specific options:
    - **Linux**: Runtime and runtime tests enabled
    - **macOS**: Runtime and runtime tests disabled
-   - Common: StableHLO OFF, Python bindings OFF, Debug strings ON
+   - Common: StableHLO OFF, OPMODEL OFF, Python bindings ON, Debug strings ON
 4. Builds and installs tt-mlir to `${CMAKE_BINARY_DIR}/tt-mlir-install`
 5. Uses the newly built tt-mlir for the tt-lang build
 
 **Python Environment:**
-All scenarios use the Python environment from `${TTMLIR_TOOLCHAIN_DIR}/venv` with `Python3_FIND_VIRTUALENV=ONLY` to ensure consistency.
+- **Scenarios 1 & 2**: Use Python from `${TTMLIR_TOOLCHAIN_DIR}/venv` with `Python3_FIND_VIRTUALENV=ONLY`
+- **Scenario 3**: Uses Python from `${TTMLIR_TOOLCHAIN_DIR}/venv` for building tt-mlir, but does not set `Python3_EXECUTABLE` globally
 
 **Note:** The `third-party/tt-mlir.commit` file pins the exact tt-mlir version for compatibility.
 
@@ -188,6 +201,10 @@ cmake --build build
 - `CMAKE_BUILD_TYPE` (default: Release) - Build type (Debug, Release, RelWithDebInfo, Asan, Coverage, Assert)
 - `TTMLIR_BUILD_DIR` - Path to tt-mlir build directory (Scenario 1)
 - `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`) - Location of tt-mlir toolchain (Scenarios 2 & 3)
+  - Can be set as environment variable: `export TTMLIR_TOOLCHAIN_DIR=/path/to/toolchain`
+  - Or as CMake variable: `-DTTMLIR_TOOLCHAIN_DIR=/path/to/toolchain`
+  - Environment variable takes precedence
+  - **Recommended for Scenario 1**: Set as environment variable to prevent incorrect derivation from Python path
 - `TTLANG_ENABLE_BINDINGS_PYTHON` (default: OFF) - Enable Python bindings
 - `TTLANG_ENABLE_RUNTIME` (default: OFF) - Enable runtime support
 - `CODE_COVERAGE` (default: OFF) - Enable code coverage reporting
@@ -195,10 +212,15 @@ cmake --build build
 **Examples:**
 
 ```bash
-# Scenario 1: Use pre-built tt-mlir
+# Scenario 1: Use pre-built tt-mlir (with explicit toolchain)
+export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 cmake -GNinja -Bbuild . -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build
 
-# Scenario 2: Use pre-installed tt-mlir
+# Scenario 2: Use pre-installed tt-mlir (via environment variable)
+export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+cmake -GNinja -Bbuild .
+
+# Scenario 2: Use pre-installed tt-mlir (via CMake variable)
 cmake -GNinja -Bbuild . -DTTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
 # Scenario 3: Automatic build (no extra options needed)
@@ -277,21 +299,22 @@ target_link_libraries(MyTarget
 
 ## Environment Variables
 
-### Set by tt-mlir's environment (optional, only for traditional mode):
+### Input Variables (can be set before CMake configure):
 - `TTMLIR_TOOLCHAIN_DIR` - Toolchain installation directory (e.g., `/opt/ttmlir-toolchain`)
-- `TTMLIR_VENV_DIR` - Python virtual environment directory
-- `TTMLIR_ENV_ACTIVATED` - Set to 1 when tt-mlir environment is active
-- `TT_MLIR_HOME` - tt-mlir project root
+  - Can be set as an environment variable or CMake variable (`-DTTMLIR_TOOLCHAIN_DIR=...`)
+  - Environment variable takes precedence if set
+  - Defaults to `/opt/ttmlir-toolchain` if not specified
+  - **Important for Scenario 1**: When using a tt-mlir build tree (no install), etting this as an environment variable prevents CMake from incorrectly deriving it from the Python executable path
 
-### Set by tt-lang's environment:
+### Set by tt-lang's generated activate script:
 - `TT_LANG_HOME` - tt-lang project root
+- `TTMLIR_TOOLCHAIN_DIR` - Toolchain directory (exported for reference)
 - `TTLANG_ENV_ACTIVATED` - Set to 1 when tt-lang environment is active
 
-### Modified by tt-lang:
+### Modified by tt-lang's activate script:
 - `PATH` - Prepends `$TT_LANG_HOME/build/bin`
-- `PYTHONPATH` - Prepends `$TT_LANG_HOME/build/python_packages`
-
-**Note:** Environment variables are optional in standalone mode. If `TTMLIR_TOOLCHAIN_DIR` is set as an environment variable, it takes precedence over the CMake variable. If not set, the CMake variable defaults to `/opt/ttmlir-toolchain`.
+- `PYTHONPATH` - Prepends `$TT_LANG_HOME/build/python_packages` and tt-mlir Python packages
+- Python virtual environment from `${TTMLIR_TOOLCHAIN_DIR}/venv` is activated
 
 ## Development Workflow
 
@@ -379,8 +402,8 @@ cmake --build build
 Verify `TTMLIRConfig.cmake` exists at `${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir/TTMLIRConfig.cmake`.
 
 #### Warning: "TTMLIR_TOOLCHAIN_DIR differs from tt-mlir's configured installation prefix"
-**Solution:** This warning indicates a mismatch between your specified `TTMLIR_TOOLCHAIN_DIR` and the one tt-mlir was configured with. The build will use tt-mlir's value. To avoid this warning, either:
-- Don't specify `TTMLIR_TOOLCHAIN_DIR` (let it be derived from tt-mlir)
+**Solution:** This warning indicates a mismatch between your specified `TTMLIR_TOOLCHAIN_DIR` and the one tt-mlir was configured with. The build will use tt-mlir's value. To avoid this warning:
+- Set `TTMLIR_TOOLCHAIN_DIR` as an environment variable before configuring (recommended)
 - Or ensure it matches tt-mlir's `CMAKE_INSTALL_PREFIX`
 
 ### Scenario 2 Issues (Pre-installed tt-mlir)
