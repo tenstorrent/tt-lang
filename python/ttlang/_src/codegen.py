@@ -44,6 +44,11 @@ def create_tensor_type(
     shape = arg.shape
     dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
 
+    # System memory (host tensors) use MetalLayoutAttr but will bufferize differently
+    # The bufferization pass should handle System→HostLayoutAttr conversion
+    # For now, create with System memory space and let bufferization/lowering handle it
+
+    # Device memory (L1/DRAM) uses MetalLayoutAttr
     layout = create_metal_layout(
         ctx,
         MetalLayoutConfig(
