@@ -155,9 +155,11 @@ def create_generic_func(
 
     compiled_threads.sort(key=lambda ct: ct.kernel_type == "compute")
 
+    # Function arguments are host tensors (System memory space, not device L1/DRAM)
+    # The to_layout operations in stream_layout will handle host→device transfers
     ordered_tensor_args = []
     for arg in user_args:
-        tensor_type = create_tensor_type(ctx, arg, grid, tiled, memory_space)
+        tensor_type = create_tensor_type(ctx, arg, grid, tiled, "System")
         ordered_tensor_args.append(tensor_type)
 
     arg_types = ordered_tensor_args
@@ -201,13 +203,38 @@ def create_generic_func(
             ]
         )
 
+        # Create L1 output buffers for the generic (not System)
+        # Generic operates on device memory (L1), not host memory
+        output_l1_buffers = []
+        for out_arg in outputs:
+            # Create L1 version of output
+            out_tensor_type = RankedTensorType(out_arg.type)
+            device_shape = list(out_tensor_type.shape)
+            element_type = out_tensor_type.element_type
+
+            l1_layout = create_metal_layout(
+                ctx,
+                MetalLayoutConfig(
+                    logical_shape=list(user_args[-num_outs].shape),  # Use output tensor's logical shape
+                    grid=grid,
+                    tiled=tiled,
+                    memory_space=memory_space,  # L1
+                ),
+            )
+            l1_output_type = RankedTensorType.get(device_shape, element_type, l1_layout)
+            l1_output_buf = d2m.EmptyOp(l1_output_type)
+            output_l1_buffers.append(l1_output_buf.result)
+
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
         # High-level DSL will need to infer these from operation semantics.
+
+        # Generic returns L1 (device memory), not System (host memory)
+        generic_ret_type = output_l1_buffers[0].type
         generic = d2m.GenericOp(
-            [ret_type],
+            [generic_ret_type],
             wrapped_inputs,
-            outputs,
+            output_l1_buffers,  # Use L1 buffers, not host outputs
             ttcore.ir.GridAttr.get(ctx, grid),
             block_factors,
             list(map(affine_map_from_lambda, indexing_maps)),
@@ -227,7 +254,12 @@ def create_generic_func(
             last_op = generic_region.blocks[0].operations[-1]
             if isinstance(last_op, func.ReturnOp):
                 last_op.erase()
-        func.ReturnOp(generic.results)
+
+        # Add to_layout to convert L1→System for output
+        host_output_buf = d2m.EmptyOp(ret_type)
+        output_to_host_op = d2m.ToLayoutOp([ret_type], generic.results[0], host_output_buf.result, layout=None)
+
+        func.ReturnOp([output_to_host_op.results[0]])
 
 
 def copy_symbol_table_globals(

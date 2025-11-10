@@ -95,9 +95,11 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
         mem_space = ttcore.MemorySpace.DeviceL1
     elif config.memory_space == "DRAM":
         mem_space = ttcore.MemorySpace.DeviceDRAM
+    elif config.memory_space == "System":
+        mem_space = ttcore.MemorySpace.System
     else:
         raise ValueError(
-            f"Invalid memory_space: {config.memory_space}. Must be 'L1' or 'DRAM'"
+            f"Invalid memory_space: {config.memory_space}. Must be 'L1', 'DRAM', or 'System'"
         )
 
     if config.sharded:
@@ -158,22 +160,34 @@ def create_stream_layout_for_input(
     if metal_layout is None:
         raise RuntimeError("Input argument must have MetalLayoutAttr encoding")
 
-    storage_layout = create_metal_layout(
+    # Create device buffer with target memory space (config.memory_space, typically DRAM)
+    # This is where the host data will be copied to via to_layout → EnqueueWriteBuffer
+    device_buffer_layout = create_metal_layout(
         ctx,
         MetalLayoutConfig(
             logical_shape=config.logical_shape,
             grid=config.grid,
             tiled=config.tiled,
-            memory_space=config.memory_space,
+            memory_space=config.memory_space,  # Use target memory space (DRAM or L1)
         ),
     )
+    device_buffer_type = RankedTensorType.get(device_shape, element_type, device_buffer_layout)
+    device_buffer = d2m.EmptyOp(device_buffer_type)
+
+    # Insert d2m.to_layout to copy host tensor → device buffer
+    # This will lower to ttmetal.EnqueueWriteBufferOp which creates the buffer in meshBuffers
+    device_input_op = d2m.ToLayoutOp([device_buffer_type], input_arg, device_buffer.result, layout=None)
+    device_input = device_input_op.results[0]
+
+    # Storage for circular buffer (same memory space as device buffer)
+    storage_layout = device_buffer_layout
     storage_type = RankedTensorType.get(device_shape, element_type, storage_layout)
     storage = d2m.EmptyOp(storage_type)
 
-    # Use the same layout as storage for the result (no index_map)
-    # This ensures they're compatible during bufferization
-    result_layout = storage_layout
+    # Stream result uses same memory space as device buffer
+    result_layout = device_buffer_layout
     result_type = RankedTensorType.get(device_shape, element_type, result_layout)
 
-    stream = d2m.StreamLayoutOp(result_type, input_arg, storage.result)
+    # stream_layout: device buffer from to_layout, storage for CB, result is view
+    stream = d2m.StreamLayoutOp(result_type, device_input, storage.result)
     return stream.result

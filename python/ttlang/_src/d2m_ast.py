@@ -165,13 +165,15 @@ class D2MGenericCompiler(TTCompilerBase):
                     )
                 elif isinstance(val, Stream):
                     with InsertionPoint.at_block_begin(self.module.body):
+                        # Globals will be replaced with stream results (L1 after to_layout)
+                        # Must use L1 memory space to match what replace-globals will substitute
                         layout = create_metal_layout(
                             self.ctx,
                             MetalLayoutConfig(
                                 logical_shape=val.shape,
                                 grid=self.context.grid,
                                 tiled=self.context.tiled,
-                                memory_space=self.context.memory_space,
+                                memory_space=self.context.memory_space,  # L1 to match stream result
                             ),
                         )
                         tile_shape = (
