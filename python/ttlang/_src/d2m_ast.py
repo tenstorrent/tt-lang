@@ -68,38 +68,15 @@ class D2MGenericCompiler(TTCompilerBase):
                 raise TypeError("All kernel arguments must have a type annotation")
             elif arg.annotation.id == "TensorBlock":
                 shape = self.args[i].shape
-                # Get dtype from tensor argument
+                shard_shape = [shape[j] // self.context.grid[j] for j in range(len(shape))]
                 dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
-
-                layout = create_metal_layout(
-                    self.ctx,
-                    MetalLayoutConfig(
-                        logical_shape=shape,
-                        grid=self.context.grid,
-                        tiled=self.context.tiled,
-                        memory_space=self.context.memory_space,
-                    ),
-                )
-                tile_shape = DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
-                device_shape = compute_device_shape(
-                    layout, self.context.grid, shape, tile_shape
-                )
-
-                # Convert torch dtype to ttcore.DataType for TileType
-                ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
-                element_type = (
-                    ttcore.ir.TileType.get(
-                        self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
-                    )
-                    if self.context.tiled
-                    else dtype
-                )
-                tensor_type = RankedTensorType.get(device_shape, element_type, layout)
+                tensor_type = RankedTensorType.get(shard_shape, dtype)
                 func_operand_types.append(tensor_type)
             elif arg.annotation.id == "CircularBuffer":
-                shape = self.args[i].shape
-                dtype = F32Type.get(self.ctx)
+                shape = list(self.args[i].shape)
+                dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
 
+                # Compute shard shape (tiles per core)
                 layout = create_metal_layout(
                     self.ctx,
                     MetalLayoutConfig(
@@ -113,22 +90,21 @@ class D2MGenericCompiler(TTCompilerBase):
                 device_shape = compute_device_shape(
                     layout, self.context.grid, shape, tile_shape
                 )
-
                 shard_shape = device_shape[len(device_shape) // 2 :]
 
-                # Convert torch dtype to ttcore.DataType for TileType
-                ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
-                element_type = (
-                    ttcore.ir.TileType.get(
+                # CBs wrap the tensor type that enters the generic op
+                # Generic operates on device tensors (tiled L1), so CBs should have tile element types
+                if self.context.tiled:
+                    ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
+                    element_type = ttcore.ir.TileType.get(
                         self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
                     )
-                    if self.context.tiled
-                    else dtype
-                )
+                else:
+                    element_type = dtype
 
-                # Create tensor WITHOUT MetalLayoutAttr - CircularBuffer is local!
-                tensor = RankedTensorType.get(shard_shape, element_type, None)
-                func_operand_types.append(d2m.ir.CBType.get(self.ctx, tensor))
+                # CBs use local memory (no MetalLayoutAttr) - they represent per-core views
+                cb_tensor_type = RankedTensorType.get(shard_shape, element_type, None)
+                func_operand_types.append(d2m.ir.CBType.get(self.ctx, cb_tensor_type))
             elif arg.annotation.id == "Semaphore":
                 func_operand_types.append(d2m.ir.SemaphoreType.get(self.ctx))
             else:

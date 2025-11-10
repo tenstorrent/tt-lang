@@ -49,5 +49,17 @@ def test_add(lhs, rhs, out):
 
 lhs = torch.randn(32, 32)
 rhs = torch.randn(32, 32)
-out = torch.zeros(32, 32)
+out = torch.full((32, 32), -999.0)
+
+print("=== BEFORE KERNEL ===")
+print(f"lhs[0:2, 0:2] = \n{lhs[0:2, 0:2]}")
+print(f"rhs[0:2, 0:2] = \n{rhs[0:2, 0:2]}")
+print(f"out[0:2, 0:2] = \n{out[0:2, 0:2]}")
+print(f"Expected result[0:2, 0:2] = \n{(lhs + rhs)[0:2, 0:2]}")
+
 test_add(lhs, rhs, out)
+
+print("\n=== AFTER KERNEL ===")
+print(f"out[0:2, 0:2] = \n{out[0:2, 0:2]}")
+print(f"Expected result[0:2, 0:2] = \n{(lhs + rhs)[0:2, 0:2]}")
+print(f"out min/max/mean: {out.min().item():.4f} / {out.max().item():.4f} / {out.mean().item():.4f}")

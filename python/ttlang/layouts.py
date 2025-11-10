@@ -95,9 +95,11 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
         mem_space = ttcore.MemorySpace.DeviceL1
     elif config.memory_space == "DRAM":
         mem_space = ttcore.MemorySpace.DeviceDRAM
+    elif config.memory_space == "System":
+        mem_space = ttcore.MemorySpace.System
     else:
         raise ValueError(
-            f"Invalid memory_space: {config.memory_space}. Must be 'L1' or 'DRAM'"
+            f"Invalid memory_space: {config.memory_space}. Must be 'L1', 'DRAM', or 'System'"
         )
 
     if config.sharded:
