@@ -27,7 +27,7 @@ except ModuleNotFoundError:
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
-from ttmlir.passes import ttmetal_to_flatbuffer_bin
+from ttmlir.passes import ttmetal_to_flatbuffer_bin, ttkernel_to_cpp
 
 from pykernel._src.utils import _cleanup_source_code
 from ._src.stream import Stream
@@ -336,6 +336,14 @@ def _compile_and_run_kernel(
             with open(final_mlir_path, "w") as fd:
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
+
+        # Extract kernel C++ source (for potential Frankenstein approach)
+        kernel_source_path = os.environ.get("TTLANG_KERNEL_SOURCE")
+        if kernel_source_path:
+            kernel_source = ttkernel_to_cpp(module)
+            with open(kernel_source_path, "w") as fd:
+                fd.write(kernel_source)
+            print(f"SAVED KERNEL SOURCE TO {kernel_source_path} ({len(kernel_source)} bytes)")
 
         # Generate TTMetal flatbuffer
         bin = ttmetal_to_flatbuffer_bin(module)
