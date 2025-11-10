@@ -45,18 +45,23 @@ def create_tensor_type(
     shard_shape = [logical_shape[i] // grid[i] for i in range(len(logical_shape))]
     dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
 
+    # HACK: Make function args 4D (device shape) to match what to_layout expects
+    # This avoids rank mismatch in D2MSplitCompoundLayoutRewriter
+    # TODO: Properly support 2D->4D rank change in compiler pass
+    device_shape = list(grid) + shard_shape  # [grid_y, grid_x, shard_y, shard_x]
+
     # Function arguments are host buffers (System memory), not device buffers (L1/DRAM)
     layout = create_metal_layout(
         ctx,
         MetalLayoutConfig(
-            logical_shape=shard_shape,
-            grid=[1, 1],
+            logical_shape=logical_shape,  # Use full logical shape
+            grid=grid,
             tiled=False,
             memory_space="System",
         ),
     )
 
-    return RankedTensorType.get(shard_shape, dtype, layout)
+    return RankedTensorType.get(device_shape, dtype, layout)
 
 
 def affine_map_from_lambda(fn: Callable) -> AffineMap:
