@@ -107,20 +107,12 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
         class ComputeTemplate:
             __name__ = func.__name__
 
-            def bind(
-                self, ctx: Dict[str, Any]
-            ) -> Callable[[], Coroutine[Any, Any, Any]]:
+            def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 # rebuild function with per-core closure
                 bound_func = _rebind_func_with_ctx(func, ctx)
 
-                async def runner():
-                    res = bound_func()
-                    import inspect
-
-                    if inspect.iscoroutine(res):
-                        await res
-                    else:
-                        return res
+                def runner():
+                    return bound_func()
 
                 return runner
 
@@ -134,19 +126,11 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
         class DMTemplate:
             __name__ = func.__name__
 
-            def bind(
-                self, ctx: Dict[str, Any]
-            ) -> Callable[[], Coroutine[Any, Any, Any]]:
+            def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 bound_func = _rebind_func_with_ctx(func, ctx)
 
-                async def runner():
-                    res = bound_func()
-                    import inspect
-
-                    if inspect.iscoroutine(res):
-                        await res
-                    else:
-                        return res
+                def runner():
+                    return bound_func()
 
                 return runner
 
@@ -223,45 +207,29 @@ def Program(*funcs: BindableTemplate) -> Any:
                 core_dm1 = dm1_tmpl.bind(core_context)
 
                 # run the three in parallel threads, because CB ops are blocking
-                import threading, asyncio, traceback
+                import threading, traceback
 
                 # we store (stage_name, exception, traceback_str)
                 thread_results: list[Tuple[str, Exception, str]] = []
 
-                def run_coro_in_thread(
-                    name: str, coro_factory: Callable[[], Coroutine[Any, Any, Any]]
+                def run_func_in_thread(
+                    name: str, func_factory: Callable[[], Any]
                 ) -> None:
                     try:
-                        coro = coro_factory()
-                        try:
-                            # normal path
-                            asyncio.run(coro)
-                        except RuntimeError as re:
-                            # only fallback if it's the "event loop is running" case
-                            msg = str(re)
-                            if "event loop is running" in msg:
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                                # create a *new* coroutine for this loop
-                                coro2 = coro_factory()
-                                loop.run_until_complete(coro2)
-                                loop.close()
-                            else:
-                                # it's some other runtime error; re-raise to outer except
-                                raise
+                        func_factory()  # Execute the function factory directly
                     except Exception as e:
                         tb_str = traceback.format_exc()
                         thread_results.append((name, e, tb_str))
 
                 t_dm0 = threading.Thread(
-                    target=run_coro_in_thread, args=(f"core{core}-dm0", core_dm0)
+                    target=run_func_in_thread, args=(f"core{core}-dm0", core_dm0)
                 )
                 t_comp = threading.Thread(
-                    target=run_coro_in_thread,
+                    target=run_func_in_thread,
                     args=(f"core{core}-compute", core_compute),
                 )
                 t_dm1 = threading.Thread(
-                    target=run_coro_in_thread, args=(f"core{core}-dm1", core_dm1)
+                    target=run_func_in_thread, args=(f"core{core}-dm1", core_dm1)
                 )
 
                 # start all three
@@ -345,7 +313,7 @@ def eltwise_add(
     out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
 
     @compute()
-    async def compute_func():
+    def compute_func():
         core_num = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
@@ -376,7 +344,7 @@ def eltwise_add(
                 b_in_cb.pop()
 
     @datamovement()
-    async def dm0():
+    def dm0():
         core_num = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
@@ -397,7 +365,7 @@ def eltwise_add(
                 b_in_cb.push()
 
     @datamovement()
-    async def dm1():
+    def dm1():
         core_num = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
