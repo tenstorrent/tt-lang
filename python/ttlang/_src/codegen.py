@@ -194,24 +194,14 @@ def create_generic_func(
                 ),
             )
 
-            # Compute device shape: [grid_y, grid_x, shard_y, shard_x]
-            from ..layouts import compute_device_shape
-            logical_shape = list(user_args[i].shape)
-            tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
-            device_shape = compute_device_shape(device_layout, grid, logical_shape, tile_shape)
-
-            # Create TileType element type if tiled
+            # For to_layout, keep element type as scalar to avoid compound operation
+            # The tiling happens inside d2m.generic, not in to_layout
+            # Device tensor shape is just the shard shape (same as input for System→L1)
             dtype = torch_dtype_to_mlir_type(user_args[i].dtype, ctx)
-            if tiled:
-                from ..dtype_utils import torch_dtype_to_ttcore_datatype
-                ttcore_dtype = torch_dtype_to_ttcore_datatype(user_args[i].dtype)
-                element_type = ttcore.ir.TileType.get(
-                    ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
-                )
-            else:
-                element_type = dtype
+            inp_tensor_type = RankedTensorType(inp.type)
+            device_shape = list(inp_tensor_type.shape)  # Same shape as input
 
-            device_tensor_type = RankedTensorType.get(device_shape, element_type, device_layout)
+            device_tensor_type = RankedTensorType.get(device_shape, dtype, device_layout)
 
             # Insert to_layout: host → device
             device_buffer = d2m.EmptyOp(device_tensor_type)
@@ -244,8 +234,8 @@ def create_generic_func(
             ]
         )
 
-        # Create device output buffer (tiled, L1 memory)
-        # Generic operates on device tensors and returns device tensors
+        # Create device output buffer (scalar, L1 memory)
+        # Keep scalar for to_layout to avoid compound operation
         output_idx = len(user_args) - num_outs
         device_output_layout = create_metal_layout(
             ctx,
@@ -257,25 +247,13 @@ def create_generic_func(
             ),
         )
 
-        from ..layouts import compute_device_shape
-        output_logical_shape = list(user_args[output_idx].shape)
-        tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
-        device_output_shape = compute_device_shape(
-            device_output_layout, grid, output_logical_shape, tile_shape
-        )
-
         output_dtype = torch_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
-        if tiled:
-            from ..dtype_utils import torch_dtype_to_ttcore_datatype
-            output_ttcore_dtype = torch_dtype_to_ttcore_datatype(user_args[output_idx].dtype)
-            output_element_type = ttcore.ir.TileType.get(
-                ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, output_ttcore_dtype
-            )
-        else:
-            output_element_type = output_dtype
+        # Use same shape as the output argument (System memory)
+        output_tensor_type = RankedTensorType(outputs[0].type)
+        device_output_shape = list(output_tensor_type.shape)
 
         device_output_type = RankedTensorType.get(
-            device_output_shape, output_element_type, device_output_layout
+            device_output_shape, output_dtype, device_output_layout
         )
         device_output_buffer = d2m.EmptyOp(device_output_type)
 
