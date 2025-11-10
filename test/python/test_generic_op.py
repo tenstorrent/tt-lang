@@ -36,9 +36,9 @@ def test_generic(lhs, rhs, out):
 
 # CHECK: func.func @test_generic(%[[ARG0:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}}, %[[ARG1:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}}, %[[ARG2:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}})
 
-# Verify: d2m.generic with explicit grid and block_factors (empty indexing_maps/iterator_types)
+# Verify: d2m.generic with explicit datamovement form (empty block_factors/indexing_maps/iterator_types)
 # CHECK: %[[RESULT:.+]] = d2m.generic
-# CHECK-SAME: block_factors = [1, 1, 1, 1, 1, 1]
+# CHECK-SAME: block_factors = []
 # CHECK-SAME: grid = #ttcore.grid<2x2>
 # CHECK-SAME: indexing_maps = []
 # CHECK-SAME: iterator_types = []

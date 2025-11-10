@@ -150,6 +150,11 @@ def create_generic_func(
     ):
         block_factors = [b for bs in block_factors for b in bs]
 
+    # TODO: Determine correct block_factors semantics for multi-region d2m.generic.
+    # Currently forcing empty block_factors to enable "explicit datamovement form"
+    # which allows multiple regions (datamovement + compute) without yield terminators.
+    block_factors = []
+
     compiled_threads.sort(key=lambda ct: ct.kernel_type == "compute")
 
     ordered_tensor_args = []
