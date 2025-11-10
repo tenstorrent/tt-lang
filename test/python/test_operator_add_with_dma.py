@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# RUN: %python %s
+# RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
+
+# Verify: TensorBlock.__add__ generates linalg.generic with identity maps and tile_add.
+
+import torch
+from ttlang.d2m_api import *
+
+
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+def test_add(lhs, rhs, out):
+    lhs_stream = Stream(lhs)
+    rhs_stream = Stream(rhs)
+
+    @compute()
+    async def add_compute(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        l = lhs_cb.pop()
+        r = rhs_cb.pop()
+        o = out_cb.reserve()
+        result = l + r
+        o.store(result)
+        out_cb.pop()
+
+    @datamovement()
+    async def dm(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        # Load lhs from stream to CB
+        lhs_shard = lhs_cb.reserve()
+        tx = dma(lhs_stream[0, 0], lhs_shard)
+        tx.wait()
+
+        # Load rhs from stream to CB
+        rhs_shard = rhs_cb.reserve()
+        tx = dma(rhs_stream[0, 0], rhs_shard)
+        tx.wait()
+
+    return Program(add_compute, dm)(lhs, rhs, out)
+
+
+# CHECK: func.func @test_add
+
+# Verify: compute region contains linalg.generic with identity maps and tile_add
+# CHECK: ^compute{{[0-9]+}}
+# CHECK: %[[ADD_RESULT:.+]] = linalg.generic
+# CHECK-SAME: iterator_types = ["parallel", "parallel"]
+# CHECK: ^bb0(%[[IN0:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, %[[IN1:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, %[[OUT:.+]]: !ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>):
+# CHECK-NEXT: %[[TILE_ADD:.+]] = "d2m.tile_add"(%[[IN0]], %[[IN1]])
+# CHECK-NEXT: linalg.yield %[[TILE_ADD]]
+
+# CHECK-LOWERED: func.func @test_add
+# CHECK-LOWERED: emitc.call_opaque "add_binary_tile"
+
+lhs = torch.randn(32, 32)
+rhs = torch.randn(32, 32)
+out = torch.full((32, 32), -999.0)
+
+print("=== BEFORE KERNEL ===")
+print(f"lhs[0:2, 0:2] = \n{lhs[0:2, 0:2]}")
+print(f"rhs[0:2, 0:2] = \n{rhs[0:2, 0:2]}")
+print(f"out[0:2, 0:2] = \n{out[0:2, 0:2]}")
+print(f"Expected result[0:2, 0:2] = \n{(lhs + rhs)[0:2, 0:2]}")
+
+test_add(lhs, rhs, out)
+
+print("\n=== AFTER KERNEL ===")
+print(f"out[0:2, 0:2] = \n{out[0:2, 0:2]}")
+print(f"Expected result[0:2, 0:2] = \n{(lhs + rhs)[0:2, 0:2]}")
+print(f"out min/max/mean: {out.min().item():.4f} / {out.max().item():.4f} / {out.mean().item():.4f}")
