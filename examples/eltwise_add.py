@@ -155,18 +155,19 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
     return decorator
 
 
-# Global state for core management
-_core_state = {"current_core": 0}
-
-
 def core_index() -> int:
-    """Returns the core index in a 2D grid (stays consistent during one program run)"""
-    return _core_state["current_core"]
+    """Get the current core index from injected context"""
+    import inspect
 
+    frame = inspect.currentframe()
 
-def next_core():
-    """Advance to the next core for the next program run"""
-    _core_state["current_core"] = (_core_state["current_core"] + 1) % MAX_CORES
+    # Check the calling frame's globals for the injected '_core' variable
+    if frame and frame.f_back and "_core" in frame.f_back.f_globals:
+        return frame.f_back.f_globals["_core"]
+
+    raise RuntimeError(
+        "core not available - function must be called within Program context"
+    )
 
 
 def Program(*funcs: BindableTemplate) -> Any:
@@ -214,7 +215,7 @@ def Program(*funcs: BindableTemplate) -> Any:
                         core_context[key] = copy.deepcopy(value, memo)
 
                 # also make the core number visible
-                core_context["core"] = core
+                core_context["_core"] = core
 
                 # bind per-core
                 core_dm0 = dm0_tmpl.bind(core_context)
@@ -286,9 +287,6 @@ def Program(*funcs: BindableTemplate) -> Any:
 
                         # add to final aggregation (short)
                         errors.append(f"{name} on core {core}: {type(e).__name__}: {e}")
-
-                if core < total_cores - 1:
-                    next_core()
 
             if errors:
                 raise RuntimeError("One or more cores failed:\n" + "\n".join(errors))
