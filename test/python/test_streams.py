@@ -47,24 +47,22 @@ def test_stream(lhs, rhs, out):
     return Program(comp, dm0, dm1)(lhs, rhs, out)
 
 
-# CHECK-DAG: #[[STORAGE_LAYOUT:.+]] = #ttcore.metal_layout<{{.*}}, l1>
-# CHECK-DAG: #[[VIEW_LAYOUT:.+]] = #ttcore.metal_layout<{{.*}}, l1, index_map =
+# CHECK-DAG: #[[LAYOUT:.+]] = #ttcore.metal_layout<{{.*}}, l1>
 
 # CHECK-LABEL: func.func @test_stream
 
 # Verify: First argument marked as stream
-# CHECK-SAME: (%[[ARG0:.+]]: tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[STORAGE_LAYOUT]]> {d2m.stream = true}
+# CHECK-SAME: (%[[ARG0:.+]]: tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]> {d2m.stream = true}
 
-# Verify: Storage created with layout WITHOUT index_map (becomes ShardLayoutAttr after bufferization)
-# CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[STORAGE_LAYOUT]]>
+# Verify: Storage created with same layout as stream result
+# CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]>
 
-# Verify: stream_layout connects input to storage, returns view WITH index_map (becomes ViewLayoutAttr)
+# Verify: stream_layout connects input to storage with consistent layout
 # CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[ARG0]], %[[STORAGE]])
-# CHECK-SAME: -> tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[VIEW_LAYOUT]]>
+# CHECK-SAME: -> tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]>
 
-# Verify: Stream view used as input to d2m.generic (low-level DSL uses empty indexing_maps/iterator_types)
-# Note: Low-level DSL provides explicit grid/block_factors and manual thread logic.
-# CHECK: d2m.generic {block_factors = [1, 1, 1, 1, 1, 1], grid = #ttcore.grid<1x1>, indexing_maps = [], iterator_types = []
+# Verify: Stream used as input to d2m.generic (explicit datamovement form)
+# CHECK: d2m.generic {block_factors = [], grid = #ttcore.grid<1x1>, indexing_maps = [], iterator_types = []
 # CHECK-NEXT: ins(%[[STREAM]]
 
 # CHECK-LOWERED-LABEL: func.func @test_stream

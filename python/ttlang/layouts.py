@@ -114,7 +114,6 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
     layout = ttcore.ir.MetalLayoutAttr.get(
         ctx,
         config.logical_shape,
-        config.grid,
         int(ttcore.OOBVal.Undef),
         int(mem_space),
         int(memory_layout),
@@ -171,23 +170,7 @@ def create_stream_layout_for_input(
     storage_type = RankedTensorType.get(device_shape, element_type, storage_layout)
     storage = d2m.EmptyOp(storage_type)
 
-    rank = len(device_shape)
-    identity_map = AffineMap.get_identity(rank, ctx)
-
-    result_layout = ttcore.ir.MetalLayoutAttr.get(
-        ctx,
-        config.logical_shape,
-        config.grid,
-        int(ttcore.OOBVal.Undef),
-        int(
-            ttcore.MemorySpace.DeviceL1
-            if config.memory_space == "L1"
-            else ttcore.MemorySpace.DeviceDRAM
-        ),
-        int(DEFAULT_TENSOR_MEMORY_LAYOUT),
-        identity_map,
-    )
-    result_type = RankedTensorType.get(device_shape, element_type, result_layout)
+    result_type = RankedTensorType.get(device_shape, element_type, storage_layout)
 
     stream = d2m.StreamLayoutOp(result_type, input_arg, storage.result)
     return stream.result
