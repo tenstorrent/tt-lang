@@ -304,10 +304,9 @@ def create_generic_func(
             if isinstance(last_op, func.ReturnOp):
                 last_op.erase()
 
-        # Insert to_layout: device → host
-        host_output_buffer = d2m.EmptyOp(ret_type)
+        # Insert to_layout: device → host (write to existing output argument)
         to_host = d2m.ToLayoutOp(
-            [ret_type], generic.results[0], host_output_buffer.result, layout=None
+            [ret_type], generic.results[0], outputs[0], layout=None
         )
 
         func.ReturnOp(to_host.results)
