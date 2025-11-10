@@ -16,18 +16,13 @@ from python.sim.errors import CBContractError
 
 def test_circular_buffer_basic():
     """Test basic CircularBuffer operations."""
-    # Create a test tensor that's properly tiled
-    tensor = tu.randn(TILE_SIZE * 2, TILE_SIZE * 2)  # 2x2 tiles
-    accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
-
     # Create a circular buffer for single tiles with buffer factor 2
-    cb = CircularBuffer(accessor, shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
 
     # Verify basic properties
     assert cb.shape == (1, 1)
     assert cb.capacity_tiles == 2  # 1*1*2
     assert cb.buffer_factor == 2
-    assert cb.accessor is accessor
 
     # Test the buffer workflow
     # Producer: reserve -> write -> push
@@ -54,12 +49,8 @@ def test_circular_buffer_basic():
 
 def test_circular_buffer_multi_tile():
     """Test CircularBuffer with multiple tiles per operation."""
-    # Create a test tensor
-    tensor = tu.randn(TILE_SIZE * 4, TILE_SIZE * 2)  # 4x2 tiles
-    accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
-
     # Create a circular buffer for 2x1 tiles (2 tiles per operation)
-    cb = CircularBuffer(accessor, shape=(2, 1), buffer_factor=3)
+    cb = CircularBuffer(shape=(2, 1), buffer_factor=3)
 
     # Verify properties
     assert cb.shape == (2, 1)
@@ -97,7 +88,7 @@ def test_dma_operations():
     accessor_a = TensorAccessor(tensor_a, index_type=IndexType.TILE)
 
     # Create circular buffer
-    cb_a = CircularBuffer(accessor_a, shape=(1, 1), buffer_factor=2)
+    cb_a = CircularBuffer(shape=(1, 1), buffer_factor=2)
 
     # Test DMA from tensor to circular buffer
     cb_view = cb_a.reserve()
@@ -126,22 +117,19 @@ def test_dma_operations():
 
 def test_error_handling():
     """Test error conditions."""
-    tensor = tu.randn(TILE_SIZE, TILE_SIZE)
-    accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
-
     # Test invalid shape
     with pytest.raises(ValueError):
-        CircularBuffer(accessor, shape=(0, 1))  # Invalid shape
+        CircularBuffer(shape=(0, 1))  # Invalid shape
 
     with pytest.raises(ValueError):
-        CircularBuffer(accessor, shape=(1, 2, 3))  # type: ignore # Wrong shape dimensions
+        CircularBuffer(shape=(1, 2, 3))  # type: ignore # Wrong shape dimensions
 
     # Test invalid buffer factor
     with pytest.raises(ValueError):
-        CircularBuffer(accessor, shape=(1, 1), buffer_factor=0)
+        CircularBuffer(shape=(1, 1), buffer_factor=0)
 
     # Test operations without proper setup
-    cb = CircularBuffer(accessor, shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
 
     # Can't push without reserve - CBAPI will catch this
     with pytest.raises(CBContractError):
@@ -165,21 +153,17 @@ def test_example_usage_pattern():
     granularity = 4
 
     a_in = tu.randn(rows, cols)
-    b_in = tu.randn(rows, cols)
     c_in = tu.randn(TILE_SIZE, cols)  # Make c_in a full tile height for proper tiling
-    out = tu.zeros(rows, cols)
 
     # Create accessors
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
-    b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
     c_accessor = TensorAccessor(c_in, index_type=IndexType.TILE)
-    out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
     # Create circular buffers like in the example
-    a_in_cb = CircularBuffer(a_accessor, shape=(granularity, 1), buffer_factor=2)
-    _ = CircularBuffer(b_accessor, shape=(granularity, 1), buffer_factor=2)
-    c_in_cb = CircularBuffer(c_accessor, shape=(1, 1), buffer_factor=2)
-    _ = CircularBuffer(out_accessor, shape=(granularity, 1), buffer_factor=2)
+    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
+    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
+    c_in_cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
+    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
 
     # Verify the circular buffers were created correctly
     assert a_in_cb.shape == (granularity, 1)

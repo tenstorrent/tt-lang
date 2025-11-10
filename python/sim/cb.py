@@ -17,7 +17,6 @@ from threading import Lock
 from .cbapi import CBAPI
 from .ringview import RingView
 from .typedefs import CBID, Size
-from .tensoraccessor import TensorAccessor
 from .constants import MAX_CBS
 
 
@@ -35,7 +34,7 @@ class CircularBuffer:
     work with a fixed number of tiles determined by the shape parameter.
 
     Example:
-        cb = CircularBuffer(accessor, shape=(2, 3), buffer_factor=2)
+        cb = CircularBuffer(shape=(2, 3), buffer_factor=2)
 
         # Producer workflow
         write_view = cb.reserve()  # Reserve space for 6 tiles
@@ -65,7 +64,6 @@ class CircularBuffer:
 
     def __init__(
         self,
-        accessor: TensorAccessor,
         shape: Tuple[Size, Size],
         buffer_factor: Size = 2,
         api: Optional[CBAPI[torch.Tensor]] = None,
@@ -74,7 +72,6 @@ class CircularBuffer:
         Initialize a CircularBuffer.
 
         Args:
-            accessor: TensorAccessor object that provides tensor access methods
             shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
             buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
             api: Optional CBAPI instance to use. If None, uses the shared default instance.
@@ -92,7 +89,6 @@ class CircularBuffer:
         if buffer_factor <= 0:
             raise ValueError(f"Buffer factor must be positive, got {buffer_factor}")
 
-        self._accessor = accessor
         self._shape = shape
         self._buffer_factor = buffer_factor
 
@@ -193,11 +189,6 @@ class CircularBuffer:
     def cb_id(self) -> CBID:
         """Get the internal CB ID (for debugging/advanced use)."""
         return self._cb_id
-
-    @property
-    def accessor(self) -> TensorAccessor:
-        """Get the associated tensor accessor."""
-        return self._accessor
 
     def stats(self):
         """Get current buffer statistics."""

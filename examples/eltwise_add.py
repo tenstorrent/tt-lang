@@ -206,7 +206,6 @@ def Program(*funcs: BindableTemplate) -> Any:
                     elif isinstance(value, CircularBuffer):
                         # create a fresh CB for this core
                         core_context[key] = CircularBuffer(
-                            accessor=value.accessor,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
                             api=api,
@@ -342,17 +341,10 @@ def eltwise_add(
     b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
     out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
-    # NOTE: (Kostas) I don't understand why a CircularBuffer needs to be associated with a tensor accessor.
-    #                Perhaps we need to know its specific type? Or to prevent mixups of tensors on the same cb?
-    a_in_cb = CircularBuffer(
-        a_accessor, shape=(granularity, 1), buffer_factor=buffer_factor
-    )
-    b_in_cb = CircularBuffer(
-        b_accessor, shape=(granularity, 1), buffer_factor=buffer_factor
-    )
-    out_cb = CircularBuffer(
-        out_accessor, shape=(granularity, 1), buffer_factor=buffer_factor
-    )
+    # Create circular buffers with simplified API (no accessor parameter needed)
+    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
+    b_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
+    out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
 
     @compute()
     async def compute_func():
