@@ -34,33 +34,29 @@ def create_tensor_type(
     Args:
         ctx: MLIR context
         arg: Tensor argument (must have .shape and .dtype attributes)
-        grid: Grid dimensions
-        tiled: Whether to use tiled layout with TileType
-        memory_space: "L1" or "DRAM"
+        grid: Grid dimensions (for computing shard shape)
+        tiled: Unused (kept for compatibility)
+        memory_space: Unused (function args always use System memory)
 
     Returns:
-        RankedTensorType with appropriate layout and element type
+        RankedTensorType with per-core shard shape, scalar element type, and System memory space
     """
-    shape = arg.shape
+    logical_shape = list(arg.shape)
+    shard_shape = [logical_shape[i] // grid[i] for i in range(len(logical_shape))]
     dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
 
+    # Function arguments are host buffers (System memory), not device buffers (L1/DRAM)
     layout = create_metal_layout(
         ctx,
         MetalLayoutConfig(
-            logical_shape=shape, grid=grid, tiled=tiled, memory_space=memory_space
+            logical_shape=shard_shape,
+            grid=[1, 1],
+            tiled=False,
+            memory_space="System",
         ),
     )
-    tile_shape = DEFAULT_TILE_SHAPE if tiled else [1, 1]
-    device_shape = compute_device_shape(layout, grid, shape, tile_shape)
 
-    ttcore_dtype = torch_dtype_to_ttcore_datatype(arg.dtype)
-    element_type = (
-        ttcore.ir.TileType.get(ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype)
-        if tiled
-        else dtype
-    )
-
-    return RankedTensorType.get(device_shape, element_type, layout)
+    return RankedTensorType.get(shard_shape, dtype, layout)
 
 
 def affine_map_from_lambda(fn: Callable) -> AffineMap:
