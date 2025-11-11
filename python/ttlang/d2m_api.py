@@ -336,7 +336,16 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
 
-        ttmetal_to_flatbuffer_bin(module)
+        flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
+
+        if binary is not None and runtime is not None:
+            try:
+                binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+                device = runtime.open_mesh_device()
+                runtime.submit(device, binary_obj, 0, list(args))
+            except Exception as e:
+                print(f"Warning: Runtime execution failed: {e}")
+                print("(This is expected on macOS or if hardware is not available)")
 
 
 def pykernel_gen(
