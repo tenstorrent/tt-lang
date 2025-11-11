@@ -23,7 +23,7 @@ from .cbapi import (
 )
 from .tensoraccessor import TensorAccessor
 from .idxtype import IndexType
-from .constants import TILE_SIZE
+from .constants import TILE_SIZE, TILE_SHAPE
 from .cb import CircularBuffer
 from .dma import dma, DMATransaction
 from . import torch_utils
@@ -45,6 +45,7 @@ __all__ = [
     "TensorAccessor",
     "IndexType",
     "TILE_SIZE",
+    "TILE_SHAPE",
     "CircularBuffer",
     "dma",
     "DMATransaction",

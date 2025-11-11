@@ -11,8 +11,9 @@ CircularBuffer system.
 
 from typing import Union, List
 import torch
+from . import torch_utils as tu
 from .ringview import RingView
-from .constants import TILE_SIZE
+from .constants import TILE_SIZE, TILE_SHAPE
 
 
 class DMATransaction:
@@ -85,8 +86,8 @@ class DMATransaction:
             if isinstance(self._src, torch.Tensor) and isinstance(self._dst, RingView):
                 # Copying from tensor to RingView - split tensor into individual tiles
                 try:
-                    # Calculate number of tiles: tensor height / TILE_SIZE
-                    num_tiles = self._src.shape[0] // TILE_SIZE
+                    # Calculate total number of tiles in the tensor
+                    num_tiles = tu.tile_count(self._src.shape, TILE_SHAPE)
                     expected_tiles = len(self._dst)
 
                     if num_tiles != expected_tiles:
@@ -108,24 +109,21 @@ class DMATransaction:
             ):
                 # Copying from RingView to tensor - combine individual tiles into one tensor
                 try:
-                    # Collect all tiles from RingView and stack them vertically
+
+                    dst_tiles = tu.tile_count(self._dst.shape, TILE_SHAPE)
+                    if len(self._src) != dst_tiles:
+                        raise ValueError(
+                            f"Expected {len(self._src)} tiles but found {dst_tiles}"
+                        )
+
+                    # Collect all tiles from RingView and concatenate them in row-major order
                     tiles: List[torch.Tensor] = []
-                    for i in range(len(self._src)):
+                    for i in range(dst_tiles):
                         tile = self._src[i]
                         tiles.append(tile)
 
-                    if len(tiles) != len(self._src):
-                        raise ValueError(
-                            f"Expected {len(self._src)} tiles but found {len(tiles)}"
-                        )
-
-                    # Stack tiles vertically to reconstruct the original tensor
-                    reconstructed_tensor = torch.cat(tiles, dim=0)  # type: ignore
-
-                    if reconstructed_tensor.shape != self._dst.shape:
-                        raise ValueError(
-                            f"Reconstructed tensor shape {reconstructed_tensor.shape} doesn't match destination {self._dst.shape}"
-                        )
+                    # Concatenate tiles in row-major order to reconstruct the original tensor
+                    reconstructed_tensor = tu.cat(tiles, dim=0)
 
                     # Copy reconstructed tensor to destination
                     self._dst[:] = reconstructed_tensor

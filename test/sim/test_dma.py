@@ -170,7 +170,7 @@ class TestRingViewToTensorDMA:
         destination = tu.zeros(96, 32)  # 3 tiles, but RingView has 2
 
         tx = dma(ringview, destination)
-        with pytest.raises(ValueError, match="Reconstructed tensor shape"):
+        with pytest.raises(ValueError, match="Expected 2 tiles but found 3"):
             tx.wait()
 
     def test_transfer_from_single_slot_ringview(self) -> None:
