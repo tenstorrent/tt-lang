@@ -300,6 +300,7 @@ def _compile_and_run_kernel(
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
         use_tile_matmul = True
+        ttnn_mode = False  # Set to True to enable runtime.submit() execution
         pipeline = f"d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{{use-tile-matmul={1 if use_tile_matmul else 0}}}"
 
         register_device = "ttcore-register-device"
@@ -338,7 +339,68 @@ def _compile_and_run_kernel(
 
         flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
 
-        if binary is not None and runtime is not None:
+        # Save flatbuffer to file for ttrt execution
+        flatbuffer_path = os.environ.get("TTLANG_FLATBUFFER_PATH")
+        if flatbuffer_path and binary is not None:
+            binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+            binary_obj.store(flatbuffer_path)
+            print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
+
+        # Metal runtime execution (set TTLANG_ENABLE_RUNTIME=1 to enable)
+        enable_runtime = os.environ.get("TTLANG_ENABLE_RUNTIME") == "1"
+        if enable_runtime and binary is not None and runtime is not None:
+            try:
+                binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+                program_index = 0
+
+                # Set the runtime to match the binary format (TTMetal vs TTNN)
+                runtime.set_compatible_device_runtime(binary_obj)
+
+                # Get mesh shape from binary and create device
+                device_options = runtime.MeshDeviceOptions()
+                device_options.mesh_shape = binary_obj.get_program_mesh_shape(program_index)
+                device = runtime.open_mesh_device(device_options)
+
+                # Create borrowed tensors from torch tensors (shares memory)
+                # TTMetal binaries already have enqueue_write_buffer ops, so we just
+                # pass the host tensors directly - no need for to_layout conversions
+                dtype_map = {
+                    torch.float32: 0,  # runtime.DataType.Float32
+                    torch.float16: 1,  # runtime.DataType.Float16
+                    torch.bfloat16: 2, # runtime.DataType.BFloat16
+                }
+
+                inputs = []
+                for arg in args:  # All args including outputs (TTMetal expects them all)
+                    dtype_value = dtype_map.get(arg.dtype, 0)
+                    rt_tensor = runtime.create_borrowed_host_tensor(
+                        arg.data_ptr(),
+                        list(arg.shape),
+                        list(arg.stride()),
+                        arg.element_size(),
+                        dtype_value
+                    )
+                    inputs.append(rt_tensor)
+
+                # Submit and execute - TTMetal binary handles all layout conversions internally
+                runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
+                runtime.wait(runtime_outputs)
+
+                # Clean up runtime output tensors
+                # Note: Since we used borrowed tensors that share memory with torch tensors,
+                # the results are already reflected in the original torch tensors (args)
+                for runtime_output_tensor in runtime_outputs:
+                    runtime.deallocate_tensor(runtime_output_tensor, force=True)
+
+                runtime.close_mesh_device(device)
+
+            except Exception as e:
+                print(f"Warning: Metal runtime execution failed: {e}")
+                print("(This is expected on macOS or if hardware is not available)")
+                import traceback
+                traceback.print_exc()
+
+        if ttnn_mode and binary is not None and runtime is not None:
             try:
                 # Convert torch tensors to runtime.Tensor objects
                 runtime_tensors = []
