@@ -340,9 +340,35 @@ def _compile_and_run_kernel(
 
         if binary is not None and runtime is not None:
             try:
+                # Convert torch tensors to runtime.Tensor objects
+                runtime_tensors = []
+                for arg in args:
+                    if torch is not None and isinstance(arg, torch.Tensor):
+                        # Map torch dtype to runtime DataType
+                        dtype_map = {
+                            torch.float32: 0,  # runtime.DataType.Float32
+                            torch.float16: 1,  # runtime.DataType.Float16
+                            torch.bfloat16: 2, # runtime.DataType.BFloat16
+                        }
+                        dtype_value = dtype_map.get(arg.dtype, 0)
+
+                        # Create borrowed tensor (shares memory with torch tensor)
+                        rt_tensor = runtime.create_borrowed_host_tensor(
+                            arg.data_ptr(),
+                            list(arg.shape),
+                            list(arg.stride()),
+                            arg.element_size(),
+                            dtype_value
+                        )
+                        runtime_tensors.append(rt_tensor)
+                    else:
+                        runtime_tensors.append(arg)
+
                 binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
                 device = runtime.open_mesh_device()
-                runtime.submit(device, binary_obj, 0, list(args))
+                output_tensors = runtime.submit(device, binary_obj, 0, runtime_tensors)
+
+                # Results are written in-place to borrowed tensors, so no copy needed
             except Exception as e:
                 print(f"Warning: Runtime execution failed: {e}")
                 print("(This is expected on macOS or if hardware is not available)")
