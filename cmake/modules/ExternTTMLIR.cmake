@@ -98,7 +98,7 @@ if(TTMLIR_FOUND)
   set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
   set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 else()
-  # Scenario 3: FetchContent fallback - build locally
+  # Scenario 3: Use FetchContent to build tt-mlir locally
   set(TTMLIR_COMMIT_FILE "${CMAKE_SOURCE_DIR}/third-party/tt-mlir.commit")
   file(READ "${TTMLIR_COMMIT_FILE}" TTMLIR_GIT_TAG)
   string(STRIP "${TTMLIR_GIT_TAG}" TTMLIR_GIT_TAG)
