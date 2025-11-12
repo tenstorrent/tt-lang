@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: %python %s
+# RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
 # Verify: TensorBlock.__add__ generates linalg.generic with identity maps and tile_add.
 
@@ -47,19 +48,29 @@ def test_add(lhs, rhs, out):
 # CHECK-LOWERED: func.func @test_add
 # CHECK-LOWERED: emitc.call_opaque "add_binary_tile"
 
-lhs = torch.randn(32, 32)
-rhs = torch.randn(32, 32)
+# Use simple known values for testing: 2 + 3 = 5
+lhs = torch.full((32, 32), 2.0)
+rhs = torch.full((32, 32), 3.0)
 out = torch.full((32, 32), -999.0)
 
 print("=== BEFORE KERNEL ===")
-print(f"lhs[0:2, 0:2] = \n{lhs[0:2, 0:2]}")
-print(f"rhs[0:2, 0:2] = \n{rhs[0:2, 0:2]}")
-print(f"out[0:2, 0:2] = \n{out[0:2, 0:2]}")
-print(f"Expected result[0:2, 0:2] = \n{(lhs + rhs)[0:2, 0:2]}")
+print(f"lhs: all 2.0")
+print(f"rhs: all 3.0")
+print(f"out: all -999.0")
+print(f"Expected: all 5.0")
 
 test_add(lhs, rhs, out)
 
 print("\n=== AFTER KERNEL ===")
-print(f"out[0:2, 0:2] = \n{out[0:2, 0:2]}")
-print(f"Expected result[0:2, 0:2] = \n{(lhs + rhs)[0:2, 0:2]}")
-print(f"out min/max/mean: {out.min().item():.4f} / {out.max().item():.4f} / {out.mean().item():.4f}")
+# CHECK-OUTPUT: === AFTER KERNEL ===
+print(f"out[0, 0] = {out[0, 0].item()}")
+# CHECK-OUTPUT: out[0, 0] = 5.0
+print(f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}")
+# CHECK-OUTPUT: out min/max/mean: 5.0 / 5.0 / 5.0
+
+expected = lhs + rhs
+if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
+    print("PASS: Output matches expected (2.0 + 3.0 = 5.0)")
+    # CHECK-OUTPUT: PASS: Output matches expected
+else:
+    print(f"FAIL: Expected all 5.0, got values from {out.min().item()} to {out.max().item()}")

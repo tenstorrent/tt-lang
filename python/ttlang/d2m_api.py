@@ -346,9 +346,8 @@ def _compile_and_run_kernel(
             binary_obj.store(flatbuffer_path)
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
 
-        # Metal runtime execution (set TTLANG_ENABLE_RUNTIME=1 to enable)
-        enable_runtime = os.environ.get("TTLANG_ENABLE_RUNTIME") == "1"
-        if enable_runtime and binary is not None and runtime is not None:
+        # Metal runtime execution (enabled by default when runtime is available)
+        if binary is not None and runtime is not None:
             try:
                 binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
                 program_index = 0
