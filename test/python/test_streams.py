@@ -51,15 +51,17 @@ def test_stream(lhs, rhs, out):
 
 # CHECK-LABEL: func.func @test_stream
 
-# Verify: First argument marked as stream
-# CHECK-SAME: (%[[ARG0:.+]]: tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]> {d2m.stream = true}
+# Verify: First argument is 2D scalar tensor marked as stream
+# CHECK-SAME: (%[[ARG0:.+]]: tensor<{{[0-9]+}}x{{[0-9]+}}xf32> {d2m.stream = true}
 
-# Verify: Storage created with same layout as stream result
+# Verify: to_layout converts host tensor to device tensor
+# CHECK: %[[DEVICE_TENSOR:.+]] = d2m.to_layout %[[ARG0]]
+
+# Verify: Storage created for stream
 # CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]>
 
-# Verify: stream_layout connects input to storage with consistent layout
-# CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[ARG0]], %[[STORAGE]])
-# CHECK-SAME: -> tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]>
+# Verify: stream_layout wraps the device tensor
+# CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[DEVICE_TENSOR]], %[[STORAGE]])
 
 # Verify: Stream used as input to d2m.generic (explicit datamovement form)
 # CHECK: d2m.generic {block_factors = [], grid = #ttcore.grid<1x1>, indexing_maps = [], iterator_types = []

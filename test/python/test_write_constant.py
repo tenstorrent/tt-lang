@@ -16,17 +16,20 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
 def test_write_constant(inp, out):
+    inp_stream = Stream(inp)
+
     @compute()
     async def write_compute(inp_cb: CircularBuffer, out_cb: CircularBuffer):
         inp_tile = inp_cb.pop()
         out_tile = out_cb.reserve()
-        # Just pass through the input (which is all 42.0)
         out_tile.store(inp_tile)
         out_cb.pop()
 
     @datamovement()
     async def dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
-        pass
+        inp_shard = inp_cb.reserve()
+        tx = dma(inp_stream[0, 0], inp_shard)
+        tx.wait()
 
     return Program(write_compute, dm)(inp, out)
 

@@ -10,6 +10,7 @@ import ast
 import inspect
 import functools
 import os
+import platform
 from typing import List, Optional, Callable, Dict, Union
 
 try:
@@ -352,7 +353,9 @@ def _compile_and_run_kernel(
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
 
         # Metal runtime execution (enabled by default when runtime is available)
-        if binary is not None and runtime is not None:
+        # Skip on macOS since hardware is not available
+        is_macos = platform.system() == "Darwin"
+        if not is_macos and binary is not None and runtime is not None:
             try:
                 binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
                 program_index = 0
