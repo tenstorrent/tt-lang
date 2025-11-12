@@ -7,17 +7,15 @@ _CState and related internal state management for cbsim.
 """
 
 from threading import Condition, RLock, Thread
-from typing import Generic, List, Optional, TypeVar
-from .typedefs import Size, Index, Count
+from typing import Generic, List, Optional
+from .typedefs import Size, Index, Count, CBElemType
 from .errors import CBContractError, CBNotConfigured
 from .ringview import Span
-
-T = TypeVar("T")
 
 
 # It is a deliberate design choice to use any generic type here to avoid dealing
 # with byte arrays as would be the case in the C++ API.
-class CBState(Generic[T]):
+class CBState(Generic[CBElemType]):
     __slots__ = (
         "cap",
         "buf",
@@ -37,7 +35,7 @@ class CBState(Generic[T]):
 
     def __init__(self):
         self.cap: Size = 1
-        self.buf: List[Optional[T]] = []
+        self.buf: List[Optional[CBElemType]] = []
         self.head: Index = 0
         self.visible: Count = 0
         self.reserved: Count = 0
