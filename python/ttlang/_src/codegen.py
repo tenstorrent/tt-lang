@@ -21,35 +21,6 @@ from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
 
 
-def create_tensor_type(
-    ctx: Context,
-    arg: Any,
-    grid: List[int],
-    tiled: bool,
-    memory_space: str,
-) -> Type:
-    """
-    Create a RankedTensorType for a kernel argument (host tensor).
-
-    Host tensors are simple 2D tensors with scalar element types and no layout attributes.
-    The LowerToLayout pass will handle distribution and tilization as needed.
-
-    Args:
-        ctx: MLIR context
-        arg: Tensor argument (must have .shape and .dtype attributes)
-        grid: Unused (kept for compatibility)
-        tiled: Unused (kept for compatibility)
-        memory_space: Unused (kept for compatibility)
-
-    Returns:
-        RankedTensorType with logical shape and scalar element type (no layout attribute)
-    """
-    logical_shape = list(arg.shape)
-    dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
-
-    return RankedTensorType.get(logical_shape, dtype)
-
-
 def create_device_tensor_type(
     ctx: Context,
     logical_shape: List[int],
@@ -202,7 +173,9 @@ def create_generic_func(
 
     ordered_tensor_args = []
     for arg in user_args:
-        tensor_type = create_tensor_type(ctx, arg, grid, tiled, memory_space)
+        logical_shape = list(arg.shape)
+        dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
+        tensor_type = RankedTensorType.get(logical_shape, dtype)
         ordered_tensor_args.append(tensor_type)
 
     arg_types = ordered_tensor_args
@@ -270,7 +243,9 @@ def create_generic_func(
         )
         device_output_buffer = d2m.EmptyOp(device_output_type)
 
-        # Generic operates on device tensors
+        # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
+        # Low-level DSL provides explicit grid/block_factors and manual thread logic.
+        # High-level DSL will need to infer these from operation semantics.
         generic = d2m.GenericOp(
             [device_output_type],
             wrapped_inputs,
