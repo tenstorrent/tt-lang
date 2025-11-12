@@ -56,6 +56,22 @@ class D2MGenericCompiler(TTCompilerBase):
         for name, val in D2MGenericCompiler._syntax.items():
             self._fn_map[name] = val
 
+    # Override to use i64 for all integer constants (attributes or not)
+    # D2M ops require i64, and this reduces casts throughout the pipeline
+    def visit_Constant(self, node):
+        as_attr = getattr(node, "_ttkernel_as_attr", False)
+        op_constructor = IntegerAttr.get if as_attr else arith.ConstantOp
+        if callable(as_attr):
+            return as_attr(node)
+        elif isinstance(node.value, bool):
+            return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
+        elif isinstance(node.value, int):
+            return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        else:
+            raise NotImplementedError(
+                f"constant type {type(node.value).__name__} not implemented"
+            )
+
     def _emit_entry(self, node):
         # TODO: add alloca args name into symbol table
         assert not self.func_entry, "Cannot declare function within a function"
