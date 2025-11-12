@@ -13,7 +13,7 @@ import torch
 from python.sim import torch_utils as tu
 from python.sim.dma import DMATransaction, dma
 from python.sim.ringview import RingView, Span
-from python.sim.constants import TILE_SIZE
+from python.sim.constants import TILE_SHAPE
 from typing import Optional, List
 
 
@@ -154,8 +154,8 @@ class TestRingViewToTensorDMA:
         assert tx.completed
         # Verify each tile was placed correctly
         for i in range(4):
-            start_row = i * TILE_SIZE
-            end_row = (i + 1) * TILE_SIZE
+            start_row = i * TILE_SHAPE[0]
+            end_row = (i + 1) * TILE_SHAPE[0]
             tile_slice = destination[start_row:end_row, :]
             assert tu.allclose(tile_slice, tiles[i])
 

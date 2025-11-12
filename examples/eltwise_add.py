@@ -6,7 +6,6 @@ import torch
 import math
 
 from sim import (
-    TILE_SIZE,
     TILE_SHAPE,
     TensorAccessor,
     IndexType,
@@ -42,8 +41,8 @@ def eltwise_add(
     assert all(is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
 
-    row_tiles = a_in.shape[0] // TILE_SIZE
-    col_tiles = a_in.shape[1] // TILE_SIZE
+    row_tiles = a_in.shape[0] // TILE_SHAPE[0]
+    col_tiles = a_in.shape[1] // TILE_SHAPE[1]
 
     # Parallelizing by columns here to get reuse on C
     cols_per_core = math.ceil(col_tiles / (grid[0] * grid[1]))

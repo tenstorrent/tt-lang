@@ -9,11 +9,11 @@ enabling data transfer operations between tensors and RingViews in the
 CircularBuffer system.
 """
 
-from typing import Union, List
+from typing import Union
 import torch
 from . import torch_utils as tu
 from .ringview import RingView
-from .constants import TILE_SIZE, TILE_SHAPE
+from .constants import TILE_SHAPE
 
 
 class DMATransaction:
@@ -86,6 +86,12 @@ class DMATransaction:
             if isinstance(self._src, torch.Tensor) and isinstance(self._dst, RingView):
                 # Copying from tensor to RingView - split tensor into individual tiles
                 try:
+                    # Validate that we're dealing with 2D tensors
+                    if len(self._src.shape) != 2:
+                        raise ValueError(
+                            f"DMA only supports 2D tensors, got {len(self._src.shape)}D tensor with shape {self._src.shape}"
+                        )
+
                     # Calculate total number of tiles in the tensor
                     num_tiles = tu.tile_count(self._src.shape, TILE_SHAPE)
                     expected_tiles = len(self._dst)
@@ -95,12 +101,23 @@ class DMATransaction:
                             f"Tensor contains {num_tiles} tiles but RingView has {expected_tiles} slots"
                         )
 
-                    # Split tensor into individual tiles and place each in a RingView slot
-                    for i in range(num_tiles):
-                        start_row = i * TILE_SIZE
-                        end_row = (i + 1) * TILE_SIZE
-                        tile = self._src[start_row:end_row, :]  # Extract one tile
-                        self._dst[i] = tile
+                    # Calculate dimensions needed for row-major indexing
+                    width_tiles = self._src.shape[1] // TILE_SHAPE[1]
+
+                    # Extract tiles in row-major order
+                    for tile_idx in range(num_tiles):
+                        # Convert linear index to 2D tile coordinates
+                        h_tile = tile_idx // width_tiles
+                        w_tile = tile_idx % width_tiles
+
+                        # Calculate tensor slice coordinates
+                        start_row = h_tile * TILE_SHAPE[0]
+                        end_row = (h_tile + 1) * TILE_SHAPE[0]
+                        start_col = w_tile * TILE_SHAPE[1]
+                        end_col = (w_tile + 1) * TILE_SHAPE[1]
+
+                        tile = self._src[start_row:end_row, start_col:end_col]
+                        self._dst[tile_idx] = tile
 
                 except Exception as e:
                     raise ValueError(f"Failed to transfer tensor to RingView: {e}")
@@ -109,6 +126,11 @@ class DMATransaction:
             ):
                 # Copying from RingView to tensor - combine individual tiles into one tensor
                 try:
+                    # Validate that we're dealing with 2D tensors
+                    if len(self._dst.shape) != 2:
+                        raise ValueError(
+                            f"DMA only supports 2D tensors, got {len(self._dst.shape)}D tensor with shape {self._dst.shape}"
+                        )
 
                     dst_tiles = tu.tile_count(self._dst.shape, TILE_SHAPE)
                     if len(self._src) != dst_tiles:
@@ -116,17 +138,22 @@ class DMATransaction:
                             f"Expected {len(self._src)} tiles but found {dst_tiles}"
                         )
 
-                    # Collect all tiles from RingView and concatenate them in row-major order
-                    tiles: List[torch.Tensor] = []
-                    for i in range(dst_tiles):
-                        tile = self._src[i]
-                        tiles.append(tile)
+                    # Calculate dimensions needed for row-major indexing
+                    width_tiles = self._dst.shape[1] // TILE_SHAPE[1]
 
-                    # Concatenate tiles in row-major order to reconstruct the original tensor
-                    reconstructed_tensor = tu.cat(tiles, dim=0)
+                    # Reconstruct tensor by placing tiles in their proper 2D positions
+                    for tile_idx in range(dst_tiles):
+                        # Convert linear index to 2D tile coordinates
+                        h_tile = tile_idx // width_tiles
+                        w_tile = tile_idx % width_tiles
 
-                    # Copy reconstructed tensor to destination
-                    self._dst[:] = reconstructed_tensor
+                        start_row = h_tile * TILE_SHAPE[0]
+                        end_row = (h_tile + 1) * TILE_SHAPE[0]
+                        start_col = w_tile * TILE_SHAPE[1]
+                        end_col = (w_tile + 1) * TILE_SHAPE[1]
+
+                        tile = self._src[tile_idx]
+                        self._dst[start_row:end_row, start_col:end_col] = tile
 
                 except Exception as e:
                     raise ValueError(f"Failed to transfer RingView to tensor: {e}")
