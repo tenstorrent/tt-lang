@@ -2,21 +2,18 @@
 
 ## Overview
 
-tt-lang uses a CMake-based build system that **reuses tt-mlir's environment and toolchain**. This approach:
-- Avoids duplicating LLVM/MLIR builds (saves hours of build time and gigabytes of disk space)
-- Ensures consistency between tt-lang and tt-mlir (same compiler, same LLVM version, same Python environment)
-- Simplifies maintenance and reduces configuration complexity
+tt-lang uses a CMake-based build system that **reuses tt-mlir's environment and toolchain**. This approach avoids duplicating LLVM/MLIR builds and ensures consistency between tt-lang and tt-mlir (same compiler, same LLVM version, same Python environment).
 
-The build system supports:
-- C++ code for MLIR dialects and passes
-- Python bindings using nanobind
-- tt-mlir as a dependency (links against tt-mlir libraries and uses its Python bindings)
+The tt-lang build system supports:
+- TableGen and C++ code for MLIR dialects and passes.
+- Python bindings using nanobind.
+- tt-mlir as a dependency (links against tt-mlir libraries and uses its Python bindings).
 
 ## Prerequisites and Build Instructions
 
 See the [README Quick Start](README.md#quick-start) section for prerequisites and build instructions.
 
-## Build Scenarios
+## Configuration and build
 
 tt-lang supports three integration scenarios for tt-mlir:
 
@@ -31,8 +28,7 @@ Use a tt-mlir build tree directly without installation. This mode:
 
 **Use this mode when:**
 - You're actively developing tt-mlir alongside tt-lang
-- You want to test tt-lang against unreleased tt-mlir changes
-- You need quick iteration without reinstalling tt-mlir
+- You need quick iteration without rebuilding/reinstalling tt-mlir
 
 **Configuration:**
 ```bash
@@ -54,11 +50,10 @@ Use a pre-installed tt-mlir toolchain. This mode:
 **Use this mode when:**
 - You have tt-mlir pre-installed (e.g., in a container or system installation)
 - You want a stable, reproducible build environment
-- You're building in CI/CD environments
 
 **Important:** The pre-installed tt-mlir must be built with Python bindings enabled (`-DTTMLIR_ENABLE_BINDINGS_PYTHON=ON`). See the [tt-mlir Getting Started guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) for details on building tt-mlir with Python bindings.
 
-### Scenario 3: Automatic Build (Fallback)
+### Scenario 3: Automatic Build
 
 Automatically fetch and build tt-mlir if not found. This mode:
 - Fetches tt-mlir from the commit specified in `third-party/tt-mlir.commit`
@@ -67,7 +62,7 @@ Automatically fetch and build tt-mlir if not found. This mode:
 - First build is slow, but subsequent builds reuse the cached installation
 
 **Use this mode when:**
-- You don't have tt-mlir pre-installed
+- You don't have tt-mlir pre-installed and don't want to build/install it yourself
 - You want a fully automated setup
 - You're setting up a new development environment
 
@@ -80,10 +75,10 @@ If `TTMLIR_BUILD_DIR` is specified:
 1. Looks for `TTMLIRConfig.cmake` in `${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir`
 2. Loads configuration from tt-mlir's CMake cache using `load_cache`:
    - `CMAKE_HOME_DIRECTORY` → tt-mlir source directory
-   - `_Python3_EXECUTABLE` → Python executable used by tt-mlir
+   - `_Python3_EXECUTABLE` → Python executable used by tt-mlir (typically from the virtual python environment in the tt-mlir toolchain location)
 3. Sets `TTMLIR_TOOLCHAIN_DIR` from:
    - Environment variable `TTMLIR_TOOLCHAIN_DIR` (if set, takes precedence)
-   - Otherwise derives from Python executable path (2 levels up)
+   - Otherwise derives it from the Python executable path
 4. Adds tt-mlir's CMake modules to the module path
 5. Sets up Python from `${TTMLIR_TOOLCHAIN_DIR}/venv`
 
@@ -98,15 +93,15 @@ If `TTMLIR_BUILD_DIR` is not specified:
 4. Sets up Python from `${TTMLIR_TOOLCHAIN_DIR}/venv`
 5. Finds MLIR and LLVM from the toolchain
 
-### Scenario 3: Automatic Build
+### Scenario 3: Automatic build
 If tt-mlir is not found in scenarios 1 or 2:
 1. Reads the commit SHA from `third-party/tt-mlir.commit`
-2. Uses `FetchContent_Populate` to clone and checkout tt-mlir
+2. Uses `FetchContent_Populate` to clone tt-mlir at the above SHA
 3. Configures tt-mlir with platform-specific options:
    - **Linux**: Runtime and runtime tests enabled
    - **macOS**: Runtime and runtime tests disabled
    - Common: StableHLO OFF, OPMODEL OFF, Python bindings ON, Debug strings ON
-4. Builds and installs tt-mlir to `${CMAKE_BINARY_DIR}/tt-mlir-install`
+4. Builds and installs tt-mlir to `${TTMLIR_INSTALL_PREFIX}` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`)
 5. Uses the newly built tt-mlir for the tt-lang build
 
 **Python Environment:**
@@ -205,6 +200,7 @@ cmake --build build
   - Or as CMake variable: `-DTTMLIR_TOOLCHAIN_DIR=/path/to/toolchain`
   - Environment variable takes precedence
   - **Recommended for Scenario 1**: Set as environment variable to prevent incorrect derivation from Python path
+- `TTMLIR_INSTALL_PREFIX` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`) - Installation prefix for automatically built tt-mlir (Scenario 3 only)
 - `TTLANG_ENABLE_BINDINGS_PYTHON` (default: OFF) - Enable Python bindings
 - `TTLANG_ENABLE_RUNTIME` (default: OFF) - Enable runtime support
 - `CODE_COVERAGE` (default: OFF) - Enable code coverage reporting
@@ -225,6 +221,9 @@ cmake -GNinja -Bbuild . -DTTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
 # Scenario 3: Automatic build (no extra options needed)
 cmake -GNinja -Bbuild .
+
+# Scenario 3: Automatic build with custom install prefix
+cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
 
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON

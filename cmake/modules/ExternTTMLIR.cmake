@@ -127,7 +127,10 @@ else()
     set(_TTMLIR_CXX_LAUNCHER "")
   endif()
 
-  set(_TTMLIR_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/tt-mlir-install")
+  if(NOT DEFINED TTMLIR_INSTALL_PREFIX)
+    set(TTMLIR_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/tt-mlir-install" CACHE PATH "Installation prefix for automatically built tt-mlir")
+  endif()
+  set(_TTMLIR_INSTALL_PREFIX "${TTMLIR_INSTALL_PREFIX}")
 
   message(STATUS "tt-mlir will be installed to: ${_TTMLIR_INSTALL_PREFIX}")
 
