@@ -23,9 +23,14 @@ from .cbapi import (
 )
 from .tensoraccessor import TensorAccessor
 from .idxtype import IndexType
-from .constants import TILE_SIZE, TILE_SHAPE
+from .constants import TILE_SIZE, TILE_SHAPE, MAX_CORES
 from .cb import CircularBuffer
 from .dma import dma, DMATransaction
+from .program import Program, BindableTemplate, core_index
+from .decorators import compute, datamovement
+from .kernel import pykernel_gen
+from .testing import assert_pcc
+from .torch_utils import is_tiled
 from . import torch_utils
 
 __all__ = [
@@ -46,8 +51,17 @@ __all__ = [
     "IndexType",
     "TILE_SIZE",
     "TILE_SHAPE",
+    "MAX_CORES",
     "CircularBuffer",
     "dma",
     "DMATransaction",
+    "Program",
+    "BindableTemplate",
+    "core_index",
+    "compute",
+    "datamovement",
+    "pykernel_gen",
+    "assert_pcc",
+    "is_tiled",
     "torch_utils",
 ]

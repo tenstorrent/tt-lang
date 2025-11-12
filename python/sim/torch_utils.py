@@ -133,3 +133,33 @@ def tile_count(tensor_shape: Tuple[int, ...], tile_shape: Tuple[int, ...]) -> in
             ]
         )
     )
+
+
+def is_tiled(tensor: torch.Tensor, tile_shape: Tuple[int, ...]) -> bool:
+    """
+    Check if a tensor's dimensions are compatible with the given tile shape.
+
+    A tensor is considered "tiled" if all its dimensions are evenly
+    divisible by the corresponding tile shape dimensions.
+
+    Args:
+        tensor: Tensor to check for tile compatibility
+        tile_shape: Shape of tiles to check compatibility against
+
+    Returns:
+        True if the tensor dimensions are tile-aligned, False otherwise
+
+    Example:
+        tensor = torch.randn(64, 64)
+        assert is_tiled(tensor, (32, 32)) == True  # 64 % 32 == 0
+
+        tensor = torch.randn(65, 64)
+        assert is_tiled(tensor, (32, 32)) == False  # 65 % 32 != 0
+
+        # Works with different tile shapes
+        tensor = torch.randn(96, 64)
+        assert is_tiled(tensor, (32, 16)) == True  # 96 % 32 == 0, 64 % 16 == 0
+    """
+    if len(tensor.shape) != len(tile_shape):
+        return False
+    return all(dim % tile_dim == 0 for dim, tile_dim in zip(tensor.shape, tile_shape))

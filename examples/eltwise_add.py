@@ -1,279 +1,25 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-import types
-from typing import Optional, Any, Callable, Union, Tuple, Dict, Protocol, Coroutine
-import copy
+from typing import Optional, Any
 import torch
 import math
-from types import CellType, FunctionType
 
-# from pykernel.kernel_ast import *
-# from utils import assert_pcc
 from sim import (
     TILE_SIZE,
+    TILE_SHAPE,
     TensorAccessor,
     IndexType,
     CircularBuffer,
     dma,
-    CBAPI,
-    torch_utils as tu,
+    Program,
+    compute,
+    datamovement,
+    core_index,
+    pykernel_gen,
+    assert_pcc,
+    is_tiled,
 )
-
-MAX_CORES = 4  # assuming a 2x2 core grid for simplicity
-
-
-# Protocol for templates that have a bind method
-class BindableTemplate(Protocol):
-    __name__: str
-
-    def bind(self, ctx: Dict[str, Any]) -> Callable[[], Coroutine[Any, Any, Any]]: ...
-
-
-# TODO: Preamble work should either merge with tt-lang or sim
-def pykernel_gen(grid: Union[str, Tuple[int, int]] = "auto", granularity: int = 4):
-    """
-    Decorator that generates a kernel with specified grid and granularity.
-    If grid='auto', defaults to (2, 2).
-    """
-
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Set grid to (2, 2) if 'auto'
-            actual_grid = (2, 2) if grid == "auto" else grid
-
-            # Inject granularity into the function's local scope
-            import inspect
-
-            frame = inspect.currentframe()
-            if frame and frame.f_back:
-                frame.f_back.f_locals["granularity"] = granularity
-
-            # Call the original function with the processed grid
-            return func(*args, grid=actual_grid, **kwargs)
-
-        # Store the decorator parameters for later access
-        setattr(
-            wrapper, "__pykernel_config__", {"grid": grid, "granularity": granularity}
-        )
-        setattr(wrapper, "granularity", granularity)  # Make granularity accessible
-        return wrapper
-
-    return decorator
-
-
-def _make_cell(value: Any) -> CellType:
-    # create a real closure cell holding `value`
-    def inner() -> Any:
-        return value
-
-    assert inner.__closure__ is not None
-    return inner.__closure__[0]
-
-
-def _rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionType:
-    """
-    Create a new function from `func` but with:
-      - globals = func.__globals__ + ctx
-      - closure cells rebuilt from ctx when possible
-    so that names like `out_cb` that were captured will now point to the per-core objects.
-    """
-    freevars = func.__code__.co_freevars
-    orig_closure = func.__closure__ or ()
-    orig_cell_map: Dict[str, CellType] = {
-        name: cell for name, cell in zip(freevars, orig_closure)
-    }
-
-    new_cells: list[CellType] = []
-    for name in freevars:
-        if name in ctx:
-            new_cells.append(_make_cell(ctx[name]))
-        else:
-            # fall back to original cell if we don't have an override
-            new_cells.append(orig_cell_map[name])
-
-    # merge globals with ctx so globals-based lookups also see per-core state
-    new_globals: Dict[str, Any] = dict(func.__globals__)
-    new_globals.update(ctx)
-
-    new_func = types.FunctionType(
-        func.__code__, new_globals, func.__name__, func.__defaults__, tuple(new_cells)
-    )
-    return new_func
-
-
-def compute() -> Callable[[FunctionType], BindableTemplate]:
-    def decorator(func: FunctionType) -> BindableTemplate:
-        class ComputeTemplate:
-            __name__ = func.__name__
-
-            def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
-                # rebuild function with per-core closure
-                bound_func = _rebind_func_with_ctx(func, ctx)
-
-                def runner():
-                    return bound_func()
-
-                return runner
-
-        return ComputeTemplate()
-
-    return decorator
-
-
-def datamovement() -> Callable[[FunctionType], BindableTemplate]:
-    def decorator(func: FunctionType) -> BindableTemplate:
-        class DMTemplate:
-            __name__ = func.__name__
-
-            def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
-                bound_func = _rebind_func_with_ctx(func, ctx)
-
-                def runner():
-                    return bound_func()
-
-                return runner
-
-        return DMTemplate()
-
-    return decorator
-
-
-def core_index() -> int:
-    """Get the current core index from injected context"""
-    import inspect
-
-    frame = inspect.currentframe()
-
-    # Check the calling frame's globals for the injected '_core' variable
-    if frame and frame.f_back and "_core" in frame.f_back.f_globals:
-        return frame.f_back.f_globals["_core"]
-
-    raise RuntimeError(
-        "core not available - function must be called within Program context"
-    )
-
-
-def Program(*funcs: BindableTemplate) -> Any:
-    """Program class that combines compute and data movement functions"""
-
-    class ProgramImpl:
-        def __init__(self, *functions: BindableTemplate):
-            self.functions = functions
-            self.context: Dict[str, Any] = {}
-
-        def __call__(self, *args: Any, **kwargs: Any) -> None:
-            import inspect
-
-            frame = inspect.currentframe()
-            if frame and frame.f_back:
-                # capture locals from the caller (eltwise_add)
-                self.context = dict(frame.f_back.f_locals)
-
-            grid = self.context.get("grid", (1, 1))
-            total_cores = grid[0] * grid[1]
-
-            compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
-
-            # collect user-facing errors here
-            errors: list[str] = []
-
-            for core in range(total_cores):
-                # build per-core context
-                memo: dict[int, Any] = {}
-                core_context: dict[str, Any] = {}
-                api = CBAPI[torch.Tensor]()  # new CBAPI per core
-
-                for key, value in self.context.items():
-                    if isinstance(value, (torch.Tensor, TensorAccessor)):
-                        core_context[key] = value
-                        memo[id(value)] = value
-                    elif isinstance(value, CircularBuffer):
-                        # create a fresh CB for this core
-                        core_context[key] = CircularBuffer(
-                            shape=value.shape,
-                            buffer_factor=value.buffer_factor,
-                            api=api,
-                        )
-                    else:
-                        core_context[key] = copy.deepcopy(value, memo)
-
-                # also make the core number visible
-                core_context["_core"] = core
-
-                # bind per-core
-                core_dm0 = dm0_tmpl.bind(core_context)
-                core_compute = compute_func_tmpl.bind(core_context)
-                core_dm1 = dm1_tmpl.bind(core_context)
-
-                # run the three in parallel threads, because CB ops are blocking
-                import threading, traceback
-
-                # we store (stage_name, exception, traceback_str)
-                thread_results: list[Tuple[str, Exception, str]] = []
-
-                def run_func_in_thread(
-                    name: str, func_factory: Callable[[], Any]
-                ) -> None:
-                    try:
-                        func_factory()  # Execute the function factory directly
-                    except Exception as e:
-                        tb_str = traceback.format_exc()
-                        thread_results.append((name, e, tb_str))
-
-                t_dm0 = threading.Thread(
-                    target=run_func_in_thread, args=(f"core{core}-dm0", core_dm0)
-                )
-                t_comp = threading.Thread(
-                    target=run_func_in_thread,
-                    args=(f"core{core}-compute", core_compute),
-                )
-                t_dm1 = threading.Thread(
-                    target=run_func_in_thread, args=(f"core{core}-dm1", core_dm1)
-                )
-
-                # start all three
-                t_dm0.start()
-                t_comp.start()
-                t_dm1.start()
-
-                # wait for all to finish
-                t_dm0.join()
-                t_comp.join()
-                t_dm1.join()
-
-                # check if any failed
-                if thread_results:
-                    for name, e, tb_str in thread_results:
-                        # print a user-readable header
-                        print(f"\n❌ {name} failed on core {core}")
-                        print(f"   error type   : {type(e).__name__}")
-                        print(f"   error message: {e}")
-                        print("   traceback:")
-                        print(tb_str)
-                        print("-" * 50)
-
-                        # add to final aggregation (short)
-                        errors.append(f"{name} on core {core}: {type(e).__name__}: {e}")
-
-            if errors:
-                raise RuntimeError("One or more cores failed:\n" + "\n".join(errors))
-
-            return None
-
-    return ProgramImpl(*funcs)
-
-
-def assert_pcc(tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> None:
-    # tensors should be equal
-    assert tensor_a.shape == tensor_b.shape, "Tensors must have the same shape"
-    assert tensor_a.dtype == tensor_b.dtype, "Tensors must have the same dtype"
-    assert tensor_a.device == tensor_b.device, "Tensors must be on the same device"
-    assert tu.allclose(tensor_a, tensor_b), "Tensors values are not close enough"
-
-
-def is_tiled(tensor: torch.Tensor) -> bool:
-    return tensor.shape[0] % TILE_SIZE == 0 and tensor.shape[1] % TILE_SIZE == 0
 
 
 @pykernel_gen(
@@ -293,7 +39,7 @@ def eltwise_add(
 
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
-    assert all(is_tiled(tensor) for tensor in [a_in, b_in, out])
+    assert all(is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
 
     row_tiles = a_in.shape[0] // TILE_SIZE
