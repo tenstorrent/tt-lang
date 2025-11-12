@@ -210,7 +210,7 @@ def create_borrowed_tensors(torch_tensors):
             list(tensor.shape),
             list(tensor.stride()),
             tensor.element_size(),
-            dtype_value
+            dtype_value,
         )
         result.append(rt_tensor)
     return result

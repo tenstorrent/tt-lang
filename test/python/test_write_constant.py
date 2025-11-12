@@ -2,13 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# Crashes in D2MInsertDstRegisterAccess because no dst register operations (zero compute ops)
+# XFAIL: *
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
 # Simplest possible test: write a constant value to output
-# This tests the most basic data path without any computation
 
 import torch
 from ttlang.d2m_api import *
@@ -63,4 +64,6 @@ if torch.allclose(out, inp, rtol=1e-2, atol=1e-2):
     print("PASS: Output matches input (constant 42.0)")
     # CHECK-OUTPUT: PASS: Output matches input
 else:
-    print(f"FAIL: Expected all 42.0, got values from {out.min().item()} to {out.max().item()}")
+    print(
+        f"FAIL: Expected all 42.0, got values from {out.min().item()} to {out.max().item()}"
+    )

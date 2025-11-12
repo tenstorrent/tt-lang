@@ -77,14 +77,20 @@ if __name__ == "__main__":
     print(f"expected[0:3, 0:3] =\n{expected[0:3, 0:3]}")
 
     print(f"\nStats:")
-    print(f"  out min/max/mean: {out.min().item():.4f} / {out.max().item():.4f} / {out.mean().item():.4f}")
-    print(f"  expected min/max/mean: {expected.min().item():.4f} / {expected.max().item():.4f} / {expected.mean().item():.4f}")
+    print(
+        f"  out min/max/mean: {out.min().item():.4f} / {out.max().item():.4f} / {out.mean().item():.4f}"
+    )
+    print(
+        f"  expected min/max/mean: {expected.min().item():.4f} / {expected.max().item():.4f} / {expected.mean().item():.4f}"
+    )
 
     # Verify results (will only work on hardware)
     if not torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
         if out.min().item() == -999.0:
             print("\n⚠️  Output unchanged - expected on macOS (compilation only)")
         else:
-            print(f"\n❌ MISMATCH! Max error: {(out - expected).abs().max().item():.6f}")
+            print(
+                f"\n❌ MISMATCH! Max error: {(out - expected).abs().max().item():.6f}"
+            )
     else:
         print("\n✅ Output matches expected!")

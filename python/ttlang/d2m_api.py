@@ -363,12 +363,16 @@ def _compile_and_run_kernel(
                 runtime.set_compatible_device_runtime(binary_obj)
 
                 device_options = runtime.MeshDeviceOptions()
-                device_options.mesh_shape = binary_obj.get_program_mesh_shape(program_index)
+                device_options.mesh_shape = binary_obj.get_program_mesh_shape(
+                    program_index
+                )
                 device = runtime.open_mesh_device(device_options)
 
                 # Borrowed tensors share memory with torch tensors (zero-copy)
                 inputs = create_borrowed_tensors(args)
-                runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
+                runtime_outputs = runtime.submit(
+                    device, binary_obj, program_index, inputs
+                )
                 runtime.wait(runtime_outputs)
 
                 # Results are written directly to torch tensor memory via enqueue_read_buffer
@@ -381,6 +385,7 @@ def _compile_and_run_kernel(
                 print(f"Warning: Metal runtime execution failed: {e}")
                 print("(This is expected on macOS or if hardware is not available)")
                 import traceback
+
                 traceback.print_exc()
 
         # TTNN runtime execution (not yet implemented - requires TTNN integration)
@@ -395,6 +400,7 @@ def _compile_and_run_kernel(
             except Exception as e:
                 print(f"Warning: TTNN runtime execution failed: {e}")
                 import traceback
+
                 traceback.print_exc()
 
 

@@ -68,7 +68,9 @@ class D2MGenericCompiler(TTCompilerBase):
                 raise TypeError("All kernel arguments must have a type annotation")
             elif arg.annotation.id == "TensorBlock":
                 shape = self.args[i].shape
-                shard_shape = [shape[j] // self.context.grid[j] for j in range(len(shape))]
+                shard_shape = [
+                    shape[j] // self.context.grid[j] for j in range(len(shape))
+                ]
                 dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
                 tensor_type = RankedTensorType.get(shard_shape, dtype)
                 func_operand_types.append(tensor_type)

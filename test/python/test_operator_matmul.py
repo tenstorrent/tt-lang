@@ -63,4 +63,6 @@ test_matmul(lhs, rhs, out)
 print("\n=== AFTER KERNEL ===")
 print(f"out[0:2, 0:2] =\n{out[0:2, 0:2]}")
 print(f"expected[0:2, 0:2] =\n{expected[0:2, 0:2]}")
-print(f"out min/max/mean: {out.min().item():.4f} / {out.max().item():.4f} / {out.mean().item():.4f}")
+print(
+    f"out min/max/mean: {out.min().item():.4f} / {out.max().item():.4f} / {out.mean().item():.4f}"
+)

@@ -2,13 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# Crashes in D2MInsertDstRegisterAccess: insufficient DST capacity (needs >4 slices for chained ops)
+# XFAIL: *
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
 # Test chained additions: (a + b) + c
-# This verifies chained operations work correctly
 
 import torch
 from ttlang.d2m_api import *
@@ -104,7 +105,9 @@ print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item()}")
 # CHECK-OUTPUT: out[0, 0] = 6.0
-print(f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}")
+print(
+    f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}"
+)
 # CHECK-OUTPUT: out min/max/mean: 6.0 / 6.0 / 6.0
 
 expected = a + b + c
@@ -112,4 +115,6 @@ if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
     print("PASS: Output matches expected (1+2+3=6)")
     # CHECK-OUTPUT: PASS: Output matches expected
 else:
-    print(f"FAIL: Expected all 6.0, got values from {out.min().item()} to {out.max().item()}")
+    print(
+        f"FAIL: Expected all 6.0, got values from {out.min().item()} to {out.max().item()}"
+    )

@@ -73,7 +73,7 @@ def test_runtime_ops(lhs, rhs, out):
 # Verify: Untilize program enqueued
 # CHECK-LOWERED: "ttmetal.enqueue_program"({{.*}})
 
-# Verify: Read result back to host (critical for output writeback!)
+# Verify: Read result back to host
 # CHECK-LOWERED: "ttmetal.enqueue_read_buffer"({{.+}}, %arg2)
 
 # Verify: Cleanup and return

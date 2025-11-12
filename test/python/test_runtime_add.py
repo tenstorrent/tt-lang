@@ -78,7 +78,9 @@ print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item()}")
 # CHECK-OUTPUT: out[0, 0] = 5.0
-print(f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}")
+print(
+    f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}"
+)
 # CHECK-OUTPUT: out min/max/mean: 5.0 / 5.0 / 5.0
 
 expected = lhs + rhs
@@ -86,4 +88,6 @@ if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
     print("PASS: Output matches expected (2.0 + 3.0 = 5.0)")
     # CHECK-OUTPUT: PASS: Output matches expected
 else:
-    print(f"FAIL: Expected all 5.0, got values from {out.min().item()} to {out.max().item()}")
+    print(
+        f"FAIL: Expected all 5.0, got values from {out.min().item()} to {out.max().item()}"
+    )
