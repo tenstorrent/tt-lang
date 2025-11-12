@@ -8,7 +8,7 @@
 # Guard against re-activation.
 if [ -n "${TTLANG_ENV_ACTIVATED}" ]; then
   deactivate 2>/dev/null || :
-  unset TTLAN_ENV_ACTIVATED
+  unset TTLANG_ENV_ACTIVATED
 fi
 
 # Set tt-lang home directory.
