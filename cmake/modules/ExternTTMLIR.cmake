@@ -9,7 +9,6 @@
 # 2. Pre-installed tt-mlir: TTMLIR_DIR pointing to TTMLIRConfig.cmake, or TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir.
 # 3. FetchContent fallback: Build locally when neither is found.
 
-
 # Scenario 1: Pre-built tt-mlir (build tree)
 if(DEFINED TTMLIR_BUILD_DIR)
   set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
@@ -35,46 +34,32 @@ else()
 endif()
 message(STATUS "TTMLIR_TOOLCHAIN_DIR: ${TTMLIR_TOOLCHAIN_DIR}")
 
-find_package(TTMLIR QUIET CONFIG HINTS ${TTMLIR_HINTS})
+if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir")
+  list(APPEND TTMLIR_HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir")
+endif()
 
-if(TTMLIR_FOUND)
+# For scenarios 1 and 2, ensure we use Python from the toolchain venv
+if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3" AND NOT DEFINED _TTMLIR_BUILD_DIR)
+  # Set as regular variables (not cache) to take precedence over find_package
+  set(Python3_FIND_VIRTUALENV ONLY)
+  set(Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
+  set(Python3_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
+  message(STATUS "Using Python from toolchain: ${Python3_EXECUTABLE}")
+endif()
+
+if(NOT DEFINED _TTMLIR_BUILD_DIR)
+  find_package(TTMLIR QUIET CONFIG HINTS ${TTMLIR_HINTS})
+endif()
+
+if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
   if(DEFINED _TTMLIR_BUILD_DIR)
-    if(NOT EXISTS "${_TTMLIR_BUILD_DIR}/CMakeCache.txt")
-      message(FATAL_ERROR "TTMLIR_BUILD_DIR points to an install directory, not a build directory. Please set TTMLIR_BUILD_DIR to the tt-mlir build directory (e.g., /path/to/tt-mlir/build), not the install directory.")
-    endif()
-    message(STATUS "Using pre-built tt-mlir from build tree: ${_TTMLIR_BUILD_DIR}")
-    load_cache("${_TTMLIR_BUILD_DIR}" READ_WITH_PREFIX _TTMLIR_
-      CMAKE_HOME_DIRECTORY
-      _Python3_EXECUTABLE
-    )
-    if(DEFINED _TTMLIR__Python3_EXECUTABLE)
-      set(Python3_EXECUTABLE "${_TTMLIR__Python3_EXECUTABLE}" CACHE FILEPATH "Python 3 executable from tt-mlir build" FORCE)
-      message(STATUS "Using Python from tt-mlir build: ${Python3_EXECUTABLE}")
-      # Only extract toolchain dir from Python if TTMLIR_TOOLCHAIN_DIR was not set from environment.
-      if(NOT _TTMLIR_TOOLCHAIN_DIR_FROM_ENV)
-        ttlang_get_parent_dir("${Python3_EXECUTABLE}" 2 _TTMLIR_EXTRACTED_TOOLCHAIN_DIR)
-        set(TTMLIR_TOOLCHAIN_DIR "${_TTMLIR_EXTRACTED_TOOLCHAIN_DIR}" CACHE PATH "tt-mlir toolchain installation directory" FORCE)
-      endif()
-    endif()
-    if(DEFINED _TTMLIR_CMAKE_HOME_DIRECTORY)
-      set(_TTMLIR_SOURCE_DIR "${_TTMLIR_CMAKE_HOME_DIRECTORY}")
-      if(EXISTS "${_TTMLIR_SOURCE_DIR}/cmake/modules")
-        message(STATUS "Found tt-mlir source directory: ${_TTMLIR_SOURCE_DIR}")
-        list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_SOURCE_DIR}/cmake/modules")
-        include(TTMLIRBuildTypes OPTIONAL)
-      endif()
-    endif()
-    set(TTMLIR_PATH "${_TTMLIR_BUILD_DIR}")
+    # Scenario 1: Using a pre-built tt-mlir build tree
+    ttlang_setup_ttmlir_build_tree(${_TTMLIR_BUILD_DIR})
   else()
     message(STATUS "Using pre-installed tt-mlir from: ${TTMLIR_CMAKE_DIR}")
     set(TTMLIR_PATH "${TTMLIR_TOOLCHAIN_DIR}")
-
-    # Use the Pytnon from the toolchain's virtual environment.
-    set(Python3_FIND_VIRTUALENV ONLY)
-    set(Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
-    set(Python3_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3" CACHE FILEPATH "Python 3 executable")
-    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-    message(STATUS "Using Python from toolchain: ${Python3_EXECUTABLE}")
+    # For installed tt-mlir, use the compiler static library
+    set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
   endif()
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")
   find_package(LLVM REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm")
@@ -89,7 +74,14 @@ if(TTMLIR_FOUND)
   include(AddMLIR)
   include(HandleLLVMOptions)
 
+  # For build tree (scenario 1), collect all tt-mlir and MLIR libraries
+  if(DEFINED _TTMLIR_BUILD_DIR)
+    ttlang_collect_ttmlir_link_libs(TTMLIR_LINK_LIBS)
+  endif()
+
   if(MLIR_ENABLE_BINDINGS_PYTHON AND TTLANG_ENABLE_BINDINGS_PYTHON)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+    message(STATUS "Using Python: ${Python3_EXECUTABLE}")
     include(MLIRDetectPythonEnv)
     mlir_configure_python_dev_packages()
   endif()
@@ -215,6 +207,9 @@ else()
 
   set(TTMLIR_PATH "${_TTMLIR_INSTALL_PREFIX}")
 
+  # For scenario 3, use the installed tt-mlir compiler static library
+  set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
+
   # Set up MLIR and LLVM environment.
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")
   find_package(LLVM REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm")
@@ -234,6 +229,8 @@ else()
   set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
   if(MLIR_ENABLE_BINDINGS_PYTHON AND TTLANG_ENABLE_BINDINGS_PYTHON)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+    message(STATUS "Using Python: ${Python3_EXECUTABLE}")
     include(MLIRDetectPythonEnv)
     mlir_configure_python_dev_packages()
   endif()

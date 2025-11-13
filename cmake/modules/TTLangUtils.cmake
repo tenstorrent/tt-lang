@@ -65,3 +65,107 @@ function(ttlang_execute_with_env)
     ${_exec_args}
   )
 endfunction()
+
+
+
+# ttlang_collect_ttmlir_link_libs(OUTPUT_VAR)
+# Collects all tt-mlir and MLIR libraries needed for linking when using a build tree.
+# This includes:
+# - TTMLIRCompilerStatic (contains RegisterAll.cpp)
+# - All tt-mlir export targets from TTMLIRInstall.cmake
+# - All MLIR dialect, conversion, extension, and translation libraries
+# - Core MLIR libraries
+# The collected libraries are stored in the variable named by OUTPUT_VAR.
+macro(ttlang_collect_ttmlir_link_libs OUTPUT_VAR)
+  # Get MLIR libraries from global properties
+  get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+  get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
+  get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
+  get_property(translation_libs GLOBAL PROPERTY MLIR_TRANSLATION_LIBS)
+
+  # Use tt-mlir export targets variable (set by TTMLIRInstall.cmake)
+  if(DEFINED ttmlir_export_targets_filtered)
+    set(_ttmlir_targets ${ttmlir_export_targets_filtered})
+  elseif(DEFINED ttmlir_export_targets)
+    set(_ttmlir_targets ${ttmlir_export_targets})
+  else()
+    set(_ttmlir_targets "")
+  endif()
+
+  # Filter out targets that don't exist (e.g. StableHLO when disabled)
+  set(_ttmlir_targets_existing "")
+  foreach(target ${_ttmlir_targets})
+    if(TARGET ${target})
+      list(APPEND _ttmlir_targets_existing ${target})
+    endif()
+  endforeach()
+
+  set(${OUTPUT_VAR}
+    TTMLIRCompilerStatic
+    ${_ttmlir_targets_existing}
+    ${dialect_libs}
+    ${conversion_libs}
+    ${extension_libs}
+    ${translation_libs}
+    MLIRToLLVMIRTranslationRegistration
+    MLIRPass
+    MLIRSupport
+    MLIRRegisterAllPasses
+  )
+endmacro()
+
+# ttlang_setup_ttmlir_build_tree(BUILD_DIR)
+# Sets up tt-mlir from a build tree. This includes:
+# - Loading build cache to get source directory and Python executable
+# - Setting up include and link directories
+# - Importing tt-mlir targets from the build tree
+# - Including tt-mlir CMake modules (TTMLIRBuildTypes, TTMLIRInstall)
+macro(ttlang_setup_ttmlir_build_tree BUILD_DIR)
+  if(NOT EXISTS "${BUILD_DIR}/CMakeCache.txt")
+    message(FATAL_ERROR "TTMLIR_BUILD_DIR points to an install directory, not a build directory. Please set TTMLIR_BUILD_DIR to the tt-mlir build directory (e.g., /path/to/tt-mlir/build), not the install directory.")
+  endif()
+
+  message(STATUS "Using pre-built tt-mlir from build tree: ${BUILD_DIR}")
+
+  # Load build cache to get source directory and configuration
+  load_cache("${BUILD_DIR}" READ_WITH_PREFIX _TTMLIR_
+    CMAKE_HOME_DIRECTORY
+    LLVM_DIR
+    _Python3_EXECUTABLE
+  )
+
+  if(DEFINED _TTMLIR_LLVM_DIR)
+    list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_LLVM_DIR}/cmake")
+  endif()
+
+  if(DEFINED _TTMLIR__Python3_EXECUTABLE)
+    set(Python3_EXECUTABLE "${_TTMLIR__Python3_EXECUTABLE}" CACHE FILEPATH "Python 3 executable from tt-mlir build" FORCE)
+    message(STATUS "Using Python from tt-mlir build: ${Python3_EXECUTABLE}")
+    # Only extract toolchain dir from Python if TTMLIR_TOOLCHAIN_DIR was not set from environment.
+    if(NOT _TTMLIR_TOOLCHAIN_DIR_FROM_ENV)
+      # Python is at /path/to/toolchain/venv/bin/python3, so go up 3 directories to get toolchain root
+      ttlang_get_parent_dir("${Python3_EXECUTABLE}" 3 _TTMLIR_EXTRACTED_TOOLCHAIN_DIR)
+      set(TTMLIR_TOOLCHAIN_DIR "${_TTMLIR_EXTRACTED_TOOLCHAIN_DIR}" CACHE PATH "tt-mlir toolchain installation directory" FORCE)
+    endif()
+  endif()
+
+  if(DEFINED _TTMLIR_CMAKE_HOME_DIRECTORY)
+    # Using a tt-mlir build tree
+    set(_TTMLIR_SOURCE_DIR "${_TTMLIR_CMAKE_HOME_DIRECTORY}")
+    if(EXISTS "${_TTMLIR_SOURCE_DIR}/cmake/modules")
+      message(STATUS "Found tt-mlir source directory: ${_TTMLIR_SOURCE_DIR}")
+      list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_SOURCE_DIR}/cmake/modules")
+      include(TTMLIRBuildTypes OPTIONAL)
+      include(TTMLIRInstall OPTIONAL)
+    endif()
+
+    set(TTMLIR_PATH "${BUILD_DIR}")
+    include_directories(${_TTMLIR_SOURCE_DIR}/include ${BUILD_DIR}/include)
+    link_directories(${BUILD_DIR}/lib)
+
+    # Import tt-mlir targets from build tree
+    if(EXISTS "${BUILD_DIR}/lib/cmake/ttmlir/TTMLIRTargets.cmake")
+      include("${BUILD_DIR}/lib/cmake/ttmlir/TTMLIRTargets.cmake")
+    endif()
+  endif()
+endmacro()
