@@ -16,6 +16,7 @@ ttlang_set_version("0.2.0")
 option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" OFF)
 option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
+option(TTLANG_ENABLE_PERF_TRACE "Enable performance trace" OFF)
 
 if (CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage")
