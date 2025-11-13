@@ -67,7 +67,9 @@ def compute_device_shape(
     if len(grid) == 2 and logical_rank == 2:
         grid_shape = list(grid)
     else:
-        grid_shape = list(grid) + [1] * (logical_rank - len(grid))  # Pad with 1s to match logical rank
+        grid_shape = list(grid) + [1] * (
+            logical_rank - len(grid)
+        )  # Pad with 1s to match logical rank
 
     typed_layout = ttcore.ir.MetalLayoutAttr.maybe_downcast(layout)
     if typed_layout is None:
