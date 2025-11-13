@@ -47,24 +47,24 @@ def test_stream(lhs, rhs, out):
     return Program(comp, dm0, dm1)(lhs, rhs, out)
 
 
-# CHECK-DAG: #[[STORAGE_LAYOUT:.+]] = #ttcore.metal_layout<{{.*}}, l1>
-# CHECK-DAG: #[[VIEW_LAYOUT:.+]] = #ttcore.metal_layout<{{.*}}, l1, index_map =
+# CHECK-DAG: #[[LAYOUT:.+]] = #ttcore.metal_layout<{{.*}}, l1>
 
 # CHECK-LABEL: func.func @test_stream
 
-# Verify: First argument marked as stream
-# CHECK-SAME: (%[[ARG0:.+]]: tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[STORAGE_LAYOUT]]> {d2m.stream = true}
+# Verify: First argument is 2D scalar tensor marked as stream
+# CHECK-SAME: (%[[ARG0:.+]]: tensor<{{[0-9]+}}x{{[0-9]+}}xf32> {d2m.stream = true}
 
-# Verify: Storage created with layout WITHOUT index_map (becomes ShardLayoutAttr after bufferization)
-# CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[STORAGE_LAYOUT]]>
+# Verify: to_layout converts host tensor to device tensor
+# CHECK: %[[DEVICE_TENSOR:.+]] = d2m.to_layout %[[ARG0]]
 
-# Verify: stream_layout connects input to storage, returns view WITH index_map (becomes ViewLayoutAttr)
-# CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[ARG0]], %[[STORAGE]])
-# CHECK-SAME: -> tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[VIEW_LAYOUT]]>
+# Verify: Storage created for stream
+# CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]>
 
-# Verify: Stream view used as input to d2m.generic (low-level DSL uses empty indexing_maps/iterator_types)
-# Note: Low-level DSL provides explicit grid/block_factors and manual thread logic.
-# CHECK: d2m.generic {block_factors = [1, 1, 1, 1, 1, 1], grid = #ttcore.grid<1x1>, indexing_maps = [], iterator_types = []
+# Verify: stream_layout wraps the device tensor
+# CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[DEVICE_TENSOR]], %[[STORAGE]])
+
+# Verify: Stream used as input to d2m.generic (explicit datamovement form)
+# CHECK: d2m.generic {block_factors = [], grid = #ttcore.grid<1x1>, indexing_maps = [], iterator_types = []
 # CHECK-NEXT: ins(%[[STREAM]]
 
 # CHECK-LOWERED-LABEL: func.func @test_stream

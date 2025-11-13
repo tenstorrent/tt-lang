@@ -49,5 +49,6 @@ def test_add(lhs, rhs, out):
 
 lhs = torch.randn(32, 32)
 rhs = torch.randn(32, 32)
-out = torch.zeros(32, 32)
+out = torch.randn(32, 32)
+
 test_add(lhs, rhs, out)

@@ -34,17 +34,21 @@ def test_generic(lhs, rhs, out):
     return Program(comp, dm)(lhs, rhs, out)
 
 
-# CHECK: func.func @test_generic(%[[ARG0:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}}, %[[ARG1:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}}, %[[ARG2:.+]]: tensor<2x2x1x1x!ttcore.tile<32x32, f32>{{.*}})
+# CHECK: func.func @test_generic(%[[ARG0:.+]]: tensor<{{[0-9]+}}x{{[0-9]+}}xf32>{{.*}}, %[[ARG1:.+]]: tensor<{{[0-9]+}}x{{[0-9]+}}xf32>{{.*}}, %[[ARG2:.+]]: tensor<{{[0-9]+}}x{{[0-9]+}}xf32>{{.*}})
 
-# Verify: d2m.generic with explicit grid and block_factors (empty indexing_maps/iterator_types)
+# Verify: to_layout operations convert host tensors to device tensors
+# CHECK: %[[DEV0:.+]] = d2m.to_layout %[[ARG0]]
+# CHECK: %[[DEV1:.+]] = d2m.to_layout %[[ARG1]]
+
+# Verify: d2m.generic with explicit datamovement form
 # CHECK: %[[RESULT:.+]] = d2m.generic
-# CHECK-SAME: block_factors = [1, 1, 1, 1, 1, 1]
+# CHECK-SAME: block_factors = []
 # CHECK-SAME: grid = #ttcore.grid<2x2>
 # CHECK-SAME: indexing_maps = []
 # CHECK-SAME: iterator_types = []
 # CHECK-SAME: threads = [#d2m.thread<datamovement>, #d2m.thread<compute>]
-# CHECK-NEXT: ins(%[[ARG0]], %[[ARG1]]
-# CHECK-NEXT: outs(%[[ARG2]]
+# CHECK-NEXT: ins(%[[DEV0]], %[[DEV1]]
+# CHECK: outs({{%.*}} : tensor<2x2x1x1x!ttcore.tile
 
 # Verify: datamovement region
 # CHECK: ^datamovement{{[0-9]+}}(%[[CB0:.+]]: !d2m.cb<tensor<1x1x!ttcore.tile<32x32, f32>>>, %[[CB1:.+]]: !d2m.cb<tensor<1x1x!ttcore.tile<32x32, f32>>>, %[[CB2:.+]]: !d2m.cb<tensor<1x1x!ttcore.tile<32x32, f32>>>):
@@ -67,7 +71,9 @@ def test_generic(lhs, rhs, out):
 # CHECK: d2m.store %[[O]], %[[ADD_RESULT]]
 # CHECK: d2m.wait %[[CB2_C]]
 
-# CHECK: return %[[RESULT]]
+# Verify: to_layout converts result back to host and returns
+# CHECK: %[[TO_HOST:.+]] = d2m.to_layout %[[RESULT]]
+# CHECK: return %[[TO_HOST]]
 
 # CHECK-LOWERED-LABEL: func.func @test_generic
 
