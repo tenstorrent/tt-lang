@@ -157,12 +157,14 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        lhs_shard = lhs_cb.pop()        # Read from CB
-        rhs_shard = rhs_cb.pop()
-        out_shard = out_cb.reserve()    # Reserve space
+        lhs_shard = lhs_cb.wait()       # Acquire data
+        rhs_shard = rhs_cb.wait()
+        out_shard = out_cb.reserve()    # Acquire space
         result = lhs_shard + rhs_shard  # Compute
         out_shard.store(result)         # Write
-        out_cb.pop()                    # Free (compute must pop)
+        lhs_cb.pop()                    # Release inputs
+        rhs_cb.pop()
+        out_cb.push()                   # Release output
 
     @datamovement()
     async def dm_reader(
@@ -177,10 +179,12 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         lhs_shard = lhs_cb.reserve()
         tx = dma(lhs_accessor[linear_idx, 0], lhs_shard)
         tx.wait()
+        lhs_cb.push()
 
         rhs_shard = rhs_cb.reserve()
         tx = dma(rhs_accessor[linear_idx, 0], rhs_shard)
         tx.wait()
+        rhs_cb.push()
 
     return Program(add_kernel, dm_reader)(lhs, rhs, out)
 
@@ -217,24 +221,21 @@ For 128x128 tensor:
 
 **Circular Buffers**
 
-Bounded FIFO queues in L1 (per-core SRAM) for passing data between threads.
-CircularBuffers wrap L1 memory and TensorAccessors (see below) wrap DRAM.
+Bounded FIFO queues in L1 (per-core SRAM) for passing data between threads. CircularBuffers provide scratch space in L1. Streams and TensorAccessors (see below) wrap DRAM tensors for indexed access.
+
+Circular buffers use explicit acquire/release operations for producer-consumer synchronization.
 
 ```python
-# Producer pattern (datamovement)
-shard = cb.reserve()           # Blocks if full
-tx = dma(stream[x, y], shard)
-tx.wait()
-# No .push() - implicit after reserve
+# Producer pattern (explicit release)
+shard = cb.reserve()           # Acquire space (blocks if full)
+tx = dma(stream[x, y], shard)  # Write data
+tx.wait()                      # Wait for DMA completion
+cb.push()                      # Release (signal data ready)
 
-# Consumer pattern (compute)
-shard = cb.pop()               # Blocks if empty
-result = compute(shard)
-
-# Output pattern (compute writes)
-out_shard = out_cb.reserve()      # Get space to write
-out_shard.store(result)           # Write data
-out_cb.pop()                      # Signal "data ready" for consumption
+# Consumer pattern (explicit release)
+shard = cb.wait()              # Acquire data (blocks if empty)
+result = compute(shard)        # Use data
+cb.pop()                       # Release (signal space available)
 ```
 
 **Thread Communication via Circular Buffers**
@@ -243,31 +244,31 @@ out_cb.pop()                      # Signal "data ready" for consumption
 Datamovement Thread          Compute Thread
       (Producer)              (Consumer)
           │                       │
-          │                       │
     cb.reserve()                  │
           │                       │
-     [CB: Space allocated]        │
+  [Acquire: Space allocated]      │
           │                       │
     dma(stream, shard)            │
           │                       │
       tx.wait()                   │
           │                       │
-  [CB: Data available]            │
-          │                   cb.pop()
+      cb.push()                   │
           │                       │
-          │              [CB: Data accessed]
+  [Release: Data ready]           │
+          │                   cb.wait()
+          │                       │
+          │            [Acquire: Data accessed]
           │                       │
           │                   compute()
           │                       │
-          │              [CB: Space freed]
+          │                   cb.pop()
           │                       │
+          │            [Release: Space freed]
 
-Blocking is implicit:
-- reserve() blocks if CB is full
-- pop() blocks if CB is empty
-
-Only tx.wait() is explicit for DMA completion.
-The CB ensures synchronization automatically.
+Blocking behavior:
+- reserve() blocks if CB is full (no space)
+- wait() blocks if CB is empty (no data)
+- push() and pop() are non-blocking releases
 ```
 
 **CB Lowering Pipeline**
@@ -275,18 +276,20 @@ The CB ensures synchronization automatically.
 Circular buffers transform through four levels: Python DSL, D2M dialect, TTKernel dialect, and C++ code generation.
 
 ```
-Python DSL
-  input_cb.pop()
+Python DSL (Consumer)
+  shard = cb.wait()
+  cb.pop()
     ↓
 D2M Dialect
-  d2m.wait %cb : !d2m.cb<memref<...>>
+  %mem = d2m.wait %cb : !d2m.cb<memref<...>> -> memref<...>
+  d2m.pop %cb : !d2m.cb<memref<...>>
     ↓
 TTKernel Dialect
-  ttkernel.cb_wait_front(%cb, %numPages) : !ttkernel.cb<4, tile>
-  ttkernel.cb_pop_front(%cb, %numPages)   (at block end)
+  ttkernel.cb_wait_front(%cb, %numPages)
+  ttkernel.cb_pop_front(%cb, %numPages)
     ↓
 EmitC
-  emitc.call_opaque "cb_wait_front"(%cb, %numPages) : (::tt::CB, i32)
+  emitc.call_opaque "cb_wait_front"(%cb, %numPages)
   emitc.call_opaque "cb_pop_front"(%cb, %numPages)
     ↓
 C++ Code
@@ -298,65 +301,50 @@ tt-metal Runtime
   Hardware semaphores + L1 buffer management
 ```
 
-Single D2M operation expands into acquire/release pair at TTKernel level.
+Each D2M operation maps to a single TTKernel operation.
 
-| D2M Operation | TTKernel Acquire | TTKernel Release |
-|---------------|------------------|------------------|
-| `d2m.wait` (consumer) | `cb_wait_front` | `cb_pop_front` |
-| `d2m.reserve` (producer) | `cb_reserve_back` | `cb_push_back` |
+| D2M Operation | TTKernel Operation |
+|---------------|-------------------|
+| `d2m.wait` | `cb_wait_front` |
+| `d2m.pop` | `cb_pop_front` |
+| `d2m.reserve` | `cb_reserve_back` |
+| `d2m.push` | `cb_push_back` |
 
-The `D2MCBOpRewriter` template converts:
-- `d2m.wait` → `ttkernel.cb_wait_front` + `ttkernel.cb_pop_front`
-- `d2m.reserve` → `ttkernel.cb_reserve_back` + `ttkernel.cb_push_back`
+**Explicit Acquire/Release Semantics**
 
-**CB Operation Asymmetry**
-
-The same `pop()` method generates `d2m.wait` in both cases, but semantically:
-- On input CB: "wait for producer to provide data"
-- On output CB: "wait for consumer to consume data" (signal production complete)
+Circular buffers use explicit acquire and release operations. Each acquire must be paired with a corresponding release.
 
 **Input CB (datamovement writes, compute reads):**
 
 ```python
 # Datamovement (producer):
-shard = input_cb.reserve()        # Get space to write
+shard = input_cb.reserve()        # Acquire space
 tx = dma(stream[idx], shard)      # Write data
 tx.wait()
-# Implicit: signal "data ready" at block end
+input_cb.push()                   # Release (signal data ready)
 
 # Compute (consumer):
-shard = input_cb.pop()            # Wait for data + get access
-# ... use shard ...
-# Implicit: signal "consumed" at block end
+shard = input_cb.wait()           # Acquire data
+result = compute(shard)           # Use data
+input_cb.pop()                    # Release (signal consumed)
 ```
 
 **Output CB (compute writes, datamovement reads):**
 
 ```python
 # Compute (producer):
-out_shard = out_cb.reserve()      # Get space to write
+out_shard = out_cb.reserve()      # Acquire space
 out_shard.store(result)           # Write data
-out_cb.pop()                      # ⚠️ Signal "data ready" (NOT consuming!)
+out_cb.push()                     # Release (signal data ready)
 
 # Datamovement (consumer):
-shard = out_cb.pop()              # Wait for data + get access
+shard = out_cb.wait()             # Acquire data
 tx = dma(shard, stream[idx])      # Read data
 tx.wait()
-# Implicit: signal "consumed" at block end
+out_cb.pop()                      # Release (signal consumed)
 ```
 
-So `pop()` has two different semantic meanings depending on which thread uses it and on which CB. For output CBs, compute needs two operations (`reserve()` + `pop()`) while datamovement only needs one (`pop()`). The second `pop()` in compute ensures the release happens at the right point (immediately after writing), not at the end of the entire block.
-
-**Operation Summary Table:**
-
-| Role | Thread | Input CB | Output CB |
-|------|--------|----------|-----------|
-| Producer | Datamovement | `reserve()` → write → implicit | - |
-| Producer | Compute | - | `reserve()` → write → `pop()` |
-| Consumer | Compute | `pop()` → use → implicit | - |
-| Consumer | Datamovement | - | `pop()` → read → implicit |
-
-Both `pop()` and `reserve()` return memref views (zero-copy). DMA operations perform the actual data movement to/from these views.
+The acquire operations (`wait()`, `reserve()`) block until resources are available and return TensorBlock (memref views). The release operations (`pop()`, `push()`) are non-blocking, return nothing, and signal completion to the other thread. DMA operations perform the actual data movement to/from these views.
 
 **TensorAccessor**
 
@@ -374,9 +362,10 @@ lhs_cb = CircularBuffer(shape=(2, 1), buffer_factor=2)
 # DMA connects DRAM ↔ L1
 @datamovement()
 async def dm_reader(...):
-    l1_buffer = lhs_cb.reserve()                    # Reserve space in L1
+    l1_buffer = lhs_cb.reserve()                    # Acquire space in L1
     tx = dma(lhs_accessor[idx, 0], l1_buffer)       # DRAM → L1
-    tx.wait()
+    tx.wait()                                       # Wait for DMA
+    lhs_cb.push()                                   # Release (signal ready)
 ```
 
 **Memory Flow:**
@@ -1003,12 +992,14 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        l = lhs_cb.pop()
-        r = rhs_cb.pop()
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
         o = out_cb.reserve()
         result = l + r
         o.store(result)
-        out_cb.pop()
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
 
     @datamovement()
     async def dm(
@@ -1023,10 +1014,12 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         l = lhs_cb.reserve()
         tx = dma(lhs_accessor[linear_idx, 0], l)
         tx.wait()
+        lhs_cb.push()
 
         r = rhs_cb.reserve()
         tx = dma(rhs_accessor[linear_idx, 0], r)
         tx.wait()
+        rhs_cb.push()
 
     return Program(compute_add, dm)(lhs, rhs, out)
 ```
@@ -1058,9 +1051,9 @@ def flash_attention(Q, K, V, out, block_factors=None, grid=None):
         O_acc = fill(0, shape)      # fill() not implemented
 
         for kv_idx in range(NUM_KV_BLOCKS):
-            Q_block = Q_cb.pop()
-            K_block = K_cb.pop()
-            V_block = V_cb.pop()
+            Q_block = Q_cb.wait()
+            K_block = K_cb.wait()
+            V_block = V_cb.wait()
 
             S = Q_block @ transpose(K_block)  # transpose() not implemented
             S_scaled = S * (1.0 / sqrt(d_head))  # sqrt() and scalar broadcast not implemented
@@ -1072,12 +1065,16 @@ def flash_attention(Q, K, V, out, block_factors=None, grid=None):
 
             O_acc = (l_old / l_new) * correction * O_acc + (P / l_new) @ V_block
 
+            Q_cb.pop()
+            K_cb.pop()
+            V_cb.pop()
+
             m_old = m_new
             l_old = l_new
 
         out_block = out_cb.reserve()
         out_block.store(O_acc)
-        out_cb.pop()
+        out_cb.push()
 
     @datamovement()
     async def dm_reader(Q_cb, K_cb, V_cb, out_cb):
@@ -1088,12 +1085,15 @@ def flash_attention(Q, K, V, out, block_factors=None, grid=None):
         for kv_idx in range(NUM_KV_BLOCKS):
             Q_shard = Q_cb.reserve()
             dma(Q_accessor[linear_idx, 0], Q_shard).wait()
+            Q_cb.push()
 
             K_shard = K_cb.reserve()
             dma(K_accessor[kv_idx, 0], K_shard).wait()
+            K_cb.push()
 
             V_shard = V_cb.reserve()
             dma(V_accessor[kv_idx, 0], V_shard).wait()
+            V_cb.push()
 
     return Program(attention_compute, dm_reader)(Q, K, V, out)
 ```
