@@ -166,6 +166,10 @@ def _compile(
                 **kwargs,
             )
 
+            # Set source lines for auto-profiling
+            if b.auto_profile_enabled:
+                b.source_lines = source_code.splitlines()
+
             if verbose:
                 print(ast.dump(m, indent=4) + "\n")
 
