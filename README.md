@@ -3,56 +3,49 @@ TT-Lang is a Python-based DSL that enables authoring of programs for TT hardware
 
 See [RFC document](https://docs.google.com/document/d/1T8Htv9nfdufebajJidzYHfDfsSnru_9xn_whdyxn6Po/edit?usp=sharing).
 
-## Build System
+## Prerequisites
 
-tt-lang uses a CMake-based build system that reuses tt-mlir's environment and toolchain. See [BUILD_SYSTEM.md](BUILD_SYSTEM.md) for complete documentation.
+* CMake 3.28+
+* Clang 18+ or gcc 11+
+* An existing LLVM/MLIR toolchain at `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`).
+* Python 3.11+ in the toolchain's virtual environment
+* Optional (recommended): Ninja
 
 ## Quick Start
 
-### Prerequisites
+tt-lang depends on tt-mlir. The build system supports three different integration scenarios for tt-mlir -- build-based, installation-based, or automatically fetched and installed (for more details on these, please refer to the [build system document](BUILD_SYSTEM.md)).
 
-**tt-mlir must be built first.** tt-lang depends on tt-mlir and reuses its toolchain. Please refer to the [Getting Started Guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) on how to build tt-mlir and its prerequisites. Note that the brief instructions below do not cover all possible build scenarios.
-
-1. Clone the correct version of tt-mlir; make sure to use the version in [third-party/tt-mlir.
-commit](./third-party/tt-mlir.commit) (different versions are not guaranteed to be compatible).
-
-```bash
-
-git clone https://github.com/tenstorrent/tt-mlir.git
-cd tt-mlir
-git checkout <commit sha from third-party/tt-mlir.commit>
-```
-
-# Activate tt-mlir environment and build tt-mlir
-source env/activate
-cmake -GNinja -Bbuild .
-cmake --build build
-```
-
-2. Configure and build tt-lang.
+Here we describe the most common scenario for tt-lang users who do not have a pre-built or pre-installed tt-mlir. Note that this will fetch, configure, build and install the tt-mlir version whose commit SHA is in `third-party/tt-mlir.commit`.
 
 ```bash
 cd /path/to/tt-lang
-source env/activate
 cmake -GNinja -Bbuild .
+source build/env/activate
 cmake --build build
 ```
 
+The tt-mlir will be built and installed to `build/tt-mlir-install/` by default (or to the location specified by `TTMLIR_INSTALL_PREFIX`). The generated `env/activate` script in tt-lang's build directory will automatically use this local installation. This process requires:
+- An existing LLVM/MLIR toolchain at `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`)
+
 **Build options:**
 ```bash
+# Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+
+# Custom install prefix for automatically built tt-mlir
+cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
+
+# Enable code coverage
+cmake -GNinja -Bbuild . -DCODE_COVERAGE=ON
 ```
 
-**Note:** The `third-party/tt-mlir.commit` file contains a reference tt-mlir version for compatibility. Ensure your installed tt-mlir is compatible.
-
+**Note:** The `third-party/tt-mlir.commit` file contains the reference tt-mlir version. The build system ensures version compatibility automatically.
 
 ## Developer Guidelines
 
 ### Updating tt-mlir version
 
-Update the `third-party/tt-mlir.commit` file to the desired SHA. Repeat steps 1-3 above after checking out that SHA in your tt-mlir clone.
-
-In future, the tt-lang build will be extended to automatically fetch and build the supported tt-mlir version.
+Update the `third-party/tt-mlir.commit` file to the desired commit SHA if using the automated tt-mlir install. Refer to the [BuildSystem.md](docs/BUILD_SYSTEM.md) document for details on building with a pre-built tt-mlir or pre-installed one.
 
 ### Code Formatting with Pre-commit
 
@@ -84,7 +77,9 @@ cd /path/to/tt-lang
 pre-commit install
 ```
 
-This will configure git to run `pre-commit` checks before each commit.
+This will configure git to run `pre-commit` checks before each commit. You may also
+choose not to do this step and instead run `pre-commit` manually as described
+below.
 
 #### Usage
 
@@ -101,6 +96,7 @@ Pre-commit will:
 - Ensure files end with a single newline
 - Check YAML and TOML syntax
 - Check for large files
+- Check for valid copyright notice
 
 If `pre-commit` makes changes, the commit will be stopped. Review the changes, stage them, and commit again:
 

@@ -1,0 +1,68 @@
+name: Build tt-mlir automatically (FetchContent)
+
+on:
+    workflow_dispatch:
+    workflow_call:
+    schedule:
+        - cron: "0 12 * * *" # 6am PST
+
+jobs:
+    build-tt-lang-tt-mlir:
+        runs-on: ubuntu-latest
+        timeout-minutes: 180
+
+        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
+
+        defaults:
+            run:
+                shell: bash
+
+        env:
+            TT_LANG_HOME: ${{ github.workspace }}
+            TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
+
+        steps:
+            - name: Checkout tt-lang
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Get LLVM version
+              id: llvm-version
+              uses: ./.github/actions/get-llvm-version
+
+            - name: Setup ccache for tt-lang
+              uses: hendrikmuhs/ccache-action@v1.2
+              with:
+                  key: ${{ github.job }}-${{ runner.os }}-llvm-${{ steps.llvm-version.outputs.version }}
+                  max-size: 200M
+
+            - name: Restore cached tt-mlir
+              uses: actions/cache/restore@v4
+              id: cache-ttmlir
+              with:
+                  path: build/tt-mlir-install
+                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
+
+            - name: Cache built tt-mlir
+              uses: actions/cache/save@v4
+              if: always() && steps.cache-ttmlir.outputs.cache-hit != 'true'
+              with:
+                  path: build/tt-mlir-install
+                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
+
+            - name: Build tt-lang
+              run: |
+                  cmake -G Ninja -B build
+                  cmake --build build
+                  source build/env/activate
+                  python test/python/smoketest.py
+
+            - name: Upload build artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: build-scenario-3-ubuntu
+                  path: |
+                      build/python_packages
+                      sim/
+                  retention-days: 1
