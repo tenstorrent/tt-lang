@@ -101,6 +101,7 @@ If tt-mlir is not found in scenarios 1 or 2:
    - **Linux**: Runtime and runtime tests enabled
    - **macOS**: Runtime and runtime tests disabled
    - Common: StableHLO OFF, OPMODEL OFF, Python bindings ON, Debug strings ON
+   - Performance trace: Controlled by `TTLANG_ENABLE_PERF_TRACE` (default: OFF)
 4. Builds and installs tt-mlir to `${TTMLIR_INSTALL_PREFIX}` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`)
 5. Uses the newly built tt-mlir for the tt-lang build
 
@@ -203,6 +204,7 @@ cmake --build build
 - `TTMLIR_INSTALL_PREFIX` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`) - Installation prefix for automatically built tt-mlir (Scenario 3 only)
 - `TTLANG_ENABLE_BINDINGS_PYTHON` (default: OFF) - Enable Python bindings
 - `TTLANG_ENABLE_RUNTIME` (default: OFF) - Enable runtime support
+- `TTLANG_ENABLE_PERF_TRACE` (default: OFF) - Enable performance trace (Scenario 3 only, passed to tt-mlir build)
 - `CODE_COVERAGE` (default: OFF) - Enable code coverage reporting
 
 **Examples:**
@@ -224,6 +226,9 @@ cmake -GNinja -Bbuild .
 
 # Scenario 3: Automatic build with custom install prefix
 cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
+
+# Scenario 3: Automatic build with performance trace enabled
+cmake -GNinja -Bbuild . -DTTLANG_ENABLE_PERF_TRACE=ON
 
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON

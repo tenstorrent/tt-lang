@@ -17,7 +17,7 @@ runs:
     - name: Install dependencies
       shell: bash
       run: |
-        brew install cmake ninja
+        brew install cmake ninja googletest
         python -m pip install --upgrade pip
 
     - name: Create toolchain directory
