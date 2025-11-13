@@ -28,9 +28,9 @@ def test_chained_add(a, b, c, out):
         c_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        a_tile = a_cb.pop()
-        b_tile = b_cb.pop()
-        c_tile = c_cb.pop()
+        a_tile = a_cb.wait()
+        b_tile = b_cb.wait()
+        c_tile = c_cb.wait()
         out_tile = out_cb.reserve()
 
         # Chain: (a + b) + c
@@ -38,7 +38,10 @@ def test_chained_add(a, b, c, out):
         result = temp + c_tile
 
         out_tile.store(result)
-        out_cb.pop()
+        a_cb.pop()
+        b_cb.pop()
+        c_cb.pop()
+        out_cb.push()
 
     @datamovement()
     async def dm_a(

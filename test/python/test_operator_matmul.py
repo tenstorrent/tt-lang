@@ -18,12 +18,14 @@ def test_matmul(lhs, rhs, out):
     async def mm_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
-        l = lhs_cb.pop()
-        r = rhs_cb.pop()
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
         o = out_cb.reserve()
         result = l @ r
         o.store(result)
-        out_cb.pop()
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
 
     @datamovement()
     async def dm(

@@ -22,12 +22,14 @@ def test_dma_ops(lhs, rhs, out):
     ):
         # TODO(#11): Addition required to create linalg.generic with tile ops.
         # Can simplify to just CB operations once compiler handles regions without tile ops.
-        lhs_shard = lhs_cb.pop()
-        rhs_shard = rhs_cb.pop()
+        lhs_shard = lhs_cb.wait()
+        rhs_shard = rhs_cb.wait()
         out_shard = out_cb.reserve()
         result = lhs_shard + rhs_shard
         out_shard.store(result)
-        out_cb.pop()
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
 
     @datamovement()
     async def dm0(
