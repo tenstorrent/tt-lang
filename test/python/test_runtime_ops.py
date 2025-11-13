@@ -15,8 +15,8 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_runtime_ops(lhs, rhs, out):
-    lhs_stream = Stream(lhs)
-    rhs_stream = Stream(rhs)
+    lhs_accessor = TensorAccessor(lhs)
+    rhs_accessor = TensorAccessor(rhs)
 
     @compute()
     async def add_compute(
@@ -34,7 +34,7 @@ def test_runtime_ops(lhs, rhs, out):
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         lhs_shard = lhs_cb.reserve()
-        tx = dma(lhs_stream[0, 0], lhs_shard)
+        tx = dma(lhs_accessor[0, 0], lhs_shard)
         tx.wait()
 
     @datamovement()
@@ -42,7 +42,7 @@ def test_runtime_ops(lhs, rhs, out):
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         rhs_shard = rhs_cb.reserve()
-        tx = dma(rhs_stream[0, 0], rhs_shard)
+        tx = dma(rhs_accessor[0, 0], rhs_shard)
         tx.wait()
 
     return Program(add_compute, dm_lhs, dm_rhs)(lhs, rhs, out)

@@ -36,8 +36,8 @@ def matmul(lhs, rhs, out, block_factors=None, grid=None):
     N = block_factors[1][1]
     K = block_factors[0][1] * GK
 
-    lhs_stream = Stream(lhs)
-    rhs_stream = Stream(rhs)
+    lhs_accessor = TensorAccessor(lhs)
+    rhs_accessor = TensorAccessor(rhs)
 
     @compute()
     async def mm(
@@ -75,7 +75,7 @@ def matmul(lhs, rhs, out, block_factors=None, grid=None):
             for m in range(M):
                 lhs_shard = lhs_cb.reserve()
                 if cx == 0:
-                    tx = dma(lhs_stream[cy * M + m, k], lhs_shard)
+                    tx = dma(lhs_accessor[cy * M + m, k], lhs_shard)
                     tx.wait()
                     lhs_receiver_ready.wait(GK - 1, reset=0)
                     tx = dma(
@@ -107,7 +107,7 @@ def matmul(lhs, rhs, out, block_factors=None, grid=None):
                 for n in range(N):
                     rhs_shard = rhs_cb.reserve()
                     if cy == 0:
-                        tx = dma(rhs_stream[k, cx * N + n], rhs_shard)
+                        tx = dma(rhs_accessor[k, cx * N + n], rhs_shard)
                         tx.wait()
                         rhs_receiver_ready.wait(GK - 1, reset=0)
                         tx = dma(

@@ -52,7 +52,7 @@ python/ttlang/
 ├── operators.py          # TensorBlock, MemTx, DMA operations
 ├── circular_buffer.py    # CircularBuffer for inter-thread communication
 ├── semaphore.py          # Semaphore for multi-core synchronization
-├── layouts.py            # MetalLayoutAttr creation and stream layout utilities
+├── layouts.py            # MetalLayoutAttr creation and accessor layout utilities
 ├── dtype_utils.py        # PyTorch/runtime data type conversions
 ├── constants.py          # Shared constants (tile sizes, memory spaces)
 └── _src/                 # Internal implementation modules
@@ -60,7 +60,7 @@ python/ttlang/
     ├── kernel_ast.py     # Base kernel compilation infrastructure
     ├── kernel_types.py   # CircularBuffer, Kernel, and other types
     ├── base_ast.py       # AST base classes
-    ├── stream.py         # Stream type for async data movement
+    ├── tensor_accessor.py  # TensorAccessor type for indexed tile-level access
     ├── utils.py          # Utility functions
     └── codegen.py        # D2M generic function creation and code generation
 ```
