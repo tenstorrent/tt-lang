@@ -18,12 +18,14 @@ def test_generic(lhs, rhs, out):
     async def comp(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
-        l = lhs_cb.pop()
-        r = rhs_cb.pop()
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
         o = out_cb.reserve()
         result = l + r
         o.store(result)
-        out_cb.pop()
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
 
     @datamovement()
     async def dm(
@@ -69,7 +71,9 @@ def test_generic(lhs, rhs, out):
 # CHECK: linalg.yield %[[TILE_ADD]]
 
 # CHECK: d2m.store %[[O]], %[[ADD_RESULT]]
-# CHECK: d2m.wait %[[CB2_C]]
+# CHECK: d2m.pop %[[CB0_C]]
+# CHECK: d2m.pop %[[CB1_C]]
+# CHECK: d2m.push %[[CB2_C]]
 
 # Verify: to_layout converts result back to host and returns
 # CHECK: %[[TO_HOST:.+]] = d2m.to_layout %[[RESULT]]
