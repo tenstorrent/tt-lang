@@ -67,6 +67,9 @@ class D2MGenericCompiler(TTCompilerBase):
             return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        elif isinstance(node.value, str):
+            # Return string as-is for operations that expect string attributes
+            return node.value
         else:
             raise NotImplementedError(
                 f"constant type {type(node.value).__name__} not implemented"

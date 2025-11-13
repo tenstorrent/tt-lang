@@ -34,7 +34,7 @@ from ._src.stream import Stream
 
 from ._src.d2m_ast import D2MGenericCompiler
 
-from .operators import TensorBlock, MemTx, dma
+from .operators import TensorBlock, MemTx, dma, signpost
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
@@ -547,6 +547,7 @@ __all__ = [
     "Semaphore",
     "dma",
     "Stream",
+    "signpost",
     "create_metal_layout",
     "to_data_type",
     "from_data_type",
