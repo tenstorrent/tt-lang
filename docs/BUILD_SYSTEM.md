@@ -228,7 +228,7 @@ cmake -GNinja -Bbuild .
 cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
 
 # Scenario 3: Automatic build with performance trace enabled
-cmake -GNinja -Bbuild . -DTTLANG_ENABLE_PERF_TRACE=ON
+cmake -GNinja -Bbuild . -DTTLANG_ENABLE_PERF_TRACE=ON -DTTMLIR_CMAKE_BUILD_TYPE=Release
 
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
