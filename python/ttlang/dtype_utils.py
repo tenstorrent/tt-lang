@@ -16,6 +16,9 @@ from ttmlir.dialects import ttcore
 
 
 # Torch dtype to runtime DataType integer mapping (for C API compatibility)
+# TODO: Replace with runtime.DataType enum once C API is updated to accept enum values
+# These integer values correspond to:
+#   0 = Float32, 1 = Float16, 2 = BFloat16
 TORCH_TO_RUNTIME_DTYPE_INT = {
     torch.float32: 0,
     torch.float16: 1,

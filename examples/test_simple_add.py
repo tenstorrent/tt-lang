@@ -58,9 +58,9 @@ if __name__ == "__main__":
     print("Simple Add Test - Data Writeback Verification")
     print("=" * 60)
 
-    # Use simple values for easy debugging: 0 + 1 = 1
-    lhs = torch.zeros(32, 32)
-    rhs = torch.ones(32, 32)
+    # Use simple non-zero values for easy debugging: 2 + 3 = 5
+    lhs = torch.full((32, 32), 2.0)
+    rhs = torch.full((32, 32), 3.0)
     out = torch.full((32, 32), -999.0)
 
     print("\n=== BEFORE KERNEL ===")

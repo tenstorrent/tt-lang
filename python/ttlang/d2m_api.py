@@ -48,6 +48,61 @@ from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
 
 
+def _should_execute_on_metal_runtime():
+    """Check if we should execute on Metal runtime (skip on macOS)."""
+    return platform.system() != "Darwin" and binary is not None and runtime is not None
+
+
+def _execute_on_metal_runtime(flatbuffer_binary, args):
+    """
+    Execute compiled kernel on Metal runtime.
+
+    Args:
+        flatbuffer_binary: Compiled flatbuffer binary capsule
+        args: List of torch tensors as input arguments
+
+    Raises:
+        Exception: If runtime execution fails
+    """
+    binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+    program_index = 0
+
+    runtime.set_compatible_device_runtime(binary_obj)
+
+    device_options = runtime.MeshDeviceOptions()
+    device_options.mesh_shape = binary_obj.get_program_mesh_shape(program_index)
+    device = runtime.open_mesh_device(device_options)
+
+    # Borrowed tensors share memory with torch tensors (zero-copy)
+    inputs = create_borrowed_tensors(args)
+    runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
+    runtime.wait(runtime_outputs)
+
+    # Results are written directly to torch tensor memory via enqueue_read_buffer
+    for runtime_output_tensor in runtime_outputs:
+        runtime.deallocate_tensor(runtime_output_tensor, force=True)
+
+    runtime.close_mesh_device(device)
+
+
+def _execute_on_ttnn_runtime(flatbuffer_binary, args):
+    """
+    Execute compiled kernel on TTNN runtime (not yet implemented).
+
+    Args:
+        flatbuffer_binary: Compiled flatbuffer binary capsule
+        args: List of torch tensors as input arguments
+
+    Raises:
+        Exception: If runtime execution fails
+    """
+    binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+    device = runtime.open_mesh_device()
+
+    inputs = create_borrowed_tensors(args)
+    runtime_outputs = runtime.submit(device, binary_obj, 0, inputs)
+
+
 def _collect_captures(f: Callable) -> Dict[str, Union[int, Stream]]:
     """
     Collect and convert captured variables from function closure.
@@ -354,33 +409,9 @@ def _compile_and_run_kernel(
 
         # Metal runtime execution (enabled by default when runtime is available)
         # Skip on macOS since hardware is not available
-        is_macos = platform.system() == "Darwin"
-        if not is_macos and binary is not None and runtime is not None:
+        if _should_execute_on_metal_runtime():
             try:
-                binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
-                program_index = 0
-
-                runtime.set_compatible_device_runtime(binary_obj)
-
-                device_options = runtime.MeshDeviceOptions()
-                device_options.mesh_shape = binary_obj.get_program_mesh_shape(
-                    program_index
-                )
-                device = runtime.open_mesh_device(device_options)
-
-                # Borrowed tensors share memory with torch tensors (zero-copy)
-                inputs = create_borrowed_tensors(args)
-                runtime_outputs = runtime.submit(
-                    device, binary_obj, program_index, inputs
-                )
-                runtime.wait(runtime_outputs)
-
-                # Results are written directly to torch tensor memory via enqueue_read_buffer
-                for runtime_output_tensor in runtime_outputs:
-                    runtime.deallocate_tensor(runtime_output_tensor, force=True)
-
-                runtime.close_mesh_device(device)
-
+                _execute_on_metal_runtime(flatbuffer_binary, args)
             except Exception as e:
                 print(f"Warning: Metal runtime execution failed: {e}")
                 print("(This is expected on macOS or if hardware is not available)")
@@ -391,12 +422,7 @@ def _compile_and_run_kernel(
         # TTNN runtime execution (not yet implemented - requires TTNN integration)
         if ttnn_mode and binary is not None and runtime is not None:
             try:
-                binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
-                device = runtime.open_mesh_device()
-
-                inputs = create_borrowed_tensors(args)
-                runtime_outputs = runtime.submit(device, binary_obj, 0, inputs)
-
+                _execute_on_ttnn_runtime(flatbuffer_binary, args)
             except Exception as e:
                 print(f"Warning: TTNN runtime execution failed: {e}")
                 import traceback

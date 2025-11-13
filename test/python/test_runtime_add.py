@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# UNSUPPORTED: system-darwin
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
@@ -15,6 +16,8 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_runtime_add(lhs, rhs, out):
+    # Stream() wraps input tensors for DMA. The torch tensor shape from lhs/rhs
+    # is used for indexing (e.g., lhs_stream[0, 0] accesses the first tile).
     lhs_stream = Stream(lhs)
     rhs_stream = Stream(rhs)
 

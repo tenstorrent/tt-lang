@@ -41,3 +41,7 @@ if "HOME" in os.environ:
     config.environment["HOME"] = os.environ["HOME"]
 if "TT_METAL_RUNTIME_ROOT" in os.environ:
     config.environment["TT_METAL_RUNTIME_ROOT"] = os.environ["TT_METAL_RUNTIME_ROOT"]
+
+# Add system platform feature for UNSUPPORTED directives
+if platform.system() == "Darwin":
+    config.available_features.add("system-darwin")
