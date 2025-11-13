@@ -33,6 +33,7 @@ from pykernel._src.utils import _cleanup_source_code
 from ._src.stream import Stream
 
 from ._src.d2m_ast import D2MGenericCompiler
+from ._src.auto_profile import is_auto_profile_enabled, get_line_mapper, run_profiling_pipeline
 
 from .operators import TensorBlock, MemTx, dma, signpost
 from .circular_buffer import CircularBuffer
@@ -410,6 +411,40 @@ def _compile_and_run_kernel(
             binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
             binary_obj.store(flatbuffer_path)
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
+
+        # Auto-profiling pipeline: run ttrt perf and display results
+        if is_auto_profile_enabled():
+            import tempfile
+            from pathlib import Path
+
+            # If no explicit flatbuffer path, create a temporary one
+            if not flatbuffer_path and binary is not None:
+                temp_dir = Path(tempfile.mkdtemp(prefix="ttlang_auto_profile_"))
+                flatbuffer_path = str(temp_dir / "kernel.ttm")
+                binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+                binary_obj.store(flatbuffer_path)
+                print(f"🔍 Auto-profiling enabled - saved flatbuffer to {flatbuffer_path}")
+
+            if flatbuffer_path:
+                # Get source code from the compilation
+                line_mapper = get_line_mapper()
+
+                # Collect source lines from all compiled functions
+                # Note: source lines are already registered during AST compilation
+                source_lines = []
+
+                # Run profiling pipeline
+                print(f"\n{'='*80}")
+                print("AUTO-PROFILING PIPELINE")
+                print(f"{'='*80}\n")
+
+                results = run_profiling_pipeline(
+                    Path(flatbuffer_path),
+                    source_lines,
+                    line_mapper
+                )
+
+                # Results are printed by run_profiling_pipeline
 
         # Metal runtime execution (enabled by default when runtime is available)
         # Skip on macOS since hardware is not available
