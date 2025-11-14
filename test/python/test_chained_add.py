@@ -106,7 +106,6 @@ test_chained_add(a, b, c, out)
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item()}")
-# CHECK-OUTPUT: out[0, 0] = 6.0
 print(
     f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}"
 )

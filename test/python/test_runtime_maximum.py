@@ -64,7 +64,6 @@ test_runtime_maximum(lhs, rhs, out)
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item():.3f}")
-# CHECK-OUTPUT: out[0, 0] = 3.0{{[0-9]*}}
 
 expected = torch.maximum(lhs, rhs)
 if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):

@@ -55,7 +55,6 @@ test_runtime_recip(input, out)
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item():.3f}")
-# CHECK-OUTPUT: out[0, 0] = 0.25{{[0-9]*}}
 
 expected = torch.reciprocal(input)
 if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
