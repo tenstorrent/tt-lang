@@ -471,155 +471,134 @@ def maximum(lhs: TensorBlock, rhs: TensorBlock) -> TensorBlock:
     )
 
 
-# Reduction operations
-@syntax("reduce_sum")
-def reduce_sum(a: TensorBlock, b: TensorBlock, c: TensorBlock, dim: int = 1) -> TensorBlock:
+def _extract_int_from_mlir_value(value):
+    """Extract integer from MLIR constant or return the value as-is."""
+    if hasattr(value, 'literal_value'):
+        return value.literal_value
+    elif hasattr(value, 'value'):
+        return int(value.value)
+    else:
+        return int(value)
+
+
+def _create_reduction_linalg(
+    a: TensorBlock,
+    b: TensorBlock,
+    dim: int,
+    tile_op_builder: Callable,
+) -> TensorBlock:
     """
-    Compute sum reduction: result <- sum<dim>(A * B, C).
+    Create linalg.generic for reduction operations (sum, max).
+
+    Generates a reduction over the specified dimension with broadcasting scaler.
+    The scaler (b) is broadcast from position (0,0) to all elements.
 
     Args:
-        a: First input tensor
-        b: Second input tensor (multiplied element-wise with a)
-        c: Accumulator tensor
-        dim: Reduction dimension (0 or 1 for 2D tiles)
+        a: Input tensor (full dimensions accessed)
+        b: Scaler tensor (broadcast from single tile)
+        dim: Reduction dimension (0 for rows, 1 for columns)
+        tile_op_builder: Function that creates the tile operation
 
     Returns:
-        Result tensor with reduced dimension
+        Result of the linalg.generic operation
     """
     if not isinstance(a.type, RankedTensorType):
         raise TypeError(f"Expected RankedTensorType, got {type(a.type).__name__}")
 
     from ttmlir.dialects.d2m import ReduceDim
-    reduce_dim_attr = ReduceDim.C if dim == 1 else ReduceDim.R
 
-    # Reduction reduces the specified dimension
-    out_shape = list(a.type.shape)
-    # For tile ops, the output keeps the same shape but semantically one dim is reduced
+    dim_value = _extract_int_from_mlir_value(dim)
+
+    # Hardware ReduceDim mapping: dim=0 (reduce rows) -> C, dim=1 (reduce cols) -> R
+    reduce_dim_attr = ReduceDim.R if dim_value == 1 else ReduceDim.C
 
     ctx = a.type.context
     rank = len(a.type.shape)
+    out_shape = list(a.type.shape)
 
-    # Create affine maps for reduction
-    # Input maps: (d0, d1) -> (d0, d1) for a and b
-    # Output map: (d0, d1) -> (d0, d1) (but one dim will be reduced)
-    # Iterator types: one parallel, one reduction
-    if dim == 1:
-        # Column reduction: reduce over d1
+    # Indexing maps: input uses all dims, scaler broadcasts from (0,0), output collapses reduced dim
+    identity_map = AffineMap.get_identity(rank, ctx)
+    zero_map = AffineMap.get(
+        2, 0, [AffineConstantExpr.get(0, ctx), AffineConstantExpr.get(0, ctx)], ctx
+    )
+
+    if dim_value == 1:
+        # Column reduction: iterate rows (parallel), reduce cols (reduction)
+        output_map = AffineMap.get(2, 0, [AffineDimExpr.get(0, ctx), AffineConstantExpr.get(0, ctx)], ctx)
         iter_types = ["parallel", "reduction"]
     else:
-        # Row reduction: reduce over d0
+        # Row reduction: reduce rows (reduction), iterate cols (parallel)
+        output_map = AffineMap.get(2, 0, [AffineConstantExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx)
         iter_types = ["reduction", "parallel"]
 
-    identity_map = AffineMap.get_identity(rank, ctx)
-
-    out_type = RankedTensorType.get(
-        out_shape, a.type.element_type, a.type.encoding
-    )
+    out_type = RankedTensorType.get(out_shape, a.type.element_type, a.type.encoding)
     empty = d2m.empty(out_type)
 
-    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(identity_map) for _ in range(4)])
+    affine_maps_attr = ArrayAttr.get([
+        AffineMapAttr.get(identity_map),
+        AffineMapAttr.get(zero_map),
+        AffineMapAttr.get(output_map)
+    ])
     iter_types_attr = ArrayAttr.get(
         [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iter_types]
     )
 
-    inputs = [a, b, c]
     generic_op = linalg.GenericOp(
         result_tensors=[out_type],
-        inputs=inputs,
+        inputs=[a, b],
         outputs=[empty],
         indexing_maps=affine_maps_attr,
         iterator_types=iter_types_attr,
     )
 
-    block_arg_types = [inp.type.element_type for inp in inputs] + [empty.type.element_type]
+    block_arg_types = [a.type.element_type, b.type.element_type, empty.type.element_type]
     block = generic_op.regions[0].blocks.append(*block_arg_types)
 
     with InsertionPoint(block):
-        # Create attribute for reduce_dim
         reduce_dim_mlir_attr = Attribute.parse(f"#d2m<reduce_dim {reduce_dim_attr.name}>", ctx)
-        tile_result = d2m.tile_reduce_sum(
+        tile_result = tile_op_builder(
             a.type.element_type,
-            block.arguments[0],  # a
-            block.arguments[1],  # b
-            block.arguments[2],  # c
+            block.arguments[0],
+            block.arguments[1],
+            block.arguments[2],
             reduce_dim_mlir_attr
         )
         linalg.YieldOp([tile_result])
 
     return generic_op.result
+
+
+# Reduction operations
+@syntax("reduce_sum")
+def reduce_sum(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
+    """
+    Sum reduction: result <- sum<dim>(A * B).
+
+    Args:
+        a: Input tensor
+        b: Scaler tensor (multiplied element-wise with a before reduction)
+        dim: Reduction dimension (0=rows, 1=columns)
+
+    Returns:
+        Reduced tensor with one dimension collapsed to single position
+    """
+    return _create_reduction_linalg(a, b, dim, d2m.tile_reduce_sum)
 
 
 @syntax("reduce_max")
-def reduce_max(a: TensorBlock, b: TensorBlock, c: TensorBlock, dim: int = 1) -> TensorBlock:
+def reduce_max(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     """
-    Compute max reduction: result <- max<dim>(A * B, C).
+    Max reduction: result <- max<dim>(A * B).
 
     Args:
-        a: First input tensor
-        b: Second input tensor (multiplied element-wise with a)
-        c: Accumulator tensor
-        dim: Reduction dimension (0 or 1 for 2D tiles)
+        a: Input tensor
+        b: Scaler tensor (multiplied element-wise with a before reduction)
+        dim: Reduction dimension (0=rows, 1=columns)
 
     Returns:
-        Result tensor with reduced dimension
+        Reduced tensor with one dimension collapsed to single position
     """
-    if not isinstance(a.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(a.type).__name__}")
-
-    from ttmlir.dialects.d2m import ReduceDim
-    reduce_dim_attr = ReduceDim.C if dim == 1 else ReduceDim.R
-
-    # Reduction reduces the specified dimension
-    out_shape = list(a.type.shape)
-
-    ctx = a.type.context
-    rank = len(a.type.shape)
-
-    # Create affine maps for reduction
-    if dim == 1:
-        # Column reduction: reduce over d1
-        iter_types = ["parallel", "reduction"]
-    else:
-        # Row reduction: reduce over d0
-        iter_types = ["reduction", "parallel"]
-
-    identity_map = AffineMap.get_identity(rank, ctx)
-
-    out_type = RankedTensorType.get(
-        out_shape, a.type.element_type, a.type.encoding
-    )
-    empty = d2m.empty(out_type)
-
-    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(identity_map) for _ in range(4)])
-    iter_types_attr = ArrayAttr.get(
-        [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iter_types]
-    )
-
-    inputs = [a, b, c]
-    generic_op = linalg.GenericOp(
-        result_tensors=[out_type],
-        inputs=inputs,
-        outputs=[empty],
-        indexing_maps=affine_maps_attr,
-        iterator_types=iter_types_attr,
-    )
-
-    block_arg_types = [inp.type.element_type for inp in inputs] + [empty.type.element_type]
-    block = generic_op.regions[0].blocks.append(*block_arg_types)
-
-    with InsertionPoint(block):
-        # Create attribute for reduce_dim
-        reduce_dim_mlir_attr = Attribute.parse(f"#d2m<reduce_dim {reduce_dim_attr.name}>", ctx)
-        tile_result = d2m.tile_reduce_max(
-            a.type.element_type,
-            block.arguments[0],  # a
-            block.arguments[1],  # b
-            block.arguments[2],  # c
-            reduce_dim_mlir_attr
-        )
-        linalg.YieldOp([tile_result])
-
-    return generic_op.result
+    return _create_reduction_linalg(a, b, dim, d2m.tile_reduce_max)
 
 
 @syntax("transpose")

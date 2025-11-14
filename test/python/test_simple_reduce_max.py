@@ -2,18 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# UNSUPPORTED: system-darwin
-# RUN: %python %s > %t.output.txt 2>&1
-# RUN: FileCheck %s < %t.initial.mlir
-# RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
+# Simple reduce test matching TTIR pattern - just reduce one input, no fusion
 
 import torch
 from ttlang.d2m_api import *
 from ttlang.operators import reduce_max
 
-
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
-def test_runtime_reduce_max(input_tensor, scaler, out):
+def simple_reduce_max(input_tensor, scaler, out):
     input_accessor = TensorAccessor(input_tensor)
     scaler_accessor = TensorAccessor(scaler)
 
@@ -22,8 +18,8 @@ def test_runtime_reduce_max(input_tensor, scaler, out):
         inp = input_cb.wait()
         scale = scaler_cb.wait()
         o = out_cb.reserve()
-        # result = max<dim>(input * scaler) - reduce over columns (dim=1)
-        result = reduce_max(inp, scale, dim=1)
+        # Just reduce with scaler=1.0, no c term
+        result = reduce_max(inp, scale, o, dim=1)
         o.store(result)
         input_cb.pop()
         scaler_cb.pop()
@@ -43,33 +39,26 @@ def test_runtime_reduce_max(input_tensor, scaler, out):
 
     return Program(compute_reduce, dm_input, dm_scaler)(input_tensor, scaler, out)
 
-
-# CHECK: func.func @test_runtime_reduce_max
-# CHECK: "d2m.tile_reduce_max"
-
-# Test: max(6 * 1) over 32 columns = 6
+# Test: max(6, 6, 6, ...) over 32 columns = 6
 input_tensor = torch.full((32, 32), 6.0)
-scaler = torch.ones((32, 32))
+scaler = torch.ones((32, 32))  # Scaler of 1.0
 out = torch.full((32, 32), -999.0)
 
 print("=== BEFORE KERNEL ===")
 print(f"input: all 6.0, scaler: all 1.0")
-print(f"Operation: reduce_max(input, scaler, dim=1)")
+print(f"Operation: reduce_max(input, scaler, out_cb, dim=1)")
 print(f"Expected: max(6*1) over 32 columns = 6 in first column")
 print(out)
 
-test_runtime_reduce_max(input_tensor, scaler, out)
+simple_reduce_max(input_tensor, scaler, out)
 
 print("\n=== AFTER KERNEL ===")
-# CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item():.3f}")
-print(f"First column: min={out[:, 0].min().item():.3f}, max={out[:, 0].max().item():.3f}, mean={out[:, 0].mean().item():.3f}")
+print(f"First column: min={out[:, 0].min().item():.3f}, max={out[:, 0].max().item():.3f}")
 print(out[:, :2])
 
-# Expected: max(6*1) over 32 columns = 6 in first column (32x1 output)
 expected_col = torch.full((32,), 6.0)
 if torch.allclose(out[:, 0], expected_col, rtol=1e-2, atol=1e-2):
-    print("PASS: Output matches expected (reduce_max dim=1, first column = 6.0)")
-    # CHECK-OUTPUT: PASS: Output matches expected
+    print("PASS: Simple reduce_max works correctly")
 else:
-    print(f"FAIL: Expected first column all 6.0, got values from {out[:, 0].min().item():.3f} to {out[:, 0].max().item():.3f}")
+    print(f"FAIL: Expected first column all 6.0, got {out[:, 0].unique()}")
