@@ -19,6 +19,15 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
+# ANSI color codes for terminal output
+class Colors:
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    GREEN = '\033[92m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    RESET = '\033[0m'
+
 
 def is_auto_profile_enabled() -> bool:
     """Check if auto-profiling is enabled via environment variable."""
@@ -177,6 +186,19 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
             # Use stripped source as key to match against full file
             source_groups[result.source.strip()].append(result)
 
+        # Find top 2 hottest operations for this thread (for color coding)
+        all_cycle_counts = []
+        for line_results in source_groups.values():
+            if len(line_results) == 1:
+                all_cycle_counts.append(line_results[0].cycles)
+            else:
+                # For multiple executions, use the max or average
+                all_cycle_counts.append(max(r.cycles for r in line_results))
+
+        all_cycle_counts.sort(reverse=True)
+        hottest = all_cycle_counts[0] if len(all_cycle_counts) > 0 else 0
+        second_hottest = all_cycle_counts[1] if len(all_cycle_counts) > 1 else 0
+
         # Print the entire source with cycle annotations where available
         if source_lines:
             for lineno in range(1, len(source_lines) + 1):
@@ -187,10 +209,18 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                     # This line has profiling data
                     line_results = source_groups[source_stripped]
 
+                    # Determine color based on max cycles for this line
+                    max_line_cycles = max(r.cycles for r in line_results)
+                    color = ""
+                    if max_line_cycles >= hottest and hottest > 0:
+                        color = Colors.RED
+                    elif max_line_cycles >= second_hottest and second_hottest > 0:
+                        color = Colors.YELLOW
+
                     if len(line_results) == 1:
                         # Single execution
                         r = line_results[0]
-                        print(f"{lineno:<6} {r.cycles:<10,} {source_line}")
+                        print(f"{color}{lineno:<6} {r.cycles:<10,} {source_line}{Colors.RESET}")
                     else:
                         # Multiple executions - show summary
                         cycles_list = [r.cycles for r in line_results]
@@ -201,11 +231,11 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
 
                         if min_cycles == max_cycles:
                             # All executions took same time
-                            print(f"{lineno:<6} {min_cycles:<10,} {source_line}  (×{len(line_results)} = {sum_cycles:,} cycles)")
+                            print(f"{color}{lineno:<6} {min_cycles:<10,} {source_line}  (×{len(line_results)} = {sum_cycles:,} cycles){Colors.RESET}")
                         else:
                             # Variable execution times - format range to fit in same column width
                             range_str = f"{min_cycles:,}-{max_cycles:,}"
-                            print(f"{lineno:<6} {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,})")
+                            print(f"{color}{lineno:<6} {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,}){Colors.RESET}")
                 else:
                     # Context line - no profiling data
                     if source_line.strip():  # Only show non-empty lines
