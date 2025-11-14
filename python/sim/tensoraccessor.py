@@ -9,7 +9,7 @@ from typing import Tuple
 import torch
 
 from .constants import TILE_SHAPE
-from .idxtype import IndexType
+from .typedefs import IndexType
 
 
 # TODO: We only support 2D tensors and 32 x 32 tiles for now, just enough to
