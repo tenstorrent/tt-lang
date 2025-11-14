@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Crashes in D2MInsertDstRegisterAccess: insufficient DST capacity (needs >4 slices for chained ops)
-# XFAIL: *
+# Tests liveness-based DST allocation with chained operations
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
