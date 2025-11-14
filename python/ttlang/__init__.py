@@ -27,6 +27,9 @@ from ttlang.operators import (
     rsqrt,
     recip,
     maximum,
+    transpose,
+    reduce_sum,
+    reduce_max,
 )
 
 __all__ = [
@@ -46,4 +49,7 @@ __all__ = [
     "rsqrt",
     "recip",
     "maximum",
+    "transpose",
+    "reduce_sum",
+    "reduce_max",
 ]

@@ -620,3 +620,30 @@ def reduce_max(a: TensorBlock, b: TensorBlock, c: TensorBlock, dim: int = 1) -> 
         linalg.YieldOp([tile_result])
 
     return generic_op.result
+
+
+@syntax("transpose")
+def transpose(input_tensor: TensorBlock) -> TensorBlock:
+    """Transpose the input tensor (swap last two dimensions)."""
+    if not isinstance(input_tensor.type, RankedTensorType):
+        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+
+    ctx = input_tensor.type.context
+    rank = len(input_tensor.type.shape)
+
+    # Output shape has last two dims swapped
+    out_shape = list(input_tensor.type.shape)
+    if rank >= 2:
+        out_shape[-2], out_shape[-1] = out_shape[-1], out_shape[-2]
+
+    identity_map = AffineMap.get_identity(rank, ctx)
+
+    return _create_linalg_generic_unary(
+        input_tensor,
+        output_shape=out_shape,
+        affine_maps=[identity_map, identity_map],
+        iterator_types=["parallel"] * rank,
+        tile_op_builder=lambda result_type, in_arg, out_arg: d2m.tile_transpose(
+            result_type, in_arg
+        ),
+    )
