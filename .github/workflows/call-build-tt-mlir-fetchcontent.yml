@@ -9,7 +9,7 @@ on:
 jobs:
     build-tt-lang-tt-mlir:
         runs-on: ubuntu-latest
-        timeout-minutes: 180
+        timeout-minutes: 360
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
@@ -31,29 +31,22 @@ jobs:
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
+            - name: Cache tt-mlir installation
+              id: cache-ttmlir
+              uses: actions/cache@v4
+              with:
+                  path: build/tt-mlir-install
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
+
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
-                  key: ${{ github.job }}-${{ runner.os }}-llvm-${{ steps.llvm-version.outputs.version }}
+                  key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
                   max-size: 200M
-
-            - name: Restore cached tt-mlir
-              uses: actions/cache/restore@v4
-              id: cache-ttmlir
-              with:
-                  path: build/tt-mlir-install
-                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
-
-            - name: Cache built tt-mlir
-              uses: actions/cache/save@v4
-              if: always() && steps.cache-ttmlir.outputs.cache-hit != 'true'
-              with:
-                  path: build/tt-mlir-install
-                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Build tt-lang
               run: |
-                  cmake -G Ninja -B build
+                  cmake -G Ninja -B build -DTTMLIR_CMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_TYPE=Release
                   cmake --build build
                   source build/env/activate
                   python test/python/smoketest.py
