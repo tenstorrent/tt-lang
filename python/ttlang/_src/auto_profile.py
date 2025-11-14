@@ -197,15 +197,15 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                         avg_cycles = sum(cycles_list) / len(cycles_list)
                         min_cycles = min(cycles_list)
                         max_cycles = max(cycles_list)
-                        total_cycles = sum(cycles_list)
+                        sum_cycles = sum(cycles_list)
 
                         if min_cycles == max_cycles:
                             # All executions took same time
-                            print(f"{lineno:<6} {min_cycles:<10,} {source_line}  (×{len(line_results)} = {total_cycles:,} cycles)")
+                            print(f"{lineno:<6} {min_cycles:<10,} {source_line}  (×{len(line_results)} = {sum_cycles:,} cycles)")
                         else:
                             # Variable execution times - format range to fit in same column width
                             range_str = f"{min_cycles:,}-{max_cycles:,}"
-                            print(f"{lineno:<6} {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={total_cycles:,})")
+                            print(f"{lineno:<6} {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,})")
                 else:
                     # Context line - no profiling data
                     if source_line.strip():  # Only show non-empty lines
@@ -286,6 +286,10 @@ def run_profiling_pipeline(flatbuffer_path: Path, source_lines: List[str],
     # Debug: show which operations were found
     unique_sources = set(r.source for r in results)
     print(f"   Unique operations: {len(unique_sources)}")
+
+    # Debug: show what we found
+    for src in sorted(unique_sources):
+        print(f"      - {src}")
 
     return results
 
