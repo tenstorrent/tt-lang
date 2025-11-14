@@ -31,9 +31,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: /opt/ttmlir-toolchain
-        key: macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}-${{ github.ref_name }}
-        restore-keys: |
-          macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}
+        key: macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}
 
     - name: Build tt-mlir toolchain
       if: steps.cache-toolchain.outputs.cache-hit != 'true'
