@@ -16,7 +16,6 @@ from sim import (
     datamovement,
     core_index,
     pykernel_gen,
-    assert_pcc,
     is_tiled,
 )
 
@@ -135,18 +134,3 @@ def eltwise_add(
 
     # Execute the program across all cores
     return Program(compute_func, dm0, dm1)(a_in, b_in, out)
-
-
-"""
-out = a + b
-"""
-dim = 256
-a_in = torch.randn(dim, dim)  # type: ignore
-b_in = torch.randn(dim, dim)  # type: ignore
-out = torch.zeros(dim, dim)  # type: ignore
-eltwise_add(a_in, b_in, out)
-
-golden = a_in + b_in
-print(golden)
-print(out)
-assert_pcc(golden, out)
