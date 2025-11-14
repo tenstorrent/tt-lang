@@ -3,17 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # UNSUPPORTED: system-darwin
-# XFAIL: *
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
-
-# XFAIL Reason: D2MInsertDstRegisterAccess generates copy_tile from uninitialized output CB
-# for tile_reduce_sum operand 2, loading garbage into DST before reduction. This adds
-# garbage values to the sum result (e.g., getting 65 instead of 64). The copy_tile should
-# be skipped for reduction ops since operand 2 is the output destination, not an input.
-# reduce_max works by chance (max ignores garbage if < result), but reduce_sum fails.
-# Needs investigation: either fix the pass or initialize output CB to zeros.
 
 import torch
 from ttlang.d2m_api import *
