@@ -431,7 +431,6 @@ def _compile_and_run_kernel(
 
                 # Get the full source from the outer kernel function
                 try:
-                    import inspect
                     full_source = inspect.getsource(f)
                     source_lines = full_source.splitlines()
                 except Exception as e:

@@ -169,20 +169,47 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
         print(f"{'LINE':<6} {'CYCLES':<10} SOURCE")
         print(f"{'-'*6} {'-'*10} {'-'*70}")
 
-        prev_lineno = 0
+        # Group results by line number to show multiple executions
+        line_groups = defaultdict(list)
         for result in thread_results:
+            line_groups[result.lineno].append(result)
+
+        prev_lineno = 0
+        for lineno in sorted(line_groups.keys()):
+            line_results = line_groups[lineno]
+
             # Show ALL context lines between previous and current (decorators, function defs, etc.)
-            if result.lineno > prev_lineno + 1 and source_lines:
-                for i in range(prev_lineno + 1, result.lineno):
+            if lineno > prev_lineno + 1 and source_lines:
+                for i in range(prev_lineno + 1, lineno):
                     if 0 < i <= len(source_lines):
                         context_line = source_lines[i - 1].rstrip()
                         # Show all non-empty lines for context
                         if context_line.strip():
                             print(f"{'':6} {'':10} {context_line}")
 
-            # Print the profiled line with cycle count
-            print(f"{result.lineno:<6} {result.cycles:<10,} {result.source}")
-            prev_lineno = result.lineno
+            # Print the profiled line with all executions
+            if len(line_results) == 1:
+                # Single execution
+                r = line_results[0]
+                print(f"{r.lineno:<6} {r.cycles:<10,} {r.source}")
+            else:
+                # Multiple executions - show each with average and range
+                cycles_list = [r.cycles for r in line_results]
+                avg_cycles = sum(cycles_list) / len(cycles_list)
+                min_cycles = min(cycles_list)
+                max_cycles = max(cycles_list)
+                total_cycles = sum(cycles_list)
+
+                # Show first execution with summary
+                r = line_results[0]
+                if min_cycles == max_cycles:
+                    # All executions took same time
+                    print(f"{r.lineno:<6} {min_cycles:<10,} {r.source}  (×{len(line_results)} = {total_cycles:,} cycles)")
+                else:
+                    # Variable execution times
+                    print(f"{r.lineno:<6} {min_cycles}-{max_cycles:<6,} {r.source}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={total_cycles:,})")
+
+            prev_lineno = lineno
 
         print()
 
