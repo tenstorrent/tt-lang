@@ -187,13 +187,12 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
             source_groups[result.source.strip()].append(result)
 
         # Find top 2 hottest operations for this thread (for color coding)
+        # Use TOTAL cycles (including all loop iterations) for fair comparison
         all_cycle_counts = []
         for line_results in source_groups.values():
-            if len(line_results) == 1:
-                all_cycle_counts.append(line_results[0].cycles)
-            else:
-                # For multiple executions, use the max or average
-                all_cycle_counts.append(max(r.cycles for r in line_results))
+            # Sum all cycles for this line (captures loop impact)
+            total_for_line = sum(r.cycles for r in line_results)
+            all_cycle_counts.append(total_for_line)
 
         all_cycle_counts.sort(reverse=True)
         hottest = all_cycle_counts[0] if len(all_cycle_counts) > 0 else 0
@@ -209,12 +208,12 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                     # This line has profiling data
                     line_results = source_groups[source_stripped]
 
-                    # Determine color based on max cycles for this line
-                    max_line_cycles = max(r.cycles for r in line_results)
+                    # Determine color based on TOTAL cycles for this line (including loops)
+                    total_line_cycles = sum(r.cycles for r in line_results)
                     color = ""
-                    if max_line_cycles >= hottest and hottest > 0:
+                    if total_line_cycles >= hottest and hottest > 0:
                         color = Colors.RED
-                    elif max_line_cycles >= second_hottest and second_hottest > 0:
+                    elif total_line_cycles >= second_hottest and second_hottest > 0:
                         color = Colors.YELLOW
 
                     if len(line_results) == 1:
@@ -229,7 +228,8 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                         min_cycles = min(cycles_list)
                         max_cycles = max(cycles_list)
                         sum_cycles = sum(cycles_list)
-                        pct = 100.0 * max_line_cycles / thread_cycles[thread]
+                        # Use TOTAL cycles for percentage (important for loops!)
+                        pct = 100.0 * sum_cycles / thread_cycles[thread]
 
                         if min_cycles == max_cycles:
                             # All executions took same time
