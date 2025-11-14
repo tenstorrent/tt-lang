@@ -177,8 +177,8 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
               f"{100.0 * thread_cycles[thread] / total_cycles:.1f}% of total)")
         print("=" * 100)
         print()
-        print(f"{'LINE':<6} {'CYCLES':<10} SOURCE")
-        print(f"{'-'*6} {'-'*10} {'-'*70}")
+        print(f"{'LINE':<6} {'%TIME':<7} {'CYCLES':<10} SOURCE")
+        print(f"{'-'*6} {'-'*7} {'-'*10} {'-'*70}")
 
         # Group results by source text (since line numbers are relative to inner functions)
         source_groups = defaultdict(list)
@@ -220,7 +220,8 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                     if len(line_results) == 1:
                         # Single execution
                         r = line_results[0]
-                        print(f"{color}{lineno:<6} {r.cycles:<10,} {source_line}{Colors.RESET}")
+                        pct = 100.0 * r.cycles / thread_cycles[thread]
+                        print(f"{color}{lineno:<6} {pct:>5.1f}%  {r.cycles:<10,} {source_line}{Colors.RESET}")
                     else:
                         # Multiple executions - show summary
                         cycles_list = [r.cycles for r in line_results]
@@ -228,18 +229,19 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                         min_cycles = min(cycles_list)
                         max_cycles = max(cycles_list)
                         sum_cycles = sum(cycles_list)
+                        pct = 100.0 * max_line_cycles / thread_cycles[thread]
 
                         if min_cycles == max_cycles:
                             # All executions took same time
-                            print(f"{color}{lineno:<6} {min_cycles:<10,} {source_line}  (×{len(line_results)} = {sum_cycles:,} cycles){Colors.RESET}")
+                            print(f"{color}{lineno:<6} {pct:>5.1f}%  {min_cycles:<10,} {source_line}  (×{len(line_results)} = {sum_cycles:,} cycles){Colors.RESET}")
                         else:
                             # Variable execution times - format range to fit in same column width
                             range_str = f"{min_cycles:,}-{max_cycles:,}"
-                            print(f"{color}{lineno:<6} {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,}){Colors.RESET}")
+                            print(f"{color}{lineno:<6} {pct:>5.1f}%  {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,}){Colors.RESET}")
                 else:
                     # Context line - no profiling data
                     if source_line.strip():  # Only show non-empty lines
-                        print(f"{'':6} {'':10} {source_line}")
+                        print(f"{lineno:<6} {'':7} {'':10} {source_line}")
 
         print()
 
