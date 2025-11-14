@@ -6,9 +6,8 @@
 _RingView and supporting Span for cbsim.
 """
 
-from dataclasses import dataclass
 from typing import Generic, List, Optional, Sequence
-from .typedefs import Size, Index, CBElemType
+from .typedefs import Size, Index, CBElemType, Span
 from pydantic import validate_call
 
 
@@ -19,10 +18,6 @@ from pydantic import validate_call
 # wrap around. Notice also that it handles a list and a capacity, instead of a
 # _CBState, a deliberate choice to make it closer in spirit to a pointer and
 # minimizing the state that is exposed.
-@dataclass(frozen=True)
-class Span:
-    start: Index  # inclusive index in underlying ring
-    length: Size  # number of tiles
 
 
 class RingView(Generic[CBElemType]):
