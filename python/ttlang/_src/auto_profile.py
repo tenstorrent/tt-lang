@@ -135,16 +135,18 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
     print("=" * 100)
     print()
 
-    # Calculate total cycles and get thread breakdown
-    total_cycles = sum(r.cycles for r in results)
+    # Calculate total cycles per thread (not sum of all results since there are duplicates)
     thread_cycles = defaultdict(int)
     thread_ops = defaultdict(int)
     for r in results:
         thread_cycles[r.thread] += r.cycles
         thread_ops[r.thread] += 1
 
+    # Total is the max of any single thread (they run in parallel)
+    total_cycles = max(thread_cycles.values()) if thread_cycles else 1
+
     print(f"Total operations: {len(results)}")
-    print(f"Total cycles: {total_cycles:,}")
+    print(f"Longest thread: {total_cycles:,} cycles")
     print()
 
     # Group results by thread
@@ -201,8 +203,9 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                             # All executions took same time
                             print(f"{lineno:<6} {min_cycles:<10,} {source_line}  (×{len(line_results)} = {total_cycles:,} cycles)")
                         else:
-                            # Variable execution times
-                            print(f"{lineno:<6} {min_cycles}-{max_cycles:<6,} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={total_cycles:,})")
+                            # Variable execution times - format range to fit in same column width
+                            range_str = f"{min_cycles:,}-{max_cycles:,}"
+                            print(f"{lineno:<6} {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={total_cycles:,})")
                 else:
                     # Context line - no profiling data
                     if source_line.strip():  # Only show non-empty lines
@@ -278,6 +281,12 @@ def run_profiling_pipeline(flatbuffer_path: Path, source_lines: List[str],
         return None
 
     print(f"✅ Found {len(results)} profiled operations")
+    print(f"   Registered signposts: {len(line_mapper.signpost_to_line)}")
+
+    # Debug: show which operations were found
+    unique_sources = set(r.source for r in results)
+    print(f"   Unique operations: {len(unique_sources)}")
+
     return results
 
 
