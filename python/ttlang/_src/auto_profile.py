@@ -125,50 +125,75 @@ def parse_device_profile_csv(csv_path: Path, line_mapper: SourceLineMapper) -> L
 
 def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
     """
-    Print a beautiful side-by-side profile report.
+    Print a beautiful side-by-side profile report organized by thread.
 
-    Format:
-        LINE THREAD    CYCLES  SOURCE CODE
-        ---- ------    ------  -----------
-          42 BRISC        23   lhs = lhs_cb.pop()
-          43 NCRISC       18   result = lhs + rhs
+    Shows full source context with function decorators and organized by thread/core.
     """
     print()
     print("=" * 100)
     print("TTLANG AUTO-PROFILE REPORT")
     print("=" * 100)
     print()
-    print(f"{'LINE':<6} {'THREAD':<12} {'CYCLES':<8}  SOURCE")
-    print(f"{'-'*6} {'-'*12} {'-'*8}  {'-'*60}")
 
-    # Group by line number
-    line_to_results = defaultdict(list)
-    for result in results:
-        line_to_results[result.lineno].append(result)
+    # Calculate total cycles and get thread breakdown
+    total_cycles = sum(r.cycles for r in results)
+    thread_cycles = defaultdict(int)
+    thread_ops = defaultdict(int)
+    for r in results:
+        thread_cycles[r.thread] += r.cycles
+        thread_ops[r.thread] += 1
 
-    # Print results line by line
-    prev_lineno = 0
-    for lineno in sorted(line_to_results.keys()):
-        # Add spacing for line gaps
-        if lineno > prev_lineno + 1:
-            print()
-
-        line_results = line_to_results[lineno]
-
-        # Print first result with source code
-        first = line_results[0]
-        print(f"{first.lineno:<6} {first.thread:<12} {first.cycles:<8}  {first.source}")
-
-        # Print additional results for same line (different threads)
-        for result in line_results[1:]:
-            print(f"{'':6} {result.thread:<12} {result.cycles:<8}")
-
-        prev_lineno = lineno
-
+    print(f"Total operations: {len(results)}")
+    print(f"Total cycles: {total_cycles:,}")
     print()
+
+    # Group results by thread
+    thread_to_results = defaultdict(list)
+    for result in results:
+        thread_to_results[result.thread].append(result)
+
+    # Sort threads (NCRISC, BRISC, TRISC_0, TRISC_1, TRISC_2)
+    thread_order = ["NCRISC", "BRISC", "TRISC_0", "TRISC_1", "TRISC_2"]
+    sorted_threads = sorted(thread_to_results.keys(),
+                           key=lambda t: thread_order.index(t) if t in thread_order else 999)
+
+    # Print each thread's execution
+    for thread in sorted_threads:
+        thread_results = sorted(thread_to_results[thread], key=lambda r: r.lineno)
+
+        print("=" * 100)
+        print(f"THREAD: {thread:<10} ({thread_ops[thread]} ops, {thread_cycles[thread]:,} cycles, "
+              f"{100.0 * thread_cycles[thread] / total_cycles:.1f}% of total)")
+        print("=" * 100)
+        print()
+        print(f"{'LINE':<6} {'CYCLES':<10} SOURCE")
+        print(f"{'-'*6} {'-'*10} {'-'*70}")
+
+        prev_lineno = 0
+        for result in thread_results:
+            # Show ALL context lines between previous and current (decorators, function defs, etc.)
+            if result.lineno > prev_lineno + 1 and source_lines:
+                for i in range(prev_lineno + 1, result.lineno):
+                    if 0 < i <= len(source_lines):
+                        context_line = source_lines[i - 1].rstrip()
+                        # Show all non-empty lines for context
+                        if context_line.strip():
+                            print(f"{'':6} {'':10} {context_line}")
+
+            # Print the profiled line with cycle count
+            print(f"{result.lineno:<6} {result.cycles:<10,} {result.source}")
+            prev_lineno = result.lineno
+
+        print()
+
+    # Thread summary
     print("=" * 100)
-    print(f"Total operations profiled: {len(results)}")
-    print(f"Total cycles: {sum(r.cycles for r in results)}")
+    print("THREAD SUMMARY")
+    print("=" * 100)
+    for thread in sorted_threads:
+        print(f"  {thread:<12} {thread_cycles[thread]:>10,} cycles ({thread_ops[thread]:>3} ops) "
+              f"[{100.0 * thread_cycles[thread] / total_cycles:>5.1f}%]")
+    print()
     print("=" * 100)
     print()
 

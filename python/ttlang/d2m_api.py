@@ -429,9 +429,14 @@ def _compile_and_run_kernel(
                 # Get source code from the compilation
                 line_mapper = get_line_mapper()
 
-                # Collect source lines from all compiled functions
-                # Note: source lines are already registered during AST compilation
-                source_lines = []
+                # Get the full source from the outer kernel function
+                try:
+                    import inspect
+                    full_source = inspect.getsource(f)
+                    source_lines = full_source.splitlines()
+                except Exception as e:
+                    print(f"Warning: Could not get source for {f.__name__}: {e}")
+                    source_lines = line_mapper.source_lines if line_mapper.source_lines else []
 
                 # Run profiling pipeline
                 print(f"\n{'='*80}")
