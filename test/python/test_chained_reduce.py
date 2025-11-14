@@ -84,7 +84,6 @@ expected_val = math.exp(32) + 2.0
 print(f"Expected in first column: {expected_val:.3e}")
 if out[0, 0].item() > 1e13:
     print(f"PASS: Output is in expected range (exp(32) + 2)")
-    # X-CHECK-OUTPUT: PASS: Output is in expected range
-    # XFAIL: reduce_sum has garbage issue, so exp(garbage) produces wrong value
+    # CHECK-OUTPUT: PASS: Output is in expected range
 else:
     print(f"FAIL: Expected ~7.9e13, got {out[0, 0].item():.3e}")

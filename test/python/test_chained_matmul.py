@@ -95,22 +95,19 @@ out = torch.full((32, 32), -999.0)
 
 print("=== BEFORE KERNEL ===")
 print(f"Testing chained matmul: (I @ 2s) @ 3s")
-print(f"Each row of (I @ 2s) has one 2.0, rest zeros")
-print(f"(I @ 2s) @ 3s gives each row sum of one column of 3s = 96")
+print(f"I @ 2s = all 2s (identity preserves uniform matrix)")
+print(f"(all 2s) @ (all 3s) = each element sum(2*3) over 32 cols = 192")
 
 test_chained_matmul(a, b, c, out)
 
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 
-# Expected: (I @ 2s) @ 3s
-# I @ 2s gives a matrix where each row has a single 2.0 (diagonal)
-# (I @ 2s) @ 3s: each element is dot product of a row with 2.0 in one position
-# with a column of all 3s, giving 2*3 = 6 in diagonal positions,
-# and 0 elsewhere since other positions multiply 0 with 3
-expected = torch.eye(32) * 6.0
+# Expected: (I @ all 2s) @ all 3s = (all 2s) @ (all 3s) = all 192s
+# Each element [i,j] = sum_k(temp[i,k] * c[k,j]) = sum_k(2 * 3) = 6 * 32 = 192
+expected = torch.full((32, 32), 192.0)
 if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
-    print(f"PASS: Output matches expected (diagonal is 6, off-diagonal is 0)")
+    print(f"PASS: Output matches expected (all 192.0)")
     # CHECK-OUTPUT: PASS: Output matches expected
 else:
-    print(f"FAIL: Expected 6I, got diagonal from {torch.diag(out).min().item():.1f} to {torch.diag(out).max().item():.1f}")
+    print(f"FAIL: Expected all 192.0, got values from {out.min().item():.1f} to {out.max().item():.1f}")
