@@ -40,6 +40,7 @@ class SourceLineMapper:
     def __init__(self):
         self.signpost_to_line: Dict[str, Tuple[int, str]] = {}  # signpost -> (lineno, source)
         self.source_lines: List[str] = []
+        self.line_offset: int = 0  # Offset to add to line numbers for actual file line numbers
 
     def register_signpost(self, signpost_name: str, lineno: int, source: str):
         """Register a signpost with its source line information."""
@@ -132,7 +133,7 @@ def parse_device_profile_csv(csv_path: Path, line_mapper: SourceLineMapper) -> L
     return results
 
 
-def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
+def print_profile_report(results: List[ProfileResult], source_lines: List[str], line_mapper: SourceLineMapper = None):
     """
     Print a beautiful side-by-side profile report organized by thread.
 
@@ -200,7 +201,12 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
 
         # Print the entire source with cycle annotations where available
         if source_lines:
+            # Get line offset for displaying actual file line numbers
+            line_offset = getattr(line_mapper, 'line_offset', 0)
+
             for lineno in range(1, len(source_lines) + 1):
+                # Actual file line number
+                file_lineno = lineno + line_offset
                 source_line = source_lines[lineno - 1].rstrip()
                 source_stripped = source_line.strip()
 
@@ -216,11 +222,12 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
                     elif total_line_cycles >= second_hottest and second_hottest > 0:
                         color = Colors.YELLOW
 
+                    # Use the actual file line number (file_lineno), not result.lineno
                     if len(line_results) == 1:
                         # Single execution
                         r = line_results[0]
                         pct = 100.0 * r.cycles / thread_cycles[thread]
-                        print(f"{color}{lineno:<6} {pct:>5.1f}%  {r.cycles:<10,} {source_line}{Colors.RESET}")
+                        print(f"{color}{file_lineno:<6} {pct:>5.1f}%  {r.cycles:<10,} {source_line}{Colors.RESET}")
                     else:
                         # Multiple executions - show summary
                         cycles_list = [r.cycles for r in line_results]
@@ -233,15 +240,15 @@ def print_profile_report(results: List[ProfileResult], source_lines: List[str]):
 
                         if min_cycles == max_cycles:
                             # All executions took same time
-                            print(f"{color}{lineno:<6} {pct:>5.1f}%  {min_cycles:<10,} {source_line}  (×{len(line_results)} = {sum_cycles:,} cycles){Colors.RESET}")
+                            print(f"{color}{file_lineno:<6} {pct:>5.1f}%  {min_cycles:<10,} {source_line}  (×{len(line_results)} = {sum_cycles:,} cycles){Colors.RESET}")
                         else:
                             # Variable execution times - format range to fit in same column width
                             range_str = f"{min_cycles:,}-{max_cycles:,}"
-                            print(f"{color}{lineno:<6} {pct:>5.1f}%  {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,}){Colors.RESET}")
+                            print(f"{color}{file_lineno:<6} {pct:>5.1f}%  {range_str:<10} {source_line}  (×{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,}){Colors.RESET}")
                 else:
                     # Context line - no profiling data
                     if source_line.strip():  # Only show non-empty lines
-                        print(f"{lineno:<6} {'':7} {'':10} {source_line}")
+                        print(f"{file_lineno:<6} {'':7} {'':10} {source_line}")
 
         print()
 

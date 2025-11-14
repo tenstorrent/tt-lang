@@ -433,9 +433,17 @@ def _compile_and_run_kernel(
                 try:
                     full_source = inspect.getsource(f)
                     source_lines = full_source.splitlines()
+
+                    # Get the actual file line number offset where this function starts
+                    source_file = inspect.getsourcefile(f)
+                    _, line_offset = inspect.getsourcelines(f)
+
+                    # Store offset in line_mapper for display
+                    line_mapper.line_offset = line_offset - 1
                 except Exception as e:
                     print(f"Warning: Could not get source for {f.__name__}: {e}")
                     source_lines = line_mapper.source_lines if line_mapper.source_lines else []
+                    line_mapper.line_offset = 0
 
                 # Run profiling pipeline
                 print(f"\n{'='*80}")
@@ -451,7 +459,7 @@ def _compile_and_run_kernel(
                 # Print the beautiful profile report
                 if results:
                     from ._src.auto_profile import print_profile_report
-                    print_profile_report(results, source_lines)
+                    print_profile_report(results, source_lines, line_mapper)
 
         # Metal runtime execution (enabled by default when runtime is available)
         # Skip on macOS since hardware is not available
