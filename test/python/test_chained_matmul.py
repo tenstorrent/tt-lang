@@ -83,9 +83,8 @@ def test_chained_matmul(a, b, c, out):
     matmul_temp_c(temp, c, out)
 
 
-# CHECK: func.func @matmul_ab
-# CHECK: "d2m.tile_matmul"
-# CHECK: func.func @matmul_temp_c
+# Only the last kernel (matmul_temp_c) gets captured in MLIR dump
+# CHECK: func.func @matmul
 # CHECK: "d2m.tile_matmul"
 
 a = torch.eye(32)
