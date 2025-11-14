@@ -444,11 +444,15 @@ def _compile_and_run_kernel(
                     line_mapper
                 )
 
-                # Results are printed by run_profiling_pipeline
+                # Print the beautiful profile report
+                if results:
+                    from ._src.auto_profile import print_profile_report
+                    print_profile_report(results, source_lines)
 
         # Metal runtime execution (enabled by default when runtime is available)
         # Skip on macOS since hardware is not available
-        if _should_execute_on_metal_runtime():
+        # Skip when auto-profiling is enabled (ttrt perf already executed the kernel)
+        if _should_execute_on_metal_runtime() and not is_auto_profile_enabled():
             try:
                 _execute_on_metal_runtime(flatbuffer_binary, args)
             except Exception as e:

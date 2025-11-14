@@ -84,12 +84,18 @@ def parse_device_profile_csv(csv_path: Path, line_mapper: SourceLineMapper) -> L
 
     with open(csv_path) as f:
         reader = csv.reader(f)
+        next(reader)  # Skip header row
         for row in reader:
             if len(row) < 13:
                 continue
 
+            # Try to parse timestamp - skip if it's not a valid integer
+            try:
+                timestamp = int(row[5])
+            except (ValueError, IndexError):
+                continue
+
             thread = row[3]
-            timestamp = int(row[5])
             signpost = row[10]
             zone_type = row[11]
 
@@ -203,11 +209,13 @@ def run_profiling_pipeline(flatbuffer_path: Path, source_lines: List[str],
         return None
 
     # Find the device profile CSV
-    artifact_dir = flatbuffer_path.parent / "ttrt-artifacts" / flatbuffer_path.name / "perf"
+    # ttrt perf creates artifacts in current working directory
+    artifact_dir = Path.cwd() / "ttrt-artifacts" / flatbuffer_path.name / "perf"
     device_csv = artifact_dir / "profile_log_device.csv"
 
     if not device_csv.exists():
         print(f"❌ Device profile CSV not found at {device_csv}")
+        print(f"   (Expected at: {artifact_dir})")
         return None
 
     # Parse the CSV
@@ -216,8 +224,11 @@ def run_profiling_pipeline(flatbuffer_path: Path, source_lines: List[str],
 
     if not results:
         print("⚠️  No signpost data found in profile")
+        print(f"   Line mapper has {len(line_mapper.signpost_to_line)} registered signposts")
+        print(f"   Check if signposts are in the CSV with: grep 'ZONE' {device_csv}")
         return None
 
+    print(f"✅ Found {len(results)} profiled operations")
     return results
 
 
