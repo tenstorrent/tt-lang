@@ -72,8 +72,10 @@ jobs:
             - name: Build tt-lang
               run: |
                   cmake -G Ninja -B build \
-                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DCMAKE_BUILD_TYPE=Release \
+                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
+                      -DTTMLIR_ENABLE_RUNTIME=OFF \
+                      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
                   source build/env/activate
