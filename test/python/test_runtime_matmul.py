@@ -45,16 +45,25 @@ def test_runtime_matmul(lhs, rhs, out):
 # CHECK: func.func @test_runtime_matmul
 # CHECK: "d2m.tile_matmul"
 
-lhs = torch.randn((32, 32))
-rhs = torch.randn((32, 32))
+# Use identity matrix for easier verification: I @ A = A
+lhs = torch.eye(32)
+rhs = torch.full((32, 32), 2.0)
 out = torch.full((32, 32), -999.0)
 
 print("=== BEFORE KERNEL ===")
-print(f"Testing matmul compilation")
+print(f"lhs: identity matrix, rhs: all 2.0")
+print(f"Expected: all 2.0 (identity @ 2s = 2s)")
 
 test_runtime_matmul(lhs, rhs, out)
 
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
-print("PASS: matmul compiled successfully")
-# CHECK-OUTPUT: PASS: matmul compiled successfully
+print(f"out[0, 0] = {out[0, 0].item():.3f}")
+# CHECK-OUTPUT: out[0, 0] = 2.0{{[0-9]*}}
+
+expected = lhs @ rhs
+if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
+    print("PASS: Output matches expected matmul result")
+    # CHECK-OUTPUT: PASS: Output matches expected
+else:
+    print(f"FAIL: Expected {expected[0, 0].item():.3f}, got {out[0, 0].item():.3f}")
