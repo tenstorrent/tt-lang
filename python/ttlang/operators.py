@@ -469,3 +469,154 @@ def maximum(lhs: TensorBlock, rhs: TensorBlock) -> TensorBlock:
             result_type, lhs_arg, rhs_arg
         ),
     )
+
+
+# Reduction operations
+@syntax("reduce_sum")
+def reduce_sum(a: TensorBlock, b: TensorBlock, c: TensorBlock, dim: int = 1) -> TensorBlock:
+    """
+    Compute sum reduction: result <- sum<dim>(A * B, C).
+
+    Args:
+        a: First input tensor
+        b: Second input tensor (multiplied element-wise with a)
+        c: Accumulator tensor
+        dim: Reduction dimension (0 or 1 for 2D tiles)
+
+    Returns:
+        Result tensor with reduced dimension
+    """
+    if not isinstance(a.type, RankedTensorType):
+        raise TypeError(f"Expected RankedTensorType, got {type(a.type).__name__}")
+
+    from ttmlir.dialects.d2m import ReduceDim
+    reduce_dim_attr = ReduceDim.C if dim == 1 else ReduceDim.R
+
+    # Reduction reduces the specified dimension
+    out_shape = list(a.type.shape)
+    # For tile ops, the output keeps the same shape but semantically one dim is reduced
+
+    ctx = a.type.context
+    rank = len(a.type.shape)
+
+    # Create affine maps for reduction
+    # Input maps: (d0, d1) -> (d0, d1) for a and b
+    # Output map: (d0, d1) -> (d0, d1) (but one dim will be reduced)
+    # Iterator types: one parallel, one reduction
+    if dim == 1:
+        # Column reduction: reduce over d1
+        iter_types = ["parallel", "reduction"]
+    else:
+        # Row reduction: reduce over d0
+        iter_types = ["reduction", "parallel"]
+
+    identity_map = AffineMap.get_identity(rank, ctx)
+
+    out_type = RankedTensorType.get(
+        out_shape, a.type.element_type, a.type.encoding
+    )
+    empty = d2m.empty(out_type)
+
+    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(identity_map) for _ in range(4)])
+    iter_types_attr = ArrayAttr.get(
+        [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iter_types]
+    )
+
+    inputs = [a, b, c]
+    generic_op = linalg.GenericOp(
+        result_tensors=[out_type],
+        inputs=inputs,
+        outputs=[empty],
+        indexing_maps=affine_maps_attr,
+        iterator_types=iter_types_attr,
+    )
+
+    block_arg_types = [inp.type.element_type for inp in inputs] + [empty.type.element_type]
+    block = generic_op.regions[0].blocks.append(*block_arg_types)
+
+    with InsertionPoint(block):
+        # Create attribute for reduce_dim
+        reduce_dim_mlir_attr = Attribute.parse(f"#d2m<reduce_dim {reduce_dim_attr.name}>", ctx)
+        tile_result = d2m.tile_reduce_sum(
+            a.type.element_type,
+            block.arguments[0],  # a
+            block.arguments[1],  # b
+            block.arguments[2],  # c
+            reduce_dim_mlir_attr
+        )
+        linalg.YieldOp([tile_result])
+
+    return generic_op.result
+
+
+@syntax("reduce_max")
+def reduce_max(a: TensorBlock, b: TensorBlock, c: TensorBlock, dim: int = 1) -> TensorBlock:
+    """
+    Compute max reduction: result <- max<dim>(A * B, C).
+
+    Args:
+        a: First input tensor
+        b: Second input tensor (multiplied element-wise with a)
+        c: Accumulator tensor
+        dim: Reduction dimension (0 or 1 for 2D tiles)
+
+    Returns:
+        Result tensor with reduced dimension
+    """
+    if not isinstance(a.type, RankedTensorType):
+        raise TypeError(f"Expected RankedTensorType, got {type(a.type).__name__}")
+
+    from ttmlir.dialects.d2m import ReduceDim
+    reduce_dim_attr = ReduceDim.C if dim == 1 else ReduceDim.R
+
+    # Reduction reduces the specified dimension
+    out_shape = list(a.type.shape)
+
+    ctx = a.type.context
+    rank = len(a.type.shape)
+
+    # Create affine maps for reduction
+    if dim == 1:
+        # Column reduction: reduce over d1
+        iter_types = ["parallel", "reduction"]
+    else:
+        # Row reduction: reduce over d0
+        iter_types = ["reduction", "parallel"]
+
+    identity_map = AffineMap.get_identity(rank, ctx)
+
+    out_type = RankedTensorType.get(
+        out_shape, a.type.element_type, a.type.encoding
+    )
+    empty = d2m.empty(out_type)
+
+    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(identity_map) for _ in range(4)])
+    iter_types_attr = ArrayAttr.get(
+        [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iter_types]
+    )
+
+    inputs = [a, b, c]
+    generic_op = linalg.GenericOp(
+        result_tensors=[out_type],
+        inputs=inputs,
+        outputs=[empty],
+        indexing_maps=affine_maps_attr,
+        iterator_types=iter_types_attr,
+    )
+
+    block_arg_types = [inp.type.element_type for inp in inputs] + [empty.type.element_type]
+    block = generic_op.regions[0].blocks.append(*block_arg_types)
+
+    with InsertionPoint(block):
+        # Create attribute for reduce_dim
+        reduce_dim_mlir_attr = Attribute.parse(f"#d2m<reduce_dim {reduce_dim_attr.name}>", ctx)
+        tile_result = d2m.tile_reduce_max(
+            a.type.element_type,
+            block.arguments[0],  # a
+            block.arguments[1],  # b
+            block.arguments[2],  # c
+            reduce_dim_mlir_attr
+        )
+        linalg.YieldOp([tile_result])
+
+    return generic_op.result
