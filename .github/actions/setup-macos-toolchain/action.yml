@@ -35,8 +35,20 @@ runs:
         restore-keys: |
           macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}
 
+    - name: Check if toolchain was restored
+      id: check-toolchain
+      shell: bash
+      run: |
+        if [ -f /opt/ttmlir-toolchain/venv/bin/python3 ] && [ -f /opt/ttmlir-toolchain/bin/llvm-config ]; then
+          echo "restored=true" >> $GITHUB_OUTPUT
+          echo "Toolchain was restored from cache"
+        else
+          echo "restored=false" >> $GITHUB_OUTPUT
+          echo "Toolchain needs to be built"
+        fi
+
     - name: Build tt-mlir toolchain
-      if: steps.cache-toolchain.outputs.cache-hit != 'true'
+      if: steps.check-toolchain.outputs.restored != 'true'
       shell: bash
       run: |
         cd ${{ inputs.tt-mlir-path }}

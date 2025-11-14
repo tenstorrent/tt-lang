@@ -2,14 +2,24 @@ name: Build tt-mlir automatically (FetchContent)
 
 on:
     workflow_dispatch:
+        inputs:
+            tt-mlir-commit:
+                description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
+                required: false
+                type: string
     workflow_call:
+        inputs:
+            tt-mlir-commit:
+                description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
+                required: false
+                type: string
     schedule:
-        - cron: "0 12 * * *" # 6am PST
+        - cron: "0 12 * * *" # 4am PST
 
 jobs:
     build-tt-lang-tt-mlir:
         runs-on: ubuntu-latest
-        timeout-minutes: 180
+        timeout-minutes: 360
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
@@ -27,33 +37,46 @@ jobs:
               with:
                   fetch-depth: 0
 
+            - name: Determine tt-mlir commit
+              id: ttmlir-commit
+              shell: bash
+              run: |
+                  if [ -n "${{ inputs.tt-mlir-commit }}" ]; then
+                      echo "commit=${{ inputs.tt-mlir-commit }}" >> $GITHUB_OUTPUT
+                      echo "Using tt-mlir commit from input: ${{ inputs.tt-mlir-commit }}"
+                  else
+                      COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+                      echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+                      echo "Using tt-mlir commit from file: $COMMIT"
+                  fi
+
             - name: Get LLVM version
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
+            - name: Cache tt-mlir installation
+              id: cache-ttmlir
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      build/tt-mlir-install
+                      build/_deps
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
+
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
-                  key: ${{ github.job }}-${{ runner.os }}-llvm-${{ steps.llvm-version.outputs.version }}
+                  key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
                   max-size: 200M
-
-            - name: Restore cached tt-mlir
-              uses: actions/cache/restore@v4
-              id: cache-ttmlir
-              with:
-                  path: build/tt-mlir-install
-                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
-
-            - name: Cache built tt-mlir
-              uses: actions/cache/save@v4
-              if: always() && steps.cache-ttmlir.outputs.cache-hit != 'true'
-              with:
-                  path: build/tt-mlir-install
-                  key: ubuntu-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Build tt-lang
               run: |
-                  cmake -G Ninja -B build
+                  cmake -G Ninja -B build \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
+                      -DTTMLIR_ENABLE_RUNTIME=OFF \
+                      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
+                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
                   source build/env/activate
                   python test/python/smoketest.py

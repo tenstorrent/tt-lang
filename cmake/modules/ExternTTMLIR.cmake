@@ -92,12 +92,17 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
   set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 else()
   # Scenario 3: Use FetchContent to build tt-mlir locally
-  set(TTMLIR_COMMIT_FILE "${CMAKE_SOURCE_DIR}/third-party/tt-mlir.commit")
-  file(READ "${TTMLIR_COMMIT_FILE}" TTMLIR_GIT_TAG)
-  string(STRIP "${TTMLIR_GIT_TAG}" TTMLIR_GIT_TAG)
+  # Check if commit was provided via CMake variable, otherwise read from file
+  if(NOT DEFINED TTMLIR_GIT_TAG)
+    set(TTMLIR_COMMIT_FILE "${CMAKE_SOURCE_DIR}/third-party/tt-mlir.commit")
+    file(READ "${TTMLIR_COMMIT_FILE}" TTMLIR_GIT_TAG)
+    string(STRIP "${TTMLIR_GIT_TAG}" TTMLIR_GIT_TAG)
+  else()
+    string(STRIP "${TTMLIR_GIT_TAG}" TTMLIR_GIT_TAG)
+  endif()
 
   if("${TTMLIR_GIT_TAG}" STREQUAL "")
-    message(FATAL_ERROR "tt-mlir.commit file does not contain a valid commit hash")
+    message(FATAL_ERROR "tt-mlir commit hash not specified. Either set TTMLIR_GIT_TAG or ensure third-party/tt-mlir.commit contains a valid commit hash")
   endif()
 
   message(STATUS "tt-mlir not found. Building private copy version: ${TTMLIR_GIT_TAG}")

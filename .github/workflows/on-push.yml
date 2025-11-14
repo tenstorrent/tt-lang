@@ -23,7 +23,6 @@ jobs:
     secrets: inherit
 
   test-sim:
-    needs: [build]
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
