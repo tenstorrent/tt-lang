@@ -32,12 +32,14 @@ def test_runtime_mul(lhs, rhs, out):
         lhs_shard = lhs_cb.reserve()
         tx = dma(lhs_accessor[0, 0], lhs_shard)
         tx.wait()
+        lhs_cb.push()
 
     @datamovement()
     async def dm_rhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         rhs_shard = rhs_cb.reserve()
         tx = dma(rhs_accessor[0, 0], rhs_shard)
         tx.wait()
+        rhs_cb.push()
 
     return Program(compute_mul, dm_lhs, dm_rhs)(lhs, rhs, out)
 
