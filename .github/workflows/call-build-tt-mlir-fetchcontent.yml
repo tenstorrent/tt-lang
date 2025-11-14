@@ -2,9 +2,19 @@ name: Build tt-mlir automatically (FetchContent)
 
 on:
     workflow_dispatch:
+        inputs:
+            tt-mlir-commit:
+                description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
+                required: false
+                type: string
     workflow_call:
+        inputs:
+            tt-mlir-commit:
+                description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
+                required: false
+                type: string
     schedule:
-        - cron: "0 12 * * *" # 6am PST
+        - cron: "0 12 * * *" # 4am PST
 
 jobs:
     build-tt-lang-tt-mlir:
@@ -27,6 +37,19 @@ jobs:
               with:
                   fetch-depth: 0
 
+            - name: Determine tt-mlir commit
+              id: ttmlir-commit
+              shell: bash
+              run: |
+                  if [ -n "${{ inputs.tt-mlir-commit }}" ]; then
+                      echo "commit=${{ inputs.tt-mlir-commit }}" >> $GITHUB_OUTPUT
+                      echo "Using tt-mlir commit from input: ${{ inputs.tt-mlir-commit }}"
+                  else
+                      COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+                      echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+                      echo "Using tt-mlir commit from file: $COMMIT"
+                  fi
+
             - name: Get LLVM version
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
@@ -35,8 +58,10 @@ jobs:
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
-                  path: build/tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
+                  path: |
+                      build/tt-mlir-install
+                      build/_deps
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
@@ -46,7 +71,10 @@ jobs:
 
             - name: Build tt-lang
               run: |
-                  cmake -G Ninja -B build -DTTMLIR_CMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_TYPE=Release
+                  cmake -G Ninja -B build \
+                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
                   source build/env/activate
                   python test/python/smoketest.py
