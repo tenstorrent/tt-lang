@@ -46,14 +46,7 @@ jobs:
               shell: bash
               run: |
                   df -H
-                  if [ -n "${{ inputs.tt-mlir-commit }}" ]; then
-                      echo "commit=${{ inputs.tt-mlir-commit }}" >> $GITHUB_OUTPUT
-                      echo "Using tt-mlir commit from input: ${{ inputs.tt-mlir-commit }}"
-                  else
-                      COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-                      echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-                      echo "Using tt-mlir commit from file: $COMMIT"
-                  fi
+                  bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
 
             - name: Get LLVM version
               id: llvm-version
