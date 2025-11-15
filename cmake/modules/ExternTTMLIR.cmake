@@ -110,14 +110,30 @@ else()
   set(_TOOLCHAIN_Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
   set(_TOOLCHAIN_Python3_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
 
-  if(APPLE)
-    set(_TTMLIR_ENABLE_RUNTIME OFF)
-    set(_TTMLIR_ENABLE_RUNTIME_TESTS OFF)
-    set(_TTMLIR_ENABLE_PERF_TRACE OFF)
+  # Check if TTMLIR_ENABLE_RUNTIME is already set (e.g., from workflow), otherwise default based on platform
+  if(NOT DEFINED TTMLIR_ENABLE_RUNTIME)
+    if(APPLE)
+      set(_TTMLIR_ENABLE_RUNTIME OFF)
+      set(_TTMLIR_ENABLE_RUNTIME_TESTS OFF)
+      set(_TTMLIR_ENABLE_PERF_TRACE OFF)
+    else()
+      set(_TTMLIR_ENABLE_RUNTIME ON)
+      set(_TTMLIR_ENABLE_RUNTIME_TESTS ON)
+      if (TTLANG_ENABLE_PERF_TRACE)
+        set(_TTMLIR_ENABLE_PERF_TRACE ON)
+      else()
+        set(_TTMLIR_ENABLE_PERF_TRACE OFF)
+      endif()
+    endif()
   else()
-    set(_TTMLIR_ENABLE_RUNTIME ON)
-    set(_TTMLIR_ENABLE_RUNTIME_TESTS ON)
-    if (TTLANG_ENABLE_PERF_TRACE)
+    # Use the provided value and derive related settings
+    set(_TTMLIR_ENABLE_RUNTIME ${TTMLIR_ENABLE_RUNTIME})
+    if(NOT DEFINED TTMLIR_ENABLE_RUNTIME_TESTS)
+      set(_TTMLIR_ENABLE_RUNTIME_TESTS ${TTMLIR_ENABLE_RUNTIME})
+    else()
+      set(_TTMLIR_ENABLE_RUNTIME_TESTS ${TTMLIR_ENABLE_RUNTIME_TESTS})
+    endif()
+    if (TTLANG_ENABLE_PERF_TRACE AND _TTMLIR_ENABLE_RUNTIME)
       set(_TTMLIR_ENABLE_PERF_TRACE ON)
     else()
       set(_TTMLIR_ENABLE_PERF_TRACE OFF)
@@ -149,6 +165,7 @@ else()
     tt-mlir
     GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
     GIT_TAG ${TTMLIR_GIT_TAG}
+    GIT_SUBMODULES_RECURSE TRUE
     SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-src"
   )
 
