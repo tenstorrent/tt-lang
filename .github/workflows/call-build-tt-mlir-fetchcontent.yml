@@ -61,6 +61,18 @@ jobs:
                       build/_deps
                   key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
 
+            - name: Check if cached tt-mlir installation exists
+              id: check-cached-install
+              shell: bash
+              run: |
+                  if [ -f build/tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake ]; then
+                      echo "exists=true" >> $GITHUB_OUTPUT
+                      echo "Found cached tt-mlir installation"
+                  else
+                      echo "exists=false" >> $GITHUB_OUTPUT
+                      echo "No cached tt-mlir installation found"
+                  fi
+
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
@@ -68,17 +80,31 @@ jobs:
                   max-size: 200M
 
             - name: Build tt-lang
+              shell: bash
               run: |
                   echo "Building tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
                   df -H
-                  cmake -G Ninja -B build \
-                      -DCMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_ENABLE_RUNTIME=OFF \
-                      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
-                      -DCMAKE_CXX_COMPILER=clang++-17 \
-                      -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
+
+                  CMAKE_ARGS=(
+                      -G Ninja -B build
+                      -DCMAKE_BUILD_TYPE=Release
+                      -DTTMLIR_CMAKE_BUILD_TYPE=Release
+                      -DTTMLIR_ENABLE_RUNTIME=OFF
+                      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF
+                      -DCMAKE_CXX_COMPILER=clang++-17
+                      -DCMAKE_C_COMPILER=clang-17
+                  )
+
+                  # If cached installation exists, use it instead of FetchContent
+                  if [ "${{ steps.check-cached-install.outputs.exists }}" == "true" ]; then
+                      echo "Using cached tt-mlir installation"
+                      CMAKE_ARGS+=(-DTTMLIR_DIR=${{ github.workspace }}/build/tt-mlir-install/lib/cmake/ttmlir)
+                  else
+                      echo "Will build tt-mlir via FetchContent"
+                      CMAKE_ARGS+=(-DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }})
+                  fi
+
+                  cmake "${CMAKE_ARGS[@]}"
                   cmake --build build
                   df -H
 
