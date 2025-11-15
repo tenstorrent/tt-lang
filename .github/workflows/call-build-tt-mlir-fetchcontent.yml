@@ -19,7 +19,9 @@ on:
 jobs:
     build-tt-lang-tt-mlir:
         runs-on: ubuntu-latest
-        timeout-minutes: 360
+        timeout-minutes: 180
+
+        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
         defaults:
             run:
@@ -28,19 +30,8 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
-            CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
-            - name: Maximize build space
-              uses: easimon/maximize-build-space@master
-              with:
-                  root-reserve-mb: 30720
-                  remove-dotnet: 'true'
-                  remove-android: 'true'
-                  remove-haskell: 'true'
-                  remove-codeql: 'true'
-                  remove-docker-images: 'true'
-
             - name: Checkout tt-lang
               uses: actions/checkout@v4
               with:
@@ -50,6 +41,7 @@ jobs:
               id: ttmlir-commit
               shell: bash
               run: |
+                  df -H
                   if [ -n "${{ inputs.tt-mlir-commit }}" ]; then
                       echo "commit=${{ inputs.tt-mlir-commit }}" >> $GITHUB_OUTPUT
                       echo "Using tt-mlir commit from input: ${{ inputs.tt-mlir-commit }}"
@@ -58,63 +50,6 @@ jobs:
                       echo "commit=$COMMIT" >> $GITHUB_OUTPUT
                       echo "Using tt-mlir commit from file: $COMMIT"
                   fi
-
-            - name: Checkout tt-mlir (for toolchain build)
-              uses: actions/checkout@v4
-              with:
-                  repository: tenstorrent/tt-mlir
-                  ref: ${{ steps.ttmlir-commit.outputs.commit }}
-                  path: tt-mlir
-                  submodules: recursive
-                  fetch-depth: 1
-
-            - name: Setup Python 3.11
-              uses: actions/setup-python@v5
-              with:
-                  python-version: "3.11"
-
-            - name: Install dependencies
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y clang cmake lld ninja-build
-                  python -m pip install --upgrade pip
-
-            - name: Create toolchain directory
-              run: |
-                  sudo mkdir -p /opt/ttmlir-toolchain
-                  sudo chown -R $USER /opt/ttmlir-toolchain
-
-            - name: Cache tt-mlir toolchain
-              id: cache-toolchain
-              uses: actions/cache@v4
-              with:
-                  path: /opt/ttmlir-toolchain
-                  key: ubuntu-ttmlir-toolchain-${{ hashFiles('tt-mlir/env/CMakeLists.txt') }}-${{ github.ref_name }}
-                  restore-keys: |
-                      ubuntu-ttmlir-toolchain-${{ hashFiles('tt-mlir/env/CMakeLists.txt') }}
-
-            - name: Check if toolchain was restored
-              id: check-toolchain
-              run: |
-                  if [ -f /opt/ttmlir-toolchain/venv/bin/python3 ] && [ -f /opt/ttmlir-toolchain/bin/llvm-config ]; then
-                      echo "restored=true" >> $GITHUB_OUTPUT
-                      echo "Toolchain was restored from cache"
-                  else
-                      echo "restored=false" >> $GITHUB_OUTPUT
-                      echo "Toolchain needs to be built"
-                  fi
-
-            - name: Build tt-mlir toolchain
-              if: steps.check-toolchain.outputs.restored != 'true'
-              run: |
-                  sudo df -h
-                  # Set pip cache and temp directories to workspace to avoid filling root filesystem
-                  export PIP_CACHE_DIR=${{ github.workspace }}/.pip-cache
-                  export TMPDIR=${{ github.workspace }}/.tmp
-                  mkdir -p $PIP_CACHE_DIR $TMPDIR
-                  cd tt-mlir
-                  cmake -B env/build env
-                  cmake --build env/build
 
             - name: Get LLVM version
               id: llvm-version
@@ -133,9 +68,12 @@ jobs:
               uses: hendrikmuhs/ccache-action@v1.2
               with:
                   key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
+                  max-size: 200M
 
             - name: Build tt-lang
               run: |
+                  echo "Building tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
+                  df -H
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
