@@ -21,15 +21,13 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 360
 
-        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
-
         defaults:
             run:
                 shell: bash
 
         env:
             TT_LANG_HOME: ${{ github.workspace }}
-            TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
+            TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
 
         steps:
             - name: Maximize build space
@@ -60,6 +58,58 @@ jobs:
                       echo "Using tt-mlir commit from file: $COMMIT"
                   fi
 
+            - name: Checkout tt-mlir (for toolchain build)
+              uses: actions/checkout@v4
+              with:
+                  repository: tenstorrent/tt-mlir
+                  ref: ${{ steps.ttmlir-commit.outputs.commit }}
+                  path: tt-mlir
+                  submodules: recursive
+                  fetch-depth: 1
+
+            - name: Setup Python 3.11
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y clang cmake lld ninja-build
+                  python -m pip install --upgrade pip
+
+            - name: Create toolchain directory
+              run: |
+                  mkdir -p ${{ github.workspace }}/ttmlir-toolchain
+
+            - name: Cache tt-mlir toolchain
+              id: cache-toolchain
+              uses: actions/cache@v4
+              with:
+                  path: ${{ github.workspace }}/ttmlir-toolchain
+                  key: ubuntu-ttmlir-toolchain-${{ hashFiles('tt-mlir/env/CMakeLists.txt') }}-${{ github.ref_name }}
+                  restore-keys: |
+                      ubuntu-ttmlir-toolchain-${{ hashFiles('tt-mlir/env/CMakeLists.txt') }}
+
+            - name: Check if toolchain was restored
+              id: check-toolchain
+              run: |
+                  if [ -f ${{ github.workspace }}/ttmlir-toolchain/venv/bin/python3 ] && [ -f ${{ github.workspace }}/ttmlir-toolchain/bin/llvm-config ]; then
+                      echo "restored=true" >> $GITHUB_OUTPUT
+                      echo "Toolchain was restored from cache"
+                  else
+                      echo "restored=false" >> $GITHUB_OUTPUT
+                      echo "Toolchain needs to be built"
+                  fi
+
+            - name: Build tt-mlir toolchain
+              if: steps.check-toolchain.outputs.restored != 'true'
+              run: |
+                  sudo df -h
+                  cd tt-mlir
+                  cmake -B env/build env
+                  cmake --build env/build
+
             - name: Get LLVM version
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
@@ -77,7 +127,6 @@ jobs:
               uses: hendrikmuhs/ccache-action@v1.2
               with:
                   key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
-                  max-size: 200M
 
             - name: Build tt-lang
               run: |
