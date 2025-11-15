@@ -80,6 +80,10 @@ jobs:
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
+                  df -H
+            
+            - name: Test the build
+              run: |
                   source build/env/activate
                   python test/python/smoketest.py
 
