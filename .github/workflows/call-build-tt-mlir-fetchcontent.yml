@@ -81,7 +81,7 @@ jobs:
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
                   df -H
-            
+
             - name: Test the build
               run: |
                   source build/env/activate

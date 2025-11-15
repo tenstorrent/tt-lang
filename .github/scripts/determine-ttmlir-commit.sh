@@ -29,4 +29,3 @@ else
     # Fallback for local testing
     echo "commit=$COMMIT"
 fi
-
