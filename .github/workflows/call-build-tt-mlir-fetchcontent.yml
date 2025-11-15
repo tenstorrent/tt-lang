@@ -19,7 +19,7 @@ on:
 jobs:
     build-tt-lang-tt-mlir:
         runs-on: ubuntu-latest
-        timeout-minutes: 180
+        timeout-minutes: 360
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
@@ -30,6 +30,7 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
+            CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
             - name: Maximize space
