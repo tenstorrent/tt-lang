@@ -32,17 +32,9 @@ jobs:
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
 
         steps:
-            - name: Free Disk Space (Ubuntu)
-              uses: jlumbroso/free-disk-space@main
-              with:
-                tool-cache: false
-                android: true
-                dotnet: true
-                haskell: true
-                large-packages: true
-                docker-images: true
-                swap-storage: true
-                
+            - name: Maximize space
+              uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
             - name: Checkout tt-lang
               uses: actions/checkout@v4
               with:
@@ -90,6 +82,8 @@ jobs:
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_ENABLE_RUNTIME=OFF \
                       -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
+                      -DCMAKE_CXX_COMPILER=clang++-17 \
+                      -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
                   source build/env/activate
