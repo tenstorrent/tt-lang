@@ -22,7 +22,7 @@ from .cbapi import (
     get_write_ptr,
 )
 from .tensoraccessor import TensorAccessor
-from .typedefs import IndexType
+from .typedefs import IndexType, CoreIndex
 from .constants import TILE_SHAPE, MAX_CORES
 from .cb import CircularBuffer
 from .dma import dma, DMATransaction
@@ -49,6 +49,7 @@ __all__ = [
     "get_write_ptr",
     "TensorAccessor",
     "IndexType",
+    "CoreIndex",
     "TILE_SHAPE",
     "MAX_CORES",
     "CircularBuffer",

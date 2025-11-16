@@ -31,6 +31,7 @@ NaturalInt = Annotated[int, Field(ge=0)]
 Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
+CoreIndex = Index
 CBID = Annotated[NaturalInt, Field(ge=0, lt=MAX_CBS)]
 
 

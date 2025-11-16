@@ -21,6 +21,7 @@ import torch
 from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .tensoraccessor import TensorAccessor
+from .typedefs import CoreIndex
 
 
 # Protocol for templates that have a bind method
@@ -75,8 +76,15 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def core_index() -> int:
-    """Get the current core index from injected context."""
+def core_index() -> CoreIndex:
+    """Get the current core index from injected context.
+
+    Returns:
+        CoreIndex: The index of the current core in the grid
+
+    Raises:
+        RuntimeError: If called outside of a Program context
+    """
     frame = inspect.currentframe()
 
     # Check the calling frame's globals for the injected '_core' variable

@@ -9,6 +9,7 @@ from sim import (
     TILE_SHAPE,
     TensorAccessor,
     IndexType,
+    CoreIndex,
     CircularBuffer,
     dma,
     Program,
@@ -20,8 +21,6 @@ from sim import (
 )
 
 if TYPE_CHECKING:
-    # Type hints for variables injected by decorators
-    # These are not executed at runtime, only used by type checkers
     grid: tuple[int, int]
     granularity: int
 
@@ -51,20 +50,18 @@ def eltwise_add(
     b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
     out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
-    # Create circular buffers with simplified API (no accessor parameter needed)
+    # Create circular buffers
     a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
     b_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
     out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
 
     @compute()
     def compute_func():
-        core_num = core_index()  # core number in 2d grid
+        core_num: CoreIndex = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
-            # Reuse C across rows of A, B
-            # returns a RingView object as defined in <put up the link>.
             # TODO: Perhaps consider making RingView pointers that come from wait()/reserve() read/write only respectively?
             for rt_block in range(row_tiles // granularity):
                 print(
@@ -89,7 +86,7 @@ def eltwise_add(
 
     @datamovement()
     def dm0():
-        core_num = core_index()  # core number in 2d grid
+        core_num: CoreIndex = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -110,7 +107,7 @@ def eltwise_add(
 
     @datamovement()
     def dm1():
-        core_num = core_index()  # core number in 2d grid
+        core_num: CoreIndex = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
