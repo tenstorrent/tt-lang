@@ -99,8 +99,16 @@ def Program(*funcs: BindableTemplate) -> Any:
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
             if frame and frame.f_back:
-                # capture locals from the caller (eltwise_add)
-                self.context = dict(frame.f_back.f_locals)
+                # capture locals and globals from the caller (eltwise_add)
+                # Check globals first for decorator-injected variables, then locals
+                self.context = {}
+                # Add relevant items from globals (like grid, granularity from decorators)
+                caller_globals = frame.f_back.f_globals
+                for key in ["grid", "granularity"]:
+                    if key in caller_globals:
+                        self.context[key] = caller_globals[key]
+                # Add locals (which take precedence)
+                self.context.update(frame.f_back.f_locals)
 
             grid = self.context.get("grid", (1, 1))
             total_cores = grid[0] * grid[1]

@@ -8,7 +8,6 @@ This module provides decorators and utilities for generating kernels with
 specified grid configurations and granularity settings.
 """
 
-import inspect
 from typing import Any, Callable, Union, Tuple
 
 
@@ -27,23 +26,36 @@ def pykernel_gen(
 
     Example:
         @pykernel_gen(grid="auto", granularity=2)
-        def my_kernel(a, b, out, grid=None):
-            # kernel implementation
+        def my_kernel(a, b, out):
+            # grid and granularity are available as variables here
             pass
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        # Create a new function with grid and granularity in its closure
+        # This is achieved by modifying the function's globals to include these variables
+        import types
+
+        # Set grid to (2, 2) if 'auto'
+        actual_grid = (2, 2) if grid == "auto" else grid
+
+        # Create new globals dict that includes grid and granularity
+        new_globals = func.__globals__.copy()
+        new_globals["grid"] = actual_grid
+        new_globals["granularity"] = granularity
+
+        # Create a new function with the modified globals
+        modified_func = types.FunctionType(
+            func.__code__,
+            new_globals,
+            func.__name__,
+            func.__defaults__,
+            func.__closure__,
+        )
+
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Set grid to (2, 2) if 'auto'
-            actual_grid = (2, 2) if grid == "auto" else grid
-
-            # Inject granularity into the function's local scope
-            frame = inspect.currentframe()
-            if frame and frame.f_back:
-                frame.f_back.f_locals["granularity"] = granularity
-
-            # Call the original function with the processed grid
-            return func(*args, grid=actual_grid, **kwargs)
+            # Call the modified function (grid and granularity are already in globals)
+            return modified_func(*args, **kwargs)
 
         # Store the decorator parameters for later access
         setattr(

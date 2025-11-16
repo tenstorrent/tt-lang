@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-from typing import Optional, Any
+from typing import TYPE_CHECKING
 import torch
 import math
 
@@ -19,6 +19,12 @@ from sim import (
     is_tiled,
 )
 
+if TYPE_CHECKING:
+    # Type hints for variables injected by decorators
+    # These are not executed at runtime, only used by type checkers
+    grid: tuple[int, int]
+    granularity: int
+
 
 @pykernel_gen(
     grid="auto",  # NOTE: allow compiler to choose grid
@@ -28,13 +34,7 @@ def eltwise_add(
     a_in: torch.Tensor,
     b_in: torch.Tensor,
     out: torch.Tensor,
-    grid: Optional[Any] = None,
 ) -> None:
-    assert grid is not None
-
-    # Get granularity from decorator (hardcoded for now since decorator system is simplified)
-    granularity = 2
-
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
     assert all(is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
