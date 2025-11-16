@@ -33,8 +33,9 @@ from pykernel._src.utils import _cleanup_source_code
 from ._src.stream import Stream
 
 from ._src.d2m_ast import D2MGenericCompiler
+from ._src.auto_profile import is_auto_profile_enabled, get_line_mapper, run_profiling_pipeline
 
-from .operators import TensorBlock, MemTx, dma
+from .operators import TensorBlock, MemTx, dma, signpost
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
@@ -165,6 +166,10 @@ def _compile(
                 *args,
                 **kwargs,
             )
+
+            # Set source lines for auto-profiling
+            if b.auto_profile_enabled:
+                b.source_lines = source_code.splitlines()
 
             if verbose:
                 print(ast.dump(m, indent=4) + "\n")
@@ -407,9 +412,59 @@ def _compile_and_run_kernel(
             binary_obj.store(flatbuffer_path)
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
 
+        # Auto-profiling pipeline: run ttrt perf and display results
+        if is_auto_profile_enabled():
+            import tempfile
+            from pathlib import Path
+
+            # If no explicit flatbuffer path, create a temporary one
+            if not flatbuffer_path and binary is not None:
+                temp_dir = Path(tempfile.mkdtemp(prefix="ttlang_auto_profile_"))
+                flatbuffer_path = str(temp_dir / "kernel.ttm")
+                binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+                binary_obj.store(flatbuffer_path)
+                print(f"🔍 Auto-profiling enabled - saved flatbuffer to {flatbuffer_path}")
+
+            if flatbuffer_path:
+                # Get source code from the compilation
+                line_mapper = get_line_mapper()
+
+                # Get the full source from the outer kernel function
+                try:
+                    full_source = inspect.getsource(f)
+                    source_lines = full_source.splitlines()
+
+                    # Get the actual file line number offset where this function starts
+                    source_file = inspect.getsourcefile(f)
+                    _, line_offset = inspect.getsourcelines(f)
+
+                    # Store offset in line_mapper for display
+                    line_mapper.line_offset = line_offset - 1
+                except Exception as e:
+                    print(f"Warning: Could not get source for {f.__name__}: {e}")
+                    source_lines = line_mapper.source_lines if line_mapper.source_lines else []
+                    line_mapper.line_offset = 0
+
+                # Run profiling pipeline
+                print(f"\n{'='*80}")
+                print("AUTO-PROFILING PIPELINE")
+                print(f"{'='*80}\n")
+
+                results = run_profiling_pipeline(
+                    Path(flatbuffer_path),
+                    source_lines,
+                    line_mapper
+                )
+
+                # Print the beautiful profile report
+                if results:
+                    from ._src.auto_profile import print_profile_report
+                    print_profile_report(results, source_lines, line_mapper)
+
         # Metal runtime execution (enabled by default when runtime is available)
         # Skip on macOS since hardware is not available
-        if _should_execute_on_metal_runtime():
+        # Skip when auto-profiling is enabled (ttrt perf already executed the kernel)
+        if _should_execute_on_metal_runtime() and not is_auto_profile_enabled():
             try:
                 _execute_on_metal_runtime(flatbuffer_binary, args)
             except Exception as e:
@@ -547,6 +602,7 @@ __all__ = [
     "Semaphore",
     "dma",
     "Stream",
+    "signpost",
     "create_metal_layout",
     "to_data_type",
     "from_data_type",

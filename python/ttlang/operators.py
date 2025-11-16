@@ -255,3 +255,26 @@ def dma(
         _asindex(core),
         _asindex(mcast),
     )
+
+
+@syntax("signpost")
+def signpost(name: str) -> None:
+    """
+    Insert a profiling signpost/region marker.
+
+    This creates a Tracy profiler region that will be visible when running
+    the compiled flatbuffer with Tracy enabled (e.g., ttrt perf).
+
+    Args:
+        name: Name of the profiling region to display in Tracy
+
+    Example:
+        @ttlang.datamovement()
+        def my_kernel(a: TensorBlock, b: TensorBlock):
+            signpost("start_dma_section")
+            tx = dma(a, b)
+            tx.wait()
+            signpost("end_dma_section")
+    """
+    from ttmlir.dialects import d2m
+    return d2m.SignpostOp(name)

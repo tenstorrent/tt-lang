@@ -4,7 +4,7 @@
 
 import ast
 import inspect
-from typing import List, Set
+from typing import List, Set, Optional
 from dataclasses import dataclass
 
 from ttmlir.ir import *
@@ -13,6 +13,7 @@ from ttmlir.dialects import ttcore, d2m, func, arith
 from pykernel._src.kernel_types import *
 from pykernel._src.kernel_ast import TTCompilerBase
 from .stream import Stream
+from .auto_profile import is_auto_profile_enabled, get_line_mapper, generate_signpost_name
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
 from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
@@ -44,6 +45,11 @@ class D2MGenericCompiler(TTCompilerBase):
             tiled=kwargs.get("tiled", True),
         )
 
+        # Auto-profiling support
+        self.auto_profile_enabled = is_auto_profile_enabled()
+        self.line_mapper = get_line_mapper() if self.auto_profile_enabled else None
+        self.source_lines: Optional[List[str]] = None  # Set during compilation
+
         self._fn_map = {}
         self._fn_map["iter_index"] = (
             d2m.iter_index,
@@ -67,6 +73,9 @@ class D2MGenericCompiler(TTCompilerBase):
             return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        elif isinstance(node.value, str):
+            # Return string as-is for operations that expect string attributes
+            return node.value
         else:
             raise NotImplementedError(
                 f"constant type {type(node.value).__name__} not implemented"
@@ -212,6 +221,118 @@ class D2MGenericCompiler(TTCompilerBase):
     def visit_AsyncFunctionDef(self, node):
         with self.loc:
             return self._emit_entry(node)
+
+    def _emit_signpost(self, name: str):
+        """Emit a signpost operation into the MLIR."""
+        d2m.SignpostOp(name)
+
+    def _get_operation_name(self, node: ast.AST) -> Optional[str]:
+        """
+        Extract a meaningful operation name from an AST node.
+
+        Returns operation name like "dma", "tile_add", "cb_pop", etc.
+        Returns None if the node shouldn't be instrumented.
+        """
+        if isinstance(node, ast.Call):
+            # Handle function calls like dma(...), signpost(...), etc.
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                # Don't instrument signpost calls themselves!
+                if func_name == "signpost":
+                    return None
+                return func_name
+            elif isinstance(node.func, ast.Attribute):
+                # Handle method calls like cb.pop(), cb.reserve(), tx.wait()
+                return f"{node.func.attr}"
+        elif isinstance(node, ast.BinOp):
+            # Handle binary operations: +, -, *, @
+            op_map = {
+                ast.Add: "tile_add",
+                ast.Sub: "tile_sub",
+                ast.Mult: "tile_mul",
+                ast.MatMult: "tile_matmul",
+            }
+            return op_map.get(type(node.op))
+
+        return None
+
+    def visit_Call(self, node):
+        """Override visit_Call to inject auto-profiling signposts."""
+        if not self.auto_profile_enabled:
+            return super().visit_Call(node)
+
+        # Get operation name
+        op_name = self._get_operation_name(node)
+
+        # If this is not an instrumentable operation, just visit normally
+        if op_name is None:
+            return super().visit_Call(node)
+
+        # Generate signpost names with line/col info
+        before_name, after_name = generate_signpost_name(
+            op_name, node.lineno, node.col_offset
+        )
+
+        # Get source line text
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {node.lineno}>"
+
+        # Register signposts with line mapper
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, node.lineno, source_line)
+            self.line_mapper.register_signpost(after_name, node.lineno, source_line)
+
+        # Emit: signpost("before")
+        self._emit_signpost(before_name)
+
+        # Emit the actual operation
+        result = super().visit_Call(node)
+
+        # Emit: signpost("after")
+        self._emit_signpost(after_name)
+
+        return result
+
+    def visit_BinOp(self, node):
+        """Override visit_BinOp to inject auto-profiling signposts for arithmetic ops."""
+        if not self.auto_profile_enabled:
+            return super().visit_BinOp(node)
+
+        # Get operation name
+        op_name = self._get_operation_name(node)
+
+        # If this is not an instrumentable operation, just visit normally
+        if op_name is None:
+            return super().visit_BinOp(node)
+
+        # Generate signpost names with line/col info
+        before_name, after_name = generate_signpost_name(
+            op_name, node.lineno, node.col_offset
+        )
+
+        # Get source line text
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {node.lineno}>"
+
+        # Register signposts with line mapper
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, node.lineno, source_line)
+            self.line_mapper.register_signpost(after_name, node.lineno, source_line)
+
+        # Emit: signpost("before")
+        self._emit_signpost(before_name)
+
+        # Emit the actual operation
+        result = super().visit_BinOp(node)
+
+        # Emit: signpost("after")
+        self._emit_signpost(after_name)
+
+        return result
 
 
 def syntax(syntax_name):
