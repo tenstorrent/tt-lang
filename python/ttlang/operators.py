@@ -494,11 +494,11 @@ def _create_reduction_linalg(
     Create linalg.generic for reduction operations (sum, max).
 
     Generates a reduction over the specified dimension with broadcasting scaler.
-    The scaler (b) is broadcast from position (0,0) to all elements.
+    The scaler B value at b[0,0] is broadcast to all elements of A before reduction.
 
     Args:
         a: Input tensor (full dimensions accessed)
-        b: Scaler tensor (broadcast from single tile)
+        b: Scaler tensor (only b[0,0] is used, broadcast to all elements)
         dim: Reduction dimension (0 for rows, 1 for columns)
         tile_op_builder: Function that creates the tile operation
 
@@ -577,9 +577,11 @@ def reduce_sum(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     """
     Sum reduction: result <- sum<dim>(A * B).
 
+    The scaler B value at b[0,0] is broadcast to all elements of A before reduction.
+
     Args:
         a: Input tensor
-        b: Scaler tensor (multiplied element-wise with a before reduction)
+        b: Scaler tensor (only b[0,0] is used, broadcast to all elements)
         dim: Reduction dimension (0=rows, 1=columns)
 
     Returns:
@@ -596,9 +598,11 @@ def reduce_max(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     """
     Max reduction: result <- max<dim>(A * B).
 
+    The scaler B value at b[0,0] is broadcast to all elements of A before reduction.
+
     Args:
         a: Input tensor
-        b: Scaler tensor (multiplied element-wise with a before reduction)
+        b: Scaler tensor (only b[0,0] is used, broadcast to all elements)
         dim: Reduction dimension (0=rows, 1=columns)
 
     Returns:
