@@ -52,6 +52,7 @@ def test_chained_add(a, b, c, out):
         a_shard = a_cb.reserve()
         tx = dma(a_accessor[0, 0], a_shard)
         tx.wait()
+        a_cb.push()
 
     @datamovement()
     async def dm_b(
@@ -63,6 +64,7 @@ def test_chained_add(a, b, c, out):
         b_shard = b_cb.reserve()
         tx = dma(b_accessor[0, 0], b_shard)
         tx.wait()
+        b_cb.push()
 
     @datamovement()
     async def dm_c(
@@ -74,6 +76,7 @@ def test_chained_add(a, b, c, out):
         c_shard = c_cb.reserve()
         tx = dma(c_accessor[0, 0], c_shard)
         tx.wait()
+        c_cb.push()
 
     return Program(add_compute, dm_a, dm_b, dm_c)(a, b, c, out)
 
