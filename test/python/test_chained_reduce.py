@@ -38,18 +38,21 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
         input_shard = input_cb.reserve()
         tx = dma(input_accessor[0, 0], input_shard)
         tx.wait()
+        input_cb.push()
 
     @datamovement()
     async def dm_scaler(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
         scaler_shard = scaler_cb.reserve()
         tx = dma(scaler_accessor[0, 0], scaler_shard)
         tx.wait()
+        scaler_cb.push()
 
     @datamovement()
     async def dm_bias(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
         bias_shard = bias_cb.reserve()
         tx = dma(bias_accessor[0, 0], bias_shard)
         tx.wait()
+        bias_cb.push()
 
     return Program(compute_chained, dm_input, dm_scaler, dm_bias)(input_tensor, scaler, bias, out)
 

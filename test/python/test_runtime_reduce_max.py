@@ -34,12 +34,14 @@ def test_runtime_reduce_max(input_tensor, scaler, out):
         input_shard = input_cb.reserve()
         tx = dma(input_accessor[0, 0], input_shard)
         tx.wait()
+        input_cb.push()
 
     @datamovement()
     async def dm_scaler(input_cb: CircularBuffer, scaler_cb: CircularBuffer, out_cb: CircularBuffer):
         scaler_shard = scaler_cb.reserve()
         tx = dma(scaler_accessor[0, 0], scaler_shard)
         tx.wait()
+        scaler_cb.push()
 
     return Program(compute_reduce, dm_input, dm_scaler)(input_tensor, scaler, out)
 
