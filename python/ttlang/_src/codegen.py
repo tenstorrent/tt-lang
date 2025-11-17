@@ -233,7 +233,7 @@ def create_generic_func(
             ]
         )
 
-        # Create device output buffer
+        # Create device output buffer from output argument (not empty, to preserve zeros)
         output_idx = len(user_args) - num_outs
         output_logical_shape = list(user_args[output_idx].shape)
         output_dtype = torch_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
@@ -241,7 +241,12 @@ def create_generic_func(
         device_output_type = create_device_tensor_type(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
         )
-        device_output_buffer = d2m.EmptyOp(device_output_type)
+
+        # Convert output argument to device layout (preserves initialization like zeros)
+        device_output_empty = d2m.EmptyOp(device_output_type)
+        device_output_buffer = d2m.ToLayoutOp(
+            [device_output_type], outputs[0], device_output_empty.result, layout=None
+        )
 
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
@@ -249,7 +254,7 @@ def create_generic_func(
         generic = d2m.GenericOp(
             [device_output_type],
             wrapped_inputs,
-            [device_output_buffer.result],
+            [device_output_buffer.results[0]],
             ttcore.ir.GridAttr.get(ctx, grid),
             block_factors,
             list(map(affine_map_from_lambda, indexing_maps)),
