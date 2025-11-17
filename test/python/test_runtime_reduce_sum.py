@@ -50,7 +50,7 @@ def test_runtime_reduce_sum(input_tensor, scaler, out):
 # Test: sum(2 * 1) over 32 columns = 2 * 32 = 64
 input_tensor = torch.full((32, 32), 2.0)
 scaler = torch.ones((32, 32))
-out = torch.full((32, 32), -999.0)
+out = torch.zeros(32, 32)  # Pre-initialize with zeros (issue #31)
 
 print("=== BEFORE KERNEL ===")
 print(f"input: all 2.0, scaler: all 1.0")

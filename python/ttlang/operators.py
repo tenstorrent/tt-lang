@@ -263,6 +263,9 @@ class TensorBlock:
             TypeError: If operands are not ranked tensors
             ValueError: If ranks are < 2 or inner dimensions don't match
         """
+        print("WARNING: matmul uses DST register as accumulator. "
+              "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
+              "See GitHub issue #31 for details.")
         lhs = ast_self
 
         if not isinstance(lhs.type, RankedTensorType):
@@ -582,6 +585,9 @@ def reduce_sum(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     Returns:
         Reduced tensor with one dimension collapsed to single position
     """
+    print("WARNING: reduce_sum uses DST register as accumulator. "
+          "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
+          "See GitHub issue #31 for details.")
     return _create_reduction_linalg(a, b, dim, d2m.tile_reduce_sum)
 
 
@@ -598,6 +604,9 @@ def reduce_max(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     Returns:
         Reduced tensor with one dimension collapsed to single position
     """
+    print("WARNING: reduce_max uses DST register as accumulator. "
+          "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
+          "See GitHub issue #31 for details.")
     return _create_reduction_linalg(a, b, dim, d2m.tile_reduce_max)
 
 

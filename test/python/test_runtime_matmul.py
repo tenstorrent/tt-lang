@@ -48,7 +48,7 @@ def test_runtime_matmul(lhs, rhs, out):
 # Use identity matrix for easier verification: I @ A = A
 lhs = torch.eye(32)
 rhs = torch.full((32, 32), 2.0)
-out = torch.full((32, 32), -999.0)
+out = torch.zeros(32, 32)  # Pre-initialize with zeros (issue #31)
 
 print("=== BEFORE KERNEL ===")
 print(f"lhs: identity matrix, rhs: all 2.0")

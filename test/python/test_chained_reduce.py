@@ -63,7 +63,7 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
 input_tensor = torch.ones((32, 32))
 scaler = torch.ones((32, 32))
 bias = torch.full((32, 32), 2.0)
-out = torch.full((32, 32), -999.0)
+out = torch.zeros(32, 32)  # Pre-initialize with zeros (issue #31)
 
 print("=== BEFORE KERNEL ===")
 print(f"Testing chained: exp(reduce_sum(1*1)) + 2")

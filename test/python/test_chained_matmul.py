@@ -90,7 +90,7 @@ def test_chained_matmul(a, b, c, out):
 a = torch.eye(32)
 b = torch.full((32, 32), 2.0)
 c = torch.full((32, 32), 3.0)
-out = torch.full((32, 32), -999.0)
+out = torch.zeros(32, 32)  # Pre-initialize with zeros (issue #31)
 
 print("=== BEFORE KERNEL ===")
 print(f"Testing chained matmul: (I @ 2s) @ 3s")
