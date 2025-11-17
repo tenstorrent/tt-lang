@@ -8,11 +8,12 @@ This module provides decorators and utilities for generating kernels with
 specified grid configurations and granularity settings.
 """
 
-from typing import Any, Callable, Union, Tuple
+from typing import Any, Callable, Union
+from .typedefs import Shape, Size
 
 
 def pykernel_gen(
-    grid: Union[str, Tuple[int, int]] = "auto", granularity: int = 4
+    grid: Union[str, Shape] = "auto", granularity: Size = 4
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator that generates a kernel with specified grid and granularity.

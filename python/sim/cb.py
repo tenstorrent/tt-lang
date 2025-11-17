@@ -16,7 +16,7 @@ from threading import Lock
 
 from .cbapi import CBAPI
 from .ringview import RingView
-from .typedefs import CBID, Size
+from .typedefs import CBID, Size, Shape
 from .constants import MAX_CBS
 
 
@@ -64,7 +64,7 @@ class CircularBuffer:
 
     def __init__(
         self,
-        shape: Tuple[Size, Size],
+        shape: Shape,
         buffer_factor: Size = 2,
         api: Optional[CBAPI[torch.Tensor]] = None,
     ):

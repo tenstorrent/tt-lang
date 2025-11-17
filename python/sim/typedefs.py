@@ -6,12 +6,11 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from typing import Annotated, TypeVar
+from typing import Annotated, TypeVar, Tuple
 from pydantic import Field
 from enum import Enum, auto
 from dataclasses import dataclass
 import torch
-from .constants import MAX_CBS
 
 CBElemType = TypeVar("CBElemType", int, torch.Tensor)
 
@@ -32,7 +31,9 @@ Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
 CoreIndex = Index
-CBID = Annotated[NaturalInt, Field(ge=0, lt=MAX_CBS)]
+Shape = Tuple[Size, ...]
+_MAX_CBS: Size = 32  # Fixed pool of circular buffers
+CBID = Annotated[NaturalInt, Field(ge=0, lt=_MAX_CBS)]
 
 
 @dataclass(frozen=True)

@@ -21,8 +21,7 @@ from sim import (
 )
 
 if TYPE_CHECKING:
-    grid: tuple[int, int]
-    granularity: int
+    from sim.pykernel_env import grid, granularity
 
 
 @pykernel_gen(

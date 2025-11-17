@@ -48,7 +48,8 @@ Use:
 """
 
 import torch
-from typing import Tuple, Union, List
+from typing import Union, List
+from .typedefs import Count, Shape
 
 
 # Tensor creation utilities
@@ -67,7 +68,7 @@ def ones(*shape: int) -> torch.Tensor:
     return torch.ones(*shape)  # type: ignore
 
 
-def full(shape: Tuple[int, ...], fill_value: Union[int, float]) -> torch.Tensor:
+def full(shape: Shape, fill_value: Union[int, float]) -> torch.Tensor:
     """Create a tensor filled with a specific value. Simplifies torch.full overloads."""
     return torch.full(shape, fill_value)  # type: ignore
 
@@ -93,18 +94,18 @@ def equal(a: torch.Tensor, b: torch.Tensor) -> bool:
 
 
 # Common tensor operations
-def cat(tensors: List[torch.Tensor], dim: int = 0) -> torch.Tensor:
+def cat(tensors: List[torch.Tensor], dim: Count = 0) -> torch.Tensor:
     """Concatenate tensors. Simplifies torch.cat overloads."""
     return torch.cat(tensors, dim=dim)  # type: ignore
 
 
-def stack(tensors: List[torch.Tensor], dim: int = 0) -> torch.Tensor:
+def stack(tensors: List[torch.Tensor], dim: Count = 0) -> torch.Tensor:
     """Stack tensors. Simplifies torch.stack overloads."""
     return torch.stack(tensors, dim=dim)  # type: ignore
 
 
 # Tile calculation utilities
-def tile_count(tensor_shape: Tuple[int, ...], tile_shape: Tuple[int, ...]) -> int:
+def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
     """
     Calculate the total number of tiles in a tensor.
 
@@ -135,7 +136,7 @@ def tile_count(tensor_shape: Tuple[int, ...], tile_shape: Tuple[int, ...]) -> in
     )
 
 
-def is_tiled(tensor: torch.Tensor, tile_shape: Tuple[int, ...]) -> bool:
+def is_tiled(tensor: torch.Tensor, tile_shape: Shape) -> bool:
     """
     Check if a tensor's dimensions are compatible with the given tile shape.
 
