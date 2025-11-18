@@ -6,8 +6,8 @@
 _RingView and supporting Span for cbsim.
 """
 
-from typing import Generic, List, Optional, Sequence
-from .typedefs import Size, Index, CBElemType, Span
+from typing import Generic, List, Sequence
+from .typedefs import Size, Index, CBElemType, CBSlotType, Span
 from pydantic import validate_call
 
 
@@ -18,8 +18,6 @@ from pydantic import validate_call
 # wrap around. Notice also that it handles a list and a capacity, instead of a
 # _CBState, a deliberate choice to make it closer in spirit to a pointer and
 # minimizing the state that is exposed.
-
-
 class RingView(Generic[CBElemType]):
     """A logically contiguous window into the ring, possibly wrapping.
     Provides list-like access to elements while respecting wrap-around.
@@ -33,7 +31,7 @@ class RingView(Generic[CBElemType]):
     #       original list as is. This is a limitation of pydantic's validate_call, and
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
     # @validate_call
-    def __init__(self, buf: List[Optional[CBElemType]], capacity: Size, span: Span):
+    def __init__(self, buf: List[CBSlotType[CBElemType]], capacity: Size, span: Span):
         self._buf = buf
         self._capacity = capacity
         self._span = span
@@ -67,7 +65,7 @@ class RingView(Generic[CBElemType]):
             raise ValueError(f"Popping uninitialized or consumed slot at index {idx}")
         self._buf[(self._span.start + idx) % self._capacity] = None
 
-    def to_list(self) -> List[Optional[CBElemType]]:
+    def to_list(self) -> List[CBSlotType[CBElemType]]:
         return [self[i] for i in range(len(self))]
 
     # @validate_call
