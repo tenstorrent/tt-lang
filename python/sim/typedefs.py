@@ -6,7 +6,7 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from typing import Annotated, TypeVar, Tuple, Optional
+from typing import Annotated, TypeVar, Tuple, Optional, List, NamedTuple
 from pydantic import Field
 from enum import Enum, auto
 from dataclasses import dataclass
@@ -27,12 +27,39 @@ class IndexType(Enum):
     TILE = auto()
 
 
+class MulticastType(Enum):
+    """
+    Enumeration of multicast types.
+
+    PUSH: Data is pushed from source to destinations.
+    PULL: Data is pulled by destinations from source.
+    """
+
+    PUSH = auto()
+    PULL = auto()
+
+
 PositiveInt = Annotated[int, Field(gt=0)]
 NaturalInt = Annotated[int, Field(ge=0)]
 Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
 CoreIndex = Index
+
+
+class MulticastAddress(NamedTuple):
+    """
+    A multicast address consisting of a type and list of core indices.
+
+    Attributes:
+        mcast_type: The type of multicast (PUSH or PULL)
+        core_indices: List of core indices to multicast to/from
+    """
+
+    mcast_type: MulticastType
+    core_indices: List[CoreIndex]
+
+
 Shape = Tuple[Size, ...]
 _MAX_CBS: Size = 32  # Fixed pool of circular buffers
 CBID = Annotated[NaturalInt, Field(ge=0, lt=_MAX_CBS)]

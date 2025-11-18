@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 import torch
 import math
 
@@ -10,7 +10,8 @@ from sim import (
     TensorAccessor,
     IndexType,
     CircularBuffer,
-    CoreIndex,
+    MulticastAddress,
+    MulticastType,
     dma,
     Program,
     compute,
@@ -60,7 +61,7 @@ def eltwise_mcast(
 
     # Create multicast address for C
     # Convention: mcast_addr[0] is the sender, rest are receivers
-    mcast_addr: List[CoreIndex] = [0, 1, 2, 3]
+    mcast_addr = MulticastAddress(MulticastType.PUSH, [0, 1, 2, 3])
 
     @compute()
     def compute_func():
@@ -102,7 +103,7 @@ def eltwise_mcast(
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
-        if core_num == 0:
+        if core_num == mcast_addr.core_indices[0]:
             print("dm0 (C multicast): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
@@ -115,7 +116,7 @@ def eltwise_mcast(
             # NoC layer meaning: receive ACKs from all cores in the mcast(?)
             c_in_cb.push()
 
-        elif core_num in mcast_addr[1:]:
+        elif core_num in mcast_addr.core_indices[1:]:
             c_block = c_in_cb.reserve()
             tx = dma(
                 mcast_addr, c_block
