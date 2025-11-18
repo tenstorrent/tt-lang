@@ -6,7 +6,8 @@
 _RingView and supporting Span for cbsim.
 """
 
-from typing import Generic, List, Sequence
+import operator as _op
+from typing import Generic, List, Sequence, Any, Union, Callable
 from .typedefs import Size, Index, CBElemType, CBSlotType, Span
 from pydantic import validate_call
 
@@ -74,3 +75,85 @@ class RingView(Generic[CBElemType]):
             raise ValueError("Length mismatch in store()")
         for i, v in enumerate(items):
             self[i] = v
+
+    def _binary_op(
+        self,
+        other: Union["RingView[CBElemType]", List[CBElemType]],
+        op: Callable[[Any, Any], Any],
+    ) -> List[CBElemType]:
+        """Element-wise binary op: self (op) other."""
+        # Assumes `other` is Sequence-like (__len__ and __getitem__),
+        # which matches your type hints.
+        if len(self) != len(other):
+            raise ValueError("Operand lengths must match for element-wise operations")
+        return [op(self[i], other[i]) for i in range(len(self))]
+
+    def _rbinary_op(
+        self,
+        other: List[CBElemType],
+        op: Callable[[Any, Any], Any],
+    ) -> List[CBElemType]:
+        """Element-wise reverse binary op: other (op) self."""
+        if len(other) != len(self):
+            raise ValueError("Operand lengths must match for element-wise operations")
+        return [op(other[i], self[i]) for i in range(len(self))]
+
+    # ---- forward operators ----
+
+    def __add__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.add)
+
+    def __sub__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.sub)
+
+    def __mul__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.mul)
+
+    def __truediv__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.truediv)
+
+    def __floordiv__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.floordiv)
+
+    def __mod__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.mod)
+
+    def __pow__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.pow)
+
+    # ---- reverse operators ----
+
+    def __radd__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.add)
+
+    def __rsub__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.sub)
+
+    def __rmul__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.mul)
+
+    def __rtruediv__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.truediv)
+
+    def __rfloordiv__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.floordiv)
+
+    def __rmod__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.mod)
+
+    def __rpow__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.pow)

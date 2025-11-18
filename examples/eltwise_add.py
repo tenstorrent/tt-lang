@@ -73,7 +73,8 @@ def eltwise_add(
                 out_block = out_cb.reserve()  # blocking
 
                 # Use store() to properly populate the RingView with computed results
-                out_block.store([a_block[i] + b_block[i] for i in range(len(a_block))])
+                result = a_block + b_block
+                out_block.store(result)
 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
                 out_cb.push()
