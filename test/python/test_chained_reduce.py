@@ -35,6 +35,7 @@ def test_chained_reduce(input_tensor, scaler, bias, zero_init, out):
 
         # Step 2: Read back reduce result, compute exp and add
         intermediate = out_cb.wait()
+        out_cb.pop()  # Pop the reduce result before reserving again
         o2 = out_cb.reserve()
         exp_result = exp(intermediate)
         final_result = exp_result + bias_val
