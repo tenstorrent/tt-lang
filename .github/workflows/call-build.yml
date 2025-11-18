@@ -120,10 +120,22 @@ jobs:
           source build/env/activate
           cmake --build build --config Release
 
+      - name: Generate system descriptor
+        if: runner.os == 'Linux'
+        run: |
+          source build/env/activate
+          ttrt query --save-artifacts
+
       - name: Test the build
         run: |
           source build/env/activate
           python test/python/smoketest.py
+
+      - name: Run lit tests
+        run: |
+          source build/env/activate
+          export SYSTEM_DESC_PATH="${GITHUB_WORKSPACE}/ttrt-artifacts/system_desc.ttsys"
+          llvm-lit -sv test/python/
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
