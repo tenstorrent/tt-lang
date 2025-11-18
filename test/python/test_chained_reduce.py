@@ -24,29 +24,13 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
         bias_val = bias_cb.wait()
         o = out_cb.reserve()
 
-        # Chained: exp(reduce_sum(input, scaler)) + bias
-        # Step 1: reduce_sum
+        # Compute: exp(reduce_sum(input, scaler)) + bias
+        # Chain all operations inline without intermediate stores
         reduced = reduce_sum(inp, scale, dim=1)
-        o.store(reduced)
-        out_cb.push()
+        exp_result = exp(reduced)
+        final_result = exp_result + bias_val
 
-        # Wait to read back intermediate, then pop it
-        intermediate = out_cb.wait()
-        out_cb.pop()
-
-        # Step 2: exp
-        exp_result = exp(intermediate)
-        o.store(exp_result)
-        out_cb.push()
-
-        # Wait to read back exp result, then pop it
-        exp_intermediate = out_cb.wait()
-        out_cb.pop()
-
-        # Step 3: add bias
-        result = exp_intermediate + bias_val
-        o.store(result)
-
+        o.store(final_result)
         input_cb.pop()
         scaler_cb.pop()
         bias_cb.pop()
