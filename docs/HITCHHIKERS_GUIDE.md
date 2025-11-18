@@ -148,26 +148,26 @@ import torch
     ],
 )
 def add(lhs, rhs, out, block_factors=None, grid=None):
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
+    lhs_acc = TensorAccessor(lhs)
+    rhs_acc = TensorAccessor(rhs)
 
     @compute()
-    async def add_kernel(
+    def add_kernel(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        lhs_shard = lhs_cb.wait()       # Acquire data
-        rhs_shard = rhs_cb.wait()
-        out_shard = out_cb.reserve()    # Acquire space
-        result = lhs_shard + rhs_shard  # Compute
-        out_shard.store(result)         # Write
-        lhs_cb.pop()                    # Release inputs
+        lhs_blk = lhs_cb.wait()       # Acquire data
+        rhs_blk = rhs_cb.wait()
+        out_blk = out_cb.reserve()    # Acquire space
+        result = lhs_blk + rhs_blk    # Compute
+        out_blk.store(result)         # Write
+        lhs_cb.pop()                  # Release (signal consumed)
         rhs_cb.pop()
-        out_cb.push()                   # Release output
+        out_cb.push()                 # Release (signal data ready)
 
     @datamovement()
-    async def dm_reader(
+    def dm_reader(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -176,14 +176,14 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         core_col_idx = core_index(1)
         linear_idx = core_row_idx * 2 + core_col_idx  # Assuming 2x2 grid
 
-        lhs_shard = lhs_cb.reserve()
-        tx = dma(lhs_accessor[linear_idx, 0], lhs_shard)
-        tx.wait()
+        lhs_blk = lhs_cb.reserve()
+        lhs_tx = dma(lhs_acc[linear_idx, 0], lhs_blk)
+        lhs_tx.wait()
         lhs_cb.push()
 
-        rhs_shard = rhs_cb.reserve()
-        tx = dma(rhs_accessor[linear_idx, 0], rhs_shard)
-        tx.wait()
+        rhs_blk = rhs_cb.reserve()
+        rhs_tx = dma(rhs_acc[linear_idx, 0], rhs_blk)
+        rhs_tx.wait()
         rhs_cb.push()
 
     return Program(add_kernel, dm_reader)(lhs, rhs, out)
@@ -354,18 +354,18 @@ TensorAccessor wraps function arguments to enable indexed tile-level access for 
 
 ```python
 # TensorAccessor = DRAM views (host memory, function arguments)
-lhs_accessor = TensorAccessor(lhs)  # lhs is a torch.Tensor in DRAM
+lhs_acc = TensorAccessor(lhs)  # lhs is a torch.Tensor in DRAM
 
 # CircularBuffer = L1 scratch space (per-core SRAM)
 lhs_cb = CircularBuffer(shape=(2, 1), buffer_factor=2)
 
 # DMA connects DRAM ↔ L1
 @datamovement()
-async def dm_reader(...):
-    l1_buffer = lhs_cb.reserve()                    # Acquire space in L1
-    tx = dma(lhs_accessor[idx, 0], l1_buffer)       # DRAM → L1
-    tx.wait()                                       # Wait for DMA
-    lhs_cb.push()                                   # Release (signal ready)
+def dm_reader(...):
+    lhs_blk = lhs_cb.reserve()                    # Acquire space in L1
+    lhs_tx = dma(lhs_acc[idx, 0], lhs_blk)        # DRAM → L1
+    lhs_tx.wait()                                 # Wait for DMA
+    lhs_cb.push()                                 # Release (signal ready)
 ```
 
 **Memory Flow:**
@@ -983,26 +983,26 @@ SFPU operations modify tiles in-place in the destination register. FPU operation
 ```python
 @pykernel_gen(grid=(2,2), block_factors=[(1,1), (1,1), (1,1)])
 def add(lhs, rhs, out, block_factors=None, grid=None):
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
+    lhs_acc = TensorAccessor(lhs)
+    rhs_acc = TensorAccessor(rhs)
 
     @compute()
-    async def compute_add(
+    def compute_add(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
-        result = l + r
-        o.store(result)
+        lhs_blk = lhs_cb.wait()
+        rhs_blk = rhs_cb.wait()
+        out_blk = out_cb.reserve()
+        result = lhs_blk + rhs_blk
+        out_blk.store(result)
         lhs_cb.pop()
         rhs_cb.pop()
         out_cb.push()
 
     @datamovement()
-    async def dm(
+    def dm(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -1011,14 +1011,14 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         core_col_idx = core_index(1)
         linear_idx = core_row_idx * 2 + core_col_idx
 
-        l = lhs_cb.reserve()
-        tx = dma(lhs_accessor[linear_idx, 0], l)
-        tx.wait()
+        lhs_blk = lhs_cb.reserve()
+        lhs_tx = dma(lhs_acc[linear_idx, 0], lhs_blk)
+        lhs_tx.wait()
         lhs_cb.push()
 
-        r = rhs_cb.reserve()
-        tx = dma(rhs_accessor[linear_idx, 0], r)
-        tx.wait()
+        rhs_blk = rhs_cb.reserve()
+        rhs_tx = dma(rhs_acc[linear_idx, 0], rhs_blk)
+        rhs_tx.wait()
         rhs_cb.push()
 
     return Program(compute_add, dm)(lhs, rhs, out)
@@ -1039,23 +1039,23 @@ Pattern:
 ```python
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def flash_attention(Q, K, V, out, block_factors=None, grid=None):
-    Q_accessor = TensorAccessor(Q)
-    K_accessor = TensorAccessor(K)
-    V_accessor = TensorAccessor(V)
+    Q_acc = TensorAccessor(Q)
+    K_acc = TensorAccessor(K)
+    V_acc = TensorAccessor(V)
     NUM_KV_BLOCKS = 4
 
     @compute()
-    async def attention_compute(Q_cb, K_cb, V_cb, out_cb):
+    def attention_compute(Q_cb, K_cb, V_cb, out_cb):
         m_old = fill(-inf, shape)  # fill() not implemented
         l_old = fill(0, shape)      # fill() not implemented
-        O_acc = fill(0, shape)      # fill() not implemented
+        O_result = fill(0, shape)   # fill() not implemented
 
         for kv_idx in range(NUM_KV_BLOCKS):
-            Q_block = Q_cb.wait()
-            K_block = K_cb.wait()
-            V_block = V_cb.wait()
+            Q_blk = Q_cb.wait()
+            K_blk = K_cb.wait()
+            V_blk = V_cb.wait()
 
-            S = Q_block @ transpose(K_block)  # transpose() not implemented
+            S = Q_blk @ transpose(K_blk)  # transpose() not implemented
             S_scaled = S * (1.0 / sqrt(d_head))  # sqrt() and scalar broadcast not implemented
 
             m_new = rowmax(S_scaled, m_old)  # rowmax() not implemented
@@ -1063,7 +1063,7 @@ def flash_attention(Q, K, V, out, block_factors=None, grid=None):
             correction = exp(m_old - m_new)  # exp() not implemented
             l_new = correction * l_old + rowsum(P)  # rowsum() not implemented
 
-            O_acc = (l_old / l_new) * correction * O_acc + (P / l_new) @ V_block
+            O_result = (l_old / l_new) * correction * O_result + (P / l_new) @ V_blk
 
             Q_cb.pop()
             K_cb.pop()
@@ -1072,27 +1072,27 @@ def flash_attention(Q, K, V, out, block_factors=None, grid=None):
             m_old = m_new
             l_old = l_new
 
-        out_block = out_cb.reserve()
-        out_block.store(O_acc)
+        out_blk = out_cb.reserve()
+        out_blk.store(O_result)
         out_cb.push()
 
     @datamovement()
-    async def dm_reader(Q_cb, K_cb, V_cb, out_cb):
+    def dm_reader(Q_cb, K_cb, V_cb, out_cb):
         core_row_idx = core_index(0)
         core_col_idx = core_index(1)
         linear_idx = core_row_idx * 1 + core_col_idx
 
         for kv_idx in range(NUM_KV_BLOCKS):
-            Q_shard = Q_cb.reserve()
-            dma(Q_accessor[linear_idx, 0], Q_shard).wait()
+            Q_blk = Q_cb.reserve()
+            dma(Q_acc[linear_idx, 0], Q_blk).wait()
             Q_cb.push()
 
-            K_shard = K_cb.reserve()
-            dma(K_accessor[kv_idx, 0], K_shard).wait()
+            K_blk = K_cb.reserve()
+            dma(K_acc[kv_idx, 0], K_blk).wait()
             K_cb.push()
 
-            V_shard = V_cb.reserve()
-            dma(V_accessor[kv_idx, 0], V_shard).wait()
+            V_blk = V_cb.reserve()
+            dma(V_acc[kv_idx, 0], V_blk).wait()
             V_cb.push()
 
     return Program(attention_compute, dm_reader)(Q, K, V, out)
