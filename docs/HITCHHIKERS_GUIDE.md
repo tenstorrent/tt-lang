@@ -170,16 +170,16 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        cy = core_index(0)
-        cx = core_index(1)
-        idx = cy * 2 + cx  # Assuming 2x2 grid
+        core_row_idx = core_index(0)
+        core_col_idx = core_index(1)
+        linear_idx = core_row_idx * 2 + core_col_idx  # Assuming 2x2 grid
 
         lhs_shard = lhs_cb.reserve()
-        tx = dma(lhs_accessor[idx, 0], lhs_shard)
+        tx = dma(lhs_accessor[linear_idx, 0], lhs_shard)
         tx.wait()
 
         rhs_shard = rhs_cb.reserve()
-        tx = dma(rhs_accessor[idx, 0], rhs_shard)
+        tx = dma(rhs_accessor[linear_idx, 0], rhs_shard)
         tx.wait()
 
     return Program(add_kernel, dm_reader)(lhs, rhs, out)
@@ -915,9 +915,9 @@ Input: source data. Storage: backing buffers. Result: view for indexed DMA opera
 **Grid Indexing**
 
 ```python
-cy = core_index(0)  # Y coordinate
-cx = core_index(1)  # X coordinate
-idx = cy * GX + cx  # Linear index
+core_row_idx = core_index(0)  # Row index in grid (dimension 0)
+core_col_idx = core_index(1)  # Column index in grid (dimension 1)
+linear_idx = core_row_idx * GX + core_col_idx  # Linear core index
 ```
 
 **Multicast DMA**
@@ -925,11 +925,11 @@ idx = cy * GX + cx  # Linear index
 One core sends to multiple cores.
 
 ```python
-# Core at (cy, 0) sends to all cores in row
-tx = dma(src, dst, core=(cy, 1), mcast=(1, GX-1))
+# Core at (core_row_idx, 0) sends to all cores in row
+tx = dma(src, dst, core=(core_row_idx, 1), mcast=(1, GX-1))
 ```
 
-`core=(cy, 1)`: destination start. `mcast=(1, GX-1)`: multicast span (1 row, GX-1 columns).
+`core=(core_row_idx, 1)`: destination start. `mcast=(1, GX-1)`: multicast span (1 row, GX-1 columns).
 
 **Turn-Based Execution**
 
@@ -937,11 +937,11 @@ Use semaphores to serialize operations.
 
 ```python
 # Core 0 does DMA first
-if cx == 0:
-    tx = dma(accessor[idx], shard)
+if core_col_idx == 0:
+    tx = dma(accessor[linear_idx], shard)
     tx.wait()
     # Signal others
-    sem.set(1, core=(cy, 1), mcast=(1, GX-1))
+    sem.set(1, core=(core_row_idx, 1), mcast=(1, GX-1))
 else:
     # Wait for core 0
     sem.wait(1, reset=0)
@@ -1016,16 +1016,16 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        cy = core_index(0)
-        cx = core_index(1)
-        idx = cy * 2 + cx
+        core_row_idx = core_index(0)
+        core_col_idx = core_index(1)
+        linear_idx = core_row_idx * 2 + core_col_idx
 
         l = lhs_cb.reserve()
-        tx = dma(lhs_accessor[idx, 0], l)
+        tx = dma(lhs_accessor[linear_idx, 0], l)
         tx.wait()
 
         r = rhs_cb.reserve()
-        tx = dma(rhs_accessor[idx, 0], r)
+        tx = dma(rhs_accessor[linear_idx, 0], r)
         tx.wait()
 
     return Program(compute_add, dm)(lhs, rhs, out)
@@ -1081,11 +1081,13 @@ def flash_attention(Q, K, V, out, block_factors=None, grid=None):
 
     @datamovement()
     async def dm_reader(Q_cb, K_cb, V_cb, out_cb):
-        idx = core_index(0) * 1 + core_index(1)
+        core_row_idx = core_index(0)
+        core_col_idx = core_index(1)
+        linear_idx = core_row_idx * 1 + core_col_idx
 
         for kv_idx in range(NUM_KV_BLOCKS):
             Q_shard = Q_cb.reserve()
-            dma(Q_accessor[idx, 0], Q_shard).wait()
+            dma(Q_accessor[linear_idx, 0], Q_shard).wait()
 
             K_shard = K_cb.reserve()
             dma(K_accessor[kv_idx, 0], K_shard).wait()
