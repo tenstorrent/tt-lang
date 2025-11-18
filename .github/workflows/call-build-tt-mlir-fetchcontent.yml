@@ -86,3 +86,8 @@ jobs:
               run: |
                   source build/env/activate
                   python test/python/smoketest.py
+
+            - name: Run lit tests
+              run: |
+                  source build/env/activate
+                  llvm-lit -sv test/python/

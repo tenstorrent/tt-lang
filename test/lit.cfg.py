@@ -33,7 +33,15 @@ config.environment["PYTHONPATH"] = os.path.pathsep.join(
     ]
 )
 
-if "SYSTEM_DESC_PATH" in os.environ:
+# Use default system descriptor for compile-only tests
+# This can be overridden by setting SYSTEM_DESC_PATH environment variable
+if "SYSTEM_DESC_PATH" not in os.environ:
+    default_system_desc = os.path.join(
+        os.path.dirname(__file__), "..", "ttrt-artifacts", "system_desc.ttsys"
+    )
+    if os.path.exists(default_system_desc):
+        config.environment["SYSTEM_DESC_PATH"] = default_system_desc
+elif "SYSTEM_DESC_PATH" in os.environ:
     config.environment["SYSTEM_DESC_PATH"] = os.environ["SYSTEM_DESC_PATH"]
 
 # Metal runtime requires both of these
@@ -42,6 +50,6 @@ if "HOME" in os.environ:
 if "TT_METAL_RUNTIME_ROOT" in os.environ:
     config.environment["TT_METAL_RUNTIME_ROOT"] = os.environ["TT_METAL_RUNTIME_ROOT"]
 
-# Add system platform feature for UNSUPPORTED directives
-if platform.system() == "Darwin":
-    config.available_features.add("system-darwin")
+# Add has-tt-hw feature - unconditionally false until HW CI is ready
+# Tests that require actual TT hardware should use REQUIRES: has-tt-hw
+# config.available_features.add("has-tt-hw")  # Uncomment when HW is available
