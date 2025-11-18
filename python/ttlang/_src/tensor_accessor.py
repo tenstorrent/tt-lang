@@ -44,7 +44,9 @@ class TensorAccessor:
             ValueError: If tensor is not a top-level argument
         """
         if not hasattr(tensor, "_global_name"):
-            raise ValueError("TensorAccessor must be created from a top level tensor argument")
+            raise ValueError(
+                "TensorAccessor must be created from a top level tensor argument"
+            )
         self.name = tensor._global_name
         self.shape = tensor.shape
         self.dtype = tensor.dtype

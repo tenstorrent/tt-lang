@@ -217,7 +217,7 @@ For 128x128 tensor:
 
 **Circular Buffers**
 
-Bounded FIFO queues in L1 (per-core SRAM) for passing data between threads. 
+Bounded FIFO queues in L1 (per-core SRAM) for passing data between threads.
 CircularBuffers wrap L1 memory and TensorAccessors (see below) wrap DRAM.
 
 ```python
