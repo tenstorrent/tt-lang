@@ -30,8 +30,8 @@ def test_cb_ops(lhs, rhs, out):
         out_shard.store(result)
 
         # Explicit releases
-        lhs_cb.pop()   # Signal consumption of lhs
-        rhs_cb.pop()   # Signal consumption of rhs
+        lhs_cb.pop()  # Signal consumption of lhs
+        rhs_cb.pop()  # Signal consumption of rhs
         out_cb.push()  # Signal production of out
 
     @datamovement()
