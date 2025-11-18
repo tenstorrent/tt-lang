@@ -27,16 +27,19 @@ def test_chained_reduce(input_tensor, scaler, bias, zero_init, out):
         zeros = out_cb.wait()
         out_cb.pop()  # Pop the zeros immediately
 
-        # Now reserve a fresh slot for output
-        o = out_cb.reserve()
-
-        # Compute: exp(reduce_sum(input, scaler)) + bias
-        # Chain all operations inline without intermediate stores
+        # Step 1: reduce_sum (like plain reduce_sum test)
+        o1 = out_cb.reserve()
         reduced = reduce_sum(inp, scale, dim=1)
-        exp_result = exp(reduced)
-        final_result = exp_result + bias_val
+        o1.store(reduced)
+        out_cb.push()
 
-        o.store(final_result)
+        # Step 2: Read back reduce result, compute exp and add
+        intermediate = out_cb.wait()
+        o2 = out_cb.reserve()
+        exp_result = exp(intermediate)
+        final_result = exp_result + bias_val
+        o2.store(final_result)
+
         input_cb.pop()
         scaler_cb.pop()
         bias_cb.pop()
