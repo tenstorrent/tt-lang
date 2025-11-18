@@ -12,7 +12,7 @@ from ttmlir.dialects import ttcore, d2m, func, arith
 
 from pykernel._src.kernel_types import *
 from pykernel._src.kernel_ast import TTCompilerBase
-from .stream import Stream
+from .tensor_accessor import TensorAccessor
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
 from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
@@ -157,7 +157,7 @@ class D2MGenericCompiler(TTCompilerBase):
                     self.symbol_tables[-1][name] = arith.ConstantOp(
                         IndexType.get(self.ctx), val
                     )
-                elif isinstance(val, Stream):
+                elif isinstance(val, TensorAccessor):
                     with InsertionPoint.at_block_begin(self.module.body):
                         layout = create_metal_layout(
                             self.ctx,
@@ -175,7 +175,7 @@ class D2MGenericCompiler(TTCompilerBase):
                             layout, self.context.grid, val.shape, tile_shape
                         )
 
-                        # Get dtype from Stream
+                        # Get dtype from TensorAccessor
                         stream_dtype = torch_dtype_to_mlir_type(val.dtype, self.ctx)
                         stream_ttcore_dtype = torch_dtype_to_ttcore_datatype(val.dtype)
                         element_type = (

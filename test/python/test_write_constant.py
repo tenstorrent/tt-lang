@@ -17,7 +17,7 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
 def test_write_constant(inp, out):
-    inp_stream = Stream(inp)
+    inp_accessor = TensorAccessor(inp)
 
     @compute()
     async def write_compute(inp_cb: CircularBuffer, out_cb: CircularBuffer):
@@ -29,7 +29,7 @@ def test_write_constant(inp, out):
     @datamovement()
     async def dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
         inp_shard = inp_cb.reserve()
-        tx = dma(inp_stream[0, 0], inp_shard)
+        tx = dma(inp_accessor[0, 0], inp_shard)
         tx.wait()
 
     return Program(write_compute, dm)(inp, out)

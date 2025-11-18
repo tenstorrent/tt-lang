@@ -30,7 +30,7 @@ from ttmlir.dialects import ttcore
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
 from pykernel._src.utils import _cleanup_source_code
-from ._src.stream import Stream
+from ._src.tensor_accessor import TensorAccessor
 
 from ._src.d2m_ast import D2MGenericCompiler
 
@@ -103,7 +103,7 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     runtime_outputs = runtime.submit(device, binary_obj, 0, inputs)
 
 
-def _collect_captures(f: Callable) -> Dict[str, Union[int, Stream]]:
+def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -122,7 +122,7 @@ def _collect_captures(f: Callable) -> Dict[str, Union[int, Stream]]:
     def convert(name, val):
         if isinstance(val, int):
             return val
-        elif isinstance(val, Stream):
+        elif isinstance(val, TensorAccessor):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
@@ -546,7 +546,7 @@ __all__ = [
     "MemTx",
     "Semaphore",
     "dma",
-    "Stream",
+    "TensorAccessor",
     "create_metal_layout",
     "to_data_type",
     "from_data_type",

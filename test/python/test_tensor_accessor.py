@@ -6,7 +6,7 @@
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 
-# Verify: Stream() creates d2m.stream_layout ops with storage and view layouts.
+# Verify: TensorAccessor() creates d2m.stream_layout ops with storage and view layouts.
 
 import torch
 from ttlang.d2m_api import *
@@ -14,7 +14,7 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_stream(lhs, rhs, out):
-    lhs_stream = Stream(lhs)
+    lhs_accessor = TensorAccessor(lhs)
 
     @compute()
     async def comp(
@@ -34,8 +34,8 @@ def test_stream(lhs, rhs, out):
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         shard = lhs_cb.reserve()
-        # Verify: Stream is accessed via indexing
-        tx = dma(lhs_stream[0, 0], shard)
+        # Verify: TensorAccessor is accessed via indexing
+        tx = dma(lhs_accessor[0, 0], shard)
         tx.wait()
 
     @datamovement()
@@ -51,19 +51,19 @@ def test_stream(lhs, rhs, out):
 
 # CHECK-LABEL: func.func @test_stream
 
-# Verify: First argument is 2D scalar tensor marked as stream
+# Verify: First argument is 2D scalar tensor marked with accessor attribute
 # CHECK-SAME: (%[[ARG0:.+]]: tensor<{{[0-9]+}}x{{[0-9]+}}xf32> {d2m.stream = true}
 
 # Verify: to_layout converts host tensor to device tensor
 # CHECK: %[[DEVICE_TENSOR:.+]] = d2m.to_layout %[[ARG0]]
 
-# Verify: Storage created for stream
+# Verify: Storage created for accessor
 # CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]>
 
-# Verify: stream_layout wraps the device tensor
+# Verify: stream_layout wraps the device tensor (implementation detail)
 # CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[DEVICE_TENSOR]], %[[STORAGE]])
 
-# Verify: Stream used as input to d2m.generic (explicit datamovement form)
+# Verify: TensorAccessor used as input to d2m.generic (explicit datamovement form)
 # CHECK: d2m.generic {block_factors = [], grid = #ttcore.grid<1x1>, indexing_maps = [], iterator_types = []
 # CHECK-NEXT: ins(%[[STREAM]]
 

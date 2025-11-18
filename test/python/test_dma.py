@@ -14,7 +14,7 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_dma_ops(lhs, rhs, out):
-    lhs_stream = Stream(lhs)
+    lhs_accessor = TensorAccessor(lhs)
 
     @compute()
     async def comp(
@@ -35,7 +35,7 @@ def test_dma_ops(lhs, rhs, out):
     ):
         shard = lhs_cb.reserve()
         # Verify: dma() generates d2m.dma and returns MemTx
-        tx = dma(lhs_stream[0, 0], shard)
+        tx = dma(lhs_accessor[0, 0], shard)
         # Verify: MemTx.wait() generates d2m.dma_wait
         tx.wait()
 

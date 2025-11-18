@@ -17,9 +17,9 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def test_chained_add(a, b, c, out):
-    a_stream = Stream(a)
-    b_stream = Stream(b)
-    c_stream = Stream(c)
+    a_accessor = TensorAccessor(a)
+    b_accessor = TensorAccessor(b)
+    c_accessor = TensorAccessor(c)
 
     @compute()
     async def add_compute(
@@ -48,7 +48,7 @@ def test_chained_add(a, b, c, out):
         out_cb: CircularBuffer,
     ):
         a_shard = a_cb.reserve()
-        tx = dma(a_stream[0, 0], a_shard)
+        tx = dma(a_accessor[0, 0], a_shard)
         tx.wait()
 
     @datamovement()
@@ -59,7 +59,7 @@ def test_chained_add(a, b, c, out):
         out_cb: CircularBuffer,
     ):
         b_shard = b_cb.reserve()
-        tx = dma(b_stream[0, 0], b_shard)
+        tx = dma(b_accessor[0, 0], b_shard)
         tx.wait()
 
     @datamovement()
@@ -70,7 +70,7 @@ def test_chained_add(a, b, c, out):
         out_cb: CircularBuffer,
     ):
         c_shard = c_cb.reserve()
-        tx = dma(c_stream[0, 0], c_shard)
+        tx = dma(c_accessor[0, 0], c_shard)
         tx.wait()
 
     return Program(add_compute, dm_a, dm_b, dm_c)(a, b, c, out)

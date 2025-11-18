@@ -62,7 +62,7 @@ Python DSL Code
       ↓
   d2m_api.py compiles each thread to MLIR
     - Creates MetalLayoutAttr with shapes/grid
-    - Wraps Stream() args with stream_layout ops
+    - Wraps TensorAccessor() args with stream_layout ops
     - Compiles thread AST to D2M dialect
     - Python operators generate linalg.generic blocks with D2M tile ops
     - Glues threads into d2m.generic op
@@ -148,6 +148,9 @@ import torch
     ],
 )
 def add(lhs, rhs, out, block_factors=None, grid=None):
+    lhs_accessor = TensorAccessor(lhs)
+    rhs_accessor = TensorAccessor(rhs)
+
     @compute()
     async def add_kernel(
         lhs_cb: CircularBuffer,
@@ -167,16 +170,16 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        cy = core_index(0)
-        cx = core_index(1)
-        idx = cy * 2 + cx  # Assuming 2x2 grid
+        core_row_idx = core_index(0)
+        core_col_idx = core_index(1)
+        linear_idx = core_row_idx * 2 + core_col_idx  # Assuming 2x2 grid
 
         lhs_shard = lhs_cb.reserve()
-        tx = dma(lhs_stream[idx, 0], lhs_shard)
+        tx = dma(lhs_accessor[linear_idx, 0], lhs_shard)
         tx.wait()
 
         rhs_shard = rhs_cb.reserve()
-        tx = dma(rhs_stream[idx, 0], rhs_shard)
+        tx = dma(rhs_accessor[linear_idx, 0], rhs_shard)
         tx.wait()
 
     return Program(add_kernel, dm_reader)(lhs, rhs, out)
@@ -214,7 +217,8 @@ For 128x128 tensor:
 
 **Circular Buffers**
 
-Bounded FIFO queues for passing data between threads.
+Bounded FIFO queues in L1 (per-core SRAM) for passing data between threads.
+CircularBuffers wrap L1 memory and TensorAccessors (see below) wrap DRAM.
 
 ```python
 # Producer pattern (datamovement)
@@ -354,18 +358,55 @@ So `pop()` has two different semantic meanings depending on which thread uses it
 
 Both `pop()` and `reserve()` return memref views (zero-copy). DMA operations perform the actual data movement to/from these views.
 
-**Streams**
+**TensorAccessor**
 
-Streams wrap function arguments for async data movement.
+TensorAccessor wraps function arguments to enable indexed tile-level access for DMA operations between memory hierarchies.
+
+**Memory Hierarchy**
 
 ```python
-lhs_stream = Stream(lhs)  # Mark lhs as streamed input
+# TensorAccessor = DRAM views (host memory, function arguments)
+lhs_accessor = TensorAccessor(lhs)  # lhs is a torch.Tensor in DRAM
 
-# Later, in datamovement:
-tx = dma(lhs_stream[idx, 0], lhs_shard)  # DMA from DRAM to L1
+# CircularBuffer = L1 scratch space (per-core SRAM)
+lhs_cb = CircularBuffer(shape=(2, 1), buffer_factor=2)
+
+# DMA connects DRAM ↔ L1
+@datamovement()
+async def dm_reader(...):
+    l1_buffer = lhs_cb.reserve()                    # Reserve space in L1
+    tx = dma(lhs_accessor[idx, 0], l1_buffer)       # DRAM → L1
+    tx.wait()
 ```
 
-Streams create `d2m.stream_layout` ops with backing storage for multi-buffering.
+**Memory Flow:**
+```
+┌─────────────────┐
+│  DRAM (slow)    │  ← TensorAccessor provides indexed access
+│  torch.Tensor   │
+│  (host memory)  │
+└────────┬────────┘
+         │ DMA (data movement)
+         ↓
+┌─────────────────┐
+│  L1 (fast)      │  ← CircularBuffer provides scratch space
+│  Per-core SRAM  │
+│  ~1.5MB         │
+└────────┬────────┘
+         │ Compute operations
+         ↓
+┌─────────────────┐
+│  Result in L1   │
+└────────┬────────┘
+         │ DMA (write back)
+         ↓
+┌─────────────────┐
+│  DRAM (output)  │  ← TensorAccessor for output tensor
+└─────────────────┘
+```
+
+**Implementation Note:** TensorAccessor creates `d2m.stream_layout` ops with backing storage for multi-buffered access.
+Under the hood, this enables efficient data movement with proper memory management.
 
 **Operators**
 
@@ -461,7 +502,7 @@ scf.for %i ... {
 
 ```python
 # DRAM → L1
-tx = dma(stream[idx, 0], l1_buffer)
+tx = dma(accessor[idx, 0], l1_buffer)
 tx.wait()
 
 # L1 → L1 with multicast (one source to many destinations)
@@ -469,7 +510,7 @@ tx = dma(src, dst, core=(cy, 1), mcast=(1, GX-1))
 tx.wait()
 
 # L1 → DRAM
-tx = dma(l1_buffer, stream[idx, 0])
+tx = dma(l1_buffer, accessor[idx, 0])
 tx.wait()
 ```
 
@@ -673,7 +714,7 @@ Stage 1: DSL Compilation (d2m_api.py)
 │  ├─ @datamovement() → D2MGenericCompiler
 │  └─ Create globals for captured values
 ├─ Create MetalLayoutAttr for each arg
-├─ Wrap Stream() args with stream_layout
+├─ Wrap TensorAccessor() args with stream_layout
 └─ Glue threads into d2m.generic op
 
 Stage 2: Frontend (TTMetalPipelines.cpp:73)
@@ -733,8 +774,8 @@ Stage 5: Backend
 - `d2m-insert-explicit-streams`: Creates stream_layout ops (now created in Python)
   - Location: lib/Dialect/D2M/Transforms/InsertExplicitStreams.cpp
   - Legacy pass that read d2m.stream attributes to create stream_layout ops
-  - Stream creation moved to d2m_api.py:313 (_create_stream_layout_for_input)
-  - Pass now typically no-op as streams already exist in IR
+  - TensorAccessor creation moved to d2m_api.py:313 (_create_stream_layout_for_input)
+  - Pass now typically no-op as accessors already exist in IR
 
 - `d2m-allocate`: Assigns L1/DRAM addresses
   - Location: lib/Dialect/D2M/Transforms/Allocate.cpp
@@ -795,7 +836,7 @@ Hardware primitive. Usually 32x32 elements.
 !d2m.cb<memref<2x2x!ttcore.tile<32x32, f32>>>
 ```
 
-Wraps underlying memref for producer-consumer sync.
+Wraps L1 memref for producer-consumer synchronization between threads.
 
 **DMA Transaction Type**
 
@@ -815,14 +856,14 @@ For multi-core synchronization primitives.
 
 ---
 
-## Stream Creation
+## TensorAccessor Creation
 
-Streams moved from pass-based to Python-based creation.
+TensorAccessor creation moved from pass-based to Python-based approach.
 
 **Old Flow (Pass-Based)**
 
 ```
-Python: Stream(lhs)
+Python: TensorAccessor(lhs)
     ↓
 d2m_api.py tags arg: {d2m.stream = true}
     ↓
@@ -838,11 +879,11 @@ Creates stream_layout ops
 **New Flow (Python-Based)**
 
 ```
-Python: Stream(lhs)
+Python: TensorAccessor(lhs)
     ↓
 d2m_api.py creates stream_layout immediately
     ↓
-Creates d2m.generic with streams
+Creates d2m.generic with accessors
     ↓
 ... bufferization ...
     ↓
@@ -851,9 +892,11 @@ D2MInsertExplicitStreams is no-op
 
 Location: d2m_api.py:203 (_create_stream_layout_for_input)
 
-Benefits: Streams visible from start of IR. Simpler pipeline. Better debugging.
+Benefits: Accessors visible from start of IR. Simpler pipeline. Better debugging.
 
 **stream_layout Op Structure**
+
+The `d2m.stream_layout` op (implementation detail) wraps tensor arguments for indexed access:
 
 ```mlir
 %storage = d2m.empty() : tensor<4x4x!ttcore.tile<32x32>>
@@ -863,7 +906,7 @@ Benefits: Streams visible from start of IR. Simpler pipeline. Better debugging.
   -> tensor<4x4x!ttcore.tile<32x32>>     // result (view)
 ```
 
-Input: source data. Storage: backing buffers. Result: view for indexing.
+Input: source data. Storage: backing buffers. Result: view for indexed DMA operations.
 
 ---
 
@@ -872,9 +915,9 @@ Input: source data. Storage: backing buffers. Result: view for indexing.
 **Grid Indexing**
 
 ```python
-cy = core_index(0)  # Y coordinate
-cx = core_index(1)  # X coordinate
-idx = cy * GX + cx  # Linear index
+core_row_idx = core_index(0)  # Row index in grid (dimension 0)
+core_col_idx = core_index(1)  # Column index in grid (dimension 1)
+linear_idx = core_row_idx * GX + core_col_idx  # Linear core index
 ```
 
 **Multicast DMA**
@@ -882,11 +925,11 @@ idx = cy * GX + cx  # Linear index
 One core sends to multiple cores.
 
 ```python
-# Core at (cy, 0) sends to all cores in row
-tx = dma(src, dst, core=(cy, 1), mcast=(1, GX-1))
+# Core at (core_row_idx, 0) sends to all cores in row
+tx = dma(src, dst, core=(core_row_idx, 1), mcast=(1, GX-1))
 ```
 
-`core=(cy, 1)`: destination start. `mcast=(1, GX-1)`: multicast span (1 row, GX-1 columns).
+`core=(core_row_idx, 1)`: destination start. `mcast=(1, GX-1)`: multicast span (1 row, GX-1 columns).
 
 **Turn-Based Execution**
 
@@ -894,11 +937,11 @@ Use semaphores to serialize operations.
 
 ```python
 # Core 0 does DMA first
-if cx == 0:
-    tx = dma(stream[idx], shard)
+if core_col_idx == 0:
+    tx = dma(accessor[linear_idx], shard)
     tx.wait()
     # Signal others
-    sem.set(1, core=(cy, 1), mcast=(1, GX-1))
+    sem.set(1, core=(core_row_idx, 1), mcast=(1, GX-1))
 else:
     # Wait for core 0
     sem.wait(1, reset=0)
@@ -951,6 +994,9 @@ SFPU operations modify tiles in-place in the destination register. FPU operation
 ```python
 @pykernel_gen(grid=(2,2), block_factors=[(1,1), (1,1), (1,1)])
 def add(lhs, rhs, out, block_factors=None, grid=None):
+    lhs_accessor = TensorAccessor(lhs)
+    rhs_accessor = TensorAccessor(rhs)
+
     @compute()
     async def compute_add(
         lhs_cb: CircularBuffer,
@@ -970,16 +1016,16 @@ def add(lhs, rhs, out, block_factors=None, grid=None):
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
-        cy = core_index(0)
-        cx = core_index(1)
-        idx = cy * 2 + cx
+        core_row_idx = core_index(0)
+        core_col_idx = core_index(1)
+        linear_idx = core_row_idx * 2 + core_col_idx
 
         l = lhs_cb.reserve()
-        tx = dma(lhs_stream[idx, 0], l)
+        tx = dma(lhs_accessor[linear_idx, 0], l)
         tx.wait()
 
         r = rhs_cb.reserve()
-        tx = dma(rhs_stream[idx, 0], r)
+        tx = dma(rhs_accessor[linear_idx, 0], r)
         tx.wait()
 
     return Program(compute_add, dm)(lhs, rhs, out)
@@ -1000,9 +1046,9 @@ Pattern:
 ```python
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def flash_attention(Q, K, V, out, block_factors=None, grid=None):
-    Q_stream = Stream(Q)
-    K_stream = Stream(K)
-    V_stream = Stream(V)
+    Q_accessor = TensorAccessor(Q)
+    K_accessor = TensorAccessor(K)
+    V_accessor = TensorAccessor(V)
     NUM_KV_BLOCKS = 4
 
     @compute()
@@ -1035,17 +1081,19 @@ def flash_attention(Q, K, V, out, block_factors=None, grid=None):
 
     @datamovement()
     async def dm_reader(Q_cb, K_cb, V_cb, out_cb):
-        idx = core_index(0) * 1 + core_index(1)
+        core_row_idx = core_index(0)
+        core_col_idx = core_index(1)
+        linear_idx = core_row_idx * 1 + core_col_idx
 
         for kv_idx in range(NUM_KV_BLOCKS):
             Q_shard = Q_cb.reserve()
-            dma(Q_stream[idx, 0], Q_shard).wait()
+            dma(Q_accessor[linear_idx, 0], Q_shard).wait()
 
             K_shard = K_cb.reserve()
-            dma(K_stream[kv_idx, 0], K_shard).wait()
+            dma(K_accessor[kv_idx, 0], K_shard).wait()
 
             V_shard = V_cb.reserve()
-            dma(V_stream[kv_idx, 0], V_shard).wait()
+            dma(V_accessor[kv_idx, 0], V_shard).wait()
 
     return Program(attention_compute, dm_reader)(Q, K, V, out)
 ```
@@ -1079,9 +1127,9 @@ To save kernel sources, use `kernel_source_mode="store"` parameter in `@pykernel
 
 **Device Shape**: Shape after grid distribution. Rank doubles: [grid_y, grid_x, shard_y, shard_x].
 
-**Stream**: Async data source. Wraps function argument for DMA.
+**TensorAccessor**: Wraps function arguments (DRAM tensors) to enable indexed tile-level access for DMA operations between DRAM and L1.
 
-**Circular Buffer (CB)**: Bounded FIFO queue between threads.
+**Circular Buffer (CB)**: Bounded FIFO queue between threads. Lives in L1 (per-core SRAM).
 
 **DMA**: Direct Memory Access. Hardware-accelerated data copy.
 
