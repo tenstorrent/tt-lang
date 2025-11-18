@@ -11,18 +11,20 @@ import torch
 from ttlang.d2m_api import *
 from ttlang.operators import reduce_sum, exp
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
-def test_chained_reduce(input_tensor, scaler, bias, out):
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
+def test_chained_reduce(input_tensor, scaler, bias, zero_init, out):
     input_accessor = TensorAccessor(input_tensor)
     scaler_accessor = TensorAccessor(scaler)
     bias_accessor = TensorAccessor(bias)
+    zero_accessor = TensorAccessor(zero_init)
 
     @compute()
-    async def compute_chained(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def compute_chained(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, zero_cb: CircularBuffer, out_cb: CircularBuffer):
         inp = input_cb.wait()
         scale = scaler_cb.wait()
         bias_val = bias_cb.wait()
-        o = out_cb.reserve()
+        # Wait for the pre-filled zeros from dm_output_zeros (issue #31 workaround)
+        o = out_cb.wait()
 
         # Compute: exp(reduce_sum(input, scaler)) + bias
         # Chain all operations inline without intermediate stores
@@ -34,30 +36,40 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
         input_cb.pop()
         scaler_cb.pop()
         bias_cb.pop()
-        out_cb.push()
+        out_cb.pop()  # Pop the zeros we waited on
+        out_cb.push()  # Push the final result
 
     @datamovement()
-    async def dm_input(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_input(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, zero_cb: CircularBuffer, out_cb: CircularBuffer):
         input_shard = input_cb.reserve()
         tx = dma(input_accessor[0, 0], input_shard)
         tx.wait()
         input_cb.push()
 
     @datamovement()
-    async def dm_scaler(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_scaler(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, zero_cb: CircularBuffer, out_cb: CircularBuffer):
         scaler_shard = scaler_cb.reserve()
         tx = dma(scaler_accessor[0, 0], scaler_shard)
         tx.wait()
         scaler_cb.push()
 
     @datamovement()
-    async def dm_bias(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_bias(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, zero_cb: CircularBuffer, out_cb: CircularBuffer):
         bias_shard = bias_cb.reserve()
         tx = dma(bias_accessor[0, 0], bias_shard)
         tx.wait()
         bias_cb.push()
 
-    return Program(compute_chained, dm_input, dm_scaler, dm_bias)(input_tensor, scaler, bias, out)
+    @datamovement()
+    async def dm_output_zeros(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, zero_cb: CircularBuffer, out_cb: CircularBuffer):
+        # Pre-fill out_cb with zeros to workaround issue #31
+        # This prevents garbage accumulation in reduce_sum
+        out_shard = out_cb.reserve()
+        tx = dma(zero_accessor[0, 0], out_shard)
+        tx.wait()
+        out_cb.push()
+
+    return Program(compute_chained, dm_input, dm_scaler, dm_bias, dm_output_zeros)(input_tensor, scaler, bias, zero_init, out)
 
 
 # CHECK: func.func @test_chained_reduce
@@ -69,7 +81,8 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
 input_tensor = torch.ones((32, 32))
 scaler = torch.ones((32, 32))
 bias = torch.full((32, 32), 2.0)
-out = torch.zeros(32, 32)  # Pre-initialize with zeros (issue #31)
+zero_init = torch.zeros((32, 32))  # Zero tensor for CB initialization (issue #31 workaround)
+out = torch.zeros(32, 32)
 
 print("=== BEFORE KERNEL ===")
 print(f"Testing chained: exp(reduce_sum(1*1)) + 2")
@@ -77,7 +90,7 @@ print(f"reduce_sum(1*1) over 32 cols = 32")
 print(f"exp(32) ≈ 7.9e13")
 print(f"exp(32) + 2 ≈ 7.9e13")
 
-test_chained_reduce(input_tensor, scaler, bias, out)
+test_chained_reduce(input_tensor, scaler, bias, zero_init, out)
 
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
