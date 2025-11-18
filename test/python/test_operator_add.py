@@ -28,9 +28,7 @@ def test_add(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    def dm(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         pass
 
     return Program(add_compute, dm)(lhs, rhs, out)

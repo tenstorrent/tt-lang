@@ -32,17 +32,13 @@ def test_runtime_ops(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    def dm_lhs(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_lhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         lhs_shard = lhs_cb.reserve()
         tx = dma(lhs_accessor[0, 0], lhs_shard)
         tx.wait()
 
     @datamovement()
-    def dm_rhs(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_rhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         rhs_shard = rhs_cb.reserve()
         tx = dma(rhs_accessor[0, 0], rhs_shard)
         tx.wait()

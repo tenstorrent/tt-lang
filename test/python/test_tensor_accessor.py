@@ -17,9 +17,7 @@ def test_stream(lhs, rhs, out):
     lhs_accessor = TensorAccessor(lhs)
 
     @compute()
-    def comp(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def comp(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         # TODO(#11): Addition required to create linalg.generic with tile ops.
         # Can simplify to just CB operations once compiler handles regions without tile ops.
         lhs_shard = lhs_cb.wait()
@@ -32,18 +30,14 @@ def test_stream(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    def dm0(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm0(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         shard = lhs_cb.reserve()
         # Verify: TensorAccessor is accessed via indexing
         tx = dma(lhs_accessor[0, 0], shard)
         tx.wait()
 
     @datamovement()
-    def dm1(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm1(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         pass
 
     return Program(comp, dm0, dm1)(lhs, rhs, out)
