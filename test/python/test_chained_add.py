@@ -22,7 +22,7 @@ def test_chained_add(a, b, c, out):
     c_accessor = TensorAccessor(c)
 
     @compute()
-    async def add_compute(
+    def add_compute(
         a_cb: CircularBuffer,
         b_cb: CircularBuffer,
         c_cb: CircularBuffer,
@@ -44,7 +44,7 @@ def test_chained_add(a, b, c, out):
         out_cb.push()
 
     @datamovement()
-    async def dm_a(
+    def dm_a(
         a_cb: CircularBuffer,
         b_cb: CircularBuffer,
         c_cb: CircularBuffer,
@@ -55,7 +55,7 @@ def test_chained_add(a, b, c, out):
         tx.wait()
 
     @datamovement()
-    async def dm_b(
+    def dm_b(
         a_cb: CircularBuffer,
         b_cb: CircularBuffer,
         c_cb: CircularBuffer,
@@ -66,7 +66,7 @@ def test_chained_add(a, b, c, out):
         tx.wait()
 
     @datamovement()
-    async def dm_c(
+    def dm_c(
         a_cb: CircularBuffer,
         b_cb: CircularBuffer,
         c_cb: CircularBuffer,

@@ -20,7 +20,7 @@ def test_write_constant(inp, out):
     inp_accessor = TensorAccessor(inp)
 
     @compute()
-    async def write_compute(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+    def write_compute(inp_cb: CircularBuffer, out_cb: CircularBuffer):
         inp_tile = inp_cb.wait()
         out_tile = out_cb.reserve()
         out_tile.store(inp_tile)
@@ -28,7 +28,7 @@ def test_write_constant(inp, out):
         out_cb.push()
 
     @datamovement()
-    async def dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
         inp_shard = inp_cb.reserve()
         tx = dma(inp_accessor[0, 0], inp_shard)
         tx.wait()

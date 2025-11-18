@@ -27,7 +27,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
     rhs_accessor = TensorAccessor(rhs)
 
     @compute()
-    async def add_kernel(
+    def add_kernel(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -42,7 +42,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
         out_cb.pop()
 
     @datamovement()
-    async def dm0(
+    def dm0(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -54,7 +54,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
         tx.wait()
 
     @datamovement()
-    async def dm1(
+    def dm1(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -95,7 +95,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #     lhs_accessor = TensorAccessor(lhs)
 #
 #     @compute()
-#     async def add_kernel(
+#     def add_kernel(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -108,7 +108,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #         out_cb.pop()
 #
 #     @datamovement()
-#     async def dm0(
+#     def dm0(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -118,7 +118,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #         tx.wait()
 #
 #     @datamovement()
-#     async def dm1(
+#     def dm1(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -143,7 +143,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #     rhs_accessor = TensorAccessor(rhs)
 #
 #     @compute()
-#     async def add_kernel(
+#     def add_kernel(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -156,7 +156,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #         out_cb.pop()
 #
 #     @datamovement()
-#     async def dm0(
+#     def dm0(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -166,7 +166,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #         tx.wait()
 #
 #     @datamovement()
-#     async def dm1(
+#     def dm1(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -190,7 +190,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #     """Simple element-wise add with no streams (baseline)."""
 #
 #     @compute()
-#     async def add_kernel(
+#     def add_kernel(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -203,7 +203,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #         out_cb.pop()
 #
 #     @datamovement()
-#     async def dm0(
+#     def dm0(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,
@@ -213,7 +213,7 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
 #         tx.wait()
 #
 #     @datamovement()
-#     async def dm1(
+#     def dm1(
 #         lhs_cb: CircularBuffer,
 #         rhs_cb: CircularBuffer,
 #         out_cb: CircularBuffer,

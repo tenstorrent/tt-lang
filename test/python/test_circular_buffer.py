@@ -17,7 +17,7 @@ from ttlang.d2m_api import *
 @pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_cb_ops(lhs, rhs, out):
     @compute()
-    async def compute_thread(
+    def compute_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         # Consumer pattern: wait() to acquire, pop() to release
@@ -35,7 +35,7 @@ def test_cb_ops(lhs, rhs, out):
         out_cb.push()  # Signal production of out
 
     @datamovement()
-    async def dm_thread(
+    def dm_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         pass

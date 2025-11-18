@@ -22,7 +22,7 @@ def test_runtime_add(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
 
     @compute()
-    async def add_compute(
+    def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         l = lhs_cb.wait()
@@ -35,7 +35,7 @@ def test_runtime_add(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    async def dm_lhs(
+    def dm_lhs(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         lhs_shard = lhs_cb.reserve()
@@ -43,7 +43,7 @@ def test_runtime_add(lhs, rhs, out):
         tx.wait()
 
     @datamovement()
-    async def dm_rhs(
+    def dm_rhs(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         rhs_shard = rhs_cb.reserve()

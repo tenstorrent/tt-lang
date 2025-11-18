@@ -18,7 +18,7 @@ def simple_add(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
 
     @compute()
-    async def add_compute(
+    def add_compute(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -31,7 +31,7 @@ def simple_add(lhs, rhs, out):
         out_cb.pop()
 
     @datamovement()
-    async def dm_lhs(
+    def dm_lhs(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -41,7 +41,7 @@ def simple_add(lhs, rhs, out):
         tx.wait()
 
     @datamovement()
-    async def dm_rhs(
+    def dm_rhs(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,

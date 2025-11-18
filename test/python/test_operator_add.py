@@ -15,7 +15,7 @@ from ttlang.d2m_api import *
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_add(lhs, rhs, out):
     @compute()
-    async def add_compute(
+    def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         l = lhs_cb.wait()
@@ -28,7 +28,7 @@ def test_add(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    async def dm(
+    def dm(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         pass

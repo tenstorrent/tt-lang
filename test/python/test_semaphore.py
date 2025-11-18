@@ -15,7 +15,7 @@ from ttlang.d2m_api import *
 @pykernel_gen(grid=(2, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_sem_ops(lhs, rhs, out):
     @compute()
-    async def comp(
+    def comp(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -34,7 +34,7 @@ def test_sem_ops(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    async def dm(
+    def dm(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,

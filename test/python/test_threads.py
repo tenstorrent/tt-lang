@@ -15,13 +15,13 @@ from ttlang.d2m_api import *
 @pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_thread_types(lhs, rhs, out):
     @datamovement()
-    async def dm_thread(
+    def dm_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         pass
 
     @compute()
-    async def compute_thread(
+    def compute_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         l = lhs_cb.wait()
