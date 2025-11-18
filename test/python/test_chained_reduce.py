@@ -24,7 +24,11 @@ def test_chained_reduce(input_tensor, scaler, bias, zero_init, out):
         scale = scaler_cb.wait()
         bias_val = bias_cb.wait()
         # Wait for the pre-filled zeros from dm_output_zeros (issue #31 workaround)
-        o = out_cb.wait()
+        zeros = out_cb.wait()
+        out_cb.pop()  # Pop the zeros immediately
+
+        # Now reserve a fresh slot for output
+        o = out_cb.reserve()
 
         # Compute: exp(reduce_sum(input, scaler)) + bias
         # Chain all operations inline without intermediate stores
@@ -36,7 +40,6 @@ def test_chained_reduce(input_tensor, scaler, bias, zero_init, out):
         input_cb.pop()
         scaler_cb.pop()
         bias_cb.pop()
-        out_cb.pop()  # Pop the zeros we waited on
         out_cb.push()  # Push the final result
 
     @datamovement()
