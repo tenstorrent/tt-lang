@@ -49,7 +49,7 @@ def test_generic(lhs, rhs, out):
 # CHECK-SAME: threads = [#d2m.thread<datamovement>, #d2m.thread<compute>]
 # CHECK-NEXT: ins(%[[DEV0]], %[[DEV1]]
 # CHECK: outs({{%.*}} : tensor<2x2x1x1x!ttcore.tile
-    
+
 # CHECK: some string that does not exist!
 
 # Verify: datamovement region
