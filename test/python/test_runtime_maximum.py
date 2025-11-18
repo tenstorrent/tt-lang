@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # UNSUPPORTED: system-darwin
+# XFAIL: *
+# Blocked by: https://github.com/tenstorrent/tt-mlir/issues/5016
+# "[D2M] Maximum writing to wrong dest register tile"
+# tile_maximum lowering passes wrong arguments to ttkernel.max_tile (tile values instead of DST indices)
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
