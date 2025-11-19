@@ -360,23 +360,25 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        
-        # Import to register ttlang-allocate
-        try:
-            import ttlang._ttlang
-        except ImportError:
-            pass
+        ttnn_mode = False  # tt-lang uses TTMetal mode
 
         pipeline_passes = [
             "d2m-generic-replace-globals",
+            "d2m-lower-to-layout",                         # Lower to_layout to data movement
             "ttcore-one-shot-bufferize",
-            "ttlang-allocate",
-            "d2m-linalg-to-affine",                # Boyana's standalone pass
-            "d2m-insert-dst-register-gc",          # Boyana's graph coloring DST allocator
+            "func.func(d2m-simple-allocate)",              # Our simplified allocator
+            "d2m-linalg-to-affine",                        # Boyana's standalone linalg-to-affine
+            "func.func(d2m-insert-dst-register-gc)",       # Boyana's graph coloring DST allocator
             "lower-affine",
             "d2m-generic-linearize-memref",
-            "d2m-generic-lower-dmas",
-            "convert-d2m-to-ttkernel{ttnn-mode=0}"
+            "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
+            "d2m-generic-lower-dmas",                      # Lower DMAs to hardware
+            "d2m-generic-regions-to-funcs",                # Extract regions to functions
+            "convert-d2m-to-ttkernel{ttnn-mode=0}",
+            "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
+            "convert-d2m-to-ttmetal",                      # Convert to_layout to ttmetal enqueue ops
+            "canonicalize",                                # Clean up duplicate ops
+            "cse"                                          # Eliminate common subexpressions
         ]
         pipeline = ",".join(pipeline_passes)
 
