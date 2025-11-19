@@ -128,8 +128,19 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          name: ttlang-build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
           path: |
             build/python_packages
+            build/test
+            build/env
             sim/
+          retention-days: 1
+
+      - name: Upload tt-mlir installation for hardware tests
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ttlang-ttmlir-install-ubuntu
+          path: |
+            ${{ env.TT_MLIR_DIR }}
           retention-days: 1

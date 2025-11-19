@@ -86,3 +86,44 @@ jobs:
               run: |
                   source build/env/activate
                   python test/python/smoketest.py
+
+            - name: Upload build artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ttlang-fetchcontent-build-ubuntu
+                  path: |
+                      build/python_packages
+                      build/test
+                      build/env
+                      sim/
+                  retention-days: 1
+
+            - name: Upload tt-mlir installation for hardware tests
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ttlang-fetchcontent-ttmlir-install-ubuntu
+                  path: |
+                      build/tt-mlir-install
+                  retention-days: 1
+
+    test-hardware-n150:
+        needs: build-tt-lang-tt-mlir
+        uses: ./.github/workflows/call-test-hardware.yml
+        secrets: inherit
+        with:
+            runs-on: n150
+            build-os: ubuntu
+            timeout: 60
+            artifact-prefix: ttlang-fetchcontent
+
+    check-all-green:
+        if: always()
+        needs:
+            - build-tt-lang-tt-mlir
+            - test-hardware-n150
+        runs-on: ubuntu-latest
+        steps:
+            - name: Decide whether all needed jobs succeeded or failed
+              uses: re-actors/alls-green@release/v1
+              with:
+                  jobs: ${{ toJSON(needs) }}
