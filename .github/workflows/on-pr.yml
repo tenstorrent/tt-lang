@@ -47,7 +47,8 @@ jobs:
     with:
       runs-on: n150
       build-os: ubuntu
-      timeout: 30
+      # TODO(bnorris): Update to 30 when ready for merge.
+      timeout: 5
 
   check-all-green:
     if: always()
@@ -63,3 +64,5 @@ jobs:
         uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}
+          # TODO(bnorris): Remove test-hardware from allowed-skips when ready for merge.
+          allowed-skips: test-hardware

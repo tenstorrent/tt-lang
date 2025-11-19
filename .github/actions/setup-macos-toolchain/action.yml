@@ -33,7 +33,8 @@ runs:
         path: /opt/ttmlir-toolchain
         key: macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}-${{ github.ref_name }}
         restore-keys: |
-          macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}
+          macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}-
+          macos-ttmlir-toolchain-
 
     - name: Check if toolchain was restored
       id: check-toolchain
