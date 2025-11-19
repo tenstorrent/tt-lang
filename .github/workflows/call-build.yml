@@ -2,25 +2,24 @@ name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      os:
+        description: 'Target OS to build (ubuntu-latest, macos-26)'
+        required: true
+        type: string
   workflow_call:
+    inputs:
+      os:
+        description: 'Target OS to build (ubuntu-latest, macos-26)'
+        required: true
+        type: string
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            timeout: 240
-            use-container: true
-          - os: macos-26
-            timeout: 360
-            use-container: false
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: ${{ inputs.os == 'ubuntu-latest' && 240 || 360 }}
 
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout }}
-
-    container: ${{ matrix.use-container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
+    container: ${{ inputs.os == 'ubuntu-latest' && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
 
     defaults:
       run:

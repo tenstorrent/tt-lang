@@ -16,6 +16,11 @@ graph TD
     D --> F
     E --> F
 ```
+<!--
+<p align="center">
+  <img src="ci.png" alt="CI Workflow" width="400"/>
+</p>
+-->
 
 ### Workflows
 
