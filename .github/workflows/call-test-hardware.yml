@@ -13,11 +13,6 @@ on:
         required: false
         type: string
         default: 'ubuntu'
-      timeout:
-        description: 'Timeout in minutes'
-        required: false
-        type: number
-        default: 30
       artifact-prefix:
         description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
         required: false
@@ -35,11 +30,6 @@ on:
         required: false
         type: string
         default: 'ubuntu'
-      timeout:
-        description: 'Timeout in minutes'
-        required: false
-        type: number
-        default: 30
       artifact-prefix:
         description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
         required: false
@@ -53,7 +43,8 @@ jobs:
   test-hardware:
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ fromJson(format('["{0}", "in-service"]', format('tt-ubuntu-2204-{0}-stable', inputs.runs-on))) }}
-    timeout-minutes: ${{ inputs.timeout }}
+    # TODO(bnorris): Update to 30 when ready for merge.
+    timeout-minutes: 3
 
     container:
       image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
