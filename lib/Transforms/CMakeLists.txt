@@ -1,4 +1,4 @@
-add_tt_library(TTLangTransforms
+add_mlir_dialect_library(TTLangTransforms
   SimpleAllocate.cpp
 
   DEPENDS
@@ -10,7 +10,8 @@ add_tt_library(TTLangTransforms
   MLIRMemRefDialect
   MLIRPass
   MLIRD2MDialect
-  MLIRD2MAnalysisAllocation
+  MLIRD2MAllocation
+  MLIRD2MAnalysis
   MLIRD2MUtils
   MLIRTTCoreDialect
 )

@@ -201,9 +201,13 @@ private:
     for (auto &info : allocs) {
       if (info.varIndex >= 0) {
         const auto &var = problem.variable(info.varIndex);
-        if (!var.requests.empty()) {
+        // Get requests from the Scratch space in the variable's domain
+        const auto &scratchRequests = var.domain[allocation::ordinal(PlannerSpace::Scratch)];
+        if (!scratchRequests.empty()) {
+          // Get the first request index and look it up
+          auto reqIndex = *scratchRequests.begin();
           // Store offset in the AllocInfo (we'll add base address later)
-          info.size = problem.request(var.requests[0]).offset;
+          info.size = problem.request(reqIndex).offset;
         }
       }
     }

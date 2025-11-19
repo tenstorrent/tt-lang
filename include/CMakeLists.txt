@@ -1,3 +1,6 @@
+# Process ttlang subdirectories for TableGen and headers
+add_subdirectory(ttlang)
+
 # Install public headers
 
 # Install ttlang headers

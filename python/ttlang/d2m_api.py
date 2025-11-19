@@ -371,8 +371,8 @@ def _compile_and_run_kernel(
             "d2m-generic-replace-globals",
             "ttcore-one-shot-bufferize",
             "ttlang-allocate",
-            "convert-linalg-to-affine-loops",
-            "d2m-insert-dst-register-access",
+            "d2m-linalg-to-affine",                # Boyana's standalone pass
+            "d2m-insert-dst-register-gc",          # Boyana's graph coloring DST allocator
             "lower-affine",
             "d2m-generic-linearize-memref",
             "d2m-generic-lower-dmas",
