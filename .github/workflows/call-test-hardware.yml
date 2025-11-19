@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: 'ttlang'
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
   workflow_call:
     inputs:
       runs-on:
@@ -35,16 +40,20 @@ on:
         required: false
         type: string
         default: 'ttlang'
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
 
 permissions:
   checks: write
 
 jobs:
-  test-hardware:
+  test-n150:
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ fromJson(format('["{0}", "in-service"]', format('tt-ubuntu-2204-{0}-stable', inputs.runs-on))) }}
-    # TODO(bnorris): Update to 30 when ready for merge.
-    timeout-minutes: 3
+    timeout-minutes: ${{ inputs.timeout }}
 
     container:
       image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
