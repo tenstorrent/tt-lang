@@ -35,18 +35,18 @@ declare_mlir_python_sources(TTLangPythonSources.Dialects
 
 declare_mlir_python_sources(TTLangPythonExtensions)
 
-# Example Python extension (to be added later):
-# declare_mlir_python_extension(TTLangPythonExtensions.Main
-#   MODULE_NAME _ttlang
-#   ADD_TO_PARENT TTLangPythonExtensions
-#   SOURCES
-#     TTLangModule.cpp
-#   EMBED_CAPI_LINK_LIBS
-#     MLIRCAPITransforms
-#   PRIVATE_LINK_LIBS
-#     # Add tt-lang libraries here
-#   PYTHON_BINDINGS_LIBRARY nanobind
-# )
+# tt-lang passes Python extension
+declare_mlir_python_extension(TTLangPythonExtensions.Main
+  MODULE_NAME _ttlang
+  ADD_TO_PARENT TTLangPythonExtensions
+  SOURCES
+    TTLangModule.cpp
+  EMBED_CAPI_LINK_LIBS
+    MLIRCAPITransforms
+  PRIVATE_LINK_LIBS
+    TTLangTransforms
+  PYTHON_BINDINGS_LIBRARY nanobind
+)
 
 set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttlang")
 

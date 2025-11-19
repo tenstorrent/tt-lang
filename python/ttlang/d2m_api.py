@@ -360,9 +360,25 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        use_tile_matmul = True
-        ttnn_mode = False
-        pipeline = f"d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{{use-tile-matmul={1 if use_tile_matmul else 0} ttnn-mode={1 if ttnn_mode else 0}}}"
+        
+        # Import to register ttlang-allocate
+        try:
+            import ttlang._ttlang
+        except ImportError:
+            pass
+
+        pipeline_passes = [
+            "d2m-generic-replace-globals",
+            "ttcore-one-shot-bufferize",
+            "ttlang-allocate",
+            "convert-linalg-to-affine-loops",
+            "d2m-insert-dst-register-access",
+            "lower-affine",
+            "d2m-generic-linearize-memref",
+            "d2m-generic-lower-dmas",
+            "convert-d2m-to-ttkernel{ttnn-mode=0}"
+        ]
+        pipeline = ",".join(pipeline_passes)
 
         register_device = "ttcore-register-device"
         if device_register_options:
