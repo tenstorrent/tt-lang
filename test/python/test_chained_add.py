@@ -46,8 +46,7 @@ def test_chained_add(a, b, c, out):
         a_cb.pop()
         b_cb.pop()
         c_cb.pop()
-        out_cb.pop()  # Pop the intermediate we read
-        out_cb.push()
+        out_cb.push()  # Push final result (don't pop when reusing same CB)
 
     @datamovement()
     async def dm_inputs(
