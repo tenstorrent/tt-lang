@@ -365,6 +365,8 @@ def _compile_and_run_kernel(
         pipeline_passes = [
             "d2m-generic-replace-globals",
             "d2m-lower-to-layout",                         # Lower to_layout to data movement
+            "d2m-elementwise-fusion",                      # Fuse d2m.generic operations
+            "canonicalize",                                # Cleanup and simplify
             "ttcore-one-shot-bufferize",
             "func.func(d2m-simple-allocate)",              # Our simplified allocator
             "d2m-linalg-to-affine{use-tile-matmul=1}",     # Convert all linalg including matmul
