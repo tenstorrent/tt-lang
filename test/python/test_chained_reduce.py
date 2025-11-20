@@ -2,20 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# XFAIL: *
 # UNSUPPORTED: system-darwin
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
-# NOTE: This test is currently failing due to issue #31 (DST register garbage accumulation).
-# The D2MInsertDstRegisterAccess pass inserts pre-copy loops before each operation that
-# loads values from the output CB into DST before computation. For chained operations
-# where intermediate results need to flow through the CB, this causes incorrect data flow:
-# - The first operation (reduce_sum) loads garbage/zeros and accumulates correctly
-# - Subsequent operations (exp, add) should read the previous result from CB/DST, but
-#   the pre-copy overwrites DST with stale CB values
-# This test will remain XFAIL until issue #31 is resolved in the compiler.
+# Tests chaining operations across multiple to_layout bounces.
+# Each operation (reduce_sum, exp, add) is split into separate programs by to_layout.
+# Intermediate results must explicitly flow through the CB using push/wait/pop/reserve
+# to properly bridge between programs.
 
 import torch
 from ttlang.d2m_api import *
@@ -34,10 +29,34 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
         bias_val = bias_cb.wait()
         o = out_cb.reserve()
 
-        # Compute: exp(reduce_sum(input, scaler)) + bias
+        # Compute: exp(reduce_sum(input, scaler)) + bias with explicit CB synchronization
+
+        # Step 1: reduce_sum(input, scaler) → 32
         reduced = reduce_sum(inp, scale, dim=1)
-        exp_result = exp(reduced)
-        final_result = exp_result + bias_val
+        o.store(reduced)
+        out_cb.push()
+
+        # Wait to read back intermediate and pop to free space
+        intermediate1 = out_cb.wait()
+        out_cb.pop()
+
+        # Reserve again for next result
+        o = out_cb.reserve()
+
+        # Step 2: exp(reduced) → exp(32)
+        exp_result = exp(intermediate1)
+        o.store(exp_result)
+        out_cb.push()
+
+        # Wait to read back intermediate and pop to free space
+        intermediate2 = out_cb.wait()
+        out_cb.pop()
+
+        # Reserve again for final result
+        o = out_cb.reserve()
+
+        # Step 3: exp_result + bias → exp(32) + 2
+        final_result = intermediate2 + bias_val
 
         o.store(final_result)
         input_cb.pop()
