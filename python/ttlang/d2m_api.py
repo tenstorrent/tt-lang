@@ -432,9 +432,13 @@ def _compile_and_run_kernel(
             binary_obj.store(flatbuffer_path)
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
 
+        # Check if runtime execution should be skipped (compile-only mode)
+        compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
+
         # Metal runtime execution (enabled by default when runtime is available)
         # Skip on macOS since hardware is not available
-        if _should_execute_on_metal_runtime():
+        # Skip if TTLANG_COMPILE_ONLY=1 is set
+        if not compile_only and _should_execute_on_metal_runtime():
             try:
                 _execute_on_metal_runtime(flatbuffer_binary, args)
             except Exception as e:
@@ -445,7 +449,7 @@ def _compile_and_run_kernel(
                 traceback.print_exc()
 
         # TTNN runtime execution (not yet implemented - requires TTNN integration)
-        if ttnn_mode and binary is not None and runtime is not None:
+        if not compile_only and ttnn_mode and binary is not None and runtime is not None:
             try:
                 _execute_on_ttnn_runtime(flatbuffer_binary, args)
             except Exception as e:
