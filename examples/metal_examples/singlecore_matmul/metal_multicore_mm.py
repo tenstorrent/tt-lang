@@ -153,6 +153,7 @@ def test_multicore_matmul(M, K, N):
     device = ttnn.open_device(device_id=0)
     assert (M * N) % (ttnn.TILE_SIZE * ttnn.TILE_SIZE) == 0, "M*N must be multiple of TILE_SIZE*TILE_SIZE"
     num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
+    print(f"num_output_tiles_total: {num_output_tiles_total}")
     Mt = M // ttnn.TILE_SIZE
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
@@ -202,23 +203,24 @@ def test_multicore_matmul(M, K, N):
         data_format=ttnn.bfloat16,
         page_size=cb_page_size,
     )
-
-    upper_bound_core = device.get_device_core_grid()
+    # device.compute_with_storage_grid_size() # size, not limit. Hardcode for now
+    upper_bound_core = ttnn.CoreCoord(7, 7)
     core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)])
-
+    (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
+    print(f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}")
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        core_ranges=core_grid,
+        core_ranges=all_cores,
         format_descriptors=[a_cb_format],
     )
     b_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        core_ranges=core_grid,
+        core_ranges=all_cores,
         format_descriptors=[b_cb_format],
     )
     out_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        core_ranges=core_grid,
+        core_ranges=all_cores,
         format_descriptors=[out_cb_format],
     )
 
@@ -226,13 +228,30 @@ def test_multicore_matmul(M, K, N):
     reader_compile_time_args = ttnn.TensorAccessorArgs(a_tensor).get_compile_time_args()
     reader_compile_time_args.extend(ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args())
     writer_compile_time_args = ttnn.TensorAccessorArgs(output_tensor).get_compile_time_args()
-    compute_compile_time_args = [Mt, Kt, Nt]
 
+    # reader_common_rt_args = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt]
+    # writer_common_rt_args = [output_tensor.buffer_address()]
+    # compute_common_rt_args = [Kt]
     # iterate over cores and assign work via runtime args
+    reader_rt_args = [[[]]]
+    writer_rt_args = [[[]]]
+    compute_rt_args = [[[]]]
+    current_tile = 0
+    for core_range in core_group_1.ranges():
+        for x in range(core_range.start.x+1, core_range.end.x+2):
+            for y in range(core_range.start.y+1, core_range.end.y+2):
+                reader_rt_args[x][y] = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt, current_tile, work_per_core1]
+                writer_rt_args[x][y] = [output_tensor.buffer_address(), work_per_core1, current_tile]
+                compute_rt_args[x][y] = [work_per_core1, Kt]
+    for core_range in core_group_2.ranges():
+        for x in range(core_range.start.x+1, core_range.end.x+2):
+            for y in range(core_range.start.y+1, core_range.end.y+2):
+                reader_rt_args[x][y] = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt, current_tile, work_per_core2]
+                writer_rt_args[x][y] = [output_tensor.buffer_address(), work_per_core2, current_tile]
+                compute_rt_args[x][y] = [work_per_core2, Kt]
 
+   
 
-    reader_rt_args = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt]
-    writer_rt_args = [output_tensor.buffer_address(), Mt, Nt]
     # Compute config init can't handle options, set here
     computeConfig = ttnn.ComputeConfigDescriptor()
     computeConfig.math_fidelity = ttnn.MathFidelity.HiFi4
@@ -242,26 +261,28 @@ def test_multicore_matmul(M, K, N):
     reader_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/singlecore_matmul/mm_reader.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=core_grid,
+        core_ranges=all_cores,
         compile_time_args=reader_compile_time_args,
-        runtime_args=[[reader_rt_args]],
+        runtime_args=reader_rt_args,
+        #common_runtime_args=reader_common_rt_args,
         config=ttnn.ReaderConfigDescriptor(),
     )
     writer_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/singlecore_matmul/mm_writer.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=core_grid,
+        core_ranges=all_cores,
         compile_time_args=writer_compile_time_args,
-        runtime_args=[[writer_rt_args]],
+        runtime_args=writer_rt_args,
+        #common_runtime_args=writer_common_rt_args,
         config=ttnn.WriterConfigDescriptor(),
     )
     compute_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/singlecore_matmul/mm_compute.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=core_grid,
-        compile_time_args=compute_compile_time_args,
-        runtime_args=[[[]]],
-        common_runtime_args=[],
+        core_ranges=all_cores,
+        compile_time_args=[],
+        runtime_args=compute_rt_args,
+        #common_runtime_args=compute_common_rt_args,
         config=computeConfig,
     )
 
@@ -271,7 +292,9 @@ def test_multicore_matmul(M, K, N):
         cbs=[a_cb_descriptor, b_cb_descriptor, out_cb_descriptor],
     )
 
+    print("Launching generic_op...")
     output = ttnn.generic_op([a_tensor, b_tensor, output_tensor], program_descriptor)
+    print("Completed generic_op.")
     metal_output = ttnn.to_torch(output).to(torch.bfloat16)
 
     a_tensor_torch = ttnn.to_torch(a_tensor).to(torch.bfloat16)
