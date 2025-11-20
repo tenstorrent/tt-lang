@@ -33,14 +33,20 @@ def test_chained_add(a, b, c, out):
         c_tile = c_cb.wait()
         out_tile = out_cb.reserve()
 
-        # Chained: (a + b) + c - directly without intermediate storage
+        # Chained: (a + b) + c with explicit intermediate handling
         temp = a_tile + b_tile
-        result = temp + c_tile
+        out_tile.store(temp)
+        out_cb.push()
+
+        # Wait to read back intermediate
+        intermediate = out_cb.wait()
+        result = intermediate + c_tile
 
         out_tile.store(result)
         a_cb.pop()
         b_cb.pop()
         c_cb.pop()
+        out_cb.pop()  # Pop the intermediate we read
         out_cb.push()
 
     @datamovement()
