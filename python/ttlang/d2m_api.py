@@ -379,6 +379,7 @@ def _compile_and_run_kernel(
             "cse",                                         # Eliminate common subexpressions
             "d2m-generic-regions-to-funcs",                # Extract regions to functions
             "convert-d2m-to-ttkernel{ttnn-mode=0}",
+            "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
             "convert-d2m-to-ttmetal",                      # Convert to_layout to ttmetal enqueue ops
             "canonicalize",                                # Cleanup after conversion
