@@ -233,7 +233,7 @@ def create_generic_func(
             ]
         )
 
-        # Create device output buffer (empty - output tensors should not be read as inputs)
+        # Create device output buffer
         output_idx = len(user_args) - num_outs
         output_logical_shape = list(user_args[output_idx].shape)
         output_dtype = torch_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
@@ -242,8 +242,22 @@ def create_generic_func(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
         )
 
-        # Just create an empty buffer for output (don't read the output argument as input!)
-        device_output_buffer = d2m.EmptyOp(device_output_type)
+        # WORKAROUND (issue #31): Accumulator ops (matmul, reduce_sum, reduce_max)
+        # require zeroed output buffers. Insert to_layout to copy the output buffer
+        # (expected to be zeroed) to initialize the accumulator. This is a temporary
+        # fix while we find a better long-term solution for handling different op semantics.
+        name_lower = name.lower()
+        is_accumulator_op = "reduce" in name_lower or "matmul" in name_lower
+
+        if is_accumulator_op:
+            device_output_empty = d2m.EmptyOp(device_output_type)
+            device_output_buffer = d2m.ToLayoutOp(
+                [device_output_type], outputs[0], device_output_empty.result, layout=None
+            )
+            output_buffer_result = device_output_buffer.results[0]
+        else:
+            device_output_buffer = d2m.EmptyOp(device_output_type)
+            output_buffer_result = device_output_buffer.result
 
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
@@ -251,7 +265,7 @@ def create_generic_func(
         generic = d2m.GenericOp(
             [device_output_type],
             wrapped_inputs,
-            [device_output_buffer.result],
+            [output_buffer_result],
             ttcore.ir.GridAttr.get(ctx, grid),
             block_factors,
             list(map(affine_map_from_lambda, indexing_maps)),
