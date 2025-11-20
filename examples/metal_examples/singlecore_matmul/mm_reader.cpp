@@ -14,41 +14,45 @@ void kernel_main() {
     uint32_t Mt = get_arg_val<uint32_t>(2);
     uint32_t Kt = get_arg_val<uint32_t>(3);
     uint32_t Nt = get_arg_val<uint32_t>(4);
+    uint32_t output_tile_start_tile = get_arg_val<uint32_t>(5); // Starting tile ID for this core
+    uint32_t num_output_tiles = get_arg_val<uint32_t>(6); // Number of output tiles to read
 
     constexpr uint32_t cb_id_in0 = 0;
     constexpr uint32_t cb_id_in1 = 1;
 
     // Declare address in which we stored the source matrices. We have set the exact same format between CBs and DRAM
     // buffers in the host code, so we can use the same address for both DRAM and CBs.
-    constexpr auto s0_args = TensorAccessorArgs<0>();
-    const auto s0 = TensorAccessor(s0_args, src0_addr, get_tile_size(cb_id_in0));
-    constexpr auto s1_args = TensorAccessorArgs<s0_args.next_compile_time_args_offset()>();
-    const auto s1 = TensorAccessor(s1_args, src1_addr, get_tile_size(cb_id_in1));
+    constexpr auto a_args = TensorAccessorArgs<0>();
+    const auto a = TensorAccessor(a_args, src0_addr, get_tile_size(cb_id_in0));
+    constexpr auto b_args = TensorAccessorArgs<a_args.next_compile_time_args_offset()>();
+    const auto b = TensorAccessor(b_args, src1_addr, get_tile_size(cb_id_in1));
 
-    // Loop through the dimensions of the matrices. Read them and push to the circular buffers.
-    // Dimension names are called M, N and K. `t` in `mt` means tile.
-    for (uint32_t mt = 0; mt < Mt; mt++) {
-        uint32_t itileB = 0;
-        for (uint32_t nt = 0; nt < Nt; nt++) {
-            for (uint32_t kt = 0; kt < Kt; kt++) {
-                {                                          // Read A's tile at (mt, kt)
-                    uint32_t a_tile_index = mt * Kt + kt;  // A is MK, so we stride by Kt
-                    cb_reserve_back(cb_id_in0, 1);
-                    uint32_t l1_write_addr_in0 = get_write_ptr(cb_id_in0);
-                    noc_async_read_tile(a_tile_index, s0, l1_write_addr_in0);
-                    noc_async_read_barrier();
-                    cb_push_back(cb_id_in0, 1);
-                }
+    // Loop through the output tiles assigned to this core
+    for (uint32_t output_tile = 0; output_tile < num_output_tiles; output_tile++) {
+        uint32_t current_tile_id = output_tile_start_tile + output_tile;
 
-                {                                          // Read B's tile at (kt, nt)
-                    uint32_t b_tile_index = kt * Nt + nt;  // B is KN, so we stride by Nt
-                    cb_reserve_back(cb_id_in1, 1);
-                    uint32_t l1_write_addr_in1 = get_write_ptr(cb_id_in1);
-                    noc_async_read_tile(b_tile_index, s1, l1_write_addr_in1);
-                    noc_async_read_barrier();
-                    cb_push_back(cb_id_in1, 1);
-                }
-            }  // Kt loop
-        }  // Nt loop
-    }  // Mt loop
+        // Calculate the output tile position in the grid
+        uint32_t out_row = current_tile_id / Nt;
+        uint32_t out_col = current_tile_id % Nt;
+
+        // Read all K tiles for this output position. Same inner loop as in the single core example.
+        for (uint32_t k = 0; k < Kt; k++) {
+            uint32_t tile_A = out_row * Kt + k;
+            {
+                cb_reserve_back(cb_id_in0, 1);
+                uint32_t l1_write_addr_in0 = get_write_ptr(cb_id_in0);
+                noc_async_read_tile(tile_A, a, l1_write_addr_in0);
+                noc_async_read_barrier();
+                cb_push_back(cb_id_in0, 1);
+            }
+            uint32_t tile_B = k * Nt + out_col;
+            {
+                cb_reserve_back(cb_id_in1, 1);
+                uint32_t l1_write_addr_in1 = get_write_ptr(cb_id_in1);
+                noc_async_read_tile(tile_B, b, l1_write_addr_in1);
+                noc_async_read_barrier();
+                cb_push_back(cb_id_in1, 1);
+            }
+        }
+    }
 }

@@ -145,17 +145,17 @@ def assert_with_ulp(
     assert ulp_passed, ulp_message
     return ulp_passed, ulp_message
 
-# works for single tile, not for multiple
+# (M * N) % (32 *32) == 0 for this implemention
 # @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 @pytest.mark.parametrize("M,K,N", [(128, 128, 128), (256, 256, 256), (512, 512, 512)])
-def test_singlecore_matmul(M, K, N): 
+def test_multicore_matmul(M, K, N): 
     # might be some l1 config stuff
     device = ttnn.open_device(device_id=0)
-
-    # ttnn py hw constants for tile size?
-    Mt = M // 32
-    Kt = K // 32
-    Nt = N // 32
+    assert (M * N) % (ttnn.TILE_SIZE * ttnn.TILE_SIZE) == 0, "M*N must be multiple of TILE_SIZE*TILE_SIZE"
+    num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
+    Mt = M // ttnn.TILE_SIZE
+    Kt = K // ttnn.TILE_SIZE
+    Nt = N // ttnn.TILE_SIZE
 
     # allocate a, b and output tensors for matmul on device dram
     dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
@@ -180,8 +180,8 @@ def test_singlecore_matmul(M, K, N):
         device=device,
         memory_config=dram_memory_config,
     )
-
-    cb_page_size = 2 * 32 * 32
+    
+    cb_page_size = 2 * ttnn.TILE_SIZE * ttnn.TILE_SIZE
     cb_total_size = 2 * cb_page_size
 
     a_cb = 0
@@ -203,9 +203,8 @@ def test_singlecore_matmul(M, K, N):
         page_size=cb_page_size,
     )
 
-    # single core setup
-    core = ttnn.CoreCoord(0, 0)
-    core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(core, core)])
+    upper_bound_core = device.get_device_core_grid()
+    core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)])
 
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
@@ -228,6 +227,10 @@ def test_singlecore_matmul(M, K, N):
     reader_compile_time_args.extend(ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args())
     writer_compile_time_args = ttnn.TensorAccessorArgs(output_tensor).get_compile_time_args()
     compute_compile_time_args = [Mt, Kt, Nt]
+
+    # iterate over cores and assign work via runtime args
+
+
     reader_rt_args = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt]
     writer_rt_args = [output_tensor.buffer_address(), Mt, Nt]
     # Compute config init can't handle options, set here
@@ -258,6 +261,7 @@ def test_singlecore_matmul(M, K, N):
         core_ranges=core_grid,
         compile_time_args=compute_compile_time_args,
         runtime_args=[[[]]],
+        common_runtime_args=[],
         config=computeConfig,
     )
 
