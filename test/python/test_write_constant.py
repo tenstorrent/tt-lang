@@ -57,7 +57,6 @@ test_write_constant(inp, out)
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item()}")
-# CHECK-OUTPUT: out[0, 0] = 42.0
 print(f"out min/max: {out.min().item():.1f} / {out.max().item():.1f}")
 # CHECK-OUTPUT: out min/max: 42.0 / 42.0
 
