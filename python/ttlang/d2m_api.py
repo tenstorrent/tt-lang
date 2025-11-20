@@ -373,12 +373,19 @@ def _compile_and_run_kernel(
             "d2m-generic-linearize-memref",
             "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
             "d2m-generic-lower-dmas",                      # Lower DMAs to hardware
+            "canonicalize",                                # Simplify before region extraction
+            "loop-invariant-code-motion",                  # Hoist invariants
+            "sccp",                                        # Sparse conditional constant propagation
+            "cse",                                         # Eliminate common subexpressions
             "d2m-generic-regions-to-funcs",                # Extract regions to functions
             "convert-d2m-to-ttkernel{ttnn-mode=0}",
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
             "convert-d2m-to-ttmetal",                      # Convert to_layout to ttmetal enqueue ops
-            "canonicalize",                                # Clean up duplicate ops
-            "cse"                                          # Eliminate common subexpressions
+            "canonicalize",                                # Cleanup after conversion
+            "loop-invariant-code-motion",                  # Hoist again after backend lowering
+            "sccp",                                        # Propagate constants
+            "cse",                                         # Final deduplication
+            "symbol-dce"                                   # Remove unused functions
         ]
         pipeline = ",".join(pipeline_passes)
 
