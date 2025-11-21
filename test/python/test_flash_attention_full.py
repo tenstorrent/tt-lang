@@ -87,8 +87,10 @@ def flash_attention(Q, K, V, scale, ones, out):
         out_cb.pop()
         o = out_cb.reserve()
 
-        # Step 6: Normalize (softmax): P = exp_S / sum_exp
-        P = exp_S * sum_recip
+        # Step 6: Normalize (softmax): P = exp_S * sum_recip
+        # Recompute exp_S (we can't reuse the earlier value due to SSA constraints)
+        exp_S_for_mul = exp(S_scaled)
+        P = exp_S_for_mul * sum_recip
         o.store(P)
         out_cb.push()
         P = out_cb.wait()
