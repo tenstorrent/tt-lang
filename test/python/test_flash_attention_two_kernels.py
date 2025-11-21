@@ -16,26 +16,23 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, reduce_sum, recip
 import math
 
-# Kernel 1: First half of FA
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
-def fa_first_half(Q, K, scale, ones, out):
+# Kernel 1: Q @ K^T → scale → exp (outputs exp_S)
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
+def fa_first_half(Q, K, scale, out):
     Q_accessor = TensorAccessor(Q)
     K_accessor = TensorAccessor(K)
     scale_accessor = TensorAccessor(scale)
-    ones_accessor = TensorAccessor(ones)
 
     @compute()
     async def compute_first(
         Q_cb: CircularBuffer,
         K_cb: CircularBuffer,
         scale_cb: CircularBuffer,
-        ones_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
         q = Q_cb.wait()
         k = K_cb.wait()
         scale_val = scale_cb.wait()
-        ones_val = ones_cb.wait()
         o = out_cb.reserve()
 
         # Step 1: Q @ K^T
@@ -54,22 +51,13 @@ def fa_first_half(Q, K, scale, ones, out):
         out_cb.pop()
         o = out_cb.reserve()
 
-        # Step 3: exp
+        # Step 3: exp (output this)
         exp_S = exp(S_scaled)
+
         o.store(exp_S)
-        out_cb.push()
-        exp_S = out_cb.wait()
-        out_cb.pop()
-        o = out_cb.reserve()
-
-        # Step 4: reduce_sum
-        sum_exp = reduce_sum(exp_S, ones_val, dim=1)
-
-        o.store(sum_exp)
         Q_cb.pop()
         K_cb.pop()
         scale_cb.pop()
-        ones_cb.pop()
         out_cb.push()
 
     @datamovement()
@@ -77,7 +65,6 @@ def fa_first_half(Q, K, scale, ones, out):
         Q_cb: CircularBuffer,
         K_cb: CircularBuffer,
         scale_cb: CircularBuffer,
-        ones_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
         q_shard = Q_cb.reserve()
@@ -95,42 +82,45 @@ def fa_first_half(Q, K, scale, ones, out):
         tx.wait()
         scale_cb.push()
 
-        ones_shard = ones_cb.reserve()
-        tx = dma(ones_accessor[0, 0], ones_shard)
-        tx.wait()
-        ones_cb.push()
-
-    return Program(compute_first, dm_first)(Q, K, scale, ones, out)
+    return Program(compute_first, dm_first)(Q, K, scale, out)
 
 
-# Kernel 2: Second half of FA
+# Kernel 2: reduce_sum → recip → mul → P @ V (takes exp_S, uses same hardware values)
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
-def fa_second_half(exp_S, sum_exp, V, out):
+def fa_second_half(exp_S, ones, V, out):
     exp_S_accessor = TensorAccessor(exp_S)
-    sum_exp_accessor = TensorAccessor(sum_exp)
+    ones_accessor = TensorAccessor(ones)
     V_accessor = TensorAccessor(V)
 
     @compute()
     async def compute_second(
         exp_S_cb: CircularBuffer,
-        sum_exp_cb: CircularBuffer,
+        ones_cb: CircularBuffer,
         V_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
         exp_s = exp_S_cb.wait()
-        sum_val = sum_exp_cb.wait()
+        ones_val = ones_cb.wait()
         v = V_cb.wait()
         o = out_cb.reserve()
 
+        # Step 4: reduce_sum (recompute from hardware exp_S)
+        sum_exp = reduce_sum(exp_s, ones_val, dim=1)
+        o.store(sum_exp)
+        out_cb.push()
+        sum_exp = out_cb.wait()
+        out_cb.pop()
+        o = out_cb.reserve()
+
         # Step 5: Reciprocal
-        sum_recip = recip(sum_val)
+        sum_recip = recip(sum_exp)
         o.store(sum_recip)
         out_cb.push()
         sum_recip = out_cb.wait()
         out_cb.pop()
         o = out_cb.reserve()
 
-        # Step 6: Normalize
+        # Step 6: Normalize (now exp_s and sum_exp are consistent!)
         P = exp_s * sum_recip
         o.store(P)
         out_cb.push()
@@ -143,14 +133,14 @@ def fa_second_half(exp_S, sum_exp, V, out):
 
         o.store(O)
         exp_S_cb.pop()
-        sum_exp_cb.pop()
+        ones_cb.pop()
         V_cb.pop()
         out_cb.push()
 
     @datamovement()
     async def dm_second(
         exp_S_cb: CircularBuffer,
-        sum_exp_cb: CircularBuffer,
+        ones_cb: CircularBuffer,
         V_cb: CircularBuffer,
         out_cb: CircularBuffer,
     ):
@@ -159,17 +149,17 @@ def fa_second_half(exp_S, sum_exp, V, out):
         tx.wait()
         exp_S_cb.push()
 
-        sum_shard = sum_exp_cb.reserve()
-        tx = dma(sum_exp_accessor[0, 0], sum_shard)
+        ones_shard = ones_cb.reserve()
+        tx = dma(ones_accessor[0, 0], ones_shard)
         tx.wait()
-        sum_exp_cb.push()
+        ones_cb.push()
 
         v_shard = V_cb.reserve()
         tx = dma(V_accessor[0, 0], v_shard)
         tx.wait()
         V_cb.push()
 
-    return Program(compute_second, dm_second)(exp_S, sum_exp, V, out)
+    return Program(compute_second, dm_second)(exp_S, ones, V, out)
 
 
 # CHECK: func.func @fa_first_half
@@ -208,31 +198,20 @@ print(f"Manual: P (softmax) = {P_ref[0, 0].item():.6f}")
 O_ref = P_ref @ V
 print(f"Manual: O (P @ V) = {O_ref[0, 0].item():.6f}")
 
-# Run kernel 1
-print("\n=== KERNEL 1: First Half ===")
-intermediate = torch.zeros(32, 32)
-fa_first_half(Q, K, scale, ones, intermediate)
+# Run kernel 1 (outputs exp_S)
+print("\n=== KERNEL 1: Q @ K^T → scale → exp ===")
+exp_S_hw = torch.zeros(32, 32)
+fa_first_half(Q, K, scale, exp_S_hw)
 
-print(f"Hardware: sum_exp[0, 0] = {intermediate[0, 0].item():.6f}")
-print(f"Manual:   sum_exp[0, 0] = {sum_exp_ref[0, 0].item():.6f}")
-print(f"Match: {abs(intermediate[0, 0].item() - sum_exp_ref[0, 0].item()) / sum_exp_ref[0, 0].item() < 0.2}")
+print(f"Hardware: exp_S[0, 0] = {exp_S_hw[0, 0].item():.6f}")
+print(f"Manual:   exp_S[0, 0] = {exp_S_ref[0, 0].item():.6f}")
+error_exp = abs(exp_S_hw[0, 0].item() - exp_S_ref[0, 0].item()) / exp_S_ref[0, 0].item()
+print(f"Error: {error_exp*100:.1f}%")
 
-# We need BOTH exp_S and sum_exp for the second kernel
-# But kernel 1 only outputs sum_exp (the last operation)
-# Let me recalculate exp_S from the intermediate values
-# Actually, we need to modify the approach - kernel 1 should output sum_exp
-# and we compute exp_S again in kernel 2, or we need two outputs
-
-# For now, let's use the CPU-computed exp_S and hardware sum_exp
-print("\n=== INTERMEDIATE CHECK ===")
-print(f"Using CPU exp_S: {exp_S_ref[0, 0].item():.6f}")
-print(f"Using HW sum_exp: {intermediate[0, 0].item():.6f}")
-
-# Run kernel 2
-print("\n=== KERNEL 2: Second Half ===")
-# Use CPU exp_S but hardware sum_exp
+# Run kernel 2 (takes hardware exp_S, recomputes sum internally)
+print("\n=== KERNEL 2: reduce_sum → recip → mul → P @ V ===")
 out = torch.zeros(32, 32)
-fa_second_half(exp_S_ref, intermediate, V, out)
+fa_second_half(exp_S_hw, ones, V, out)
 
 print(f"Hardware: O[0, 0] = {out[0, 0].item():.6f}")
 print(f"Manual:   O[0, 0] = {O_ref[0, 0].item():.6f}")
