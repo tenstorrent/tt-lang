@@ -9,11 +9,18 @@ enabling data transfer operations between tensors and RingViews in the
 CircularBuffer system.
 """
 
-from typing import Union
+from typing import Any, Dict, List, Union
 import torch
 from . import torch_utils as tu
 from .ringview import RingView
 from .constants import TILE_SHAPE
+from .typedefs import MulticastAddress
+
+
+# Global multicast buffer for simulating NoC multicast communication
+# In a real implementation, this would be handled by the NoC hardware
+# TODO: This "List[Any]" should be made more specific, should need refactoring
+_multicast_buffer: Dict[MulticastAddress, List[Any]] = {}
 
 
 class DMATransaction:
@@ -31,15 +38,15 @@ class DMATransaction:
 
     def __init__(
         self,
-        src: Union[torch.Tensor, RingView[torch.Tensor]],
-        dst: Union[torch.Tensor, RingView[torch.Tensor]],
+        src: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
+        dst: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
     ):
         """
         Initialize a DMA transaction from src to dst.
 
         Args:
-            src: Source data (tensor or RingView)
-            dst: Destination (tensor or RingView)
+            src: Source data (tensor, RingView, or MulticastAddress)
+            dst: Destination (tensor, RingView, or MulticastAddress)
 
         Raises:
             ValueError: If the source and destination types are not supported
@@ -51,13 +58,19 @@ class DMATransaction:
         elif isinstance(src, RingView) and isinstance(dst, torch.Tensor):
             # RingView → tensor: supported
             pass
+        elif isinstance(src, RingView) and isinstance(dst, MulticastAddress):
+            # RingView → MulticastAddress: multicast send (supported)
+            pass
+        elif isinstance(src, MulticastAddress) and isinstance(dst, RingView):
+            # MulticastAddress → RingView: multicast receive (supported)
+            pass
         else:
             # Unsupported type combination
             src_type = type(src).__name__
             dst_type = type(dst).__name__
             raise ValueError(
                 f"Unsupported DMA transfer from {src_type} to {dst_type}. "
-                f"Only tensor↔RingView transfers are supported."
+                f"Supported transfers: tensor↔RingView, RingView→MulticastAddress, MulticastAddress→RingView"
             )
 
         self._src = src
@@ -157,6 +170,50 @@ class DMATransaction:
 
                 except Exception as e:
                     raise ValueError(f"Failed to transfer RingView to tensor: {e}")
+            elif isinstance(self._src, RingView) and isinstance(
+                self._dst, MulticastAddress
+            ):
+                # Multicast send: RingView → MulticastAddress
+                # Store the data in a shared multicast buffer accessible by all cores
+                try:
+                    src_data = [self._src[i] for i in range(len(self._src))]
+                    # Store in a global multicast buffer keyed by the multicast address
+                    # In a real implementation, this would send packets over the NoC
+                    _multicast_buffer[self._dst] = src_data
+                except Exception as e:
+                    raise ValueError(f"Failed to multicast send: {e}")
+            elif isinstance(self._src, MulticastAddress) and isinstance(
+                self._dst, RingView
+            ):
+                # Multicast receive: MulticastAddress → RingView
+                # Retrieve the data from the shared multicast buffer
+                try:
+                    # Poll until data is available in the multicast buffer
+                    # In a real implementation, this would be hardware-level blocking
+                    import time
+
+                    timeout = 2.0  # 2 second timeout to detect deadlocks
+                    start_time = time.time()
+                    while self._src not in _multicast_buffer:
+                        if time.time() - start_time > timeout:
+                            raise TimeoutError(
+                                f"Timeout waiting for multicast data. "
+                                f"The sender may not have called dma(ringview, mcast_addr).wait() "
+                                f"or there may be a deadlock."
+                            )
+                        time.sleep(0.001)  # Small sleep to avoid busy-waiting
+
+                    src_data = _multicast_buffer[self._src]
+                    if len(self._dst) != len(src_data):
+                        raise ValueError(
+                            f"Destination RingView length ({len(self._dst)}) "
+                            f"does not match multicast data length ({len(src_data)})"
+                        )
+                    self._dst.store(src_data)
+                except TimeoutError:
+                    raise
+                except Exception as e:
+                    raise ValueError(f"Failed to multicast receive: {e}")
             # Note: No else case needed since types are validated in __init__
             self._completed = True
 
@@ -167,8 +224,8 @@ class DMATransaction:
 
 
 def dma(
-    src: Union[torch.Tensor, RingView[torch.Tensor]],
-    dst: Union[torch.Tensor, RingView[torch.Tensor]],
+    src: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
+    dst: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
 ) -> DMATransaction:
     """
     Create a DMA transaction from source to destination.
@@ -179,10 +236,12 @@ def dma(
     Supported transfer patterns:
     - torch.Tensor → RingView: Load tensor data into circular buffer
     - RingView → torch.Tensor: Extract tensor data from circular buffer
+    - RingView → MulticastAddress: Broadcast data to multiple cores (multicast send)
+    - MulticastAddress → RingView: Receive broadcasted data from multicast (multicast receive)
 
     Args:
-        src: Source data (tensor or RingView)
-        dst: Destination (tensor or RingView)
+        src: Source data (tensor, RingView, or MulticastAddress)
+        dst: Destination (tensor, RingView, or MulticastAddress)
 
     Returns:
         DMATransaction object that can be waited on

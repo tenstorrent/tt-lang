@@ -41,6 +41,19 @@ class CBAPI(Generic[CBElemType]):
             CBState[CBElemType]() for _ in range(MAX_CBS)
         ]
         self._timeout: Optional[float] = timeout
+        self._next_cb_id: CBID = 0
+        self._cb_allocator_lock = threading.Lock()
+
+    def allocate_cb_id(self) -> CBID:
+        """Allocate a unique CB ID from this API instance. Thread-safe."""
+        with self._cb_allocator_lock:
+            cb_id = self._next_cb_id
+            self._next_cb_id += 1
+            if self._next_cb_id > MAX_CBS:
+                raise RuntimeError(
+                    f"Maximum number of circular buffers exceeded: {MAX_CBS}"
+                )
+            return cb_id
 
     @validate_call
     def host_configure_cb(self, cb_id: CBID, capacity_tiles: Size) -> None:

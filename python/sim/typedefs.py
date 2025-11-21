@@ -6,7 +6,7 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from typing import Annotated, TypeVar, Tuple, Optional, List, NamedTuple
+from typing import Annotated, TypeVar, Tuple, Optional, NamedTuple
 from pydantic import Field
 from enum import Enum, auto
 from dataclasses import dataclass
@@ -49,15 +49,15 @@ CoreIndex = Index
 
 class MulticastAddress(NamedTuple):
     """
-    A multicast address consisting of a type and list of core indices.
+    Represents a multicast address for NoC communication.
 
     Attributes:
-        mcast_type: The type of multicast (PUSH or PULL)
-        core_indices: List of core indices to multicast to/from
+        mcast_type: Type of multicast (PUSH or PULL)
+        core_indices: Tuple of core indices participating in the multicast
     """
 
     mcast_type: MulticastType
-    core_indices: List[CoreIndex]
+    core_indices: Tuple[CoreIndex, ...]
 
 
 Shape = Tuple[Size, ...]

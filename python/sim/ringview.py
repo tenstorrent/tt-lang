@@ -76,17 +76,43 @@ class RingView(Generic[CBElemType]):
         for i, v in enumerate(items):
             self[i] = v
 
+    def _apply_binary_op(
+        self,
+        left: Union["RingView[CBElemType]", List[CBElemType]],
+        right: Union["RingView[CBElemType]", List[CBElemType]],
+        op: Callable[[Any, Any], Any],
+    ) -> List[CBElemType]:
+        """Element-wise binary op: left (op) right with broadcasting support.
+
+        Supports broadcasting when one operand has length 1.
+        """
+        len_left = len(left)
+        len_right = len(right)
+
+        if len_left == len_right:
+            # Standard element-wise operation
+            return [op(left[i], right[i]) for i in range(len_left)]
+        elif len_right == 1:
+            # Broadcast right to all elements of left
+            right_val = right[0]
+            return [op(left[i], right_val) for i in range(len_left)]
+        elif len_left == 1:
+            # Broadcast left to all elements of right
+            left_val = left[0]
+            return [op(left_val, right[i]) for i in range(len_right)]
+        else:
+            raise ValueError(
+                f"Operand lengths must match or one must be 1 for broadcasting "
+                f"(got lengths {len_left} and {len_right})"
+            )
+
     def _binary_op(
         self,
         other: Union["RingView[CBElemType]", List[CBElemType]],
         op: Callable[[Any, Any], Any],
     ) -> List[CBElemType]:
         """Element-wise binary op: self (op) other."""
-        # Assumes `other` is Sequence-like (__len__ and __getitem__),
-        # which matches your type hints.
-        if len(self) != len(other):
-            raise ValueError("Operand lengths must match for element-wise operations")
-        return [op(self[i], other[i]) for i in range(len(self))]
+        return self._apply_binary_op(self, other, op)
 
     def _rbinary_op(
         self,
@@ -94,9 +120,7 @@ class RingView(Generic[CBElemType]):
         op: Callable[[Any, Any], Any],
     ) -> List[CBElemType]:
         """Element-wise reverse binary op: other (op) self."""
-        if len(other) != len(self):
-            raise ValueError("Operand lengths must match for element-wise operations")
-        return [op(other[i], self[i]) for i in range(len(self))]
+        return self._apply_binary_op(other, self, op)
 
     # ---- forward operators ----
 
