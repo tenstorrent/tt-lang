@@ -8,7 +8,7 @@
 
 import torch
 from ttlang.d2m_api import *
-from ttlang.operators import reduce_sum
+from ttlang.operators import reduce_sum, bcast
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def test_reduce_matmul(A, ones, C, out):
@@ -23,7 +23,7 @@ def test_reduce_matmul(A, ones, C, out):
         c = C_cb.wait()
         o = out_cb.reserve()
 
-        # Op 1: reduce_sum
+        # Op 1: reduce_sum (only fills column 0)
         sum_result = reduce_sum(a, ones_val, dim=1)
         o.store(sum_result)
         out_cb.push()
@@ -31,8 +31,16 @@ def test_reduce_matmul(A, ones, C, out):
         out_cb.pop()
         o = out_cb.reserve()
 
-        # Op 2: matmul with the sum result
-        result = sum_result @ c
+        # Op 2: bcast to fill all columns
+        sum_bcast = bcast(sum_result, dim=1)
+        o.store(sum_bcast)
+        out_cb.push()
+        sum_bcast = out_cb.wait()
+        out_cb.pop()
+        o = out_cb.reserve()
+
+        # Op 3: matmul with the broadcasted sum
+        result = sum_bcast @ c
 
         o.store(result)
         A_cb.pop()
