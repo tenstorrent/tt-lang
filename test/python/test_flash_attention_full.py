@@ -12,7 +12,7 @@
 
 import torch
 from ttlang.d2m_api import *
-from ttlang.operators import exp, reduce_sum, recip
+from ttlang.operators import exp, reduce_sum, recip, bcast
 import math
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
@@ -63,7 +63,7 @@ def flash_attention(Q, K, V, scale, ones, out):
         out_cb.pop()
         o = out_cb.reserve()
 
-        # Step 4: reduce_sum for normalization denominator
+        # Step 4: reduce_sum for normalization denominator (only fills column 0)
         sum_exp = reduce_sum(exp_S, ones_val, dim=1)
         o.store(sum_exp)
         out_cb.push()
@@ -71,8 +71,16 @@ def flash_attention(Q, K, V, scale, ones, out):
         out_cb.pop()
         o = out_cb.reserve()
 
-        # Step 5: Reciprocal for division
-        sum_recip = recip(sum_exp)
+        # Step 4b: bcast to fill all columns
+        sum_exp_bcast = bcast(sum_exp, dim=1)
+        o.store(sum_exp_bcast)
+        out_cb.push()
+        sum_exp_bcast = out_cb.wait()
+        out_cb.pop()
+        o = out_cb.reserve()
+
+        # Step 5: Reciprocal for division (use broadcasted sum)
+        sum_recip = recip(sum_exp_bcast)
         o.store(sum_recip)
         out_cb.push()
         sum_recip = out_cb.wait()
