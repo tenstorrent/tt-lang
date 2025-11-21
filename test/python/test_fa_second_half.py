@@ -95,6 +95,8 @@ def test_fa_second_half(exp_S, sum_exp, V, out):
 
 
 # CHECK: func.func @test_fa_second_half
+# CHECK: "d2m.tile_reduce_sum"
+# CHECK: "d2m.tile_bcast"
 # CHECK: "d2m.tile_recip"
 # CHECK: "d2m.tile_mul"
 # CHECK: "d2m.tile_matmul"

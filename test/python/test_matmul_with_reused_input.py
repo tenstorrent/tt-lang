@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # UNSUPPORTED: system-darwin
+# RUN: %python %s > %t.output.txt 2>&1
+# RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
 # Test: a @ b, then reuse 'a' in matmul again: result @ a
-# Tests if reusing input in matmul (not reduce_sum) works
+# Tests if reusing input in matmul works correctly
 
 import torch
 from ttlang.d2m_api import *
@@ -52,17 +55,35 @@ def test_matmul_reuse(A, B, out):
     return Program(compute_chain, dm_loader)(A, B, out)
 
 
+# CHECK: func.func @test_matmul_reuse
+# CHECK: "d2m.tile_matmul"
+
 # Test: (2 @ 3) @ 2 = (2 * 3 * 32) @ 2 = 192 @ 2 = 192 * 2 * 32 = 12288
 A = torch.full((32, 32), 2.0)
 B = torch.full((32, 32), 3.0)
 out = torch.zeros(32, 32)
 
-temp_expected = (A @ B)[0, 0].item()
-result_expected = (temp_expected * 2.0 * 32)
-
+print("=== BEFORE KERNEL ===")
 print(f"Test: (a @ b) @ a with a reused")
-print(f"Expected: {result_expected:.1f}")
+print(f"A: all 2.0, B: all 3.0")
+print(f"Step 1: a @ b = 2 * 3 * 32 = 192")
+print(f"Step 2: 192 @ 2 = 192 * 2 * 32 = 12288")
 
 test_matmul_reuse(A, B, out)
 
-print(f"Hardware: {out[0, 0].item():.1f}, Expected: {result_expected:.1f}")
+print("\n=== AFTER KERNEL ===")
+# CHECK-OUTPUT: === AFTER KERNEL ===
+
+expected = 12288.0
+print(f"Hardware: {out[0, 0].item():.1f}, Expected: {expected:.1f}")
+# CHECK-OUTPUT: Hardware: {{[0-9]+\.[0-9]+}}, Expected: 12288
+
+tolerance = 0.2
+error = abs(out[0, 0].item() - expected) / expected if expected != 0 else 1.0
+
+if error < tolerance:
+    print(f"PASS: Matmul with reused input produced correct result!")
+    # CHECK-OUTPUT: PASS: Matmul with reused input produced correct result
+else:
+    print(f"FAIL: Expected {expected:.1f}, got {out[0, 0].item():.1f} (error: {error*100:.1f}%)")
+
