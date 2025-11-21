@@ -496,6 +496,9 @@ def _create_reduction_linalg(
     Generates a reduction over the specified dimension with broadcasting scaler.
     The scaler B value at b[0,0] is broadcast to all elements of A before reduction.
 
+    EXPERIMENTAL: Using broadcast output map to test if hardware tile_reduce_sum
+    already broadcasts within the tile.
+
     Args:
         a: Input tensor (full dimensions accessed)
         b: Scaler tensor (only b[0,0] is used, broadcast to all elements)
@@ -519,7 +522,8 @@ def _create_reduction_linalg(
     rank = len(a.type.shape)
     out_shape = list(a.type.shape)
 
-    # Indexing maps: input uses all dims, scaler broadcasts from (0,0), output collapses reduced dim
+    # EXPERIMENTAL: Use identity output map instead of collapsed map
+    # Testing if hardware tile_reduce_sum broadcasts within the tile
     identity_map = AffineMap.get_identity(rank, ctx)
     zero_map = AffineMap.get(
         2, 0, [AffineConstantExpr.get(0, ctx), AffineConstantExpr.get(0, ctx)], ctx
@@ -527,11 +531,13 @@ def _create_reduction_linalg(
 
     if dim_value == 1:
         # Column reduction: iterate rows (parallel), reduce cols (reduction)
-        output_map = AffineMap.get(2, 0, [AffineDimExpr.get(0, ctx), AffineConstantExpr.get(0, ctx)], ctx)
+        # EXPERIMENTAL: output to all positions instead of just (d0, 0)
+        output_map = identity_map  # Was: (d0, 0), Now: (d0, d1)
         iter_types = ["parallel", "reduction"]
     else:
         # Row reduction: reduce rows (reduction), iterate cols (parallel)
-        output_map = AffineMap.get(2, 0, [AffineConstantExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx)
+        # EXPERIMENTAL: output to all positions instead of just (0, d1)
+        output_map = identity_map  # Was: (0, d1), Now: (d0, d1)
         iter_types = ["reduction", "parallel"]
 
     out_type = RankedTensorType.get(out_shape, a.type.element_type, a.type.encoding)
@@ -571,6 +577,73 @@ def _create_reduction_linalg(
     return generic_op.result
 
 
+@syntax("broadcast_reduce_result")
+def broadcast_reduce_result(input_tensor: TensorBlock, dim: int = 1) -> TensorBlock:
+    """
+    Broadcast a reduction result to fill the entire tensor.
+
+    After reduce operations, only certain positions contain valid data:
+    - dim=1 (column reduction): only column 0 has valid data
+    - dim=0 (row reduction): only row 0 has valid data
+
+    This operation broadcasts those values to all positions in the reduced dimension.
+
+    Args:
+        input_tensor: Reduced tensor (e.g., from reduce_sum with broadcast=False)
+        dim: The dimension that was reduced (0=rows, 1=columns)
+
+    Returns:
+        Broadcasted tensor with the reduced values replicated across the reduced dimension
+    """
+    if not isinstance(input_tensor.type, RankedTensorType):
+        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+
+    ctx = input_tensor.type.context
+    rank = len(input_tensor.type.shape)
+    dim_value = _extract_int_from_mlir_value(dim)
+
+    identity_map = AffineMap.get_identity(rank, ctx)
+
+    # Create input map that reads from the reduced dimension position
+    if dim_value == 1:
+        # Column was reduced: read from (d0, 0), write to (d0, d1)
+        input_map = AffineMap.get(2, 0, [AffineDimExpr.get(0, ctx), AffineConstantExpr.get(0, ctx)], ctx)
+    else:
+        # Row was reduced: read from (0, d1), write to (d0, d1)
+        input_map = AffineMap.get(2, 0, [AffineConstantExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx)
+
+    out_type = RankedTensorType.get(
+        list(input_tensor.type.shape), input_tensor.type.element_type, input_tensor.type.encoding
+    )
+    empty = d2m.empty(out_type)
+
+    affine_maps_attr = ArrayAttr.get([
+        AffineMapAttr.get(input_map),   # Read from reduced position
+        AffineMapAttr.get(identity_map) # Write to all positions
+    ])
+    iter_types_attr = ArrayAttr.get([
+        Attribute.parse("#linalg.iterator_type<parallel>", ctx),
+        Attribute.parse("#linalg.iterator_type<parallel>", ctx)
+    ])
+
+    generic_op = linalg.GenericOp(
+        result_tensors=[out_type],
+        inputs=[input_tensor],
+        outputs=[empty],
+        indexing_maps=affine_maps_attr,
+        iterator_types=iter_types_attr,
+    )
+
+    block_arg_types = [input_tensor.type.element_type, empty.type.element_type]
+    block = generic_op.regions[0].blocks.append(*block_arg_types)
+
+    with InsertionPoint(block):
+        # Just pass through the input tile (broadcast via indexing maps)
+        linalg.YieldOp([block.arguments[0]])
+
+    return generic_op.result
+
+
 # Reduction operations
 @syntax("reduce_sum")
 def reduce_sum(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
@@ -579,13 +652,15 @@ def reduce_sum(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
 
     The scaler B value at b[0,0] is broadcast to all elements of A before reduction.
 
+    EXPERIMENTAL: Now uses broadcast output map - testing if hardware already broadcasts.
+
     Args:
         a: Input tensor
         b: Scaler tensor (only b[0,0] is used, broadcast to all elements)
         dim: Reduction dimension (0=rows, 1=columns)
 
     Returns:
-        Reduced tensor with one dimension collapsed to single position
+        Reduced tensor with values at all positions (if hardware broadcasts correctly)
     """
     print("WARNING: reduce_sum uses DST register as accumulator. "
           "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
@@ -600,13 +675,15 @@ def reduce_max(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
 
     The scaler B value at b[0,0] is broadcast to all elements of A before reduction.
 
+    EXPERIMENTAL: Now uses broadcast output map - testing if hardware already broadcasts.
+
     Args:
         a: Input tensor
         b: Scaler tensor (only b[0,0] is used, broadcast to all elements)
         dim: Reduction dimension (0=rows, 1=columns)
 
     Returns:
-        Reduced tensor with one dimension collapsed to single position
+        Reduced tensor with values at all positions (if hardware broadcasts correctly)
     """
     print("WARNING: reduce_max uses DST register as accumulator. "
           "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
