@@ -13,7 +13,7 @@
 
 import torch
 from ttlang.d2m_api import *
-from ttlang.operators import exp, reduce_sum, recip
+from ttlang.operators import exp, reduce_sum, recip, bcast
 import math
 
 # Kernel 1: Q @ K^T → scale → exp (outputs exp_S)
@@ -104,7 +104,7 @@ def fa_second_half(exp_S, ones, V, out):
         v = V_cb.wait()
         o = out_cb.reserve()
 
-        # Step 4: reduce_sum (recompute from hardware exp_S)
+        # Step 4: reduce_sum (recompute from hardware exp_S, only fills column 0)
         sum_exp = reduce_sum(exp_s, ones_val, dim=1)
         o.store(sum_exp)
         out_cb.push()
@@ -112,8 +112,16 @@ def fa_second_half(exp_S, ones, V, out):
         out_cb.pop()
         o = out_cb.reserve()
 
-        # Step 5: Reciprocal
-        sum_recip = recip(sum_exp)
+        # Step 4b: bcast to fill all columns
+        sum_exp_bcast = bcast(sum_exp, dim=1)
+        o.store(sum_exp_bcast)
+        out_cb.push()
+        sum_exp_bcast = out_cb.wait()
+        out_cb.pop()
+        o = out_cb.reserve()
+
+        # Step 5: Reciprocal (use broadcasted sum)
+        sum_recip = recip(sum_exp_bcast)
         o.store(sum_recip)
         out_cb.push()
         sum_recip = out_cb.wait()
