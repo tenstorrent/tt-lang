@@ -110,7 +110,8 @@ scale_factor = 1.0 / math.sqrt(d_head)
 S = Q @ K.T  # 0.1 * 0.1 * 32 = 0.32 per element
 S_scaled = S * scale_factor  # 0.32 * 0.177 ≈ 0.0566
 exp_S = torch.exp(S_scaled)  # exp(0.0566) ≈ 1.058 per element
-sum_exp = exp_S.sum(dim=1, keepdim=True)  # sum of 32 values per row
+sum_exp_reduced = exp_S.sum(dim=1, keepdim=True)  # (32, 1) - sum of 32 values per row
+sum_exp = sum_exp_reduced.expand(32, 32)  # Broadcast to (32, 32) for kernel
 
 # V matrix for attention-weighted sum
 V = torch.ones((32, 32)) * 0.2  # Simple uniform values
@@ -118,11 +119,11 @@ V = torch.ones((32, 32)) * 0.2  # Simple uniform values
 print("=== BEFORE KERNEL ===")
 print(f"Testing FA second half: softmax normalization → P @ V")
 print(f"exp_S shape: {exp_S.shape}, sample value: {exp_S[0, 0].item():.6f}")
-print(f"sum_exp shape: {sum_exp.shape}, sample value: {sum_exp[0, 0].item():.6f}")
+print(f"sum_exp shape (after broadcast): {sum_exp.shape}, sample value: {sum_exp[0, 0].item():.6f}")
 print(f"V shape: {V.shape}, all values: {V[0, 0].item()}")
 
 # Compute expected on CPU
-P_expected = exp_S / sum_exp  # Softmax probabilities (should sum to 1 per row)
+P_expected = exp_S / sum_exp_reduced  # Softmax probabilities (should sum to 1 per row)
 O_expected = P_expected @ V  # Attention-weighted values
 
 print(f"\nExpected intermediate values:")
