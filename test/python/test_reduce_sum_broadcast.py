@@ -12,7 +12,7 @@
 
 import torch
 from ttlang.d2m_api import *
-from ttlang.operators import reduce_sum
+from ttlang.operators import reduce_sum, bcast
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_reduce_broadcast(A, ones, out):
@@ -25,8 +25,18 @@ def test_reduce_broadcast(A, ones, out):
         ones_val = ones_cb.wait()
         o = out_cb.reserve()
 
-        # reduce_sum with broadcast=True should fill all columns
-        result = reduce_sum(a, ones_val, dim=1, broadcast=True)
+        # Step 1: reduce_sum (only fills column 0)
+        reduced = reduce_sum(a, ones_val, dim=1)
+        o.store(reduced)
+        out_cb.push()
+
+        # CB synchronization
+        reduced_readback = out_cb.wait()
+        out_cb.pop()
+        o = out_cb.reserve()
+
+        # Step 2: bcast to fill all columns
+        result = bcast(reduced_readback, dim=1)
 
         o.store(result)
         A_cb.pop()
