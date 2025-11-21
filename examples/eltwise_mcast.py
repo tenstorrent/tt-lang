@@ -69,6 +69,8 @@ def eltwise_mcast(
     @compute()
     def compute_func():
         core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -103,6 +105,9 @@ def eltwise_mcast(
     @datamovement()
     def dm0():
         core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
+
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -149,6 +154,8 @@ def eltwise_mcast(
     @datamovement()
     def dm1():
         core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 

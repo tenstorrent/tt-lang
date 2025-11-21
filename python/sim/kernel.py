@@ -37,8 +37,8 @@ def pykernel_gen(
         # This is achieved by modifying the function's globals to include these variables
         import types
 
-        # Set grid to (2, 2) if 'auto'
-        actual_grid = (2, 2) if grid == "auto" else grid
+        # Set grid to (8, 8) if 'auto'
+        actual_grid = (8, 8) if grid == "auto" else grid
 
         # Create new globals dict that includes grid and granularity
         new_globals = func.__globals__.copy()
