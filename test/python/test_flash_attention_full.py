@@ -155,7 +155,9 @@ def flash_attention(Q, K, V, scale, ones, out):
 # CHECK: "d2m.tile_mul"
 # CHECK: "d2m.tile_exp"
 # CHECK: "d2m.tile_reduce_sum"
+# CHECK: "d2m.tile_bcast"
 # CHECK: "d2m.tile_recip"
+# CHECK: "d2m.tile_mul"
 # CHECK: "d2m.tile_matmul"
 
 # Create test inputs
