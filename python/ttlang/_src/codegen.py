@@ -242,22 +242,15 @@ def create_generic_func(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
         )
 
-        # WORKAROUND (issue #31): Accumulator ops (matmul, reduce_sum, reduce_max)
-        # require zeroed output buffers. Insert to_layout to copy the output buffer
-        # (expected to be zeroed) to initialize the accumulator. This is a temporary
-        # fix while we find a better long-term solution for handling different op semantics.
-        name_lower = name.lower()
-        is_accumulator_op = "reduce" in name_lower or "matmul" in name_lower
-
-        if is_accumulator_op:
-            device_output_empty = d2m.EmptyOp(device_output_type)
-            device_output_buffer = d2m.ToLayoutOp(
-                [device_output_type], outputs[0], device_output_empty.result, layout=None
-            )
-            output_buffer_result = device_output_buffer.results[0]
-        else:
-            device_output_buffer = d2m.EmptyOp(device_output_type)
-            output_buffer_result = device_output_buffer.result
+        # Initialize device buffer from user's output tensor for all ops.
+        # All ops use DST register in-place, so we need to initialize it from
+        # the user's output (which may be zeroed or contain specific values).
+        # This fixes issue #31 by ensuring DST always has valid initial data.
+        device_output_empty = d2m.EmptyOp(device_output_type)
+        device_output_buffer = d2m.ToLayoutOp(
+            [device_output_type], outputs[0], device_output_empty.result, layout=None
+        )
+        output_buffer_result = device_output_buffer.results[0]
 
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
