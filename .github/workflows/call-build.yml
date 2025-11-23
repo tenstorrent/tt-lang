@@ -51,12 +51,20 @@ jobs:
           submodules: recursive
           fetch-depth: 0 # Fetch full history and tags
 
+      - name: Compute toolchain hash
+        if: runner.os == 'macOS'
+        id: toolchain-hash
+        run: |
+          HASH=$(shasum tt-mlir/env/CMakeLists.txt | awk '{print $1}')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
       # macOS-specific: Setup toolchain
       - name: Setup macOS toolchain
         if: runner.os == 'macOS'
         uses: ./.github/actions/setup-macos-toolchain
         with:
           tt-mlir-path: tt-mlir
+          toolchain-hash: ${{ steps.toolchain-hash.outputs.hash }}
 
       # Common steps (MacOS and Ubuntu) from here down
       - name: Get LLVM version
