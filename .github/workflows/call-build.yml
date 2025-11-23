@@ -67,6 +67,12 @@ jobs:
           toolchain-hash: ${{ steps.toolchain-hash.outputs.hash }}
 
       # Common steps (MacOS and Ubuntu) from here down
+      - name: Compute tt-mlir commit hash
+        id: ttmlir-commit-hash
+        run: |
+          HASH=$(shasum third-party/tt-mlir.commit | awk '{print $1}')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
       - name: Get LLVM version
         id: llvm-version
         uses: ./.github/actions/get-llvm-version
@@ -78,7 +84,7 @@ jobs:
           path: |
             ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
