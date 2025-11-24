@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ttlang"
 description = "Python Bindings and Package for TT-Lang Compiler Project"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
 license = "Apache-2.0"
 license-files = ["../LICENSE*"]
@@ -24,9 +24,6 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: C++",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
