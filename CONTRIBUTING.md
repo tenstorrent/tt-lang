@@ -19,5 +19,4 @@ In addition to the 24 hour rule, the following prerequisites for landing a PR ex
 * At least 1 reviewer signs off on the change
 * Component owners sign-offs (GitHub will tell you if this hasn't been met)
 * Green CI
-* Wait at least 24 hours since opening the PR to give all tagged reviewers a chance to take a look, or at least comment on the issue that they need more time to review.
-  * *Rebasing or further changes to the PR do not reset the 24 hour counter.*
+* Rebasing or further changes to the PR do not reset the 24 hour counter.
