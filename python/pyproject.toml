@@ -5,16 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ttlang"
 description = "Python Bindings and Package for TT-Lang Compiler Project"
-requires-python = ">=3.8"
-keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler"]
+requires-python = ">=3.11"
+keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
 license = "Apache-2.0"
 license-files = ["../LICENSE*"]
+authors = [
+  {name = "Tenstorrent AI ULC"}
+]
+maintainers = [
+  {name = "Tenstorrent AI ULC"}
+]
 
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: C++",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Compilers",
+  "Topic :: Software Development :: Code Generators"
 ]
 
 # We will dynamically provide `version` and `dependencies` in setup.py
