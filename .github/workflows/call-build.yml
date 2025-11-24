@@ -159,11 +159,20 @@ jobs:
           echo "✅ TT_MLIR_DIR exists: ${{ env.TT_MLIR_DIR }}"
           ls -la "${{ env.TT_MLIR_DIR }}"
 
+      - name: Archive tt-mlir installation
+        if: runner.os == 'Linux'
+        run: |
+          tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf tt-mlir-install.tar.zst -C ${{ env.TT_MLIR_DIR }} .
+
       - name: Upload tt-mlir installation for hardware tests
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ttlang-ttmlir-install-ubuntu
-          path: tt-mlir-install
+          path: tt-mlir-install.tar.zst
           if-no-files-found: error
           retention-days: 1
+
+      - name: Clean up tt-mlir installation archive
+        if: runner.os == 'Linux'
+        run: rm -f tt-mlir-install.tar.zst

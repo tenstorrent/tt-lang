@@ -96,10 +96,17 @@ jobs:
           name: ${{ format('{0}-ttmlir-install-{1}', inputs.artifact-prefix, inputs.build-os) }}
           path: .
 
+      - name: Extract tt-mlir installation
+        run: |
+          mkdir -p ${{ env.TT_MLIR_DIR }}
+          tar -I 'zstd --long=31' -xf tt-mlir-install.tar.zst -C ${{ env.TT_MLIR_DIR }}
+          rm -f tt-mlir-install.tar.zst
+
       - name: Set up environment variables
         run: |
           echo "LD_LIBRARY_PATH=${{ env.TT_MLIR_DIR }}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
           echo "PYTHONPATH=${{ github.workspace }}/build/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
+          echo "PATH=${{ env.TT_MLIR_DIR }}/bin:/opt/ttmlir-toolchain/bin:${PATH}" >> $GITHUB_ENV
 
       - name: Generate system descriptor
         run: |
