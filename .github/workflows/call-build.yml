@@ -149,11 +149,21 @@ jobs:
             sim/
           retention-days: 1
 
+      - name: Verify tt-mlir installation exists
+        if: runner.os == 'Linux'
+        run: |
+          if [ ! -d "${{ env.TT_MLIR_DIR }}" ]; then
+            echo "❌ TT_MLIR_DIR does not exist: ${{ env.TT_MLIR_DIR }}"
+            exit 1
+          fi
+          echo "✅ TT_MLIR_DIR exists: ${{ env.TT_MLIR_DIR }}"
+          ls -la "${{ env.TT_MLIR_DIR }}"
+
       - name: Upload tt-mlir installation for hardware tests
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ttlang-ttmlir-install-ubuntu
-          path: |
-            ${{ env.TT_MLIR_DIR }}
+          path: tt-mlir-install
+          if-no-files-found: error
           retention-days: 1

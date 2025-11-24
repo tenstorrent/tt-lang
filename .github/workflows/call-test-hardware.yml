@@ -48,11 +48,12 @@ on:
 
 permissions:
   checks: write
+  contents: read
 
 jobs:
   test-n150:
     name: "Hardware Tests (${{ inputs.runs-on }})"
-    runs-on: ${{ fromJson(format('["{0}", "in-service"]', format('tt-ubuntu-2204-{0}-stable', inputs.runs-on))) }}
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout }}
 
     container:
@@ -87,13 +88,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ format('{0}-build-{1}', inputs.artifact-prefix, inputs.build-os) }}
-          path: build
+          path: .
 
       - name: Download tt-mlir installation
         uses: actions/download-artifact@v4
         with:
           name: ${{ format('{0}-ttmlir-install-{1}', inputs.artifact-prefix, inputs.build-os) }}
-          path: ${{ env.TT_MLIR_DIR }}
+          path: .
 
       - name: Set up environment variables
         run: |
