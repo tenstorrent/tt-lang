@@ -17,9 +17,9 @@
 <!-- Describe the tests you ran and how to reproduce them -->
 
 ### Test Configuration
-- **OS:** 
-- **Python version:** 
-- **Compiler:** 
+- **OS:**
+- **Python version:**
+- **Compiler:**
 
 ### Tests Added/Modified
 - [ ] Unit tests added

@@ -30,7 +30,7 @@ This directory contains working examples demonstrating tt-lang capabilities for 
    ```bash
    export SYSTEM_DESC_PATH=/path/to/system_desc.ttsys
    ```
-   
+
    > **Note:** The system descriptor file is not included in the repository. Contact your Tenstorrent representative for access to hardware configuration files.
 
 ### Running an Example
