@@ -1,0 +1,35 @@
+tt-lang
+Copyright 2025 Tenstorrent AI ULC
+
+This product includes software developed at Tenstorrent AI ULC.
+
+================================================================================
+
+This project includes or depends upon the following third-party software:
+
+--------------------------------------------------------------------------------
+LLVM Project
+--------------------------------------------------------------------------------
+
+Copyright (c) 2003-2024 University of Illinois at Urbana-Champaign.
+All rights reserved.
+
+Licensed under the Apache License, Version 2.0 with LLVM Exceptions.
+See: https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT
+
+The LLVM Project provides compiler infrastructure and related tools, including
+MLIR (Multi-Level Intermediate Representation), which forms the foundation of
+the tt-lang compilation pipeline.
+
+--------------------------------------------------------------------------------
+tt-mlir
+--------------------------------------------------------------------------------
+
+Copyright 2024 Tenstorrent AI ULC
+
+Licensed under the Apache License, Version 2.0.
+See: https://github.com/tenstorrent/tt-mlir/blob/main/LICENSE
+
+tt-mlir provides the MLIR dialect infrastructure and compilation passes for
+Tenstorrent hardware. tt-lang builds upon tt-mlir to provide a Python-based
+DSL for authoring custom kernels.

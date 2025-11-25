@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use tt-lang in your research, please cite it as below."
+type: software
+title: "tt-lang: Python DSL for Tenstorrent Hardware"
+abstract: "A Python-based Domain-Specific Language for authoring high-performance custom kernels on Tenstorrent hardware, built on MLIR compiler infrastructure."
+authors:
+  - family-names: "Tenstorrent"
+    name: "Tenstorrent AI ULC"
+repository-code: "https://github.com/tenstorrent/tt-lang"
+url: "https://github.com/tenstorrent/tt-lang"
+license: Apache-2.0
+keywords:
+  - MLIR
+  - DSL
+  - compiler
+  - Tenstorrent
+  - AI accelerator
+  - machine learning
+  - Python
+  - kernel programming
+date-released: 2025-01-01
