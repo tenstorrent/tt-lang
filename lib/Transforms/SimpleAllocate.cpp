@@ -41,16 +41,13 @@ public:
         ttcore::getCurrentScopeSystemDesc(moduleOp);
     ttcore::ChipDescAttr chipDesc = systemDesc.getChipDescs().front();
 
-    SmallVector<AllocInfo> allocs;
-    if (failed(collectAllocs(funcOp, chipDesc, allocs))) {
-      return signalPassFailure();
-    }
+    SmallVector<AllocInfo> allocs = collectAllocs(funcOp, chipDesc);
 
     if (failed(allocateL1(funcOp, chipDesc, allocs))) {
       return signalPassFailure();
     }
 
-    if (failed(assignAddresses(funcOp, allocs))) {
+    if (failed(assignAddresses(funcOp, chipDesc, allocs))) {
       return signalPassFailure();
     }
 
@@ -58,9 +55,9 @@ public:
   }
 
 private:
-  LogicalResult collectAllocs(func::FuncOp funcOp,
-                               ttcore::ChipDescAttr chipDesc,
-                               SmallVector<AllocInfo> &allocs) {
+  SmallVector<AllocInfo> collectAllocs(func::FuncOp funcOp,
+                                        ttcore::ChipDescAttr chipDesc) {
+    SmallVector<AllocInfo> allocs;
     mlir::Liveness liveness(funcOp);
     Block &body = funcOp.getBody().front();
 
@@ -101,7 +98,7 @@ private:
           {allocOp, memSpace, size, range, -1});
     });
 
-    return success();
+    return allocs;
   }
 
   Operation *extendLiveness(Value val, Operation *currentEnd,
@@ -200,12 +197,8 @@ private:
   }
 
   LogicalResult assignAddresses(func::FuncOp funcOp,
+                                 ttcore::ChipDescAttr chipDesc,
                                  SmallVector<AllocInfo> &allocs) {
-    ModuleOp moduleOp = funcOp->getParentOfType<ModuleOp>();
-    ttcore::SystemDescAttr systemDesc =
-        ttcore::getCurrentScopeSystemDesc(moduleOp);
-    ttcore::ChipDescAttr chipDesc = systemDesc.getChipDescs().front();
-
     IRRewriter rewriter(funcOp.getContext());
 
     for (auto &info : allocs) {
@@ -232,6 +225,7 @@ private:
 
   void insertDeallocs(func::FuncOp funcOp, SmallVector<AllocInfo> &allocs) {
     // All deallocs at function end (conservative but avoids aliasing issues)
+    // TODO: Should DRAM allocs skip dealloc since runtime manages addresses?
     IRRewriter rewriter(funcOp.getContext());
 
     funcOp.walk([&](func::ReturnOp returnOp) {
