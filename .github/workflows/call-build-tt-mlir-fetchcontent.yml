@@ -30,6 +30,7 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
+            TT_MLIR_DIR: ${{ github.workspace }}/build/tt-mlir-install
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
@@ -73,6 +74,7 @@ jobs:
                   df -H
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
+                      -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/build/tt-mlir-install \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_ENABLE_RUNTIME=OFF \
                       -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
@@ -80,6 +82,7 @@ jobs:
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
+                  cmake --install build
                   df -H
 
             - name: Test the build
