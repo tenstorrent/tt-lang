@@ -21,7 +21,6 @@ jobs:
     secrets: inherit
 
   build-ubuntu:
-    if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
@@ -35,12 +34,10 @@ jobs:
       os: macos-26
 
   test-sim:
-    if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   test-hardware:
-    if: github.event.pull_request.draft == false
     needs: build-ubuntu
     uses: ./.github/workflows/call-test-hardware.yml
     secrets: inherit
