@@ -105,7 +105,7 @@ jobs:
       - name: Set up environment variables
         run: |
           echo "LD_LIBRARY_PATH=${{ env.TT_MLIR_DIR }}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${{ github.workspace }}/build/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
+          echo "PYTHONPATH=${{ github.workspace }}/build/python_packages:${{ env.TT_MLIR_DIR }}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
           echo "PATH=${{ env.TT_MLIR_DIR }}/bin:/opt/ttmlir-toolchain/bin:${PATH}" >> $GITHUB_ENV
 
       - name: Generate system descriptor
