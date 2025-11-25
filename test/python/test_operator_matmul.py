@@ -15,20 +15,20 @@ from ttlang.d2m_api import *
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_matmul(lhs, rhs, out):
     @compute()
-    async def mm_compute(
+    def mm_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
-        l = lhs_cb.pop()
-        r = rhs_cb.pop()
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
         o = out_cb.reserve()
         result = l @ r
         o.store(result)
-        out_cb.pop()
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
 
     @datamovement()
-    async def dm(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         pass
 
     return Program(mm_compute, dm)(lhs, rhs, out)

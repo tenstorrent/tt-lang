@@ -18,10 +18,64 @@ class CircularBuffer:
     compute and data movement threads.
     """
 
-    def pop(ast_self: "CircularBuffer") -> "TensorBlock":
-        """Wait for and consume data from the circular buffer."""
+    def wait(ast_self: "CircularBuffer") -> "TensorBlock":
+        """
+        Wait for data from the circular buffer (consumer acquire).
+
+        Use in consumer threads to acquire data. Must be followed by pop()
+        to signal consumption is complete.
+
+        Returns:
+            TensorBlock: The acquired data.
+
+        Example:
+            shard = cb.wait()
+            result = compute(shard)
+            cb.pop()
+        """
         return d2m.wait(d2m.ir.CBType.cast(ast_self.type).get_underlying(), ast_self)
 
+    def pop(ast_self: "CircularBuffer") -> None:
+        """
+        Signal that data has been consumed (consumer release).
+
+        Use in consumer threads after wait() to signal that data has been
+        consumed and space is available for producers.
+
+        Example:
+            shard = cb.wait()
+            result = compute(shard)
+            cb.pop()  # Signal consumption complete
+        """
+        d2m.pop(ast_self)
+
     def reserve(ast_self: "CircularBuffer") -> "TensorBlock":
-        """Reserve space in the circular buffer for writing."""
+        """
+        Reserve space in the circular buffer (producer acquire).
+
+        Use in producer threads to acquire space for writing. Must be followed
+        by push() to signal data is ready.
+
+        Returns:
+            TensorBlock: The reserved space.
+
+        Example:
+            shard = cb.reserve()
+            dma(stream[idx], shard).wait()
+            cb.push()
+        """
         return d2m.reserve(d2m.ir.CBType.cast(ast_self.type).get_underlying(), ast_self)
+
+    def push(ast_self: "CircularBuffer") -> None:
+        """
+        Signal that data is ready in the circular buffer (producer release).
+
+        Use in producer threads after reserve() to signal that data has been
+        written and is ready for consumers.
+
+        Example:
+            shard = cb.reserve()
+            dma(stream[idx], shard).wait()
+            cb.push()  # Signal data ready
+        """
+        d2m.push(ast_self)
