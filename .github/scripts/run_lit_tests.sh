@@ -5,20 +5,18 @@
 
 set -e
 
-# Source the environment
+HARDWARE_TYPE="${1:-n150}"
+
 source build/env/activate
 
-# Create test output directory
 mkdir -p test_reports
 
-# Run lit tests on hardware
-echo "Running hardware tests on ${RUNS_ON}..."
+echo "Running hardware tests on ${HARDWARE_TYPE}..."
 
-# Run tests using cmake target
-cmake --build build --target check-ttlang
+llvm-lit -sv test/python/ \
+  --xunit-xml-output test_reports/report_${HARDWARE_TYPE}.xml
 
-# Display test results summary (assuming XML is generated)
-if [ -f test_reports/report_${RUNS_ON}.xml ]; then
+if [ -f test_reports/report_${HARDWARE_TYPE}.xml ]; then
   echo "Test report generated successfully"
-  grep -E "testsuite|testcase" test_reports/report_${RUNS_ON}.xml | head -20 || true
+  grep -E "testsuite|testcase" test_reports/report_${HARDWARE_TYPE}.xml | head -20 || true
 fi

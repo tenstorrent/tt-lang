@@ -122,12 +122,15 @@ jobs:
             - name: Clean up tt-mlir installation archive
               run: rm -f tt-mlir-install.tar.zst
 
-    test-hardware-n150:
+    test-hardware:
         needs: build-tt-lang-tt-mlir
+        strategy:
+            matrix:
+                hardware: [n150, n300, tg, p150]
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
-            runs-on: n150
+            runs-on: ${{ matrix.hardware }}
             build-os: ubuntu
             timeout: 60
             artifact-prefix: ttlang-fetchcontent
@@ -136,7 +139,7 @@ jobs:
         if: always()
         needs:
             - build-tt-lang-tt-mlir
-            - test-hardware-n150
+            - test-hardware
         runs-on: ubuntu-latest
         steps:
             - name: Decide whether all needed jobs succeeded or failed
