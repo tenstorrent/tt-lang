@@ -17,21 +17,13 @@ namespace mlir::tt::d2m {
 #define GEN_PASS_DEF_D2MSIMPLEALLOCATE
 #include "ttlang/Transforms/Passes.h.inc"
 
-using namespace mlir::tt::d2m;
-using Planner = allocation::Planner;
-using AllocSizeT = Planner::AllocSizeT;
-using PlannerSpace = Planner::Space;
-using SequenceT = Planner::SequenceT;
-using LiveRange = Planner::LiveRange;
-using ttcore::MemorySpace;
-
 namespace {
 
 struct AllocInfo {
   memref::AllocOp op;
-  MemorySpace memSpace;
-  AllocSizeT size;
-  LiveRange range;
+  ttcore::MemorySpace memSpace;
+  allocation::Planner::AllocSizeT size;
+  allocation::Planner::LiveRange range;
   int32_t varIndex = -1;
 };
 
@@ -44,29 +36,24 @@ public:
     if (funcOp.isDeclaration())
       return;
 
-    // Get device info
     ModuleOp moduleOp = funcOp->getParentOfType<ModuleOp>();
     ttcore::SystemDescAttr systemDesc =
         ttcore::getCurrentScopeSystemDesc(moduleOp);
     ttcore::ChipDescAttr chipDesc = systemDesc.getChipDescs().front();
 
-    // Collect allocations
     SmallVector<AllocInfo> allocs;
     if (failed(collectAllocs(funcOp, chipDesc, allocs))) {
       return signalPassFailure();
     }
 
-    // Allocate L1 addresses
     if (failed(allocateL1(funcOp, chipDesc, allocs))) {
       return signalPassFailure();
     }
 
-    // Assign addresses to ops
     if (failed(assignAddresses(funcOp, allocs))) {
       return signalPassFailure();
     }
 
-    // Insert deallocs (simple version - at function end)
     insertDeallocs(funcOp, allocs);
   }
 
@@ -77,44 +64,38 @@ private:
     mlir::Liveness liveness(funcOp);
     Block &body = funcOp.getBody().front();
 
-    // Build sequence map
-    llvm::DenseMap<Operation *, SequenceT> opToSeq;
-    SequenceT seq = 0;
+    llvm::DenseMap<Operation *, allocation::Planner::SequenceT> opToSeq;
+    allocation::Planner::SequenceT seq = 0;
     body.walk<WalkOrder::PreOrder>([&](Operation *op) { opToSeq[op] = seq++; });
 
-    // Collect allocs with liveness
     funcOp.walk([&](memref::AllocOp allocOp) {
       MemRefType type = allocOp.getType();
-      MemorySpace memSpace =
-          ttcore::getMemorySpace(type, MemorySpace::System);
+      ttcore::MemorySpace memSpace =
+          ttcore::getMemorySpace(type, ttcore::MemorySpace::System);
 
-      // Only handle device memory
       if (!ttcore::isDeviceMemorySpace(memSpace))
         return;
 
-      // Compute size
       ttcore::DeviceAttr device = ttcore::lookupDevice(funcOp);
       int64_t sizeBytes = device.getMemrefSizeBytes(type, 0, false);
 
-      // Get memory space alignment
-      AllocSizeT alignment;
-      if (memSpace == MemorySpace::DeviceL1) {
+      allocation::Planner::AllocSizeT alignment;
+      if (memSpace == ttcore::MemorySpace::DeviceL1) {
         alignment = chipDesc.getNocL1AddressAlignBytes();
       } else {
         alignment = chipDesc.getNocDRAMAddressAlignBytes();
       }
-      AllocSizeT size = ttmlir::utils::alignUp(sizeBytes, alignment);
+      allocation::Planner::AllocSizeT size = ttmlir::utils::alignUp(sizeBytes, alignment);
 
-      // Compute live range
       Value result = allocOp.getResult();
       const mlir::LivenessBlockInfo *li = liveness.getLiveness(&body);
       Operation *startOp = li->getStartOperation(result);
       Operation *endOp = li->getEndOperation(result, startOp);
 
-      // Extend liveness through view/stream users
+      // Extend through view/stream ops that alias the buffer
       endOp = extendLiveness(result, endOp, opToSeq);
 
-      LiveRange range = {opToSeq[startOp], opToSeq[endOp]};
+      allocation::Planner::LiveRange range = {opToSeq[startOp], opToSeq[endOp]};
 
       allocs.push_back(
           {allocOp, memSpace, size, range, -1});
@@ -124,20 +105,19 @@ private:
   }
 
   Operation *extendLiveness(Value val, Operation *currentEnd,
-                            const llvm::DenseMap<Operation *, SequenceT> &opToSeq) {
+                            const llvm::DenseMap<Operation *, allocation::Planner::SequenceT> &opToSeq) {
     llvm::DenseSet<Value> visited;
     return extendLivenessImpl(val, currentEnd, opToSeq, visited);
   }
 
   Operation *extendLivenessImpl(
       Value val, Operation *currentEnd,
-      const llvm::DenseMap<Operation *, SequenceT> &opToSeq,
+      const llvm::DenseMap<Operation *, allocation::Planner::SequenceT> &opToSeq,
       llvm::DenseSet<Value> &visited) {
-    // Prevent infinite recursion
     if (!visited.insert(val).second)
       return currentEnd;
 
-    SequenceT maxSeq = opToSeq.lookup(currentEnd);
+    allocation::Planner::SequenceT maxSeq = opToSeq.lookup(currentEnd);
 
     for (Operation *user : val.getUsers()) {
       auto it = opToSeq.find(user);
@@ -145,7 +125,6 @@ private:
         maxSeq = std::max(maxSeq, it->second);
       }
 
-      // Trace through view/stream ops
       if (auto viewOp = dyn_cast<d2m::ViewLayoutOp>(user)) {
         Operation *extendedEnd = extendLivenessImpl(
             viewOp.getResult(), currentEnd, opToSeq, visited);
@@ -157,10 +136,8 @@ private:
         if (opToSeq.lookup(extendedEnd) > maxSeq)
           currentEnd = extendedEnd;
       } else if (auto genericOp = dyn_cast<d2m::GenericOp>(user)) {
-        // Buffers used in generic ops are live until the generic completes
-        // This is critical: generic ops execute kernels that need all their operands
+        // Generic ops need all operands live until completion
         maxSeq = std::max(maxSeq, opToSeq.lookup(user));
-        // Also trace through results in case they're used later
         for (Value result : genericOp.getResults()) {
           Operation *extendedEnd = extendLivenessImpl(
               result, currentEnd, opToSeq, visited);
@@ -172,7 +149,6 @@ private:
       }
     }
 
-    // Find op with maxSeq
     for (auto &[op, s] : opToSeq) {
       if (s == maxSeq)
         return op;
@@ -182,29 +158,25 @@ private:
 
   LogicalResult allocateL1(func::FuncOp funcOp, ttcore::ChipDescAttr chipDesc,
                             SmallVector<AllocInfo> &allocs) {
-    // Setup L1 capacity
-    AllocSizeT l1Base = chipDesc.getL1UnreservedBase();
-    AllocSizeT l1Size = testAssumeL1Capacity > 0
+    allocation::Planner::AllocSizeT l1Base = chipDesc.getL1UnreservedBase();
+    allocation::Planner::AllocSizeT l1Size = testAssumeL1Capacity > 0
                             ? (l1Base + testAssumeL1Capacity)
                             : chipDesc.getL1Size();
-    AllocSizeT l1Capacity = l1Size - l1Base;
+    allocation::Planner::AllocSizeT l1Capacity = l1Size - l1Base;
 
-    // Build allocation problem for L1
-    Planner::Problem problem;
+    allocation::Planner::Problem problem;
 
     for (auto &info : allocs) {
-      if (info.memSpace == MemorySpace::DeviceL1) {
-        info.varIndex = problem.def([&](Planner::VariableBuilder &b) {
-          b.request(PlannerSpace::Scratch, info.size, info.range.first,
+      if (info.memSpace == ttcore::MemorySpace::DeviceL1) {
+        info.varIndex = problem.def([&](allocation::Planner::VariableBuilder &b) {
+          b.request(allocation::Planner::Space::Scratch, info.size, info.range.first,
                     info.range.last);
-          b.place(PlannerSpace::Scratch);
+          b.place(allocation::Planner::Space::Scratch);
         });
       }
     }
 
-    // Solve with simple allocation (no spilling for now)
-    // Use Simple algorithm to avoid premature reuse of addresses
-    auto stats = Planner::allocate(problem, Planner::Algorithm::Simple);
+    auto stats = allocation::Planner::allocate(problem, allocation::Planner::Algorithm::Simple);
 
     if (stats.memUsage > l1Capacity) {
       return funcOp.emitError("L1 capacity exceeded: ")
@@ -212,16 +184,13 @@ private:
              << " bytes available";
     }
 
-    // Store offsets for later
     for (auto &info : allocs) {
       if (info.varIndex >= 0) {
         const auto &var = problem.variable(info.varIndex);
-        // Get requests from the Scratch space in the variable's domain
-        const auto &scratchRequests = var.domain[allocation::ordinal(PlannerSpace::Scratch)];
+        const auto &scratchRequests = var.domain[allocation::ordinal(allocation::Planner::Space::Scratch)];
         if (!scratchRequests.empty()) {
-          // Get the first request index and look it up
           auto reqIndex = *scratchRequests.begin();
-          // Store offset in the AllocInfo (we'll add base address later)
+          // Reuse size field to store offset (base address added later)
           info.size = problem.request(reqIndex).offset;
         }
       }
@@ -240,20 +209,18 @@ private:
     IRRewriter rewriter(funcOp.getContext());
 
     for (auto &info : allocs) {
-      if (info.memSpace == MemorySpace::DeviceL1) {
-        AllocSizeT base = chipDesc.getL1UnreservedBase();
-        AllocSizeT alignment = chipDesc.getNocL1AddressAlignBytes();
-
-        // info.size contains the offset from the planner
-        AllocSizeT address = base + info.size;
+      if (info.memSpace == ttcore::MemorySpace::DeviceL1) {
+        allocation::Planner::AllocSizeT base = chipDesc.getL1UnreservedBase();
+        allocation::Planner::AllocSizeT alignment = chipDesc.getNocL1AddressAlignBytes();
+        allocation::Planner::AllocSizeT address = base + info.size;  // size holds offset here
 
         rewriter.startOpModification(info.op);
         info.op.setAlignment(alignment);
         info.op->setAttr("address", rewriter.getI64IntegerAttr(address));
         rewriter.finalizeOpModification(info.op);
-      } else if (info.memSpace == MemorySpace::DeviceDRAM) {
-        // For DRAM, just set alignment (runtime handles addresses)
-        AllocSizeT alignment = chipDesc.getNocDRAMAddressAlignBytes();
+      } else if (info.memSpace == ttcore::MemorySpace::DeviceDRAM) {
+        // DRAM addresses assigned by runtime
+        allocation::Planner::AllocSizeT alignment = chipDesc.getNocDRAMAddressAlignBytes();
         rewriter.startOpModification(info.op);
         info.op.setAlignment(alignment);
         rewriter.finalizeOpModification(info.op);
@@ -264,8 +231,7 @@ private:
   }
 
   void insertDeallocs(func::FuncOp funcOp, SmallVector<AllocInfo> &allocs) {
-    // Simple strategy: insert all deallocs before the return
-    // This is conservative but safe - avoids all aliasing issues
+    // All deallocs at function end (conservative but avoids aliasing issues)
     IRRewriter rewriter(funcOp.getContext());
 
     funcOp.walk([&](func::ReturnOp returnOp) {
