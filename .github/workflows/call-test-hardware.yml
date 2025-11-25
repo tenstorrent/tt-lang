@@ -109,63 +109,16 @@ jobs:
           echo "PATH=${{ env.TT_MLIR_DIR }}/bin:/opt/ttmlir-toolchain/bin:${PATH}" >> $GITHUB_ENV
 
       - name: Generate system descriptor
-        run: |
-          # Install ttrt if not available
-          if ! command -v ttrt &> /dev/null; then
-            echo "ttrt not found, attempting to install from tt-mlir installation"
-            # This will be provided by tt-mlir installation or container
-          fi
-
-          # Generate system descriptor
-          mkdir -p ttrt-artifacts
-          cd ttrt-artifacts
-
-          # Check if ttrt is available
-          if command -v ttrt &> /dev/null; then
-            if [ "${{ inputs.runs-on }}" == "tg" ] || [ "${{ inputs.runs-on }}" == "p150" ]; then
-              ttrt query --save-artifacts --disable-eth-dispatch
-            else
-              ttrt query --save-artifacts
-            fi
-          else
-            echo "Warning: ttrt not available, using dummy system descriptor"
-            # For initial testing, create a minimal dummy descriptor
-            # This should be replaced with actual ttrt query in production
-            echo "Creating placeholder system descriptor..."
-          fi
-
-      - name: Set SYSTEM_DESC_PATH
-        run: |
-          SYSTEM_DESC=$(find ttrt-artifacts -name "*.ttsys" -type f | head -1)
-          if [ -z "$SYSTEM_DESC" ]; then
-            echo "Warning: No system descriptor found"
-          else
-            echo "SYSTEM_DESC_PATH=$SYSTEM_DESC" >> $GITHUB_ENV
-            echo "Using system descriptor: $SYSTEM_DESC"
-          fi
+        run: .github/scripts/generate_system_descriptor.sh ${{ inputs.runs-on }}
 
       - name: Run hardware tests
         env:
           TTLANG_VERBOSE_PASSES: 0
-        run: |
-          # Source the environment
-          source build/env/activate
-
-          # Create test output directory
-          mkdir -p test_reports
-
-          # Run lit tests on hardware
-          echo "Running hardware tests on ${{ inputs.runs-on }}..."
-
-          # Run tests and capture results
-          llvm-lit -sv build/test/python/ \
-            --xunit-xml-output test_reports/report_${{ inputs.runs-on }}.xml || true
-
-          # Display test results summary
-          if [ -f test_reports/report_${{ inputs.runs-on }}.xml ]; then
-            echo "Test report generated successfully"
-            grep -E "testsuite|testcase" test_reports/report_${{ inputs.runs-on }}.xml | head -20 || true
-          fi
+          RUNS_ON: ${{ inputs.runs-on }}
+          BUILD_DIR: ${{ github.workspace }}/build
+          INSTALL_DIR: ${{ env.TT_MLIR_DIR }}
+          TEST_OUTPUT_DIR: ${{ github.workspace }}/test_reports
+        run: .github/scripts/run_lit_tests.sh --type ${{ inputs.runs-on }}
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
@@ -175,10 +128,19 @@ jobs:
           path: test_reports
           retention-days: 7
 
-      - name: Show test report
-        uses: mikepenz/action-junit-report@v5
+      - name: Upload system descriptor artifacts
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          report_paths: test_reports/report_*.xml
-          check_name: Hardware Tests (${{ inputs.runs-on }})
-          summary: true
+          name: hardware-system-desc-${{ inputs.runs-on }}
+          path: ttrt-artifacts
+          retention-days: 7
+
+      - name: Show test report
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Hardware Tests (${{ inputs.runs-on }})
+          path: test_reports/report_*.xml
+          reporter: java-junit
+          fail-on-error: false
