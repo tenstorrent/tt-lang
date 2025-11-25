@@ -29,6 +29,8 @@ from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
+import ttlang._mlir_libs._ttlang  # Register tt-lang passes
+
 from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
 
@@ -360,9 +362,37 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        use_tile_matmul = True
-        ttnn_mode = False
-        pipeline = f"d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{{use-tile-matmul={1 if use_tile_matmul else 0} ttnn-mode={1 if ttnn_mode else 0}}}"
+        ttnn_mode = False  # tt-lang uses TTMetal mode
+
+        pipeline_passes = [
+            "d2m-generic-replace-globals",
+            "d2m-lower-to-layout",                         # Lower to_layout to data movement
+            "d2m-elementwise-fusion",                      # Fuse d2m.generic operations
+            "canonicalize",                                # Cleanup and simplify
+            "ttcore-one-shot-bufferize",
+            "func.func(d2m-simple-allocate)",              # Our simplified allocator
+            "d2m-linalg-to-affine{use-tile-matmul=1}",     # Convert all linalg including matmul
+            "func.func(d2m-insert-dst-register-gc)",       # Boyana's graph coloring DST allocator
+            "lower-affine",
+            "d2m-generic-linearize-memref",
+            "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
+            "d2m-generic-lower-dmas",                      # Lower DMAs to hardware
+            "canonicalize",                                # Simplify before region extraction
+            "loop-invariant-code-motion",                  # Hoist invariants
+            "sccp",                                        # Sparse conditional constant propagation
+            "cse",                                         # Eliminate common subexpressions
+            "d2m-generic-regions-to-funcs",                # Extract regions to functions
+            "convert-d2m-to-ttkernel{ttnn-mode=0}",
+            "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
+            "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
+            "convert-d2m-to-ttmetal",                      # Convert to_layout to ttmetal enqueue ops
+            "canonicalize",                                # Cleanup after conversion
+            "loop-invariant-code-motion",                  # Hoist again after backend lowering
+            "sccp",                                        # Propagate constants
+            "cse",                                         # Final deduplication
+            "symbol-dce"                                   # Remove unused functions
+        ]
+        pipeline = ",".join(pipeline_passes)
 
         register_device = "ttcore-register-device"
         if device_register_options:
@@ -407,9 +437,13 @@ def _compile_and_run_kernel(
             binary_obj.store(flatbuffer_path)
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
 
+        # Check if runtime execution should be skipped (compile-only mode)
+        compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
+
         # Metal runtime execution (enabled by default when runtime is available)
         # Skip on macOS since hardware is not available
-        if _should_execute_on_metal_runtime():
+        # Skip if TTLANG_COMPILE_ONLY=1 is set
+        if not compile_only and _should_execute_on_metal_runtime():
             try:
                 _execute_on_metal_runtime(flatbuffer_binary, args)
             except Exception as e:
@@ -420,7 +454,7 @@ def _compile_and_run_kernel(
                 traceback.print_exc()
 
         # TTNN runtime execution (not yet implemented - requires TTNN integration)
-        if ttnn_mode and binary is not None and runtime is not None:
+        if not compile_only and ttnn_mode and binary is not None and runtime is not None:
             try:
                 _execute_on_ttnn_runtime(flatbuffer_binary, args)
             except Exception as e:

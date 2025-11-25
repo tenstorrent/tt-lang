@@ -20,6 +20,30 @@ declare_mlir_python_sources(TTLangPythonSources.Dialects
   ADD_TO_PARENT TTLangPythonSources
 )
 
+declare_mlir_python_sources(TTLangPythonSources.Core
+  ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
+  ADD_TO_PARENT TTLangPythonSources
+  SOURCES
+    __init__.py
+    circular_buffer.py
+    constants.py
+    d2m_api.py
+    dtype_utils.py
+    layouts.py
+    operators.py
+    semaphore.py
+)
+
+declare_mlir_python_sources(TTLangPythonSources.Src
+  ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
+  ADD_TO_PARENT TTLangPythonSources
+  SOURCES
+    _src/__init__.py
+    _src/codegen.py
+    _src/d2m_ast.py
+    _src/tensor_accessor.py
+)
+
 # Example dialect bindings (to be added later):
 # declare_mlir_dialect_python_bindings(
 #   ADD_TO_PARENT TTLangPythonSources.Dialects
@@ -35,18 +59,18 @@ declare_mlir_python_sources(TTLangPythonSources.Dialects
 
 declare_mlir_python_sources(TTLangPythonExtensions)
 
-# Example Python extension (to be added later):
-# declare_mlir_python_extension(TTLangPythonExtensions.Main
-#   MODULE_NAME _ttlang
-#   ADD_TO_PARENT TTLangPythonExtensions
-#   SOURCES
-#     TTLangModule.cpp
-#   EMBED_CAPI_LINK_LIBS
-#     MLIRCAPITransforms
-#   PRIVATE_LINK_LIBS
-#     # Add tt-lang libraries here
-#   PYTHON_BINDINGS_LIBRARY nanobind
-# )
+# tt-lang passes Python extension
+declare_mlir_python_extension(TTLangPythonExtensions.Main
+  MODULE_NAME _ttlang
+  ADD_TO_PARENT TTLangPythonExtensions
+  SOURCES
+    TTLangModule.cpp
+  EMBED_CAPI_LINK_LIBS
+    MLIRCAPITransforms
+  PRIVATE_LINK_LIBS
+    TTLangTransforms
+  PYTHON_BINDINGS_LIBRARY nanobind
+)
 
 set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttlang")
 
