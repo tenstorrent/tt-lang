@@ -8,12 +8,6 @@ def D2MSimpleAllocate : Pass<"d2m-simple-allocate", "::mlir::func::FuncOp"> {
   let description = [{
     Assigns L1/DRAM addresses to memref.alloc operations using liveness-based
     first-fit allocation. Designed for tt-lang DSL where streams are explicit.
-
-    Features:
-    - Uses builtin MLIR liveness analysis
-    - Extends liveness through view/stream chains
-    - Simple first-fit allocation (no spilling)
-    - Conservative dealloc insertion (before returns)
   }];
 
   let dependentDialects = [
