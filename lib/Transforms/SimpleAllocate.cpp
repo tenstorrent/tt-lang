@@ -47,10 +47,7 @@ public:
       return signalPassFailure();
     }
 
-    if (failed(assignAddresses(funcOp, chipDesc, allocs))) {
-      return signalPassFailure();
-    }
-
+    assignAddresses(funcOp, chipDesc, allocs);
     insertDeallocs(funcOp, allocs);
   }
 
@@ -65,6 +62,10 @@ private:
     allocation::Planner::SequenceT seq = 0;
     body.walk<WalkOrder::PreOrder>([&](Operation *op) { opToSeq[op] = seq++; });
 
+    ttcore::DeviceAttr device = ttcore::lookupDevice(funcOp);
+    allocation::Planner::AllocSizeT l1Alignment = chipDesc.getNocL1AddressAlignBytes();
+    allocation::Planner::AllocSizeT dramAlignment = chipDesc.getNocDRAMAddressAlignBytes();
+
     funcOp.walk([&](memref::AllocOp allocOp) {
       MemRefType type = allocOp.getType();
       ttcore::MemorySpace memSpace =
@@ -73,15 +74,9 @@ private:
       if (!ttcore::isDeviceMemorySpace(memSpace))
         return;
 
-      ttcore::DeviceAttr device = ttcore::lookupDevice(funcOp);
       int64_t sizeBytes = device.getMemrefSizeBytes(type, 0, false);
-
-      allocation::Planner::AllocSizeT alignment;
-      if (memSpace == ttcore::MemorySpace::DeviceL1) {
-        alignment = chipDesc.getNocL1AddressAlignBytes();
-      } else {
-        alignment = chipDesc.getNocDRAMAddressAlignBytes();
-      }
+      allocation::Planner::AllocSizeT alignment =
+          (memSpace == ttcore::MemorySpace::DeviceL1) ? l1Alignment : dramAlignment;
       allocation::Planner::AllocSizeT size = ttmlir::utils::alignUp(sizeBytes, alignment);
 
       Value result = allocOp.getResult();
@@ -196,31 +191,30 @@ private:
     return success();
   }
 
-  LogicalResult assignAddresses(func::FuncOp funcOp,
-                                 ttcore::ChipDescAttr chipDesc,
-                                 SmallVector<AllocInfo> &allocs) {
+  void assignAddresses(func::FuncOp funcOp,
+                        ttcore::ChipDescAttr chipDesc,
+                        SmallVector<AllocInfo> &allocs) {
     IRRewriter rewriter(funcOp.getContext());
+
+    allocation::Planner::AllocSizeT l1Base = chipDesc.getL1UnreservedBase();
+    allocation::Planner::AllocSizeT l1Alignment = chipDesc.getNocL1AddressAlignBytes();
+    allocation::Planner::AllocSizeT dramAlignment = chipDesc.getNocDRAMAddressAlignBytes();
 
     for (auto &info : allocs) {
       if (info.memSpace == ttcore::MemorySpace::DeviceL1) {
-        allocation::Planner::AllocSizeT base = chipDesc.getL1UnreservedBase();
-        allocation::Planner::AllocSizeT alignment = chipDesc.getNocL1AddressAlignBytes();
-        allocation::Planner::AllocSizeT address = base + info.size;  // size holds offset here
+        allocation::Planner::AllocSizeT address = l1Base + info.size;  // size holds offset here
 
         rewriter.startOpModification(info.op);
-        info.op.setAlignment(alignment);
+        info.op.setAlignment(l1Alignment);
         info.op->setAttr("address", rewriter.getI64IntegerAttr(address));
         rewriter.finalizeOpModification(info.op);
       } else if (info.memSpace == ttcore::MemorySpace::DeviceDRAM) {
         // DRAM addresses assigned by runtime
-        allocation::Planner::AllocSizeT alignment = chipDesc.getNocDRAMAddressAlignBytes();
         rewriter.startOpModification(info.op);
-        info.op.setAlignment(alignment);
+        info.op.setAlignment(dramAlignment);
         rewriter.finalizeOpModification(info.op);
       }
     }
-
-    return success();
   }
 
   void insertDeallocs(func::FuncOp funcOp, SmallVector<AllocInfo> &allocs) {
