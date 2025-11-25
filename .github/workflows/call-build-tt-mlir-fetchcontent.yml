@@ -98,13 +98,29 @@ jobs:
                       sim/
                   retention-days: 1
 
+            - name: Verify tt-mlir installation exists
+              run: |
+                  if [ ! -d "build/tt-mlir-install" ]; then
+                      echo "❌ tt-mlir installation does not exist: build/tt-mlir-install"
+                      exit 1
+                  fi
+                  echo "✅ tt-mlir installation exists: build/tt-mlir-install"
+                  ls -la build/tt-mlir-install
+
+            - name: Archive tt-mlir installation
+              run: |
+                  cd build/tt-mlir-install && tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf ../../tt-mlir-install.tar.zst .
+
             - name: Upload tt-mlir installation for hardware tests
               uses: actions/upload-artifact@v4
               with:
                   name: ttlang-fetchcontent-ttmlir-install-ubuntu
-                  path: |
-                      build/tt-mlir-install
+                  path: tt-mlir-install.tar.zst
+                  if-no-files-found: error
                   retention-days: 1
+
+            - name: Clean up tt-mlir installation archive
+              run: rm -f tt-mlir-install.tar.zst
 
     test-hardware-n150:
         needs: build-tt-lang-tt-mlir

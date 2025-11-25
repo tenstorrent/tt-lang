@@ -50,16 +50,18 @@ Builds tt-lang for Ubuntu (in container) and macOS.
 **Build Steps**:
 1. Checkout tt-lang
 2. Checkout tt-mlir (version from `third-party/tt-mlir.commit`)
-3. Cache or build tt-mlir with PyKernel enabled
-4. Build tt-lang
-5. Run smoketest
-6. Upload artifacts:
+3. **macOS only**: Setup LLVM/Stablehlo toolchain (cached based on `tt-mlir/env/CMakeLists.txt` hash)
+4. Cache or build tt-mlir with PyKernel enabled
+5. Build tt-lang
+6. Run smoketest
+7. Upload artifacts:
    - `ttlang-build-ubuntu` / `ttlang-build-macos`: Contains `build/python_packages`, `build/test`, `build/env`, `sim/`
-   - `ttlang-ttmlir-install-ubuntu`: Contains tt-mlir installation (Ubuntu only)
+   - `ttlang-ttmlir-install-ubuntu`: Compressed tt-mlir installation (Ubuntu only, zstd format)
 
 **Caching**:
-- tt-mlir build is cached based on commit hash and LLVM version
-- ccache is used for tt-lang builds
+- **macOS toolchain**: Cached in `/opt/ttmlir-toolchain` based on hash of `tt-mlir/env/CMakeLists.txt` and branch name
+- **tt-mlir build**: Cached based on tt-mlir commit hash and LLVM version (macOS) or Ubuntu build
+- **ccache**: Used for tt-lang C++ builds to speed up recompilation
 
 #### 3. call-test-hardware.yml - Hardware Test Workflow
 
@@ -78,8 +80,11 @@ Runs tests on self-hosted hardware runners.
 
 **Test Steps**:
 1. Download build artifacts from build job
-2. Download tt-mlir installation
-3. Set up environment (LD_LIBRARY_PATH, PYTHONPATH)
+2. Download and extract tt-mlir installation (zstd-compressed archive)
+3. Set up environment (PATH, LD_LIBRARY_PATH, PYTHONPATH)
+   - `PATH`: Includes `$TT_MLIR_DIR/bin` for `llvm-lit` and other tools
+   - `LD_LIBRARY_PATH`: Includes `$TT_MLIR_DIR/lib` for runtime libraries
+   - `PYTHONPATH`: Includes `build/python_packages` for Python bindings
 4. Generate system descriptor using `ttrt query`
 5. Run lit tests: `llvm-lit -sv build/test/python/`
 6. Upload test reports (JUnit XML)
@@ -250,11 +255,13 @@ gh run download RUN_ID --name hardware-test-reports-n150 \
 
 #### 4. Missing Dependencies
 
-**Symptoms**: Import errors or missing commands
+**Symptoms**: Import errors or missing commands (e.g., `llvm-lit: command not found`)
 
 **Solutions**:
 - Verify build artifacts uploaded correctly
-- Check that tt-mlir installation artifact is complete
+- Check that tt-mlir installation artifact is complete and extracted properly
+- Ensure `PATH` includes `$TT_MLIR_DIR/bin` (where `llvm-lit` is located)
+- Verify zstd extraction used correct window size: `--long=31`
 - Ensure environment activation script exists and works
 
 ### Verbose Debugging
@@ -374,12 +381,22 @@ gh workflow run on-pr.yml \
 
 Current artifact sizes (approximate):
 - `ttlang-build-ubuntu`: ~50MB
-- `ttlang-ttmlir-install-ubuntu`: ~500MB
+- `ttlang-ttmlir-install-ubuntu`: ~100MB (zstd compressed with `--long=31`)
 
-To reduce artifact size, consider:
-- Using artifact compression (already enabled by default)
-- Excluding unnecessary files (e.g., debug symbols)
-- Sharing tt-mlir installation across multiple test jobs
+**Compression Strategy**:
+The tt-mlir installation is compressed using zstd with maximum compression settings:
+```bash
+tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf tt-mlir-install.tar.zst -C $TT_MLIR_DIR .
+```
+
+When extracting (in hardware tests), the same window size must be used:
+```bash
+tar -I 'zstd --long=31' -xf tt-mlir-install.tar.zst -C $TT_MLIR_DIR
+```
+
+To reduce artifact size further, consider:
+- Excluding unnecessary files (e.g., debug symbols, documentation)
+- Sharing tt-mlir installation across multiple test jobs via cache
 
 ### Test Parallelization
 
