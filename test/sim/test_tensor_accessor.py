@@ -6,7 +6,7 @@ Test suite for the TensorAccessor class with PyTorch tensors.
 """
 
 import pytest
-from python.sim import TensorAccessor, IndexType, TILE_SIZE
+from python.sim import TensorAccessor, IndexType
 from python.sim import torch_utils as tu
 
 
@@ -15,20 +15,19 @@ class TestTensorAccessor:
 
     def test_tensor_accessor_creation(self) -> None:
         """Test creating a TensorAccessor with a properly sized tensor."""
-        # Create a tensor that's a multiple of TILE_SIZE
+        # Create a tensor that's a multiple of tile dimensions
         tensor = tu.randn(64, 64)
         accessor = TensorAccessor(tensor, index_type=IndexType.TILE)
 
         assert accessor.shape == (64, 64)
         assert accessor.get_tile_shape() == (2, 2)
-        assert accessor.tile_size == TILE_SIZE
 
     def test_tensor_accessor_invalid_size(self) -> None:
         """Test that TensorAccessor rejects tensors with invalid sizes."""
-        # Create tensor that's not a multiple of TILE_SIZE
+        # Create tensor that's not a multiple of tile dimensions
         tensor = tu.randn(30, 30)
 
-        with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
+        with pytest.raises(ValueError, match="not a multiple of tile dimension"):
             TensorAccessor(tensor, index_type=IndexType.TILE)
 
     def test_tensor_accessor_invalid_index_type(self) -> None:
@@ -156,7 +155,6 @@ class TestTensorAccessor:
         repr_str = repr(stream)
         assert "tensor_shape=torch.Size([96, 64])" in repr_str
         assert "tile_shape=(3, 2)" in repr_str
-        assert f"tile_size={TILE_SIZE}" in repr_str
 
     def test_real_usage_pattern(self) -> None:
         """Test usage pattern from tt-lang code examples."""

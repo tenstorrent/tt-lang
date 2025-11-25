@@ -7,15 +7,13 @@ Public API for cbsim: a class-based interface with a singleton default.
 """
 
 import threading
-from typing import List, Optional, TypeVar, Annotated, NamedTuple, Generic, Any
+from typing import List, Optional, Annotated, NamedTuple, Generic, Any
 from pydantic import validate_call, Field
 from .errors import CBContractError, CBTimeoutError
 from .constants import MAX_CBS
-from .typedefs import Size, CBID
+from .typedefs import Size, CBID, CBElemType
 from .ringview import RingView
 from .cbstate import CBState
-
-T = TypeVar("T")
 
 
 class CBStats(NamedTuple):
@@ -30,7 +28,7 @@ class CBStats(NamedTuple):
     list: List[Optional[object]]
 
 
-class CBAPI(Generic[T]):
+class CBAPI(Generic[CBElemType]):
     """Circular buffer simulator API interface with its own state pool.
     The simulator is based on the following API:
     https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
@@ -39,19 +37,21 @@ class CBAPI(Generic[T]):
     def __init__(self, timeout: Optional[float] = 1.0):
         """Initialize simulator with optional per-instance timeout (seconds)."""
 
-        self._pool: List[CBState[T]] = [CBState[T]() for _ in range(MAX_CBS)]
+        self._pool: List[CBState[CBElemType]] = [
+            CBState[CBElemType]() for _ in range(MAX_CBS)
+        ]
         self._timeout: Optional[float] = timeout
 
     @validate_call
     def host_configure_cb(self, cb_id: CBID, capacity_tiles: Size) -> None:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.cap = capacity_tiles
             cb_state.reset()
 
     @validate_call
     def host_reset_cb(self, cb_id: CBID) -> None:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             if not cb_state.configured:
                 raise CBContractError("CB not configured; cannot reset")
@@ -59,7 +59,7 @@ class CBAPI(Generic[T]):
 
     @validate_call
     def cb_stats(self, cb_id: CBID) -> CBStats:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
             return CBStats(
@@ -74,7 +74,7 @@ class CBAPI(Generic[T]):
 
     @validate_call
     def cb_pages_available_at_front(self, cb_id: CBID, num_tiles: Size) -> bool:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
             cb_state.check_num_tiles(num_tiles)
@@ -82,7 +82,7 @@ class CBAPI(Generic[T]):
 
     @validate_call
     def cb_pages_reservable_at_back(self, cb_id: CBID, num_tiles: Size) -> bool:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
             cb_state.check_num_tiles(num_tiles)
@@ -90,7 +90,7 @@ class CBAPI(Generic[T]):
 
     @validate_call
     def cb_wait_front(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.can_consume:
             cb_state.require_configured()
             cb_state.check_num_tiles(num_tiles)
@@ -119,7 +119,7 @@ class CBAPI(Generic[T]):
 
     @validate_call
     def cb_reserve_back(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.can_produce:
             cb_state.require_configured()
             cb_state.check_num_tiles(num_tiles)
@@ -145,7 +145,7 @@ class CBAPI(Generic[T]):
 
     @validate_call
     def cb_push_back(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
             cb_state.check_num_tiles(num_tiles)
@@ -162,7 +162,7 @@ class CBAPI(Generic[T]):
 
     @validate_call
     def cb_pop_front(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
             cb_state.check_num_tiles(num_tiles)
@@ -171,9 +171,9 @@ class CBAPI(Generic[T]):
                     f"cb_pop_front({num_tiles}) exceeds visible={cb_state.visible}"
                 )
             span = cb_state.front_span(num_tiles)
-            view = RingView[Optional[T]](cb_state.buf, cb_state.cap, span)
+            view = RingView[CBElemType](cb_state.buf, cb_state.cap, span)
             for i in range(len(view)):
-                view[i] = None
+                view.pop(i)
             cb_state.head = (cb_state.head + num_tiles) % cb_state.cap
             cb_state.visible -= num_tiles
             cb_state.last_wait_target = 0
@@ -183,8 +183,8 @@ class CBAPI(Generic[T]):
                 cb_state.can_produce.notify_all()
 
     @validate_call
-    def get_read_ptr(self, cb_id: CBID) -> RingView[T]:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+    def get_read_ptr(self, cb_id: CBID) -> RingView[CBElemType]:
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
             if cb_state.last_wait_target <= 0:
@@ -194,11 +194,11 @@ class CBAPI(Generic[T]):
                     "read window invalidated; call cb_wait_front again"
                 )
             span = cb_state.front_span(cb_state.last_wait_target)
-            return RingView[T](cb_state.buf, cb_state.cap, span)
+            return RingView[CBElemType](cb_state.buf, cb_state.cap, span)
 
     @validate_call
-    def get_write_ptr(self, cb_id: CBID) -> RingView[T]:
-        cb_state: CBState[T] = self._pool[int(cb_id)]
+    def get_write_ptr(self, cb_id: CBID) -> RingView[CBElemType]:
+        cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
             if cb_state.last_reserve_target <= 0:
@@ -206,7 +206,7 @@ class CBAPI(Generic[T]):
             if cb_state.reserved < cb_state.last_reserve_target:
                 raise CBContractError("write window invalidated; call cb_reserve again")
             span = cb_state.back_span(cb_state.last_reserve_target)
-            return RingView[T](cb_state.buf, cb_state.cap, span)
+            return RingView[CBElemType](cb_state.buf, cb_state.cap, span)
 
     @validate_call
     def set_timeout(self, seconds: Optional[Annotated[float, Field(gt=0)]]) -> None:

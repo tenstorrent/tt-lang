@@ -6,11 +6,10 @@
 _RingView and supporting Span for cbsim.
 """
 
-from dataclasses import dataclass
-from typing import Generic, List, Optional, Sequence, TypeVar
-from .typedefs import Size, Index
-
-T = TypeVar("T")
+import operator as _op
+from typing import Generic, List, Sequence, Any, Union, Callable
+from .typedefs import Size, Index, CBElemType, CBSlotType, Span
+from pydantic import validate_call
 
 
 # Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not
@@ -20,20 +19,20 @@ T = TypeVar("T")
 # wrap around. Notice also that it handles a list and a capacity, instead of a
 # _CBState, a deliberate choice to make it closer in spirit to a pointer and
 # minimizing the state that is exposed.
-@dataclass(frozen=True)
-class Span:
-    start: Index  # inclusive index in underlying ring
-    length: Size  # number of tiles
-
-
-class RingView(Generic[T]):
+class RingView(Generic[CBElemType]):
     """A logically contiguous window into the ring, possibly wrapping.
     Provides list-like access to elements while respecting wrap-around.
     """
 
     __slots__ = ("_buf", "_capacity", "_span")
 
-    def __init__(self, buf: List[Optional[T]], capacity: Size, span: Span):
+    # TODO: We can't do @validate_call here. There reason is that @validate_call actually
+    #       copies the arguments to validate them and returns the copies to the decorated
+    #       function. In our case, we don't want the copy of the list, we want to use the
+    #       original list as is. This is a limitation of pydantic's validate_call, and
+    #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
+    # @validate_call
+    def __init__(self, buf: List[CBSlotType[CBElemType]], capacity: Size, span: Span):
         self._buf = buf
         self._capacity = capacity
         self._span = span
@@ -41,24 +40,120 @@ class RingView(Generic[T]):
     def __len__(self) -> Size:
         return self._span.length
 
-    def __getitem__(self, idx: Index) -> T:
+    @validate_call
+    def __getitem__(self, idx: Index) -> CBElemType:
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         value = self._buf[(self._span.start + idx) % self._capacity]
         if value is None:
-            raise ValueError(f"Accessing uninitialized or consumed slot at index {idx}")
+            raise ValueError(f"Reading uninitialized or consumed slot at index {idx}")
         return value
 
-    def __setitem__(self, idx: Index, value: T) -> None:
+    # TODO: Why does validate_call fail here? Maybe because CBElemType could
+    # resolve to tensor which is similar to a list?
+    # @validate_call
+    def __setitem__(self, idx: Index, value: CBElemType) -> None:
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         self._buf[(self._span.start + idx) % self._capacity] = value
 
-    def to_list(self) -> List[Optional[T]]:
+    @validate_call
+    def pop(self, idx: Index) -> None:
+        if not (0 <= idx < self._span.length):
+            raise IndexError(idx)
+        value = self._buf[(self._span.start + idx) % self._capacity]
+        if value is None:
+            raise ValueError(f"Popping uninitialized or consumed slot at index {idx}")
+        self._buf[(self._span.start + idx) % self._capacity] = None
+
+    def to_list(self) -> List[CBSlotType[CBElemType]]:
         return [self[i] for i in range(len(self))]
 
-    def store(self, items: Sequence[T]) -> None:
+    # @validate_call
+    def store(self, items: Sequence[CBElemType]) -> None:
         if len(items) != self._span.length:
             raise ValueError("Length mismatch in store()")
         for i, v in enumerate(items):
             self[i] = v
+
+    def _binary_op(
+        self,
+        other: Union["RingView[CBElemType]", List[CBElemType]],
+        op: Callable[[Any, Any], Any],
+    ) -> List[CBElemType]:
+        """Element-wise binary op: self (op) other."""
+        # Assumes `other` is Sequence-like (__len__ and __getitem__),
+        # which matches your type hints.
+        if len(self) != len(other):
+            raise ValueError("Operand lengths must match for element-wise operations")
+        return [op(self[i], other[i]) for i in range(len(self))]
+
+    def _rbinary_op(
+        self,
+        other: List[CBElemType],
+        op: Callable[[Any, Any], Any],
+    ) -> List[CBElemType]:
+        """Element-wise reverse binary op: other (op) self."""
+        if len(other) != len(self):
+            raise ValueError("Operand lengths must match for element-wise operations")
+        return [op(other[i], self[i]) for i in range(len(self))]
+
+    # ---- forward operators ----
+
+    def __add__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.add)
+
+    def __sub__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.sub)
+
+    def __mul__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.mul)
+
+    def __truediv__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.truediv)
+
+    def __floordiv__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.floordiv)
+
+    def __mod__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.mod)
+
+    def __pow__(
+        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+    ) -> List[CBElemType]:
+        return self._binary_op(other, _op.pow)
+
+    # ---- reverse operators ----
+
+    def __radd__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.add)
+
+    def __rsub__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.sub)
+
+    def __rmul__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.mul)
+
+    def __rtruediv__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.truediv)
+
+    def __rfloordiv__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.floordiv)
+
+    def __rmod__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.mod)
+
+    def __rpow__(self, other: List[CBElemType]) -> List[CBElemType]:
+        return self._rbinary_op(other, _op.pow)

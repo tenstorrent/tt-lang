@@ -22,10 +22,15 @@ from .cbapi import (
     get_write_ptr,
 )
 from .tensoraccessor import TensorAccessor
-from .idxtype import IndexType
-from .constants import TILE_SIZE, TILE_SHAPE
+from .typedefs import IndexType, CoreIndex, Shape
+from .constants import TILE_SHAPE, MAX_CBS
 from .cb import CircularBuffer
 from .dma import dma, DMATransaction
+from .program import Program, BindableTemplate, core_index
+from .decorators import compute, datamovement
+from .kernel import pykernel_gen
+from .testing import assert_pcc
+from .torch_utils import is_tiled
 from . import torch_utils
 
 __all__ = [
@@ -44,10 +49,20 @@ __all__ = [
     "get_write_ptr",
     "TensorAccessor",
     "IndexType",
-    "TILE_SIZE",
+    "CoreIndex",
+    "Shape",
     "TILE_SHAPE",
+    "MAX_CBS",
     "CircularBuffer",
     "dma",
     "DMATransaction",
+    "Program",
+    "BindableTemplate",
+    "core_index",
+    "compute",
+    "datamovement",
+    "pykernel_gen",
+    "assert_pcc",
+    "is_tiled",
     "torch_utils",
 ]
