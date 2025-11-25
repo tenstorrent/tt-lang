@@ -8,6 +8,8 @@ set -e
 HARDWARE_TYPE="${1:-n150}"
 
 source build/env/activate
+echo "Activated virtual environment"
+env
 
 mkdir -p test_reports
 
