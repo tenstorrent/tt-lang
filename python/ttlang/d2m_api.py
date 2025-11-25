@@ -364,6 +364,7 @@ def _compile_and_run_kernel(
         verify = True
         ttnn_mode = False  # tt-lang uses TTMetal mode
 
+        # fmt: off
         pipeline_passes = [
             "d2m-generic-replace-globals",
             "d2m-lower-to-layout",                         # Lower to_layout to data movement
@@ -399,6 +400,7 @@ def _compile_and_run_kernel(
             register_device = f"{register_device}{{{device_register_options}}}"
 
         pipeline_str = f"builtin.module({','.join([register_device, pipeline])})"
+        # fmt: on
         pm = PassManager.parse(pipeline_str)
         pm.enable_verifier(verify)
 
@@ -454,7 +456,12 @@ def _compile_and_run_kernel(
                 traceback.print_exc()
 
         # TTNN runtime execution (not yet implemented - requires TTNN integration)
-        if not compile_only and ttnn_mode and binary is not None and runtime is not None:
+        if (
+            not compile_only
+            and ttnn_mode
+            and binary is not None
+            and runtime is not None
+        ):
             try:
                 _execute_on_ttnn_runtime(flatbuffer_binary, args)
             except Exception as e:

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
 #include "mlir/Bindings/Python/NanobindAdaptors.h"
 #include "ttlang/Transforms/Passes.h"
 
