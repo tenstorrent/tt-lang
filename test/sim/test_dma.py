@@ -200,8 +200,13 @@ class TestDMAConvenienceFunction:
 
         tx = dma(source, ringview)
 
-        assert isinstance(tx, DMATransaction)
-        assert not tx.completed
+        match tx:
+            case DMATransaction():
+                assert not tx.completed
+            case _:
+                raise AssertionError(
+                    f"Expected DMATransaction, got {type(tx).__name__}"
+                )
 
 
 class TestDMAComplexOperations:

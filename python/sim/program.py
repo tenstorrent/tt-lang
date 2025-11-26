@@ -133,18 +133,19 @@ def Program(*funcs: BindableTemplate) -> Any:
                 api = CBAPI[torch.Tensor]()  # new CBAPI per core
 
                 for key, value in self.context.items():
-                    if isinstance(value, (torch.Tensor, TensorAccessor)):
-                        core_context[key] = value
-                        memo[id(value)] = value
-                    elif isinstance(value, CircularBuffer):
-                        # create a fresh CB for this core
-                        core_context[key] = CircularBuffer(
-                            shape=value.shape,
-                            buffer_factor=value.buffer_factor,
-                            api=api,
-                        )
-                    else:
-                        core_context[key] = copy.deepcopy(value, memo)
+                    match value:
+                        case torch.Tensor() | TensorAccessor():
+                            core_context[key] = value
+                            memo[id(value)] = value
+                        case CircularBuffer():
+                            # create a fresh CB for this core
+                            core_context[key] = CircularBuffer(
+                                shape=value.shape,
+                                buffer_factor=value.buffer_factor,
+                                api=api,
+                            )
+                        case _:
+                            core_context[key] = copy.deepcopy(value, memo)
 
                 # also make the core number visible
                 core_context["_core"] = core

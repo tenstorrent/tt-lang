@@ -18,12 +18,19 @@ def _extract_max_cbs_from_cbid() -> int:
     )  # Cast required for type checkers
 
     for meta in fi.metadata:
-        if isinstance(meta, Lt):
-            value = meta.lt
-            assert isinstance(
-                value, int
-            )  # This assertion constrains the type for type checkers
-            return value
+        match meta:
+            case Lt():
+                value = meta.lt
+                match value:
+                    case int():
+                        return value
+                    case _:
+                        raise RuntimeError(
+                            f"Lt constraint value must be int, got {type(value).__name__}"
+                        )
+            case _:
+                # Skip non-Lt metadata
+                continue
 
     raise RuntimeError("No Lt constraint found on CBID")
 
