@@ -84,7 +84,7 @@ jobs:
           path: |
             ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -116,12 +116,6 @@ jobs:
           # Copy ttrt wheel to install directory for artifact upload
           mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
           cp build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
-
-      - name: Copy ttrt wheel to install directory (cache hit)
-        if: steps.cache-ttmlir.outputs.cache-hit == 'true' && runner.os == 'Linux'
-        run: |
-          mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
-          cp ${{ env.TT_MLIR_HOME }}/build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
