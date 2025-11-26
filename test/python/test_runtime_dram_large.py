@@ -7,6 +7,9 @@
 
 # Runtime test for large DRAM tensors using tilize-on-the-fly.
 # 1024x1024 f32 = 4MB (exceeds L1 ~1.5MB per core).
+#
+# TODO: This test currently only processes tile [0,0]. To process all tiles,
+# add loops in DM and compute to iterate over the 32x32 tile grid.
 
 import torch
 from ttlang.d2m_api import *
@@ -25,6 +28,7 @@ def test_runtime_dram_large(lhs, rhs, lhs_tiled, rhs_tiled, out):
         rhs_tiled_cb: CircularBuffer,
         out_cb: CircularBuffer
     ):
+        # TODO: for tile_idx in range(NUM_TILES):
         l_scalar = lhs_scalar_cb.wait()
         r_scalar = rhs_scalar_cb.wait()
 
@@ -54,7 +58,9 @@ def test_runtime_dram_large(lhs, rhs, lhs_tiled, rhs_tiled, out):
     def dm_lhs(lhs_scalar_cb: CircularBuffer, rhs_scalar_cb: CircularBuffer,
                lhs_tiled_cb: CircularBuffer, rhs_tiled_cb: CircularBuffer,
                out_cb: CircularBuffer):
+        # TODO: for tile_idx in range(NUM_TILES):
         lhs_shard = lhs_scalar_cb.reserve()
+        # TODO: tx = dma(lhs_accessor[tile_row, tile_col], lhs_shard)
         tx = dma(lhs_accessor[0, 0], lhs_shard)
         tx.wait()
         lhs_scalar_cb.push()
@@ -63,7 +69,9 @@ def test_runtime_dram_large(lhs, rhs, lhs_tiled, rhs_tiled, out):
     def dm_rhs(lhs_scalar_cb: CircularBuffer, rhs_scalar_cb: CircularBuffer,
                lhs_tiled_cb: CircularBuffer, rhs_tiled_cb: CircularBuffer,
                out_cb: CircularBuffer):
+        # TODO: for tile_idx in range(NUM_TILES):
         rhs_shard = rhs_scalar_cb.reserve()
+        # TODO: tx = dma(rhs_accessor[tile_row, tile_col], rhs_shard)
         tx = dma(rhs_accessor[0, 0], rhs_shard)
         tx.wait()
         rhs_scalar_cb.push()
