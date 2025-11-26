@@ -397,6 +397,40 @@ def dm_reader(...):
 **Implementation Note:** TensorAccessor creates `d2m.stream_layout` ops with backing storage for multi-buffered access.
 Under the hood, this enables efficient data movement with proper memory management.
 
+**DRAM TensorAccessors (Tilize-on-the-Fly)**
+
+For tensors that exceed L1 capacity (~1.5MB per core), use DRAM-backed TensorAccessors. Currently requires explicit tilization in the compute kernel.
+
+```python
+# Create DRAM-backed accessor
+lhs_accessor = TensorAccessor(lhs, memory_space="DRAM")
+```
+
+**Data Flow:**
+
+```
+Host Tensor → to_layout → DRAM Buffer (TensorAccessor)
+                               ↓
+                     d2m.generic inputs (DRAM)
+                               ↓
+          ┌────────────────────┼────────────────────┐
+          │                    │                    │
+     datamovement         datamovement          compute
+          │                    │                    │
+     get_global @lhs      get_global @rhs       wait on CBs
+          ↓                    ↓                    ↓
+     DMA: DRAM→L1 CB      DMA: DRAM→L1 CB       tilize
+     (scalar format)      (scalar format)       (scalar → tiled)
+                                                    ↓
+                                                operate on tiles
+```
+
+**Pattern:** DRAM data arrives in scalar format. Use 5 CBs: 2 scalar (DRAM inputs), 2 tiled (tilize destinations), 1 tiled (output). Compute tilizes scalar data into tiled CBs before operating.
+
+Currently, tilize-on-the-fly is required for DRAM inputs because of to_layout always going through L1 for the bounces. In the future, we could use TTNN integration which will provide pre-tilized tensors (so no need for to_layout) or go back to to_layout once it's fixed (and doesn't require an L1 bounce).
+
+See `test/python/test_runtime_dram_add.py` for a complete example.
+
 **Operators**
 
 ```python
