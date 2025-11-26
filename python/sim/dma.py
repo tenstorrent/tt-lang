@@ -9,18 +9,20 @@ enabling data transfer operations between tensors and RingViews in the
 CircularBuffer system.
 """
 
-from typing import Any, Dict, List, Union
+from typing import Deque, Dict, List, Tuple, Union
+from collections import deque
 import torch
 from . import torch_utils as tu
 from .ringview import RingView
 from .constants import TILE_SHAPE
-from .typedefs import MulticastAddress
+from .typedefs import MulticastAddress, Count
 
 
 # Global multicast buffer for simulating NoC multicast communication
 # In a real implementation, this would be handled by the NoC hardware
-# TODO: This "List[Any]" should be made more specific, should need refactoring
-_multicast_buffer: Dict[MulticastAddress, List[Any]] = {}
+# Each queue entry is (data, remaining_receiver_count)
+# Multiple receivers can consume the same data, tracked by the count
+_multicast_buffer: Dict[MulticastAddress, Deque[Tuple[List[torch.Tensor], Count]]] = {}
 
 
 class DMATransaction:
@@ -177,9 +179,16 @@ class DMATransaction:
                 # Store the data in a shared multicast buffer accessible by all cores
                 try:
                     src_data = [self._src[i] for i in range(len(self._src))]
-                    # Store in a global multicast buffer keyed by the multicast address
+                    # Initialize queue if it doesn't exist
+                    if self._dst not in _multicast_buffer:
+                        _multicast_buffer[self._dst] = deque()
+
+                    # Calculate number of receivers (all cores except the sender)
+                    num_receivers = len(self._dst.core_indices) - 1
+
+                    # Add to the queue for this multicast address with receiver count
                     # In a real implementation, this would send packets over the NoC
-                    _multicast_buffer[self._dst] = src_data
+                    _multicast_buffer[self._dst].append((src_data, num_receivers))
                 except Exception as e:
                     raise ValueError(f"Failed to multicast send: {e}")
             elif isinstance(self._src, MulticastAddress) and isinstance(
@@ -188,13 +197,16 @@ class DMATransaction:
                 # Multicast receive: MulticastAddress → RingView
                 # Retrieve the data from the shared multicast buffer
                 try:
-                    # Poll until data is available in the multicast buffer
+                    # Poll until data is available in the multicast buffer queue
                     # In a real implementation, this would be hardware-level blocking
                     import time
 
                     timeout = 2.0  # 2 second timeout to detect deadlocks
                     start_time = time.time()
-                    while self._src not in _multicast_buffer:
+                    while (
+                        self._src not in _multicast_buffer
+                        or len(_multicast_buffer[self._src]) == 0
+                    ):
                         if time.time() - start_time > timeout:
                             raise TimeoutError(
                                 f"Timeout waiting for multicast data. "
@@ -203,13 +215,26 @@ class DMATransaction:
                             )
                         time.sleep(0.001)  # Small sleep to avoid busy-waiting
 
-                    src_data = _multicast_buffer[self._src]
+                    # Peek at the front of the queue (don't remove yet)
+                    src_data, remaining_receivers = _multicast_buffer[self._src][0]
                     if len(self._dst) != len(src_data):
                         raise ValueError(
                             f"Destination RingView length ({len(self._dst)}) "
                             f"does not match multicast data length ({len(src_data)})"
                         )
                     self._dst.store(src_data)
+
+                    # Decrement receiver count
+                    remaining_receivers -= 1
+                    if remaining_receivers == 0:
+                        # All receivers consumed, remove from queue
+                        _multicast_buffer[self._src].popleft()
+                    else:
+                        # Update the count for remaining receivers
+                        _multicast_buffer[self._src][0] = (
+                            src_data,
+                            remaining_receivers,
+                        )
                 except TimeoutError:
                     raise
                 except Exception as e:
