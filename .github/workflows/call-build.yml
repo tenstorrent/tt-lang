@@ -108,6 +108,7 @@ jobs:
             -DBUILD_TESTING=OFF \
             -S .
           cmake --build build --target all --target TTMLIRPythonModules
+          cmake --build build --target ttrt
           cmake --install build
           cmake --install build --component TTMLIRPythonWheel
 
@@ -153,6 +154,15 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf tt-mlir-install.tar.zst -C ${{ env.TT_MLIR_DIR }} .
+
+      - name: Upload ttrt wheels for hardware tests
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ttlang-ttrt-whl-ubuntu
+          path: tt-mlir/build/tools/ttrt/build/ttrt*.whl
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload tt-mlir installation for hardware tests
         if: runner.os == 'Linux'

@@ -76,13 +76,16 @@ jobs:
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/build/tt-mlir-install \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_ENABLE_RUNTIME=OFF \
-                      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
+                      -DTTMLIR_ENABLE_RUNTIME=ON \
+                      -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
                   cmake --install build
+
+                  # Build ttrt wheels for hardware testing
+                  cmake --build build --target ttrt
                   df -H
 
             - name: Test the build
@@ -99,6 +102,14 @@ jobs:
                       build/test
                       build/env
                       sim/
+                  retention-days: 1
+
+            - name: Upload ttrt wheels
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ttlang-fetchcontent-ttrt-whl-ubuntu
+                  path: build/tools/ttrt/build/ttrt*.whl
+                  if-no-files-found: error
                   retention-days: 1
 
             - name: Verify tt-mlir installation exists

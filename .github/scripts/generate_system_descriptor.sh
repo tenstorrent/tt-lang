@@ -6,21 +6,34 @@
 set -e
 
 HARDWARE_TYPE="${1:-n150}"
-TTRT=/opt/ttmlir-toolchain/venv/bin/ttrt
 
 source build/env/activate
-if [ ! -f "${TTRT}" ]; then
-  echo "Error: ttrt binary not found (${TTRT})"
-  exit 1
+
+# For hardware testing, try to get real system descriptor using ttrt (like tt-mlir does)
+if [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/bin/ttrt" ]; then
+  TTRT="${TT_MLIR_DIR}/bin/ttrt"
+elif [ -f "/opt/ttmlir-toolchain/venv/bin/ttrt" ]; then
+  TTRT="/opt/ttmlir-toolchain/venv/bin/ttrt"
+elif command -v ttrt >/dev/null 2>&1; then
+  TTRT="ttrt"
+else
+  TTRT=""
 fi
 
 mkdir -p ttrt-artifacts
 cd ttrt-artifacts
 
-if [ "${HARDWARE_TYPE}" == "tg" ] || [ "${HARDWARE_TYPE}" == "p150" ]; then
-  ${TTRT} query --save-artifacts --disable-eth-dispatch
+if [ -n "${TTRT}" ]; then
+  echo "Using ttrt from: ${TTRT}"
+  if [ "${HARDWARE_TYPE}" == "tg" ] || [ "${HARDWARE_TYPE}" == "p150" ]; then
+    ${TTRT} query --save-artifacts --disable-eth-dispatch
+  else
+    ${TTRT} query --save-artifacts
+  fi
 else
-  ${TTRT} query --save-artifacts
+  echo "Error: ttrt not found. For hardware testing, ttrt must be available to query the real system descriptor."
+  echo "Install ttrt or ensure it's in PATH."
+  exit 1
 fi
 
 SYSTEM_DESC=$(find . -name "*.ttsys" -type f | head -1)
