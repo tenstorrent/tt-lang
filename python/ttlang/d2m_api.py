@@ -36,7 +36,7 @@ from ._src.tensor_accessor import TensorAccessor
 
 from ._src.d2m_ast import D2MGenericCompiler
 
-from .operators import TensorBlock, MemTx, dma, tilize, untilize, tile_alloc
+from .operators import TensorBlock, MemTx, dma, tilize, untilize
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
@@ -518,8 +518,8 @@ def pykernel_gen(
     """
     if grid is None:
         raise ValueError("grid parameter is required")
-    if num_outs < 1:
-        raise ValueError(f"num_outs must be at least 1, got {num_outs}")
+    if num_outs != 1:
+        raise ValueError(f"num_outs must be 1, got {num_outs}")
     if memory_space not in SUPPORTED_MEMORY_SPACES:
         raise ValueError(
             f"Invalid memory_space: {memory_space!r}. "

@@ -246,7 +246,6 @@ def create_generic_func(
             ]
         )
 
-        # Create device output buffers for all outputs
         device_output_types = []
         device_output_buffers = []
         for out_i in range(num_outs):

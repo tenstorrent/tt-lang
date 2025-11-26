@@ -7,19 +7,14 @@
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
-# Verify: Runtime execution of add operation works correctly with DRAM memory space.
-# Uses 5 CBs for tilize-on-the-fly:
-#   - 2 scalar input CBs (from DRAM)
-#   - 2 tiled intermediate CBs (tilize destinations)
-#   - 1 tiled output CB
+# Tilize-on-the-fly pattern: DRAM scalar → L1 scalar CB → tilize → L1 tiled CB → compute.
+# 5 CBs: 2 scalar (DRAM), 2 tiled (L1 intermediate), 1 tiled (output).
 
 import torch
 from ttlang.d2m_api import *
 
 
-# num_outs=1: only 'out' is an output
-# lhs, rhs are DRAM streams; lhs_tiled, rhs_tiled are empty L1 buffers for tilize
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)], num_outs=1)
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
 def test_runtime_dram_add(lhs, rhs, lhs_tiled, rhs_tiled, out):
     # TensorAccessor() wraps input tensors for DMA with explicit DRAM memory space.
     # Scalar data is staged to DRAM, then pulled to L1 and tilized on-the-fly in compute.

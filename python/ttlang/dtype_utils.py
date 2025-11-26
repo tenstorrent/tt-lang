@@ -187,29 +187,6 @@ def torch_dtype_to_ttcore_datatype(torch_dtype):
     raise ValueError(f"Unsupported torch dtype for ttcore.DataType: {torch_dtype}")
 
 
-def mlir_type_to_ttcore_datatype(mlir_type):
-    """
-    Convert MLIR element type to ttcore.DataType enum.
-
-    Args:
-        mlir_type: MLIR type (F32Type, F16Type, BF16Type, etc.)
-
-    Returns:
-        ttcore.DataType enum value
-
-    Raises:
-        TypeError: If type is not supported
-    """
-    if isinstance(mlir_type, ir.F32Type):
-        return ttcore.DataType.Float32
-    if isinstance(mlir_type, ir.F16Type):
-        return ttcore.DataType.Float16
-    if isinstance(mlir_type, ir.BF16Type):
-        return ttcore.DataType.BFloat16
-
-    raise TypeError(f"Unsupported MLIR type for ttcore.DataType: {mlir_type}")
-
-
 def create_borrowed_tensors(torch_tensors):
     """
     Create runtime borrowed tensors from torch tensors.

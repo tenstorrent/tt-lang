@@ -12,7 +12,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)], num_outs=1)
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
 def test_runtime_dram_large(lhs, rhs, lhs_tiled, rhs_tiled, out):
     lhs_accessor = TensorAccessor(lhs, memory_space="DRAM")
     rhs_accessor = TensorAccessor(rhs, memory_space="DRAM")

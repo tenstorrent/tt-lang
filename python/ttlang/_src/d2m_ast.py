@@ -97,8 +97,7 @@ class D2MGenericCompiler(TTCompilerBase):
                 shape = list(self.args[i].shape)
                 dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
 
-                # Check if this CB receives data from a DRAM TensorAccessor
-                # CBs receiving DRAM data should be scalar (tilization happens in compute)
+                # DRAM-backed CBs use scalar format (tilization happens in compute)
                 tensor_name = getattr(self.args[i], '_global_name', None)
                 cb_receives_dram = tensor_name in self.context.dram_streams
 
@@ -120,8 +119,6 @@ class D2MGenericCompiler(TTCompilerBase):
                 )
                 shard_shape = device_shape[len(device_shape) // 2 :]
 
-                # CBs wrap the tensor type that enters the generic op
-                # CBs receiving DRAM data use scalar type, others use tile type
                 if cb_tiled:
                     ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
                     element_type = ttcore.ir.TileType.get(
@@ -174,8 +171,7 @@ class D2MGenericCompiler(TTCompilerBase):
                             if val.memory_space is not None
                             else self.context.memory_space # Default to L1
                         )
-                        # DRAM TensorAccessors use scalar format - tilization happens
-                        # on-the-fly in compute when data is pulled from DRAM to CB
+                        # DRAM uses scalar format (tilization happens in compute)
                         accessor_tiled = self.context.tiled and accessor_memory_space != "DRAM"
                         layout = create_metal_layout(
                             self.ctx,

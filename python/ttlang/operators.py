@@ -9,11 +9,9 @@ from __future__ import annotations
 from typing import List, Callable, Optional, Tuple, Union
 
 from ttmlir.ir import *
-from ttmlir.dialects import d2m, arith, linalg, ttcore
+from ttmlir.dialects import d2m, arith, linalg
 
 from ._src.d2m_ast import syntax
-from .constants import DEFAULT_TILE_SIZE
-from .dtype_utils import mlir_type_to_ttcore_datatype
 from pykernel._src.utils import _asindex
 
 # Type aliases for common patterns
@@ -261,37 +259,6 @@ def untilize(src: TensorBlock, dst: TensorBlock) -> None:
         None (operates in place on dst)
     """
     return d2m.tile_untilize_block(src, dst)
-
-
-@syntax("tile_alloc")
-def tile_alloc() -> TensorBlock:
-    """
-    Allocate a local tiled buffer for compute operations.
-
-    Creates an empty tensor with a single 32x32 tile (f32 dtype).
-    Used for intermediate storage during tilize-on-the-fly operations.
-
-    Returns:
-        Empty tensor with shape [1, 1] and tile element type.
-
-    Example:
-        scalar = src_cb.wait()
-        tiled = tile_alloc()
-        tilize(scalar, tiled)
-    """
-    # Get context from current insertion point
-    ip = InsertionPoint.current
-    ctx = ip.block.owner.context
-
-    # Create tile type: 32x32 f32 tile
-    tile_type = ttcore.ir.TileType.get(
-        ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore.DataType.Float32
-    )
-
-    # Create 1x1 tensor of tiles (single tile)
-    tensor_type = RankedTensorType.get([1, 1], tile_type)
-
-    return d2m.empty(tensor_type)
 
 
 @syntax("dma")
