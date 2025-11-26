@@ -6,6 +6,8 @@
 
 from typing import Optional, Any
 
+from ..constants import SUPPORTED_MEMORY_SPACES
+
 
 class TensorAccessor:
     """
@@ -22,6 +24,7 @@ class TensorAccessor:
         name: Global name of the wrapped tensor
         shape: Shape of the tensor
         dtype: Data type of the tensor (e.g., torch.float32)
+        memory_space: Memory space for the accessor ("L1" or "DRAM"), or None for kernel default
 
     Example:
         >>> @pykernel_gen(grid=(2,2))
@@ -33,20 +36,27 @@ class TensorAccessor:
         >>>         dma(lhs_accessor[idx, 0], shard).wait()
     """
 
-    def __init__(self, tensor: Any):
+    def __init__(self, tensor: Any, memory_space: Optional[str] = None):
         """
         Create a TensorAccessor from a tensor argument.
 
         Args:
             tensor: PyTorch tensor that must have a _global_name attribute
+            memory_space: Optional memory space ("L1" or "DRAM"). If None, uses L1.
 
         Raises:
-            ValueError: If tensor is not a top-level argument
+            ValueError: If tensor is not a top-level argument or memory_space is invalid
         """
         if not hasattr(tensor, "_global_name"):
             raise ValueError(
                 "TensorAccessor must be created from a top level tensor argument"
             )
+        if memory_space is not None and memory_space not in SUPPORTED_MEMORY_SPACES:
+            raise ValueError(
+                f"Invalid memory_space: {memory_space!r}. "
+                f"Must be one of: {', '.join(sorted(SUPPORTED_MEMORY_SPACES))}"
+            )
         self.name = tensor._global_name
         self.shape = tensor.shape
         self.dtype = tensor.dtype
+        self.memory_space = memory_space

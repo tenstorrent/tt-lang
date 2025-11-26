@@ -135,6 +135,7 @@ def create_generic_func(
     user_args: List[Any],
     tiled: bool,
     memory_space: str,
+    stream_memory_spaces: Dict[str, str] = None,
 ):
     """
     Create a D2M generic function from compiled threads.
@@ -155,8 +156,11 @@ def create_generic_func(
         num_outs: Number of output arguments
         user_args: Original user tensor arguments
         tiled: Whether to use tiled layout
-        memory_space: "L1" or "DRAM"
+        memory_space: "L1" or "DRAM" (default for non-stream inputs)
+        stream_memory_spaces: Dict mapping stream arg names to their memory spaces
     """
+    if stream_memory_spaces is None:
+        stream_memory_spaces = {}
     if (
         isinstance(block_factors, list)
         and len(block_factors) > 0
@@ -200,8 +204,13 @@ def create_generic_func(
             logical_shape = list(user_args[i].shape)
             dtype = torch_dtype_to_mlir_type(user_args[i].dtype, ctx)
 
+            # Determine memory space for this input:
+            # If it's a stream with explicit memory_space, use that; otherwise default
+            arg_name = user_args[i]._global_name
+            input_memory_space = stream_memory_spaces.get(arg_name, memory_space)
+
             device_tensor_type = create_device_tensor_type(
-                ctx, logical_shape, dtype, grid, tiled, memory_space
+                ctx, logical_shape, dtype, grid, tiled, input_memory_space
             )
 
             device_buffer = d2m.EmptyOp(device_tensor_type)
@@ -217,7 +226,7 @@ def create_generic_func(
                         logical_shape=logical_shape,
                         grid=grid,
                         tiled=tiled,
-                        memory_space=memory_space,
+                        memory_space=input_memory_space,
                     ),
                 )
                 device_inputs.append(device_with_stream)

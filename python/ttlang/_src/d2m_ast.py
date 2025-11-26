@@ -36,6 +36,7 @@ class D2MGenericCompiler(TTCompilerBase):
         self.loc = Location.name(self.name)
         self.captures = captures
         self.streams: Set[str] = set()
+        self.stream_memory_spaces: dict = {}
         self.supported_nodes.append(ast.AsyncFunctionDef)
 
         self.context = CompilerContext(
@@ -159,13 +160,18 @@ class D2MGenericCompiler(TTCompilerBase):
                     )
                 elif isinstance(val, TensorAccessor):
                     with InsertionPoint.at_block_begin(self.module.body):
+                        accessor_memory_space = (
+                            val.memory_space
+                            if val.memory_space is not None
+                            else self.context.memory_space # Default to L1
+                        )
                         layout = create_metal_layout(
                             self.ctx,
                             MetalLayoutConfig(
                                 logical_shape=val.shape,
                                 grid=self.context.grid,
                                 tiled=self.context.tiled,
-                                memory_space=self.context.memory_space,
+                                memory_space=accessor_memory_space,
                             ),
                         )
                         tile_shape = (
@@ -195,6 +201,7 @@ class D2MGenericCompiler(TTCompilerBase):
                         self.module_symbol_table.insert(globalTensor.operation)
                     self.symbol_tables[-1][name] = ttcore.get_global(tensor, val.name)
                     self.streams.add(val.name)
+                    self.stream_memory_spaces[val.name] = accessor_memory_space
                 else:
                     raise TypeError(f"Invalid capture type for var {name}: {type(val)}")
 

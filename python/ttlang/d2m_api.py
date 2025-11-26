@@ -330,6 +330,11 @@ def _compile_and_run_kernel(
             copy_symbol_table_globals(module_symbol_table, compiled_threads, f_params)
 
         streams = set().union(*[ct.streams for ct in compiled_threads])
+
+        stream_memory_spaces = {}
+        for ct in compiled_threads:
+            stream_memory_spaces.update(ct.stream_memory_spaces)
+
         positional_arg_names = list(f_params.keys())[: len(args)]
         stream_func_arg_attrs = [
             DictAttr.get({"d2m.stream": BoolAttr.get(p in streams)})
@@ -352,6 +357,7 @@ def _compile_and_run_kernel(
                 args,
                 tiled,
                 memory_space,
+                stream_memory_spaces,
             )
 
         initial_mlir_path = os.environ.get("TTLANG_INITIAL_MLIR")
