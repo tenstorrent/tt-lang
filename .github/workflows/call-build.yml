@@ -89,6 +89,7 @@ jobs:
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
         run: |
+          set -x
           cd tt-mlir
           source env/activate
           ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
@@ -108,14 +109,31 @@ jobs:
             -DBUILD_TESTING=OFF \
             -S .
           cmake --build build
+
+      - name: Build ttrt
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: |
+          cd tt-mlir
+          source env/activate
           cmake --build build -t ttrt
-          cmake --install build
-          cmake --install build --component TTMLIRPythonWheel
-          # Copy runtime Python module to install directory
-          cp build/runtime/python/_ttmlir_runtime*.so ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
-          # Copy ttrt wheel to install directory for artifact upload
+
+      - name: Install tt-mlir
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+        run: |
+          cd tt-mlir
+          source env/activate
+          cmake --build build -t install
+
+      - name: Copy runtime Python module to install directory
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: |
+          cp tt-mlir/build/runtime/python/_ttmlir_runtime*.so ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
+
+      - name: Copy ttrt wheel to install directory
+        if: runner.os == 'Linux'
+        run: |
           mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
-          cp build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
+          cp ${{ env.TT_MLIR_HOME }}/build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
