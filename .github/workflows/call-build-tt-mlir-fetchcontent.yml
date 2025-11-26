@@ -60,7 +60,8 @@ jobs:
                   path: |
                       build/tt-mlir-install
                       build/_deps
-                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
+                      build/tools/ttrt
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
@@ -86,9 +87,6 @@ jobs:
 
                   # Build ttrt wheels for hardware testing
                   cmake --build build --target ttrt
-                  # Copy ttrt wheel to install directory for artifact upload (survives cache restore)
-                  mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
-                  cp build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
                   df -H
 
             - name: Test the build
@@ -111,7 +109,7 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: ttlang-fetchcontent-ttrt-whl-ubuntu
-                  path: ${{ env.TT_MLIR_DIR }}/wheels/ttrt*.whl
+                  path: build/tools/ttrt/build/ttrt*.whl
                   if-no-files-found: error
                   retention-days: 1
 
