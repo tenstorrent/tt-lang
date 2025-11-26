@@ -113,6 +113,9 @@ jobs:
           cmake --install build --component TTMLIRPythonWheel
           # Copy runtime Python module to install directory
           cp build/runtime/python/_ttmlir_runtime*.so ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
+          # Copy ttrt wheel to install directory for artifact upload
+          mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
+          cp build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
@@ -162,7 +165,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ttlang-ttrt-whl-ubuntu
-          path: tt-mlir/build/tools/ttrt/build/ttrt*.whl
+          path: ${{ env.TT_MLIR_DIR }}/wheels/ttrt*.whl
           if-no-files-found: error
           retention-days: 1
 
