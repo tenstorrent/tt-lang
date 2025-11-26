@@ -17,7 +17,7 @@ on:
 jobs:
   build:
     runs-on: ${{ inputs.os }}
-    timeout-minutes: ${{ inputs.os == 'ubuntu-latest' && 240 || 360 }}
+    timeout-minutes: 360
 
     container: ${{ inputs.os == 'ubuntu-latest' && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
 
