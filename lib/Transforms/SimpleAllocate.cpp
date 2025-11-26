@@ -53,6 +53,10 @@ public:
       return signalPassFailure();
     }
 
+    if (failed(allocateDRAM(funcOp, chipDesc, allocs))) {
+      return signalPassFailure();
+    }
+
     assignAddresses(funcOp, chipDesc, allocs);
     insertDeallocs(funcOp, allocs);
   }
@@ -173,12 +177,12 @@ private:
                                  : chipDesc.getL1Size();
     allocation::Planner::AllocSizeT l1Capacity = l1Size - l1Base;
 
-    allocation::Planner::Problem problem;
+    allocation::Planner::Problem l1Problem;
 
     for (auto &info : allocs) {
       if (info.memSpace == ttcore::MemorySpace::DeviceL1) {
         info.varIndex =
-            problem.def([&](allocation::Planner::VariableBuilder &b) {
+            l1Problem.def([&](allocation::Planner::VariableBuilder &b) {
               b.request(allocation::Planner::Space::Scratch, info.size,
                         info.range.first, info.range.last);
               b.place(allocation::Planner::Space::Scratch);
@@ -186,24 +190,68 @@ private:
       }
     }
 
-    auto stats = allocation::Planner::allocate(
-        problem, allocation::Planner::Algorithm::Simple);
+    auto l1Stats = allocation::Planner::allocate(
+        l1Problem, allocation::Planner::Algorithm::Simple);
 
-    if (stats.memUsage > l1Capacity) {
+    if (l1Stats.memUsage > l1Capacity) {
       return funcOp.emitError("L1 capacity exceeded: ")
-             << stats.memUsage << " bytes required, " << l1Capacity
+             << l1Stats.memUsage << " bytes required, " << l1Capacity
              << " bytes available";
     }
 
     for (auto &info : allocs) {
-      if (info.varIndex >= 0) {
-        const auto &var = problem.variable(info.varIndex);
+      if (info.memSpace == ttcore::MemorySpace::DeviceL1 && info.varIndex >= 0) {
+        const auto &var = l1Problem.variable(info.varIndex);
         const auto &scratchRequests = var.domain[allocation::ordinal(
             allocation::Planner::Space::Scratch)];
         if (!scratchRequests.empty()) {
           auto reqIndex = *scratchRequests.begin();
           // Reuse size field to store offset (base address added later)
-          info.size = problem.request(reqIndex).offset;
+          info.size = l1Problem.request(reqIndex).offset;
+        }
+      }
+    }
+
+    return success();
+  }
+
+  LogicalResult allocateDRAM(func::FuncOp funcOp, ttcore::ChipDescAttr chipDesc,
+                             SmallVector<AllocInfo> &allocs) {
+    allocation::Planner::AllocSizeT dramBase = chipDesc.getDramUnreservedBase();
+    allocation::Planner::AllocSizeT dramSize = chipDesc.getDramChannelSize();
+    allocation::Planner::AllocSizeT dramCapacity = dramSize - dramBase;
+
+    allocation::Planner::Problem dramProblem;
+
+    for (auto &info : allocs) {
+      if (info.memSpace == ttcore::MemorySpace::DeviceDRAM) {
+        info.varIndex =
+            dramProblem.def([&](allocation::Planner::VariableBuilder &b) {
+              b.request(allocation::Planner::Space::Scratch, info.size,
+                        info.range.first, info.range.last);
+              b.place(allocation::Planner::Space::Scratch);
+            });
+      }
+    }
+
+    auto dramStats = allocation::Planner::allocate(
+        dramProblem, allocation::Planner::Algorithm::Simple);
+
+    if (dramStats.memUsage > dramCapacity) {
+      return funcOp.emitError("DRAM capacity exceeded: ")
+             << dramStats.memUsage << " bytes required, " << dramCapacity
+             << " bytes available";
+    }
+
+    for (auto &info : allocs) {
+      if (info.memSpace == ttcore::MemorySpace::DeviceDRAM && info.varIndex >= 0) {
+        const auto &var = dramProblem.variable(info.varIndex);
+        const auto &scratchRequests = var.domain[allocation::ordinal(
+            allocation::Planner::Space::Scratch)];
+        if (!scratchRequests.empty()) {
+          auto reqIndex = *scratchRequests.begin();
+          // Reuse size field to store offset (base address added later)
+          info.size = dramProblem.request(reqIndex).offset;
         }
       }
     }
@@ -216,6 +264,7 @@ private:
     IRRewriter rewriter(funcOp.getContext());
 
     allocation::Planner::AllocSizeT l1Base = chipDesc.getL1UnreservedBase();
+    allocation::Planner::AllocSizeT dramBase = chipDesc.getDramUnreservedBase();
     allocation::Planner::AllocSizeT l1Alignment =
         chipDesc.getNocL1AddressAlignBytes();
     allocation::Planner::AllocSizeT dramAlignment =
@@ -231,9 +280,12 @@ private:
         info.op->setAttr("address", rewriter.getI64IntegerAttr(address));
         rewriter.finalizeOpModification(info.op);
       } else if (info.memSpace == ttcore::MemorySpace::DeviceDRAM) {
-        // DRAM addresses assigned by runtime
+        allocation::Planner::AllocSizeT address =
+            dramBase + info.size; // size holds offset here
+
         rewriter.startOpModification(info.op);
         info.op.setAlignment(dramAlignment);
+        info.op->setAttr("address", rewriter.getI64IntegerAttr(address));
         rewriter.finalizeOpModification(info.op);
       }
     }
