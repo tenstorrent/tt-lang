@@ -204,34 +204,38 @@ def create_generic_func(
             logical_shape = list(user_args[i].shape)
             dtype = torch_dtype_to_mlir_type(user_args[i].dtype, ctx)
 
-            # Determine memory space for this input:
-            # If it's a stream with explicit memory_space, use that; otherwise default
             arg_name = user_args[i]._global_name
             input_memory_space = stream_memory_spaces.get(arg_name, memory_space)
 
-            device_tensor_type = create_device_tensor_type(
-                ctx, logical_shape, dtype, grid, tiled, input_memory_space
-            )
+            # DRAM inputs use scalar format - tilization happens on-the-fly in compute
+            input_tiled = tiled and input_memory_space != "DRAM"
 
-            device_buffer = d2m.EmptyOp(device_tensor_type)
-            to_device = d2m.ToLayoutOp(
-                [device_tensor_type], inp, device_buffer.result, layout=None
+            device_tensor_type = create_device_tensor_type(
+                ctx, logical_shape, dtype, grid, input_tiled, input_memory_space
             )
 
             if is_stream[i]:
+                # Stream inputs: stage from host to device, then wrap with stream_layout
+                device_buffer = d2m.EmptyOp(device_tensor_type)
+                to_device = d2m.ToLayoutOp(
+                    [device_tensor_type], inp, device_buffer.result, layout=None
+                )
                 device_with_stream = create_stream_layout_for_input(
                     ctx,
                     to_device.results[0],
                     StreamLayoutConfig(
                         logical_shape=logical_shape,
                         grid=grid,
-                        tiled=tiled,
+                        tiled=input_tiled,
                         memory_space=input_memory_space,
                     ),
                 )
                 device_inputs.append(device_with_stream)
             else:
-                device_inputs.append(to_device.results[0])
+                # Non-stream inputs: intermediate working buffers
+                # Just allocate device memory, no to_layout needed
+                device_buffer = d2m.EmptyOp(device_tensor_type)
+                device_inputs.append(device_buffer.result)
 
         wrapped_inputs = device_inputs
 
@@ -242,23 +246,28 @@ def create_generic_func(
             ]
         )
 
-        # Create device output buffer
-        output_idx = len(user_args) - num_outs
-        output_logical_shape = list(user_args[output_idx].shape)
-        output_dtype = torch_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
+        # Create device output buffers for all outputs
+        device_output_types = []
+        device_output_buffers = []
+        for out_i in range(num_outs):
+            output_idx = len(user_args) - num_outs + out_i
+            output_logical_shape = list(user_args[output_idx].shape)
+            output_dtype = torch_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
 
-        device_output_type = create_device_tensor_type(
-            ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
-        )
-        device_output_buffer = d2m.EmptyOp(device_output_type)
+            device_output_type = create_device_tensor_type(
+                ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
+            )
+            device_output_types.append(device_output_type)
+            device_output_buffer = d2m.EmptyOp(device_output_type)
+            device_output_buffers.append(device_output_buffer.result)
 
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
         # High-level DSL will need to infer these from operation semantics.
         generic = d2m.GenericOp(
-            [device_output_type],
+            device_output_types,
             wrapped_inputs,
-            [device_output_buffer.result],
+            device_output_buffers,
             ttcore.ir.GridAttr.get(ctx, grid),
             block_factors,
             list(map(affine_map_from_lambda, indexing_maps)),
@@ -279,9 +288,11 @@ def create_generic_func(
             if isinstance(last_op, func.ReturnOp):
                 last_op.erase()
 
-        # Insert to_layout: device → host (write to existing output argument)
+        # Insert to_layout: device → host for the final output only
+        # (intermediate outputs stay on device as internal buffers)
+        final_result_idx = num_outs - 1
         to_host = d2m.ToLayoutOp(
-            [ret_type], generic.results[0], outputs[0], layout=None
+            [ret_type], generic.results[final_result_idx], outputs[final_result_idx], layout=None
         )
 
         func.ReturnOp(to_host.results)

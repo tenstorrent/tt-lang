@@ -36,7 +36,7 @@ from ._src.tensor_accessor import TensorAccessor
 
 from ._src.d2m_ast import D2MGenericCompiler
 
-from .operators import TensorBlock, MemTx, dma
+from .operators import TensorBlock, MemTx, dma, tilize, untilize, tile_alloc
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
@@ -305,10 +305,19 @@ def _compile_and_run_kernel(
             f"Kernel function must return a Program, got {type(program).__name__}"
         )
 
+    # Collect DRAM stream names from all thread captures
+    dram_streams = set()
+    for compile_thread in program.threads:
+        captures = _collect_captures(compile_thread.__wrapped__)
+        for val in captures.values():
+            if isinstance(val, TensorAccessor) and val.memory_space == "DRAM":
+                dram_streams.add(val.name)
+
     injected_program_kwargs = {
         "grid": grid,
         "memory_space": memory_space,
         "tiled": tiled,
+        "dram_streams": dram_streams,
     }
     program = Program(
         *program.threads,
@@ -509,8 +518,8 @@ def pykernel_gen(
     """
     if grid is None:
         raise ValueError("grid parameter is required")
-    if num_outs != 1:
-        raise ValueError(f"num_outs must be 1, got {num_outs}")
+    if num_outs < 1:
+        raise ValueError(f"num_outs must be at least 1, got {num_outs}")
     if memory_space not in SUPPORTED_MEMORY_SPACES:
         raise ValueError(
             f"Invalid memory_space: {memory_space!r}. "

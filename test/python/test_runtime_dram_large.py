@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# UNSUPPORTED: system-darwin
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
@@ -54,11 +53,13 @@ def test_runtime_dram_large(lhs, rhs, out):
 # This test focuses on runtime proof that large tensors work with DRAM.
 
 # CHECK: dram
-# CHECK: func.func @test_runtime_dram_large
 # CHECK: ttcore.global @lhs
 # CHECK: ttcore.global @rhs
+# CHECK: func.func @test_runtime_dram_large
 
 # CHECK-LOWERED: #dram = #ttcore.memory_space<dram>
+# CHECK-LOWERED: ttcore.global @lhs
+# CHECK-LOWERED: ttcore.global @rhs
 # CHECK-LOWERED: func.func @test_runtime_dram_large
 
 # Large tensors: 1024x1024 f32 = 4MB each (won't fit in L1)
@@ -79,13 +80,10 @@ test_runtime_dram_large(lhs, rhs, out)
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item()}")
-# CHECK-OUTPUT: out[0, 0] = 5.0
 print(f"out[512, 512] = {out[512, 512].item()}")
-# CHECK-OUTPUT: out[512, 512] = 5.0
 print(
     f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}"
 )
-# CHECK-OUTPUT: out min/max/mean: 5.0 / 5.0 / 5.0
 
 expected = lhs + rhs
 if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):

@@ -9,9 +9,11 @@ from __future__ import annotations
 from typing import List, Callable, Optional, Tuple, Union
 
 from ttmlir.ir import *
-from ttmlir.dialects import d2m, arith, linalg
+from ttmlir.dialects import d2m, arith, linalg, ttcore
 
 from ._src.d2m_ast import syntax
+from .constants import DEFAULT_TILE_SIZE
+from .dtype_utils import mlir_type_to_ttcore_datatype
 from pykernel._src.utils import _asindex
 
 # Type aliases for common patterns
@@ -220,6 +222,76 @@ class MemTx:
     def wait(ast_self: MemTx):
         """Block until the DMA operation completes."""
         return d2m.dma_wait(ast_self)
+
+
+@syntax("tilize")
+def tilize(src: TensorBlock, dst: TensorBlock) -> None:
+    """
+    Tilize scalar data from source tensor to destination tensor.
+
+    This operation converts row-major scalar data to tile format.
+    User is responsible for wait/reserve on CBs before calling.
+
+    Args:
+        src: Source tensor containing scalar (row-major) data (from cb.wait())
+        dst: Destination tensor for tiled output (from cb.reserve())
+
+    Example:
+        scalar = src_cb.wait()
+        tiled = dst_cb.reserve()
+        tilize(scalar, tiled)
+        src_cb.pop()
+        dst_cb.push()
+    """
+    d2m.tile_tilize_block(src, dst)
+
+
+@syntax("untilize")
+def untilize(src: TensorBlock, dst: TensorBlock) -> None:
+    """
+    Untilize tiled data from src tensor to dst tensor.
+
+    This operation converts tile format back to row-major scalar data.
+
+    Args:
+        src: Source tensor containing tiled data
+        dst: Destination tensor for scalar (row-major) output
+
+    Returns:
+        None (operates in place on dst)
+    """
+    return d2m.tile_untilize_block(src, dst)
+
+
+@syntax("tile_alloc")
+def tile_alloc() -> TensorBlock:
+    """
+    Allocate a local tiled buffer for compute operations.
+
+    Creates an empty tensor with a single 32x32 tile (f32 dtype).
+    Used for intermediate storage during tilize-on-the-fly operations.
+
+    Returns:
+        Empty tensor with shape [1, 1] and tile element type.
+
+    Example:
+        scalar = src_cb.wait()
+        tiled = tile_alloc()
+        tilize(scalar, tiled)
+    """
+    # Get context from current insertion point
+    ip = InsertionPoint.current
+    ctx = ip.block.owner.context
+
+    # Create tile type: 32x32 f32 tile
+    tile_type = ttcore.ir.TileType.get(
+        ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore.DataType.Float32
+    )
+
+    # Create 1x1 tensor of tiles (single tile)
+    tensor_type = RankedTensorType.get([1, 1], tile_type)
+
+    return d2m.empty(tensor_type)
 
 
 @syntax("dma")

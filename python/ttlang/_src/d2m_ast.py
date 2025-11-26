@@ -26,6 +26,7 @@ class CompilerContext:
     grid: List[int]
     memory_space: str
     tiled: bool
+    dram_streams: frozenset  # Names of streams backed by DRAM TensorAccessors
 
 
 class D2MGenericCompiler(TTCompilerBase):
@@ -43,6 +44,7 @@ class D2MGenericCompiler(TTCompilerBase):
             grid=kwargs.get("grid", [1, 1]),
             memory_space=kwargs.get("memory_space", "L1"),
             tiled=kwargs.get("tiled", True),
+            dram_streams=frozenset(kwargs.get("dram_streams", set())),
         )
 
         self._fn_map = {}
@@ -95,25 +97,32 @@ class D2MGenericCompiler(TTCompilerBase):
                 shape = list(self.args[i].shape)
                 dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
 
+                # Check if this CB receives data from a DRAM TensorAccessor
+                # CBs receiving DRAM data should be scalar (tilization happens in compute)
+                tensor_name = getattr(self.args[i], '_global_name', None)
+                cb_receives_dram = tensor_name in self.context.dram_streams
+
+                cb_tiled = self.context.tiled and not cb_receives_dram
+
                 # Compute shard shape (tiles per core)
                 layout = create_metal_layout(
                     self.ctx,
                     MetalLayoutConfig(
                         logical_shape=shape,
                         grid=self.context.grid,
-                        tiled=self.context.tiled,
+                        tiled=cb_tiled,
                         memory_space=self.context.memory_space,
                     ),
                 )
-                tile_shape = DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
+                tile_shape = DEFAULT_TILE_SHAPE if cb_tiled else [1, 1]
                 device_shape = compute_device_shape(
                     layout, self.context.grid, shape, tile_shape
                 )
                 shard_shape = device_shape[len(device_shape) // 2 :]
 
                 # CBs wrap the tensor type that enters the generic op
-                # Generic operates on device tensors (tiled L1), so CBs should have tile element types
-                if self.context.tiled:
+                # CBs receiving DRAM data use scalar type, others use tile type
+                if cb_tiled:
                     ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
                     element_type = ttcore.ir.TileType.get(
                         self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
@@ -165,17 +174,20 @@ class D2MGenericCompiler(TTCompilerBase):
                             if val.memory_space is not None
                             else self.context.memory_space # Default to L1
                         )
+                        # DRAM TensorAccessors use scalar format - tilization happens
+                        # on-the-fly in compute when data is pulled from DRAM to CB
+                        accessor_tiled = self.context.tiled and accessor_memory_space != "DRAM"
                         layout = create_metal_layout(
                             self.ctx,
                             MetalLayoutConfig(
                                 logical_shape=val.shape,
                                 grid=self.context.grid,
-                                tiled=self.context.tiled,
+                                tiled=accessor_tiled,
                                 memory_space=accessor_memory_space,
                             ),
                         )
                         tile_shape = (
-                            DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
+                            DEFAULT_TILE_SHAPE if accessor_tiled else [1, 1]
                         )
                         device_shape = compute_device_shape(
                             layout, self.context.grid, val.shape, tile_shape
@@ -191,7 +203,7 @@ class D2MGenericCompiler(TTCompilerBase):
                                 DEFAULT_TILE_SIZE,
                                 stream_ttcore_dtype,
                             )
-                            if self.context.tiled
+                            if accessor_tiled
                             else stream_dtype
                         )
                         tensor = RankedTensorType.get(
