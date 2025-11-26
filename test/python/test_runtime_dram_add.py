@@ -7,8 +7,8 @@
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
-# Tilize-on-the-fly pattern: DRAM scalar → L1 scalar CB → tilize → L1 tiled CB → compute.
-# 5 CBs: 2 scalar (DRAM), 2 tiled (L1 intermediate), 1 tiled (output).
+# Tilize-on-the-fly: DRAM scalar data is tilized inside compute kernel.
+# 5 CBs: 2 scalar (DRAM inputs), 2 tiled (tilize destinations), 1 tiled (output).
 
 import torch
 from ttlang.d2m_api import *
@@ -16,48 +16,38 @@ from ttlang.d2m_api import *
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
 def test_runtime_dram_add(lhs, rhs, lhs_tiled, rhs_tiled, out):
-    # TensorAccessor() wraps input tensors for DMA with explicit DRAM memory space.
-    # Scalar data is staged to DRAM, then pulled to L1 and tilized on-the-fly in compute.
     lhs_accessor = TensorAccessor(lhs, memory_space="DRAM")
     rhs_accessor = TensorAccessor(rhs, memory_space="DRAM")
 
     @compute()
     def add_compute(
-        lhs_scalar_cb: CircularBuffer,  # ins[0] - scalar CB (from DRAM DMA)
-        rhs_scalar_cb: CircularBuffer,  # ins[1] - scalar CB (from DRAM DMA)
-        lhs_tiled_cb: CircularBuffer,   # ins[2] - empty L1 buffer (tilize destination)
-        rhs_tiled_cb: CircularBuffer,   # ins[3] - empty L1 buffer (tilize destination)
-        out_cb: CircularBuffer          # outs[0] - tiled CB (final output)
+        lhs_scalar_cb: CircularBuffer,  # CB 0: scalar from DRAM
+        rhs_scalar_cb: CircularBuffer,  # CB 1: scalar from DRAM
+        lhs_tiled_cb: CircularBuffer,   # CB 2: tilize destination
+        rhs_tiled_cb: CircularBuffer,   # CB 3: tilize destination
+        out_cb: CircularBuffer          # CB 4: tiled output
     ):
-        # 1. Wait for scalar data from DRAM-backed CBs (input pattern)
+        # Wait for scalar data from DM threads
         l_scalar = lhs_scalar_cb.wait()
         r_scalar = rhs_scalar_cb.wait()
 
-        # 2. Reserve tiled CBs for tilize output (output pattern)
+        # Tilize scalar -> tiled
         l_tiled = lhs_tiled_cb.reserve()
         r_tiled = rhs_tiled_cb.reserve()
-
-        # 3. Tilize: scalar → tiled
         tilize(l_scalar, l_tiled)
         tilize(r_scalar, r_tiled)
-
-        # 4. Push tiled data (make available), pop scalar data (done with it)
         lhs_tiled_cb.push()
         rhs_tiled_cb.push()
         lhs_scalar_cb.pop()
         rhs_scalar_cb.pop()
 
-        # 5. Wait for tiled data we just pushed (immediate since same thread)
+        # Add tiled data
         l_tile = lhs_tiled_cb.wait()
         r_tile = rhs_tiled_cb.wait()
-
-        # 6. Reserve output, perform add, store result
         o = out_cb.reserve()
         result = l_tile + r_tile
         o.store(result)
         out_cb.push()
-
-        # 7. Pop tiled CBs
         lhs_tiled_cb.pop()
         rhs_tiled_cb.pop()
 
@@ -81,66 +71,62 @@ def test_runtime_dram_add(lhs, rhs, lhs_tiled, rhs_tiled, out):
 
     return Program(add_compute, dm_lhs, dm_rhs)(lhs, rhs, lhs_tiled, rhs_tiled, out)
 
-# Verify: Two layout definitions - #layout for DRAM, #layout1 for L1
+
+# Verify: DRAM and L1 layouts defined
 # CHECK: #layout = #ttcore.metal_layout<logical_shape = 32x32,
 # CHECK-SAME: dram
 # CHECK: #layout1 = #ttcore.metal_layout<logical_shape = 32x32,
 # CHECK-SAME: l1
 
-# Verify: TensorAccessor globals use DRAM layout
+# Verify: Globals use DRAM layout
 # CHECK: ttcore.global @lhs = tensor<{{.*}}, #layout>
 # CHECK: ttcore.global @rhs = tensor<{{.*}}, #layout>
 
 # CHECK: func.func @test_runtime_dram_add
 
-# Verify: to_layout stages host tensor to DRAM
+# Verify: Host tensors staged to DRAM via to_layout
 # CHECK: d2m.to_layout %arg0, %{{.*}} : tensor<32x32xf32> into tensor<{{.*}}, #layout>
 # CHECK: d2m.stream_layout
 # CHECK: d2m.to_layout %arg1, %{{.*}} : tensor<32x32xf32> into tensor<{{.*}}, #layout>
 
-# Verify: d2m.generic has 4 inputs (2 DRAM + 2 L1 buffers) and 1 L1 output
+# Verify: Generic has 2 DRAM inputs, 2 L1 intermediates, 1 L1 output
 # CHECK: d2m.generic
 # CHECK: ins({{.*}} : tensor<{{.*}}, #layout>, tensor<{{.*}}, #layout>, tensor<{{.*}}, #layout1>, tensor<{{.*}}, #layout1>)
 # CHECK: outs({{.*}} : tensor<{{.*}}, #layout1>)
 
-# Verify: get_global returns DRAM tensor type (used for DMA source)
+# Verify: DM threads use get_global for DRAM source
 # CHECK: ttcore.get_global @lhs : tensor<{{.*}}, #layout>
 # CHECK: ttcore.get_global @rhs : tensor<{{.*}}, #layout>
 
-# Verify: compute region contains tile_tilize_block and linalg.generic with tile_add
+# Verify: Compute has tilize and tile_add
 # CHECK: ^compute{{[0-9]+}}
 # CHECK: d2m.tile_tilize_block
 # CHECK: linalg.generic
 # CHECK-SAME: iterator_types = ["parallel", "parallel"]
 # CHECK: "d2m.tile_add"
 
-# Verify: Memory space attributes are defined
+# Verify: Memory space attributes lowered
 # CHECK-LOWERED: #dram = #ttcore.memory_space<dram>
 # CHECK-LOWERED: #l1 = #ttcore.memory_space<l1>
 
-# Verify: Globals are lowered to memrefs with DRAM memory space
+# Verify: Globals lowered to DRAM memrefs
 # CHECK-LOWERED: ttcore.global @lhs = memref<{{.*}}, #dram>
 # CHECK-LOWERED: ttcore.global @rhs = memref<{{.*}}, #dram>
 
 # CHECK-LOWERED: func.func @test_runtime_dram_add
 
-# Verify: DRAM buffers are created
-# CHECK-LOWERED: "ttmetal.create_buffer"() <{address = {{[0-9]+}}
-# CHECK-LOWERED-SAME: #dram>
+# Verify: DRAM and L1 buffers created with addresses
+# CHECK-LOWERED: "ttmetal.create_buffer"(){{.*}}#dram>
+# CHECK-LOWERED: "ttmetal.create_buffer"(){{.*}}#l1>
 
-# Verify: L1 buffers are created
-# CHECK-LOWERED: "ttmetal.create_buffer"() <{address = {{[0-9]+}}
-# CHECK-LOWERED-SAME: #l1>
-
-# Verify: Compute kernel calls tilize and add_binary_tile
-# CHECK-LOWERED: emitc.call_opaque "tilize_block"
+# Verify: Compute kernel has tilize and add ops
+# CHECK-LOWERED: emitc.call_opaque "experimental::tilize_block"
 # CHECK-LOWERED: emitc.call_opaque "add_binary_tile"
 
-# Use simple known values for testing: 2 + 3 = 5
 lhs = torch.full((32, 32), 2.0)
 rhs = torch.full((32, 32), 3.0)
-lhs_tiled = torch.zeros((32, 32))  # intermediate tiled buffer (stays on device)
-rhs_tiled = torch.zeros((32, 32))  # intermediate tiled buffer (stays on device)
+lhs_tiled = torch.zeros((32, 32))  # L1 intermediate
+rhs_tiled = torch.zeros((32, 32))  # L1 intermediate
 out = torch.full((32, 32), -999.0)
 
 print("=== BEFORE KERNEL ===")
