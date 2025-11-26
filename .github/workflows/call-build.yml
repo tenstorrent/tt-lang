@@ -107,10 +107,12 @@ jobs:
             -DTTMLIR_ENABLE_EXPLORER=OFF \
             -DBUILD_TESTING=OFF \
             -S .
-          cmake --build build --target all --target TTMLIRPythonModules
-          cmake --build build --target ttrt
+          cmake --build build
+          cmake --build build -t ttrt
           cmake --install build
           cmake --install build --component TTMLIRPythonWheel
+          # Copy runtime Python module to install directory
+          cp build/runtime/python/_ttmlir_runtime*.so ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2

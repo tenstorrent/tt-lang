@@ -9,6 +9,9 @@ HARDWARE_TYPE="${1:-n150}"
 
 source build/env/activate
 
+# Ensure PYTHONPATH includes tt-mlir installation for runtime modules
+export PYTHONPATH="${TT_MLIR_DIR}/python_packages:${PYTHONPATH}"
+
 # For hardware testing, try to get real system descriptor using ttrt (like tt-mlir does)
 if [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/bin/ttrt" ]; then
   TTRT="${TT_MLIR_DIR}/bin/ttrt"
