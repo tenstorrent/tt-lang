@@ -14,7 +14,7 @@ from collections import deque
 import torch
 from . import torch_utils as tu
 from .ringview import RingView
-from .constants import TILE_SHAPE
+from .constants import TILE_SHAPE, DMA_MULTICAST_TIMEOUT
 from .typedefs import MulticastAddress, Count
 
 
@@ -200,13 +200,12 @@ class DMATransaction:
                         # In a real implementation, this would be hardware-level blocking
                         import time
 
-                        timeout = 2.0  # 2 second timeout to detect deadlocks
                         start_time = time.time()
                         while (
                             self._src not in _multicast_buffer
                             or len(_multicast_buffer[self._src]) == 0
                         ):
-                            if time.time() - start_time > timeout:
+                            if time.time() - start_time > DMA_MULTICAST_TIMEOUT:
                                 raise TimeoutError(
                                     f"Timeout waiting for multicast data. "
                                     f"The sender may not have called dma(ringview, mcast_addr).wait() "
