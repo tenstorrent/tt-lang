@@ -9,11 +9,12 @@ enabling data transfer operations between tensors and RingViews in the
 CircularBuffer system.
 """
 
-from typing import Any, Type, Union
-import torch
-from .ringview import RingView
-from .typedefs import MulticastAddress
-from .dmahandlers import DMATransferHandler, handler_registry
+from .dmahandlers import (
+    DMATransferHandler,
+    DMAEndpoint,
+    DMAEndpointType,
+    handler_registry,
+)
 
 
 class DMATransaction:
@@ -31,8 +32,8 @@ class DMATransaction:
 
     def __init__(
         self,
-        src: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
-        dst: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
+        src: DMAEndpoint,
+        dst: DMAEndpoint,
     ):
         """
         Initialize a DMA transaction from src to dst.
@@ -63,13 +64,15 @@ class DMATransaction:
             ) from e
 
     @staticmethod
-    def _lookup_handler(src_type: Type[Any], dst_type: Type[Any]) -> DMATransferHandler:
+    def _lookup_handler(
+        src_type: DMAEndpointType, dst_type: DMAEndpointType
+    ) -> DMATransferHandler:
         """
         Look up the handler for a given (src_type, dst_type) pair.
 
         Args:
-            src_type: Source type class
-            dst_type: Destination type class
+            src_type: Source type class (must be a valid DMA endpoint type)
+            dst_type: Destination type class (must be a valid DMA endpoint type)
 
         Returns:
             The registered handler for this type combination
@@ -113,8 +116,8 @@ class DMATransaction:
 
 
 def dma(
-    src: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
-    dst: Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress],
+    src: DMAEndpoint,
+    dst: DMAEndpoint,
 ) -> DMATransaction:
     """
     Create a DMA transaction from source to destination.

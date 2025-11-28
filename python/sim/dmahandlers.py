@@ -9,7 +9,7 @@ New transfer types can be added by creating a new handler and decorating it with
 @register_dma_handler.
 """
 
-from typing import Any, Dict, Protocol, Tuple, Type, Deque, List
+from typing import Any, Dict, Protocol, Tuple, Type, Deque, List, Union
 from collections import deque
 import time
 import torch
@@ -17,6 +17,12 @@ from . import torch_utils as tu
 from .ringview import RingView
 from .constants import TILE_SHAPE, DMA_MULTICAST_TIMEOUT
 from .typedefs import MulticastAddress, Count
+
+# DMA endpoint types - these are the valid types for DMA transfers
+# To add a new endpoint type, add it to this Union and implement a handler for it
+DMAEndpoint = Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress]
+# Type of a DMA endpoint class (derived automatically from DMAEndpoint)
+DMAEndpointType = Type[DMAEndpoint]
 
 
 # Global multicast buffer for simulating NoC multicast communication
@@ -57,16 +63,16 @@ class DMATransferHandler(Protocol):
 
 
 # Global handler registry: (src_type, dst_type) -> handler instance
-handler_registry: Dict[Tuple[Type[Any], Type[Any]], DMATransferHandler] = {}
+handler_registry: Dict[Tuple[DMAEndpointType, DMAEndpointType], DMATransferHandler] = {}
 
 
-def register_dma_handler(src_type: Type[Any], dst_type: Type[Any]):
+def register_dma_handler(src_type: DMAEndpointType, dst_type: DMAEndpointType):
     """
     Decorator to register a DMA transfer handler for a specific (src_type, dst_type) pair.
 
     Args:
-        src_type: Source type class
-        dst_type: Destination type class
+        src_type: Source type class (must be a valid DMA endpoint type)
+        dst_type: Destination type class (must be a valid DMA endpoint type)
 
     Returns:
         Decorator function
