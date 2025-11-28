@@ -15,6 +15,7 @@ from python.sim.dma import DMATransaction, dma
 from python.sim.ringview import RingView, Span
 from python.sim.constants import TILE_SHAPE
 from typing import Optional, List
+from python.sim.typedefs import MulticastAddress, MulticastType
 
 
 class TestDMATransaction:
@@ -268,3 +269,87 @@ class TestDMAErrorHandling:
         # Should fail when trying to create DMA to empty RingView
         with pytest.raises(ValueError):
             tx = dma(source, ringview)  # type: ignore
+
+
+class TestMulticastDMA:
+    """Tests for multicast DMA using the public `dma` API."""
+
+    def test_multicast_single_tile_single_receiver(self) -> None:
+        """Send a single tile via multicast and receive it."""
+        tile = tu.full((32, 32), 123.0)
+        src_buf: List[Optional[torch.Tensor]] = [tile]
+        src_ringview = RingView(src_buf, 1, Span(0, 1))
+
+        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_ringview = RingView(dst_buf, 1, Span(0, 1))
+
+        mcast_addr = MulticastAddress(MulticastType.PUSH, (210, 211))
+
+        tx_send = dma(src_ringview, mcast_addr)
+        tx_send.wait()
+
+        tx_recv = dma(mcast_addr, dst_ringview)
+        tx_recv.wait()
+
+        assert dst_ringview[0] is not None
+        assert tu.allclose(dst_ringview[0], tile)
+
+    def test_multicast_multiple_tiles_multiple_receivers(self) -> None:
+        """Send multiple tiles and have multiple receivers consume them."""
+        tile1 = tu.full((32, 32), 1.0)
+        tile2 = tu.full((32, 32), 2.0)
+        src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
+        src_ringview = RingView(src_buf, 2, Span(0, 2))
+
+        mcast_addr = MulticastAddress(MulticastType.PUSH, (211, 212, 213))
+
+        tx_send = dma(src_ringview, mcast_addr)
+        tx_send.wait()
+
+        # First receiver
+        dst1: List[Optional[torch.Tensor]] = [None, None]
+        dst_ring1 = RingView(dst1, 2, Span(0, 2))
+        tx_r1 = dma(mcast_addr, dst_ring1)
+        tx_r1.wait()
+        assert tu.allclose(dst_ring1[0], tile1)
+        assert tu.allclose(dst_ring1[1], tile2)
+
+        # Second receiver
+        dst2: List[Optional[torch.Tensor]] = [None, None]
+        dst_ring2 = RingView(dst2, 2, Span(0, 2))
+        tx_r2 = dma(mcast_addr, dst_ring2)
+        tx_r2.wait()
+        assert tu.allclose(dst_ring2[0], tile1)
+        assert tu.allclose(dst_ring2[1], tile2)
+
+    def test_multicast_length_mismatch_raises(self) -> None:
+        """Receiver with mismatched length should raise ValueError at wait()."""
+        tile1 = tu.ones(32, 32)
+        tile2 = tu.zeros(32, 32)
+        src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
+        src_ringview = RingView(src_buf, 2, Span(0, 2))
+
+        mcast_addr = MulticastAddress(MulticastType.PUSH, (212, 213))
+
+        tx_send = dma(src_ringview, mcast_addr)
+        tx_send.wait()
+
+        # Receiver with wrong length
+        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_ring = RingView(dst_buf, 1, Span(0, 1))
+        tx_recv = dma(mcast_addr, dst_ring)
+        with pytest.raises(
+            ValueError,
+            match="Destination RingView length .* does not match multicast data length",
+        ):
+            tx_recv.wait()
+
+    def test_multicast_receive_timeout(self) -> None:
+        """Receiving on an address with no send should timeout."""
+        mcast_addr = MulticastAddress(MulticastType.PUSH, (99, 100))
+        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_ring = RingView(dst_buf, 1, Span(0, 1))
+
+        tx_recv = dma(mcast_addr, dst_ring)
+        with pytest.raises(ValueError, match="Timeout waiting for multicast data"):
+            tx_recv.wait()
