@@ -45,7 +45,7 @@ class TestDMATransaction:
 
         # tensor → tensor not supported
         with pytest.raises(
-            ValueError, match="Unsupported DMA transfer from Tensor to Tensor"
+            ValueError, match="No DMA handler registered for \\(Tensor, Tensor\\)"
         ):
             DMATransaction(tensor1, tensor2)
 
@@ -54,7 +54,7 @@ class TestDMATransaction:
         ringview1 = RingView(buf, 2, Span(0, 2))
         ringview2 = RingView(buf, 2, Span(0, 2))
         with pytest.raises(
-            ValueError, match="Unsupported DMA transfer from RingView to RingView"
+            ValueError, match="No DMA handler registered for \\(RingView, RingView\\)"
         ):
             DMATransaction(ringview1, ringview2)
 
@@ -101,11 +101,10 @@ class TestTensorToRingViewDMA:
         buf: List[Optional[torch.Tensor]] = [None, None, None]
         ringview = RingView(buf, 3, Span(0, 2))  # Only 2 slots
 
-        tx = dma(source, ringview)
         with pytest.raises(
             ValueError, match="Tensor contains 3 tiles but RingView has 2 slots"
         ):
-            tx.wait()
+            tx = dma(source, ringview)  # type: ignore
 
     def test_transfer_to_single_slot_ringview(self) -> None:
         """Test transferring to a RingView with a single slot."""
@@ -169,9 +168,8 @@ class TestRingViewToTensorDMA:
         # Wrong destination shape
         destination = tu.zeros(96, 32)  # 3 tiles, but RingView has 2
 
-        tx = dma(ringview, destination)
         with pytest.raises(ValueError, match="Expected 2 tiles but found 3"):
-            tx.wait()
+            tx = dma(ringview, destination)  # type: ignore
 
     def test_transfer_from_single_slot_ringview(self) -> None:
         """Test transferring from a RingView with a single slot."""
@@ -194,7 +192,7 @@ class TestDMAConvenienceFunction:
 
     def test_dma_function_creates_transaction(self) -> None:
         """Test that dma() function creates and returns a DMATransaction."""
-        source = tu.randn(32, 32)
+        source = tu.randn(64, 32)  # 2 tiles to match RingView size
         buf: List[Optional[torch.Tensor]] = [None, None]
         ringview = RingView(buf, 2, Span(0, 2))
 
@@ -267,7 +265,6 @@ class TestDMAErrorHandling:
         buf: List[Optional[torch.Tensor]] = []
         ringview = RingView(buf, 0, Span(0, 0))
 
-        # Should fail when trying to transfer to empty RingView
-        tx = dma(source, ringview)
+        # Should fail when trying to create DMA to empty RingView
         with pytest.raises(ValueError):
-            tx.wait()
+            tx = dma(source, ringview)  # type: ignore

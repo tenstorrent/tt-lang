@@ -140,7 +140,7 @@ def test_error_handling():
         cb.pop()
 
     # Test unsupported DMA operations with wrong types
-    with pytest.raises(ValueError, match="Unsupported DMA transfer"):
+    with pytest.raises(ValueError, match="No DMA handler registered"):
         tx = dma("invalid_source", "invalid_dest")  # type: ignore
 
     print("Error handling test passed!")
