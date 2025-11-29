@@ -11,6 +11,7 @@ New transfer types can be added by creating a new handler and decorating it with
 
 from typing import Any, Dict, Protocol, Tuple, Type, Deque, List, Union
 from collections import deque
+import threading
 import time
 import torch
 from . import torch_utils as tu
@@ -25,11 +26,13 @@ DMAEndpoint = Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress]
 DMAEndpointType = Type[DMAEndpoint]
 
 
-# Global multicast buffer for simulating NoC multicast communication
-# In a real implementation, this would be handled by the NoC hardware
-# Each queue entry is (data, remaining_receiver_count)
-# Multiple receivers can consume the same data, tracked by the count
-_multicast_buffer: Dict[MulticastAddress, Deque[Tuple[List[torch.Tensor], Count]]] = {}
+# Global multicast state for simulating NoC multicast communication
+# For each multicast address we keep a small structure with:
+# - queue: deque of (data, remaining_receiver_count)
+# - event: threading.Event set when queue is non-empty
+# - lock: threading.Lock to guard queue and receiver count updates
+# In a real implementation this would be handled by NoC hardware.
+_multicast_buffer: Dict[MulticastAddress, Dict[str, Any]] = {}
 
 
 class DMATransferHandler(Protocol):
@@ -177,17 +180,25 @@ class RingViewToMulticastHandler:
     def transfer(self, src: RingView[torch.Tensor], dst: MulticastAddress) -> None:
         """Multicast send: store data in shared buffer accessible by all cores."""
         src_data = [src[i] for i in range(len(src))]
-
-        # Initialize queue if it doesn't exist
+        # Initialize per-address state if it doesn't exist
         if dst not in _multicast_buffer:
-            _multicast_buffer[dst] = deque()
+            _multicast_buffer[dst] = {
+                "queue": deque(),
+                "event": threading.Event(),
+                "lock": threading.Lock(),
+            }
+
+        entry = _multicast_buffer[dst]
 
         # Calculate number of receivers (all cores except the sender)
         num_receivers = len(dst.core_indices) - 1
 
         # Add to the queue for this multicast address with receiver count
-        # In a real implementation, this would send packets over the NoC
-        _multicast_buffer[dst].append((src_data, num_receivers))
+        # and notify any waiting receivers via event
+        with entry["lock"]:
+            entry["queue"].append((src_data, num_receivers))
+            # Signal that data is available
+            entry["event"].set()
 
 
 @register_dma_handler(MulticastAddress, RingView)
@@ -200,35 +211,68 @@ class MulticastToRingViewHandler:
 
     def transfer(self, src: MulticastAddress, dst: RingView[torch.Tensor]) -> None:
         """Multicast receive: retrieve data from shared multicast buffer."""
-        # Poll until data is available in the multicast buffer queue
-        # In a real implementation, this would be hardware-level blocking
+        # Use an event to wait for data instead of polling. This reduces CPU
+        # usage and provides a cleaner synchronization primitive for tests.
         start_time = time.time()
-        while src not in _multicast_buffer or len(_multicast_buffer[src]) == 0:
-            if time.time() - start_time > DMA_MULTICAST_TIMEOUT:
+
+        # Ensure entry exists so we can safely access event/lock
+        if src not in _multicast_buffer:
+            _multicast_buffer[src] = {
+                "queue": deque(),
+                "event": threading.Event(),
+                "lock": threading.Lock(),
+            }
+
+        entry = _multicast_buffer[src]
+        event: threading.Event = entry["event"]
+        queue: Deque[Tuple[List[torch.Tensor], Count]] = entry["queue"]
+        lock: threading.Lock = entry["lock"]
+
+        while True:
+            # Compute remaining timeout
+            elapsed = time.time() - start_time
+            remaining = DMA_MULTICAST_TIMEOUT - elapsed
+            if remaining <= 0:
                 raise TimeoutError(
                     f"Timeout waiting for multicast data. "
                     f"The sender may not have called dma(ringview, mcast_addr).wait() "
                     f"or there may be a deadlock."
                 )
-            time.sleep(0.001)  # Small sleep to avoid busy-waiting
 
-        # Peek at the front of the queue (don't remove yet)
-        src_data, remaining_receivers = _multicast_buffer[src][0]
-        if len(dst) != len(src_data):
-            raise ValueError(
-                f"Destination RingView length ({len(dst)}) "
-                f"does not match multicast data length ({len(src_data)})"
-            )
-        dst.store(src_data)
+            # Wait until signaled or timeout
+            signaled = event.wait(timeout=remaining)
+            if not signaled:
+                # event.wait returned False -> timeout
+                raise TimeoutError(
+                    f"Timeout waiting for multicast data. "
+                    f"The sender may not have called dma(ringview, mcast_addr).wait() "
+                    f"or there may be a deadlock."
+                )
 
-        # Decrement receiver count
-        remaining_receivers -= 1
-        if remaining_receivers == 0:
-            # All receivers consumed, remove from queue
-            _multicast_buffer[src].popleft()
-        else:
-            # Update the count for remaining receivers
-            _multicast_buffer[src][0] = (
-                src_data,
-                remaining_receivers,
-            )
+            # Event signaled - examine queue under lock
+            with lock:
+                if len(queue) == 0:
+                    # Spurious wakeup or another receiver consumed; wait again
+                    event.clear()
+                    continue
+
+                src_data, remaining_receivers = queue[0]
+                if len(dst) != len(src_data):
+                    raise ValueError(
+                        f"Destination RingView length ({len(dst)}) "
+                        f"does not match multicast data length ({len(src_data)})"
+                    )
+
+                dst.store(src_data)
+
+                # Decrement receiver count and update queue
+                remaining_receivers -= 1
+                if remaining_receivers == 0:
+                    queue.popleft()
+                    # If nothing left, clear the event so future waits block
+                    if len(queue) == 0:
+                        event.clear()
+                else:
+                    queue[0] = (src_data, remaining_receivers)
+
+                return
