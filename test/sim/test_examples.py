@@ -44,7 +44,5 @@ class TestExamples:
 
         eltwise_mcast(a_in, b_in, c_in, out)
         print(out)
-        golden = (
-            a_in * b_in + c_in
-        )  # that won't work with torch broadcasting, c_in is not a single value
+        golden = a_in * b_in + c_in
         assert_pcc(golden, out)
