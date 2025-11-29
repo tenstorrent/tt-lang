@@ -49,7 +49,7 @@ class CBAPI(Generic[CBElemType]):
         with self._cb_allocator_lock:
             cb_id = self._next_cb_id
             self._next_cb_id += 1
-            if self._next_cb_id >= MAX_CBS:
+            if self._next_cb_id > MAX_CBS:
                 raise RuntimeError(
                     f"Maximum number of circular buffers exceeded: {MAX_CBS}"
                 )

@@ -9,7 +9,7 @@ New transfer types can be added by creating a new handler and decorating it with
 @register_dma_handler.
 """
 
-from typing import Any, Dict, Protocol, Tuple, Type, Deque, List, Union
+from typing import Any, Dict, Protocol, Tuple, Type, Deque, List, Union, TypedDict
 from collections import deque
 import threading
 import time
@@ -32,7 +32,18 @@ DMAEndpointType = Type[DMAEndpoint]
 # - event: threading.Event set when queue is non-empty
 # - lock: threading.Lock to guard queue and receiver count updates
 # In a real implementation this would be handled by NoC hardware.
-_multicast_buffer: Dict[MulticastAddress, Dict[str, Any]] = {}
+class _MulticastEntry(TypedDict):
+    queue: Deque[Tuple[List[torch.Tensor], Count]]
+    event: threading.Event
+    lock: threading.Lock
+
+
+_multicast_buffer: Dict[MulticastAddress, _MulticastEntry] = {}
+# Lock protecting creation of per-address entries in _multicast_buffer.
+# This ensures all threads agree on the same entry object (and its lock)
+# and avoids races where two threads create different entry dicts for
+# the same multicast address.
+_multicast_registry_lock = threading.Lock()
 
 
 class DMATransferHandler(Protocol):
@@ -180,15 +191,18 @@ class RingViewToMulticastHandler:
     def transfer(self, src: RingView[torch.Tensor], dst: MulticastAddress) -> None:
         """Multicast send: store data in shared buffer accessible by all cores."""
         src_data = [src[i] for i in range(len(src))]
-        # Initialize per-address state if it doesn't exist
-        if dst not in _multicast_buffer:
-            _multicast_buffer[dst] = {
-                "queue": deque(),
-                "event": threading.Event(),
-                "lock": threading.Lock(),
-            }
-
-        entry = _multicast_buffer[dst]
+        # Initialize per-address state atomically so all threads see the
+        # same entry (and therefore the same per-entry lock).
+        with _multicast_registry_lock:
+            entry = _multicast_buffer.get(dst)
+            if entry is None:
+                new_entry: _MulticastEntry = {
+                    "queue": deque(),
+                    "event": threading.Event(),
+                    "lock": threading.Lock(),
+                }
+                _multicast_buffer[dst] = new_entry
+                entry = new_entry
 
         # Calculate number of receivers (all cores except the sender)
         num_receivers = len(dst.core_indices) - 1
@@ -215,15 +229,17 @@ class MulticastToRingViewHandler:
         # usage and provides a cleaner synchronization primitive for tests.
         start_time = time.time()
 
-        # Ensure entry exists so we can safely access event/lock
-        if src not in _multicast_buffer:
-            _multicast_buffer[src] = {
-                "queue": deque(),
-                "event": threading.Event(),
-                "lock": threading.Lock(),
-            }
-
-        entry = _multicast_buffer[src]
+        # Ensure entry exists atomically so we can safely access event/lock.
+        with _multicast_registry_lock:
+            entry = _multicast_buffer.get(src)
+            if entry is None:
+                new_entry: _MulticastEntry = {
+                    "queue": deque(),
+                    "event": threading.Event(),
+                    "lock": threading.Lock(),
+                }
+                _multicast_buffer[src] = new_entry
+                entry = new_entry
         event: threading.Event = entry["event"]
         queue: Deque[Tuple[List[torch.Tensor], Count]] = entry["queue"]
         lock: threading.Lock = entry["lock"]
