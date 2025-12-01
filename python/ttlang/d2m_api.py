@@ -73,7 +73,8 @@ class _TensorWrapper:
 
     @property
     def shape(self):
-        return self._tensor.shape
+        # Convert to list to handle ttnn.Shape objects
+        return list(self._tensor.shape)
 
     @property
     def dtype(self):
@@ -343,12 +344,18 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
-    # Wrap tensors to add _global_name attribute (needed for TensorAccessor)
-    # Use wrappers since ttnn.Tensor doesn't allow attribute assignment
-    wrapped_args = tuple(
-        _TensorWrapper(arg, param_name)
-        for param_name, arg in zip(f_params, args)
-    )
+    # Add _global_name attribute to tensors (needed for TensorAccessor)
+    # For ttnn.Tensor, use wrappers since they don't allow attribute assignment
+    # For torch.Tensor, set the attribute directly
+    if _ttnn_mode:
+        wrapped_args = tuple(
+            _TensorWrapper(arg, param_name)
+            for param_name, arg in zip(f_params, args)
+        )
+    else:
+        for param_name, arg in zip(f_params, args):
+            arg._global_name = param_name
+        wrapped_args = args
 
     inject_kwargs = [
         ("block_factors", block_factors),
