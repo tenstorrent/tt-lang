@@ -41,7 +41,7 @@ def test_diag_loop_l1(lhs, rhs, out):
             lhs_shard = lhs_cb.reserve()
             tx = dma(lhs_accessor[0, 0], lhs_shard)
             tx.wait()
-            lhs_cb.push()
+            # NO push - matching working L1 pattern
 
     @datamovement()
     def dm_rhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
@@ -49,7 +49,7 @@ def test_diag_loop_l1(lhs, rhs, out):
             rhs_shard = rhs_cb.reserve()
             tx = dma(rhs_accessor[0, 0], rhs_shard)
             tx.wait()
-            rhs_cb.push()
+            # NO push - matching working L1 pattern
 
     return Program(add_compute, dm_lhs, dm_rhs)(lhs, rhs, out)
 

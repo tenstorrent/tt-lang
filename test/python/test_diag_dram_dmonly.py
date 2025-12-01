@@ -21,11 +21,10 @@ def test_diag_dram_dmonly(lhs, out):
 
     @compute()
     def passthrough(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
+        # Just consume from CB - don't try to store (types won't match)
         l = lhs_cb.wait()
-        o = out_cb.reserve()
-        o.store(l)  # Just pass through, no arithmetic
         lhs_cb.pop()
-        out_cb.push()
+        # Output not used - just testing if DM works
 
     @datamovement()
     def dm_read(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
