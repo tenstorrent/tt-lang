@@ -10,7 +10,7 @@ import threading
 from typing import List, Optional, Annotated, NamedTuple, Generic, Any
 from pydantic import validate_call, Field
 from .errors import CBContractError, CBTimeoutError
-from .constants import MAX_CBS
+from .constants import MAX_CBS, CB_DEFAULT_TIMEOUT
 from .typedefs import Size, CBID, CBElemType
 from .ringview import RingView
 from .cbstate import CBState
@@ -34,13 +34,26 @@ class CBAPI(Generic[CBElemType]):
     https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
     """
 
-    def __init__(self, timeout: Optional[float] = 1.0):
+    def __init__(self, timeout: Optional[float] = CB_DEFAULT_TIMEOUT):
         """Initialize simulator with optional per-instance timeout (seconds)."""
 
         self._pool: List[CBState[CBElemType]] = [
             CBState[CBElemType]() for _ in range(MAX_CBS)
         ]
         self._timeout: Optional[float] = timeout
+        self._next_cb_id: CBID = 0
+        self._cb_allocator_lock = threading.Lock()
+
+    def allocate_cb_id(self) -> CBID:
+        """Allocate a unique CB ID from this API instance. Thread-safe."""
+        with self._cb_allocator_lock:
+            cb_id = self._next_cb_id
+            self._next_cb_id += 1
+            if self._next_cb_id > MAX_CBS:
+                raise RuntimeError(
+                    f"Maximum number of circular buffers exceeded: {MAX_CBS}"
+                )
+            return cb_id
 
     @validate_call
     def host_configure_cb(self, cb_id: CBID, capacity_tiles: Size) -> None:

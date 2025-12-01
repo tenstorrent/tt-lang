@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 import torch
 import math
 
@@ -10,7 +10,8 @@ from sim import (
     TensorAccessor,
     IndexType,
     CircularBuffer,
-    CoreIndex,
+    MulticastAddress,
+    MulticastType,
     dma,
     Program,
     compute,
@@ -36,9 +37,12 @@ def eltwise_mcast(
 ) -> None:
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
-    assert all(is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, c_in, out])
+    assert all(is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
-    assert c_in.shape == TILE_SHAPE
+
+    # Check that c_in is 1x1 and expand it to TILE_SHAPE
+    assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
+    c_expanded = c_in.expand(TILE_SHAPE[0], TILE_SHAPE[1])
 
     row_tiles = a_in.shape[0] // TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // TILE_SHAPE[1]
@@ -49,7 +53,7 @@ def eltwise_mcast(
 
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
     b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
-    c_accessor = TensorAccessor(c_in, index_type=IndexType.TILE)
+    c_accessor = TensorAccessor(c_expanded, index_type=IndexType.TILE)
     out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
     # Create circular buffers
@@ -59,12 +63,14 @@ def eltwise_mcast(
     out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
 
     # Create multicast address for C
-    # Convention: mcast_addr[0] is the sender, rest are receivers
-    mcast_addr: List[CoreIndex] = [0, 1, 2, 3]
+    # Convention: mcast_addr.core_indices[0] is the sender, rest are receivers
+    mcast_addr = MulticastAddress(MulticastType.PUSH, (0, 1, 2, 3))
 
     @compute()
     def compute_func():
         core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -99,10 +105,13 @@ def eltwise_mcast(
     @datamovement()
     def dm0():
         core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
+
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
-        if core_num == 0:
+        if core_num == mcast_addr.core_indices[0]:
             print("dm0 (C multicast): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
@@ -115,7 +124,7 @@ def eltwise_mcast(
             # NoC layer meaning: receive ACKs from all cores in the mcast(?)
             c_in_cb.push()
 
-        elif core_num in mcast_addr[1:]:
+        elif core_num in mcast_addr.core_indices[1:]:
             c_block = c_in_cb.reserve()
             tx = dma(
                 mcast_addr, c_block
@@ -145,6 +154,8 @@ def eltwise_mcast(
     @datamovement()
     def dm1():
         core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
