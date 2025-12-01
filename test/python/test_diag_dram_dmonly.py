@@ -5,10 +5,10 @@
 # UNSUPPORTED: system-darwin
 
 # =============================================================================
-# DIAGNOSTIC: DRAM round-trip with tilize/untilize (no compute, no loop)
+# DIAGNOSTIC: DRAM round-trip with explicit L1 staging buffer
 # =============================================================================
-# Tests DRAM -> L1 -> DRAM data round-trip using tilize/untilize.
-# No arithmetic, no loops - just verify data moves correctly.
+# Tests DRAM -> L1 (staging) -> tilize -> L1 (output) data flow.
+# Uses explicit L1 staging buffer for the CB backing.
 # =============================================================================
 
 import torch
@@ -16,43 +16,42 @@ from ttlang.d2m_api import *
 
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
-def test_diag_dram_dmonly(lhs, out):
+def test_diag_dram_dmonly(lhs, staging, out):
+    # lhs is DRAM source, staging is L1 CB buffer, out is L1 output
     lhs_accessor = TensorAccessor(lhs, memory_space="DRAM")
 
-    @compute()
-    def passthrough(lhs_scalar_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Wait for scalar data from DM
-        l_scalar = lhs_scalar_cb.wait()
+    @datamovement()
+    def dm_read(staging_cb: CircularBuffer, out_cb: CircularBuffer):
+        # DMA from DRAM into L1 staging CB
+        shard = staging_cb.reserve()
+        tx = dma(lhs_accessor[0, 0], shard)
+        tx.wait()
+        staging_cb.push()
 
-        # Tilize: scalar -> tiled, write directly to output CB
-        # This avoids the push-then-wait-same-CB hang pattern
-        o = out_cb.reserve()
-        tilize(l_scalar, o)
-        lhs_scalar_cb.pop()
+    @compute()
+    def compute_kern(staging_cb: CircularBuffer, out_cb: CircularBuffer):
+        # Wait for data in staging CB, tilize to output CB
+        data = staging_cb.wait()
+        out_tile = out_cb.reserve()
+        tilize(data, out_tile)
+        staging_cb.pop()
         out_cb.push()
 
     @datamovement()
-    def dm_read(lhs_scalar_cb: CircularBuffer, out_cb: CircularBuffer):
-        lhs_shard = lhs_scalar_cb.reserve()
-        tx = dma(lhs_accessor[0, 0], lhs_shard)
-        tx.wait()
-        lhs_scalar_cb.push()
-
-    @datamovement()
-    def dm_out(lhs_scalar_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Consume the output CB to prevent hang
-        # (CB state persists between programs, must be balanced)
+    def dm_out(staging_cb: CircularBuffer, out_cb: CircularBuffer):
+        # Consume output CB (CB state persists between programs)
         out_shard = out_cb.wait()
         out_cb.pop()
 
-    return Program(passthrough, dm_read, dm_out)(lhs, out)
+    return Program(compute_kern, dm_read, dm_out)(staging, out)
 
 
 lhs = torch.full((32, 32), 7.0)
+staging = torch.empty((32, 32))  # L1 staging buffer
 out = torch.full((32, 32), -999.0)
 
-print("=== DIAG: DRAM round-trip (tilize, no loop) ===")
-test_diag_dram_dmonly(lhs, out)
+print("=== DIAG: DRAM round-trip with explicit L1 staging ===")
+test_diag_dram_dmonly(lhs, staging, out)
 print(f"Input: 7.0, Output: {out[0,0].item()}")
 if torch.allclose(out, lhs, rtol=1e-2, atol=1e-2):
     print("PASS: Data round-tripped correctly")
