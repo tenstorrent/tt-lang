@@ -15,7 +15,7 @@ from pykernel._src.kernel_ast import TTCompilerBase
 from .tensor_accessor import TensorAccessor
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
-from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
+from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype, get_tensor_dtype
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 
 
@@ -87,12 +87,12 @@ class D2MGenericCompiler(TTCompilerBase):
                 shard_shape = [
                     shape[j] // self.context.grid[j] for j in range(len(shape))
                 ]
-                dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
+                dtype = torch_dtype_to_mlir_type(get_tensor_dtype(self.args[i]), self.ctx)
                 tensor_type = RankedTensorType.get(shard_shape, dtype)
                 func_operand_types.append(tensor_type)
             elif arg.annotation.id == "CircularBuffer":
                 shape = list(self.args[i].shape)
-                dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
+                dtype = torch_dtype_to_mlir_type(get_tensor_dtype(self.args[i]), self.ctx)
 
                 # Compute shard shape (tiles per core)
                 layout = create_metal_layout(
@@ -113,7 +113,7 @@ class D2MGenericCompiler(TTCompilerBase):
                 # CBs wrap the tensor type that enters the generic op
                 # Generic operates on device tensors (tiled L1), so CBs should have tile element types
                 if self.context.tiled:
-                    ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
+                    ttcore_dtype = torch_dtype_to_ttcore_datatype(get_tensor_dtype(self.args[i]))
                     element_type = ttcore.ir.TileType.get(
                         self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
                     )
@@ -176,8 +176,8 @@ class D2MGenericCompiler(TTCompilerBase):
                         )
 
                         # Get dtype from TensorAccessor
-                        stream_dtype = torch_dtype_to_mlir_type(val.dtype, self.ctx)
-                        stream_ttcore_dtype = torch_dtype_to_ttcore_datatype(val.dtype)
+                        stream_dtype = torch_dtype_to_mlir_type(get_tensor_dtype(val), self.ctx)
+                        stream_ttcore_dtype = torch_dtype_to_ttcore_datatype(get_tensor_dtype(val))
                         element_type = (
                             ttcore.ir.TileType.get(
                                 self.ctx,
