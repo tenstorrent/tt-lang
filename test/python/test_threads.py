@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: %python %s
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 
