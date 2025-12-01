@@ -32,10 +32,25 @@ TORCH_TO_RUNTIME_DTYPE_INT = {
 
 
 def _is_ttnn_tensor(tensor) -> bool:
-    """Check if tensor is a ttnn.Tensor."""
+    """Check if tensor is a ttnn.Tensor or a wrapper around one."""
     if ttnn is None:
         return False
-    return isinstance(tensor, ttnn.Tensor)
+    # Check for direct ttnn.Tensor
+    if isinstance(tensor, ttnn.Tensor):
+        return True
+    # Check for wrapper with underlying ttnn.Tensor
+    if hasattr(tensor, "_tensor") and isinstance(tensor._tensor, ttnn.Tensor):
+        return True
+    return False
+
+
+def _is_ttnn_dtype(dtype) -> bool:
+    """Check if dtype is a ttnn.DataType."""
+    if ttnn is None:
+        return False
+    # Check by string representation since ttnn.DataType comparison can be tricky
+    dtype_str = str(type(dtype))
+    return "ttnn" in dtype_str and "DataType" in dtype_str
 
 
 def _ttnn_dtype_to_torch(ttnn_dtype):
@@ -100,18 +115,19 @@ def get_tensor_dtype(tensor):
     """
     Get tensor dtype as torch.dtype.
 
-    Works with both torch.Tensor and ttnn.Tensor.
+    Works with both torch.Tensor, ttnn.Tensor, and wrappers.
 
     Args:
-        tensor: torch.Tensor or ttnn.Tensor
+        tensor: torch.Tensor, ttnn.Tensor, or wrapper with .dtype
 
     Returns:
         torch.dtype for the tensor's element type
     """
-    if _is_ttnn_tensor(tensor):
-        return _ttnn_dtype_to_torch(tensor.dtype)
-    else:
-        return tensor.dtype
+    dtype = tensor.dtype
+    # Check if it's a ttnn dtype and convert to torch dtype
+    if _is_ttnn_dtype(dtype):
+        return _ttnn_dtype_to_torch(dtype)
+    return dtype
 
 
 def to_data_type(dtype):

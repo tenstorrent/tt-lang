@@ -60,6 +60,30 @@ from ._src.codegen import create_generic_func, copy_symbol_table_globals
 _ttnn_mode = True
 
 
+class _TensorWrapper:
+    """
+    Wrapper to add _global_name attribute to tensors that don't support attribute assignment.
+
+    This is needed for ttnn.Tensor which doesn't allow setting arbitrary attributes.
+    """
+
+    def __init__(self, tensor, global_name: str):
+        self._tensor = tensor
+        self._global_name = global_name
+
+    @property
+    def shape(self):
+        return self._tensor.shape
+
+    @property
+    def dtype(self):
+        return self._tensor.dtype
+
+    def device(self):
+        """Delegate device() call to underlying tensor."""
+        return self._tensor.device()
+
+
 def _should_execute_on_metal_runtime():
     """Check if we should execute on Metal runtime (skip on macOS)."""
     return platform.system() != "Darwin" and binary is not None and runtime is not None
@@ -319,8 +343,12 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
-    for param_name, arg in zip(f_params, args):
-        arg._global_name = param_name
+    # Wrap tensors to add _global_name attribute (needed for TensorAccessor)
+    # Use wrappers since ttnn.Tensor doesn't allow attribute assignment
+    wrapped_args = tuple(
+        _TensorWrapper(arg, param_name)
+        for param_name, arg in zip(f_params, args)
+    )
 
     inject_kwargs = [
         ("block_factors", block_factors),
@@ -332,7 +360,7 @@ def _compile_and_run_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    program = f(*args, **kwargs)
+    program = f(*wrapped_args, **kwargs)
     if not isinstance(program, Program):
         raise TypeError(
             f"Kernel function must return a Program, got {type(program).__name__}"
@@ -382,7 +410,7 @@ def _compile_and_run_kernel(
                 iterator_types,
                 compiled_threads,
                 num_outs,
-                args,
+                wrapped_args,
                 tiled,
                 memory_space,
             )
