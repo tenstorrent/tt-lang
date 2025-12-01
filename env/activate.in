@@ -27,7 +27,10 @@ fi
 
 # Add tt-lang build directories to PATH and PYTHONPATH.
 export PATH="@CMAKE_BINARY_DIR@/bin:$PATH"
-export PYTHONPATH="@CMAKE_BINARY_DIR@/python_packages:@TTMLIR_PATH@/python_packages:$PYTHONPATH"
+export PYTHONPATH="@CMAKE_BINARY_DIR@/python_packages:@TTMLIR_PATH@/python_packages:@TTMLIR_PATH@/python_packages/ttrt/runtime:$PYTHONPATH"
+
+# Set tt-metal runtime root for hardware execution.
+export TT_METAL_RUNTIME_ROOT="@TTMLIR_PATH@/../third_party/tt-metal/src/tt-metal"
 
 # Mark environment as activated.
 export TTLANG_ENV_ACTIVATED=1
