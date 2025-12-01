@@ -12,7 +12,7 @@ from pydantic import validate_call, Field
 from .errors import CBContractError, CBTimeoutError
 from .constants import MAX_CBS, CB_DEFAULT_TIMEOUT
 from .typedefs import Size, CBID, CBElemType
-from .ringview import RingView
+from .block import Block
 from .cbstate import CBState
 
 
@@ -184,7 +184,7 @@ class CBAPI(Generic[CBElemType]):
                     f"cb_pop_front({num_tiles}) exceeds visible={cb_state.visible}"
                 )
             span = cb_state.front_span(num_tiles)
-            view = RingView[CBElemType](cb_state.buf, cb_state.cap, span)
+            view = Block[CBElemType](cb_state.buf, cb_state.cap, span)
             for i in range(len(view)):
                 view.pop(i)
             cb_state.head = (cb_state.head + num_tiles) % cb_state.cap
@@ -196,7 +196,7 @@ class CBAPI(Generic[CBElemType]):
                 cb_state.can_produce.notify_all()
 
     @validate_call
-    def get_read_ptr(self, cb_id: CBID) -> RingView[CBElemType]:
+    def get_read_ptr(self, cb_id: CBID) -> Block[CBElemType]:
         cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
@@ -207,10 +207,10 @@ class CBAPI(Generic[CBElemType]):
                     "read window invalidated; call cb_wait_front again"
                 )
             span = cb_state.front_span(cb_state.last_wait_target)
-            return RingView[CBElemType](cb_state.buf, cb_state.cap, span)
+            return Block[CBElemType](cb_state.buf, cb_state.cap, span)
 
     @validate_call
-    def get_write_ptr(self, cb_id: CBID) -> RingView[CBElemType]:
+    def get_write_ptr(self, cb_id: CBID) -> Block[CBElemType]:
         cb_state: CBState[CBElemType] = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.require_configured()
@@ -219,7 +219,7 @@ class CBAPI(Generic[CBElemType]):
             if cb_state.reserved < cb_state.last_reserve_target:
                 raise CBContractError("write window invalidated; call cb_reserve again")
             span = cb_state.back_span(cb_state.last_reserve_target)
-            return RingView[CBElemType](cb_state.buf, cb_state.cap, span)
+            return Block[CBElemType](cb_state.buf, cb_state.cap, span)
 
     @validate_call
     def set_timeout(self, seconds: Optional[Annotated[float, Field(gt=0)]]) -> None:

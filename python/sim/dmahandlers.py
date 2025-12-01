@@ -15,13 +15,13 @@ import threading
 import time
 import torch
 from . import torch_utils as tu
-from .ringview import RingView
+from .block import Block
 from .constants import TILE_SHAPE, DMA_MULTICAST_TIMEOUT
 from .typedefs import MulticastAddress, Count
 
 # DMA endpoint types - these are the valid types for DMA transfers
 # To add a new endpoint type, add it to this Union and implement a handler for it
-DMAEndpoint = Union[torch.Tensor, RingView[torch.Tensor], MulticastAddress]
+DMAEndpoint = Union[torch.Tensor, Block[torch.Tensor], MulticastAddress]
 # Type of a DMA endpoint class (derived automatically from DMAEndpoint)
 DMAEndpointType = Type[DMAEndpoint]
 
@@ -92,8 +92,8 @@ def register_dma_handler(src_type: DMAEndpointType, dst_type: DMAEndpointType):
         Decorator function
 
     Example:
-        @register_dma_handler(torch.Tensor, RingView)
-        class TensorToRingViewHandler:
+        @register_dma_handler(torch.Tensor, Block)
+        class TensorToBlockHandler:
             def validate(self, src, dst): ...
             def transfer(self, src, dst): ...
     """
@@ -105,12 +105,12 @@ def register_dma_handler(src_type: DMAEndpointType, dst_type: DMAEndpointType):
     return decorator
 
 
-@register_dma_handler(torch.Tensor, RingView)
-class TensorToRingViewHandler:
-    """Handler for Tensor → RingView transfers."""
+@register_dma_handler(torch.Tensor, Block)
+class TensorToBlockHandler:
+    """Handler for Tensor → Block transfers."""
 
-    def validate(self, src: torch.Tensor, dst: RingView[torch.Tensor]) -> None:
-        """Validate tensor to RingView transfer."""
+    def validate(self, src: torch.Tensor, dst: Block[torch.Tensor]) -> None:
+        """Validate tensor to Block transfer."""
         if len(src.shape) != 2:
             raise ValueError(
                 f"DMA only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
@@ -121,11 +121,11 @@ class TensorToRingViewHandler:
 
         if num_tiles != expected_tiles:
             raise ValueError(
-                f"Tensor contains {num_tiles} tiles but RingView has {expected_tiles} slots"
+                f"Tensor contains {num_tiles} tiles but Block has {expected_tiles} slots"
             )
 
-    def transfer(self, src: torch.Tensor, dst: RingView[torch.Tensor]) -> None:
-        """Transfer tensor data to RingView by splitting into tiles."""
+    def transfer(self, src: torch.Tensor, dst: Block[torch.Tensor]) -> None:
+        """Transfer tensor data to Block by splitting into tiles."""
         num_tiles = tu.tile_count(src.shape, TILE_SHAPE)
         width_tiles = src.shape[1] // TILE_SHAPE[1]
 
@@ -145,12 +145,12 @@ class TensorToRingViewHandler:
             dst[tile_idx] = tile
 
 
-@register_dma_handler(RingView, torch.Tensor)
-class RingViewToTensorHandler:
-    """Handler for RingView → Tensor transfers."""
+@register_dma_handler(Block, torch.Tensor)
+class BlockToTensorHandler:
+    """Handler for Block → Tensor transfers."""
 
-    def validate(self, src: RingView[torch.Tensor], dst: torch.Tensor) -> None:
-        """Validate RingView to tensor transfer."""
+    def validate(self, src: Block[torch.Tensor], dst: torch.Tensor) -> None:
+        """Validate Block to tensor transfer."""
         if len(dst.shape) != 2:
             raise ValueError(
                 f"DMA only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
@@ -160,8 +160,8 @@ class RingViewToTensorHandler:
         if len(src) != dst_tiles:
             raise ValueError(f"Expected {len(src)} tiles but found {dst_tiles}")
 
-    def transfer(self, src: RingView[torch.Tensor], dst: torch.Tensor) -> None:
-        """Transfer RingView data to tensor by combining tiles."""
+    def transfer(self, src: Block[torch.Tensor], dst: torch.Tensor) -> None:
+        """Transfer Block data to tensor by combining tiles."""
         dst_tiles = tu.tile_count(dst.shape, TILE_SHAPE)
         width_tiles = dst.shape[1] // TILE_SHAPE[1]
 
@@ -180,15 +180,15 @@ class RingViewToTensorHandler:
             dst[start_row:end_row, start_col:end_col] = tile
 
 
-@register_dma_handler(RingView, MulticastAddress)
-class RingViewToMulticastHandler:
-    """Handler for RingView → MulticastAddress (multicast send)."""
+@register_dma_handler(Block, MulticastAddress)
+class BlockToMulticastHandler:
+    """Handler for Block → MulticastAddress (multicast send)."""
 
-    def validate(self, src: RingView[torch.Tensor], dst: MulticastAddress) -> None:
+    def validate(self, src: Block[torch.Tensor], dst: MulticastAddress) -> None:
         """Validate multicast send - no specific validation needed."""
         pass
 
-    def transfer(self, src: RingView[torch.Tensor], dst: MulticastAddress) -> None:
+    def transfer(self, src: Block[torch.Tensor], dst: MulticastAddress) -> None:
         """Multicast send: store data in shared buffer accessible by all cores."""
         src_data = [src[i] for i in range(len(src))]
         # Initialize per-address state atomically so all threads see the
@@ -215,15 +215,15 @@ class RingViewToMulticastHandler:
             entry["event"].set()
 
 
-@register_dma_handler(MulticastAddress, RingView)
-class MulticastToRingViewHandler:
-    """Handler for MulticastAddress → RingView (multicast receive)."""
+@register_dma_handler(MulticastAddress, Block)
+class MulticastToBlockHandler:
+    """Handler for MulticastAddress → Block (multicast receive)."""
 
-    def validate(self, src: MulticastAddress, dst: RingView[torch.Tensor]) -> None:
+    def validate(self, src: MulticastAddress, dst: Block[torch.Tensor]) -> None:
         """Validate multicast receive - validation happens during transfer when data is available."""
         pass
 
-    def transfer(self, src: MulticastAddress, dst: RingView[torch.Tensor]) -> None:
+    def transfer(self, src: MulticastAddress, dst: Block[torch.Tensor]) -> None:
         """Multicast receive: retrieve data from shared multicast buffer."""
         # Use an event to wait for data instead of polling. This reduces CPU
         # usage and provides a cleaner synchronization primitive for tests.
@@ -251,7 +251,7 @@ class MulticastToRingViewHandler:
             if remaining <= 0:
                 raise TimeoutError(
                     f"Timeout waiting for multicast data. "
-                    f"The sender may not have called dma(ringview, mcast_addr).wait() "
+                    f"The sender may not have called dma(block, mcast_addr).wait() "
                     f"or there may be a deadlock."
                 )
 
@@ -261,7 +261,7 @@ class MulticastToRingViewHandler:
                 # event.wait returned False -> timeout
                 raise TimeoutError(
                     f"Timeout waiting for multicast data. "
-                    f"The sender may not have called dma(ringview, mcast_addr).wait() "
+                    f"The sender may not have called dma(block, mcast_addr).wait() "
                     f"or there may be a deadlock."
                 )
 
@@ -275,7 +275,7 @@ class MulticastToRingViewHandler:
                 src_data, remaining_receivers = queue[0]
                 if len(dst) != len(src_data):
                     raise ValueError(
-                        f"Destination RingView length ({len(dst)}) "
+                        f"Destination Block length ({len(dst)}) "
                         f"does not match multicast data length ({len(src_data)})"
                     )
 

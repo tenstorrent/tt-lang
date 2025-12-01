@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-_RingView and supporting Span for cbsim.
+Block and supporting Span for cbsim.
 """
 
 import operator as _op
@@ -19,7 +19,7 @@ from pydantic import validate_call
 # wrap around. Notice also that it handles a list and a capacity, instead of a
 # _CBState, a deliberate choice to make it closer in spirit to a pointer and
 # minimizing the state that is exposed.
-class RingView(Generic[CBElemType]):
+class Block(Generic[CBElemType]):
     """A logically contiguous window into the ring, possibly wrapping.
     Provides list-like access to elements while respecting wrap-around.
     """
@@ -78,8 +78,8 @@ class RingView(Generic[CBElemType]):
 
     def _apply_binary_op(
         self,
-        left: Union["RingView[CBElemType]", List[CBElemType]],
-        right: Union["RingView[CBElemType]", List[CBElemType]],
+        left: Union["Block[CBElemType]", List[CBElemType]],
+        right: Union["Block[CBElemType]", List[CBElemType]],
         op: Callable[[Any, Any], Any],
     ) -> List[CBElemType]:
         """Element-wise binary op: left (op) right with broadcasting support.
@@ -108,7 +108,7 @@ class RingView(Generic[CBElemType]):
 
     def _binary_op(
         self,
-        other: Union["RingView[CBElemType]", List[CBElemType]],
+        other: Union["Block[CBElemType]", List[CBElemType]],
         op: Callable[[Any, Any], Any],
     ) -> List[CBElemType]:
         """Element-wise binary op: self (op) other."""
@@ -125,37 +125,37 @@ class RingView(Generic[CBElemType]):
     # ---- forward operators ----
 
     def __add__(
-        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+        self, other: Union["Block[CBElemType]", List[CBElemType]]
     ) -> List[CBElemType]:
         return self._binary_op(other, _op.add)
 
     def __sub__(
-        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+        self, other: Union["Block[CBElemType]", List[CBElemType]]
     ) -> List[CBElemType]:
         return self._binary_op(other, _op.sub)
 
     def __mul__(
-        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+        self, other: Union["Block[CBElemType]", List[CBElemType]]
     ) -> List[CBElemType]:
         return self._binary_op(other, _op.mul)
 
     def __truediv__(
-        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+        self, other: Union["Block[CBElemType]", List[CBElemType]]
     ) -> List[CBElemType]:
         return self._binary_op(other, _op.truediv)
 
     def __floordiv__(
-        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+        self, other: Union["Block[CBElemType]", List[CBElemType]]
     ) -> List[CBElemType]:
         return self._binary_op(other, _op.floordiv)
 
     def __mod__(
-        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+        self, other: Union["Block[CBElemType]", List[CBElemType]]
     ) -> List[CBElemType]:
         return self._binary_op(other, _op.mod)
 
     def __pow__(
-        self, other: Union["RingView[CBElemType]", List[CBElemType]]
+        self, other: Union["Block[CBElemType]", List[CBElemType]]
     ) -> List[CBElemType]:
         return self._binary_op(other, _op.pow)
 

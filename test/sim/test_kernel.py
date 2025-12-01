@@ -17,7 +17,8 @@ class TestGridSize:
         """Test grid_size returns correct dimensions in 2D grid."""
 
         @ttl.kernel(grid=(4, 8), granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
             grid_h, grid_w = ttl.grid_size()
             assert grid_h == 4
             assert grid_w == 8
@@ -33,7 +34,8 @@ class TestGridSize:
         """Test grid_size with auto grid (defaults to 8x8)."""
 
         @ttl.kernel(grid="auto", granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
             grid_h, grid_w = ttl.grid_size()
             assert grid_h == 8
             assert grid_w == 8
@@ -49,7 +51,8 @@ class TestGridSize:
         """Test grid_size with 1D grid."""
 
         @ttl.kernel(grid=(16,), granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
             (grid_size_val,) = ttl.grid_size()
             assert grid_size_val == 16
 
@@ -64,7 +67,8 @@ class TestGridSize:
         """Test grid_size with 3D grid."""
 
         @ttl.kernel(grid=(2, 3, 4), granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
             grid_d1, grid_d2, grid_d3 = ttl.grid_size()
             assert grid_d1 == 2
             assert grid_d2 == 3
@@ -86,7 +90,8 @@ class TestGridSize:
         """Test grid_size can be called from within compute/datamovement functions."""
 
         @ttl.kernel(grid=(3, 5), granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
 
             @ttl.compute()
             def compute_func():
@@ -119,7 +124,8 @@ class TestGridSize:
         """Test various ways to unpack grid_size result."""
 
         @ttl.kernel(grid=(2, 3), granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
             # Unpack to individual variables
             h, w = ttl.grid_size()
             assert h == 2
@@ -145,7 +151,9 @@ class TestGridSize:
         """Test grid_size works in nested function calls within kernel."""
 
         @ttl.kernel(grid=(6, 7), granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
             def helper_function():
                 return ttl.grid_size()
 
@@ -167,7 +175,8 @@ class TestGridSize:
         """Test that grid_size returns consistent values across multiple calls."""
 
         @ttl.kernel(grid=(5, 9), granularity=1)
-        def test_kernel():
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
             grid1 = ttl.grid_size()
             grid2 = ttl.grid_size()
             grid3 = ttl.grid_size()

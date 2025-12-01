@@ -79,25 +79,25 @@ def eltwise_mcast(
 
         for ct in range(start_col_tile, end_col_tile):
             # Reuse C across rows of A, B
-            # TODO: Perhaps consider making RingView pointers that come from wait()/reserve() read/write only respectively?
+            # TODO: Perhaps consider making Block pointers that come from wait()/reserve() read/write only respectively?
             for rt_block in range(row_tiles // granularity):
                 print(
                     "Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}"
                 )
-                # again, these return RingView pointers:
+                # again, these return Block pointers:
                 a_block = a_in_cb.wait()  # blocking
                 b_block = b_in_cb.wait()  # blocking
                 # NOTE: Please consider making non-approx the default for eltwise unary, but leave the option for the user to specify approx=True
                 out_block = out_cb.reserve()  # blocking
 
-                # Use store() to properly populate the RingView with computed results
+                # Use store() to properly populate the Block with computed results
                 result = a_block * b_block + c_block
                 out_block.store(result)
 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
                 out_cb.push()
                 # finalize pop, this advances the cb pointers, essentially freeing the memory
-                # After poping, the corresponding RingView(a_block) points to stale data. Should probably make it an error to access it at that point
+                # After poping, the corresponding Block(a_block) points to stale data. Should probably make it an error to access it at that point
                 a_in_cb.pop()
                 # ditto
                 b_in_cb.pop()

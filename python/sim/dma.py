@@ -5,7 +5,7 @@
 DMA (Direct Memory Access) simulation for CircularBuffer operations.
 
 This module provides a simplified DMA implementation for simulation purposes,
-enabling data transfer operations between tensors and RingViews in the
+enabling data transfer operations between tensors and Blocks in the
 CircularBuffer system.
 """
 
@@ -26,7 +26,7 @@ class DMATransaction:
     between different memory locations or devices.
 
     Example:
-        tx = dma(source_tensor, destination_ringview)
+        tx = dma(source_tensor, destination_block)
         tx.wait()  # Wait for transfer to complete
     """
 
@@ -39,8 +39,8 @@ class DMATransaction:
         Initialize a DMA transaction from src to dst.
 
         Args:
-            src: Source data (tensor, RingView, or MulticastAddress)
-            dst: Destination (tensor, RingView, or MulticastAddress)
+            src: Source data (tensor, Block, or MulticastAddress)
+            dst: Destination (tensor, Block, or MulticastAddress)
 
         Raises:
             ValueError: If the source and destination types are not supported
@@ -126,14 +126,14 @@ def dma(
     The actual transfer occurs when wait() is called on the returned transaction.
 
     Supported transfer patterns:
-    - torch.Tensor → RingView: Load tensor data into circular buffer
-    - RingView → torch.Tensor: Extract tensor data from circular buffer
-    - RingView → MulticastAddress: Broadcast data to multiple cores (multicast send)
-    - MulticastAddress → RingView: Receive broadcasted data from multicast (multicast receive)
+    - torch.Tensor → Block: Load tensor data into circular buffer
+    - Block → torch.Tensor: Extract tensor data from circular buffer
+    - Block → MulticastAddress: Broadcast data to multiple cores (multicast send)
+    - MulticastAddress → Block: Receive broadcasted data from multicast (multicast receive)
 
     Args:
-        src: Source data (tensor, RingView, or MulticastAddress)
-        dst: Destination (tensor, RingView, or MulticastAddress)
+        src: Source data (tensor, Block, or MulticastAddress)
+        dst: Destination (tensor, Block, or MulticastAddress)
 
     Returns:
         DMATransaction object that can be waited on
@@ -143,11 +143,11 @@ def dma(
 
     Example:
         # Transfer from tensor to circular buffer
-        tx = dma(tensor_slice, cb_ringview)
+        tx = dma(tensor_slice, cb_block)
         tx.wait()
 
         # Transfer from circular buffer to tensor
-        tx = dma(cb_ringview, tensor_slice)
+        tx = dma(cb_block, tensor_slice)
         tx.wait()
     """
     return DMATransaction(src, dst)

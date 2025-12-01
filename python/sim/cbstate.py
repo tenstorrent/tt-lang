@@ -10,7 +10,7 @@ from threading import Condition, RLock, Thread
 from typing import Generic, List, Optional
 from .typedefs import Size, Index, Count, CBElemType, CBSlotType
 from .errors import CBContractError, CBNotConfigured
-from .ringview import Span
+from .block import Span
 
 
 # It is a deliberate design choice to use any generic type here to avoid dealing

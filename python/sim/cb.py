@@ -14,7 +14,7 @@ from typing import Tuple, Optional
 import torch
 
 from .cbapi import CBAPI
-from .ringview import RingView
+from .block import Block
 from .typedefs import CBID, Size, Shape
 
 
@@ -83,16 +83,16 @@ class CircularBuffer:
         self._cb_id = self._api.allocate_cb_id()
         self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
 
-    def wait(self) -> RingView[torch.Tensor]:
+    def wait(self) -> Block[torch.Tensor]:
         """
         Wait for data to be available and return a read view.
 
         This method blocks until the required number of tiles (as specified by
-        the shape parameter) are available for reading. It returns a RingView
+        the shape parameter) are available for reading. It returns a Block
         that provides access to the available data.
 
         Returns:
-            RingView object providing read access to the available tiles
+            Block object providing read access to the available tiles
 
         Raises:
             CBTimeoutError: If the wait times out
@@ -101,16 +101,16 @@ class CircularBuffer:
         self._api.cb_wait_front(self._cb_id, self._tiles_per_operation)
         return self._api.get_read_ptr(self._cb_id)
 
-    def reserve(self) -> RingView[torch.Tensor]:
+    def reserve(self) -> Block[torch.Tensor]:
         """
         Reserve space for writing and return a write view.
 
         This method blocks until there is sufficient space to write the required
-        number of tiles (as specified by the shape parameter). It returns a RingView
+        number of tiles (as specified by the shape parameter). It returns a Block
         that provides access to the reserved space.
 
         Returns:
-            RingView object providing write access to the reserved space
+            Block object providing write access to the reserved space
 
         Raises:
             CBTimeoutError: If the reservation times out
@@ -124,7 +124,7 @@ class CircularBuffer:
         Finalize a write operation, making reserved data visible to consumers.
 
         This method must be called after reserve() and writing data to the
-        returned RingView. It advances the CB pointers and makes the written
+        returned Block. It advances the CB pointers and makes the written
         data available for consumers to read via wait().
 
         Raises:
@@ -138,10 +138,10 @@ class CircularBuffer:
         Finalize a read operation, freeing consumed data.
 
         This method must be called after wait() and reading data from the
-        returned RingView. It advances the CB pointers and frees the consumed
+        returned Block. It advances the CB pointers and frees the consumed
         tiles, making space available for producers.
 
-        After calling pop(), the RingView returned by the corresponding wait()
+        After calling pop(), the Block returned by the corresponding wait()
         points to stale data and should not be accessed.
 
         Raises:
