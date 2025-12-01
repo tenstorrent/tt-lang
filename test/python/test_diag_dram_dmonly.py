@@ -38,7 +38,14 @@ def test_diag_dram_dmonly(lhs, out):
         tx.wait()
         lhs_scalar_cb.push()
 
-    return Program(passthrough, dm_read)(lhs, out)
+    @datamovement()
+    def dm_out(lhs_scalar_cb: CircularBuffer, out_cb: CircularBuffer):
+        # Consume the output CB to prevent hang
+        # (CB state persists between programs, must be balanced)
+        out_shard = out_cb.wait()
+        out_cb.pop()
+
+    return Program(passthrough, dm_read, dm_out)(lhs, out)
 
 
 lhs = torch.full((32, 32), 7.0)
