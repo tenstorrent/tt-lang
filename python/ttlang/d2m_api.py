@@ -73,8 +73,8 @@ class _TensorWrapper:
 
     @property
     def shape(self):
-        # Convert to list to handle ttnn.Shape objects
-        return list(self._tensor.shape)
+        # Convert to list of ints to handle ttnn.Shape objects
+        return [int(x) for x in self._tensor.shape]
 
     @property
     def dtype(self):
@@ -389,6 +389,7 @@ def _compile_and_run_kernel(
     with ctx, loc:
         compiled_threads = []
         for compile_thread in program.threads:
+            print(f"DEBUG: Compiling thread: {compile_thread.__name__}")
             compiled_threads.append(compile_thread(*program.args, **program.kwargs))
 
         module = Module.create(loc)

@@ -48,6 +48,6 @@ class TensorAccessor:
                 "TensorAccessor must be created from a top level tensor argument"
             )
         self.name = tensor._global_name
-        # Convert shape to list to handle ttnn.Shape objects
-        self.shape = list(tensor.shape)
+        # Convert shape to list of ints to handle ttnn.Shape objects
+        self.shape = [int(x) for x in tensor.shape]
         self.dtype = tensor.dtype

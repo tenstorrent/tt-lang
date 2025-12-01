@@ -101,14 +101,8 @@ def get_tensor_shape(tensor):
     Returns:
         List of integers representing tensor shape
     """
-    if _is_ttnn_tensor(tensor):
-        # ttnn.Shape can be converted to list directly or via indexing
-        shape = tensor.shape
-        # Handle ttnn.Shape - convert to list of ints
-        return list(shape)
-    else:
-        # torch.Tensor
-        return list(tensor.shape)
+    # Explicitly convert each dimension to int to handle ttnn.Shape
+    return [int(x) for x in tensor.shape]
 
 
 def get_tensor_dtype(tensor):
