@@ -59,30 +59,7 @@ from ._src.codegen import create_generic_func, copy_symbol_table_globals
 # Set to True for testing TTNN interop, False for standard torch.Tensor path
 _ttnn_mode = True
 
-
-class _TensorWrapper:
-    """
-    Wrapper to add _global_name attribute to tensors that don't support attribute assignment.
-
-    This is needed for ttnn.Tensor which doesn't allow setting arbitrary attributes.
-    """
-
-    def __init__(self, tensor, global_name: str):
-        self._tensor = tensor
-        self._global_name = global_name
-
-    @property
-    def shape(self):
-        # Convert to list of ints to handle ttnn.Shape objects
-        return [int(x) for x in self._tensor.shape]
-
-    @property
-    def dtype(self):
-        return self._tensor.dtype
-
-    def device(self):
-        """Delegate device() call to underlying tensor."""
-        return self._tensor.device()
+from ._src.tensor_registry import register_tensor_name
 
 
 def _should_execute_on_metal_runtime():
@@ -344,18 +321,14 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
-    # Add _global_name attribute to tensors (needed for TensorAccessor)
-    # For ttnn.Tensor, use wrappers since they don't allow attribute assignment
-    # For torch.Tensor, set the attribute directly
-    if _ttnn_mode:
-        wrapped_args = tuple(
-            _TensorWrapper(arg, param_name)
-            for param_name, arg in zip(f_params, args)
-        )
-    else:
-        for param_name, arg in zip(f_params, args):
+    # Register tensor names (needed for TensorAccessor)
+    # For ttnn.Tensor, use registry since they don't allow attribute assignment
+    # For torch.Tensor, set the attribute directly (and also register for consistency)
+    for param_name, arg in zip(f_params, args):
+        register_tensor_name(arg, param_name)
+        if not _ttnn_mode:
+            # Also set attribute for backwards compatibility
             arg._global_name = param_name
-        wrapped_args = args
 
     inject_kwargs = [
         ("block_factors", block_factors),
@@ -367,7 +340,7 @@ def _compile_and_run_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    program = f(*wrapped_args, **kwargs)
+    program = f(*args, **kwargs)
     if not isinstance(program, Program):
         raise TypeError(
             f"Kernel function must return a Program, got {type(program).__name__}"
@@ -389,7 +362,6 @@ def _compile_and_run_kernel(
     with ctx, loc:
         compiled_threads = []
         for compile_thread in program.threads:
-            print(f"DEBUG: Compiling thread: {compile_thread.__name__}")
             compiled_threads.append(compile_thread(*program.args, **program.kwargs))
 
         module = Module.create(loc)
@@ -418,7 +390,7 @@ def _compile_and_run_kernel(
                 iterator_types,
                 compiled_threads,
                 num_outs,
-                wrapped_args,
+                args,
                 tiled,
                 memory_space,
             )

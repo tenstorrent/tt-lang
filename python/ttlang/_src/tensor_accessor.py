@@ -6,6 +6,8 @@
 
 from typing import Optional, Any
 
+from .tensor_registry import get_tensor_global_name
+
 
 class TensorAccessor:
     """
@@ -43,11 +45,12 @@ class TensorAccessor:
         Raises:
             ValueError: If tensor is not a top-level argument
         """
-        if not hasattr(tensor, "_global_name"):
+        try:
+            self.name = get_tensor_global_name(tensor)
+        except ValueError:
             raise ValueError(
                 "TensorAccessor must be created from a top level tensor argument"
             )
-        self.name = tensor._global_name
         # Convert shape to list of ints to handle ttnn.Shape objects
         self.shape = [int(x) for x in tensor.shape]
         self.dtype = tensor.dtype

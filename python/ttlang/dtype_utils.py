@@ -32,16 +32,10 @@ TORCH_TO_RUNTIME_DTYPE_INT = {
 
 
 def _is_ttnn_tensor(tensor) -> bool:
-    """Check if tensor is a ttnn.Tensor or a wrapper around one."""
+    """Check if tensor is a ttnn.Tensor."""
     if ttnn is None:
         return False
-    # Check for direct ttnn.Tensor
-    if isinstance(tensor, ttnn.Tensor):
-        return True
-    # Check for wrapper with underlying ttnn.Tensor
-    if hasattr(tensor, "_tensor") and isinstance(tensor._tensor, ttnn.Tensor):
-        return True
-    return False
+    return isinstance(tensor, ttnn.Tensor)
 
 
 def _is_ttnn_dtype(dtype) -> bool:
