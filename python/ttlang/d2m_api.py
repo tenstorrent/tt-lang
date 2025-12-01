@@ -123,6 +123,9 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
     program_index = 0
 
+    # Set the device runtime based on the binary format (TTMetal)
+    runtime.set_compatible_device_runtime(binary_obj)
+
     # Get the device from the first tensor - all tensors should be on same device
     ttnn_device = args[0].device()
 
