@@ -24,10 +24,11 @@ except ModuleNotFoundError:
     ttnn = None
 
 try:
-    from _ttmlir_runtime import runtime, binary
+    from _ttmlir_runtime import runtime, binary, utils as runtime_utils
 except ModuleNotFoundError:
     runtime = None
     binary = None
+    runtime_utils = None
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
@@ -116,6 +117,8 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     """
     if ttnn is None:
         raise ImportError("ttnn module not available")
+    if runtime_utils is None:
+        raise ImportError("runtime utils module not available")
 
     binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
     program_index = 0
@@ -124,11 +127,11 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     ttnn_device = args[0].device()
 
     # Wrap the ttnn device as a runtime device (uses existing device, doesn't open new one)
-    device = runtime.create_runtime_device_from_ttnn(ttnn_device)
+    device = runtime_utils.create_runtime_device_from_ttnn(ttnn_device)
 
     # Wrap ttnn tensors as runtime tensors
     # retain=True keeps the tensor alive during execution
-    inputs = [runtime.create_runtime_tensor_from_ttnn(t, retain=True) for t in args]
+    inputs = [runtime_utils.create_runtime_tensor_from_ttnn(t, retain=True) for t in args]
 
     # Submit the compiled kernel
     runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
