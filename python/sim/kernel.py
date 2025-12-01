@@ -8,8 +8,37 @@ This module provides decorators and utilities for generating kernels with
 specified grid configurations and granularity settings.
 """
 
-from typing import Any, Callable, Union
+from typing import Any, Callable, Union, Tuple
+import inspect
 from .typedefs import Shape, Size
+
+
+def grid_size() -> Tuple[int, ...]:
+    """Get the grid size from the execution context.
+
+    Returns:
+        Tuple of grid dimensions (e.g., (height, width) for 2D grid)
+
+    Raises:
+        RuntimeError: If called outside of a kernel function context
+
+    Example:
+        grid_h, grid_w = ttl.grid_size()
+    """
+    frame = inspect.currentframe()
+
+    # Walk up the stack to find the frame with 'grid' variable
+    current_frame = frame
+    while current_frame:
+        if "grid" in current_frame.f_globals:
+            return current_frame.f_globals["grid"]
+        if "grid" in current_frame.f_locals:
+            return current_frame.f_locals["grid"]
+        current_frame = current_frame.f_back
+
+    raise RuntimeError(
+        "grid not available - function must be called within a kernel context"
+    )
 
 
 def kernel(

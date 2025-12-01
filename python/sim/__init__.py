@@ -39,12 +39,13 @@ class _TTLNamespace:
     """TT-Lang namespace for DSL constructs."""
 
     def __init__(self):
-        from .kernel import kernel
+        from .kernel import kernel, grid_size
         from .cb import CircularBuffer
         from .decorators import compute, datamovement
         from .program import core_index
 
         self.kernel = kernel
+        self.grid_size = grid_size
         self.CircularBuffer = CircularBuffer
         self.compute = compute
         self.datamovement = datamovement

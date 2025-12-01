@@ -20,7 +20,7 @@ from sim import (
 )
 
 if TYPE_CHECKING:
-    from sim.pykernel_env import grid, granularity
+    from sim.pykernel_env import granularity
 
 
 @ttl.kernel(
@@ -46,7 +46,8 @@ def eltwise_mcast(
     col_tiles = a_in.shape[1] // TILE_SHAPE[1]
 
     # Parallelizing by columns here to get reuse on C
-    cols_per_core = math.ceil(col_tiles / (grid[0] * grid[1]))
+    grid_h, grid_w = ttl.grid_size()
+    cols_per_core = math.ceil(col_tiles / (grid_h * grid_w))
     buffer_factor = (
         2  # TODO: Should buffer factor be tunable by the user? Or tuned by kernel?
     )
