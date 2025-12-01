@@ -12,7 +12,7 @@ from typing import Any, Callable, Union
 from .typedefs import Shape, Size
 
 
-def pykernel_gen(
+def kernel(
     grid: Union[str, Shape] = "auto", granularity: Size = 4
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
@@ -26,7 +26,7 @@ def pykernel_gen(
         Decorated function with grid and granularity configuration
 
     Example:
-        @pykernel_gen(grid="auto", granularity=2)
+        @kernel(grid="auto", granularity=2)
         def my_kernel(a, b, out):
             # grid and granularity are available as variables here
             pass

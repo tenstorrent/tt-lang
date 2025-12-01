@@ -17,7 +17,7 @@ from sim import (
     compute,
     datamovement,
     core_index,
-    pykernel_gen,
+    kernel,
     is_tiled,
 )
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from sim.pykernel_env import grid, granularity
 
 
-@pykernel_gen(
+@kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
     granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
@@ -49,7 +49,9 @@ def eltwise_mcast(
 
     # Parallelizing by columns here to get reuse on C
     cols_per_core = math.ceil(col_tiles / (grid[0] * grid[1]))
-    buffer_factor = 2  # TODO: Should buffer factor be tunable by the user? Or tuned by pykernel_gen?
+    buffer_factor = (
+        2  # TODO: Should buffer factor be tunable by the user? Or tuned by kernel?
+    )
 
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
     b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)

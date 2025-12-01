@@ -12,7 +12,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_add(lhs, rhs, out):
     @compute()
     def add_compute(

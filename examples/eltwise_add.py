@@ -16,7 +16,7 @@ from sim import (
     compute,
     datamovement,
     core_index,
-    pykernel_gen,
+    kernel,
     is_tiled,
 )
 
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from sim.pykernel_env import grid, granularity
 
 
-@pykernel_gen(
+@kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
     granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )

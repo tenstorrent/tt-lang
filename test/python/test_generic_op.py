@@ -12,7 +12,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_generic(lhs, rhs, out):
     @compute()
     def comp(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):

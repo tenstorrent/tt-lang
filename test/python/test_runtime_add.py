@@ -14,7 +14,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_runtime_add(lhs, rhs, out):
     # TensorAccessor() wraps input tensors for DMA. The torch tensor shape from lhs/rhs
     # is used for indexing (e.g., lhs_accessor[0, 0] accesses the first tile).

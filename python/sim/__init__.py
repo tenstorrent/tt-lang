@@ -28,7 +28,7 @@ from .cb import CircularBuffer
 from .dma import dma, DMATransaction
 from .program import Program, BindableTemplate, core_index
 from .decorators import compute, datamovement
-from .kernel import pykernel_gen
+from .kernel import kernel
 from .testing import assert_pcc
 from .torch_utils import is_tiled
 from . import torch_utils
@@ -63,7 +63,7 @@ __all__ = [
     "core_index",
     "compute",
     "datamovement",
-    "pykernel_gen",
+    "kernel",
     "assert_pcc",
     "is_tiled",
     "torch_utils",
