@@ -33,6 +33,26 @@ from .testing import assert_pcc
 from .torch_utils import is_tiled
 from . import torch_utils
 
+
+# Create ttl namespace object
+class _TTLNamespace:
+    """TT-Lang namespace for DSL constructs."""
+
+    def __init__(self):
+        from .kernel import kernel
+        from .cb import CircularBuffer
+        from .decorators import compute, datamovement
+        from .program import core_index
+
+        self.kernel = kernel
+        self.CircularBuffer = CircularBuffer
+        self.compute = compute
+        self.datamovement = datamovement
+        self.core_index = core_index
+
+
+ttl = _TTLNamespace()
+
 __all__ = [
     "CBAPI",
     "CBStats",
@@ -67,4 +87,5 @@ __all__ = [
     "assert_pcc",
     "is_tiled",
     "torch_utils",
+    "ttl",
 ]

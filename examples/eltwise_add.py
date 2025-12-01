@@ -13,18 +13,16 @@ from sim import (
     CircularBuffer,
     dma,
     Program,
-    compute,
-    datamovement,
     core_index,
-    kernel,
     is_tiled,
+    ttl,
 )
 
 if TYPE_CHECKING:
     from sim.pykernel_env import grid, granularity
 
 
-@kernel(
+@ttl.kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
     granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
@@ -54,7 +52,7 @@ def eltwise_add(
     b_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
     out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
 
-    @compute()
+    @ttl.compute()
     def compute_func():
         core_num: CoreIndex = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
@@ -84,7 +82,7 @@ def eltwise_add(
                 # ditto
                 b_in_cb.pop()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm0():
         core_num: CoreIndex = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core
@@ -105,7 +103,7 @@ def eltwise_add(
                 tx.wait()
                 b_in_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm1():
         core_num: CoreIndex = core_index()  # core number in 2d grid
         start_col_tile = core_num * cols_per_core

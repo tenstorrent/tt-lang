@@ -14,18 +14,16 @@ from sim import (
     MulticastType,
     dma,
     Program,
-    compute,
-    datamovement,
     core_index,
-    kernel,
     is_tiled,
+    ttl,
 )
 
 if TYPE_CHECKING:
     from sim.pykernel_env import grid, granularity
 
 
-@kernel(
+@ttl.kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
     granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
@@ -68,7 +66,7 @@ def eltwise_mcast(
     # Convention: mcast_addr.core_indices[0] is the sender, rest are receivers
     mcast_addr = MulticastAddress(MulticastType.PUSH, (0, 1, 2, 3))
 
-    @compute()
+    @ttl.compute()
     def compute_func():
         core_num = core_index()  # core number in 2d grid
         if core_num not in mcast_addr.core_indices:
@@ -104,7 +102,7 @@ def eltwise_mcast(
                 b_in_cb.pop()
         c_in_cb.pop()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm0():
         core_num = core_index()  # core number in 2d grid
         if core_num not in mcast_addr.core_indices:
@@ -153,7 +151,7 @@ def eltwise_mcast(
                 tx.wait()
                 b_in_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm1():
         core_num = core_index()  # core number in 2d grid
         if core_num not in mcast_addr.core_indices:
