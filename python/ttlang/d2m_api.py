@@ -19,6 +19,11 @@ except ModuleNotFoundError:
     torch = None
 
 try:
+    import ttnn
+except ModuleNotFoundError:
+    ttnn = None
+
+try:
     from _ttmlir_runtime import runtime, binary
 except ModuleNotFoundError:
     runtime = None
@@ -48,6 +53,11 @@ from .dtype_utils import (
 )
 from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
+
+
+# TTNN mode flag - when True, expects ttnn.Tensor inputs and uses TTNN runtime
+# Set to True for testing TTNN interop, False for standard torch.Tensor path
+_ttnn_mode = True
 
 
 def _should_execute_on_metal_runtime():
@@ -89,20 +99,43 @@ def _execute_on_metal_runtime(flatbuffer_binary, args):
 
 def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     """
-    Execute compiled kernel on TTNN runtime (not yet implemented).
+    Execute compiled kernel on TTNN runtime using existing ttnn.Tensor inputs.
+
+    This allows tt-lang kernels to be used within existing TTNN programs.
+    The tensors are already on device, so we wrap them as runtime tensors
+    and execute the compiled flatbuffer.
 
     Args:
         flatbuffer_binary: Compiled flatbuffer binary capsule
-        args: List of torch tensors as input arguments
+        args: List of ttnn.Tensor as input arguments (already on device)
 
     Raises:
         Exception: If runtime execution fails
     """
-    binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
-    device = runtime.open_mesh_device()
+    if ttnn is None:
+        raise ImportError("ttnn module not available")
 
-    inputs = create_borrowed_tensors(args)
-    runtime_outputs = runtime.submit(device, binary_obj, 0, inputs)
+    binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
+    program_index = 0
+
+    # Get the device from the first tensor - all tensors should be on same device
+    ttnn_device = args[0].device()
+
+    # Wrap the ttnn device as a runtime device (uses existing device, doesn't open new one)
+    device = runtime.create_runtime_device_from_ttnn(ttnn_device)
+
+    # Wrap ttnn tensors as runtime tensors
+    # retain=True keeps the tensor alive during execution
+    inputs = [runtime.create_runtime_tensor_from_ttnn(t, retain=True) for t in args]
+
+    # Submit the compiled kernel
+    runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
+    runtime.wait(runtime_outputs)
+
+    # The output tensor(s) are written in place - no need to copy back
+    # Clean up runtime tensor wrappers (doesn't deallocate underlying ttnn tensors)
+    for runtime_output_tensor in runtime_outputs:
+        runtime.deallocate_tensor(runtime_output_tensor, force=True)
 
 
 def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
@@ -362,7 +395,6 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        ttnn_mode = False  # tt-lang uses TTMetal mode
 
         # fmt: off
         pipeline_passes = [
@@ -383,7 +415,7 @@ def _compile_and_run_kernel(
             "sccp",                                        # Sparse conditional constant propagation
             "cse",                                         # Eliminate common subexpressions
             "d2m-generic-regions-to-funcs",                # Extract regions to functions
-            "convert-d2m-to-ttkernel{ttnn-mode=0}",
+            f"convert-d2m-to-ttkernel{{ttnn-mode={1 if _ttnn_mode else 0}}}",
             "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
             "convert-d2m-to-ttmetal",                      # Convert to_layout to ttmetal enqueue ops
@@ -442,33 +474,24 @@ def _compile_and_run_kernel(
         # Check if runtime execution should be skipped (compile-only mode)
         compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
 
-        # Metal runtime execution (enabled by default when runtime is available)
-        # Skip on macOS since hardware is not available
-        # Skip if TTLANG_COMPILE_ONLY=1 is set
-        if not compile_only and _should_execute_on_metal_runtime():
-            try:
-                _execute_on_metal_runtime(flatbuffer_binary, args)
-            except Exception as e:
-                print(f"Warning: Metal runtime execution failed: {e}")
-                print("(This is expected on macOS or if hardware is not available)")
-                import traceback
-
-                traceback.print_exc()
-
-        # TTNN runtime execution (not yet implemented - requires TTNN integration)
-        if (
-            not compile_only
-            and ttnn_mode
-            and binary is not None
-            and runtime is not None
-        ):
-            try:
-                _execute_on_ttnn_runtime(flatbuffer_binary, args)
-            except Exception as e:
-                print(f"Warning: TTNN runtime execution failed: {e}")
-                import traceback
-
-                traceback.print_exc()
+        if not compile_only and binary is not None and runtime is not None:
+            if _ttnn_mode:
+                # TTNN runtime: tensors are already on device
+                try:
+                    _execute_on_ttnn_runtime(flatbuffer_binary, args)
+                except Exception as e:
+                    print(f"Warning: TTNN runtime execution failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+            elif _should_execute_on_metal_runtime():
+                # Metal runtime: torch tensors, need to move to device
+                try:
+                    _execute_on_metal_runtime(flatbuffer_binary, args)
+                except Exception as e:
+                    print(f"Warning: Metal runtime execution failed: {e}")
+                    print("(This is expected on macOS or if hardware is not available)")
+                    import traceback
+                    traceback.print_exc()
 
 
 def pykernel_gen(

@@ -2,9 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Data type conversion utilities between PyTorch and runtime types."""
+"""Data type conversion utilities between PyTorch, TTNN, and runtime types."""
 
 import torch
+
+try:
+    import ttnn
+except ModuleNotFoundError:
+    ttnn = None
 
 try:
     from _ttmlir_runtime import runtime
@@ -24,6 +29,89 @@ TORCH_TO_RUNTIME_DTYPE_INT = {
     torch.float16: 1,
     torch.bfloat16: 2,
 }
+
+
+def _is_ttnn_tensor(tensor) -> bool:
+    """Check if tensor is a ttnn.Tensor."""
+    if ttnn is None:
+        return False
+    return isinstance(tensor, ttnn.Tensor)
+
+
+def _ttnn_dtype_to_torch(ttnn_dtype):
+    """
+    Convert ttnn.DataType to torch dtype.
+
+    Args:
+        ttnn_dtype: ttnn.DataType enum value
+
+    Returns:
+        Corresponding torch.dtype
+
+    Raises:
+        ValueError: If ttnn dtype is not supported
+    """
+    if ttnn is None:
+        raise ImportError("ttnn module not available")
+
+    # ttnn.DataType values - compare by value since enum comparison can be tricky
+    dtype_str = str(ttnn_dtype)
+    if "BFLOAT16" in dtype_str:
+        return torch.bfloat16
+    if "FLOAT32" in dtype_str:
+        return torch.float32
+    if "FLOAT16" in dtype_str:
+        return torch.float16
+    if "UINT32" in dtype_str:
+        return torch.uint32
+    if "UINT16" in dtype_str:
+        return torch.uint16
+    if "UINT8" in dtype_str:
+        return torch.uint8
+    if "INT32" in dtype_str:
+        return torch.int32
+
+    raise ValueError(f"Unsupported ttnn dtype: {ttnn_dtype}")
+
+
+def get_tensor_shape(tensor):
+    """
+    Get tensor shape as a list of integers.
+
+    Works with both torch.Tensor and ttnn.Tensor.
+
+    Args:
+        tensor: torch.Tensor or ttnn.Tensor
+
+    Returns:
+        List of integers representing tensor shape
+    """
+    if _is_ttnn_tensor(tensor):
+        # ttnn.Shape can be converted to list directly or via indexing
+        shape = tensor.shape
+        # Handle ttnn.Shape - convert to list of ints
+        return list(shape)
+    else:
+        # torch.Tensor
+        return list(tensor.shape)
+
+
+def get_tensor_dtype(tensor):
+    """
+    Get tensor dtype as torch.dtype.
+
+    Works with both torch.Tensor and ttnn.Tensor.
+
+    Args:
+        tensor: torch.Tensor or ttnn.Tensor
+
+    Returns:
+        torch.dtype for the tensor's element type
+    """
+    if _is_ttnn_tensor(tensor):
+        return _ttnn_dtype_to_torch(tensor.dtype)
+    else:
+        return tensor.dtype
 
 
 def to_data_type(dtype):
