@@ -26,33 +26,25 @@ def simple_add(lhs, rhs, out):
 
     @compute()
     def add_compute(
-        lhs_cb: CircularBuffer,
-        rhs_cb: CircularBuffer,
-        out_cb: CircularBuffer,
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
-        lhs_shard = lhs_cb.pop()
-        rhs_shard = rhs_cb.pop()
-        out_shard = out_cb.reserve()
-        result = lhs_shard + rhs_shard
-        out_shard.store(result)
-        out_cb.pop()
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
+        o = out_cb.reserve()
+        result = l + r
+        o.store(result)
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
 
     @datamovement()
-    def dm_lhs(
-        lhs_cb: CircularBuffer,
-        rhs_cb: CircularBuffer,
-        out_cb: CircularBuffer,
-    ):
+    def dm_lhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         lhs_shard = lhs_cb.reserve()
         tx = dma(lhs_accessor[0, 0], lhs_shard)
         tx.wait()
 
     @datamovement()
-    def dm_rhs(
-        lhs_cb: CircularBuffer,
-        rhs_cb: CircularBuffer,
-        out_cb: CircularBuffer,
-    ):
+    def dm_rhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         rhs_shard = rhs_cb.reserve()
         tx = dma(rhs_accessor[0, 0], rhs_shard)
         tx.wait()

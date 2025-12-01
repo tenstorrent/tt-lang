@@ -15,7 +15,7 @@ from pykernel._src.kernel_ast import TTCompilerBase
 from .tensor_accessor import TensorAccessor
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
-from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype, get_tensor_dtype
+from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype, get_tensor_dtype, get_tensor_shape
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 
 
@@ -83,7 +83,7 @@ class D2MGenericCompiler(TTCompilerBase):
             if not arg.annotation:
                 raise TypeError("All kernel arguments must have a type annotation")
             elif arg.annotation.id == "TensorBlock":
-                shape = self.args[i].shape
+                shape = get_tensor_shape(self.args[i])
                 shard_shape = [
                     shape[j] // self.context.grid[j] for j in range(len(shape))
                 ]
@@ -91,7 +91,7 @@ class D2MGenericCompiler(TTCompilerBase):
                 tensor_type = RankedTensorType.get(shard_shape, dtype)
                 func_operand_types.append(tensor_type)
             elif arg.annotation.id == "CircularBuffer":
-                shape = list(self.args[i].shape)
+                shape = get_tensor_shape(self.args[i])
                 dtype = torch_dtype_to_mlir_type(get_tensor_dtype(self.args[i]), self.ctx)
 
                 # Compute shard shape (tiles per core)
