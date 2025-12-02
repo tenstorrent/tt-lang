@@ -236,19 +236,24 @@ def create_generic_func(
                 device_value = to_device.results[0]
 
             if is_stream[i]:
-                # Create stream layout for streaming to L1
-                # Storage is always L1 (CB destination), regardless of input location
-                device_with_stream = create_stream_layout_for_input(
-                    ctx,
-                    device_value,
-                    StreamLayoutConfig(
-                        logical_shape=logical_shape,
-                        grid=grid,
-                        tiled=tiled,
-                        memory_space="L1",  # Storage is always L1
-                    ),
-                )
-                device_inputs.append(device_with_stream)
+                if on_device:
+                    # For on_device (TTNN), use view_layout to preserve DRAM type
+                    # while still providing ViewOpInterface for lower-dmas
+                    view = d2m.ViewLayoutOp(device_value.type, device_value)
+                    device_inputs.append(view.result)
+                else:
+                    # For host tensors, create stream layout for auto-generated DMA
+                    device_with_stream = create_stream_layout_for_input(
+                        ctx,
+                        device_value,
+                        StreamLayoutConfig(
+                            logical_shape=logical_shape,
+                            grid=grid,
+                            tiled=tiled,
+                            memory_space="L1",  # Storage is always L1
+                        ),
+                    )
+                    device_inputs.append(device_with_stream)
             else:
                 device_inputs.append(device_value)
 
