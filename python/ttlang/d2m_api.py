@@ -443,10 +443,10 @@ def _compile_and_run_kernel(
             "sccp",                                        # Sparse conditional constant propagation
             "cse",                                         # Eliminate common subexpressions
             "d2m-generic-regions-to-funcs",                # Extract regions to functions
-            f"convert-d2m-to-ttkernel{{ttnn-mode={1 if _ttnn_mode else 0}}}",
+            "convert-d2m-to-ttkernel{ttnn-mode=1}",        # ttnn-mode=1 for runtime buffer addresses
             "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
-            "convert-d2m-to-ttnn" if _ttnn_mode else "convert-d2m-to-ttmetal",  # Convert to backend dialect
+            "convert-d2m-to-ttmetal",                      # Convert to TTMetal dialect
             "canonicalize",                                # Cleanup after conversion
             "loop-invariant-code-motion",                  # Hoist again after backend lowering
             "sccp",                                        # Propagate constants
@@ -490,10 +490,7 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
 
-        if _ttnn_mode:
-            flatbuffer_binary = ttnn_to_flatbuffer_bin(module)
-        else:
-            flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
+        flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
 
         # Save flatbuffer to file for ttrt execution
         flatbuffer_path = os.environ.get("TTLANG_FLATBUFFER_PATH")
