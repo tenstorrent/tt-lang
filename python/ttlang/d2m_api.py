@@ -201,9 +201,9 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
         # Runtime args: empty per-core args
         runtime_args = [[[]]]  # Empty 2D grid of args
 
-        # Common runtime args: tensor buffer address indices
-        # The runtime resolves these indices to actual buffer addresses from io_tensors
-        # io_tensors = [lhs, rhs, out] so: index 0=lhs, 1=rhs, 2=out
+        # Common runtime args: actual buffer addresses from ttnn tensors
+        # The kernel uses get_common_arg_val<uint32_t>() to read these directly as addresses
+        # args = [lhs, rhs, out] tensors
         if thread_type == "compute":
             # Compute kernels don't access NOC, no runtime args needed
             common_runtime_args = []
@@ -213,16 +213,19 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
             # noc_kernel_idx == 1 means this is the reader (was 0 when config was set)
             # noc_kernel_idx == 2 means this is the writer (was 1 when config was set)
             if noc_kernel_idx == 1:
-                # Reader: needs lhs (0) and rhs (1) tensor indices
-                common_runtime_args = [0, 1]
-                print(f"  [DEBUG] {name} (reader): common_runtime_args = [0, 1] (lhs, rhs)")
+                # Reader: needs lhs and rhs buffer addresses
+                lhs_addr = args[0].buffer_address()
+                rhs_addr = args[1].buffer_address()
+                common_runtime_args = [lhs_addr, rhs_addr]
+                print(f"  [DEBUG] {name} (reader): common_runtime_args = [0x{lhs_addr:x}, 0x{rhs_addr:x}] (lhs, rhs addrs)")
             else:
-                # Writer: needs out (2) tensor index
-                common_runtime_args = [2]
-                print(f"  [DEBUG] {name} (writer): common_runtime_args = [2] (out)")
+                # Writer: needs out buffer address
+                out_addr = args[2].buffer_address()
+                common_runtime_args = [out_addr]
+                print(f"  [DEBUG] {name} (writer): common_runtime_args = [0x{out_addr:x}] (out addr)")
         else:
-            common_runtime_args = [0]
-            print(f"  [DEBUG] {name} (unknown): common_runtime_args = [0]")
+            common_runtime_args = [args[0].buffer_address()]
+            print(f"  [DEBUG] {name} (unknown): common_runtime_args = [0x{args[0].buffer_address():x}]")
 
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=kernel_path,
