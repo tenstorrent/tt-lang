@@ -51,6 +51,7 @@ from .dtype_utils import (
     from_data_type,
     TORCH_TO_RUNTIME_DTYPE_INT,
     create_borrowed_tensors,
+    _is_ttnn_tensor,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
@@ -330,6 +331,12 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
+    # Detect if tensors are already on device (e.g., TTNN tensors)
+    on_device = any(_is_ttnn_tensor(arg) for arg in args)
+
+    # For on-device (TTNN) tensors, use DRAM as memory space for TensorAccessor globals
+    effective_memory_space = "DRAM" if on_device else memory_space
+
     # Register tensor names (needed for TensorAccessor)
     # For ttnn.Tensor, use registry since they don't allow attribute assignment
     # For torch.Tensor, set the attribute directly (and also register for consistency)
@@ -342,7 +349,7 @@ def _compile_and_run_kernel(
     inject_kwargs = [
         ("block_factors", block_factors),
         ("grid", grid),
-        ("memory_space", memory_space),
+        ("memory_space", effective_memory_space),
         ("tiled", tiled),
     ]
     for injected_kwarg, val in inject_kwargs:
@@ -357,7 +364,7 @@ def _compile_and_run_kernel(
 
     injected_program_kwargs = {
         "grid": grid,
-        "memory_space": memory_space,
+        "memory_space": effective_memory_space,
         "tiled": tiled,
     }
     program = Program(
@@ -388,6 +395,9 @@ def _compile_and_run_kernel(
         if positional_arg_names[-num_outs] in streams:
             raise ValueError("Output streaming is not supported")
 
+        # on_device was computed earlier - indicates TTNN tensors already on device
+        # If so, skip to_layout ops since DMA handles DRAM<->L1 transfers
+
         with InsertionPoint(module.body):
             create_generic_func(
                 ctx,
@@ -402,6 +412,7 @@ def _compile_and_run_kernel(
                 args,
                 tiled,
                 memory_space,
+                on_device=on_device,
             )
 
         initial_mlir_path = os.environ.get("TTLANG_INITIAL_MLIR")

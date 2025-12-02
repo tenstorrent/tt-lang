@@ -140,6 +140,7 @@ def create_generic_func(
     user_args: List[Any],
     tiled: bool,
     memory_space: str,
+    on_device: bool = False,
 ):
     """
     Create a D2M generic function from compiled threads.
@@ -161,6 +162,8 @@ def create_generic_func(
         user_args: Original user tensor arguments
         tiled: Whether to use tiled layout
         memory_space: "L1" or "DRAM"
+        on_device: If True, tensors are already on device (e.g., TTNN tensors).
+                   Skip to_layout ops since DMA handles DRAM<->L1 transfers.
     """
     if (
         isinstance(block_factors, list)
@@ -180,7 +183,15 @@ def create_generic_func(
     for arg in user_args:
         logical_shape = get_tensor_shape(arg)
         dtype = torch_dtype_to_mlir_type(get_tensor_dtype(arg), ctx)
-        tensor_type = RankedTensorType.get(logical_shape, dtype)
+        if on_device:
+            # For on-device tensors (e.g., TTNN), use device tensor type directly
+            # TTNN tensors are in DRAM
+            tensor_type = create_device_tensor_type(
+                ctx, logical_shape, dtype, grid, tiled, "DRAM"
+            )
+        else:
+            # For host tensors, use plain tensor type (no layout)
+            tensor_type = RankedTensorType.get(logical_shape, dtype)
         ordered_tensor_args.append(tensor_type)
 
     arg_types = ordered_tensor_args
@@ -200,34 +211,44 @@ def create_generic_func(
             is_stream.append(BoolAttr(stream_attr).value)
 
         # Convert host tensors to device tensors using to_layout
+        # For on_device mode, skip to_layout since tensors are already on device
         device_inputs = []
         for i, inp in enumerate(inputs):
             logical_shape = get_tensor_shape(user_args[i])
             dtype = torch_dtype_to_mlir_type(get_tensor_dtype(user_args[i]), ctx)
 
+            # For on_device inputs (TTNN), tensors are in DRAM
+            input_memory_space = "DRAM" if on_device else memory_space
+
             device_tensor_type = create_device_tensor_type(
-                ctx, logical_shape, dtype, grid, tiled, memory_space
+                ctx, logical_shape, dtype, grid, tiled, input_memory_space
             )
 
-            device_buffer = d2m.EmptyOp(device_tensor_type)
-            to_device = d2m.ToLayoutOp(
-                [device_tensor_type], inp, device_buffer.result, layout=None
-            )
+            if on_device:
+                # Tensor is already on device - use it directly
+                device_value = inp
+            else:
+                # Host tensor - need to_layout to move to device
+                device_buffer = d2m.EmptyOp(device_tensor_type)
+                to_device = d2m.ToLayoutOp(
+                    [device_tensor_type], inp, device_buffer.result, layout=None
+                )
+                device_value = to_device.results[0]
 
             if is_stream[i]:
                 device_with_stream = create_stream_layout_for_input(
                     ctx,
-                    to_device.results[0],
+                    device_value,
                     StreamLayoutConfig(
                         logical_shape=logical_shape,
                         grid=grid,
                         tiled=tiled,
-                        memory_space=memory_space,
+                        memory_space=input_memory_space,
                     ),
                 )
                 device_inputs.append(device_with_stream)
             else:
-                device_inputs.append(to_device.results[0])
+                device_inputs.append(device_value)
 
         wrapped_inputs = device_inputs
 
@@ -247,15 +268,19 @@ def create_generic_func(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
         )
 
-        # Initialize device buffer from user's output tensor for all ops.
-        # All ops use DST register in-place, so we need to initialize it from
-        # the user's output (which may be zeroed or contain specific values).
-        # This fixes issue #31 by ensuring DST always has valid initial data.
-        device_output_empty = d2m.EmptyOp(device_output_type)
-        device_output_buffer = d2m.ToLayoutOp(
-            [device_output_type], outputs[0], device_output_empty.result, layout=None
-        )
-        output_buffer_result = device_output_buffer.results[0]
+        if on_device:
+            # Output tensor is already on device - use it directly
+            output_buffer_result = outputs[0]
+        else:
+            # Initialize device buffer from user's output tensor for all ops.
+            # All ops use DST register in-place, so we need to initialize it from
+            # the user's output (which may be zeroed or contain specific values).
+            # This fixes issue #31 by ensuring DST always has valid initial data.
+            device_output_empty = d2m.EmptyOp(device_output_type)
+            device_output_buffer = d2m.ToLayoutOp(
+                [device_output_type], outputs[0], device_output_empty.result, layout=None
+            )
+            output_buffer_result = device_output_buffer.results[0]
 
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
@@ -284,12 +309,15 @@ def create_generic_func(
             if isinstance(last_op, func.ReturnOp):
                 last_op.erase()
 
-        # Insert to_layout: device → host (write to existing output argument)
-        to_host = d2m.ToLayoutOp(
-            [ret_type], generic.results[0], outputs[0], layout=None
-        )
-
-        func.ReturnOp(to_host.results)
+        if on_device:
+            # Output is already on device - return generic result directly
+            func.ReturnOp(generic.results)
+        else:
+            # Insert to_layout: device → host (write to existing output argument)
+            to_host = d2m.ToLayoutOp(
+                [ret_type], generic.results[0], outputs[0], layout=None
+            )
+            func.ReturnOp(to_host.results)
 
 
 def copy_symbol_table_globals(
