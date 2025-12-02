@@ -9,6 +9,7 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 """
 
 import pytest
+import torch
 from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SHAPE, dma
 from python.sim import torch_utils as tu
 from python.sim.errors import CBContractError
@@ -17,7 +18,7 @@ from python.sim.errors import CBContractError
 def test_circular_buffer_basic():
     """Test basic CircularBuffer operations."""
     # Create a circular buffer for single tiles with buffer factor 2
-    cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
 
     # Verify basic properties
     assert cb.shape == (1, 1)
@@ -50,7 +51,7 @@ def test_circular_buffer_basic():
 def test_circular_buffer_multi_tile():
     """Test CircularBuffer with multiple tiles per operation."""
     # Create a circular buffer for 2x1 tiles (2 tiles per operation)
-    cb = CircularBuffer(shape=(2, 1), buffer_factor=3)
+    cb = CircularBuffer[torch.Tensor](shape=(2, 1), buffer_factor=3)
 
     # Verify properties
     assert cb.shape == (2, 1)
@@ -88,7 +89,7 @@ def test_dma_operations():
     accessor_a = TensorAccessor(tensor_a, index_type=IndexType.TILE)
 
     # Create circular buffer
-    cb_a = CircularBuffer(shape=(1, 1), buffer_factor=2)
+    cb_a = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
 
     # Test DMA from tensor to circular buffer
     cb_view = cb_a.reserve()
@@ -119,17 +120,17 @@ def test_error_handling():
     """Test error conditions."""
     # Test invalid shape
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(0, 1))  # Invalid shape
+        CircularBuffer[torch.Tensor](shape=(0, 1))  # Invalid shape
 
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(1, 2, 3))  # type: ignore # Wrong shape dimensions
+        CircularBuffer[torch.Tensor](shape=(1, 2, 3))  # type: ignore # Wrong shape dimensions
 
     # Test invalid buffer factor
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(1, 1), buffer_factor=0)
+        CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=0)
 
     # Test operations without proper setup
-    cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
 
     # Can't push without reserve - CBAPI will catch this
     with pytest.raises(CBContractError):
@@ -162,10 +163,10 @@ def test_example_usage_pattern():
     c_accessor = TensorAccessor(c_in, index_type=IndexType.TILE)
 
     # Create circular buffers like in the example
-    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
-    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
-    c_in_cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
-    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
+    a_in_cb = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
+    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
+    c_in_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
 
     # Verify the circular buffers were created correctly
     assert a_in_cb.shape == (granularity, 1)

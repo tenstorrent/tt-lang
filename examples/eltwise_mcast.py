@@ -58,10 +58,16 @@ def eltwise_mcast(
     out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
     # Create circular buffers
-    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
-    b_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
-    c_in_cb = CircularBuffer(shape=(1, 1), buffer_factor=buffer_factor)
-    out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
+    a_in_cb = CircularBuffer[type(a_in)](
+        shape=(granularity, 1), buffer_factor=buffer_factor
+    )
+    b_in_cb = CircularBuffer[type(b_in)](
+        shape=(granularity, 1), buffer_factor=buffer_factor
+    )
+    c_in_cb = CircularBuffer[type(c_in)](shape=(1, 1), buffer_factor=buffer_factor)
+    out_cb = CircularBuffer[type(out)](
+        shape=(granularity, 1), buffer_factor=buffer_factor
+    )
 
     # Create multicast address for C
     # Convention: mcast_addr.core_indices[0] is the sender, rest are receivers

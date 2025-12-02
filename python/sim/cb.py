@@ -10,17 +10,14 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from typing import Tuple, Optional
-import torch
+from typing import Tuple, Optional, Generic
 
 from .cbapi import CBAPI
 from .block import Block
-from .typedefs import CBID, Size, Shape
+from .typedefs import CBID, Size, Shape, CBElemType
 
 
-# TODO: Perhaps make CircularBuffer generic as well? Currently supports
-# torch.Tensor only.
-class CircularBuffer:
+class CircularBuffer(Generic[CBElemType]):
     """
     High-level circular buffer interface for tensor operations.
 
@@ -46,13 +43,13 @@ class CircularBuffer:
     """
 
     # Class-level default API instance
-    _default_api = CBAPI[torch.Tensor]()
+    _default_api = CBAPI[CBElemType]()
 
     def __init__(
         self,
         shape: Shape,
         buffer_factor: Size = 2,
-        api: Optional[CBAPI[torch.Tensor]] = None,
+        api: Optional[CBAPI[CBElemType]] = None,
     ):
         """
         Initialize a CircularBuffer.
@@ -73,7 +70,7 @@ class CircularBuffer:
         self._buffer_factor = buffer_factor
 
         # Use provided API instance or default
-        self._api = api if api is not None else self._default_api
+        self._api: CBAPI[CBElemType] = api if api is not None else self._default_api  # type: ignore
 
         # Calculate total capacity in tiles
         self._tiles_per_operation = shape[0] * shape[1]
@@ -83,7 +80,7 @@ class CircularBuffer:
         self._cb_id = self._api.allocate_cb_id()
         self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
 
-    def wait(self) -> Block[torch.Tensor]:
+    def wait(self) -> Block[CBElemType]:
         """
         Wait for data to be available and return a read view.
 
@@ -101,7 +98,7 @@ class CircularBuffer:
         self._api.cb_wait_front(self._cb_id, self._tiles_per_operation)
         return self._api.get_read_ptr(self._cb_id)
 
-    def reserve(self) -> Block[torch.Tensor]:
+    def reserve(self) -> Block[CBElemType]:
         """
         Reserve space for writing and return a write view.
 

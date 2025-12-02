@@ -49,9 +49,15 @@ def eltwise_add(
     out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
     # Create circular buffers
-    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
-    b_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
-    out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
+    a_in_cb = CircularBuffer[type(a_in)](
+        shape=(granularity, 1), buffer_factor=buffer_factor
+    )
+    b_in_cb = CircularBuffer[type(b_in)](
+        shape=(granularity, 1), buffer_factor=buffer_factor
+    )
+    out_cb = CircularBuffer[type(out)](
+        shape=(granularity, 1), buffer_factor=buffer_factor
+    )
 
     @ttl.compute()
     def compute_func():
