@@ -176,16 +176,20 @@ def ttnn_dtype_to_mlir_type(ttnn_dtype, ctx):
     match ttnn_dtype:
         case ttnn.DataType.FLOAT32:
             return ir.F32Type.get(ctx)
-        case ttnn.DataType.FLOAT16:
-            return ir.F16Type.get(ctx)
         case ttnn.DataType.BFLOAT16:
             return ir.BF16Type.get(ctx)
+        case ttnn.DataType.BFLOAT8_B:
+            return ir.BF16Type.get(ctx)  # Approximate as BF16
+        case ttnn.DataType.BFLOAT4_B:
+            return ir.BF16Type.get(ctx)  # Approximate as BF16
         case ttnn.DataType.INT32:
             return ir.IntegerType.get_signless(32, ctx)
         case ttnn.DataType.UINT32:
             return ir.IntegerType.get_unsigned(32, ctx)
         case ttnn.DataType.UINT16:
             return ir.IntegerType.get_unsigned(16, ctx)
+        case ttnn.DataType.UINT8:
+            return ir.IntegerType.get_unsigned(8, ctx)
         case _:
             raise ValueError(f"Unsupported ttnn dtype: {ttnn_dtype}")
 
@@ -264,8 +268,6 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
     match torch_dtype:
         case torch.float32:
             return ttnn.DataType.FLOAT32
-        case torch.float16:
-            return ttnn.DataType.FLOAT16
         case torch.bfloat16:
             return ttnn.DataType.BFLOAT16
         case torch.int32:
