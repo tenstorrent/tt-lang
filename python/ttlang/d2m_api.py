@@ -55,6 +55,7 @@ from .dtype_utils import (
     from_data_type,
     TORCH_TO_RUNTIME_DTYPE_INT,
     create_borrowed_tensors,
+    torch_dtype_to_ttnn_datatype,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
@@ -173,8 +174,8 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     # Build CB descriptors from tensor info
     cb_descriptors = []
     for i, tensor in enumerate(args):
-        # Get tensor dtype and calculate page size
-        dtype = tensor.dtype if hasattr(tensor, 'dtype') else ttnn.bfloat16
+        # Convert torch dtype to ttnn DataType
+        data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
 
         # Tile size for bfloat16: 32x32 * 2 bytes = 2048, but with header = 4096
         page_size = 4096  # Default tile page size
@@ -188,7 +189,7 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
 
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
-            data_format=dtype,
+            data_format=data_format,
             page_size=page_size,
         )
 
