@@ -26,6 +26,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
+    out_accessor = TensorAccessor(out)
 
     @compute()
     def add_compute(
@@ -41,18 +42,25 @@ def test_ttnn_interop_add(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    def dm_lhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+        # Read both inputs
         lhs_shard = lhs_cb.reserve()
-        tx = dma(lhs_accessor[0, 0], lhs_shard)
-        tx.wait()
+        tx_lhs = dma(lhs_accessor[0, 0], lhs_shard)
+        tx_lhs.wait()
+
+        rhs_shard = rhs_cb.reserve()
+        tx_rhs = dma(rhs_accessor[0, 0], rhs_shard)
+        tx_rhs.wait()
 
     @datamovement()
-    def dm_rhs(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        rhs_shard = rhs_cb.reserve()
-        tx = dma(rhs_accessor[0, 0], rhs_shard)
+    def dm_out(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+        # Write output
+        out_shard = out_cb.wait()
+        tx = dma(out_shard, out_accessor[0, 0])
         tx.wait()
+        out_cb.pop()
 
-    return Program(add_compute, dm_lhs, dm_rhs)(lhs, rhs, out)
+    return Program(add_compute, dm_read, dm_out)(lhs, rhs, out)
 
 
 # CHECK: TTNN INTEROP
