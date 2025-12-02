@@ -140,6 +140,8 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     print(f"\nCore range: {core_ranges}")
 
     # Build kernel descriptors
+    # For noc kernels, we need to pass tensor indices as common_runtime_args
+    # The runtime will resolve these to actual buffer addresses
     kernel_descriptors = []
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
@@ -158,14 +160,21 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
         num_cbs = len(args)
         compile_time_args = list(range(num_cbs))
 
-        # Runtime args: empty for now (could be tensor addresses)
+        # Runtime args: empty per-core args
         runtime_args = [[[]]]  # Empty 2D grid of args
+
+        # Common runtime args: tensor buffer address indices
+        # For noc kernels, pass tensor index 0 as the common runtime arg
+        # The runtime will resolve this to the actual buffer address
+        # TODO: This needs to match the actual kernel's expectations
+        common_runtime_args = [0]  # Index into io_tensors for buffer address
 
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=cpp_source,
             core_ranges=core_ranges,
             compile_time_args=compile_time_args,
             runtime_args=runtime_args,
+            common_runtime_args=common_runtime_args,
             config=config,
         )
         kernel_descriptors.append(kernel_desc)
@@ -174,8 +183,13 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     # Build CB descriptors from tensor info
     cb_descriptors = []
     for i, tensor in enumerate(args):
-        # Convert torch dtype to ttnn DataType
-        data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
+        # Get data format from ttnn tensor or convert from torch
+        if hasattr(tensor, 'dtype') and hasattr(tensor.dtype, 'name'):
+            # ttnn.Tensor - use dtype directly
+            data_format = tensor.dtype
+        else:
+            # torch.Tensor - convert to ttnn DataType
+            data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
 
         # Tile size for bfloat16: 32x32 * 2 bytes = 2048, but with header = 4096
         page_size = 4096  # Default tile page size
