@@ -18,7 +18,7 @@ from ..layouts import (
     MetalLayoutConfig,
 )
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
-from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
+from ..dtype_utils import tensor_dtype_to_mlir_type, tensor_dtype_to_ttcore_datatype
 
 
 def create_device_tensor_type(
@@ -174,7 +174,7 @@ def create_generic_func(
     ordered_tensor_args = []
     for arg in user_args:
         logical_shape = list(arg.shape)
-        dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
+        dtype = tensor_dtype_to_mlir_type(arg.dtype, ctx)
         tensor_type = RankedTensorType.get(logical_shape, dtype)
         ordered_tensor_args.append(tensor_type)
 
@@ -198,7 +198,7 @@ def create_generic_func(
         device_inputs = []
         for i, inp in enumerate(inputs):
             logical_shape = list(user_args[i].shape)
-            dtype = torch_dtype_to_mlir_type(user_args[i].dtype, ctx)
+            dtype = tensor_dtype_to_mlir_type(user_args[i].dtype, ctx)
 
             device_tensor_type = create_device_tensor_type(
                 ctx, logical_shape, dtype, grid, tiled, memory_space
@@ -236,7 +236,7 @@ def create_generic_func(
         # Create device output buffer
         output_idx = len(user_args) - num_outs
         output_logical_shape = list(user_args[output_idx].shape)
-        output_dtype = torch_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
+        output_dtype = tensor_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
 
         device_output_type = create_device_tensor_type(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
