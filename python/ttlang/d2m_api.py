@@ -131,6 +131,14 @@ def _execute_on_metal_runtime(flatbuffer_binary, args):
     runtime.close_mesh_device(device)
 
 
+def _write_kernel_to_tmp(name: str, source: str) -> str:
+    """Write kernel source to /tmp and return the file path."""
+    path = f"/tmp/ttlang_kernel_{name}.cpp"
+    with open(path, "w") as f:
+        f.write(source)
+    return path
+
+
 def _execute_ttnn_interop(module, args, grid, num_outs):
     """
     Execute compiled kernel via ttnn.generic_op.
@@ -200,6 +208,7 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
     for name, thread_type in first_iteration_kernels:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
+        kernel_path = _write_kernel_to_tmp(name, cpp_source)
 
         # Map thread type to config
         if thread_type == "compute":
@@ -230,7 +239,7 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
         common_runtime_args = [0]  # Index into io_tensors for buffer address
 
         kernel_desc = ttnn.KernelDescriptor(
-            kernel_source=cpp_source,
+            kernel_source=kernel_path,
             core_ranges=core_ranges,
             compile_time_args=compile_time_args,
             runtime_args=runtime_args,
@@ -239,7 +248,7 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
         )
         kernel_descriptors.append(kernel_desc)
         config_type = "reader" if isinstance(config, ttnn.ReaderConfigDescriptor) else ("writer" if isinstance(config, ttnn.WriterConfigDescriptor) else "compute")
-        print(f"  Created KernelDescriptor for {name} ({config_type})")
+        print(f"  Created KernelDescriptor for {name} ({config_type}) -> {kernel_path}")
 
     # Build CB descriptors from tensor info
     cb_descriptors = []
