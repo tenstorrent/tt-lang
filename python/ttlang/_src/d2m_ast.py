@@ -15,7 +15,7 @@ from pykernel._src.kernel_ast import TTCompilerBase
 from .tensor_accessor import TensorAccessor
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
-from ..dtype_utils import tensor_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
+from ..dtype_utils import tensor_dtype_to_mlir_type, tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 
 
@@ -113,7 +113,7 @@ class D2MGenericCompiler(TTCompilerBase):
                 # CBs wrap the tensor type that enters the generic op
                 # Generic operates on device tensors (tiled L1), so CBs should have tile element types
                 if self.context.tiled:
-                    ttcore_dtype = torch_dtype_to_ttcore_datatype(self.args[i].dtype)
+                    ttcore_dtype = tensor_dtype_to_ttcore_datatype(self.args[i].dtype)
                     element_type = ttcore.ir.TileType.get(
                         self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
                     )
@@ -177,7 +177,7 @@ class D2MGenericCompiler(TTCompilerBase):
 
                         # Get dtype from TensorAccessor
                         stream_dtype = tensor_dtype_to_mlir_type(val.dtype, self.ctx)
-                        stream_ttcore_dtype = torch_dtype_to_ttcore_datatype(val.dtype)
+                        stream_ttcore_dtype = tensor_dtype_to_ttcore_datatype(val.dtype)
                         element_type = (
                             ttcore.ir.TileType.get(
                                 self.ctx,

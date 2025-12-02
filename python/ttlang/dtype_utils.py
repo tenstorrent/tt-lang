@@ -246,6 +246,62 @@ def torch_dtype_to_ttcore_datatype(torch_dtype):
     raise ValueError(f"Unsupported torch dtype for ttcore.DataType: {torch_dtype}")
 
 
+def ttnn_dtype_to_ttcore_datatype(ttnn_dtype):
+    """
+    Convert ttnn.DataType to ttcore.DataType enum.
+
+    Args:
+        ttnn_dtype: ttnn.DataType enum value
+
+    Returns:
+        ttcore.DataType enum value
+
+    Raises:
+        ValueError: If dtype is not supported
+    """
+    try:
+        import ttnn
+    except ModuleNotFoundError:
+        raise ImportError("ttnn module not available")
+
+    match ttnn_dtype:
+        case ttnn.DataType.FLOAT32:
+            return ttcore.DataType.Float32
+        case ttnn.DataType.BFLOAT16:
+            return ttcore.DataType.BFloat16
+        case ttnn.DataType.BFLOAT8_B:
+            return ttcore.DataType.BFloat16  # Approximate
+        case ttnn.DataType.BFLOAT4_B:
+            return ttcore.DataType.BFloat16  # Approximate
+        case ttnn.DataType.INT32:
+            return ttcore.DataType.Int32
+        case ttnn.DataType.UINT32:
+            return ttcore.DataType.UInt32
+        case ttnn.DataType.UINT16:
+            return ttcore.DataType.UInt16
+        case ttnn.DataType.UINT8:
+            return ttcore.DataType.UInt8
+        case _:
+            raise ValueError(f"Unsupported ttnn dtype for ttcore.DataType: {ttnn_dtype}")
+
+
+def tensor_dtype_to_ttcore_datatype(dtype):
+    """
+    Convert tensor dtype to ttcore.DataType, supporting both torch and ttnn dtypes.
+
+    Args:
+        dtype: Either torch dtype or ttnn.DataType
+
+    Returns:
+        ttcore.DataType enum value
+    """
+    dtype_str = str(dtype)
+    if "DataType." in dtype_str:
+        return ttnn_dtype_to_ttcore_datatype(dtype)
+    else:
+        return torch_dtype_to_ttcore_datatype(dtype)
+
+
 def torch_dtype_to_ttnn_datatype(torch_dtype):
     """
     Convert PyTorch dtype to ttnn.DataType enum.
