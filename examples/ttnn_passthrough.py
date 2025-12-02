@@ -21,13 +21,15 @@ except ImportError:
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
 def passthrough_kernel(inp, out):
-    """Kernel that copies input to output - tests data movement.
+    """Kernel that reads input via DMA and processes it.
 
-    Full flow for TTNN interop:
-        DRAM(inp) --[reader DMA]--> inp_cb --[compute copy]--> out_cb --[writer DMA]--> DRAM(out)
+    Current flow (output write not yet supported):
+        DRAM(inp) --[reader DMA]--> inp_cb --[compute]--> out_cb
+
+    TODO: Add output DMA write support for full passthrough.
     """
     inp_accessor = TensorAccessor(inp)
-    out_accessor = TensorAccessor(out)
+    # Note: TensorAccessor(out) not supported - "Output streaming is not supported"
 
     @compute()
     def copy_compute(inp_cb: CircularBuffer, out_cb: CircularBuffer):
@@ -37,7 +39,7 @@ def passthrough_kernel(inp, out):
         o = out_cb.reserve()
         # Copy input to output (identity operation through DST register)
         o.store(tile)
-        # Signal done - release input, push output for writer DMA
+        # Signal done
         inp_cb.pop()
         out_cb.push()
 
@@ -49,15 +51,7 @@ def passthrough_kernel(inp, out):
         tx.wait()
         inp_cb.push()  # Signal to compute that data is ready
 
-    @datamovement()
-    def writer_dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
-        # DMA write: out_cb (L1) -> DRAM(out)
-        shard = out_cb.wait()  # Wait for compute to produce output
-        tx = dma(shard, out_accessor[0, 0])
-        tx.wait()
-        out_cb.pop()  # Release the CB slot
-
-    return Program(copy_compute, reader_dm, writer_dm)(inp, out)
+    return Program(copy_compute, reader_dm)(inp, out)
 
 
 if __name__ == "__main__":
