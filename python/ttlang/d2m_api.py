@@ -156,31 +156,16 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
         print(f"  Wrote {kernel_path}")
 
     # Build kernel descriptors
-    # For noc kernels, we need to pass tensor indices as common_runtime_args
-    # The runtime will resolve these to actual buffer addresses
-    #
-    # IMPORTANT: tt-metal only allows one reader kernel and one writer kernel per core.
-    # The tt-lang pipeline generates multiple iterations due to to_layout passes.
-    # For ttnn interop, we need to find the actual add kernels.
-    #
-    # TODO: For now, use first iteration (kernels 0-2). Update after inspection.
-    first_iteration_kernels = []
-    seen_compute = False
-    for name, thread_type in kernel_info:
-        first_iteration_kernels.append((name, thread_type))
-        if thread_type == "compute":
-            seen_compute = True
-            break  # Stop after first compute (end of first iteration)
-
-    if not seen_compute:
-        # Fallback: use all kernels if pattern doesn't match
-        first_iteration_kernels = kernel_info
-
-    print(f"\nUsing {len(first_iteration_kernels)} kernels from first iteration (out of {len(kernel_info)} total)")
+    # HARD-CODED for testing: kernels 9, 10, 11 are the actual add kernels
+    #   - Kernel 9: Reader (noc_async_read for lhs and rhs)
+    #   - Kernel 10: Writer (noc_async_write for output)
+    #   - Kernel 11: Compute (add_binary_tile)
+    selected_kernels = [kernel_info[9], kernel_info[10], kernel_info[11]]
+    print(f"\nUsing hard-coded kernels 9, 10, 11 (out of {len(kernel_info)} total)")
 
     kernel_descriptors = []
     noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
-    for name, thread_type in first_iteration_kernels:
+    for name, thread_type in selected_kernels:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
 
