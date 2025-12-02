@@ -130,7 +130,7 @@ def Program(*funcs: BindableTemplate) -> Any:
                 # build per-core context
                 memo: Dict[int, Any] = {}
                 core_context: Dict[str, Any] = {}
-                api = CBAPI[torch.Tensor]()  # new CBAPI per core
+                api = CBAPI()  # new CBAPI per core
 
                 for key, value in self.context.items():
                     match value:

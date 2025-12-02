@@ -44,13 +44,13 @@ class CircularBuffer(Generic[CBElemType]):
     """
 
     # Class-level default API instance
-    _default_api = CBAPI[CBElemType]()
+    _default_api = CBAPI()
 
     def __init__(
         self,
         shape: Shape,
         buffer_factor: Size = 2,
-        api: Optional[CBAPI[CBElemType]] = None,
+        api: Optional[CBAPI] = None,
     ):
         """
         Initialize a CircularBuffer.
@@ -71,7 +71,7 @@ class CircularBuffer(Generic[CBElemType]):
         self._buffer_factor = buffer_factor
 
         # Use provided API instance or default
-        self._api: CBAPI[CBElemType] = api if api is not None else self._default_api  # type: ignore
+        self._api: CBAPI = api if api is not None else self._default_api
 
         # Calculate total capacity in tiles
         self._tiles_per_operation = shape[0] * shape[1]
@@ -82,8 +82,7 @@ class CircularBuffer(Generic[CBElemType]):
         self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
 
     def wait(self) -> Block[CBElemType]:
-        """
-        Wait for data to be available and return a read view.
+        """Wait for data to be available and return a read view.
 
         This method blocks until the required number of tiles (as specified by
         the shape parameter) are available for reading. It returns a Block
@@ -97,7 +96,7 @@ class CircularBuffer(Generic[CBElemType]):
             CBContractError: If called incorrectly (e.g., multiple concurrent waits)
         """
         self._api.cb_wait_front(self._cb_id, self._tiles_per_operation)
-        return self._api.get_read_ptr(self._cb_id)
+        return self._api.get_read_ptr(self._cb_id)  # type: ignore
 
     def reserve(self) -> Block[CBElemType]:
         """
@@ -115,7 +114,7 @@ class CircularBuffer(Generic[CBElemType]):
             CBContractError: If called incorrectly (e.g., multiple concurrent reserves)
         """
         self._api.cb_reserve_back(self._cb_id, self._tiles_per_operation)
-        return self._api.get_write_ptr(self._cb_id)
+        return self._api.get_write_ptr(self._cb_id)  # type: ignore
 
     def push(self) -> None:
         """
@@ -187,7 +186,7 @@ def make_circular_buffer_like(
     element: CBElemType,
     shape: Shape,
     buffer_factor: Size = 2,
-    api: Optional[CBAPI[CBElemType]] = None,
+    api: Optional[CBAPI] = None,
 ) -> CircularBuffer[CBElemType]:
     """
     Create a CircularBuffer with the same element type as the element.
