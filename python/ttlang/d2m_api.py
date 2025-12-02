@@ -57,6 +57,8 @@ from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
 
 
+_ttnn_mode = True
+
 from ._src.tensor_registry import register_tensor_name
 
 
@@ -355,7 +357,7 @@ def _compile_and_run_kernel(
     # For torch.Tensor, set the attribute directly (and also register for consistency)
     for param_name, arg in zip(f_params, args):
         register_tensor_name(arg, param_name)
-        if not on_device:
+        if not _ttnn_mode:
             # Also set attribute for backwards compatibility
             arg._global_name = param_name
 
@@ -456,7 +458,7 @@ def _compile_and_run_kernel(
             "sccp",                                        # Sparse conditional constant propagation
             "cse",                                         # Eliminate common subexpressions
             "d2m-generic-regions-to-funcs",                # Extract regions to functions
-            f"convert-d2m-to-ttkernel{{ttnn-mode={1 if on_device else 0}}}",  # ttnn-mode for runtime buffer addresses
+            f"convert-d2m-to-ttkernel{{ttnn-mode={1 if _ttnn_mode else 0}}}",  # ttnn-mode for runtime buffer addresses
             "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
             "convert-d2m-to-ttmetal",                      # Convert to TTMetal dialect
@@ -516,7 +518,7 @@ def _compile_and_run_kernel(
         compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
 
         if not compile_only and binary is not None and runtime is not None:
-            if on_device:
+            if _ttnn_mode:
                 # TTNN runtime: tensors are already on device
                 try:
                     _execute_on_ttnn_runtime(flatbuffer_binary, args)
