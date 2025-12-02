@@ -114,6 +114,14 @@ jobs:
             -S .
           cmake --build build
 
+      - name: Copy ttrt wheel before install
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: |
+          # Copy ttrt wheel BEFORE install step, as install may trigger rebuild
+          # The wheel is built during main build (ttrt has ALL target)
+          mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
+          cp ${{ env.TT_MLIR_HOME }}/build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
+
       - name: Install tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
         run: |
@@ -121,15 +129,11 @@ jobs:
           source env/activate
           cmake --build build -t install
 
-      - name: Copy ttrt artifacts to install directory
+      - name: Copy runtime Python module to install directory
         if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
-          # Copy runtime Python module
+          # Copy runtime Python module (install doesn't put this in the right place)
           cp tt-mlir/build/runtime/python/_ttmlir_runtime*.so ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
-
-          # Copy ttrt wheel (built during main build since ttrt has ALL target)
-          mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
-          cp ${{ env.TT_MLIR_HOME }}/build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
