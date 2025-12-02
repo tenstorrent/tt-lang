@@ -31,6 +31,10 @@ jobs:
       TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
 
     steps:
+      - name: Maximize space
+        if: inputs.os == 'ubuntu-latest'
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - name: Checkout tt-lang
         uses: actions/checkout@v4
         with:
@@ -90,6 +94,7 @@ jobs:
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
         run: |
           set -x
+          df -Hk
           cd tt-mlir
           source env/activate
           ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
