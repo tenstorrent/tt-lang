@@ -154,6 +154,61 @@ def torch_dtype_to_mlir_type(torch_dtype, ctx):
     raise ValueError(f"Unsupported torch dtype: {torch_dtype}")
 
 
+def ttnn_dtype_to_mlir_type(ttnn_dtype, ctx):
+    """
+    Convert ttnn.DataType to MLIR type.
+
+    Args:
+        ttnn_dtype: ttnn.DataType enum value
+        ctx: MLIR context
+
+    Returns:
+        MLIR Type object
+
+    Raises:
+        ValueError: If dtype is not supported
+    """
+    try:
+        import ttnn
+    except ModuleNotFoundError:
+        raise ImportError("ttnn module not available")
+
+    match ttnn_dtype:
+        case ttnn.DataType.FLOAT32:
+            return ir.F32Type.get(ctx)
+        case ttnn.DataType.FLOAT16:
+            return ir.F16Type.get(ctx)
+        case ttnn.DataType.BFLOAT16:
+            return ir.BF16Type.get(ctx)
+        case ttnn.DataType.INT32:
+            return ir.IntegerType.get_signless(32, ctx)
+        case ttnn.DataType.UINT32:
+            return ir.IntegerType.get_unsigned(32, ctx)
+        case ttnn.DataType.UINT16:
+            return ir.IntegerType.get_unsigned(16, ctx)
+        case _:
+            raise ValueError(f"Unsupported ttnn dtype: {ttnn_dtype}")
+
+
+def tensor_dtype_to_mlir_type(dtype, ctx):
+    """
+    Convert tensor dtype to MLIR type, supporting both torch and ttnn dtypes.
+
+    Args:
+        dtype: Either torch dtype or ttnn.DataType
+        ctx: MLIR context
+
+    Returns:
+        MLIR Type object
+    """
+    # Check if it's a ttnn DataType by checking for the enum name pattern
+    dtype_str = str(dtype)
+    if "DataType." in dtype_str:
+        return ttnn_dtype_to_mlir_type(dtype, ctx)
+    else:
+        return torch_dtype_to_mlir_type(dtype, ctx)
+
+
 def torch_dtype_to_ttcore_datatype(torch_dtype):
     """
     Convert PyTorch dtype to ttcore.DataType enum.

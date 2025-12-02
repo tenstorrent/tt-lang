@@ -15,7 +15,7 @@ from pykernel._src.kernel_ast import TTCompilerBase
 from .tensor_accessor import TensorAccessor
 
 from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
-from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
+from ..dtype_utils import tensor_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 
 
@@ -87,12 +87,12 @@ class D2MGenericCompiler(TTCompilerBase):
                 shard_shape = [
                     shape[j] // self.context.grid[j] for j in range(len(shape))
                 ]
-                dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
+                dtype = tensor_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
                 tensor_type = RankedTensorType.get(shard_shape, dtype)
                 func_operand_types.append(tensor_type)
             elif arg.annotation.id == "CircularBuffer":
                 shape = list(self.args[i].shape)
-                dtype = torch_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
+                dtype = tensor_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
 
                 # Compute shard shape (tiles per core)
                 layout = create_metal_layout(
@@ -176,7 +176,7 @@ class D2MGenericCompiler(TTCompilerBase):
                         )
 
                         # Get dtype from TensorAccessor
-                        stream_dtype = torch_dtype_to_mlir_type(val.dtype, self.ctx)
+                        stream_dtype = tensor_dtype_to_mlir_type(val.dtype, self.ctx)
                         stream_ttcore_dtype = torch_dtype_to_ttcore_datatype(val.dtype)
                         element_type = (
                             ttcore.ir.TileType.get(
