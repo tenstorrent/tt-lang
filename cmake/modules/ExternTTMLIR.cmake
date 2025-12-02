@@ -12,6 +12,7 @@
 # Scenario 1: Pre-built tt-mlir (build tree)
 if(DEFINED TTMLIR_BUILD_DIR)
   set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
+
   if(EXISTS "${_TTMLIR_CONFIG_PATH}/TTMLIRConfig.cmake")
     list(APPEND TTMLIR_HINTS "${_TTMLIR_CONFIG_PATH}")
     set(_TTMLIR_BUILD_DIR "${TTMLIR_BUILD_DIR}")
@@ -59,9 +60,11 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
   else()
     message(STATUS "Using pre-installed tt-mlir from: ${TTMLIR_CMAKE_DIR}")
     set(TTMLIR_PATH "${TTMLIR_TOOLCHAIN_DIR}")
+
     # For installed tt-mlir, use the compiler static library
     set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
   endif()
+
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")
   find_package(LLVM REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm")
   message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
@@ -119,7 +122,8 @@ else()
     else()
       set(_TTMLIR_ENABLE_RUNTIME ON)
       set(_TTMLIR_ENABLE_RUNTIME_TESTS ON)
-      if (TTLANG_ENABLE_PERF_TRACE)
+
+      if(TTLANG_ENABLE_PERF_TRACE)
         set(_TTMLIR_ENABLE_PERF_TRACE ON)
       else()
         set(_TTMLIR_ENABLE_PERF_TRACE OFF)
@@ -128,12 +132,14 @@ else()
   else()
     # Use the provided value and derive related settings
     set(_TTMLIR_ENABLE_RUNTIME ${TTMLIR_ENABLE_RUNTIME})
+
     if(NOT DEFINED TTMLIR_ENABLE_RUNTIME_TESTS)
       set(_TTMLIR_ENABLE_RUNTIME_TESTS ${TTMLIR_ENABLE_RUNTIME})
     else()
       set(_TTMLIR_ENABLE_RUNTIME_TESTS ${TTMLIR_ENABLE_RUNTIME_TESTS})
     endif()
-    if (TTLANG_ENABLE_PERF_TRACE AND _TTMLIR_ENABLE_RUNTIME)
+
+    if(TTLANG_ENABLE_PERF_TRACE AND _TTMLIR_ENABLE_RUNTIME)
       set(_TTMLIR_ENABLE_PERF_TRACE ON)
     else()
       set(_TTMLIR_ENABLE_PERF_TRACE OFF)
@@ -147,6 +153,7 @@ else()
   endif()
 
   find_program(CCACHE_PROGRAM ccache)
+
   if(CCACHE_PROGRAM)
     set(_TTMLIR_CXX_LAUNCHER ccache)
   else()
@@ -156,6 +163,7 @@ else()
   if(NOT DEFINED TTMLIR_INSTALL_PREFIX)
     set(TTMLIR_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/tt-mlir-install" CACHE PATH "Installation prefix for automatically built tt-mlir")
   endif()
+
   set(_TTMLIR_INSTALL_PREFIX "${TTMLIR_INSTALL_PREFIX}")
 
   message(STATUS "tt-mlir will be installed to: ${_TTMLIR_INSTALL_PREFIX}")
@@ -191,7 +199,7 @@ else()
     -DTTMLIR_ENABLE_STABLEHLO=OFF
     -DTTMLIR_ENABLE_OPMODEL=OFF
     -DTT_RUNTIME_ENABLE_PERF_TRACE=${_TTMLIR_ENABLE_PERF_TRACE}
-    -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON
+    -DTTMLIR_ENABLE_BINDINGS_PYTHON=${TTLANG_ENABLE_BINDINGS_PYTHON}
     -DTTMLIR_ENABLE_DEBUG_STRINGS=ON
     -DTTMLIR_ENABLE_EXPLORER=OFF
     -DBUILD_TESTING=OFF
