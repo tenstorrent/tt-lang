@@ -264,8 +264,11 @@ def create_generic_func(
         output_logical_shape = get_tensor_shape(user_args[output_idx])
         output_dtype = torch_dtype_to_mlir_type(get_tensor_dtype(user_args[output_idx]), ctx)
 
+        # For on_device outputs (TTNN), output tensor is in DRAM
+        output_memory_space = "DRAM" if on_device else memory_space
+
         device_output_type = create_device_tensor_type(
-            ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
+            ctx, output_logical_shape, output_dtype, grid, tiled, output_memory_space
         )
 
         if on_device:
