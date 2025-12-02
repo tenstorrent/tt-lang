@@ -177,6 +177,17 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
     for name, thread_type in selected_kernels:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
+
+        # HACK: Fix hardcoded NOC coordinates (18, 18) -> (18, 20)
+        # The tt-mlir code generation emits wrong y-coordinate
+        # TODO: Fix this properly in tt-mlir D2M lowering
+        if thread_type == "noc":
+            # The generated code has: get_noc_addr(v5, v5, addr) where v5=18
+            # But actual DRAM is at (18, 20), so fix the y-coordinate
+            cpp_source = cpp_source.replace("get_noc_addr(v5, v5,", "get_noc_addr(18, 20,")
+            cpp_source = cpp_source.replace("get_noc_addr(v4, v4,", "get_noc_addr(18, 20,")
+            print(f"  [HACK] Fixed NOC coords (18,18) -> (18,20) for {name}")
+
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
 
         # Map thread type to config
