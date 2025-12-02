@@ -94,7 +94,7 @@ jobs:
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
         run: |
           set -x
-          df -Hk
+          df -h
           cd tt-mlir
           source env/activate
           ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}

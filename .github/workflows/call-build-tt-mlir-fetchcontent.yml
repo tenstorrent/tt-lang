@@ -50,7 +50,7 @@ jobs:
               id: ttmlir-commit
               shell: bash
               run: |
-                  df -H
+                  df -h
                   bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
 
             - name: Get LLVM version
@@ -76,7 +76,7 @@ jobs:
             - name: Build tt-lang
               run: |
                   echo "Building tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
-                  df -H
+                  df -h
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/build/tt-mlir-install \
@@ -88,10 +88,26 @@ jobs:
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
                   cmake --install build
+                  df -h
 
+            - name: Build ttrt wheels
+              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              run: |
                   # Build ttrt wheels for hardware testing
                   cmake --build build --target ttrt
-                  df -H
+
+            - name: Copy cached ttrt wheels
+              if: steps.cache-ttmlir.outputs.cache-hit == 'true'
+              run: |
+                  # When cache is hit, copy the cached wheel to the expected location
+                  mkdir -p build/tools/ttrt/build
+                  if [ -f build/tools/ttrt/build/ttrt*.whl ]; then
+                      echo "✅ Found cached ttrt wheel"
+                      ls -lh build/tools/ttrt/build/ttrt*.whl
+                  else
+                      echo "❌ Cached ttrt wheel not found, rebuilding is required"
+                      cmake --build build --target ttrt
+                  fi
 
             - name: Test the build
               run: |
