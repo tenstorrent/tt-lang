@@ -202,10 +202,27 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
         runtime_args = [[[]]]  # Empty 2D grid of args
 
         # Common runtime args: tensor buffer address indices
-        # For noc kernels, pass tensor index 0 as the common runtime arg
-        # The runtime will resolve this to the actual buffer address
-        # TODO: This needs to match the actual kernel's expectations
-        common_runtime_args = [0]  # Index into io_tensors for buffer address
+        # The runtime resolves these indices to actual buffer addresses from io_tensors
+        # io_tensors = [lhs, rhs, out] so: index 0=lhs, 1=rhs, 2=out
+        if thread_type == "compute":
+            # Compute kernels don't access NOC, no runtime args needed
+            common_runtime_args = []
+            print(f"  [DEBUG] {name} (compute): common_runtime_args = [] (no NOC access)")
+        elif thread_type == "noc":
+            # noc_kernel_idx was already incremented above, so:
+            # noc_kernel_idx == 1 means this is the reader (was 0 when config was set)
+            # noc_kernel_idx == 2 means this is the writer (was 1 when config was set)
+            if noc_kernel_idx == 1:
+                # Reader: needs lhs (0) and rhs (1) tensor indices
+                common_runtime_args = [0, 1]
+                print(f"  [DEBUG] {name} (reader): common_runtime_args = [0, 1] (lhs, rhs)")
+            else:
+                # Writer: needs out (2) tensor index
+                common_runtime_args = [2]
+                print(f"  [DEBUG] {name} (writer): common_runtime_args = [2] (out)")
+        else:
+            common_runtime_args = [0]
+            print(f"  [DEBUG] {name} (unknown): common_runtime_args = [0]")
 
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=kernel_path,
