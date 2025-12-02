@@ -57,10 +57,6 @@ from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
 
 
-# TTNN mode flag - when True, expects ttnn.Tensor inputs and uses TTNN runtime
-# Set to True for testing TTNN interop, False for standard torch.Tensor path
-_ttnn_mode = True
-
 from ._src.tensor_registry import register_tensor_name
 
 
@@ -138,11 +134,28 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     # Wrap ttnn tensors as TTMetal-compatible runtime tensors.
     # This creates MeshBuffer views over the existing device buffers,
     # with TTMetal runtime tags so the executor can use them.
-    inputs = [runtime_utils.create_ttmetal_tensor_from_ttnn(t, retain=True) for t in args]
+    print("[TTNN interop] Wrapping tensors...")
+    inputs = []
+    for i, t in enumerate(args):
+        print(f"[TTNN interop] arg[{i}]: shape={t.shape}, dtype={t.dtype}")
+        # Try to get buffer address if available
+        try:
+            if hasattr(t, 'buffer_address'):
+                print(f"[TTNN interop] arg[{i}] buffer_address: {t.buffer_address()}")
+            elif hasattr(t, 'buffer') and hasattr(t.buffer(), 'address'):
+                print(f"[TTNN interop] arg[{i}] buffer.address: {t.buffer().address()}")
+        except Exception as e:
+            print(f"[TTNN interop] arg[{i}] could not get address: {e}")
+        wrapped = runtime_utils.create_ttmetal_tensor_from_ttnn(t, retain=True)
+        print(f"[TTNN interop] arg[{i}] wrapped successfully")
+        inputs.append(wrapped)
 
     # Submit the compiled kernel
+    print("[TTNN interop] Submitting kernel...")
     runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
+    print("[TTNN interop] Kernel submitted, waiting...")
     runtime.wait(runtime_outputs)
+    print("[TTNN interop] Kernel completed")
 
     # The output tensor(s) are written in place - no need to copy back
     # Clean up runtime tensor wrappers (doesn't deallocate underlying ttnn tensors)
@@ -342,7 +355,7 @@ def _compile_and_run_kernel(
     # For torch.Tensor, set the attribute directly (and also register for consistency)
     for param_name, arg in zip(f_params, args):
         register_tensor_name(arg, param_name)
-        if not _ttnn_mode:
+        if not on_device:
             # Also set attribute for backwards compatibility
             arg._global_name = param_name
 
@@ -443,7 +456,7 @@ def _compile_and_run_kernel(
             "sccp",                                        # Sparse conditional constant propagation
             "cse",                                         # Eliminate common subexpressions
             "d2m-generic-regions-to-funcs",                # Extract regions to functions
-            "convert-d2m-to-ttkernel{ttnn-mode=1}",        # ttnn-mode=1 for runtime buffer addresses
+            f"convert-d2m-to-ttkernel{{ttnn-mode={1 if on_device else 0}}}",  # ttnn-mode for runtime buffer addresses
             "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
             "convert-d2m-to-ttmetal",                      # Convert to TTMetal dialect
@@ -503,7 +516,7 @@ def _compile_and_run_kernel(
         compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
 
         if not compile_only and binary is not None and runtime is not None:
-            if _ttnn_mode:
+            if on_device:
                 # TTNN runtime: tensors are already on device
                 try:
                     _execute_on_ttnn_runtime(flatbuffer_binary, args)

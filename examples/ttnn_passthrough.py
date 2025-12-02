@@ -21,29 +21,43 @@ except ImportError:
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
 def passthrough_kernel(inp, out):
-    """Kernel that copies input to output - tests data movement."""
+    """Kernel that copies input to output - tests data movement.
+
+    Full flow for TTNN interop:
+        DRAM(inp) --[reader DMA]--> inp_cb --[compute copy]--> out_cb --[writer DMA]--> DRAM(out)
+    """
     inp_accessor = TensorAccessor(inp)
+    out_accessor = TensorAccessor(out)
 
     @compute()
     def copy_compute(inp_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Wait for input data
+        # Wait for input data from reader DMA
         tile = inp_cb.wait()
-        # Reserve output
+        # Reserve output buffer
         o = out_cb.reserve()
-        # Copy input to output (identity operation)
+        # Copy input to output (identity operation through DST register)
         o.store(tile)
-        # Signal done
+        # Signal done - release input, push output for writer DMA
         inp_cb.pop()
         out_cb.push()
 
     @datamovement()
-    def read_dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
-        # DMA read from input tensor to circular buffer
+    def reader_dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+        # DMA read: DRAM(inp) -> inp_cb (L1)
         shard = inp_cb.reserve()
         tx = dma(inp_accessor[0, 0], shard)
         tx.wait()
+        inp_cb.push()  # Signal to compute that data is ready
 
-    return Program(copy_compute, read_dm)(inp, out)
+    @datamovement()
+    def writer_dm(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+        # DMA write: out_cb (L1) -> DRAM(out)
+        shard = out_cb.wait()  # Wait for compute to produce output
+        tx = dma(shard, out_accessor[0, 0])
+        tx.wait()
+        out_cb.pop()  # Release the CB slot
+
+    return Program(copy_compute, reader_dm, writer_dm)(inp, out)
 
 
 if __name__ == "__main__":
