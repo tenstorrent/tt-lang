@@ -191,6 +191,42 @@ def torch_dtype_to_ttcore_datatype(torch_dtype):
     raise ValueError(f"Unsupported torch dtype for ttcore.DataType: {torch_dtype}")
 
 
+def torch_dtype_to_ttnn_datatype(torch_dtype):
+    """
+    Convert PyTorch dtype to ttnn.DataType enum.
+
+    Args:
+        torch_dtype: PyTorch dtype (torch.float32, torch.bfloat16, etc.)
+
+    Returns:
+        ttnn.DataType enum value
+
+    Raises:
+        ImportError: If ttnn is not available
+        ValueError: If dtype is not supported
+    """
+    try:
+        import ttnn
+    except ModuleNotFoundError:
+        raise ImportError("ttnn module not available")
+
+    match torch_dtype:
+        case torch.float32:
+            return ttnn.DataType.FLOAT32
+        case torch.float16:
+            return ttnn.DataType.FLOAT16
+        case torch.bfloat16:
+            return ttnn.DataType.BFLOAT16
+        case torch.int32:
+            return ttnn.DataType.INT32
+        case torch.uint32:
+            return ttnn.DataType.UINT32
+        case torch.uint16:
+            return ttnn.DataType.UINT16
+        case _:
+            raise ValueError(f"Unsupported torch dtype for ttnn.DataType: {torch_dtype}")
+
+
 def create_borrowed_tensors(torch_tensors):
     """
     Create runtime borrowed tensors from torch tensors.
