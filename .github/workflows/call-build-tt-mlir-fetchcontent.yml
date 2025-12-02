@@ -63,7 +63,6 @@ jobs:
               with:
                   path: |
                       build/tt-mlir-install
-                      build/_deps
                       build/tools/ttrt
                   key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
 
@@ -90,23 +89,22 @@ jobs:
                   cmake --install build
                   df -h
 
-            - name: Build ttrt wheels
-              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+            - name: Ensure ttrt wheel is in expected location
               run: |
-                  # Build ttrt wheels for hardware testing
-                  cmake --build build --target ttrt
-
-            - name: Copy cached ttrt wheels
-              if: steps.cache-ttmlir.outputs.cache-hit == 'true'
-              run: |
-                  # When cache is hit, copy the cached wheel to the expected location
-                  mkdir -p build/tools/ttrt/build
-                  if [ -f build/tools/ttrt/build/ttrt*.whl ]; then
-                      echo "✅ Found cached ttrt wheel"
+                  # ttrt is built during main build (via FetchContent tt-mlir with ALL target)
+                  # Wheel is at build/_deps/tt-mlir-build/tools/ttrt/build/
+                  # Create symlink/copy to expected location for caching and upload
+                  mkdir -p build/tools/ttrt
+                  if [ -d build/_deps/tt-mlir-build/tools/ttrt/build ]; then
+                      ln -sfn ../../_deps/tt-mlir-build/tools/ttrt/build build/tools/ttrt/build
+                      echo "✅ Created symlink to ttrt wheel directory"
+                      ls -lh build/_deps/tt-mlir-build/tools/ttrt/build/ttrt*.whl
+                  elif [ -d build/tools/ttrt/build ] && [ -f build/tools/ttrt/build/ttrt*.whl ]; then
+                      echo "✅ Found ttrt wheel in expected location (from cache)"
                       ls -lh build/tools/ttrt/build/ttrt*.whl
                   else
-                      echo "❌ Cached ttrt wheel not found, rebuilding is required"
-                      cmake --build build --target ttrt
+                      echo "❌ ttrt wheel not found at expected locations"
+                      exit 1
                   fi
 
             - name: Test the build
