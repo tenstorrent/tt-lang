@@ -19,11 +19,22 @@ from .block import Block
 from .constants import TILE_SHAPE, DMA_MULTICAST_TIMEOUT
 from .typedefs import MulticastAddress, Count
 
+
+# TODO: Ideally, to avoid duplication, we would want something like this:
+# DMAEndpointTypes: List[type] = [torch.Tensor, Block[torch.Tensor], MulticastAddress]
+# DMAEndpoint = Union[*DMAEndpointTypes]
+# DMAEndpointType = Union[*[Type[x] for x in DMAEndpointTypes]]
+#
+# Unfortunately, this is too difficult for static analysis to understand
+# (pyright, it needs to execute the expansion to figure it out). So we stick to
+# the simpler explicit definition bellow.
+
 # DMA endpoint types - these are the valid types for DMA transfers
-# To add a new endpoint type, add it to this Union and implement a handler for it
+# To add a new endpoint type, add it to the Unions and implement a handler for it
 DMAEndpoint = Union[torch.Tensor, Block[torch.Tensor], MulticastAddress]
-# Type of a DMA endpoint class (derived automatically from DMAEndpoint)
-DMAEndpointType = Type[DMAEndpoint]
+DMAEndpointType = Union[
+    Type[torch.Tensor], Type[Block[torch.Tensor]], Type[MulticastAddress]
+]
 
 
 # Global multicast state for simulating NoC multicast communication
