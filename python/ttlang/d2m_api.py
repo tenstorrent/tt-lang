@@ -19,6 +19,11 @@ except ModuleNotFoundError:
     torch = None
 
 try:
+    import ttnn
+except ModuleNotFoundError:
+    ttnn = None
+
+try:
     from _ttmlir_runtime import runtime, binary
 except ModuleNotFoundError:
     runtime = None
@@ -27,7 +32,12 @@ except ModuleNotFoundError:
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
-from ttmlir.passes import ttmetal_to_flatbuffer_bin, ttkernel_to_cpp
+from ttmlir.passes import (
+    ttmetal_to_flatbuffer_bin,
+    ttkernel_to_cpp,
+    ttkernel_to_cpp_by_name,
+    get_ttkernel_names,
+)
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
@@ -117,6 +127,137 @@ def _execute_on_metal_runtime(flatbuffer_binary, args):
         runtime.deallocate_tensor(runtime_output_tensor, force=True)
 
     runtime.close_mesh_device(device)
+
+
+def _execute_ttnn_interop(module, args, grid, num_outs):
+    """
+    Execute compiled kernel via ttnn.generic_op.
+
+    Builds ttnn.ProgramDescriptor from compiled MLIR module and executes
+    using the ttnn generic op interface.
+
+    Args:
+        module: MLIR module after D2M pipeline (with EmitC kernels)
+        args: Input/output tensors (ttnn.Tensor expected)
+        grid: Grid dimensions tuple
+        num_outs: Number of output tensors
+    """
+    # Get kernel info from module
+    kernel_info = get_ttkernel_names(module)
+
+    print("=" * 60)
+    print("TTNN INTEROP: Building ProgramDescriptor")
+    print("=" * 60)
+    print(f"Found {len(kernel_info)} kernels:")
+    for name, thread_type in kernel_info:
+        print(f"  - {name} ({thread_type})")
+
+    # Build core range (single core for now)
+    if ttnn is None:
+        print("\nttnn not available - printing C++ sources only")
+        for name, thread_type in kernel_info:
+            cpp_source = ttkernel_to_cpp_by_name(module, name)
+            print(f"\n{'='*40}")
+            print(f"Kernel: {name} ({thread_type})")
+            print(f"{'='*40}")
+            print(cpp_source)
+        return
+
+    # Default core range for simple kernels: single core (0,0)
+    core = ttnn.CoreCoord(0, 0)
+    core_range = ttnn.CoreRange(core, core)
+    core_ranges = ttnn.CoreRangeSet([core_range])
+
+    print(f"\nCore range: {core_ranges}")
+
+    # Build kernel descriptors
+    kernel_descriptors = []
+    for name, thread_type in kernel_info:
+        cpp_source = ttkernel_to_cpp_by_name(module, name)
+
+        # Map thread type to config
+        if thread_type == "compute":
+            config = ttnn.ComputeConfigDescriptor()
+        elif thread_type == "noc":
+            # Default to reader for noc threads (could be reader or writer)
+            config = ttnn.ReaderConfigDescriptor()
+        else:
+            config = ttnn.ReaderConfigDescriptor()
+
+        # Compile-time args: CB port indices
+        # For simple kernels, we use indices 0, 1, 2, ... for CBs
+        num_cbs = len(args)
+        compile_time_args = list(range(num_cbs))
+
+        # Runtime args: empty for now (could be tensor addresses)
+        runtime_args = [[[]]]  # Empty 2D grid of args
+
+        kernel_desc = ttnn.KernelDescriptor(
+            kernel_source=cpp_source,
+            core_ranges=core_ranges,
+            compile_time_args=compile_time_args,
+            runtime_args=runtime_args,
+            config=config,
+        )
+        kernel_descriptors.append(kernel_desc)
+        print(f"  Created KernelDescriptor for {name}")
+
+    # Build CB descriptors from tensor info
+    cb_descriptors = []
+    for i, tensor in enumerate(args):
+        # Get tensor dtype and calculate page size
+        dtype = tensor.dtype if hasattr(tensor, 'dtype') else ttnn.bfloat16
+
+        # Tile size for bfloat16: 32x32 * 2 bytes = 2048, but with header = 4096
+        page_size = 4096  # Default tile page size
+
+        # Calculate total size based on tensor volume
+        if hasattr(tensor, 'volume'):
+            num_tiles = max(1, tensor.volume() // 1024)  # 1024 elements per tile
+        else:
+            num_tiles = 1
+        total_size = num_tiles * page_size
+
+        cb_format = ttnn.CBFormatDescriptor(
+            buffer_index=i,
+            data_format=dtype,
+            page_size=page_size,
+        )
+
+        cb_desc = ttnn.CBDescriptor(
+            total_size=total_size,
+            core_ranges=core_ranges,
+            format_descriptors=[cb_format],
+        )
+        cb_descriptors.append(cb_desc)
+        print(f"  Created CBDescriptor for tensor {i}: page_size={page_size}, total_size={total_size}")
+
+    # Build program descriptor
+    program = ttnn.ProgramDescriptor(
+        kernels=kernel_descriptors,
+        cbs=cb_descriptors,
+        semaphores=[],
+    )
+    print(f"\nCreated ProgramDescriptor with {len(kernel_descriptors)} kernels and {len(cb_descriptors)} CBs")
+
+    # Check if we can execute (not on macOS)
+    if platform.system() == "Darwin":
+        print("\n[macOS] Cannot execute ttnn.generic_op - compile only")
+        print("=" * 60)
+        return
+
+    # Execute via ttnn.generic_op
+    print("\nExecuting ttnn.generic_op...")
+    try:
+        result = ttnn.generic_op(list(args), program)
+        print("ttnn.generic_op completed successfully!")
+        print("=" * 60)
+        return result
+    except Exception as e:
+        print(f"ttnn.generic_op failed: {e}")
+        import traceback
+        traceback.print_exc()
+        print("=" * 60)
 
 
 def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
@@ -462,16 +603,8 @@ def _compile_and_run_kernel(
             print(f"SAVED FINAL TO {final_mlir_path}")
 
         if config.is_ttnn:
-            # TTNN interop path: translate kernel functions to C++ and print
-            # ttkernel_to_cpp runs ConvertTTKernelToEmitC (idempotent if already run)
-            # then uses translateTopLevelKernelsToCpp to extract only kernel functions
-            cpp_source = ttkernel_to_cpp(module)
-            print("=" * 60)
-            print("TTNN INTEROP: Generated C++ kernel source")
-            print("=" * 60)
-            print(cpp_source)
-            print("=" * 60)
-            # TODO: Build ttnn.ProgramDescriptor and call ttnn.generic_op
+            # TTNN interop path: build ttnn.ProgramDescriptor and call ttnn.generic_op
+            _execute_ttnn_interop(module, args, grid, num_outs)
             return
 
         # Metal path: convert to flatbuffer and optionally execute
