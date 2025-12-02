@@ -163,6 +163,16 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     selected_kernels = [kernel_info[9], kernel_info[10], kernel_info[11]]
     print(f"\nUsing hard-coded kernels 9, 10, 11 (out of {len(kernel_info)} total)")
 
+    # Print kernel sources for debugging
+    print("\n" + "=" * 60)
+    print("KERNEL SOURCES FOR DEBUGGING")
+    print("=" * 60)
+    for name, thread_type in selected_kernels:
+        cpp_source = ttkernel_to_cpp_by_name(module, name)
+        print(f"\n--- {name} ({thread_type}) ---")
+        print(cpp_source)
+    print("=" * 60 + "\n")
+
     kernel_descriptors = []
     noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
     for name, thread_type in selected_kernels:
