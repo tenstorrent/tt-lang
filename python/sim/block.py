@@ -8,7 +8,7 @@ Block and supporting Span for cbsim.
 
 import operator as _op
 from typing import Generic, List, Sequence, Any, Union, Callable
-from .typedefs import Size, Index, CBElemTypeVar, CBSlotType, Span
+from .typedefs import Size, Index, CBElemTypeVar, CBSlot, Span
 from pydantic import validate_call
 
 
@@ -32,9 +32,7 @@ class Block(Generic[CBElemTypeVar]):
     #       original list as is. This is a limitation of pydantic's validate_call, and
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
     # @validate_call
-    def __init__(
-        self, buf: List[CBSlotType[CBElemTypeVar]], capacity: Size, span: Span
-    ):
+    def __init__(self, buf: List[CBSlot[CBElemTypeVar]], capacity: Size, span: Span):
         self._buf = buf
         self._capacity = capacity
         self._span = span
@@ -68,7 +66,7 @@ class Block(Generic[CBElemTypeVar]):
             raise ValueError(f"Popping uninitialized or consumed slot at index {idx}")
         self._buf[(self._span.start + idx) % self._capacity] = None
 
-    def to_list(self) -> List[CBSlotType[CBElemTypeVar]]:
+    def to_list(self) -> List[CBSlot[CBElemTypeVar]]:
         return [self[i] for i in range(len(self))]
 
     # @validate_call

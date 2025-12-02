@@ -8,7 +8,7 @@ _CState and related internal state management for cbsim.
 
 from threading import Condition, RLock, Thread
 from typing import Generic, List, Optional
-from .typedefs import Size, Index, Count, CBElemTypeVar, CBSlotType
+from .typedefs import Size, Index, Count, CBElemTypeVar, CBSlot
 from .errors import CBContractError, CBNotConfigured
 from .block import Span
 
@@ -35,7 +35,7 @@ class CBState(Generic[CBElemTypeVar]):
 
     def __init__(self):
         self.cap: Size = 1
-        self.buf: List[CBSlotType[CBElemTypeVar]] = []
+        self.buf: List[CBSlot[CBElemTypeVar]] = []
         self.head: Index = 0
         self.visible: Count = 0
         self.reserved: Count = 0
