@@ -235,9 +235,9 @@ def create_generic_func(
                 )
                 device_value = to_device.results[0]
 
-            if is_stream[i] and not on_device:
-                # For host tensors, create stream layout for DRAM→L1 streaming
-                # For on_device (TTNN), skip - explicit DMA handles transfers
+            if is_stream[i]:
+                # Create stream layout for streaming to L1
+                # Storage is always L1 (CB destination), regardless of input location
                 device_with_stream = create_stream_layout_for_input(
                     ctx,
                     device_value,
@@ -245,7 +245,7 @@ def create_generic_func(
                         logical_shape=logical_shape,
                         grid=grid,
                         tiled=tiled,
-                        memory_space=input_memory_space,
+                        memory_space="L1",  # Storage is always L1
                     ),
                 )
                 device_inputs.append(device_with_stream)
