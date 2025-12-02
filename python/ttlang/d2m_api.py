@@ -148,16 +148,22 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
 
     print(f"\nCore range: {core_ranges}")
 
+    # Write ALL kernels to /tmp for inspection
+    print("\nWriting all kernels to /tmp for inspection...")
+    for name, thread_type in kernel_info:
+        cpp_source = ttkernel_to_cpp_by_name(module, name)
+        kernel_path = _write_kernel_to_tmp(name, cpp_source)
+        print(f"  Wrote {kernel_path}")
+
     # Build kernel descriptors
     # For noc kernels, we need to pass tensor indices as common_runtime_args
     # The runtime will resolve these to actual buffer addresses
     #
     # IMPORTANT: tt-metal only allows one reader kernel and one writer kernel per core.
-    # The tt-lang pipeline may generate multiple kernel iterations due to loop unrolling.
-    # For ttnn interop, we only use the first iteration (first reader, writer, compute).
+    # The tt-lang pipeline generates multiple iterations due to to_layout passes.
+    # For ttnn interop, we need to find the actual add kernels.
     #
-    # Filter to first iteration: find the pattern and take first set
-    # Pattern: noc, noc, compute repeats - take first 3 (or first complete set)
+    # TODO: For now, use first iteration (kernels 0-2). Update after inspection.
     first_iteration_kernels = []
     seen_compute = False
     for name, thread_type in kernel_info:
