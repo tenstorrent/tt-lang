@@ -175,16 +175,43 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     # Build kernel descriptors
     # For noc kernels, we need to pass tensor indices as common_runtime_args
     # The runtime will resolve these to actual buffer addresses
-    kernel_descriptors = []
+    #
+    # IMPORTANT: tt-metal only allows one reader kernel and one writer kernel per core.
+    # The tt-lang pipeline may generate multiple kernel iterations due to loop unrolling.
+    # For ttnn interop, we only use the first iteration (first reader, writer, compute).
+    #
+    # Filter to first iteration: find the pattern and take first set
+    # Pattern: noc, noc, compute repeats - take first 3 (or first complete set)
+    first_iteration_kernels = []
+    seen_compute = False
     for name, thread_type in kernel_info:
+        first_iteration_kernels.append((name, thread_type))
+        if thread_type == "compute":
+            seen_compute = True
+            break  # Stop after first compute (end of first iteration)
+
+    if not seen_compute:
+        # Fallback: use all kernels if pattern doesn't match
+        first_iteration_kernels = kernel_info
+
+    print(f"\nUsing {len(first_iteration_kernels)} kernels from first iteration (out of {len(kernel_info)} total)")
+
+    kernel_descriptors = []
+    noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
+    for name, thread_type in first_iteration_kernels:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
 
         # Map thread type to config
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
         elif thread_type == "noc":
-            # Default to reader for noc threads (could be reader or writer)
-            config = ttnn.ReaderConfigDescriptor()
+            # Alternate between reader and writer for noc kernels
+            # First noc kernel = reader, second = writer
+            if noc_kernel_idx == 0:
+                config = ttnn.ReaderConfigDescriptor()
+            else:
+                config = ttnn.WriterConfigDescriptor()
+            noc_kernel_idx += 1
         else:
             config = ttnn.ReaderConfigDescriptor()
 
@@ -211,7 +238,8 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
             config=config,
         )
         kernel_descriptors.append(kernel_desc)
-        print(f"  Created KernelDescriptor for {name}")
+        config_type = "reader" if isinstance(config, ttnn.ReaderConfigDescriptor) else ("writer" if isinstance(config, ttnn.WriterConfigDescriptor) else "compute")
+        print(f"  Created KernelDescriptor for {name} ({config_type})")
 
     # Build CB descriptors from tensor info
     cb_descriptors = []
