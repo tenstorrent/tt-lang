@@ -16,6 +16,10 @@ on:
     schedule:
         - cron: "0 12 * * *" # 4am PST
 
+permissions:
+    checks: write
+    contents: read
+
 jobs:
     build-tt-lang-tt-mlir:
         runs-on: ubuntu-latest
