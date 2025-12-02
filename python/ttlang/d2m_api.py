@@ -33,7 +33,7 @@ except ModuleNotFoundError:
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
-from ttmlir.passes import ttmetal_to_flatbuffer_bin
+from ttmlir.passes import ttmetal_to_flatbuffer_bin, ttnn_to_flatbuffer_bin
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
@@ -105,8 +105,8 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     Execute compiled kernel on TTNN runtime using existing ttnn.Tensor inputs.
 
     This allows tt-lang kernels to be used within existing TTNN programs.
-    The tensors are already on device, so we wrap them as runtime tensors
-    and execute the compiled flatbuffer.
+    The tensors are already on device, so we wrap them as TTMetal-compatible
+    runtime tensors (MeshBuffer views) and execute the compiled TTMetal flatbuffer.
 
     Args:
         flatbuffer_binary: Compiled flatbuffer binary capsule
@@ -129,12 +129,15 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     # Get the device from the first tensor - all tensors should be on same device
     ttnn_device = args[0].device()
 
-    # Wrap the ttnn device as a runtime device (uses existing device, doesn't open new one)
-    device = runtime_utils.create_runtime_device_from_ttnn(ttnn_device)
+    # Wrap the ttnn device as a TTMetal-compatible runtime device.
+    # This creates a non-owning wrapper with TTMetal runtime tag,
+    # allowing the TTMetal executor to use the same underlying device.
+    device = runtime_utils.create_ttmetal_device_from_ttnn(ttnn_device)
 
-    # Wrap ttnn tensors as runtime tensors
-    # retain=True keeps the tensor alive during execution
-    inputs = [runtime_utils.create_runtime_tensor_from_ttnn(t, retain=True) for t in args]
+    # Wrap ttnn tensors as TTMetal-compatible runtime tensors.
+    # This creates MeshBuffer views over the existing device buffers,
+    # with TTMetal runtime tags so the executor can use them.
+    inputs = [runtime_utils.create_ttmetal_tensor_from_ttnn(t, retain=True) for t in args]
 
     # Submit the compiled kernel
     runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
@@ -432,7 +435,7 @@ def _compile_and_run_kernel(
             f"convert-d2m-to-ttkernel{{ttnn-mode={1 if _ttnn_mode else 0}}}",
             "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
-            "convert-d2m-to-ttmetal",                      # Convert to_layout to ttmetal enqueue ops
+            "convert-d2m-to-ttnn" if _ttnn_mode else "convert-d2m-to-ttmetal",  # Convert to backend dialect
             "canonicalize",                                # Cleanup after conversion
             "loop-invariant-code-motion",                  # Hoist again after backend lowering
             "sccp",                                        # Propagate constants
@@ -476,7 +479,10 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
 
-        flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
+        if _ttnn_mode:
+            flatbuffer_binary = ttnn_to_flatbuffer_bin(module)
+        else:
+            flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
 
         # Save flatbuffer to file for ttrt execution
         flatbuffer_path = os.environ.get("TTLANG_FLATBUFFER_PATH")
