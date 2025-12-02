@@ -163,18 +163,14 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     selected_kernels = [kernel_info[9], kernel_info[10], kernel_info[11]]
     print(f"\nUsing hard-coded kernels 9, 10, 11 (out of {len(kernel_info)} total)")
 
-    # Print kernel sources for debugging
-    print("\n" + "=" * 60)
-    print("KERNEL SOURCES FOR DEBUGGING")
-    print("=" * 60)
-    for name, thread_type in selected_kernels:
-        cpp_source = ttkernel_to_cpp_by_name(module, name)
-        print(f"\n--- {name} ({thread_type}) ---")
-        print(cpp_source)
-    print("=" * 60 + "\n")
-
     kernel_descriptors = []
     noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
+
+    # Print kernel sources for debugging (AFTER applying hacks)
+    print("\n" + "=" * 60)
+    print("KERNEL SOURCES FOR DEBUGGING (after NOC coord fix)")
+    print("=" * 60)
+
     for name, thread_type in selected_kernels:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
 
@@ -186,7 +182,11 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
             # But actual DRAM is at (18, 20), so fix the y-coordinate
             cpp_source = cpp_source.replace("get_noc_addr(v5, v5,", "get_noc_addr(18, 20,")
             cpp_source = cpp_source.replace("get_noc_addr(v4, v4,", "get_noc_addr(18, 20,")
-            print(f"  [HACK] Fixed NOC coords (18,18) -> (18,20) for {name}")
+            print(f"  [HACK] Fixed NOC coords for {name}")
+
+        # Print the fixed source
+        print(f"\n--- {name} ({thread_type}) ---")
+        print(cpp_source)
 
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
 
