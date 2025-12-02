@@ -136,28 +136,28 @@ def _execute_on_ttnn_runtime(flatbuffer_binary, args):
     # Wrap ttnn tensors as TTMetal-compatible runtime tensors.
     # This creates MeshBuffer views over the existing device buffers,
     # with TTMetal runtime tags so the executor can use them.
-    print("[TTNN interop] Wrapping tensors...")
+    print("[TTNN interop] Wrapping tensors...", flush=True)
     inputs = []
     for i, t in enumerate(args):
-        print(f"[TTNN interop] arg[{i}]: shape={t.shape}, dtype={t.dtype}")
+        print(f"[TTNN interop] arg[{i}]: shape={t.shape}, dtype={t.dtype}", flush=True)
         # Try to get buffer address if available
         try:
             if hasattr(t, 'buffer_address'):
-                print(f"[TTNN interop] arg[{i}] buffer_address: {t.buffer_address()}")
+                print(f"[TTNN interop] arg[{i}] buffer_address: {t.buffer_address()}", flush=True)
             elif hasattr(t, 'buffer') and hasattr(t.buffer(), 'address'):
-                print(f"[TTNN interop] arg[{i}] buffer.address: {t.buffer().address()}")
+                print(f"[TTNN interop] arg[{i}] buffer.address: {t.buffer().address()}", flush=True)
         except Exception as e:
-            print(f"[TTNN interop] arg[{i}] could not get address: {e}")
+            print(f"[TTNN interop] arg[{i}] could not get address: {e}", flush=True)
         wrapped = runtime_utils.create_ttmetal_tensor_from_ttnn(t, retain=True)
-        print(f"[TTNN interop] arg[{i}] wrapped successfully")
+        print(f"[TTNN interop] arg[{i}] wrapped successfully", flush=True)
         inputs.append(wrapped)
 
     # Submit the compiled kernel
-    print("[TTNN interop] Submitting kernel...")
+    print("[TTNN interop] Submitting kernel...", flush=True)
     runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
-    print("[TTNN interop] Kernel submitted, waiting...")
+    print("[TTNN interop] Kernel submitted, waiting...", flush=True)
     runtime.wait(runtime_outputs)
-    print("[TTNN interop] Kernel completed")
+    print("[TTNN interop] Kernel completed", flush=True)
 
     # The output tensor(s) are written in place - no need to copy back
     # Clean up runtime tensor wrappers (doesn't deallocate underlying ttnn tensors)
