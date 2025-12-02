@@ -34,7 +34,7 @@ class CBAPI:
     https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
 
     CBAPI is not generic to allow heterogeneous CBState instances with different element types.
-    Each CBState in the pool can have a different CBElemType parameter.
+    Each CBState in the pool can have a different CBElemTypeVar parameter.
     """
 
     def __init__(self, timeout: Optional[float] = CB_DEFAULT_TIMEOUT):

@@ -12,9 +12,9 @@ from enum import Enum, auto
 from dataclasses import dataclass
 import torch
 
-CBElemType = TypeVar("CBElemType", int, torch.Tensor)
+CBElemTypeVar = TypeVar("CBElemTypeVar", int, torch.Tensor)
 # Type alias for circular buffer slots
-CBSlotType = Optional[CBElemType]
+CBSlotType = Optional[CBElemTypeVar]
 
 
 class IndexType(Enum):

@@ -14,11 +14,11 @@ from typing import Tuple, Optional, Generic
 
 from .cbapi import CBAPI
 from .block import Block
-from .typedefs import CBID, Size, Shape, CBElemType
+from .typedefs import CBID, Size, Shape, CBElemTypeVar
 
 
 # TODO: Should this class now be private?
-class CircularBuffer(Generic[CBElemType]):
+class CircularBuffer(Generic[CBElemTypeVar]):
     """
     High-level circular buffer interface for tensor operations.
 
@@ -81,7 +81,7 @@ class CircularBuffer(Generic[CBElemType]):
         self._cb_id = self._api.allocate_cb_id()
         self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
 
-    def wait(self) -> Block[CBElemType]:
+    def wait(self) -> Block[CBElemTypeVar]:
         """Wait for data to be available and return a read view.
 
         This method blocks until the required number of tiles (as specified by
@@ -98,7 +98,7 @@ class CircularBuffer(Generic[CBElemType]):
         self._api.cb_wait_front(self._cb_id, self._tiles_per_operation)
         return self._api.get_read_ptr(self._cb_id)  # type: ignore
 
-    def reserve(self) -> Block[CBElemType]:
+    def reserve(self) -> Block[CBElemTypeVar]:
         """
         Reserve space for writing and return a write view.
 
@@ -183,11 +183,11 @@ class CircularBuffer(Generic[CBElemType]):
 
 
 def make_circular_buffer_like(
-    element: CBElemType,
+    element: CBElemTypeVar,
     shape: Shape,
     buffer_factor: Size = 2,
     api: Optional[CBAPI] = None,
-) -> CircularBuffer[CBElemType]:
+) -> CircularBuffer[CBElemTypeVar]:
     """
     Create a CircularBuffer with the same element type as the element.
 
