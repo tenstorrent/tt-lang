@@ -235,7 +235,9 @@ def create_generic_func(
                 )
                 device_value = to_device.results[0]
 
-            if is_stream[i]:
+            if is_stream[i] and not on_device:
+                # For host tensors, create stream layout for DRAM→L1 streaming
+                # For on_device (TTNN), skip - explicit DMA handles transfers
                 device_with_stream = create_stream_layout_for_input(
                     ctx,
                     device_value,
