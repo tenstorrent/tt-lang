@@ -43,6 +43,7 @@ import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
 from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
+from ._src.tensor_registry import register_tensor_name
 
 from ._src.d2m_ast import D2MGenericCompiler
 
@@ -427,7 +428,7 @@ def _compile_and_run_kernel(
     f_params = inspect.signature(f).parameters
 
     for param_name, arg in zip(f_params, args):
-        arg._global_name = param_name
+        register_tensor_name(arg, param_name)
 
     inject_kwargs = [
         ("block_factors", block_factors),
