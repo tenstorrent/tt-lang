@@ -17,6 +17,7 @@ from .block import Block
 from .typedefs import CBID, Size, Shape, CBElemType
 
 
+# TODO: Should this class now be private?
 class CircularBuffer(Generic[CBElemType]):
     """
     High-level circular buffer interface for tensor operations.
@@ -180,3 +181,30 @@ class CircularBuffer(Generic[CBElemType]):
             f"CircularBuffer(cb_id={self._cb_id}, shape={self._shape}, "
             f"capacity_tiles={self._capacity_tiles}, buffer_factor={self._buffer_factor})"
         )
+
+
+def make_circular_buffer_like(
+    element: CBElemType,
+    shape: Shape,
+    buffer_factor: Size = 2,
+    api: Optional[CBAPI[CBElemType]] = None,
+) -> CircularBuffer[CBElemType]:
+    """
+    Create a CircularBuffer with the same element type as the element.
+
+    Args:
+        element: An instance used to determine the CircularBuffer's element type
+        shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
+        buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
+        api: Optional CBAPI instance to use. If None, uses the shared default instance.
+
+    Returns:
+        A CircularBuffer with element type matching the element
+
+    Example:
+        x = torch.zeros(32, 32)
+        x_cb = make_circular_buffer_like(x, shape=(2, 2), buffer_factor=2)
+    """
+    return CircularBuffer[type(element)](
+        shape=shape, buffer_factor=buffer_factor, api=api
+    )

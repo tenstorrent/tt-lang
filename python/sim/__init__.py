@@ -40,13 +40,14 @@ class _TTLNamespace:
 
     def __init__(self):
         from .kernel import kernel, grid_size
-        from .cb import CircularBuffer
+        from .cb import CircularBuffer, make_circular_buffer_like
         from .decorators import compute, datamovement
         from .program import core_index
 
         self.kernel = kernel
         self.grid_size = grid_size
         self.CircularBuffer = CircularBuffer
+        self.make_circular_buffer_like = make_circular_buffer_like
         self.compute = compute
         self.datamovement = datamovement
         self.core_index = core_index

@@ -10,7 +10,6 @@ from sim import (
     TensorAccessor,
     IndexType,
     CoreIndex,
-    CircularBuffer,
     dma,
     Program,
     core_index,
@@ -49,14 +48,14 @@ def eltwise_add(
     out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
     # Create circular buffers
-    a_in_cb = CircularBuffer[type(a_in)](
-        shape=(granularity, 1), buffer_factor=buffer_factor
+    a_in_cb = ttl.make_circular_buffer_like(
+        a_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    b_in_cb = CircularBuffer[type(b_in)](
-        shape=(granularity, 1), buffer_factor=buffer_factor
+    b_in_cb = ttl.make_circular_buffer_like(
+        b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    out_cb = CircularBuffer[type(out)](
-        shape=(granularity, 1), buffer_factor=buffer_factor
+    out_cb = ttl.make_circular_buffer_like(
+        out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 
     @ttl.compute()
