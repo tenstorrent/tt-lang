@@ -276,7 +276,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
         print("\nttnn not available - cannot compile for ttnn.generic_op")
         return None
 
-    # Default core range for simple kernels: single core (0,0)
+    # TODO: Support multi-core grids. Currently hardcoded to single core (0,0).
     core = ttnn.CoreCoord(0, 0)
     core_range = ttnn.CoreRange(core, core)
     core_ranges = ttnn.CoreRangeSet([core_range])
