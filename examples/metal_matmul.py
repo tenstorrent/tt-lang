@@ -145,29 +145,26 @@ def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
         layout=ttnn.TILE_LAYOUT,
     )
     a_cb = ttl.make_circular_buffer_like(a, 
-        shape = (1, 1),
+        shape = (blk_size, blk_size),
         buffer_factor = 2)
     b_cb = ttl.make_circular_buffer_like(b, 
-        shape = (1, 1),
+        shape = (blk_size, blk_size),
         buffer_factor = 2)
     c_cb = ttl.make_circular_buffer_like(c, 
-        shape = (1, 1),
+        shape = (blk_size, blk_size),
         buffer_factor = 2)
 
-
-# need to use tensor accessors first
     @ttl.compute()
     def mm_compute():
-        for m in range(a.shape[0] // blk_size):
-            for n in range(b.shape[1] // blk_size):
+        for _ in range(a.shape[0] // blk_size): # m
+            for _ in range(b.shape[1] // blk_size): # n
                 with c_cb.reserve() as c_blk:
-                    for k in range(a.shape[1] // blk_size):
+                    for _ in range(a.shape[1] // blk_size): # k
                         a_blk = a_cb.wait()
                         b_blk = b_cb.wait()
                         c_blk += a_blk @ b_blk
                         a_cb.pop()
-                        b_cb.pop()
-                    
+                        b_cb.pop()  
 
     @ttl.datamovement()
     def mm_reader():
