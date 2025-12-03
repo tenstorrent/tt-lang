@@ -139,7 +139,9 @@ class CompiledTTNNKernel:
             compile_time_args = list(range(self.num_tensors))
             runtime_args = [[[]]]
 
-            # Build runtime args based on kernel type
+            # HACK: Hardcoded runtime args for 3-tensor add kernel (lhs, rhs, out).
+            # TODO: Replace with proper arg mapping by analyzing kernel IR to determine
+            # which tensors each kernel accesses and in what order.
             if thread_type == "compute":
                 common_runtime_args = []
             elif thread_type == "noc":
