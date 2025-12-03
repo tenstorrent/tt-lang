@@ -50,9 +50,30 @@ from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
 
 
-def _should_execute_on_metal_runtime():
-    """Check if we should execute on Metal runtime (skip on macOS)."""
-    return platform.system() != "Darwin" and binary is not None and runtime is not None
+class CompilerConfig:
+    """
+    Configuration for the compiler pipeline and runtime execution.
+
+    Encapsulates environment flags and runtime availability checks.
+    """
+
+    def __init__(self):
+        self.compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
+        self._runtime_available = binary is not None and runtime is not None
+        self._is_macos = platform.system() == "Darwin"
+
+    def should_run_metal(self) -> bool:
+        """Check if Metal runtime execution should proceed."""
+        return (
+            not self.compile_only
+            and not self._is_macos
+            and self._runtime_available
+        )
+
+    def should_run_ttnn(self) -> bool:
+        """Check if TTNN runtime execution should proceed."""
+        # TTNN mode not yet supported - PR #50 will add this
+        return False
 
 
 def _execute_on_metal_runtime(flatbuffer_binary, args):
@@ -362,7 +383,7 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        ttnn_mode = False  # tt-lang uses TTMetal mode
+        config = CompilerConfig()
 
         # fmt: off
         pipeline_passes = [
@@ -439,13 +460,7 @@ def _compile_and_run_kernel(
             binary_obj.store(flatbuffer_path)
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
 
-        # Check if runtime execution should be skipped (compile-only mode)
-        compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
-
-        # Metal runtime execution (enabled by default when runtime is available)
-        # Skip on macOS since hardware is not available
-        # Skip if TTLANG_COMPILE_ONLY=1 is set
-        if not compile_only and _should_execute_on_metal_runtime():
+        if config.should_run_metal():
             try:
                 _execute_on_metal_runtime(flatbuffer_binary, args)
             except Exception as e:
@@ -455,13 +470,7 @@ def _compile_and_run_kernel(
 
                 traceback.print_exc()
 
-        # TTNN runtime execution (not yet implemented - requires TTNN integration)
-        if (
-            not compile_only
-            and ttnn_mode
-            and binary is not None
-            and runtime is not None
-        ):
+        if config.should_run_ttnn():
             try:
                 _execute_on_ttnn_runtime(flatbuffer_binary, args)
             except Exception as e:
