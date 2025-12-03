@@ -302,7 +302,6 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
 
-        # Map thread type to config
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
         elif thread_type == "noc":
