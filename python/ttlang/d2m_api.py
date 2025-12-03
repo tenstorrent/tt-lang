@@ -112,6 +112,15 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
+def _resolve_grid_params(grid, block_factors, args, kwargs):
+    """Resolve grid and block_factors, evaluating callables if needed."""
+    resolved_grid = grid(*args, **kwargs) if callable(grid) else grid
+    resolved_block_factors = block_factors(*args, **kwargs) if callable(block_factors) else block_factors
+    if resolved_block_factors is None:
+        resolved_block_factors = [1] * len(resolved_grid)
+    return resolved_grid, resolved_block_factors
+
+
 class CompiledTTNNKernel:
     """
     A compiled tt-lang kernel ready for execution via ttnn.generic_op.
@@ -820,14 +829,9 @@ def pykernel_gen(
     def _decorator(f):
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
-            nonlocal grid
-            nonlocal block_factors
-
-            resolved_grid = grid(*args, **kwargs) if callable(grid) else grid
-            resolved_block_factors = block_factors(*args, **kwargs) if callable(block_factors) else block_factors
-
-            if resolved_block_factors is None:
-                resolved_block_factors = [1] * len(resolved_grid)
+            resolved_grid, resolved_block_factors = _resolve_grid_params(
+                grid, block_factors, args, kwargs
+            )
 
             _compile_and_run_kernel(
                 f,
@@ -855,14 +859,9 @@ def pykernel_gen(
             Returns:
                 CompiledTTNNKernel that can be called multiple times
             """
-            nonlocal grid
-            nonlocal block_factors
-
-            resolved_grid = grid(*args, **kwargs) if callable(grid) else grid
-            resolved_block_factors = block_factors(*args, **kwargs) if callable(block_factors) else block_factors
-
-            if resolved_block_factors is None:
-                resolved_block_factors = [1] * len(resolved_grid)
+            resolved_grid, resolved_block_factors = _resolve_grid_params(
+                grid, block_factors, args, kwargs
+            )
 
             return _compile_and_run_kernel(
                 f,
