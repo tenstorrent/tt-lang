@@ -59,7 +59,7 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
     ttlang_setup_ttmlir_build_tree(${_TTMLIR_BUILD_DIR})
   else()
     message(STATUS "Using pre-installed tt-mlir from: ${TTMLIR_CMAKE_DIR}")
-    set(TTMLIR_PATH "${TTMLIR_TOOLCHAIN_DIR}")
+    set(TTMLIR_PATH "${TTMLIR_CMAKE_DIR}")
 
     # For installed tt-mlir, use the compiler static library
     set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
