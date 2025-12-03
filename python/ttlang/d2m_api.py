@@ -57,6 +57,7 @@ from .dtype_utils import (
     TORCH_TO_RUNTIME_DTYPE_INT,
     create_borrowed_tensors,
     torch_dtype_to_ttnn_datatype,
+    _is_ttnn_tensor,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
@@ -166,25 +167,15 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
     kernel_descriptors = []
     noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
 
-    # Print kernel sources for debugging (AFTER applying hacks)
+    # Print kernel sources for debugging
     print("\n" + "=" * 60)
-    print("KERNEL SOURCES FOR DEBUGGING (after NOC coord fix)")
+    print("KERNEL SOURCES FOR DEBUGGING")
     print("=" * 60)
 
     for name, thread_type in selected_kernels:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
 
-        # HACK: Fix hardcoded NOC coordinates (18, 18) -> (18, 20)
-        # The tt-mlir code generation emits wrong y-coordinate
-        # TODO: Fix this properly in tt-mlir D2M lowering
-        if thread_type == "noc":
-            # The generated code has: get_noc_addr(v5, v5, addr) where v5=18
-            # But actual DRAM is at (18, 20), so fix the y-coordinate
-            cpp_source = cpp_source.replace("get_noc_addr(v5, v5,", "get_noc_addr(18, 20,")
-            cpp_source = cpp_source.replace("get_noc_addr(v4, v4,", "get_noc_addr(18, 20,")
-            print(f"  [HACK] Fixed NOC coords for {name}")
-
-        # Print the fixed source
+        # Print the source for debugging
         print(f"\n--- {name} ({thread_type}) ---")
         print(cpp_source)
 
@@ -496,13 +487,23 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
+    # Detect if tensors are already on device (e.g., TTNN tensors in DRAM)
+    on_device = any(_is_ttnn_tensor(arg) for arg in args)
+
+    # For on-device (TTNN) tensors, use DRAM as memory space
+    # This ensures the D2M lowering uses bank-aware addressing (get_noc_addr_from_bank_id)
+    # instead of hardcoded NOC coordinates (get_noc_addr)
+    effective_memory_space = "DRAM" if on_device else memory_space
+    if on_device:
+        print(f"[TTNN interop] Detected on-device tensors, using memory_space=DRAM")
+
     for param_name, arg in zip(f_params, args):
         register_tensor_name(arg, param_name)
 
     inject_kwargs = [
         ("block_factors", block_factors),
         ("grid", grid),
-        ("memory_space", memory_space),
+        ("memory_space", effective_memory_space),
         ("tiled", tiled),
     ]
     for injected_kwarg, val in inject_kwargs:
@@ -517,7 +518,7 @@ def _compile_and_run_kernel(
 
     injected_program_kwargs = {
         "grid": grid,
-        "memory_space": memory_space,
+        "memory_space": effective_memory_space,
         "tiled": tiled,
     }
     program = Program(
