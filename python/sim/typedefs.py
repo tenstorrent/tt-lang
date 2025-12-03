@@ -40,10 +40,12 @@ class MulticastAddress(NamedTuple):
     Represents a multicast address for NoC communication.
 
     Attributes:
-        core_indices: Tuple of core indices participating in the multicast
+        src_core: Core index of the source/sender
+        dst_core_range: Tuple of core indices of the receivers
     """
 
-    core_indices: Tuple[CoreIndex, ...]
+    src_core: CoreIndex
+    dst_core_range: Tuple[CoreIndex, ...]
 
 
 Shape = Tuple[Size, ...]

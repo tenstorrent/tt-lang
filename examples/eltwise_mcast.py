@@ -68,13 +68,16 @@ def eltwise_mcast(
     )
 
     # Create multicast address for C
-    # Convention: mcast_addr.core_indices[0] is the sender, rest are receivers
-    mcast_addr = MulticastAddress((0, 1, 2, 3))
+    # Convention: src_core is the sender, dst_core_range are the receivers
+    mcast_addr = MulticastAddress(0, (1, 2, 3))
 
     @ttl.compute()
     def compute_func():
         core_num = ttl.core(dims=1)  # linear core index
-        if core_num not in mcast_addr.core_indices:
+        if (
+            core_num != mcast_addr.src_core
+            and core_num not in mcast_addr.dst_core_range
+        ):
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
@@ -110,13 +113,16 @@ def eltwise_mcast(
     @ttl.datamovement()
     def dm0():
         core_num = ttl.core(dims=1)  # linear core index
-        if core_num not in mcast_addr.core_indices:
+        if (
+            core_num != mcast_addr.src_core
+            and core_num not in mcast_addr.dst_core_range
+        ):
             return  # This core is not participating in C multicast
 
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
-        if core_num == mcast_addr.core_indices[0]:
+        if core_num == mcast_addr.src_core:
             print("dm0 (C multicast): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
@@ -129,7 +135,7 @@ def eltwise_mcast(
             # NoC layer meaning: receive ACKs from all cores in the mcast(?)
             c_in_cb.push()
 
-        elif core_num in mcast_addr.core_indices[1:]:
+        elif core_num in mcast_addr.dst_core_range:
             c_block = c_in_cb.reserve()
             tx = ttl.copy(
                 mcast_addr, c_block
@@ -159,7 +165,10 @@ def eltwise_mcast(
     @ttl.datamovement()
     def dm1():
         core_num = ttl.core(dims=1)  # linear core index
-        if core_num not in mcast_addr.core_indices:
+        if (
+            core_num != mcast_addr.src_core
+            and core_num not in mcast_addr.dst_core_range
+        ):
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)

@@ -178,7 +178,7 @@ class TestBlockToMulticastHandler:
         tile = tu.ones(32, 32)
         buf: List[Optional[torch.Tensor]] = [tile]
         block = Block(buf, 1, Span(0, 1))
-        mcast_addr = MulticastAddress((0, 1, 2))
+        mcast_addr = MulticastAddress(0, (1, 2))
 
         # Should not raise
         handler.validate(block, mcast_addr)
@@ -192,7 +192,7 @@ class TestBlockToMulticastHandler:
         tile = tu.full((32, 32), 42.0)
         src_buf: List[Optional[torch.Tensor]] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
-        mcast_addr = MulticastAddress((0, 1))
+        mcast_addr = MulticastAddress(0, (1,))
 
         # Send via multicast
         send_handler.transfer(src_block, mcast_addr)
@@ -216,7 +216,7 @@ class TestBlockToMulticastHandler:
         tile2 = tu.full((32, 32), 2.0)
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
-        mcast_addr = MulticastAddress((0, 1))
+        mcast_addr = MulticastAddress(0, (1,))
 
         # Send via multicast
         send_handler.transfer(src_block, mcast_addr)
@@ -237,7 +237,7 @@ class TestMulticastToBlockHandler:
     def test_validate_always_succeeds(self):
         """Test that validation always succeeds (no-op)."""
         handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress((0, 1))
+        mcast_addr = MulticastAddress(0, (1,))
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
@@ -248,7 +248,7 @@ class TestMulticastToBlockHandler:
         """Test that transfer times out when no data is available."""
         recv_handler = MulticastToBlockHandler()
         # Use a unique address to avoid interference from other tests
-        mcast_addr = MulticastAddress((99, 100))
+        mcast_addr = MulticastAddress(99, (100,))
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
@@ -259,7 +259,7 @@ class TestMulticastToBlockHandler:
         """Test successful transfer with single receiver."""
         send_handler = BlockToMulticastHandler()
         recv_handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress((0, 1))
+        mcast_addr = MulticastAddress(0, (1,))
 
         # Sender: send data
         tile = tu.full((32, 32), 99.0)
@@ -280,7 +280,7 @@ class TestMulticastToBlockHandler:
         """Test successful transfer with multiple receivers."""
         send_handler = BlockToMulticastHandler()
         recv_handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress((0, 1, 2))
+        mcast_addr = MulticastAddress(0, (1, 2))
 
         # Sender: send data for 2 receivers
         tile = tu.full((32, 32), 77.0)
@@ -304,7 +304,7 @@ class TestMulticastToBlockHandler:
         """Test that transfer fails when Block length doesn't match data."""
         send_handler = BlockToMulticastHandler()
         recv_handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress((0, 1))
+        mcast_addr = MulticastAddress(0, (1,))
 
         # Sender: send 2 tiles
         tile1 = tu.ones(32, 32)

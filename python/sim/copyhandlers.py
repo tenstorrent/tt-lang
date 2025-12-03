@@ -217,8 +217,8 @@ class BlockToMulticastHandler:
                 _multicast_buffer[dst] = new_entry
                 entry = new_entry
 
-        # Calculate number of receivers (all cores except the sender)
-        num_receivers = len(dst.core_indices) - 1
+        # Calculate number of receivers
+        num_receivers = len(dst.dst_core_range)
 
         # Add to the queue for this multicast address with receiver count
         # and notify any waiting receivers via event
