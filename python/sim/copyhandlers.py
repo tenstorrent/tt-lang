@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-DMA transfer handlers using a registry-based strategy pattern.
+Copy transfer handlers using a registry-based strategy pattern.
 
 Each handler implements validate() and transfer() for a specific (src_type, dst_type) pair.
 New transfer types can be added by creating a new handler and decorating it with
-@register_dma_handler.
+@register_copy_handler.
 """
 
 from typing import Any, Dict, Protocol, Tuple, Type, Deque, List, Union, TypedDict
@@ -16,23 +16,23 @@ import time
 import torch
 from . import torch_utils as tu
 from .block import Block
-from .constants import TILE_SHAPE, DMA_MULTICAST_TIMEOUT
+from .constants import TILE_SHAPE, COPY_MULTICAST_TIMEOUT
 from .typedefs import MulticastAddress, Count
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
-# DMAEndpointTypes: List[type] = [torch.Tensor, Block[torch.Tensor], MulticastAddress]
-# DMAEndpoint = Union[*DMAEndpointTypes]
-# DMAEndpointType = Union[*[Type[x] for x in DMAEndpointTypes]]
+# CopyEndpointTypes: List[type] = [torch.Tensor, Block[torch.Tensor], MulticastAddress]
+# CopyEndpoint = Union[*CopyEndpointTypes]
+# CopyEndpointType = Union[*[Type[x] for x in CopyEndpointTypes]]
 #
 # Unfortunately, this is too difficult for static analysis to understand
 # (pyright, it needs to execute the expansion to figure it out). So we stick to
 # the simpler explicit definition bellow.
 
-# DMA endpoint types - these are the valid types for DMA transfers
+# Copy endpoint types - these are the valid types for copy transfers
 # To add a new endpoint type, add it to the Unions and implement a handler for it
-DMAEndpoint = Union[torch.Tensor, Block[torch.Tensor], MulticastAddress]
-DMAEndpointType = Union[
+CopyEndpoint = Union[torch.Tensor, Block[torch.Tensor], MulticastAddress]
+CopyEndpointType = Union[
     Type[torch.Tensor], Type[Block[torch.Tensor]], Type[MulticastAddress]
 ]
 
@@ -57,8 +57,8 @@ _multicast_buffer: Dict[MulticastAddress, _MulticastEntry] = {}
 _multicast_registry_lock = threading.Lock()
 
 
-class DMATransferHandler(Protocol):
-    """Protocol for DMA transfer handlers."""
+class CopyTransferHandler(Protocol):
+    """Protocol for copy transfer handlers."""
 
     def validate(self, src: Any, dst: Any) -> None:
         """
@@ -88,35 +88,37 @@ class DMATransferHandler(Protocol):
 
 
 # Global handler registry: (src_type, dst_type) -> handler instance
-handler_registry: Dict[Tuple[DMAEndpointType, DMAEndpointType], DMATransferHandler] = {}
+handler_registry: Dict[
+    Tuple[CopyEndpointType, CopyEndpointType], CopyTransferHandler
+] = {}
 
 
-def register_dma_handler(src_type: DMAEndpointType, dst_type: DMAEndpointType):
+def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType):
     """
-    Decorator to register a DMA transfer handler for a specific (src_type, dst_type) pair.
+    Decorator to register a copy transfer handler for a specific (src_type, dst_type) pair.
 
     Args:
-        src_type: Source type class (must be a valid DMA endpoint type)
-        dst_type: Destination type class (must be a valid DMA endpoint type)
+        src_type: Source type class (must be a valid copy endpoint type)
+        dst_type: Destination type class (must be a valid copy endpoint type)
 
     Returns:
         Decorator function
 
     Example:
-        @register_dma_handler(torch.Tensor, Block)
+        @register_copy_handler(torch.Tensor, Block)
         class TensorToBlockHandler:
             def validate(self, src, dst): ...
             def transfer(self, src, dst): ...
     """
 
-    def decorator(handler_cls: Type[DMATransferHandler]):
+    def decorator(handler_cls: Type[CopyTransferHandler]):
         handler_registry[(src_type, dst_type)] = handler_cls()
         return handler_cls
 
     return decorator
 
 
-@register_dma_handler(torch.Tensor, Block)
+@register_copy_handler(torch.Tensor, Block)
 class TensorToBlockHandler:
     """Handler for Tensor → Block transfers."""
 
@@ -124,7 +126,7 @@ class TensorToBlockHandler:
         """Validate tensor to Block transfer."""
         if len(src.shape) != 2:
             raise ValueError(
-                f"DMA only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
+                f"Copy only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
             )
 
         num_tiles = tu.tile_count(src.shape, TILE_SHAPE)
@@ -156,7 +158,7 @@ class TensorToBlockHandler:
             dst[tile_idx] = tile
 
 
-@register_dma_handler(Block, torch.Tensor)
+@register_copy_handler(Block, torch.Tensor)
 class BlockToTensorHandler:
     """Handler for Block → Tensor transfers."""
 
@@ -164,7 +166,7 @@ class BlockToTensorHandler:
         """Validate Block to tensor transfer."""
         if len(dst.shape) != 2:
             raise ValueError(
-                f"DMA only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
+                f"Copy only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
             )
 
         dst_tiles = tu.tile_count(dst.shape, TILE_SHAPE)
@@ -191,7 +193,7 @@ class BlockToTensorHandler:
             dst[start_row:end_row, start_col:end_col] = tile
 
 
-@register_dma_handler(Block, MulticastAddress)
+@register_copy_handler(Block, MulticastAddress)
 class BlockToMulticastHandler:
     """Handler for Block → MulticastAddress (multicast send)."""
 
@@ -226,7 +228,7 @@ class BlockToMulticastHandler:
             entry["event"].set()
 
 
-@register_dma_handler(MulticastAddress, Block)
+@register_copy_handler(MulticastAddress, Block)
 class MulticastToBlockHandler:
     """Handler for MulticastAddress → Block (multicast receive)."""
 
@@ -258,11 +260,11 @@ class MulticastToBlockHandler:
         while True:
             # Compute remaining timeout
             elapsed = time.time() - start_time
-            remaining = DMA_MULTICAST_TIMEOUT - elapsed
+            remaining = COPY_MULTICAST_TIMEOUT - elapsed
             if remaining <= 0:
                 raise TimeoutError(
                     f"Timeout waiting for multicast data. "
-                    f"The sender may not have called dma(block, mcast_addr).wait() "
+                    f"The sender may not have called copy(block, mcast_addr).wait() "
                     f"or there may be a deadlock."
                 )
 
@@ -272,7 +274,7 @@ class MulticastToBlockHandler:
                 # event.wait returned False -> timeout
                 raise TimeoutError(
                     f"Timeout waiting for multicast data. "
-                    f"The sender may not have called dma(block, mcast_addr).wait() "
+                    f"The sender may not have called copy(block, mcast_addr).wait() "
                     f"or there may be a deadlock."
                 )
 

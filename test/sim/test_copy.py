@@ -2,66 +2,66 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Tests for DMA (Direct Memory Access) simulation.
+Tests for copy operation simulation.
 
-Tests the DMA transfer functionality between tensors and Blocks,
+Tests the copy transfer functionality between tensors and Blocks,
 including error handling and edge cases.
 """
 
 import pytest
 import torch
 from python.sim import torch_utils as tu
-from python.sim.dma import DMATransaction, dma
+from python.sim.copy import CopyTransaction, copy
 from python.sim.block import Block, Span
 from python.sim.constants import TILE_SHAPE
 from typing import Optional, List
 from python.sim.typedefs import MulticastAddress, MulticastType
 
 
-class TestDMATransaction:
-    """Test DMATransaction class functionality."""
+class TestCopyTransaction:
+    """Test CopyTransaction class functionality."""
 
-    def test_dma_transaction_creation_tensor_to_block(self) -> None:
-        """Test creating a DMA transaction from tensor to Block."""
+    def test_copy_transaction_creation_tensor_to_block(self) -> None:
+        """Test creating a copy transaction from tensor to Block."""
         tensor = tu.randn(64, 32)  # 2x1 tile block
         buf: List[Optional[torch.Tensor]] = [None, None]
         block = Block(buf, 2, Span(0, 2))
 
-        tx = DMATransaction(tensor, block)
-        assert not tx.completed
+        tx = CopyTransaction(tensor, block)
+        assert not tx.is_completed
 
-    def test_dma_transaction_creation_block_to_tensor(self) -> None:
-        """Test creating a DMA transaction from Block to tensor."""
+    def test_copy_transaction_creation_block_to_tensor(self) -> None:
+        """Test creating a copy transaction from Block to tensor."""
         buf: List[Optional[torch.Tensor]] = [tu.ones(32, 32), tu.zeros(32, 32)]
         block = Block(buf, 2, Span(0, 2))
         tensor = tu.zeros(64, 32)  # 2x1 tile block
 
-        tx = DMATransaction(block, tensor)
-        assert not tx.completed
+        tx = CopyTransaction(block, tensor)
+        assert not tx.is_completed
 
-    def test_dma_transaction_unsupported_types(self) -> None:
+    def test_copy_transaction_unsupported_types(self) -> None:
         """Test that unsupported type combinations raise ValueError."""
         tensor1 = tu.randn(32, 32)
         tensor2 = tu.zeros(32, 32)
 
         # tensor → tensor not supported
         with pytest.raises(
-            ValueError, match="No DMA handler registered for \\(Tensor, Tensor\\)"
+            ValueError, match="No copy handler registered for \\(Tensor, Tensor\\)"
         ):
-            DMATransaction(tensor1, tensor2)
+            CopyTransaction(tensor1, tensor2)
 
         # Block → Block not supported
         buf: List[Optional[torch.Tensor]] = [None, None]
         block1 = Block(buf, 2, Span(0, 2))
         block2 = Block(buf, 2, Span(0, 2))
         with pytest.raises(
-            ValueError, match="No DMA handler registered for \\(Block, Block\\)"
+            ValueError, match="No copy handler registered for \\(Block, Block\\)"
         ):
-            DMATransaction(block1, block2)
+            CopyTransaction(block1, block2)
 
 
-class TestTensorToBlockDMA:
-    """Test DMA operations from tensor to Block."""
+class TestTensorToBlockCopy:
+    """Test copy operations from tensor to Block."""
 
     def test_transfer_single_tile_to_block(self) -> None:
         """Test transferring a single tile tensor to Block."""
@@ -69,11 +69,11 @@ class TestTensorToBlockDMA:
         buf: List[Optional[torch.Tensor]] = [None]  # Single slot for single tile
         block = Block(buf, 1, Span(0, 1))
 
-        tx = dma(source, block)
+        tx = copy(source, block)
         tx.wait()
 
         # Verify completion
-        assert tx.completed
+        assert tx.is_completed
 
         # Verify data was transferred correctly
         assert tu.allclose(block[0], source)
@@ -88,10 +88,10 @@ class TestTensorToBlockDMA:
         buf: List[Optional[torch.Tensor]] = [None, None, None, None]
         block = Block(buf, 4, Span(0, 2))
 
-        tx = dma(source, block)
+        tx = copy(source, block)
         tx.wait()
 
-        assert tx.completed
+        assert tx.is_completed
         assert tu.allclose(block[0], tile0)
         assert tu.allclose(block[1], tile1)
 
@@ -105,7 +105,7 @@ class TestTensorToBlockDMA:
         with pytest.raises(
             ValueError, match="Tensor contains 3 tiles but Block has 2 slots"
         ):
-            tx = dma(source, block)  # type: ignore
+            tx = copy(source, block)  # type: ignore
 
     def test_transfer_to_single_slot_block(self) -> None:
         """Test transferring to a Block with a single slot."""
@@ -113,15 +113,15 @@ class TestTensorToBlockDMA:
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
-        tx = dma(source, block)
+        tx = copy(source, block)
         tx.wait()
 
-        assert tx.completed
+        assert tx.is_completed
         assert tu.allclose(block[0], source)
 
 
-class TestBlockToTensorDMA:
-    """Test DMA operations from Block to tensor."""
+class TestBlockToTensorCopy:
+    """Test copy operations from Block to tensor."""
 
     def test_transfer_single_tile_from_block(self) -> None:
         """Test transferring a single tile from Block to tensor."""
@@ -132,10 +132,10 @@ class TestBlockToTensorDMA:
 
         destination = tu.zeros(64, 32)
 
-        tx = dma(block, destination)
+        tx = copy(block, destination)
         tx.wait()
 
-        assert tx.completed
+        assert tx.is_completed
         # Check that tiles were stacked correctly
         expected = torch.cat([tile0, tile1], dim=0)  # type: ignore
         assert tu.allclose(destination, expected)
@@ -148,10 +148,10 @@ class TestBlockToTensorDMA:
 
         destination = tu.zeros(128, 32)  # 4 tiles
 
-        tx = dma(block, destination)
+        tx = copy(block, destination)
         tx.wait()
 
-        assert tx.completed
+        assert tx.is_completed
         # Verify each tile was placed correctly
         for i in range(4):
             start_row = i * TILE_SHAPE[0]
@@ -170,7 +170,7 @@ class TestBlockToTensorDMA:
         destination = tu.zeros(96, 32)  # 3 tiles, but Block has 2
 
         with pytest.raises(ValueError, match="Expected 2 tiles but found 3"):
-            tx = dma(block, destination)  # type: ignore
+            tx = copy(block, destination)  # type: ignore
 
     def test_transfer_from_single_slot_block(self) -> None:
         """Test transferring from a Block with a single slot."""
@@ -181,38 +181,38 @@ class TestBlockToTensorDMA:
 
         destination = tu.zeros(32, 32)
 
-        tx = dma(block, destination)
+        tx = copy(block, destination)
         tx.wait()
 
-        assert tx.completed
+        assert tx.is_completed
         assert tu.allclose(destination, tile)
 
 
-class TestDMAConvenienceFunction:
-    """Test the dma() convenience function."""
+class TestCopyConvenienceFunction:
+    """Test the copy() convenience function."""
 
-    def test_dma_function_creates_transaction(self) -> None:
-        """Test that dma() function creates and returns a DMATransaction."""
+    def test_copy_function_creates_transaction(self) -> None:
+        """Test that copy() function creates and returns a CopyTransaction."""
         source = tu.randn(64, 32)  # 2 tiles to match Block size
         buf: List[Optional[torch.Tensor]] = [None, None]
         block = Block(buf, 2, Span(0, 2))
 
-        tx = dma(source, block)
+        tx = copy(source, block)
 
         match tx:
-            case DMATransaction():
-                assert not tx.completed
+            case CopyTransaction():
+                assert not tx.is_completed
             case _:
                 raise AssertionError(
-                    f"Expected DMATransaction, got {type(tx).__name__}"
+                    f"Expected CopyTransaction, got {type(tx).__name__}"
                 )
 
 
-class TestDMAComplexOperations:
-    """Test complex DMA operation scenarios."""
+class TestCopyComplexOperations:
+    """Test complex copy operation scenarios."""
 
     def test_multiple_sequential_transfers(self) -> None:
-        """Test performing multiple DMA transfers in sequence."""
+        """Test performing multiple copy transfers in sequence."""
         # Setup: Create source tensors
         tensor1 = tu.full((64, 32), 1.0)  # 2 tiles
 
@@ -221,9 +221,9 @@ class TestDMAComplexOperations:
         block = Block(buf, 4, Span(0, 2))
 
         # Stage 1: Load first tensor to Block
-        tx1 = dma(tensor1, block)
+        tx1 = copy(tensor1, block)
         tx1.wait()
-        assert tx1.completed
+        assert tx1.is_completed
 
         # Stage 2: Process tiles in Block (simulate some operation)
         processed_tiles = [block[i] * 10.0 for i in range(len(block))]
@@ -231,48 +231,48 @@ class TestDMAComplexOperations:
 
         # Stage 3: Extract processed data back to tensor
         result = tu.zeros(64, 32)
-        tx2 = dma(block2, result)
+        tx2 = copy(block2, result)
         tx2.wait()
-        assert tx2.completed
+        assert tx2.is_completed
 
         # Verify the transformation
         expected = tensor1 * 10.0
         assert tu.allclose(result, expected)
 
-    def test_dma_with_single_element_block(self) -> None:
-        """Test DMA with minimal Block (single element)."""
+    def test_copy_with_single_element_block(self) -> None:
+        """Test copy with minimal Block (single element)."""
         source = tu.full((32, 32), 123.456)
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
         # Transfer to Block
-        tx1 = dma(source, block)
+        tx1 = copy(source, block)
         tx1.wait()
 
         # Transfer back to tensor
         destination = tu.zeros(32, 32)
-        tx2 = dma(block, destination)
+        tx2 = copy(block, destination)
         tx2.wait()
 
         assert tu.allclose(destination, source)
 
 
-class TestDMAErrorHandling:
-    """Test DMA error conditions and edge cases."""
+class TestCopyErrorHandling:
+    """Test copy error conditions and edge cases."""
 
-    def test_dma_with_empty_block(self) -> None:
-        """Test DMA behavior with zero-length Block."""
+    def test_copy_with_empty_block(self) -> None:
+        """Test copy behavior with zero-length Block."""
         source = tu.ones(32, 32)
         buf: List[Optional[torch.Tensor]] = []
         block = Block(buf, 0, Span(0, 0))
 
-        # Should fail when trying to create DMA to empty Block
+        # Should fail when trying to create copy to empty Block
         with pytest.raises(ValueError):
-            tx = dma(source, block)  # type: ignore
+            tx = copy(source, block)  # type: ignore
 
 
-class TestMulticastDMA:
-    """Tests for multicast DMA using the public `dma` API."""
+class TestMulticastCopy:
+    """Tests for multicast copy using the public `copy` API."""
 
     def test_multicast_single_tile_single_receiver(self) -> None:
         """Send a single tile via multicast and receive it."""
@@ -285,10 +285,10 @@ class TestMulticastDMA:
 
         mcast_addr = MulticastAddress(MulticastType.PUSH, (210, 211))
 
-        tx_send = dma(src_block, mcast_addr)
+        tx_send = copy(src_block, mcast_addr)
         tx_send.wait()
 
-        tx_recv = dma(mcast_addr, dst_block)
+        tx_recv = copy(mcast_addr, dst_block)
         tx_recv.wait()
 
         assert dst_block[0] is not None
@@ -303,13 +303,13 @@ class TestMulticastDMA:
 
         mcast_addr = MulticastAddress(MulticastType.PUSH, (211, 212, 213))
 
-        tx_send = dma(src_block, mcast_addr)
+        tx_send = copy(src_block, mcast_addr)
         tx_send.wait()
 
         # First receiver
         dst1: List[Optional[torch.Tensor]] = [None, None]
         dst_ring1 = Block(dst1, 2, Span(0, 2))
-        tx_r1 = dma(mcast_addr, dst_ring1)
+        tx_r1 = copy(mcast_addr, dst_ring1)
         tx_r1.wait()
         assert tu.allclose(dst_ring1[0], tile1)
         assert tu.allclose(dst_ring1[1], tile2)
@@ -317,7 +317,7 @@ class TestMulticastDMA:
         # Second receiver
         dst2: List[Optional[torch.Tensor]] = [None, None]
         dst_ring2 = Block(dst2, 2, Span(0, 2))
-        tx_r2 = dma(mcast_addr, dst_ring2)
+        tx_r2 = copy(mcast_addr, dst_ring2)
         tx_r2.wait()
         assert tu.allclose(dst_ring2[0], tile1)
         assert tu.allclose(dst_ring2[1], tile2)
@@ -331,13 +331,13 @@ class TestMulticastDMA:
 
         mcast_addr = MulticastAddress(MulticastType.PUSH, (212, 213))
 
-        tx_send = dma(src_block, mcast_addr)
+        tx_send = copy(src_block, mcast_addr)
         tx_send.wait()
 
         # Receiver with wrong length
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_ring = Block(dst_buf, 1, Span(0, 1))
-        tx_recv = dma(mcast_addr, dst_ring)
+        tx_recv = copy(mcast_addr, dst_ring)
         with pytest.raises(
             ValueError,
             match="Destination Block length .* does not match multicast data length",
@@ -350,6 +350,6 @@ class TestMulticastDMA:
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_ring = Block(dst_buf, 1, Span(0, 1))
 
-        tx_recv = dma(mcast_addr, dst_ring)
+        tx_recv = copy(mcast_addr, dst_ring)
         with pytest.raises(ValueError, match="Timeout waiting for multicast data"):
             tx_recv.wait()

@@ -11,7 +11,6 @@ from sim import (
     IndexType,
     MulticastAddress,
     MulticastType,
-    dma,
     Program,
     is_tiled,
     ttl,
@@ -122,18 +121,18 @@ def eltwise_mcast(
             print("dm0 (C multicast): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
-            tx = dma(c_accessor[slice(0, 1), slice(0, 1)], c_block)
+            tx = ttl.copy(c_accessor[slice(0, 1), slice(0, 1)], c_block)
             tx.wait()
-            tx2 = dma(
+            tx2 = ttl.copy(
                 c_block, mcast_addr
             )  # start sending the data to all cores in the mcast address. Non-blocking
-            tx2.wait()  # wait for all cores to do their corresponding dma receive
+            tx2.wait()  # wait for all cores to do their corresponding copy receive
             # NoC layer meaning: receive ACKs from all cores in the mcast(?)
             c_in_cb.push()
 
         elif core_num in mcast_addr.core_indices[1:]:
             c_block = c_in_cb.reserve()
-            tx = dma(
+            tx = ttl.copy(
                 mcast_addr, c_block
             )  # start receiving data from the mcast address and store them in c_block. Non-blocking
             # NoC layer meaning: wait for packets with that mcast address
@@ -150,11 +149,11 @@ def eltwise_mcast(
                 col_slice = slice(ct, ct + 1)
                 # Write the cbs just as above
                 a_block = a_in_cb.reserve()
-                tx = dma(a_accessor[row_slice, col_slice], a_block)
+                tx = ttl.copy(a_accessor[row_slice, col_slice], a_block)
                 tx.wait()
                 a_in_cb.push()
                 b_block = b_in_cb.reserve()
-                tx = dma(b_accessor[row_slice, col_slice], b_block)
+                tx = ttl.copy(b_accessor[row_slice, col_slice], b_block)
                 tx.wait()
                 b_in_cb.push()
 
@@ -174,7 +173,7 @@ def eltwise_mcast(
 
                 out_block = out_cb.wait()
 
-                tx = dma(out_block, out_accessor[row_slice, col_slice])
+                tx = ttl.copy(out_block, out_accessor[row_slice, col_slice])
                 tx.wait()
                 out_cb.pop()
 

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-sim package: simulation components for TT-Lang including circular buffers, tensors, and DMA operations.
+sim package: simulation components for TT-Lang including circular buffers, tensors, and copy operations.
 """
 
 from .cbapi import (
@@ -25,7 +25,7 @@ from .tensoraccessor import TensorAccessor
 from .typedefs import IndexType, CoreIndex, Shape, MulticastAddress, MulticastType
 from .constants import TILE_SHAPE, MAX_CBS
 from .cb import CircularBuffer
-from .dma import dma, DMATransaction
+from .copy import copy, CopyTransaction
 from .program import Program, BindableTemplate, core
 from .decorators import compute, datamovement
 from .kernel import kernel
@@ -43,6 +43,7 @@ class _TTLNamespace:
         from .cb import CircularBuffer, make_circular_buffer_like
         from .decorators import compute, datamovement
         from .program import core
+        from .copy import copy
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -51,6 +52,7 @@ class _TTLNamespace:
         self.compute = compute
         self.datamovement = datamovement
         self.core = core
+        self.copy = copy
 
 
 ttl = _TTLNamespace()
@@ -78,8 +80,8 @@ __all__ = [
     "TILE_SHAPE",
     "MAX_CBS",
     "CircularBuffer",
-    "dma",
-    "DMATransaction",
+    "copy",
+    "CopyTransaction",
     "Program",
     "BindableTemplate",
     "core",

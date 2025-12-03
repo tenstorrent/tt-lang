@@ -9,7 +9,6 @@ from sim import (
     TILE_SHAPE,
     TensorAccessor,
     IndexType,
-    dma,
     Program,
     is_tiled,
     ttl,
@@ -99,11 +98,11 @@ def eltwise_add(
                 col_slice = slice(ct, ct + 1)
                 # Write the cbs just as above
                 a_block = a_in_cb.reserve()
-                tx = dma(a_accessor[row_slice, col_slice], a_block)
+                tx = ttl.copy(a_accessor[row_slice, col_slice], a_block)
                 tx.wait()
                 a_in_cb.push()
                 b_block = b_in_cb.reserve()
-                tx = dma(b_accessor[row_slice, col_slice], b_block)
+                tx = ttl.copy(b_accessor[row_slice, col_slice], b_block)
                 tx.wait()
                 b_in_cb.push()
 
@@ -122,7 +121,7 @@ def eltwise_add(
                 out_block = out_cb.wait()
                 # out_block[100] # accessing out of bounds should fail
 
-                tx = dma(out_block, out_accessor[row_slice, col_slice])
+                tx = ttl.copy(out_block, out_accessor[row_slice, col_slice])
                 tx.wait()
                 out_cb.pop()
                 # TODO: We might want better error messages, most of them come from the underlying CBAPI

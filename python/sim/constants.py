@@ -44,4 +44,4 @@ TILE_SHAPE: Shape = (_TILE_SIZE, _TILE_SIZE)  # Standard tile shape (32x32)
 
 # Timeout constants for simulation operations (in seconds)
 CB_DEFAULT_TIMEOUT = 1.0  # Default timeout for circular buffer operations
-DMA_MULTICAST_TIMEOUT = 2.0  # Timeout for multicast DMA operations
+COPY_MULTICAST_TIMEOUT = 2.0  # Timeout for multicast copy operations

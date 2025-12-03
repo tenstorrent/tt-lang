@@ -10,7 +10,7 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 
 import pytest
 import torch
-from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SHAPE, dma
+from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SHAPE, copy
 from python.sim import torch_utils as tu
 from python.sim.errors import CBContractError
 
@@ -81,8 +81,8 @@ def test_circular_buffer_multi_tile():
     print("Multi-tile CircularBuffer test passed!")
 
 
-def test_dma_operations():
-    """Test DMA operations between TensorAccessor and CircularBuffer."""
+def test_copy_operations():
+    """Test copy operations between TensorAccessor and CircularBuffer."""
     # Create test tensors
     tensor_a = tu.randn(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
 
@@ -91,21 +91,21 @@ def test_dma_operations():
     # Create circular buffer
     cb_a = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
 
-    # Test DMA from tensor to circular buffer
+    # Test copy from tensor to circular buffer
     cb_view = cb_a.reserve()
     tensor_slice = accessor_a[slice(0, 1), slice(0, 1)]  # Single tile
 
-    # DMA operation
-    tx = dma(tensor_slice, cb_view)
+    # Copy operation
+    tx = copy(tensor_slice, cb_view)
     tx.wait()
     cb_a.push()
 
-    # Test DMA from circular buffer to tensor
+    # Test copy from circular buffer to tensor
     cb_read_view = cb_a.wait()
     output_tensor = tu.zeros(*TILE_SHAPE)  # Single tile output
 
-    # Copy through DMA
-    tx2 = dma(cb_read_view, output_tensor)
+    # Copy operation
+    tx2 = copy(cb_read_view, output_tensor)
     tx2.wait()
     cb_a.pop()
 
@@ -113,7 +113,7 @@ def test_dma_operations():
     assert output_tensor.shape == TILE_SHAPE
     # The output tensor should now contain the data from the circular buffer
 
-    print("DMA operations test passed!")
+    print("Copy operations test passed!")
 
 
 def test_error_handling():
@@ -140,9 +140,9 @@ def test_error_handling():
     with pytest.raises(CBContractError):
         cb.pop()
 
-    # Test unsupported DMA operations with wrong types
-    with pytest.raises(ValueError, match="No DMA handler registered"):
-        tx = dma("invalid_source", "invalid_dest")  # type: ignore
+    # Test unsupported copy operations with wrong types
+    with pytest.raises(ValueError, match="No copy handler registered"):
+        tx = copy("invalid_source", "invalid_dest")  # type: ignore
 
     print("Error handling test passed!")
 
@@ -178,14 +178,14 @@ def test_example_usage_pattern():
     # Simulate data movement operations
     c_block = c_in_cb.reserve()
     c_slice = c_accessor[slice(0, 1), slice(0, 1)]
-    tx = dma(c_slice, c_block)
+    tx = copy(c_slice, c_block)
     tx.wait()
     c_in_cb.push()
 
     # Simulate some compute pattern
     a_block = a_in_cb.reserve()
     a_slice = a_accessor[slice(0, granularity), slice(0, 1)]
-    tx = dma(a_slice, a_block)
+    tx = copy(a_slice, a_block)
     tx.wait()
     a_in_cb.push()
 
@@ -333,7 +333,7 @@ def test_make_circular_buffer_like_with_example_pattern():
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
     a_block = a_cb.reserve()
     a_slice = a_accessor[slice(0, granularity), slice(0, 1)]
-    tx = dma(a_slice, a_block)
+    tx = copy(a_slice, a_block)
     tx.wait()
     a_cb.push()
 
@@ -347,7 +347,7 @@ def test_make_circular_buffer_like_with_example_pattern():
 if __name__ == "__main__":
     test_circular_buffer_basic()
     test_circular_buffer_multi_tile()
-    test_dma_operations()
+    test_copy_operations()
     test_error_handling()
     test_example_usage_pattern()
     test_make_circular_buffer_like_basic()
