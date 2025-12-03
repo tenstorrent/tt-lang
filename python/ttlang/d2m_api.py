@@ -285,10 +285,10 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
         print(f"\nCore range: {core_ranges}")
 
     # Build kernel paths and configs
-    # HARD-CODED for testing: kernels 9, 10, 11 are the actual add kernels
-    #   - Kernel 9: Reader (noc_async_read for lhs and rhs)
-    #   - Kernel 10: Writer (noc_async_write for output)
-    #   - Kernel 11: Compute (add_binary_tile)
+    # TODO: Currently hardcoded to kernels 9, 10, 11 because to_layout generates
+    # extra bounce kernels in ttnn mode. Fix by conditionalizing to_layout to skip
+    # layout conversion when tensors are already in the correct format, which would
+    # result in only 3 kernels (reader, writer, compute) that map directly to cores.
     selected_kernels = [kernel_info[9], kernel_info[10], kernel_info[11]]
     if verbose:
         print(f"\nUsing kernels 9, 10, 11 (reader, writer, compute)")
