@@ -31,6 +31,7 @@ from .decorators import compute, datamovement
 from .kernel import kernel
 from .testing import assert_pcc
 from .torch_utils import is_tiled
+from .pipe import if_pipe_src, if_pipe_dst
 from . import torch_utils
 
 
@@ -48,6 +49,7 @@ class _TTLNamespace:
         from .torch_utils import is_tiled
         from .constants import TILE_SHAPE
         from .tensoraccessor import TensorAccessor
+        from .pipe import if_pipe_src, if_pipe_dst
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -63,6 +65,8 @@ class _TTLNamespace:
         self.TensorAccessor = TensorAccessor
         self.IndexType = IndexType
         self.Program = Program
+        self.if_pipe_src = if_pipe_src
+        self.if_pipe_dst = if_pipe_dst
 
 
 ttl = _TTLNamespace()
@@ -99,6 +103,8 @@ __all__ = [
     "kernel",
     "assert_pcc",
     "is_tiled",
+    "if_pipe_src",
+    "if_pipe_dst",
     "torch_utils",
     "ttl",
 ]

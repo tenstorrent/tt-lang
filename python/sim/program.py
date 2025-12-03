@@ -21,7 +21,6 @@ import torch
 from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .tensoraccessor import TensorAccessor
-from .typedefs import CoreIndex
 
 
 # Protocol for templates that have a bind method
@@ -98,10 +97,13 @@ def core(dims: int = 2) -> int:
 
     frame = inspect.currentframe()
 
-    # Check the calling frame's globals for the injected '_core' variable
-    if frame and frame.f_back and "_core" in frame.f_back.f_globals:
-        core_index: CoreIndex = frame.f_back.f_globals["_core"]
-        return core_index
+    # Walk up the call stack to find the frame with '_core'
+    while frame:
+        if "_core" in frame.f_locals:
+            return frame.f_locals["_core"]
+        if "_core" in frame.f_globals:
+            return frame.f_globals["_core"]
+        frame = frame.f_back
 
     raise RuntimeError(
         "core not available - function must be called within Program context"

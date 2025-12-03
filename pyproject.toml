@@ -46,6 +46,7 @@ build-verbosity = 2
 
 [tool.pyright]
 typeCheckingMode = "strict"
+reportMissingParameterType = "error"
 reportMissingTypeStubs = "warning"
 reportMissingImports = "error"
 reportUnknownParameterType = "error"

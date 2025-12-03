@@ -6,6 +6,7 @@ import torch
 import math
 
 from sim import ttl
+from sim.typedefs import Pipe
 
 if TYPE_CHECKING:
     from sim.pykernel_env import granularity
@@ -60,7 +61,6 @@ def eltwise_pipe(
     )
 
     # Create multicast address for C
-    # Convention: src_core is the sender, dst_core_range are the receivers
     pipe = ttl.Pipe(0, (1, 2, 3))
 
     @ttl.compute()
@@ -105,33 +105,34 @@ def eltwise_pipe(
         if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
             return  # This core is not participating in C multicast
 
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
-
-        if core_num == pipe.src_core:
+        def pipe_src(p: Pipe) -> None:
             print("dm0 (C multicast): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
             tx = ttl.copy(c_accessor[slice(0, 1), slice(0, 1)], c_block)
             tx.wait()
             tx2 = ttl.copy(
-                c_block, pipe
+                c_block, p
             )  # start sending the data to all cores in the mcast address. Non-blocking
             tx2.wait()  # wait for all cores to do their corresponding copy receive
             # NoC layer meaning: receive ACKs from all cores in the mcast(?)
             c_in_cb.push()
 
-        elif core_num in pipe.dst_core_range:
+        def pipe_dst(p: Pipe) -> None:
             c_block = c_in_cb.reserve()
             tx = ttl.copy(
-                pipe, c_block
+                p, c_block
             )  # start receiving data from the mcast address and store them in c_block. Non-blocking
             # NoC layer meaning: wait for packets with that mcast address
             tx.wait()  # Wait until all data from the mcast address is in c_block and sender is informed
             # NoC layer meaning: all data received and ACK is sent back to sender core, assuming reliable delivery
             c_in_cb.push()
-        else:
-            raise Exception(f"Core not in multicast address: {core_num}")
+
+        ttl.if_pipe_src(pipe, pipe_src)
+        ttl.if_pipe_dst(pipe, pipe_dst)
+
+        start_col_tile = core_num * cols_per_core
+        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
