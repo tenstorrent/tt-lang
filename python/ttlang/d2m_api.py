@@ -279,20 +279,11 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         _write_kernel_to_tmp(name, cpp_source)
 
-    # Build kernel paths and configs
-    # TODO: Currently hardcoded to kernels 9, 10, 11 because to_layout generates
-    # extra bounce kernels in ttnn mode. Fix by conditionalizing to_layout to skip
-    # layout conversion when tensors are already in the correct format, which would
-    # result in only 3 kernels (reader, writer, compute) that map directly to cores.
-    selected_kernels = [kernel_info[9], kernel_info[10], kernel_info[11]]
-    if verbose:
-        print(f"\n[HACK] Using hardcoded kernels 9, 10, 11 (reader, writer, compute)")
-
     kernel_paths = []
     kernel_configs = []
     noc_kernel_idx = 0
 
-    for name, thread_type in selected_kernels:
+    for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
