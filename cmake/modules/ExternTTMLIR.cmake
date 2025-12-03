@@ -146,6 +146,12 @@ else()
     endif()
   endif()
 
+  if(NOT DEFINED TTMLIR_ENABLE_STABLEHLO)
+    set(_TTMLIR_ENABLE_STABLEHLO OFF)
+  else()
+    set(_TTMLIR_ENABLE_STABLEHLO ${TTMLIR_ENABLE_STABLEHLO})
+  endif()
+
   if(NOT DEFINED TTLMLIR_CMAKE_BUILD_TYPE)
     set(_TTMLIR_CMAKE_BUILD_TYPE "RelWithDebInfo")
   else()
@@ -168,21 +174,21 @@ else()
 
   message(STATUS "tt-mlir will be installed to: ${_TTMLIR_INSTALL_PREFIX}")
 
+  set(_TTMLIR_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-src")
+  set(_TTMLIR_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build")
   include(FetchContent)
   FetchContent_Populate(
     tt-mlir
     GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
     GIT_TAG ${TTMLIR_GIT_TAG}
     GIT_SUBMODULES_RECURSE TRUE
-    SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-src"
+    SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
+    BINARY_DIR "${_TTMLIR_BUILD_DIR}"
   )
-
-  set(_TTMLIR_SOURCE_DIR "${tt-mlir_SOURCE_DIR}")
-  set(_TTMLIR_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build")
-  file(MAKE_DIRECTORY "${_TTMLIR_BUILD_DIR}")
 
   set(_TTMLIR_CMAKE_ARGS
     -G Ninja
+    -B ${_TTMLIR_BUILD_DIR}
     -DCMAKE_INSTALL_PREFIX=${_TTMLIR_INSTALL_PREFIX}
     -DTTMLIR_ENABLE_SHARED_LIB=ON
     -DCMAKE_BUILD_TYPE=${_TTMLIR_CMAKE_BUILD_TYPE}
@@ -196,7 +202,7 @@ else()
     -DTTMLIR_ENABLE_PYKERNEL=ON
     -DTTMLIR_ENABLE_RUNTIME=${_TTMLIR_ENABLE_RUNTIME}
     -DTTMLIR_ENABLE_RUNTIME_TESTS=${_TTMLIR_ENABLE_RUNTIME_TESTS}
-    -DTTMLIR_ENABLE_STABLEHLO=OFF
+    -DTTMLIR_ENABLE_STABLEHLO=${_TTMLIR_ENABLE_STABLEHLO}
     -DTTMLIR_ENABLE_OPMODEL=OFF
     -DTT_RUNTIME_ENABLE_PERF_TRACE=${_TTMLIR_ENABLE_PERF_TRACE}
     -DTTMLIR_ENABLE_BINDINGS_PYTHON=${TTLANG_ENABLE_BINDINGS_PYTHON}
@@ -216,7 +222,7 @@ else()
 
   message(STATUS "Building tt-mlir in ${_TTMLIR_BUILD_DIR}...")
   ttlang_execute_with_env(
-    COMMAND "${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} --target all --target TTMLIRPythonModules"
+    COMMAND "TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/build ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR}"
     ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
     WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )

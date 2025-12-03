@@ -34,7 +34,7 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
-            TT_MLIR_DIR: ${{ github.workspace }}/build/tt-mlir-install
+            TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
@@ -57,13 +57,14 @@ jobs:
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
-            - name: Cache tt-mlir installation
+            - name: Cache tt-mlir build and installation
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
                   path: |
-                      build/tt-mlir-install
-                      build/tools/ttrt
+                      tt-mlir-install
+                      build/tt-mlir-build
+                      build/_deps/tt-mlir*
                   key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
 
             - name: Setup ccache for tt-lang
@@ -78,87 +79,44 @@ jobs:
                   df -h
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
-                      -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/build/tt-mlir-install \
+                      -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/tt-mlir-install \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_ENABLE_RUNTIME=ON \
                       -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
+                      -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
-                  df -h
-
             - name: Save ttrt wheel before install
               run: |
-                  # Save ttrt wheel BEFORE install step, as install may trigger rebuild
-                  # ttrt is built during main build (via FetchContent tt-mlir with ALL target)
-                  # Wheel is at build/_deps/tt-mlir-build/tools/ttrt/build/
-                  # Create symlink to expected location for caching and upload
                   mkdir -p build/tools/ttrt
-                  if [ -d build/_deps/tt-mlir-build/tools/ttrt/build ]; then
-                      ln -sfn ../../_deps/tt-mlir-build/tools/ttrt/build build/tools/ttrt/build
-                      echo "✅ Created symlink to ttrt wheel directory"
-                      ls -lh build/_deps/tt-mlir-build/tools/ttrt/build/ttrt*.whl
-                  elif [ -d build/tools/ttrt/build ] && [ -f build/tools/ttrt/build/ttrt*.whl ]; then
-                      echo "✅ Found ttrt wheel in expected location (from cache)"
-                      ls -lh build/tools/ttrt/build/ttrt*.whl
-                  else
-                      echo "❌ ttrt wheel not found at expected locations"
-                      exit 1
-                  fi
-
+                  ln -sfn ../../_deps/tt-mlir-build/tools/ttrt/build build/tools/ttrt/build
             - name: Install tt-lang
               run: |
                   cmake --install build
-                  df -h
 
-            - name: Test the build
+            - name: Test the tt-lang build
               run: |
                   source build/env/activate
                   python test/python/smoketest.py
 
-            - name: Upload build artifacts
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ttlang-fetchcontent-build-ubuntu
-                  path: |
-                      build/python_packages
-                      build/test
-                      build/env
-                      sim/
-                  retention-days: 1
-
-            - name: Upload ttrt wheels
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ttlang-fetchcontent-ttrt-whl-ubuntu
-                  path: build/tools/ttrt/build/ttrt*.whl
-                  if-no-files-found: error
-                  retention-days: 1
-
-            - name: Verify tt-mlir installation exists
+            - name: Archive build artifacts
               run: |
-                  if [ ! -d "build/tt-mlir-install" ]; then
-                      echo "❌ tt-mlir installation does not exist: build/tt-mlir-install"
-                      exit 1
-                  fi
-                  echo "✅ tt-mlir installation exists: build/tt-mlir-install"
-                  ls -la build/tt-mlir-install
+                  # Archive both tt-mlir-install and build directories from workspace root
+                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf ttlang-build-artifacts.tar.zst \
+                    tt-mlir-install build/python_packages build/test build/env sim/
 
-            - name: Archive tt-mlir installation
-              run: |
-                  cd build/tt-mlir-install && tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf ../../tt-mlir-install.tar.zst .
-
-            - name: Upload tt-mlir installation for hardware tests
+            - name: Upload build artifacts for hardware tests
               uses: actions/upload-artifact@v4
               with:
                   name: ttlang-fetchcontent-ttmlir-install-ubuntu
-                  path: tt-mlir-install.tar.zst
+                  path: ttlang-build-artifacts.tar.zst
                   if-no-files-found: error
                   retention-days: 1
 
-            - name: Clean up tt-mlir installation archive
-              run: rm -f tt-mlir-install.tar.zst
+            - name: Clean up build artifacts archive
+              run: rm -f ttlang-build-artifacts.tar.zst
 
     test-hardware:
         needs: build-tt-lang-tt-mlir

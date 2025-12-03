@@ -27,8 +27,8 @@ jobs:
 
     env:
       TT_LANG_HOME: ${{ github.workspace }}
-      TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
       TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
+      TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
 
     steps:
       - name: Maximize space
@@ -104,7 +104,7 @@ jobs:
             -DTTMLIR_ENABLE_PYKERNEL=ON \
             -DTTMLIR_ENABLE_RUNTIME=ON \
             -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
-            -DTTMLIR_ENABLE_STABLEHLO=OFF \
+            -DTTMLIR_ENABLE_STABLEHLO=ON \
             -DTTMLIR_ENABLE_OPMODEL=OFF \
             -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
             -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
@@ -113,27 +113,25 @@ jobs:
             -DBUILD_TESTING=OFF \
             -S .
           cmake --build build
+          pwd && find . -name "*.whl" -ls
 
-      - name: Copy ttrt wheel before install
+      - name: Copy ttrt wheel to install directory
         if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
-          # Copy ttrt wheel BEFORE install step, as install may trigger rebuild
           # The wheel is built during main build (ttrt has ALL target)
+          # Copy wheel BEFORE install step to prevent rebuild from deleting it
+          # Wheel location after archive: tt-mlir-install/wheels/*.whl
+          set -x
           mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
-          cp ${{ env.TT_MLIR_HOME }}/build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
+          cp tt-mlir/build/tools/ttrt/build/*.whl ${{ env.TT_MLIR_DIR }}/wheels/
+
 
       - name: Install tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
         run: |
           cd tt-mlir
           source env/activate
-          cmake --build build -t install
-
-      - name: Copy runtime Python module to install directory
-        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: |
-          # Copy runtime Python module (install doesn't put this in the right place)
-          cp tt-mlir/build/runtime/python/_ttmlir_runtime*.so ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
+          cmake --install build
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
@@ -143,11 +141,11 @@ jobs:
 
       - name: Configure tt-lang
         run: |
-          source /opt/ttmlir-toolchain/venv/bin/activate
+          source ${{ env.TTMLIR_TOOLCHAIN_DIR }}/venv/bin/activate
           cmake -G Ninja \
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DTTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain \
+            -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
             -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }} \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
             -S .
@@ -173,29 +171,22 @@ jobs:
             sim/
           retention-days: 1
 
-      - name: Archive tt-mlir installation
+      - name: Archive the current build
         if: runner.os == 'Linux'
         run: |
-          tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf tt-mlir-install.tar.zst -C ${{ env.TT_MLIR_DIR }} .
+          # Archive both tt-mlir-install and build directories from workspace root
+          tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf ttlang-build-artifacts.tar.zst \
+            -C ${{ github.workspace }} tt-mlir-install build/python_packages build/test build/env sim/
 
-      - name: Upload ttrt wheels for hardware tests
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ttlang-ttrt-whl-ubuntu
-          path: ${{ env.TT_MLIR_DIR }}/wheels/ttrt*.whl
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload tt-mlir installation for hardware tests
+      - name: Upload build artifacts for hardware tests
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ttlang-ttmlir-install-ubuntu
-          path: tt-mlir-install.tar.zst
+          path: ttlang-build-artifacts.tar.zst
           if-no-files-found: error
           retention-days: 1
 
-      - name: Clean up tt-mlir installation archive
+      - name: Clean up build artifacts archive
         if: runner.os == 'Linux'
-        run: rm -f tt-mlir-install.tar.zst
+        run: rm -f ttlang-build-artifacts.tar.zst

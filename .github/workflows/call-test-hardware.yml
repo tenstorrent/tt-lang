@@ -90,31 +90,17 @@ jobs:
           name: ${{ format('{0}-build-{1}', inputs.artifact-prefix, inputs.build-os) }}
           path: .
 
-      - name: Download ttrt wheels
-        id: download-ttrt
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: ${{ format('{0}-ttrt-whl-{1}', inputs.artifact-prefix, inputs.build-os) }}
-          path: .
-
-      - name: Install ttrt wheels
-        if: steps.download-ttrt.outcome == 'success'
-        run: |
-          source build/env/activate
-          pip install ttrt-*.whl --upgrade
-
-      - name: Download tt-mlir installation
+      - name: Download build artifacts archive
         uses: actions/download-artifact@v4
         with:
           name: ${{ format('{0}-ttmlir-install-{1}', inputs.artifact-prefix, inputs.build-os) }}
           path: .
 
-      - name: Extract tt-mlir installation
+      - name: Extract build artifacts
         run: |
-          mkdir -p ${{ env.TT_MLIR_DIR }}
-          tar -I 'zstd --long=31' -xf tt-mlir-install.tar.zst -C ${{ env.TT_MLIR_DIR }}
-          rm -f tt-mlir-install.tar.zst
+          # Extract to workspace root (archive contains tt-mlir-install/, build/, sim/ directories)
+          tar -I 'zstd --long=31' -xf ttlang-build-artifacts.tar.zst -C ${{ github.workspace }}
+          rm -f ttlang-build-artifacts.tar.zst
 
       - name: Set up environment variables
         run: |
