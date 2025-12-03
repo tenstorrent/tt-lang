@@ -10,7 +10,6 @@ from sim import (
     TensorAccessor,
     IndexType,
     Program,
-    is_tiled,
     ttl,
 )
 
@@ -29,7 +28,7 @@ def eltwise_add(
 ) -> None:
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
-    assert all(is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
+    assert all(ttl.is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
 
     row_tiles = a_in.shape[0] // TILE_SHAPE[0]
