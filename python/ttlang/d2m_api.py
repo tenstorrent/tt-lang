@@ -31,11 +31,12 @@ except ModuleNotFoundError:
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
-from ttmlir.dialects import ttcore
+from ttmlir.dialects import ttcore, ttkernel
 from ttmlir.passes import (
     ttmetal_to_flatbuffer_bin,
     ttkernel_to_cpp_by_name,
     get_ttkernel_names,
+    get_ttkernel_arg_spec,
 )
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
@@ -128,19 +129,21 @@ class CompiledTTNNKernel:
     can be executed multiple times with different tensors without recompiling.
     """
 
-    def __init__(self, kernel_paths, kernel_configs, cb_page_size, num_tensors, core_ranges):
+    def __init__(self, kernel_paths, kernel_configs, kernel_arg_specs, cb_page_size, num_tensors, core_ranges):
         """
         Initialize with pre-compiled kernel artifacts.
 
         Args:
             kernel_paths: List of (path, thread_type) tuples for each kernel
             kernel_configs: List of config descriptors matching kernel_paths
+            kernel_arg_specs: List of arg specs (rt_args list) for each kernel
             cb_page_size: Page size for circular buffers
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
+        self.kernel_arg_specs = kernel_arg_specs
         self.cb_page_size = cb_page_size
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
@@ -152,29 +155,23 @@ class CompiledTTNNKernel:
 
         # Build kernel descriptors with current tensor addresses
         kernel_descriptors = []
-        noc_kernel_idx = 0
 
-        for (kernel_path, thread_type), config in zip(self.kernel_paths, self.kernel_configs):
+        for (kernel_path, thread_type), config, rt_args in zip(
+            self.kernel_paths, self.kernel_configs, self.kernel_arg_specs
+        ):
             # TODO: Derive compile-time args from kernel IR (CB indices, tile counts, etc.)
             compile_time_args = list(range(self.num_tensors))
             # TODO: Support per-core runtime args for multi-core grids
             runtime_args = [[[]]]
 
-            # HACK: Hardcoded runtime args for 3-tensor add kernel (lhs, rhs, out).
-            # TODO: Replace with proper arg mapping by analyzing kernel IR to determine
-            # which tensors each kernel accesses and in what order.
-            if thread_type == "compute":
-                common_runtime_args = []
-            elif thread_type == "noc":
-                if noc_kernel_idx == 0:
-                    # Reader: lhs and rhs addresses
-                    common_runtime_args = [args[0].buffer_address(), args[1].buffer_address()]
-                else:
-                    # Writer: out address
-                    common_runtime_args = [args[2].buffer_address()]
-                noc_kernel_idx += 1
-            else:
-                common_runtime_args = []
+            # Build common_runtime_args from arg_spec: BufferAddress args -> tensor addresses
+            # ArgType.BufferAddress = 1
+            common_runtime_args = []
+            for arg in rt_args:
+                arg = ttkernel.ir.ArgAttr.maybe_downcast(arg)
+                if arg.arg_type_as_value == 1:  # BufferAddress
+                    tensor_idx = arg.operand_index
+                    common_runtime_args.append(args[tensor_idx].buffer_address())
 
             kernel_desc = ttnn.KernelDescriptor(
                 kernel_source=kernel_path,
@@ -313,6 +310,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
 
     kernel_paths = []
     kernel_configs = []
+    kernel_arg_specs = []
     noc_kernel_idx = 0
 
     for name, thread_type in kernel_info:
@@ -332,6 +330,14 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
             config = ttnn.ReaderConfigDescriptor()
         kernel_configs.append(config)
 
+        # Extract runtime args from kernel's arg_spec attribute
+        arg_spec = get_ttkernel_arg_spec(module, name)
+        if arg_spec is not None:
+            arg_spec = ttkernel.ir.ArgSpecAttr.maybe_downcast(arg_spec)
+            kernel_arg_specs.append(arg_spec.rt_args if arg_spec else [])
+        else:
+            kernel_arg_specs.append([])
+
     # TODO: Calculate page size based on dtype and tile format. Currently hardcoded
     # to 4096 for bfloat16 tiles (32x32 * 2 = 2048 data bytes + tile header/alignment).
     cb_page_size = 4096
@@ -339,6 +345,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     compiled_kernel = CompiledTTNNKernel(
         kernel_paths=kernel_paths,
         kernel_configs=kernel_configs,
+        kernel_arg_specs=kernel_arg_specs,
         cb_page_size=cb_page_size,
         num_tensors=len(args),
         core_ranges=core_ranges,
