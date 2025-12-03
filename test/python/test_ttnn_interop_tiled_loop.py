@@ -79,14 +79,18 @@ print("=== Tiled Loop Test ===")
 device = ttnn.open_device(device_id=0)
 
 try:
-    # Large tensor: 128x128 = 4x4 tiles of 32x32 each
-    H, W = 128, 128
+    # Large tensor: 1024x1024 = 32x32 tiles of 32x32 each
+    # Size: 1024*1024*2 bytes = 2MB per tensor (> 1.5MB L1 limit)
+    # Total: 3 tensors * 2MB = 6MB (definitely won't fit in L1)
+    H, W = 1024, 1024
     TILE_H, TILE_W = 32, 32
     num_tiles_h = H // TILE_H
     num_tiles_w = W // TILE_W
     total_tiles = num_tiles_h * num_tiles_w
 
-    print(f"Tensor size: {H}x{W} = {num_tiles_h}x{num_tiles_w} tiles ({total_tiles} total)")
+    size_mb = H * W * 2 / (1024 * 1024)
+    print(f"Tensor size: {H}x{W} = {size_mb:.1f}MB per tensor ({size_mb*3:.1f}MB total)")
+    print(f"Tile grid: {num_tiles_h}x{num_tiles_w} = {total_tiles} tiles")
 
     # Create input tensors with distinct values per tile for easy verification
     lhs_torch = torch.zeros((H, W), dtype=torch.bfloat16)
@@ -130,9 +134,31 @@ try:
 
     l1_config = create_sharded_l1_config(device)
 
-    # Process tile by tile
+    # Compile kernel ONCE using the first tile as sample
+    print("\nCompiling kernel (once)...")
+    # CHECK: Compiling kernel
+
+    # Get first tile to use as sample for compilation
+    sample_lhs = ttnn.to_memory_config(
+        ttnn.slice(lhs_dram, [0, 0], [TILE_H, TILE_W]),
+        memory_config=l1_config
+    )
+    sample_rhs = ttnn.to_memory_config(
+        ttnn.slice(rhs_dram, [0, 0], [TILE_H, TILE_W]),
+        memory_config=l1_config
+    )
+    sample_out = ttnn.to_memory_config(
+        ttnn.slice(out_dram, [0, 0], [TILE_H, TILE_W]),
+        memory_config=l1_config
+    )
+
+    # Compile and get reusable kernel
+    kernel = add_tile_kernel.compile(sample_lhs, sample_rhs, sample_out)
+    print(f"Kernel compiled! Type: {type(kernel)}")
+
+    # Process tile by tile using compiled kernel
     print(f"\nProcessing {total_tiles} tiles...")
-    # CHECK: Processing 16 tiles
+    # CHECK: Processing 1024 tiles
 
     for ti in range(num_tiles_h):
         for tj in range(num_tiles_w):
@@ -152,8 +178,8 @@ try:
             rhs_l1 = ttnn.to_memory_config(rhs_tile, memory_config=l1_config)
             out_l1 = ttnn.to_memory_config(out_tile, memory_config=l1_config)
 
-            # Run tt-lang kernel on this tile
-            add_tile_kernel(lhs_l1, rhs_l1, out_l1)
+            # Run compiled kernel on this tile (no recompilation!)
+            kernel(lhs_l1, rhs_l1, out_l1)
 
             # Copy result back to the output DRAM tensor
             # First move result back to DRAM
@@ -165,12 +191,12 @@ try:
             # Store in our output tensor
             out_torch[row_start:row_end, col_start:col_end] = out_tile_torch
 
-            # Progress indicator
-            if tile_idx % 4 == 0:
+            # Progress indicator (every 100 tiles)
+            if tile_idx % 100 == 0:
                 print(f"  Processed tile {tile_idx}/{total_tiles}")
 
     print(f"\nAll {total_tiles} tiles processed!")
-    # CHECK: All 16 tiles processed
+    # CHECK: All 1024 tiles processed
 
     # Verify results
     print("\n=== Verification ===")

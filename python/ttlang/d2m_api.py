@@ -68,6 +68,106 @@ def _should_execute_on_metal_runtime():
     return platform.system() != "Darwin" and binary is not None and runtime is not None
 
 
+class CompiledTTNNKernel:
+    """
+    A compiled tt-lang kernel ready for execution via ttnn.generic_op.
+
+    Caches compilation artifacts (kernel paths, CB descriptors) so the kernel
+    can be executed multiple times with different tensors without recompiling.
+    """
+
+    def __init__(self, kernel_paths, kernel_configs, cb_page_size, num_tensors, core_ranges):
+        """
+        Initialize with pre-compiled kernel artifacts.
+
+        Args:
+            kernel_paths: List of (path, thread_type) tuples for each kernel
+            kernel_configs: List of config descriptors matching kernel_paths
+            cb_page_size: Page size for circular buffers
+            num_tensors: Number of input/output tensors
+            core_ranges: CoreRangeSet for kernel execution
+        """
+        self.kernel_paths = kernel_paths
+        self.kernel_configs = kernel_configs
+        self.cb_page_size = cb_page_size
+        self.num_tensors = num_tensors
+        self.core_ranges = core_ranges
+        self._call_count = 0
+
+    def __call__(self, *args):
+        """Execute the kernel with the given tensors."""
+        if len(args) != self.num_tensors:
+            raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
+
+        # Build kernel descriptors with current tensor addresses
+        kernel_descriptors = []
+        noc_kernel_idx = 0
+
+        for (kernel_path, thread_type), config in zip(self.kernel_paths, self.kernel_configs):
+            compile_time_args = list(range(self.num_tensors))
+            runtime_args = [[[]]]
+
+            # Build runtime args based on kernel type
+            if thread_type == "compute":
+                common_runtime_args = []
+            elif thread_type == "noc":
+                if noc_kernel_idx == 0:
+                    # Reader: lhs and rhs addresses
+                    common_runtime_args = [args[0].buffer_address(), args[1].buffer_address()]
+                else:
+                    # Writer: out address
+                    common_runtime_args = [args[2].buffer_address()]
+                noc_kernel_idx += 1
+            else:
+                common_runtime_args = []
+
+            kernel_desc = ttnn.KernelDescriptor(
+                kernel_source=kernel_path,
+                core_ranges=self.core_ranges,
+                compile_time_args=compile_time_args,
+                runtime_args=runtime_args,
+                common_runtime_args=common_runtime_args,
+                config=config,
+            )
+            kernel_descriptors.append(kernel_desc)
+
+        # Build CB descriptors
+        cb_descriptors = []
+        for i, tensor in enumerate(args):
+            if hasattr(tensor, 'dtype') and hasattr(tensor.dtype, 'name'):
+                data_format = tensor.dtype
+            else:
+                data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
+
+            if hasattr(tensor, 'volume'):
+                num_tiles = max(1, tensor.volume() // 1024)
+            else:
+                num_tiles = 1
+            total_size = num_tiles * self.cb_page_size
+
+            cb_format = ttnn.CBFormatDescriptor(
+                buffer_index=i,
+                data_format=data_format,
+                page_size=self.cb_page_size,
+            )
+            cb_desc = ttnn.CBDescriptor(
+                total_size=total_size,
+                core_ranges=self.core_ranges,
+                format_descriptors=[cb_format],
+            )
+            cb_descriptors.append(cb_desc)
+
+        # Build and execute program
+        program = ttnn.ProgramDescriptor(
+            kernels=kernel_descriptors,
+            cbs=cb_descriptors,
+            semaphores=[],
+        )
+
+        self._call_count += 1
+        return ttnn.generic_op(list(args), program)
+
+
 def _execute_on_metal_runtime(flatbuffer_binary, args):
     """
     Execute compiled kernel on Metal runtime.
@@ -108,85 +208,79 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
     return path
 
 
-def _execute_ttnn_interop(module, args, grid, num_outs):
+def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     """
-    Execute compiled kernel via ttnn.generic_op.
+    Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
 
-    Builds ttnn.ProgramDescriptor from compiled MLIR module and executes
-    using the ttnn generic op interface.
+    Builds kernel paths, configs, and CB descriptors from compiled MLIR module.
 
     Args:
         module: MLIR module after D2M pipeline (with EmitC kernels)
-        args: Input/output tensors (ttnn.Tensor expected)
+        args: Input/output tensors (used for shape/dtype info)
         grid: Grid dimensions tuple
         num_outs: Number of output tensors
+        verbose: Print compilation info
+
+    Returns:
+        CompiledTTNNKernel ready for execution
     """
     # Get kernel info from module
     kernel_info = get_ttkernel_names(module)
 
-    print("=" * 60)
-    print("TTNN INTEROP: Building ProgramDescriptor")
-    print("=" * 60)
-    print(f"Found {len(kernel_info)} kernels:")
-    for name, thread_type in kernel_info:
-        print(f"  - {name} ({thread_type})")
+    if verbose:
+        print("=" * 60)
+        print("TTNN INTEROP: Compiling kernel")
+        print("=" * 60)
+        print(f"Found {len(kernel_info)} kernels:")
+
+    if verbose:
+        for name, thread_type in kernel_info:
+            print(f"  - {name} ({thread_type})")
 
     # Build core range (single core for now)
     if ttnn is None:
-        print("\nttnn not available - printing C++ sources only")
-        for name, thread_type in kernel_info:
-            cpp_source = ttkernel_to_cpp_by_name(module, name)
-            print(f"\n{'='*40}")
-            print(f"Kernel: {name} ({thread_type})")
-            print(f"{'='*40}")
-            print(cpp_source)
-        return
+        print("\nttnn not available - cannot compile for ttnn.generic_op")
+        return None
 
     # Default core range for simple kernels: single core (0,0)
     core = ttnn.CoreCoord(0, 0)
     core_range = ttnn.CoreRange(core, core)
     core_ranges = ttnn.CoreRangeSet([core_range])
 
-    print(f"\nCore range: {core_ranges}")
+    if verbose:
+        print(f"\nCore range: {core_ranges}")
 
     # Write ALL kernels to /tmp for inspection
-    print("\nWriting all kernels to /tmp for inspection...")
+    if verbose:
+        print("\nWriting kernels to /tmp...")
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
-        print(f"  Wrote {kernel_path}")
+        if verbose:
+            print(f"  Wrote {kernel_path}")
 
-    # Build kernel descriptors
+    # Build kernel paths and configs
     # HARD-CODED for testing: kernels 9, 10, 11 are the actual add kernels
     #   - Kernel 9: Reader (noc_async_read for lhs and rhs)
     #   - Kernel 10: Writer (noc_async_write for output)
     #   - Kernel 11: Compute (add_binary_tile)
     selected_kernels = [kernel_info[9], kernel_info[10], kernel_info[11]]
-    print(f"\nUsing hard-coded kernels 9, 10, 11 (out of {len(kernel_info)} total)")
+    if verbose:
+        print(f"\nUsing kernels 9, 10, 11 (reader, writer, compute)")
 
-    kernel_descriptors = []
-    noc_kernel_idx = 0  # Track noc kernels to alternate reader/writer
-
-    # Print kernel sources for debugging
-    print("\n" + "=" * 60)
-    print("KERNEL SOURCES FOR DEBUGGING")
-    print("=" * 60)
+    kernel_paths = []
+    kernel_configs = []
+    noc_kernel_idx = 0
 
     for name, thread_type in selected_kernels:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-
-        # Print the source for debugging
-        print(f"\n--- {name} ({thread_type}) ---")
-        print(cpp_source)
-
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
+        kernel_paths.append((kernel_path, thread_type))
 
         # Map thread type to config
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
         elif thread_type == "noc":
-            # Alternate between reader and writer for noc kernels
-            # First noc kernel = reader, second = writer
             if noc_kernel_idx == 0:
                 config = ttnn.ReaderConfigDescriptor()
             else:
@@ -194,114 +288,24 @@ def _execute_ttnn_interop(module, args, grid, num_outs):
             noc_kernel_idx += 1
         else:
             config = ttnn.ReaderConfigDescriptor()
+        kernel_configs.append(config)
 
-        # Compile-time args: CB port indices
-        # For simple kernels, we use indices 0, 1, 2, ... for CBs
-        num_cbs = len(args)
-        compile_time_args = list(range(num_cbs))
+    # Tile page size for bfloat16: 32x32 * 2 bytes = 2048, with header = 4096
+    cb_page_size = 4096
 
-        # Runtime args: empty per-core args
-        runtime_args = [[[]]]  # Empty 2D grid of args
-
-        # Common runtime args: actual buffer addresses from ttnn tensors
-        # The kernel uses get_common_arg_val<uint32_t>() to read these directly as addresses
-        # args = [lhs, rhs, out] tensors
-        if thread_type == "compute":
-            # Compute kernels don't access NOC, no runtime args needed
-            common_runtime_args = []
-            print(f"  [DEBUG] {name} (compute): common_runtime_args = [] (no NOC access)")
-        elif thread_type == "noc":
-            # noc_kernel_idx was already incremented above, so:
-            # noc_kernel_idx == 1 means this is the reader (was 0 when config was set)
-            # noc_kernel_idx == 2 means this is the writer (was 1 when config was set)
-            if noc_kernel_idx == 1:
-                # Reader: needs lhs and rhs buffer addresses
-                lhs_addr = args[0].buffer_address()
-                rhs_addr = args[1].buffer_address()
-                common_runtime_args = [lhs_addr, rhs_addr]
-                print(f"  [DEBUG] {name} (reader): common_runtime_args = [0x{lhs_addr:x}, 0x{rhs_addr:x}] (lhs, rhs addrs)")
-            else:
-                # Writer: needs out buffer address
-                out_addr = args[2].buffer_address()
-                common_runtime_args = [out_addr]
-                print(f"  [DEBUG] {name} (writer): common_runtime_args = [0x{out_addr:x}] (out addr)")
-        else:
-            common_runtime_args = [args[0].buffer_address()]
-            print(f"  [DEBUG] {name} (unknown): common_runtime_args = [0x{args[0].buffer_address():x}]")
-
-        kernel_desc = ttnn.KernelDescriptor(
-            kernel_source=kernel_path,
-            core_ranges=core_ranges,
-            compile_time_args=compile_time_args,
-            runtime_args=runtime_args,
-            common_runtime_args=common_runtime_args,
-            config=config,
-        )
-        kernel_descriptors.append(kernel_desc)
-        config_type = "reader" if isinstance(config, ttnn.ReaderConfigDescriptor) else ("writer" if isinstance(config, ttnn.WriterConfigDescriptor) else "compute")
-        print(f"  Created KernelDescriptor for {name} ({config_type}) -> {kernel_path}")
-
-    # Build CB descriptors from tensor info
-    cb_descriptors = []
-    for i, tensor in enumerate(args):
-        # Get data format from ttnn tensor or convert from torch
-        if hasattr(tensor, 'dtype') and hasattr(tensor.dtype, 'name'):
-            # ttnn.Tensor - use dtype directly
-            data_format = tensor.dtype
-        else:
-            # torch.Tensor - convert to ttnn DataType
-            data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
-
-        # Tile size for bfloat16: 32x32 * 2 bytes = 2048, but with header = 4096
-        page_size = 4096  # Default tile page size
-
-        # Calculate total size based on tensor volume
-        if hasattr(tensor, 'volume'):
-            num_tiles = max(1, tensor.volume() // 1024)  # 1024 elements per tile
-        else:
-            num_tiles = 1
-        total_size = num_tiles * page_size
-
-        cb_format = ttnn.CBFormatDescriptor(
-            buffer_index=i,
-            data_format=data_format,
-            page_size=page_size,
-        )
-
-        cb_desc = ttnn.CBDescriptor(
-            total_size=total_size,
-            core_ranges=core_ranges,
-            format_descriptors=[cb_format],
-        )
-        cb_descriptors.append(cb_desc)
-        print(f"  Created CBDescriptor for tensor {i}: page_size={page_size}, total_size={total_size}")
-
-    # Build program descriptor
-    program = ttnn.ProgramDescriptor(
-        kernels=kernel_descriptors,
-        cbs=cb_descriptors,
-        semaphores=[],
+    compiled_kernel = CompiledTTNNKernel(
+        kernel_paths=kernel_paths,
+        kernel_configs=kernel_configs,
+        cb_page_size=cb_page_size,
+        num_tensors=len(args),
+        core_ranges=core_ranges,
     )
-    print(f"\nCreated ProgramDescriptor with {len(kernel_descriptors)} kernels and {len(cb_descriptors)} CBs")
 
-    # Check if we can execute (not on macOS)
-    if platform.system() == "Darwin":
-        print("\n[macOS] Cannot execute ttnn.generic_op - compile only")
+    if verbose:
+        print(f"\nCompiled kernel ready (will execute on {len(kernel_paths)} kernels)")
         print("=" * 60)
-        return
 
-    # Execute via ttnn.generic_op
-    print("\nExecuting ttnn.generic_op...")
-    try:
-        result = ttnn.generic_op(list(args), program)
-        print("ttnn.generic_op completed successfully!")
-        print("=" * 60)
-        return result
-    except Exception as e:
-        print(f"ttnn.generic_op failed: {e}")
-        import traceback
-        traceback.print_exc()
-        print("=" * 60)
+    return compiled_kernel
 
 
 def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
@@ -468,7 +472,8 @@ def _compile_and_run_kernel(
     memory_space: str,
     tiled: bool,
     ttnn_interop: bool = False,
-) -> None:
+    compile_only: bool = False,
+):
     """
     Compile kernel function to MLIR and execute compilation pipeline.
 
@@ -667,9 +672,12 @@ def _compile_and_run_kernel(
             print(f"SAVED FINAL TO {final_mlir_path}")
 
         if ttnn_interop:
-            # TTNN interop path: build ttnn.ProgramDescriptor and call ttnn.generic_op
-            _execute_ttnn_interop(module, args, grid, num_outs)
-            return
+            # TTNN interop path: compile to CompiledTTNNKernel
+            compiled_kernel = _compile_ttnn_kernel(module, args, grid, num_outs)
+            if compiled_kernel is not None and not compile_only:
+                # Execute immediately for regular calls (not .compile())
+                compiled_kernel(*args)
+            return compiled_kernel
 
         # Metal path: convert to flatbuffer and optionally execute
         flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
@@ -779,21 +787,18 @@ def pykernel_gen(
             nonlocal grid
             nonlocal block_factors
 
-            if callable(grid):
-                grid = grid(*args, **kwargs)
+            resolved_grid = grid(*args, **kwargs) if callable(grid) else grid
+            resolved_block_factors = block_factors(*args, **kwargs) if callable(block_factors) else block_factors
 
-            if callable(block_factors):
-                block_factors = block_factors(*args, **kwargs)
-
-            if block_factors is None:
-                block_factors = [1] * len(grid)
+            if resolved_block_factors is None:
+                resolved_block_factors = [1] * len(resolved_grid)
 
             _compile_and_run_kernel(
                 f,
                 args,
                 kwargs,
-                grid,
-                block_factors,
+                resolved_grid,
+                resolved_block_factors,
                 indexing_maps,
                 iterator_types,
                 num_outs,
@@ -802,6 +807,43 @@ def pykernel_gen(
                 ttnn_interop,
             )
 
+        def _compile(*args, **kwargs):
+            """
+            Compile the kernel without executing, returning a CompiledTTNNKernel.
+
+            Use this when you want to compile once and execute many times.
+
+            Args:
+                *args: Sample tensors (same shape/dtype as actual inputs)
+
+            Returns:
+                CompiledTTNNKernel that can be called multiple times
+            """
+            nonlocal grid
+            nonlocal block_factors
+
+            resolved_grid = grid(*args, **kwargs) if callable(grid) else grid
+            resolved_block_factors = block_factors(*args, **kwargs) if callable(block_factors) else block_factors
+
+            if resolved_block_factors is None:
+                resolved_block_factors = [1] * len(resolved_grid)
+
+            return _compile_and_run_kernel(
+                f,
+                args,
+                kwargs,
+                resolved_grid,
+                resolved_block_factors,
+                indexing_maps,
+                iterator_types,
+                num_outs,
+                memory_space,
+                tiled,
+                ttnn_interop,
+                compile_only=True,
+            )
+
+        _wrapper.compile = _compile
         return _wrapper
 
     return _decorator
@@ -818,6 +860,7 @@ __all__ = [
     "Semaphore",
     "dma",
     "TensorAccessor",
+    "CompiledTTNNKernel",
     "create_metal_layout",
     "to_data_type",
     "from_data_type",
