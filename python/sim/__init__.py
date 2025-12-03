@@ -42,7 +42,7 @@ class _TTLNamespace:
         from .kernel import kernel, grid_size
         from .cb import CircularBuffer, make_circular_buffer_like
         from .decorators import compute, datamovement
-        from .program import core
+        from .program import core, Program
         from .copy import copy
         from .typedefs import Pipe, IndexType
         from .torch_utils import is_tiled
@@ -62,6 +62,7 @@ class _TTLNamespace:
         self.TILE_SHAPE = TILE_SHAPE
         self.TensorAccessor = TensorAccessor
         self.IndexType = IndexType
+        self.Program = Program
 
 
 ttl = _TTLNamespace()

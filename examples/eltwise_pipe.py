@@ -5,10 +5,7 @@ from typing import TYPE_CHECKING
 import torch
 import math
 
-from sim import (
-    Program,
-    ttl,
-)
+from sim import ttl
 
 if TYPE_CHECKING:
     from sim.pykernel_env import granularity
@@ -172,4 +169,4 @@ def eltwise_pipe(
                 out_cb.pop()
 
     # Execute the program across all cores
-    return Program(compute_func, dm0, dm1)(a_in, b_in, out)
+    return ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
