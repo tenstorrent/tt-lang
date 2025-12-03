@@ -302,6 +302,33 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     # Get kernel info from module
     kernel_info = get_ttkernel_names(module)
 
+    # Validate grid is single core
+    if grid != (1, 1) and grid != [1, 1]:
+        raise ValueError(
+            f"TTNN interop only supports single-core grid (1, 1), got {grid}"
+        )
+
+    # Validate tensor types: must be all TTNN or all torch, not mixed.
+    # Mixed tensors would generate ToLayoutOps for host tensors, creating extra
+    # bounce kernels that exceed the expected kernel count for core assignment.
+    ttnn_count = sum(1 for arg in args if _is_ttnn_tensor(arg))
+    if ttnn_count > 0 and ttnn_count < len(args):
+        raise ValueError(
+            f"TTNN interop requires all tensors to be the same type. "
+            f"Got {ttnn_count} TTNN tensors and {len(args) - ttnn_count} host tensors. "
+            f"Mixed tensor types would generate extra bounce kernels."
+        )
+
+    # Validate TTNN tensors are in L1 memory space
+    for i, arg in enumerate(args):
+        if _is_ttnn_tensor(arg):
+            mem_space = _detect_memory_space_from_tensor(arg, "unknown")
+            if mem_space != "L1":
+                raise ValueError(
+                    f"TTNN interop requires L1 memory space, but tensor {i} is in {mem_space}. "
+                    f"Use ttnn.to_memory_config() to move tensors to L1."
+                )
+
     if verbose:
         print("=" * 60)
         print("TTNN INTEROP: Compiling kernel")
@@ -312,7 +339,6 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
         for name, thread_type in kernel_info:
             print(f"  - {name} ({thread_type})")
 
-    # Build core range (single core for now)
     if ttnn is None:
         print("\nttnn not available - cannot compile for ttnn.generic_op")
         return None
