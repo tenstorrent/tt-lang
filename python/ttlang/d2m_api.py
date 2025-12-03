@@ -531,7 +531,8 @@ def _compile_and_run_kernel(
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     effective_memory_space = memory_space
     if has_ttnn_tensors:
-        # Check first ttnn tensor's memory config
+        # TODO: Check all tensors and handle mixed memory spaces. Currently only
+        # checks first tensor and assumes all tensors are in the same memory space.
         for arg in args:
             if _is_ttnn_tensor(arg):
                 mem_config = arg.memory_config()
