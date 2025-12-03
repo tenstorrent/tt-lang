@@ -297,6 +297,18 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
                     f"Use ttnn.to_memory_config() to move tensors to L1."
                 )
 
+    # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
+    # Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts.
+    # TODO: in the future we should figure out how to map arbitrary kernels.
+    if len(kernel_info) != 3:
+        compute_count = sum(1 for _, t in kernel_info if t == "compute")
+        dm_count = sum(1 for _, t in kernel_info if t == "noc")
+        raise ValueError(
+            f"TTNN interop requires exactly 3 kernels (1 compute + 2 data movement), "
+            f"got {len(kernel_info)} kernels ({compute_count} compute, {dm_count} data movement). "
+            f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
+        )
+
     if verbose:
         print("=" * 60)
         print("TTNN INTEROP: Compiling kernel")
