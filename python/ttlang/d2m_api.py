@@ -136,7 +136,9 @@ class CompiledTTNNKernel:
         noc_kernel_idx = 0
 
         for (kernel_path, thread_type), config in zip(self.kernel_paths, self.kernel_configs):
+            # TODO: Derive compile-time args from kernel IR (CB indices, tile counts, etc.)
             compile_time_args = list(range(self.num_tensors))
+            # TODO: Support per-core runtime args for multi-core grids
             runtime_args = [[[]]]
 
             # HACK: Hardcoded runtime args for 3-tensor add kernel (lhs, rhs, out).
@@ -166,6 +168,7 @@ class CompiledTTNNKernel:
             kernel_descriptors.append(kernel_desc)
 
         # Build CB descriptors
+        # TODO: Get CB configuration from kernel IR (buffer indices, page sizes, double-buffering)
         cb_descriptors = []
         for i, tensor in enumerate(args):
             if hasattr(tensor, 'dtype') and hasattr(tensor.dtype, 'name'):
@@ -192,6 +195,7 @@ class CompiledTTNNKernel:
             cb_descriptors.append(cb_desc)
 
         # Build and execute program
+        # TODO: Extract semaphore info from kernel IR for synchronization
         program = ttnn.ProgramDescriptor(
             kernels=kernel_descriptors,
             cbs=cb_descriptors,
