@@ -67,8 +67,12 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
 
     get_filename_component(TTMLIR_PATH "${TTMLIR_CMAKE_DIR}/../../.." ABSOLUTE)
 
-    # For installed tt-mlir, use the compiler static library
-    set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
+    if(TARGET TTMLIR::TTMLIRCompilerStatic)
+      set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
+      message(STATUS "Using TTMLIR library: TTMLIR::TTMLIRCompilerStatic")
+    else()
+      message(FATAL_ERROR "Required TTMLIR::TTMLIRCompilerStatic target not found in installed tt-mlir at: ${TTMLIR_CMAKE_DIR}")
+    endif()
   endif()
 
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")

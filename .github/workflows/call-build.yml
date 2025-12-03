@@ -106,7 +106,6 @@ jobs:
           cmake -G Ninja \
             -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
             -DCMAKE_BUILD_TYPE=Release \
-            -DTTMLIR_ENABLE_SHARED_LIB=ON \
             -DTTMLIR_ENABLE_PYKERNEL=ON \
             -DTTMLIR_ENABLE_RUNTIME=ON \
             -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
