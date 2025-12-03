@@ -6,8 +6,6 @@ import torch
 import math
 
 from sim import (
-    TensorAccessor,
-    IndexType,
     Program,
     ttl,
 )
@@ -45,10 +43,10 @@ def eltwise_pipe(
         2  # TODO: Should buffer factor be tunable by the user? Or tuned by kernel?
     )
 
-    a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
-    b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
-    c_accessor = TensorAccessor(c_expanded, index_type=IndexType.TILE)
-    out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
+    a_accessor = ttl.TensorAccessor(a_in, index_type=ttl.IndexType.TILE)
+    b_accessor = ttl.TensorAccessor(b_in, index_type=ttl.IndexType.TILE)
+    c_accessor = ttl.TensorAccessor(c_expanded, index_type=ttl.IndexType.TILE)
+    out_accessor = ttl.TensorAccessor(out, index_type=ttl.IndexType.TILE)
 
     # Create circular buffers
     a_in_cb = ttl.make_circular_buffer_like(

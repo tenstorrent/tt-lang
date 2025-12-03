@@ -6,8 +6,6 @@ import torch
 import math
 
 from sim import (
-    TensorAccessor,
-    IndexType,
     Program,
     ttl,
 )
@@ -38,9 +36,9 @@ def eltwise_add(
     cols_per_core = math.ceil(col_tiles / (grid_h * grid_w))
     buffer_factor = 2
 
-    a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
-    b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
-    out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
+    a_accessor = ttl.TensorAccessor(a_in, index_type=ttl.IndexType.TILE)
+    b_accessor = ttl.TensorAccessor(b_in, index_type=ttl.IndexType.TILE)
+    out_accessor = ttl.TensorAccessor(out, index_type=ttl.IndexType.TILE)
 
     # Create circular buffers
     a_in_cb = ttl.make_circular_buffer_like(

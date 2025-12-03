@@ -44,9 +44,10 @@ class _TTLNamespace:
         from .decorators import compute, datamovement
         from .program import core
         from .copy import copy
-        from .typedefs import Pipe
+        from .typedefs import Pipe, IndexType
         from .torch_utils import is_tiled
         from .constants import TILE_SHAPE
+        from .tensoraccessor import TensorAccessor
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -59,6 +60,8 @@ class _TTLNamespace:
         self.Pipe = Pipe
         self.is_tiled = is_tiled
         self.TILE_SHAPE = TILE_SHAPE
+        self.TensorAccessor = TensorAccessor
+        self.IndexType = IndexType
 
 
 ttl = _TTLNamespace()
