@@ -26,7 +26,7 @@ from .typedefs import IndexType, CoreIndex, Shape, MulticastAddress, MulticastTy
 from .constants import TILE_SHAPE, MAX_CBS
 from .cb import CircularBuffer
 from .dma import dma, DMATransaction
-from .program import Program, BindableTemplate, core_index
+from .program import Program, BindableTemplate, core
 from .decorators import compute, datamovement
 from .kernel import kernel
 from .testing import assert_pcc
@@ -42,7 +42,7 @@ class _TTLNamespace:
         from .kernel import kernel, grid_size
         from .cb import CircularBuffer, make_circular_buffer_like
         from .decorators import compute, datamovement
-        from .program import core_index
+        from .program import core
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -50,7 +50,7 @@ class _TTLNamespace:
         self.make_circular_buffer_like = make_circular_buffer_like
         self.compute = compute
         self.datamovement = datamovement
-        self.core_index = core_index
+        self.core = core
 
 
 ttl = _TTLNamespace()
@@ -82,7 +82,7 @@ __all__ = [
     "DMATransaction",
     "Program",
     "BindableTemplate",
-    "core_index",
+    "core",
     "compute",
     "datamovement",
     "kernel",

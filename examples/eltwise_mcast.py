@@ -13,7 +13,6 @@ from sim import (
     MulticastType,
     dma,
     Program,
-    core_index,
     is_tiled,
     ttl,
 )
@@ -76,7 +75,7 @@ def eltwise_mcast(
 
     @ttl.compute()
     def compute_func():
-        core_num = core_index()  # core number in 2d grid
+        core_num = ttl.core(dims=1)  # linear core index
         if core_num not in mcast_addr.core_indices:
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
@@ -112,7 +111,7 @@ def eltwise_mcast(
 
     @ttl.datamovement()
     def dm0():
-        core_num = core_index()  # core number in 2d grid
+        core_num = ttl.core(dims=1)  # linear core index
         if core_num not in mcast_addr.core_indices:
             return  # This core is not participating in C multicast
 
@@ -161,7 +160,7 @@ def eltwise_mcast(
 
     @ttl.datamovement()
     def dm1():
-        core_num = core_index()  # core number in 2d grid
+        core_num = ttl.core(dims=1)  # linear core index
         if core_num not in mcast_addr.core_indices:
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core

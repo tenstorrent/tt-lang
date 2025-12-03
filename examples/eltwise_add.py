@@ -9,10 +9,8 @@ from sim import (
     TILE_SHAPE,
     TensorAccessor,
     IndexType,
-    CoreIndex,
     dma,
     Program,
-    core_index,
     is_tiled,
     ttl,
 )
@@ -60,7 +58,7 @@ def eltwise_add(
 
     @ttl.compute()
     def compute_func():
-        core_num: CoreIndex = core_index()  # core number in 2d grid
+        core_num = ttl.core(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -90,7 +88,7 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm0():
-        core_num: CoreIndex = core_index()  # core number in 2d grid
+        core_num = ttl.core(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -111,7 +109,7 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm1():
-        core_num: CoreIndex = core_index()  # core number in 2d grid
+        core_num = ttl.core(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 

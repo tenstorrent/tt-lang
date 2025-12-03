@@ -76,20 +76,32 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def core_index() -> CoreIndex:
+def core(dims: int = 2) -> int:
     """Get the current core index from injected context.
 
+    Args:
+        dims: Number of dimensions for the core index. Only dims=1 is supported.
+              Default is 2 for backward compatibility but will raise an error.
+
     Returns:
-        CoreIndex: The index of the current core in the grid
+        int: The linear index of the current core in the grid (only when dims=1)
 
     Raises:
         RuntimeError: If called outside of a Program context
+        ValueError: If dims != 1
     """
+    if dims != 1:
+        raise ValueError(
+            f"core() only supports dims=1, got dims={dims}. "
+            "Use core(dims=1) to get the linear core index."
+        )
+
     frame = inspect.currentframe()
 
     # Check the calling frame's globals for the injected '_core' variable
     if frame and frame.f_back and "_core" in frame.f_back.f_globals:
-        return frame.f_back.f_globals["_core"]
+        core_index: CoreIndex = frame.f_back.f_globals["_core"]
+        return core_index
 
     raise RuntimeError(
         "core not available - function must be called within Program context"
