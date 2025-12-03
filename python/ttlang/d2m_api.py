@@ -314,7 +314,8 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
             config = ttnn.ReaderConfigDescriptor()
         kernel_configs.append(config)
 
-    # Tile page size for bfloat16: 32x32 * 2 bytes = 2048, with header = 4096
+    # TODO: Calculate page size based on dtype and tile format. Currently hardcoded
+    # to 4096 for bfloat16 tiles (32x32 * 2 = 2048 data bytes + tile header/alignment).
     cb_page_size = 4096
 
     compiled_kernel = CompiledTTNNKernel(
