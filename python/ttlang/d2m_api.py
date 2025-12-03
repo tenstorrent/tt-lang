@@ -284,15 +284,6 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
-    # Write ALL kernels to /tmp for inspection
-    if verbose:
-        print("\nWriting kernels to /tmp...")
-    for name, thread_type in kernel_info:
-        cpp_source = ttkernel_to_cpp_by_name(module, name)
-        kernel_path = _write_kernel_to_tmp(name, cpp_source)
-        if verbose:
-            print(f"  Wrote {kernel_path}")
-
     # Build kernel paths and configs
     # HARD-CODED for testing: kernels 9, 10, 11 are the actual add kernels
     #   - Kernel 9: Reader (noc_async_read for lhs and rhs)
