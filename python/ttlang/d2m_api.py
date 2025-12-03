@@ -493,13 +493,12 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
-    # Detect if tensors are already on device (e.g., TTNN tensors)
-    on_device = any(_is_ttnn_tensor(arg) for arg in args)
+    has_ttnn_tensors = any(_is_ttnn_tensor(arg) for arg in args)
 
-    # For on-device (TTNN) tensors, detect memory space from tensor
-    # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing
+    # For TTNN tensors, detect memory space from tensor.
+    # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     effective_memory_space = memory_space
-    if on_device:
+    if has_ttnn_tensors:
         # Check first ttnn tensor's memory config
         for arg in args:
             if _is_ttnn_tensor(arg):
