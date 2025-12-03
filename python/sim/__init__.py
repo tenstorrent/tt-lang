@@ -22,7 +22,7 @@ from .cbapi import (
     get_write_ptr,
 )
 from .tensoraccessor import TensorAccessor
-from .typedefs import IndexType, CoreIndex, Shape, MulticastAddress
+from .typedefs import IndexType, CoreIndex, Shape, Pipe
 from .constants import TILE_SHAPE, MAX_CBS
 from .cb import CircularBuffer
 from .copy import copy, CopyTransaction
@@ -44,6 +44,7 @@ class _TTLNamespace:
         from .decorators import compute, datamovement
         from .program import core
         from .copy import copy
+        from .typedefs import Pipe
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -53,6 +54,7 @@ class _TTLNamespace:
         self.datamovement = datamovement
         self.core = core
         self.copy = copy
+        self.Pipe = Pipe
 
 
 ttl = _TTLNamespace()
@@ -75,7 +77,7 @@ __all__ = [
     "IndexType",
     "CoreIndex",
     "Shape",
-    "MulticastAddress",
+    "Pipe",
     "TILE_SHAPE",
     "MAX_CBS",
     "CircularBuffer",

@@ -16,12 +16,12 @@ import time
 import torch
 from . import torch_utils as tu
 from .block import Block
-from .constants import TILE_SHAPE, COPY_MULTICAST_TIMEOUT
-from .typedefs import MulticastAddress, Count
+from .constants import TILE_SHAPE, COPY_PIPE_TIMEOUT
+from .typedefs import Pipe, Count
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
-# CopyEndpointTypes: List[type] = [torch.Tensor, Block[torch.Tensor], MulticastAddress]
+# CopyEndpointTypes: List[type] = [torch.Tensor, Block[torch.Tensor], Pipe]
 # CopyEndpoint = Union[*CopyEndpointTypes]
 # CopyEndpointType = Union[*[Type[x] for x in CopyEndpointTypes]]
 #
@@ -31,30 +31,28 @@ from .typedefs import MulticastAddress, Count
 
 # Copy endpoint types - these are the valid types for copy transfers
 # To add a new endpoint type, add it to the Unions and implement a handler for it
-CopyEndpoint = Union[torch.Tensor, Block[torch.Tensor], MulticastAddress]
-CopyEndpointType = Union[
-    Type[torch.Tensor], Type[Block[torch.Tensor]], Type[MulticastAddress]
-]
+CopyEndpoint = Union[torch.Tensor, Block[torch.Tensor], Pipe]
+CopyEndpointType = Union[Type[torch.Tensor], Type[Block[torch.Tensor]], Type[Pipe]]
 
 
-# Global multicast state for simulating NoC multicast communication
-# For each multicast address we keep a small structure with:
+# Global pipe state for simulating NoC pipe communication
+# For each pipe we keep a small structure with:
 # - queue: deque of (data, remaining_receiver_count)
 # - event: threading.Event set when queue is non-empty
 # - lock: threading.Lock to guard queue and receiver count updates
 # In a real implementation this would be handled by NoC hardware.
-class _MulticastEntry(TypedDict):
+class _PipeEntry(TypedDict):
     queue: Deque[Tuple[List[torch.Tensor], Count]]
     event: threading.Event
     lock: threading.Lock
 
 
-_multicast_buffer: Dict[MulticastAddress, _MulticastEntry] = {}
-# Lock protecting creation of per-address entries in _multicast_buffer.
+_pipe_buffer: Dict[Pipe, _PipeEntry] = {}
+# Lock protecting creation of per-pipe entries in _pipe_buffer.
 # This ensures all threads agree on the same entry object (and its lock)
 # and avoids races where two threads create different entry dicts for
-# the same multicast address.
-_multicast_registry_lock = threading.Lock()
+# the same pipe.
+_pipe_registry_lock = threading.Lock()
 
 
 class CopyTransferHandler(Protocol):
@@ -193,34 +191,34 @@ class BlockToTensorHandler:
             dst[start_row:end_row, start_col:end_col] = tile
 
 
-@register_copy_handler(Block, MulticastAddress)
-class BlockToMulticastHandler:
-    """Handler for Block → MulticastAddress (multicast send)."""
+@register_copy_handler(Block, Pipe)
+class BlockToPipeHandler:
+    """Handler for Block → Pipe (pipe send)."""
 
-    def validate(self, src: Block[torch.Tensor], dst: MulticastAddress) -> None:
-        """Validate multicast send - no specific validation needed."""
+    def validate(self, src: Block[torch.Tensor], dst: Pipe) -> None:
+        """Validate pipe send - no specific validation needed."""
         pass
 
-    def transfer(self, src: Block[torch.Tensor], dst: MulticastAddress) -> None:
-        """Multicast send: store data in shared buffer accessible by all cores."""
+    def transfer(self, src: Block[torch.Tensor], dst: Pipe) -> None:
+        """Pipe send: store data in shared buffer accessible by all cores."""
         src_data = [src[i] for i in range(len(src))]
-        # Initialize per-address state atomically so all threads see the
+        # Initialize per-pipe state atomically so all threads see the
         # same entry (and therefore the same per-entry lock).
-        with _multicast_registry_lock:
-            entry = _multicast_buffer.get(dst)
+        with _pipe_registry_lock:
+            entry = _pipe_buffer.get(dst)
             if entry is None:
-                new_entry: _MulticastEntry = {
+                new_entry: _PipeEntry = {
                     "queue": deque(),
                     "event": threading.Event(),
                     "lock": threading.Lock(),
                 }
-                _multicast_buffer[dst] = new_entry
+                _pipe_buffer[dst] = new_entry
                 entry = new_entry
 
         # Calculate number of receivers
         num_receivers = len(dst.dst_core_range)
 
-        # Add to the queue for this multicast address with receiver count
+        # Add to the queue for this pipe with receiver count
         # and notify any waiting receivers via event
         with entry["lock"]:
             entry["queue"].append((src_data, num_receivers))
@@ -228,30 +226,30 @@ class BlockToMulticastHandler:
             entry["event"].set()
 
 
-@register_copy_handler(MulticastAddress, Block)
-class MulticastToBlockHandler:
-    """Handler for MulticastAddress → Block (multicast receive)."""
+@register_copy_handler(Pipe, Block)
+class PipeToBlockHandler:
+    """Handler for Pipe → Block (pipe receive)."""
 
-    def validate(self, src: MulticastAddress, dst: Block[torch.Tensor]) -> None:
-        """Validate multicast receive - validation happens during transfer when data is available."""
+    def validate(self, src: Pipe, dst: Block[torch.Tensor]) -> None:
+        """Validate pipe receive - validation happens during transfer when data is available."""
         pass
 
-    def transfer(self, src: MulticastAddress, dst: Block[torch.Tensor]) -> None:
-        """Multicast receive: retrieve data from shared multicast buffer."""
+    def transfer(self, src: Pipe, dst: Block[torch.Tensor]) -> None:
+        """Pipe receive: retrieve data from shared pipe buffer."""
         # Use an event to wait for data instead of polling. This reduces CPU
         # usage and provides a cleaner synchronization primitive for tests.
         start_time = time.time()
 
         # Ensure entry exists atomically so we can safely access event/lock.
-        with _multicast_registry_lock:
-            entry = _multicast_buffer.get(src)
+        with _pipe_registry_lock:
+            entry = _pipe_buffer.get(src)
             if entry is None:
-                new_entry: _MulticastEntry = {
+                new_entry: _PipeEntry = {
                     "queue": deque(),
                     "event": threading.Event(),
                     "lock": threading.Lock(),
                 }
-                _multicast_buffer[src] = new_entry
+                _pipe_buffer[src] = new_entry
                 entry = new_entry
         event: threading.Event = entry["event"]
         queue: Deque[Tuple[List[torch.Tensor], Count]] = entry["queue"]
@@ -260,11 +258,11 @@ class MulticastToBlockHandler:
         while True:
             # Compute remaining timeout
             elapsed = time.time() - start_time
-            remaining = COPY_MULTICAST_TIMEOUT - elapsed
+            remaining = COPY_PIPE_TIMEOUT - elapsed
             if remaining <= 0:
                 raise TimeoutError(
-                    f"Timeout waiting for multicast data. "
-                    f"The sender may not have called copy(block, mcast_addr).wait() "
+                    f"Timeout waiting for pipe data. "
+                    f"The sender may not have called copy(block, pipe).wait() "
                     f"or there may be a deadlock."
                 )
 
@@ -273,8 +271,8 @@ class MulticastToBlockHandler:
             if not signaled:
                 # event.wait returned False -> timeout
                 raise TimeoutError(
-                    f"Timeout waiting for multicast data. "
-                    f"The sender may not have called copy(block, mcast_addr).wait() "
+                    f"Timeout waiting for pipe data. "
+                    f"The sender may not have called copy(block, pipe).wait() "
                     f"or there may be a deadlock."
                 )
 
@@ -289,7 +287,7 @@ class MulticastToBlockHandler:
                 if len(dst) != len(src_data):
                     raise ValueError(
                         f"Destination Block length ({len(dst)}) "
-                        f"does not match multicast data length ({len(src_data)})"
+                        f"does not match pipe data length ({len(src_data)})"
                     )
 
                 dst.store(src_data)

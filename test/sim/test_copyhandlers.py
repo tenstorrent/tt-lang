@@ -9,11 +9,11 @@ from python.sim.copyhandlers import (
     handler_registry,
     TensorToBlockHandler,
     BlockToTensorHandler,
-    BlockToMulticastHandler,
-    MulticastToBlockHandler,
+    BlockToPipeHandler,
+    PipeToBlockHandler,
 )
 from python.sim.block import Block, Span
-from python.sim.typedefs import MulticastAddress
+from python.sim.typedefs import Pipe
 from python.sim import torch_utils as tu
 from python.sim.constants import TILE_SHAPE
 
@@ -25,19 +25,15 @@ class TestHandlerRegistry:
         """Test that all handlers are registered."""
         assert (torch.Tensor, Block) in handler_registry
         assert (Block, torch.Tensor) in handler_registry
-        assert (Block, MulticastAddress) in handler_registry
-        assert (MulticastAddress, Block) in handler_registry
+        assert (Block, Pipe) in handler_registry
+        assert (Pipe, Block) in handler_registry
 
     def test_registry_handlers_correct_type(self):
         """Test that registered handlers are the correct instances."""
         assert isinstance(handler_registry[(torch.Tensor, Block)], TensorToBlockHandler)
         assert isinstance(handler_registry[(Block, torch.Tensor)], BlockToTensorHandler)
-        assert isinstance(
-            handler_registry[(Block, MulticastAddress)], BlockToMulticastHandler
-        )
-        assert isinstance(
-            handler_registry[(MulticastAddress, Block)], MulticastToBlockHandler
-        )
+        assert isinstance(handler_registry[(Block, Pipe)], BlockToPipeHandler)
+        assert isinstance(handler_registry[(Pipe, Block)], PipeToBlockHandler)
 
 
 class TestTensorToBlockHandler:
@@ -169,108 +165,108 @@ class TestBlockToTensorHandler:
         assert tu.allclose(tensor[32:64, :], tile2)
 
 
-class TestBlockToMulticastHandler:
-    """Test BlockToMulticastHandler validation and transfer."""
+class TestBlockToPipeHandler:
+    """Test BlockToPipeHandler validation and transfer."""
 
     def test_validate_always_succeeds(self):
         """Test that validation always succeeds (no-op)."""
-        handler = BlockToMulticastHandler()
+        handler = BlockToPipeHandler()
         tile = tu.ones(32, 32)
         buf: List[Optional[torch.Tensor]] = [tile]
         block = Block(buf, 1, Span(0, 1))
-        mcast_addr = MulticastAddress(0, (1, 2))
+        pipe = Pipe(0, (1, 2))
 
         # Should not raise
-        handler.validate(block, mcast_addr)
+        handler.validate(block, pipe)
 
     def test_transfer_and_receive_single_tile(self):
-        """Test multicast send and receive with single tile."""
-        send_handler = BlockToMulticastHandler()
-        recv_handler = MulticastToBlockHandler()
+        """Test pipe send and receive with single tile."""
+        send_handler = BlockToPipeHandler()
+        recv_handler = PipeToBlockHandler()
 
         # Sender prepares data
         tile = tu.full((32, 32), 42.0)
         src_buf: List[Optional[torch.Tensor]] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
-        mcast_addr = MulticastAddress(0, (1,))
+        pipe = Pipe(0, (1,))
 
-        # Send via multicast
-        send_handler.transfer(src_block, mcast_addr)
+        # Send via pipe
+        send_handler.transfer(src_block, pipe)
 
         # Receiver retrieves data
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_block = Block(dst_buf, 1, Span(0, 1))
-        recv_handler.transfer(mcast_addr, dst_block)
+        recv_handler.transfer(pipe, dst_block)
 
         # Verify data was received correctly
         assert dst_block[0] is not None
         assert tu.allclose(dst_block[0], tile)
 
     def test_transfer_multiple_tiles(self):
-        """Test transferring multiple tiles via multicast."""
-        send_handler = BlockToMulticastHandler()
-        recv_handler = MulticastToBlockHandler()
+        """Test transferring multiple tiles via pipe."""
+        send_handler = BlockToPipeHandler()
+        recv_handler = PipeToBlockHandler()
 
         # Sender prepares data
         tile1 = tu.full((32, 32), 1.0)
         tile2 = tu.full((32, 32), 2.0)
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
-        mcast_addr = MulticastAddress(0, (1,))
+        pipe = Pipe(0, (1,))
 
-        # Send via multicast
-        send_handler.transfer(src_block, mcast_addr)
+        # Send via pipe
+        send_handler.transfer(src_block, pipe)
 
         # Receiver retrieves data
         dst_buf: List[Optional[torch.Tensor]] = [None, None]
         dst_block = Block(dst_buf, 2, Span(0, 2))
-        recv_handler.transfer(mcast_addr, dst_block)
+        recv_handler.transfer(pipe, dst_block)
 
         # Verify data was received correctly
         assert tu.allclose(dst_block[0], tile1)
         assert tu.allclose(dst_block[1], tile2)
 
 
-class TestMulticastToBlockHandler:
-    """Test MulticastToBlockHandler validation and transfer."""
+class TestPipeToBlockHandler:
+    """Test PipeToBlockHandler validation and transfer."""
 
     def test_validate_always_succeeds(self):
         """Test that validation always succeeds (no-op)."""
-        handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress(0, (1,))
+        handler = PipeToBlockHandler()
+        pipe = Pipe(0, (1,))
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
         # Should not raise
-        handler.validate(mcast_addr, block)
+        handler.validate(pipe, block)
 
     def test_transfer_timeout_no_data(self):
         """Test that transfer times out when no data is available."""
-        recv_handler = MulticastToBlockHandler()
+        recv_handler = PipeToBlockHandler()
         # Use a unique address to avoid interference from other tests
-        mcast_addr = MulticastAddress(99, (100,))
+        pipe = Pipe(99, (100,))
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
-        with pytest.raises(TimeoutError, match="Timeout waiting for multicast data"):
-            recv_handler.transfer(mcast_addr, block)
+        with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
+            recv_handler.transfer(pipe, block)
 
     def test_transfer_success_single_receiver(self):
         """Test successful transfer with single receiver."""
-        send_handler = BlockToMulticastHandler()
-        recv_handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress(0, (1,))
+        send_handler = BlockToPipeHandler()
+        recv_handler = PipeToBlockHandler()
+        pipe = Pipe(0, (1,))
 
         # Sender: send data
         tile = tu.full((32, 32), 99.0)
         src_buf: List[Optional[torch.Tensor]] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
-        send_handler.transfer(src_block, mcast_addr)
+        send_handler.transfer(src_block, pipe)
 
-        # Receiver: consume from multicast buffer
+        # Receiver: consume from pipe buffer
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_block = Block(dst_buf, 1, Span(0, 1))
-        recv_handler.transfer(mcast_addr, dst_block)
+        recv_handler.transfer(pipe, dst_block)
 
         # Verify data was transferred
         assert dst_block[0] is not None
@@ -278,40 +274,40 @@ class TestMulticastToBlockHandler:
 
     def test_transfer_success_multiple_receivers(self):
         """Test successful transfer with multiple receivers."""
-        send_handler = BlockToMulticastHandler()
-        recv_handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress(0, (1, 2))
+        send_handler = BlockToPipeHandler()
+        recv_handler = PipeToBlockHandler()
+        pipe = Pipe(0, (1, 2))
 
         # Sender: send data for 2 receivers
         tile = tu.full((32, 32), 77.0)
         src_buf: List[Optional[torch.Tensor]] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
-        send_handler.transfer(src_block, mcast_addr)
+        send_handler.transfer(src_block, pipe)
 
         # First receiver
         buf1: List[Optional[torch.Tensor]] = [None]
         block1 = Block(buf1, 1, Span(0, 1))
-        recv_handler.transfer(mcast_addr, block1)
+        recv_handler.transfer(pipe, block1)
         assert tu.allclose(block1[0], tile)
 
         # Second receiver
         buf2: List[Optional[torch.Tensor]] = [None]
         block2 = Block(buf2, 1, Span(0, 1))
-        recv_handler.transfer(mcast_addr, block2)
+        recv_handler.transfer(pipe, block2)
         assert tu.allclose(block2[0], tile)
 
     def test_transfer_length_mismatch(self):
         """Test that transfer fails when Block length doesn't match data."""
-        send_handler = BlockToMulticastHandler()
-        recv_handler = MulticastToBlockHandler()
-        mcast_addr = MulticastAddress(0, (1,))
+        send_handler = BlockToPipeHandler()
+        recv_handler = PipeToBlockHandler()
+        pipe = Pipe(0, (1,))
 
         # Sender: send 2 tiles
         tile1 = tu.ones(32, 32)
         tile2 = tu.zeros(32, 32)
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
-        send_handler.transfer(src_block, mcast_addr)
+        send_handler.transfer(src_block, pipe)
 
         # Receiver: try to receive into 1-tile Block
         dst_buf: List[Optional[torch.Tensor]] = [None]
@@ -319,9 +315,9 @@ class TestMulticastToBlockHandler:
 
         with pytest.raises(
             ValueError,
-            match="Destination Block length .* does not match multicast data length",
+            match="Destination Block length .* does not match pipe data length",
         ):
-            recv_handler.transfer(mcast_addr, dst_block)
+            recv_handler.transfer(pipe, dst_block)
 
 
 if __name__ == "__main__":

@@ -39,8 +39,8 @@ class CopyTransaction:
         Initialize a copy transaction from src to dst.
 
         Args:
-            src: Source data (tensor, Block, or MulticastAddress)
-            dst: Destination (tensor, Block, or MulticastAddress)
+            src: Source data (tensor, Block, or Pipe)
+            dst: Destination (tensor, Block, or Pipe)
 
         Raises:
             ValueError: If the source and destination types are not supported
@@ -128,12 +128,12 @@ def copy(
     Supported transfer patterns:
     - torch.Tensor → Block: Load tensor data into circular buffer
     - Block → torch.Tensor: Extract tensor data from circular buffer
-    - Block → MulticastAddress: Broadcast data to multiple cores (multicast send)
-    - MulticastAddress → Block: Receive broadcasted data from multicast (multicast receive)
+    - Block → Pipe: Broadcast data to multiple cores (pipe send)
+    - Pipe → Block: Receive broadcasted data from pipe (pipe receive)
 
     Args:
-        src: Source data (tensor, Block, or MulticastAddress)
-        dst: Destination (tensor, Block, or MulticastAddress)
+        src: Source data (tensor, Block, or Pipe)
+        dst: Destination (tensor, Block, or Pipe)
 
     Returns:
         CopyTransaction object that can be waited on

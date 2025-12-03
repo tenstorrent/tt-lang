@@ -11,7 +11,7 @@ import torch
 
 # Import the example functions
 from eltwise_add import eltwise_add
-from eltwise_mcast import eltwise_mcast
+from eltwise_pipe import eltwise_pipe
 
 # Import validation utilities and CircularBuffer for resetting
 from python.sim import assert_pcc
@@ -33,16 +33,16 @@ class TestExamples:
         golden = a_in + b_in
         assert_pcc(golden, out)
 
-    def test_eltwise_mcast_example(self):
-        """Test that the eltwise_mcast example runs without assertions being hit."""
-        # Use parameters that match the eltwise_mcast requirements
+    def test_eltwise_pipe_example(self):
+        """Test that the eltwise_pipe example runs without assertions being hit."""
+        # Use parameters that match the eltwise_pipe requirements
         dim = 128
         a_in = torch.randn(dim, dim)  # type: ignore
         b_in = torch.randn(dim, dim)  # type: ignore
         c_in = torch.randn(1, 1)  # type: ignore (single tile)
         out = torch.zeros(dim, dim)  # type: ignore
 
-        eltwise_mcast(a_in, b_in, c_in, out)
+        eltwise_pipe(a_in, b_in, c_in, out)
         print(out)
         golden = a_in * b_in + c_in
         assert_pcc(golden, out)

@@ -35,9 +35,9 @@ Count = NaturalInt
 CoreIndex = Index
 
 
-class MulticastAddress(NamedTuple):
+class Pipe(NamedTuple):
     """
-    Represents a multicast address for NoC communication.
+    Represents a pipe for NoC communication.
 
     Attributes:
         src_core: Core index of the source/sender

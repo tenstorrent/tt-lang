@@ -9,7 +9,6 @@ from sim import (
     TILE_SHAPE,
     TensorAccessor,
     IndexType,
-    MulticastAddress,
     Program,
     is_tiled,
     ttl,
@@ -23,7 +22,7 @@ if TYPE_CHECKING:
     grid="auto",  # NOTE: allow compiler to choose grid
     granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
-def eltwise_mcast(
+def eltwise_pipe(
     a_in: torch.Tensor,
     b_in: torch.Tensor,
     c_in: torch.Tensor,
@@ -69,15 +68,12 @@ def eltwise_mcast(
 
     # Create multicast address for C
     # Convention: src_core is the sender, dst_core_range are the receivers
-    mcast_addr = MulticastAddress(0, (1, 2, 3))
+    pipe = ttl.Pipe(0, (1, 2, 3))
 
     @ttl.compute()
     def compute_func():
         core_num = ttl.core(dims=1)  # linear core index
-        if (
-            core_num != mcast_addr.src_core
-            and core_num not in mcast_addr.dst_core_range
-        ):
+        if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
@@ -113,32 +109,29 @@ def eltwise_mcast(
     @ttl.datamovement()
     def dm0():
         core_num = ttl.core(dims=1)  # linear core index
-        if (
-            core_num != mcast_addr.src_core
-            and core_num not in mcast_addr.dst_core_range
-        ):
+        if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
             return  # This core is not participating in C multicast
 
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
-        if core_num == mcast_addr.src_core:
+        if core_num == pipe.src_core:
             print("dm0 (C multicast): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
             tx = ttl.copy(c_accessor[slice(0, 1), slice(0, 1)], c_block)
             tx.wait()
             tx2 = ttl.copy(
-                c_block, mcast_addr
+                c_block, pipe
             )  # start sending the data to all cores in the mcast address. Non-blocking
             tx2.wait()  # wait for all cores to do their corresponding copy receive
             # NoC layer meaning: receive ACKs from all cores in the mcast(?)
             c_in_cb.push()
 
-        elif core_num in mcast_addr.dst_core_range:
+        elif core_num in pipe.dst_core_range:
             c_block = c_in_cb.reserve()
             tx = ttl.copy(
-                mcast_addr, c_block
+                pipe, c_block
             )  # start receiving data from the mcast address and store them in c_block. Non-blocking
             # NoC layer meaning: wait for packets with that mcast address
             tx.wait()  # Wait until all data from the mcast address is in c_block and sender is informed
@@ -165,10 +158,7 @@ def eltwise_mcast(
     @ttl.datamovement()
     def dm1():
         core_num = ttl.core(dims=1)  # linear core index
-        if (
-            core_num != mcast_addr.src_core
-            and core_num not in mcast_addr.dst_core_range
-        ):
+        if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
