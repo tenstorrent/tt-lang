@@ -64,11 +64,7 @@ class CompilerConfig:
 
     def should_run_metal(self) -> bool:
         """Check if Metal runtime execution should proceed."""
-        return (
-            not self.compile_only
-            and not self._is_macos
-            and self._runtime_available
-        )
+        return not self.compile_only and not self._is_macos and self._runtime_available
 
     def should_run_ttnn(self) -> bool:
         """Check if TTNN runtime execution should proceed."""
