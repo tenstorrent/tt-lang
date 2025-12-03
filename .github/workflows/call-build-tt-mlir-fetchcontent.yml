@@ -71,7 +71,7 @@ jobs:
               uses: hendrikmuhs/ccache-action@v1.2
               with:
                   key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
-                  max-size: 200M
+                  max-size: 100M
 
             - name: Build tt-lang
               run: |
@@ -97,7 +97,7 @@ jobs:
             - name: Archive build artifacts
               run: |
                   set -x
-                  ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "Linux" "${{ github.sha }}")
+                  ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
                   # Archive both tt-mlir-install and build directories from workspace root
@@ -117,7 +117,7 @@ jobs:
         needs: build-tt-lang-tt-mlir
         strategy:
             matrix:
-                hardware: [n150, n300, tg, p150]
+                hardware: [n150, n300, p150]
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:

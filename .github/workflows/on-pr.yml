@@ -27,7 +27,6 @@ jobs:
       os: ubuntu-latest
 
   build-macos:
-    if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
@@ -44,8 +43,7 @@ jobs:
     with:
       runs-on: n150
       build-os: ubuntu
-      # TODO(bnorris): Update to 30 when ready for merge.
-      timeout: 3
+      timeout: 30
 
   check-all-green:
     if: always()
