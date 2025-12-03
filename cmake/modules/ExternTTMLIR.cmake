@@ -146,12 +146,6 @@ else()
     endif()
   endif()
 
-  if(NOT DEFINED TTMLIR_ENABLE_STABLEHLO)
-    set(_TTMLIR_ENABLE_STABLEHLO OFF)
-  else()
-    set(_TTMLIR_ENABLE_STABLEHLO ${TTMLIR_ENABLE_STABLEHLO})
-  endif()
-
   if(NOT DEFINED TTLMLIR_CMAKE_BUILD_TYPE)
     set(_TTMLIR_CMAKE_BUILD_TYPE "RelWithDebInfo")
   else()
@@ -173,7 +167,6 @@ else()
   set(_TTMLIR_INSTALL_PREFIX "${TTMLIR_INSTALL_PREFIX}")
 
   message(STATUS "tt-mlir will be installed to: ${_TTMLIR_INSTALL_PREFIX}")
-
   set(_TTMLIR_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-src")
   set(_TTMLIR_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build")
   include(FetchContent)
@@ -199,10 +192,10 @@ else()
     -DPython3_ROOT_DIR=${_TOOLCHAIN_Python3_ROOT_DIR}
     -DMLIR_DIR=${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir
     -DLLVM_DIR=${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm
-    -DTTMLIR_ENABLE_PYKERNEL=ON
+    -DTTMLIR_ENABLE_PYKERNEL=${TTLANG_ENABLE_BINDINGS_PYTHON}
     -DTTMLIR_ENABLE_RUNTIME=${_TTMLIR_ENABLE_RUNTIME}
     -DTTMLIR_ENABLE_RUNTIME_TESTS=${_TTMLIR_ENABLE_RUNTIME_TESTS}
-    -DTTMLIR_ENABLE_STABLEHLO=${_TTMLIR_ENABLE_STABLEHLO}
+    -DTTMLIR_ENABLE_STABLEHLO=${TTMLIR_ENABLE_STABLEHLO}
     -DTTMLIR_ENABLE_OPMODEL=OFF
     -DTT_RUNTIME_ENABLE_PERF_TRACE=${_TTMLIR_ENABLE_PERF_TRACE}
     -DTTMLIR_ENABLE_BINDINGS_PYTHON=${TTLANG_ENABLE_BINDINGS_PYTHON}
@@ -222,14 +215,14 @@ else()
 
   message(STATUS "Building tt-mlir in ${_TTMLIR_BUILD_DIR}...")
   ttlang_execute_with_env(
-    COMMAND "TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/build ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR}"
+    COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR}"
     ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
     WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
 
   message(STATUS "Installing tt-mlir...")
   ttlang_execute_with_env(
-    COMMAND "${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} --target install"
+    COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} --target install"
     ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
     WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
