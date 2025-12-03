@@ -34,7 +34,6 @@ from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
 from ttmlir.passes import (
     ttmetal_to_flatbuffer_bin,
-    ttkernel_to_cpp,
     ttkernel_to_cpp_by_name,
     get_ttkernel_names,
 )
