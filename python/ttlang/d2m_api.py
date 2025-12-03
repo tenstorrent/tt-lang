@@ -259,7 +259,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     # result in only 3 kernels (reader, writer, compute) that map directly to cores.
     selected_kernels = [kernel_info[9], kernel_info[10], kernel_info[11]]
     if verbose:
-        print(f"\nUsing kernels 9, 10, 11 (reader, writer, compute)")
+        print(f"\n[HACK] Using hardcoded kernels 9, 10, 11 (reader, writer, compute)")
 
     kernel_paths = []
     kernel_configs = []
