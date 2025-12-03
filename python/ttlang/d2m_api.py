@@ -256,6 +256,11 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
+    # Write all kernels to /tmp for debugging
+    for name, thread_type in kernel_info:
+        cpp_source = ttkernel_to_cpp_by_name(module, name)
+        _write_kernel_to_tmp(name, cpp_source)
+
     # Build kernel paths and configs
     # TODO: Currently hardcoded to kernels 9, 10, 11 because to_layout generates
     # extra bounce kernels in ttnn mode. Fix by conditionalizing to_layout to skip
