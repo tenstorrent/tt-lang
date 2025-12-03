@@ -15,7 +15,7 @@ from python.sim.copy import CopyTransaction, copy
 from python.sim.block import Block, Span
 from python.sim.constants import TILE_SHAPE
 from typing import Optional, List
-from python.sim.typedefs import MulticastAddress, MulticastType
+from python.sim.typedefs import MulticastAddress
 
 
 class TestCopyTransaction:
@@ -283,7 +283,7 @@ class TestMulticastCopy:
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_block = Block(dst_buf, 1, Span(0, 1))
 
-        mcast_addr = MulticastAddress(MulticastType.PUSH, (210, 211))
+        mcast_addr = MulticastAddress((210, 211))
 
         tx_send = copy(src_block, mcast_addr)
         tx_send.wait()
@@ -301,7 +301,7 @@ class TestMulticastCopy:
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
 
-        mcast_addr = MulticastAddress(MulticastType.PUSH, (211, 212, 213))
+        mcast_addr = MulticastAddress((211, 212, 213))
 
         tx_send = copy(src_block, mcast_addr)
         tx_send.wait()
@@ -329,7 +329,7 @@ class TestMulticastCopy:
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
 
-        mcast_addr = MulticastAddress(MulticastType.PUSH, (212, 213))
+        mcast_addr = MulticastAddress((212, 213))
 
         tx_send = copy(src_block, mcast_addr)
         tx_send.wait()
@@ -346,7 +346,7 @@ class TestMulticastCopy:
 
     def test_multicast_receive_timeout(self) -> None:
         """Receiving on an address with no send should timeout."""
-        mcast_addr = MulticastAddress(MulticastType.PUSH, (99, 100))
+        mcast_addr = MulticastAddress((99, 100))
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_ring = Block(dst_buf, 1, Span(0, 1))
 

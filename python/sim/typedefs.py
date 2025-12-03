@@ -27,18 +27,6 @@ class IndexType(Enum):
     TILE = auto()
 
 
-class MulticastType(Enum):
-    """
-    Enumeration of multicast types.
-
-    PUSH: Data is pushed from source to destinations.
-    PULL: Data is pulled by destinations from source.
-    """
-
-    PUSH = auto()
-    PULL = auto()
-
-
 PositiveInt = Annotated[int, Field(gt=0)]
 NaturalInt = Annotated[int, Field(ge=0)]
 Size = PositiveInt
@@ -52,11 +40,9 @@ class MulticastAddress(NamedTuple):
     Represents a multicast address for NoC communication.
 
     Attributes:
-        mcast_type: Type of multicast (PUSH or PULL)
         core_indices: Tuple of core indices participating in the multicast
     """
 
-    mcast_type: MulticastType
     core_indices: Tuple[CoreIndex, ...]
 
 

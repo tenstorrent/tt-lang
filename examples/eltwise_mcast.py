@@ -10,7 +10,6 @@ from sim import (
     TensorAccessor,
     IndexType,
     MulticastAddress,
-    MulticastType,
     Program,
     is_tiled,
     ttl,
@@ -70,7 +69,7 @@ def eltwise_mcast(
 
     # Create multicast address for C
     # Convention: mcast_addr.core_indices[0] is the sender, rest are receivers
-    mcast_addr = MulticastAddress(MulticastType.PUSH, (0, 1, 2, 3))
+    mcast_addr = MulticastAddress((0, 1, 2, 3))
 
     @ttl.compute()
     def compute_func():

@@ -22,7 +22,7 @@ from .cbapi import (
     get_write_ptr,
 )
 from .tensoraccessor import TensorAccessor
-from .typedefs import IndexType, CoreIndex, Shape, MulticastAddress, MulticastType
+from .typedefs import IndexType, CoreIndex, Shape, MulticastAddress
 from .constants import TILE_SHAPE, MAX_CBS
 from .cb import CircularBuffer
 from .copy import copy, CopyTransaction
@@ -76,7 +76,6 @@ __all__ = [
     "CoreIndex",
     "Shape",
     "MulticastAddress",
-    "MulticastType",
     "TILE_SHAPE",
     "MAX_CBS",
     "CircularBuffer",
