@@ -79,22 +79,23 @@ try:
     out_torch = torch.full((32, 32), -999.0, dtype=torch.bfloat16)
     expected = lhs_torch + rhs_torch
 
-    # Convert to TTNN tensors on device (tilized, DRAM)
-    lhs = ttnn.from_torch(
+    # Convert to TTNN tensors on device - start in DRAM, then move to L1
+    # This avoids bank-aware DRAM addressing complexity for now
+    lhs_dram = ttnn.from_torch(
         lhs_torch,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
-    rhs = ttnn.from_torch(
+    rhs_dram = ttnn.from_torch(
         rhs_torch,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
-    out = ttnn.from_torch(
+    out_dram = ttnn.from_torch(
         out_torch,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
@@ -102,10 +103,16 @@ try:
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
-    print(f"\nttnn.Tensors created on device:")
-    print(f"  lhs: {lhs.shape}, dtype={lhs.dtype}")
-    print(f"  rhs: {rhs.shape}, dtype={rhs.dtype}")
-    print(f"  out: {out.shape}, dtype={out.dtype}")
+    # Move to L1 - tt-lang kernel will operate on L1 tensors
+    print("\nMoving tensors from DRAM to L1...")
+    lhs = ttnn.to_memory_config(lhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
+    rhs = ttnn.to_memory_config(rhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
+
+    print(f"\nttnn.Tensors in L1:")
+    print(f"  lhs: {lhs.shape}, dtype={lhs.dtype}, memory_config={lhs.memory_config()}")
+    print(f"  rhs: {rhs.shape}, dtype={rhs.dtype}, memory_config={rhs.memory_config()}")
+    print(f"  out: {out.shape}, dtype={out.dtype}, memory_config={out.memory_config()}")
 
     print("\n=== Running tt-lang kernel with ttnn.Tensors ===")
     test_ttnn_interop_add(lhs, rhs, out)
