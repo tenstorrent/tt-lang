@@ -59,7 +59,13 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
     ttlang_setup_ttmlir_build_tree(${_TTMLIR_BUILD_DIR})
   else()
     message(STATUS "Using pre-installed tt-mlir from: ${TTMLIR_CMAKE_DIR}")
-    set(TTMLIR_PATH "${TTMLIR_CMAKE_DIR}")
+
+    # Set TTMLIR_PATH to the installation root (parent of lib/cmake/ttmlir)
+    if(NOT EXISTS "${TTMLIR_CMAKE_DIR}")
+      message(FATAL_ERROR "TTMLIR_CMAKE_DIR does not exist: ${TTMLIR_CMAKE_DIR}. Can't install tt-lang from the specified installed tt-mlir location.")
+    endif()
+
+    get_filename_component(TTMLIR_PATH "${TTMLIR_CMAKE_DIR}/../../.." ABSOLUTE)
 
     # For installed tt-mlir, use the compiler static library
     set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
@@ -146,10 +152,10 @@ else()
     endif()
   endif()
 
-  if(NOT DEFINED TTLMLIR_CMAKE_BUILD_TYPE)
+  if(NOT DEFINED TTMLIR_CMAKE_BUILD_TYPE)
     set(_TTMLIR_CMAKE_BUILD_TYPE "RelWithDebInfo")
   else()
-    set(_TTMLIR_CMAKE_BUILD_TYPE "${TTLMLIR_CMAKE_BUILD_TYPE}")
+    set(_TTMLIR_CMAKE_BUILD_TYPE "${TTMLIR_CMAKE_BUILD_TYPE}")
   endif()
 
   find_program(CCACHE_PROGRAM ccache)

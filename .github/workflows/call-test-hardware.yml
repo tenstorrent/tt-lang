@@ -70,8 +70,6 @@ jobs:
         shell: bash
 
     env:
-      TT_LANG_HOME: ${{ github.workspace }}
-      TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
       TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
       RUNS_ON: ${{ inputs.runs-on }}
 
@@ -84,12 +82,6 @@ jobs:
       - name: Git safe directory
         run: git config --global --add safe.directory ${{ github.workspace }}
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ format('{0}-build-{1}', inputs.artifact-prefix, inputs.build-os) }}
-          path: .
-
       - name: Download build artifacts archive
         uses: actions/download-artifact@v4
         with:
@@ -98,14 +90,15 @@ jobs:
 
       - name: Extract build artifacts
         run: |
-          # Extract to workspace root (archive contains tt-mlir-install/, build/, sim/ directories)
-          tar -I 'zstd --long=31' -xf ttlang-build-artifacts.tar.zst -C ${{ github.workspace }}
-          rm -f ttlang-build-artifacts.tar.zst
+          set -x
+          ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "Linux" "${{ github.sha }}")
+          tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}" -C ${{ github.workspace }}
+          rm -f "${ARTIFACT_FILE}"
 
       - name: Set up environment variables
         run: |
           echo "LD_LIBRARY_PATH=${{ env.TT_MLIR_DIR }}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${{ github.workspace }}/build/python_packages:${{ env.TT_MLIR_DIR }}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
+          echo "PYTHONPATH=${{ github.workspace }}/build/python_packages:${{ env.TT_MLIR_DIR }}/python_packages:${{ env.TT_MLIR_DIR }}/ttrt/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
           echo "PATH=${{ env.TT_MLIR_DIR }}/bin:/opt/ttmlir-toolchain/bin:${PATH}" >> $GITHUB_ENV
 
       - name: Generate system descriptor

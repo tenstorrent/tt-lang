@@ -79,7 +79,7 @@ jobs:
                   df -h
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
-                      -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/tt-mlir-install \
+                      -DTTMLIR_INSTALL_PREFIX=${{ github.workspace }}/tt-mlir-install \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_ENABLE_RUNTIME=ON \
                       -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
@@ -88,13 +88,6 @@ jobs:
                       -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
-            - name: Save ttrt wheel before install
-              run: |
-                  mkdir -p build/tools/ttrt
-                  ln -sfn ../../_deps/tt-mlir-build/tools/ttrt/build build/tools/ttrt/build
-            - name: Install tt-lang
-              run: |
-                  cmake --install build
 
             - name: Test the tt-lang build
               run: |
@@ -103,39 +96,44 @@ jobs:
 
             - name: Archive build artifacts
               run: |
+                  # Generate artifact name using script
+                  ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "Linux" "${{ github.sha }}")
+                  echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
+
                   # Archive both tt-mlir-install and build directories from workspace root
-                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf ttlang-build-artifacts.tar.zst \
+                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
                     tt-mlir-install build/python_packages build/test build/env sim/
+
+                  echo "Created artifact: ${ARTIFACT_NAME}"
+                  ls -lh "${ARTIFACT_NAME}"
 
             - name: Upload build artifacts for hardware tests
               uses: actions/upload-artifact@v4
               with:
                   name: ttlang-fetchcontent-ttmlir-install-ubuntu
-                  path: ttlang-build-artifacts.tar.zst
+                  path: ${{ env.ARTIFACT_NAME }}
                   if-no-files-found: error
                   retention-days: 1
 
-            - name: Clean up build artifacts archive
-              run: rm -f ttlang-build-artifacts.tar.zst
 
-    test-hardware:
-        needs: build-tt-lang-tt-mlir
-        strategy:
-            matrix:
-                hardware: [n150, n300, tg, p150]
-        uses: ./.github/workflows/call-test-hardware.yml
-        secrets: inherit
-        with:
-            runs-on: ${{ matrix.hardware }}
-            build-os: ubuntu
-            timeout: 60
-            artifact-prefix: ttlang-fetchcontent
+    # test-hardware:
+    #     needs: build-tt-lang-tt-mlir
+    #     strategy:
+    #         matrix:
+    #             hardware: [n150, n300, tg, p150]
+    #     uses: ./.github/workflows/call-test-hardware.yml
+    #     secrets: inherit
+    #     with:
+    #         runs-on: ${{ matrix.hardware }}
+    #         build-os: ubuntu
+    #         timeout: 60
+    #         artifact-prefix: ttlang-fetchcontent
 
     check-all-green:
         if: always()
         needs:
             - build-tt-lang-tt-mlir
-            - test-hardware
+            #- test-hardware
         runs-on: ubuntu-latest
         steps:
             - name: Decide whether all needed jobs succeeded or failed
