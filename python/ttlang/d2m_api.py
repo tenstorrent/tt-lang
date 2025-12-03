@@ -470,7 +470,7 @@ def _compile_and_run_kernel(
     tiled: bool,
     ttnn_interop: bool = False,
     compile_only: bool = False,
-):
+) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and execute compilation pipeline.
 
@@ -486,6 +486,10 @@ def _compile_and_run_kernel(
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
         ttnn_interop: If True, compile to C++ for ttnn.generic_op instead of flatbuffer
+        compile_only: If True, return compiled kernel without executing (ttnn_interop only)
+
+    Returns:
+        CompiledTTNNKernel if ttnn_interop=True, None otherwise
     """
     f_params = inspect.signature(f).parameters
 
