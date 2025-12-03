@@ -100,6 +100,18 @@ class CompilerConfig:
         return not self._is_macos and self._runtime_available
 
 
+def _detect_memory_space_from_tensor(tensor, default: str) -> str:
+    """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
+    mem_config = tensor.memory_config()
+    if hasattr(mem_config, 'buffer_type'):
+        buffer_type_str = str(mem_config.buffer_type)
+        if "L1" in buffer_type_str:
+            return "L1"
+        elif "DRAM" in buffer_type_str:
+            return "DRAM"
+    return default
+
+
 class CompiledTTNNKernel:
     """
     A compiled tt-lang kernel ready for execution via ttnn.generic_op.
@@ -532,22 +544,15 @@ def _compile_and_run_kernel(
 
     has_ttnn_tensors = any(_is_ttnn_tensor(arg) for arg in args)
 
-    # For TTNN tensors, detect memory space from tensor.
+    # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
+    # TODO: Check all tensors and handle mixed memory spaces.
     effective_memory_space = memory_space
     if has_ttnn_tensors:
-        # TODO: Check all tensors and handle mixed memory spaces. Currently only
-        # checks first tensor and assumes all tensors are in the same memory space.
-        for arg in args:
-            if _is_ttnn_tensor(arg):
-                mem_config = arg.memory_config()
-                if hasattr(mem_config, 'memory_layout'):
-                    # L1_MEMORY_CONFIG has memory_layout = INTERLEAVED in L1
-                    # DRAM_MEMORY_CONFIG has memory_layout = INTERLEAVED in DRAM
-                    is_l1 = "L1" in str(mem_config)
-                    effective_memory_space = "L1" if is_l1 else "DRAM"
-                    print(f"[TTNN interop] Detected {effective_memory_space} tensor: {mem_config}")
-                break
+        first_ttnn_tensor = next((arg for arg in args if _is_ttnn_tensor(arg)), None)
+        if first_ttnn_tensor is not None:
+            effective_memory_space = _detect_memory_space_from_tensor(first_ttnn_tensor, memory_space)
+            print(f"[TTNN interop] Detected {effective_memory_space} memory space")
 
     for param_name, arg in zip(f_params, args):
         register_tensor_name(arg, param_name)
