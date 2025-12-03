@@ -96,23 +96,13 @@ jobs:
 
             - name: Archive build artifacts
               run: |
-                  # Debug: show what exists
-                  echo "Current directory: $(pwd)"
-                  echo "Workspace: ${{ github.workspace }}"
-                  ls -la
-                  ls -la tt-mlir-install || echo "tt-mlir-install not found"
-                  ls -la build/ || echo "build not found"
-
-                  # Generate artifact name using script
+                  set -x
                   ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "Linux" "${{ github.sha }}")
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
                   # Archive both tt-mlir-install and build directories from workspace root
                   tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
                     tt-mlir-install build/python_packages build/test build/env
-
-                  echo "Created artifact: ${ARTIFACT_NAME}"
-                  ls -lh "${ARTIFACT_NAME}"
 
             - name: Upload build artifacts for hardware tests
               uses: actions/upload-artifact@v4
@@ -123,24 +113,24 @@ jobs:
                   retention-days: 1
 
 
-    # test-hardware:
-    #     needs: build-tt-lang-tt-mlir
-    #     strategy:
-    #         matrix:
-    #             hardware: [n150, n300, tg, p150]
-    #     uses: ./.github/workflows/call-test-hardware.yml
-    #     secrets: inherit
-    #     with:
-    #         runs-on: ${{ matrix.hardware }}
-    #         build-os: ubuntu
-    #         timeout: 60
-    #         artifact-prefix: ttlang-fetchcontent
+    test-hardware:
+        needs: build-tt-lang-tt-mlir
+        strategy:
+            matrix:
+                hardware: [n150, n300, tg, p150]
+        uses: ./.github/workflows/call-test-hardware.yml
+        secrets: inherit
+        with:
+            runs-on: ${{ matrix.hardware }}
+            build-os: ubuntu
+            timeout: 60
+            artifact-prefix: ttlang-fetchcontent
 
     check-all-green:
         if: always()
         needs:
             - build-tt-lang-tt-mlir
-            #- test-hardware
+            - test-hardware
         runs-on: ubuntu-latest
         steps:
             - name: Decide whether all needed jobs succeeded or failed
