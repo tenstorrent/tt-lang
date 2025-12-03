@@ -79,7 +79,7 @@ jobs:
                   df -h
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_INSTALL_PREFIX=${{ github.workspace }}/tt-mlir-install \
+                      -DTTMLIR_INSTALL_PREFIX=`pwd`/tt-mlir-install \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_ENABLE_RUNTIME=ON \
                       -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
@@ -96,13 +96,20 @@ jobs:
 
             - name: Archive build artifacts
               run: |
+                  # Debug: show what exists
+                  echo "Current directory: $(pwd)"
+                  echo "Workspace: ${{ github.workspace }}"
+                  ls -la
+                  ls -la tt-mlir-install || echo "tt-mlir-install not found"
+                  ls -la build/ || echo "build not found"
+
                   # Generate artifact name using script
                   ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "Linux" "${{ github.sha }}")
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
                   # Archive both tt-mlir-install and build directories from workspace root
                   tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
-                    tt-mlir-install build/python_packages build/test build/env sim/
+                    tt-mlir-install build/python_packages build/test build/env
 
                   echo "Created artifact: ${ARTIFACT_NAME}"
                   ls -lh "${ARTIFACT_NAME}"

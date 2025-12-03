@@ -145,7 +145,7 @@ jobs:
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
-            -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }} \
+            -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
             -S .
 
