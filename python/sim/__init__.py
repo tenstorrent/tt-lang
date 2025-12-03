@@ -46,6 +46,7 @@ class _TTLNamespace:
         from .copy import copy
         from .typedefs import Pipe
         from .torch_utils import is_tiled
+        from .constants import TILE_SHAPE
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -57,6 +58,7 @@ class _TTLNamespace:
         self.copy = copy
         self.Pipe = Pipe
         self.is_tiled = is_tiled
+        self.TILE_SHAPE = TILE_SHAPE
 
 
 ttl = _TTLNamespace()

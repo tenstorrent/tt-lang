@@ -6,7 +6,6 @@ import torch
 import math
 
 from sim import (
-    TILE_SHAPE,
     TensorAccessor,
     IndexType,
     Program,
@@ -29,15 +28,15 @@ def eltwise_pipe(
 ) -> None:
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
-    assert all(ttl.is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
+    assert all(ttl.is_tiled(tensor, ttl.TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
 
-    # Check that c_in is 1x1 and expand it to TILE_SHAPE
+    # Check that c_in is 1x1 and expand it to ttl.TILE_SHAPE
     assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
-    c_expanded = c_in.expand(TILE_SHAPE[0], TILE_SHAPE[1])
+    c_expanded = c_in.expand(ttl.TILE_SHAPE[0], ttl.TILE_SHAPE[1])
 
-    row_tiles = a_in.shape[0] // TILE_SHAPE[0]
-    col_tiles = a_in.shape[1] // TILE_SHAPE[1]
+    row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
+    col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
 
     # Parallelizing by columns here to get reuse on C
     grid_h, grid_w = ttl.grid_size()

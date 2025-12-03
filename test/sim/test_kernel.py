@@ -7,7 +7,7 @@ Tests for kernel.py module (kernel decorator, grid_size, etc.).
 
 import pytest
 import torch
-from python.sim import ttl, TILE_SHAPE
+from python.sim import ttl
 
 
 class TestGridSize:
@@ -24,8 +24,8 @@ class TestGridSize:
             assert grid_w == 8
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
@@ -41,8 +41,8 @@ class TestGridSize:
             assert grid_w == 8
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
@@ -57,8 +57,8 @@ class TestGridSize:
             assert grid_size_val == 16
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
@@ -75,8 +75,8 @@ class TestGridSize:
             assert grid_d3 == 4
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
@@ -114,8 +114,8 @@ class TestGridSize:
             return Program(compute_func, dm0, dm1)()
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
@@ -141,8 +141,8 @@ class TestGridSize:
             assert ttl.grid_size()[1] == 3
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
@@ -165,8 +165,8 @@ class TestGridSize:
             assert result == 42  # 6 * 7
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
@@ -185,8 +185,8 @@ class TestGridSize:
             assert grid1 == (5, 9)
 
         # Create dummy tensors
-        a = torch.zeros(TILE_SHAPE)
-        b = torch.zeros(TILE_SHAPE)
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
 
         # Should not raise
         test_kernel(a, b)
