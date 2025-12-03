@@ -519,15 +519,24 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
-    # Detect if tensors are already on device (e.g., TTNN tensors in DRAM)
+    # Detect if tensors are already on device (e.g., TTNN tensors)
     on_device = any(_is_ttnn_tensor(arg) for arg in args)
 
-    # For on-device (TTNN) tensors, use DRAM as memory space
-    # This ensures the D2M lowering uses bank-aware addressing (get_noc_addr_from_bank_id)
-    # instead of hardcoded NOC coordinates (get_noc_addr)
-    effective_memory_space = "DRAM" if on_device else memory_space
+    # For on-device (TTNN) tensors, detect memory space from tensor
+    # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing
+    effective_memory_space = memory_space
     if on_device:
-        print(f"[TTNN interop] Detected on-device tensors, using memory_space=DRAM")
+        # Check first ttnn tensor's memory config
+        for arg in args:
+            if _is_ttnn_tensor(arg):
+                mem_config = arg.memory_config()
+                if hasattr(mem_config, 'memory_layout'):
+                    # L1_MEMORY_CONFIG has memory_layout = INTERLEAVED in L1
+                    # DRAM_MEMORY_CONFIG has memory_layout = INTERLEAVED in DRAM
+                    is_l1 = "L1" in str(mem_config)
+                    effective_memory_space = "L1" if is_l1 else "DRAM"
+                    print(f"[TTNN interop] Detected {effective_memory_space} tensor: {mem_config}")
+                break
 
     for param_name, arg in zip(f_params, args):
         register_tensor_name(arg, param_name)
