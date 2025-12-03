@@ -145,7 +145,6 @@ class CompiledTTNNKernel:
         self.cb_page_size = cb_page_size
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
-        self._call_count = 0
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -223,7 +222,6 @@ class CompiledTTNNKernel:
             semaphores=[],
         )
 
-        self._call_count += 1
         return ttnn.generic_op(list(args), program)
 
 
