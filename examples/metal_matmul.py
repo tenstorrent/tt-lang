@@ -136,21 +136,19 @@ def test_singlecore_matmul(M, K, N):
     ttnn.close_device(device)
 
 @ttl.kernel()
-def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
+def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     blk_size = ttnn.TILE_SIZE
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
-    c = ttnn.empty(
-        (a.shape[0], b.shape[1]),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-    )
+    a_accessor = ttl.TensorAccessor(a, index_type=ttnn.IndexType.TILE)
+    b_accessor = ttl.TensorAccessor(b, index_type=ttnn.IndexType.TILE)
+    out_accessor = ttl.TensorAccessor(out, index_type=ttnn.IndexType.TILE)
     a_cb = ttl.make_circular_buffer_like(a, 
         shape = (blk_size, blk_size),
         buffer_factor = 2)
     b_cb = ttl.make_circular_buffer_like(b, 
         shape = (blk_size, blk_size),
         buffer_factor = 2)
-    c_cb = ttl.make_circular_buffer_like(c, 
+    out_cb = ttl.make_circular_buffer_like(out, 
         shape = (blk_size, blk_size),
         buffer_factor = 2)
 
@@ -158,11 +156,11 @@ def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
     def mm_compute():
         for _ in range(a.shape[0] // blk_size): # m
             for _ in range(b.shape[1] // blk_size): # n
-                with c_cb.reserve() as c_blk:
+                with out_cb.reserve() as out_blk:
                     for _ in range(a.shape[1] // blk_size): # k
                         a_blk = a_cb.wait()
                         b_blk = b_cb.wait()
-                        c_blk += a_blk @ b_blk
+                        out_blk += a_blk @ b_blk
                         a_cb.pop()
                         b_cb.pop()  
 
@@ -172,17 +170,18 @@ def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
             for n in range(0, b.shape[1], blk_size):
                 for k in range(0, a.shape[1], blk_size):
                     with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                        ttl.copy(a[m:(m+blk_size), k:(k+blk_size)], a_blk)
-                        ttl.copy(b[k:(k+blk_size), n:(n+blk_size)], b_blk)
+                        ttl.copy(a_accessor[m:(m+blk_size), k:(k+blk_size)], a_blk)
+                        ttl.copy(b_accessor[k:(k+blk_size), n:(n+blk_size)], b_blk)
 
     @ttl.datamovement()
     def mm_writer():
         for m in range(0, a.shape[0], blk_size):
             for n in range(0, b.shape[1], blk_size):
-                with c_cb.reserve() as c_blk:
-                    ttl.copy(c_blk, c[m:(m+blk_size), n:(n+blk_size)])
+                out_blk = out_cb.wait()
+                ttl.copy(out_blk, out_accessor[m:(m+blk_size), n:(n+blk_size)])
+                out_cb.pop()
 
-    return Program(mm_compute, mm_reader, mm_writer)(a, b)
+    return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
 
 def test_singlecore_matmul():
     """Test singlecore matmul kernel."""
@@ -190,5 +189,6 @@ def test_singlecore_matmul():
     M, K, N = 256, 256, 256
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    output = singlecore_matmul(a, b)
+    c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+    singlecore_matmul(a, b, c)
    
