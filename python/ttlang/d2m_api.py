@@ -89,6 +89,30 @@ def _resolve_grid_params(grid, block_factors, args, kwargs):
     return resolved_grid, resolved_block_factors
 
 
+def _tile_bytes_from_dtype(dtype) -> int:
+    """
+    Calculate tile size in bytes from ttnn dtype.
+
+    For tiled tensors, each tile is 32x32 elements. The byte size depends on
+    the data type's element size plus any format-specific overhead.
+    """
+    dtype_int = int(dtype)
+    # Map ttnn DataType enum values to tile sizes
+    # Reference: tt-buda/pybuda/csrc/balancer/balancer_utils.hpp
+    if dtype_int in (0, 6):  # BFloat16, UInt16
+        return 32 * 32 * 2  # 2048
+    elif dtype_int in (1, 2, 7):  # Float32, Int32, UInt32
+        return 32 * 32 * 4  # 4096
+    elif dtype_int == 3:  # BFP8
+        return 32 * 32 + 64  # 1088
+    elif dtype_int == 5:  # UInt8/Int8
+        return 32 * 32  # 1024
+    elif dtype_int == 4:  # BFP4
+        return 512 + 64  # 576
+    else:
+        raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
+
+
 class CompiledTTNNKernel:
     """
     A compiled tt-lang kernel ready for execution via ttnn.generic_op.
@@ -97,7 +121,7 @@ class CompiledTTNNKernel:
     can be executed multiple times with different tensors without recompiling.
     """
 
-    def __init__(self, kernel_paths, kernel_configs, kernel_arg_specs, cb_page_size, num_tensors, core_ranges):
+    def __init__(self, kernel_paths, kernel_configs, kernel_arg_specs, num_tensors, core_ranges):
         """
         Initialize with pre-compiled kernel artifacts.
 
@@ -105,14 +129,12 @@ class CompiledTTNNKernel:
             kernel_paths: List of (path, thread_type) tuples for each kernel
             kernel_configs: List of config descriptors matching kernel_paths
             kernel_arg_specs: List of arg specs (rt_args list) for each kernel
-            cb_page_size: Page size for circular buffers
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
         self.kernel_arg_specs = kernel_arg_specs
-        self.cb_page_size = cb_page_size
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
 
@@ -152,7 +174,6 @@ class CompiledTTNNKernel:
             kernel_descriptors.append(kernel_desc)
 
         # Build CB descriptors
-        # TODO: Get CB configuration from kernel IR (buffer indices, page sizes, double-buffering)
         cb_descriptors = []
         for i, tensor in enumerate(args):
             if hasattr(tensor, 'dtype') and hasattr(tensor.dtype, 'name'):
@@ -160,16 +181,17 @@ class CompiledTTNNKernel:
             else:
                 data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
 
+            page_size = _tile_bytes_from_dtype(data_format)
             if hasattr(tensor, 'volume'):
                 num_tiles = max(1, tensor.volume() // 1024)
             else:
                 num_tiles = 1
-            total_size = num_tiles * self.cb_page_size
+            total_size = num_tiles * page_size
 
             cb_format = ttnn.CBFormatDescriptor(
                 buffer_index=i,
                 data_format=data_format,
-                page_size=self.cb_page_size,
+                page_size=page_size,
             )
             cb_desc = ttnn.CBDescriptor(
                 total_size=total_size,
@@ -306,15 +328,10 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
         else:
             kernel_arg_specs.append([])
 
-    # TODO: Calculate page size based on dtype and tile format. Currently hardcoded
-    # to 4096 for bfloat16 tiles (32x32 * 2 = 2048 data bytes + tile header/alignment).
-    cb_page_size = 4096
-
     compiled_kernel = CompiledTTNNKernel(
         kernel_paths=kernel_paths,
         kernel_configs=kernel_configs,
         kernel_arg_specs=kernel_arg_specs,
-        cb_page_size=cb_page_size,
         num_tensors=len(args),
         core_ranges=core_ranges,
     )
