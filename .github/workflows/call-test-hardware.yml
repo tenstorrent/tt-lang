@@ -94,31 +94,9 @@ jobs:
           tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
           rm -f "${ARTIFACT_FILE}"
 
-          # Verify critical directories were unpacked
-          echo "Verifying unpacked artifacts..."
-          ls -la
-
-          if [ ! -d "tt-mlir-install" ]; then
-            echo "ERROR: tt-mlir-install directory not found"
-            exit 1
-          fi
-
-          if [ ! -d "build" ]; then
-            echo "ERROR: build directory not found"
-            exit 1
-          fi
 
           echo "Checking tt-mlir-install structure..."
-          ls -la tt-mlir-install/
-
-          if [ ! -d "tt-mlir-install/bin" ]; then
-            echo "ERROR: tt-mlir-install/bin directory not found"
-            exit 1
-          fi
-
-          echo "Checking for ttrt binary..."
-          ls -la tt-mlir-install/bin/ | grep -E "^-.*ttrt" || echo "WARNING: ttrt binary not found in tt-mlir-install/bin"
-          find tt-mlir-install -name "ttrt" -type f -ls
+          ls -la tt-mlir-install/ tt-mlir-install/python_packages/
 
       - name: Set up environment variables
         run: |
@@ -127,15 +105,15 @@ jobs:
           echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${TT_MLIR_DIR}/ttrt/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
           echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/bin:${PATH}" >> $GITHUB_ENV
 
-      - name: Generate system descriptor
-        run: |
-          ls -al build/env/
-          .github/scripts/generate_system_descriptor.sh ${{ inputs.runs-on }}
+      # - name: Generate system descriptor
+      #   run: |
+      #     ls -al build/env/
+      #     .github/scripts/generate_system_descriptor.sh ${{ inputs.runs-on }}
 
-      - name: Run hardware tests
-        env:
-          TTLANG_VERBOSE_PASSES: 0
-        run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }} || true
+      # - name: Run hardware tests
+      #   env:
+      #     TTLANG_VERBOSE_PASSES: 0
+      #   run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }} || true
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4

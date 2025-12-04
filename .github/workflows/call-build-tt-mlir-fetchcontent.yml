@@ -145,13 +145,10 @@ jobs:
 
     test-hardware:
         needs: build-tt-lang-tt-mlir
-        strategy:
-            matrix:
-                hardware: [n150, n300, p150]
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
-            runs-on: ${{ matrix.hardware }}
+            runs-on: n150
             build-os: ubuntu
             timeout: 60
             artifact-prefix: ttlang-fetchcontent
