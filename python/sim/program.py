@@ -75,41 +75,6 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def core(dims: int = 2) -> int:
-    """Get the current core index from injected context.
-
-    Args:
-        dims: Number of dimensions for the core index. Only dims=1 is supported.
-              Default is 2 for backward compatibility but will raise an error.
-
-    Returns:
-        int: The linear index of the current core in the grid (only when dims=1)
-
-    Raises:
-        RuntimeError: If called outside of a Program context
-        ValueError: If dims != 1
-    """
-    if dims != 1:
-        raise ValueError(
-            f"core() only supports dims=1, got dims={dims}. "
-            "Use core(dims=1) to get the linear core index."
-        )
-
-    frame = inspect.currentframe()
-
-    # Walk up the call stack to find the frame with '_core'
-    while frame:
-        if "_core" in frame.f_locals:
-            return frame.f_locals["_core"]
-        if "_core" in frame.f_globals:
-            return frame.f_globals["_core"]
-        frame = frame.f_back
-
-    raise RuntimeError(
-        "core not available - function must be called within Program context"
-    )
-
-
 def Program(*funcs: BindableTemplate) -> Any:
     """Program class that combines compute and data movement functions."""
 
@@ -133,7 +98,10 @@ def Program(*funcs: BindableTemplate) -> Any:
                 self.context.update(frame.f_back.f_locals)
 
             grid = self.context.get("grid", (1, 1))
-            total_cores = grid[0] * grid[1]
+            # Calculate total cores for any dimension grid
+            total_cores = 1
+            for dim_size in grid:
+                total_cores *= dim_size
 
             compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
 

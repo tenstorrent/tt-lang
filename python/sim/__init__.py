@@ -26,7 +26,8 @@ from .typedefs import IndexType, CoreIndex, Shape, Pipe
 from .constants import TILE_SHAPE, MAX_CBS
 from .cb import CircularBuffer
 from .copy import copy, CopyTransaction
-from .program import Program, BindableTemplate, core
+from .program import Program, BindableTemplate
+from .kernel import core
 from .decorators import compute, datamovement
 from .kernel import kernel
 from .testing import assert_pcc
@@ -40,10 +41,10 @@ class _TTLNamespace:
     """TT-Lang namespace for DSL constructs."""
 
     def __init__(self):
-        from .kernel import kernel, grid_size
+        from .kernel import kernel, grid_size, core
         from .cb import CircularBuffer, make_circular_buffer_like
         from .decorators import compute, datamovement
-        from .program import core, Program
+        from .program import Program
         from .copy import copy
         from .typedefs import Pipe, IndexType
         from .torch_utils import is_tiled

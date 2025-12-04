@@ -6,7 +6,7 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from typing import Annotated, TypeVar, Tuple, Optional, NamedTuple
+from typing import Annotated, TypeVar, Tuple, Optional, NamedTuple, Union
 from pydantic import Field
 from enum import Enum, auto
 from dataclasses import dataclass
@@ -32,7 +32,7 @@ NaturalInt = Annotated[int, Field(ge=0)]
 Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
-CoreIndex = Index
+CoreIndex = Union[Index, Tuple[Index, Index, *tuple[Index, ...]]]
 
 
 class Pipe(NamedTuple):

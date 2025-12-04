@@ -190,3 +190,410 @@ class TestGridSize:
 
         # Should not raise
         test_kernel(a, b)
+
+
+class TestCore:
+    """Test core() function."""
+
+    def test_core_1d_grid_dims_1(self):
+        """Test core() returns single Index for 1D grid with dims=1."""
+
+        @ttl.kernel(grid=(8,), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_id = ttl.core(dims=1)
+                # Should be an int, not a tuple
+                assert isinstance(core_id, int)
+                assert 0 <= core_id < 8
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_2d_grid_dims_1(self):
+        """Test core() with dims=1 on 2D grid returns flattened index."""
+
+        @ttl.kernel(grid=(2, 3), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_id = ttl.core(dims=1)
+                # Should be a single int from 0 to 5 (2*3 - 1)
+                assert isinstance(core_id, int)
+                assert 0 <= core_id < 6
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_2d_grid_dims_2(self):
+        """Test core() returns 2D coordinates for 2D grid with dims=2."""
+
+        @ttl.kernel(grid=(3, 4), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_coord = ttl.core(dims=2)
+                # Should be a tuple of 2 ints
+                assert isinstance(core_coord, tuple)
+                assert len(core_coord) == 2
+                assert 0 <= core_coord[0] < 3
+                assert 0 <= core_coord[1] < 4
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_3d_grid_dims_1(self):
+        """Test core() with dims=1 on 3D grid returns fully flattened index."""
+
+        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_id = ttl.core(dims=1)
+                # Should be a single int from 0 to 23 (2*3*4 - 1)
+                assert isinstance(core_id, int)
+                assert 0 <= core_id < 24
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_3d_grid_dims_2_flattens_first_dimension(self):
+        """Test core() with dims=2 on 3D grid flattens first two dimensions."""
+
+        @ttl.kernel(grid=(2, 3, 5), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_coord = ttl.core(dims=2)
+                # Should be a tuple of 2 ints
+                assert isinstance(core_coord, tuple)
+                assert len(core_coord) == 2
+                # First dimension: flattened [0,1] x [0,1,2] -> [0,5]
+                assert 0 <= core_coord[0] < 6  # 2 * 3
+                # Second dimension: unchanged
+                assert 0 <= core_coord[1] < 5
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_3d_grid_dims_3(self):
+        """Test core() returns 3D coordinates for 3D grid with dims=3."""
+
+        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_coord = ttl.core(dims=3)
+                # Should be a tuple of 3 ints
+                assert isinstance(core_coord, tuple)
+                assert len(core_coord) == 3
+                assert 0 <= core_coord[0] < 2
+                assert 0 <= core_coord[1] < 3
+                assert 0 <= core_coord[2] < 4
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_2d_grid_dims_3_pads_with_zeros(self):
+        """Test core() pads with zeros when dims > grid dimensions."""
+
+        @ttl.kernel(grid=(2, 3), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_coord = ttl.core(dims=3)
+                # Should be a tuple of 3 ints, third one padded with 0
+                assert isinstance(core_coord, tuple)
+                assert len(core_coord) == 3
+                assert 0 <= core_coord[0] < 2
+                assert 0 <= core_coord[1] < 3
+                assert core_coord[2] == 0  # Padded
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_default_dims_is_2(self):
+        """Test that core() defaults to dims=2."""
+
+        @ttl.kernel(grid=(4, 5), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_default = ttl.core()
+                core_explicit = ttl.core(dims=2)
+                # Should be the same
+                assert core_default == core_explicit
+                assert isinstance(core_default, tuple)
+                assert len(core_default) == 2
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_outside_program_raises(self):
+        """Test that core() raises error when called outside Program context."""
+        with pytest.raises(RuntimeError, match="core not available"):
+            ttl.core()
+
+    def test_core_in_nested_functions(self):
+        """Test core() works in nested function calls."""
+
+        @ttl.kernel(grid=(3, 4), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                def helper_function():
+                    return ttl.core(dims=2)
+
+                def another_helper():
+                    coord = helper_function()
+                    # Verify it's a valid 2D coordinate
+                    assert isinstance(coord, tuple)
+                    assert len(coord) == 2
+                    assert 0 <= coord[0] < 3
+                    assert 0 <= coord[1] < 4
+
+                another_helper()
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_in_datamovement_functions(self):
+        """Test core() can be called from datamovement functions."""
+
+        @ttl.kernel(grid=(2, 3), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                pass
+
+            @ttl.datamovement()
+            def dm0():
+                core_coord = ttl.core(dims=2)
+                assert isinstance(core_coord, tuple)
+                assert len(core_coord) == 2
+                assert 0 <= core_coord[0] < 2
+                assert 0 <= core_coord[1] < 3
+
+            @ttl.datamovement()
+            def dm1():
+                core_coord = ttl.core(dims=2)
+                assert isinstance(core_coord, tuple)
+                assert len(core_coord) == 2
+                assert 0 <= core_coord[0] < 2
+                assert 0 <= core_coord[1] < 3
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_consistent_across_calls(self):
+        """Test that core() returns consistent values across multiple calls."""
+
+        @ttl.kernel(grid=(3, 5), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core1 = ttl.core(dims=2)
+                core2 = ttl.core(dims=2)
+                core3 = ttl.core(dims=2)
+
+                # All calls should return the same value
+                assert core1 == core2 == core3
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_core_different_dims_same_core(self):
+        """Test that different dims values on same core produce correct transformations."""
+
+        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core1d = ttl.core(dims=1)
+                core2d = ttl.core(dims=2)
+                core3d = ttl.core(dims=3)
+
+                # Verify consistency: all should be valid
+                assert isinstance(core1d, int)
+                assert isinstance(core2d, tuple) and len(core2d) == 2
+                assert isinstance(core3d, tuple) and len(core3d) == 3
+
+                # Verify ranges
+                assert 0 <= core1d < 24
+                assert 0 <= core2d[0] < 6 and 0 <= core2d[1] < 4
+                assert 0 <= core3d[0] < 2 and 0 <= core3d[1] < 3 and 0 <= core3d[2] < 4
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)

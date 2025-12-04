@@ -65,7 +65,9 @@ def eltwise_pipe(
 
     @ttl.compute()
     def compute_func():
-        core_num = ttl.core(dims=1)  # linear core index
+        _core = ttl.core(dims=1)  # linear core index
+        assert isinstance(_core, int), "Expected linear core index"
+        core_num = _core
         if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
@@ -101,7 +103,9 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm0():
-        core_num = ttl.core(dims=1)  # linear core index
+        _core = ttl.core(dims=1)  # linear core index
+        assert isinstance(_core, int), "Expected linear core index"
+        core_num = _core
         if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
             return  # This core is not participating in C multicast
 
@@ -151,7 +155,9 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm1():
-        core_num = ttl.core(dims=1)  # linear core index
+        _core = ttl.core(dims=1)  # linear core index
+        assert isinstance(_core, int), "Expected linear core index"
+        core_num = _core
         if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
             return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core

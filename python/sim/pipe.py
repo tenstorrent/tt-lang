@@ -7,7 +7,7 @@ Pipe utilities for conditional execution based on pipe roles.
 
 from typing import Callable, Union, List
 from .typedefs import Pipe
-from .program import core
+from .kernel import core
 
 
 def if_pipe_src(pipes: Union[Pipe, List[Pipe]], func: Callable[[Pipe], None]) -> None:

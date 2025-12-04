@@ -28,9 +28,10 @@ def eltwise_add(
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
 
-    # Parallelizing by columns here to get reuse on C
+    # Parallelize across both grid dimensions
     grid_h, grid_w = ttl.grid_size()
-    cols_per_core = math.ceil(col_tiles / (grid_h * grid_w))
+    cols_per_core_x = math.ceil(col_tiles / grid_w)
+    rows_per_core_y = math.ceil(row_tiles / grid_h)
     buffer_factor = 2
 
     a_accessor = ttl.TensorAccessor(a_in, index_type=ttl.IndexType.TILE)
@@ -50,15 +51,23 @@ def eltwise_add(
 
     @ttl.compute()
     def compute_func():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        core_coord = ttl.core()  # 2D core coordinates
+        assert isinstance(core_coord, tuple), "Expected 2D coordinates"
+        core_y, core_x = int(core_coord[0]), int(core_coord[1])
+        start_col_tile = core_x * cols_per_core_x
+        end_col_tile = min(start_col_tile + cols_per_core_x, col_tiles)
+        start_row_tile = core_y * rows_per_core_y
+        end_row_tile = min(start_row_tile + rows_per_core_y, row_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
             # TODO: Perhaps consider making Block pointers that come from wait()/reserve() read/write only respectively?
-            for rt_block in range(row_tiles // granularity):
+            for rt in range(start_row_tile, end_row_tile, granularity):
+                rt_block = rt // granularity
                 print(
-                    "Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}"
+                    "Compute: ",
+                    f"core=({core_y},{core_x})",
+                    f"column={ct}",
+                    f"row_block={rt_block}",
                 )
                 # again, these return Block pointers:
                 a_block = a_in_cb.wait()  # blocking
@@ -80,13 +89,23 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm0():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        core_coord = ttl.core()  # 2D core coordinates
+        assert isinstance(core_coord, tuple), "Expected 2D coordinates"
+        core_y, core_x = int(core_coord[0]), int(core_coord[1])
+        start_col_tile = core_x * cols_per_core_x
+        end_col_tile = min(start_col_tile + cols_per_core_x, col_tiles)
+        start_row_tile = core_y * rows_per_core_y
+        end_row_tile = min(start_row_tile + rows_per_core_y, row_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
-            for rt_block in range(row_tiles // granularity):
-                print("dm0: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
+            for rt in range(start_row_tile, end_row_tile, granularity):
+                rt_block = rt // granularity
+                print(
+                    "dm0: ",
+                    f"core=({core_y},{core_x})",
+                    f"column={ct}",
+                    f"row_block={rt_block}",
+                )
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
                 # Write the cbs just as above
@@ -101,13 +120,23 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm1():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        core_coord = ttl.core()  # 2D core coordinates
+        assert isinstance(core_coord, tuple), "Expected 2D coordinates"
+        core_y, core_x = int(core_coord[0]), int(core_coord[1])
+        start_col_tile = core_x * cols_per_core_x
+        end_col_tile = min(start_col_tile + cols_per_core_x, col_tiles)
+        start_row_tile = core_y * rows_per_core_y
+        end_row_tile = min(start_row_tile + rows_per_core_y, row_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
-            for rt_block in range(row_tiles // granularity):
-                print("dm1: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
+            for rt in range(start_row_tile, end_row_tile, granularity):
+                rt_block = rt // granularity
+                print(
+                    "dm1: ",
+                    f"core=({core_y},{core_x})",
+                    f"column={ct}",
+                    f"row_block={rt_block}",
+                )
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
 
