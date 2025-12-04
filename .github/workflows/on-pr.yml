@@ -27,6 +27,7 @@ jobs:
       os: ubuntu-latest
 
   build-macos:
+    if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:

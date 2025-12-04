@@ -13,7 +13,9 @@ source build/env/activate
 export PYTHONPATH="${TT_MLIR_DIR}/python_packages:${PYTHONPATH}"
 
 # For hardware testing, try to get real system descriptor using ttrt (like tt-mlir does)
-if [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/bin/ttrt" ]; then
+if [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/ttrt/bin/ttrt" ]; then
+  TTRT="${TT_MLIR_DIR}/ttrt/bin/ttrt"
+elif [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/bin/ttrt" ]; then
   TTRT="${TT_MLIR_DIR}/bin/ttrt"
 elif [ -f "/opt/ttmlir-toolchain/venv/bin/ttrt" ]; then
   TTRT="/opt/ttmlir-toolchain/venv/bin/ttrt"
