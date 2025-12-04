@@ -93,10 +93,9 @@ jobs:
           ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
           tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
           rm -f "${ARTIFACT_FILE}"
-
-
           echo "Checking tt-mlir-install structure..."
-          ls -la tt-mlir-install/ tt-mlir-install/python_packages/
+          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ tt-mlir-install/wheels/
+          ls -la /opt/ttmlir-toolchain/venv/bin
 
       - name: Set up environment variables
         run: |
@@ -104,14 +103,21 @@ jobs:
           echo "TT_MLIR_DIR=${TT_MLIR_DIR}" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=${TT_MLIR_DIR}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
           echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${TT_MLIR_DIR}/ttrt/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/bin:${PATH}" >> $GITHUB_ENV
+          echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
+
+      - name: Install ttrt wheel
+        run: |
+          python3 -m pip install --force-reinstall ${TT_MLIR_DIR}/wheels/*.whl || echo "Error: No wheels found."
 
       - name: Generate system descriptor
         run: |
-          ls -al build/env/
-          .github/scripts/generate_system_descriptor.sh ${{ inputs.runs-on }}
+          ttrt query --save-artifacts --disable-eth-dispatch
 
-      - name: Run hardware tests
+      - name: Run smoketest
+        run: |
+          python3 test/python/smoketest.py
+
+      - name: Run lit tests
         env:
           TTLANG_VERBOSE_PASSES: 0
         run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }} || true

@@ -86,6 +86,7 @@ jobs:
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
 
+
             - name: Test the tt-lang build
               run: |
                   source build/env/activate
