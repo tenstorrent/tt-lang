@@ -37,6 +37,7 @@ class D2MGenericCompiler(TTCompilerBase):
         self.captures = captures
         self.streams: Set[str] = set()
         self.supported_nodes.append(ast.AsyncFunctionDef)
+        self.supported_nodes.append(ast.With)
 
         self.context = CompilerContext(
             grid=kwargs.get("grid", [1, 1]),
@@ -212,6 +213,69 @@ class D2MGenericCompiler(TTCompilerBase):
     def visit_AsyncFunctionDef(self, node):
         with self.loc:
             return self._emit_entry(node)
+
+    def visit_With(self, node):
+        """
+        Handle 'with cb.reserve() as blk:' for implicit push at scope end.
+
+        Example:
+            with out_cb.reserve() as out_blk:
+                out_blk.store(result)
+                # implicit out_cb.push() here
+        """
+        with self.loc:
+            if len(node.items) != 1:
+                raise NotImplementedError(
+                    "Only single-item 'with' statements are supported"
+                )
+
+            item = node.items[0]
+            context_expr = item.context_expr
+            optional_vars = item.optional_vars
+
+            if not isinstance(context_expr, ast.Call):
+                raise NotImplementedError(
+                    "'with' statement requires a method call (e.g., cb.reserve())"
+                )
+
+            if not isinstance(context_expr.func, ast.Attribute):
+                raise NotImplementedError(
+                    "'with' statement requires a method call on an object"
+                )
+
+            method_name = context_expr.func.attr
+            cb_node = context_expr.func.value
+
+            if method_name != "reserve":
+                raise NotImplementedError(
+                    f"'with' only supports 'reserve()', got '{method_name}'"
+                )
+
+            if not isinstance(cb_node, ast.Name):
+                raise NotImplementedError(
+                    "'with' requires a simple variable (e.g., cb.reserve())"
+                )
+
+            cb_table = self._var_exists(cb_node.id)
+            if not cb_table:
+                raise NameError(f"'{cb_node.id}' not found in scope")
+            cb_val = cb_table[cb_node.id]
+
+            reserve_result = d2m.reserve(
+                d2m.ir.CBType.cast(cb_val.type).get_underlying(), cb_val
+            )
+
+            if optional_vars is not None:
+                if not isinstance(optional_vars, ast.Name):
+                    raise NotImplementedError(
+                        "'with ... as var' requires a simple variable name"
+                    )
+                self.symbol_tables[-1][optional_vars.id] = reserve_result
+
+            for stmt in node.body:
+                self.visit(stmt)
+
+            d2m.push(cb_val)
 
 
 def syntax(syntax_name):
