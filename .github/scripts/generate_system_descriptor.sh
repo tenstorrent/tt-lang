@@ -16,7 +16,10 @@ export PYTHONPATH="${TT_MLIR_DIR}/python_packages:${PYTHONPATH}"
 echo "Looking for ttrt binary..."
 echo "TT_MLIR_DIR: ${TT_MLIR_DIR}"
 
-if [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/ttrt/bin/ttrt" ]; then
+if [ -f "/opt/ttmlir-toolchain/venv/bin/ttrt" ]; then
+  TTRT="/opt/ttmlir-toolchain/venv/bin/ttrt"
+  echo "Found ttrt at: ${TTRT}"
+elif [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/ttrt/bin/ttrt" ]; then
   TTRT="${TT_MLIR_DIR}/ttrt/bin/ttrt"
   echo "Found ttrt at: ${TTRT}"
 elif [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/bin/ttrt" ]; then

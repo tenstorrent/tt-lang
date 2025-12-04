@@ -57,14 +57,11 @@ jobs:
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
-            - name: Cache tt-mlir build and installation
+            - name: Cache tt-mlir installation only
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
-                  path: |
-                      tt-mlir-install
-                      build/tt-mlir-build
-                      build/_deps/tt-mlir*
+                  path: tt-mlir-install
                   key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
 
             - name: Setup ccache for tt-lang
@@ -82,7 +79,7 @@ jobs:
                       -DTTMLIR_INSTALL_PREFIX=`pwd`/tt-mlir-install \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_ENABLE_RUNTIME=ON \
-                      -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
+                      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
@@ -93,6 +90,21 @@ jobs:
               run: |
                   source build/env/activate
                   python test/python/smoketest.py
+
+            - name: Clean up tt-mlir build directory to save disk space
+              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              run: |
+                  echo "Disk usage before cleanup:"
+                  df -h
+                  du -sh build/tt-mlir-build 2>/dev/null || echo "tt-mlir-build directory not found"
+
+                  # Remove the large tt-mlir build directory after installation
+                  # We only need tt-mlir-install for caching and artifacts
+                  rm -rf build/tt-mlir-build
+                  rm -rf build/_deps/tt-mlir-src
+
+                  echo "Disk usage after cleanup:"
+                  df -h
 
             - name: Verify tt-mlir installation before archiving
               run: |
