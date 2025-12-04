@@ -94,6 +94,24 @@ jobs:
                   source build/env/activate
                   python test/python/smoketest.py
 
+            - name: Verify tt-mlir installation before archiving
+              run: |
+                  echo "Checking tt-mlir-install structure..."
+                  ls -la tt-mlir-install/
+                  echo ""
+                  echo "Checking if bin directory exists..."
+                  if [ -d "tt-mlir-install/bin" ]; then
+                    echo "bin directory found, contents:"
+                    ls -la tt-mlir-install/bin/
+                  else
+                    echo "ERROR: bin directory not found in tt-mlir-install"
+                    echo "This is expected - tt-mlir install doesn't include bin directory"
+                  fi
+                  echo ""
+                  echo "Checking for ttrt..."
+                  find tt-mlir-install -name "ttrt" -type f -ls || echo "No ttrt binary files found"
+                  find build -name "ttrt" -type f -ls || echo "No ttrt binary files found in build"
+
             - name: Archive build artifacts
               run: |
                   set -x
