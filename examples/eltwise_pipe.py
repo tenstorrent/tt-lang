@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+# type: ignore
 from typing import TYPE_CHECKING
 import torch
 import math
@@ -60,16 +61,15 @@ def eltwise_pipe(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 
-    # Create multicast address for C
-    pipe = ttl.Pipe(0, (1, 2, 3))
+    # Create multicast address for C using 2D coordinates
+    # Source: (0,0), Destinations: (0,1), (0,2), (0,3)
+    pipe = ttl.Pipe((0, 0), ((0, 1), (0, 2), (0, 3)))
 
     @ttl.compute()
     def compute_func():
-        _core = ttl.core(dims=1)  # linear core index
-        assert isinstance(_core, int), "Expected linear core index"
-        core_num = _core
-        if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
+        if not ttl.core_in_pipe(pipe):
             return  # This core is not participating in C multicast
+        core_num = ttl.core(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -103,10 +103,7 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm0():
-        _core = ttl.core(dims=1)  # linear core index
-        assert isinstance(_core, int), "Expected linear core index"
-        core_num = _core
-        if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
+        if not ttl.core_in_pipe(pipe):
             return  # This core is not participating in C multicast
 
         def pipe_src(p: Pipe) -> None:
@@ -132,6 +129,7 @@ def eltwise_pipe(
             # NoC layer meaning: all data received and ACK is sent back to sender core, assuming reliable delivery
             c_in_cb.push()
 
+        core_num = ttl.core(dims=1)  # linear core index
         ttl.if_pipe_src(pipe, pipe_src)
         ttl.if_pipe_dst(pipe, pipe_dst)
 
@@ -155,11 +153,9 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm1():
-        _core = ttl.core(dims=1)  # linear core index
-        assert isinstance(_core, int), "Expected linear core index"
-        core_num = _core
-        if core_num != pipe.src_core and core_num not in pipe.dst_core_range:
+        if not ttl.core_in_pipe(pipe):
             return  # This core is not participating in C multicast
+        core_num = ttl.core(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 

@@ -27,12 +27,12 @@ from .constants import TILE_SHAPE, MAX_CBS
 from .cb import CircularBuffer
 from .copy import copy, CopyTransaction
 from .program import Program, BindableTemplate
-from .kernel import core
+from .kernel import core, flatten_core_index
 from .decorators import compute, datamovement
 from .kernel import kernel
 from .testing import assert_pcc
 from .torch_utils import is_tiled
-from .pipe import if_pipe_src, if_pipe_dst
+from .pipe import if_pipe_src, if_pipe_dst, core_in_pipe
 from . import torch_utils
 
 
@@ -41,7 +41,7 @@ class _TTLNamespace:
     """TT-Lang namespace for DSL constructs."""
 
     def __init__(self):
-        from .kernel import kernel, grid_size, core
+        from .kernel import kernel, grid_size, core, flatten_core_index
         from .cb import CircularBuffer, make_circular_buffer_like
         from .decorators import compute, datamovement
         from .program import Program
@@ -50,7 +50,7 @@ class _TTLNamespace:
         from .torch_utils import is_tiled
         from .constants import TILE_SHAPE
         from .tensoraccessor import TensorAccessor
-        from .pipe import if_pipe_src, if_pipe_dst
+        from .pipe import if_pipe_src, if_pipe_dst, core_in_pipe
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -59,6 +59,7 @@ class _TTLNamespace:
         self.compute = compute
         self.datamovement = datamovement
         self.core = core
+        self.flatten_core_index = flatten_core_index
         self.copy = copy
         self.Pipe = Pipe
         self.is_tiled = is_tiled
@@ -68,6 +69,7 @@ class _TTLNamespace:
         self.Program = Program
         self.if_pipe_src = if_pipe_src
         self.if_pipe_dst = if_pipe_dst
+        self.core_in_pipe = core_in_pipe
 
 
 ttl = _TTLNamespace()
@@ -99,6 +101,7 @@ __all__ = [
     "Program",
     "BindableTemplate",
     "core",
+    "flatten_core_index",
     "compute",
     "datamovement",
     "kernel",
@@ -106,6 +109,7 @@ __all__ = [
     "is_tiled",
     "if_pipe_src",
     "if_pipe_dst",
+    "core_in_pipe",
     "torch_utils",
     "ttl",
 ]

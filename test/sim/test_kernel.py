@@ -597,3 +597,254 @@ class TestCore:
         a = torch.zeros(ttl.TILE_SHAPE)
         b = torch.zeros(ttl.TILE_SHAPE)
         test_kernel(a, b)
+
+
+class TestFlattenCoreIndex:
+    """Test flatten_core_index() function."""
+
+    def test_flatten_already_linear_index(self):
+        """Test flattening an already linear index returns it unchanged."""
+
+        @ttl.kernel(grid=(8, 8), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                # Linear index should be returned unchanged
+                result = ttl.flatten_core_index(5)
+                assert result == 5
+                assert isinstance(result, int)
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_flatten_2d_core_index(self):
+        """Test flattening a 2D core index to linear."""
+
+        @ttl.kernel(grid=(4, 8), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                # (0, 0) -> 0
+                assert ttl.flatten_core_index((0, 0)) == 0
+                # (0, 1) -> 1
+                assert ttl.flatten_core_index((0, 1)) == 1
+                # (0, 7) -> 7
+                assert ttl.flatten_core_index((0, 7)) == 7
+                # (1, 0) -> 8 (1 * 8 + 0)
+                assert ttl.flatten_core_index((1, 0)) == 8
+                # (1, 1) -> 9 (1 * 8 + 1)
+                assert ttl.flatten_core_index((1, 1)) == 9
+                # (2, 3) -> 19 (2 * 8 + 3)
+                assert ttl.flatten_core_index((2, 3)) == 19
+                # (3, 7) -> 31 (3 * 8 + 7)
+                assert ttl.flatten_core_index((3, 7)) == 31
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_flatten_3d_core_index(self):
+        """Test flattening a 3D core index to linear."""
+
+        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                # (0, 0, 0) -> 0
+                assert ttl.flatten_core_index((0, 0, 0)) == 0
+                # (0, 0, 1) -> 1
+                assert ttl.flatten_core_index((0, 0, 1)) == 1
+                # (0, 1, 0) -> 4 (0 * 3 * 4 + 1 * 4 + 0)
+                assert ttl.flatten_core_index((0, 1, 0)) == 4
+                # (0, 2, 3) -> 11 (0 * 3 * 4 + 2 * 4 + 3)
+                assert ttl.flatten_core_index((0, 2, 3)) == 11
+                # (1, 0, 0) -> 12 (1 * 3 * 4 + 0 * 4 + 0)
+                assert ttl.flatten_core_index((1, 0, 0)) == 12
+                # (1, 2, 3) -> 23 (1 * 3 * 4 + 2 * 4 + 3)
+                assert ttl.flatten_core_index((1, 2, 3)) == 23
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_flatten_with_core_function(self):
+        """Test flattening the result of core() function."""
+
+        @ttl.kernel(grid=(3, 5), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                # Get 2D core coordinates
+                core_2d = ttl.core(dims=2)
+                # Get 1D core index
+                core_1d = ttl.core(dims=1)
+
+                # Flattening the 2D coordinates should equal the 1D index
+                flattened = ttl.flatten_core_index(core_2d)
+                assert flattened == core_1d
+
+                # Flattening the already-linear index should return itself
+                flattened_linear = ttl.flatten_core_index(core_1d)
+                assert flattened_linear == core_1d
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_flatten_idempotent(self):
+        """Test that flattening twice gives the same result."""
+
+        @ttl.kernel(grid=(2, 4), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                core_2d = (1, 2)
+                flat1 = ttl.flatten_core_index(core_2d)
+                flat2 = ttl.flatten_core_index(flat1)
+
+                # Should be the same (idempotent)
+                assert flat1 == flat2
+                assert flat1 == 6  # 1 * 4 + 2
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_flatten_different_grid_sizes(self):
+        """Test flattening works correctly with different grid dimensions."""
+
+        @ttl.kernel(grid=(10, 5), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                # Test with 10x5 grid
+                # (0, 0) -> 0
+                assert ttl.flatten_core_index((0, 0)) == 0
+                # (1, 0) -> 5 (1 * 5 + 0)
+                assert ttl.flatten_core_index((1, 0)) == 5
+                # (5, 3) -> 28 (5 * 5 + 3)
+                assert ttl.flatten_core_index((5, 3)) == 28
+                # (9, 4) -> 49 (9 * 5 + 4)
+                assert ttl.flatten_core_index((9, 4)) == 49
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)
+
+    def test_flatten_returns_int_type(self):
+        """Test that flatten_core_index always returns an int."""
+
+        @ttl.kernel(grid=(2, 2), granularity=1)
+        def test_kernel(a: torch.Tensor, b: torch.Tensor):
+            assert a is not None and b is not None
+
+            @ttl.compute()
+            def compute_func():
+                # Test with linear index
+                result1 = ttl.flatten_core_index(3)
+                assert isinstance(result1, int)
+
+                # Test with 2D tuple
+                result2 = ttl.flatten_core_index((1, 1))
+                assert isinstance(result2, int)
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            from python.sim import Program
+
+            return Program(compute_func, dm0, dm1)()
+
+        a = torch.zeros(ttl.TILE_SHAPE)
+        b = torch.zeros(ttl.TILE_SHAPE)
+        test_kernel(a, b)

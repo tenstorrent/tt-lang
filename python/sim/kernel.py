@@ -13,6 +13,38 @@ import inspect
 from .typedefs import Shape, Size, CoreIndex, Index
 
 
+def flatten_core_index(core_idx: CoreIndex) -> Index:
+    """Flatten a CoreIndex to a linear Index.
+
+    Args:
+        core_idx: A CoreIndex which can be a single Index or a tuple of Indices
+
+    Returns:
+        A linear Index (single integer)
+
+    Example:
+        >>> flatten_core_index(5)  # Already linear
+        5
+        >>> # With grid (8, 8), core (2, 3) -> 2 * 8 + 3 = 19
+        >>> flatten_core_index((2, 3))
+        19
+    """
+    if isinstance(core_idx, int):
+        return core_idx
+
+    # It's a tuple - convert to linear index using grid dimensions
+    grid = grid_size()
+    coords = list(core_idx)
+
+    # Calculate linear index: for (y, x) with grid (h, w), linear = y * w + x
+    # For 3D: (z, y, x) with grid (d, h, w), linear = z * h * w + y * w + x
+    linear = coords[0]
+    for i in range(1, len(coords)):
+        linear = linear * grid[i] + coords[i]
+
+    return int(linear)
+
+
 def grid_size() -> Tuple[int, ...]:
     """Get the grid size from the execution context.
 

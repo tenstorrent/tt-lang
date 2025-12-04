@@ -20,6 +20,7 @@ from python.sim import assert_pcc
 class TestExamples:
     """Test cases for example simulations."""
 
+    # TODO: Make sure all cores are utilized in the tests and they use the correct chunks
     def test_eltwise_add_example(self):
         """Test that the eltwise_add example runs without assertions being hit."""
         # Use the same parameters as the original example
