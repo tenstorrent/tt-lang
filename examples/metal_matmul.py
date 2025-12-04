@@ -150,9 +150,10 @@ def test_singlecore_matmul_metal(M, K, N):
 # from ttl import Program, make_circular_buffer_like, copy
 
 
-# @ttl.kernel()
+# @ttl.kernel(grid=(1, 1))
 # def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 #     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
+#     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
 #     blk_size = ttnn.TILE_SIZE
 #     M = a.shape[0]
 #     N = b.shape[1]
@@ -170,10 +171,10 @@ def test_singlecore_matmul_metal(M, K, N):
 
 #     @ttl.compute()
 #     def mm_compute():
-#         for _ in range(M // blk_size):  # m
-#             for _ in range(N // blk_size):  # n
+#         for _ in range(M // blk_size):
+#             for _ in range(N // blk_size):
 #                 with out_cb.reserve() as out_blk:
-#                     for _ in range(K // blk_size):  # k
+#                     for _ in range(K // blk_size):
 #                         with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
 #                             out_blk += a_blk @ b_blk
 

@@ -36,7 +36,7 @@ void kernel_main() {
     for (uint32_t nt = 0; nt < Nt; nt++) {
       for (uint32_t kt = 0; kt < Kt; kt++) {
         {                                       // Read A's tile at (mt, kt)
-          uint32_t a_tile_index = mt * Kt + kt; // A is MK, so we stride by Kt
+          uint32_t a_tile_index = mt * Kt + kt; // A is MxK, so we stride by Kt
           cb_reserve_back(cb_id_in0, 1);
           uint32_t l1_write_addr_in0 = get_write_ptr(cb_id_in0);
           noc_async_read_tile(a_tile_index, s0, l1_write_addr_in0);
@@ -45,7 +45,7 @@ void kernel_main() {
         }
 
         {                                       // Read B's tile at (kt, nt)
-          uint32_t b_tile_index = kt * Nt + nt; // B is KN, so we stride by Nt
+          uint32_t b_tile_index = kt * Nt + nt; // B is KxN, so we stride by Nt
           cb_reserve_back(cb_id_in1, 1);
           uint32_t l1_write_addr_in1 = get_write_ptr(cb_id_in1);
           noc_async_read_tile(b_tile_index, s1, l1_write_addr_in1);
