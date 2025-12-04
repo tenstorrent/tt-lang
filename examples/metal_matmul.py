@@ -9,8 +9,9 @@ from utils import assert_with_ulp
 
 
 # works for single tile, not for multiple
-# @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
-@pytest.mark.parametrize("M,K,N", [(128, 128, 128), (256, 256, 256), (512, 512, 512)])
+@pytest.mark.parametrize(
+    "M,K,N", [(128, 128, 128), (256, 256, 256), (512, 512, 512), (640, 640, 640)]
+)
 def test_singlecore_matmul_metal(M, K, N):
     device = ttnn.open_device(device_id=0)
     # single core grid
@@ -49,7 +50,8 @@ def test_singlecore_matmul_metal(M, K, N):
     a_cb = 0
     b_cb = 1
     out_cb = 16
-    cb_page_size = 2 * ttnn.TILE_SIZE * ttnn.TILE_SIZE
+    dtype_size = 2  # bfloat16
+    cb_page_size = dtype_size * ttnn.TILE_SIZE * ttnn.TILE_SIZE
     a_cb_format = ttnn.CBFormatDescriptor(
         buffer_index=a_cb,
         data_format=ttnn.bfloat16,
@@ -65,7 +67,8 @@ def test_singlecore_matmul_metal(M, K, N):
         data_format=ttnn.bfloat16,
         page_size=cb_page_size,
     )
-    cb_total_size = 2 * cb_page_size
+    buffering_factor = 2
+    cb_total_size = buffering_factor * cb_page_size
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
         core_ranges=core_grid,
@@ -151,40 +154,49 @@ from ttl import Program, make_circular_buffer_like, copy
 
 @ttl.kernel()
 def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
-    blk_size = ttnn.TILE_SIZE
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
-    a_cb = make_circular_buffer_like(a, shape=(blk_size, blk_size), buffer_factor=2)
-    b_cb = make_circular_buffer_like(b, shape=(blk_size, blk_size), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(blk_size, blk_size), buffer_factor=2)
+    blk_size = ttnn.TILE_SIZE
+    M = a.shape[0]
+    N = b.shape[1]
+    K = a.shape[1]
+    buffering_factor = 2
+    a_cb = make_circular_buffer_like(
+        a, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+    )
+    b_cb = make_circular_buffer_like(
+        b, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+    )
+    out_cb = make_circular_buffer_like(
+        out, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+    )
 
     @ttl.compute()
     def mm_compute():
-        for _ in range(a.shape[0] // blk_size):  # m
-            for _ in range(b.shape[1] // blk_size):  # n
+        for _ in range(M // blk_size):  # m
+            for _ in range(N // blk_size):  # n
                 with out_cb.reserve() as out_blk:
-                    for _ in range(a.shape[1] // blk_size):  # k
-                        a_blk = a_cb.wait()
-                        b_blk = b_cb.wait()
-                        out_blk += a_blk @ b_blk
-                        a_cb.pop()
-                        b_cb.pop()
+                    for _ in range(K // blk_size):  # k
+                        with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+                            out_blk += a_blk @ b_blk
 
     @ttl.datamovement()
     def mm_reader():
-        for m in range(0, a.shape[0], blk_size):
-            for n in range(0, b.shape[1], blk_size):
-                for k in range(0, a.shape[1], blk_size):
+        for m in range(0, M, blk_size):
+            for n in range(0, N, blk_size):
+                for k in range(0, K, blk_size):
                     with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                        copy(a[m : (m + blk_size), k : (k + blk_size)], a_blk)
-                        copy(b[k : (k + blk_size), n : (n + blk_size)], b_blk)
+                        a_wr = copy(a[m : (m + blk_size), k : (k + blk_size)], a_blk)
+                        b_wr = copy(b[k : (k + blk_size), n : (n + blk_size)], b_blk)
+                        a_wr.wait()
+                        b_wr.wait()
 
     @ttl.datamovement()
     def mm_writer():
-        for m in range(0, a.shape[0], blk_size):
-            for n in range(0, b.shape[1], blk_size):
-                out_blk = out_cb.wait()
-                copy(out_blk, out[m : (m + blk_size), n : (n + blk_size)])
-                out_cb.pop()
+        for m in range(0, M, blk_size):
+            for n in range(0, N, blk_size):
+                with out_cb.wait() as out_blk:
+                    out_wr = copy(out_blk, out[m : (m + blk_size), n : (n + blk_size)])
+                    out_wr.wait()
 
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
 
