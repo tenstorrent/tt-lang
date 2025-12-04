@@ -187,6 +187,7 @@ def comp_ulp(golden, calculated, ulp_threshold, allow_nonfinite=False):
     return (ulp_delta <= ulp_threshold, f"Max ULP Delta: {ulp_delta}")
 
 
+# TODO: add support for ttnn.Tensor inputs when ttnn module is part of tt-lang dependencies
 def assert_with_ulp(
     expected_result: torch.Tensor,
     actual_result: torch.Tensor,
@@ -228,6 +229,10 @@ def assert_with_ulp(
         function, or converted to bfloat16 beforehand (bfloat16 has the 'same' resolution as bfloat8_b).
         Indeed, ttnn.to_torch() converts bfloat8_b to float32 by default, which would lead to assert_with_ulp() measuring ULP error as if
         data type was computed as float32.
+
+        This should be identical to the definition of ULP by Goldberg
+        "What every computer scientist should know about floating-point arithmetic"
+        https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
 
     Returns:
         tuple: A tuple containing:

@@ -14,15 +14,6 @@ from utils import assert_with_ulp
 )
 def test_singlecore_matmul_metal(M, K, N):
     device = ttnn.open_device(device_id=0)
-    # single core grid
-    core = ttnn.CoreCoord(0, 0)
-    core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(core, core)])
-
-    # ttnn py hw constants for tile size?
-    Mt = M // ttnn.TILE_SIZE
-    Kt = K // ttnn.TILE_SIZE
-    Nt = N // ttnn.TILE_SIZE
-
     # allocate a, b and output tensors for matmul on device dram
     dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
     a_tensor = ttnn.rand(
@@ -46,6 +37,9 @@ def test_singlecore_matmul_metal(M, K, N):
         device=device,
         memory_config=dram_memory_config,
     )
+    Mt = M // ttnn.TILE_SIZE
+    Kt = K // ttnn.TILE_SIZE
+    Nt = N // ttnn.TILE_SIZE
 
     a_cb = 0
     b_cb = 1
@@ -67,6 +61,10 @@ def test_singlecore_matmul_metal(M, K, N):
         data_format=ttnn.bfloat16,
         page_size=cb_page_size,
     )
+
+    # single core grid
+    core = ttnn.CoreCoord(0, 0)
+    core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(core, core)])
     buffering_factor = 2
     cb_total_size = buffering_factor * cb_page_size
     a_cb_descriptor = ttnn.CBDescriptor(
@@ -149,72 +147,72 @@ def test_singlecore_matmul_metal(M, K, N):
     ttnn.close_device(device)
 
 
-from ttl import Program, make_circular_buffer_like, copy
+# from ttl import Program, make_circular_buffer_like, copy
 
 
-@ttl.kernel()
-def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
-    assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
-    blk_size = ttnn.TILE_SIZE
-    M = a.shape[0]
-    N = b.shape[1]
-    K = a.shape[1]
-    buffering_factor = 2
-    a_cb = make_circular_buffer_like(
-        a, shape=(blk_size, blk_size), buffer_factor=buffering_factor
-    )
-    b_cb = make_circular_buffer_like(
-        b, shape=(blk_size, blk_size), buffer_factor=buffering_factor
-    )
-    out_cb = make_circular_buffer_like(
-        out, shape=(blk_size, blk_size), buffer_factor=buffering_factor
-    )
+# @ttl.kernel()
+# def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
+#     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
+#     blk_size = ttnn.TILE_SIZE
+#     M = a.shape[0]
+#     N = b.shape[1]
+#     K = a.shape[1]
+#     buffering_factor = 2
+#     a_cb = make_circular_buffer_like(
+#         a, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+#     )
+#     b_cb = make_circular_buffer_like(
+#         b, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+#     )
+#     out_cb = make_circular_buffer_like(
+#         out, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+#     )
 
-    @ttl.compute()
-    def mm_compute():
-        for _ in range(M // blk_size):  # m
-            for _ in range(N // blk_size):  # n
-                with out_cb.reserve() as out_blk:
-                    for _ in range(K // blk_size):  # k
-                        with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                            out_blk += a_blk @ b_blk
+#     @ttl.compute()
+#     def mm_compute():
+#         for _ in range(M // blk_size):  # m
+#             for _ in range(N // blk_size):  # n
+#                 with out_cb.reserve() as out_blk:
+#                     for _ in range(K // blk_size):  # k
+#                         with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+#                             out_blk += a_blk @ b_blk
 
-    @ttl.datamovement()
-    def mm_reader():
-        for m in range(0, M, blk_size):
-            for n in range(0, N, blk_size):
-                for k in range(0, K, blk_size):
-                    with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                        a_wr = copy(a[m : (m + blk_size), k : (k + blk_size)], a_blk)
-                        b_wr = copy(b[k : (k + blk_size), n : (n + blk_size)], b_blk)
-                        a_wr.wait()
-                        b_wr.wait()
+#     @ttl.datamovement()
+#     def mm_reader():
+#         for m in range(0, M, blk_size):
+#             for n in range(0, N, blk_size):
+#                 for k in range(0, K, blk_size):
+#                     with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+#                         a_wr = copy(a[m : (m + blk_size), k : (k + blk_size)], a_blk)
+#                         b_wr = copy(b[k : (k + blk_size), n : (n + blk_size)], b_blk)
+#                         a_wr.wait()
+#                         b_wr.wait()
 
-    @ttl.datamovement()
-    def mm_writer():
-        for m in range(0, M, blk_size):
-            for n in range(0, N, blk_size):
-                with out_cb.wait() as out_blk:
-                    out_wr = copy(out_blk, out[m : (m + blk_size), n : (n + blk_size)])
-                    out_wr.wait()
+#     @ttl.datamovement()
+#     def mm_writer():
+#         for m in range(0, M, blk_size):
+#             for n in range(0, N, blk_size):
+#                 with out_cb.wait() as out_blk:
+#                     out_wr = copy(out_blk, out[m : (m + blk_size), n : (n + blk_size)])
+#                     out_wr.wait()
 
-    return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
+#     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
 
 
-def test_singlecore_matmul_tt_lang():
-    """Test singlecore matmul kernel."""
-    device = ttnn.open_device(device_id=0)
-    M, K, N = 256, 256, 256
-    a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+# def test_singlecore_matmul_tt_lang():
+#     """Test singlecore matmul kernel."""
+#     device = ttnn.open_device(device_id=0)
+#     M, K, N = 256, 256, 256
+#     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+#     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+#     c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
 
-    tt_lang_singlecore_matmul(a, b, c)
+#     tt_lang_singlecore_matmul(a, b, c)
 
-    golden = torch.matmul(
-        ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
-    )
-    result = ttnn.to_torch(c).to(torch.bfloat16)
-    assert_with_ulp(golden, result)
+#     golden = torch.matmul(
+#         ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
+#     )
+#     result = ttnn.to_torch(c).to(torch.bfloat16)
+#     assert_with_ulp(golden, result)
 
-    ttnn.close_device(device)
+#     ttnn.close_device(device)

@@ -38,7 +38,8 @@ void MAIN {
 
         // Perform the matrix multiplication for the current tile.
         // NOTE: This function also accumulates the result into the destination
-        // tile.
+        // tile. (A cb index, B cb index, index of tile for A cb, index of tile
+        // for B cb, index of tile for DST register)
         matmul_tiles(cb_in0, cb_in1, 0, 0, 0, false);
 
         // Mark the input tiles as used by popping them from the front of the
