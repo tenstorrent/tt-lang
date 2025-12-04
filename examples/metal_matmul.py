@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
 import ttnn
 import pytest
 import torch
@@ -8,7 +11,7 @@ from utils import assert_with_ulp
 # works for single tile, not for multiple
 # @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 @pytest.mark.parametrize("M,K,N", [(128, 128, 128), (256, 256, 256), (512, 512, 512)])
-def test_singlecore_matmul(M, K, N): 
+def test_singlecore_matmul(M, K, N):
     device = ttnn.open_device(device_id=0)
     # single core grid
     core = ttnn.CoreCoord(0, 0)
@@ -22,18 +25,18 @@ def test_singlecore_matmul(M, K, N):
     # allocate a, b and output tensors for matmul on device dram
     dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
     a_tensor = ttnn.rand(
-        (M, K), 
-        dtype=ttnn.bfloat16, 
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config
-    )
-    b_tensor = ttnn.rand(
-        (K, N), 
+        (M, K),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
-        memory_config=dram_memory_config
+        memory_config=dram_memory_config,
+    )
+    b_tensor = ttnn.rand(
+        (K, N),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
     )
     output_tensor = ttnn.empty(
         (M, N),
@@ -42,7 +45,6 @@ def test_singlecore_matmul(M, K, N):
         device=device,
         memory_config=dram_memory_config,
     )
-
 
     a_cb = 0
     b_cb = 1
@@ -81,8 +83,12 @@ def test_singlecore_matmul(M, K, N):
     )
 
     reader_compile_time_args = ttnn.TensorAccessorArgs(a_tensor).get_compile_time_args()
-    reader_compile_time_args.extend(ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args())
-    writer_compile_time_args = ttnn.TensorAccessorArgs(output_tensor).get_compile_time_args()
+    reader_compile_time_args.extend(
+        ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args()
+    )
+    writer_compile_time_args = ttnn.TensorAccessorArgs(
+        output_tensor
+    ).get_compile_time_args()
     compute_compile_time_args = [Mt, Kt, Nt]
     reader_rt_args = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt]
     writer_rt_args = [output_tensor.buffer_address(), Mt, Nt]
@@ -119,7 +125,11 @@ def test_singlecore_matmul(M, K, N):
     )
 
     program_descriptor = ttnn.ProgramDescriptor(
-        kernels=[reader_kernel_descriptor, writer_kernel_descriptor, compute_kernel_descriptor],
+        kernels=[
+            reader_kernel_descriptor,
+            writer_kernel_descriptor,
+            compute_kernel_descriptor,
+        ],
         semaphores=[],
         cbs=[a_cb_descriptor, b_cb_descriptor, out_cb_descriptor],
     )
@@ -135,34 +145,29 @@ def test_singlecore_matmul(M, K, N):
 
     ttnn.close_device(device)
 
+
+from ttl import Program, make_circular_buffer_like, copy
+
+
 @ttl.kernel()
 def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     blk_size = ttnn.TILE_SIZE
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
-    a_accessor = ttl.TensorAccessor(a, index_type=ttnn.IndexType.TILE)
-    b_accessor = ttl.TensorAccessor(b, index_type=ttnn.IndexType.TILE)
-    out_accessor = ttl.TensorAccessor(out, index_type=ttnn.IndexType.TILE)
-    a_cb = ttl.make_circular_buffer_like(a, 
-        shape = (blk_size, blk_size),
-        buffer_factor = 2)
-    b_cb = ttl.make_circular_buffer_like(b, 
-        shape = (blk_size, blk_size),
-        buffer_factor = 2)
-    out_cb = ttl.make_circular_buffer_like(out, 
-        shape = (blk_size, blk_size),
-        buffer_factor = 2)
+    a_cb = make_circular_buffer_like(a, shape=(blk_size, blk_size), buffer_factor=2)
+    b_cb = make_circular_buffer_like(b, shape=(blk_size, blk_size), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(blk_size, blk_size), buffer_factor=2)
 
     @ttl.compute()
     def mm_compute():
-        for _ in range(a.shape[0] // blk_size): # m
-            for _ in range(b.shape[1] // blk_size): # n
+        for _ in range(a.shape[0] // blk_size):  # m
+            for _ in range(b.shape[1] // blk_size):  # n
                 with out_cb.reserve() as out_blk:
-                    for _ in range(a.shape[1] // blk_size): # k
+                    for _ in range(a.shape[1] // blk_size):  # k
                         a_blk = a_cb.wait()
                         b_blk = b_cb.wait()
                         out_blk += a_blk @ b_blk
                         a_cb.pop()
-                        b_cb.pop()  
+                        b_cb.pop()
 
     @ttl.datamovement()
     def mm_reader():
@@ -170,18 +175,19 @@ def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             for n in range(0, b.shape[1], blk_size):
                 for k in range(0, a.shape[1], blk_size):
                     with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                        ttl.copy(a_accessor[m:(m+blk_size), k:(k+blk_size)], a_blk)
-                        ttl.copy(b_accessor[k:(k+blk_size), n:(n+blk_size)], b_blk)
+                        copy(a[m : (m + blk_size), k : (k + blk_size)], a_blk)
+                        copy(b[k : (k + blk_size), n : (n + blk_size)], b_blk)
 
     @ttl.datamovement()
     def mm_writer():
         for m in range(0, a.shape[0], blk_size):
             for n in range(0, b.shape[1], blk_size):
                 out_blk = out_cb.wait()
-                ttl.copy(out_blk, out_accessor[m:(m+blk_size), n:(n+blk_size)])
+                copy(out_blk, out[m : (m + blk_size), n : (n + blk_size)])
                 out_cb.pop()
 
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
+
 
 def test_singlecore_matmul():
     """Test singlecore matmul kernel."""
@@ -191,4 +197,3 @@ def test_singlecore_matmul():
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     singlecore_matmul(a, b, c)
-   
