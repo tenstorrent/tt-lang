@@ -9,58 +9,36 @@ HARDWARE_TYPE="${1:-n150}"
 
 source build/env/activate
 
-# Ensure PYTHONPATH includes tt-mlir installation for runtime modules
-export PYTHONPATH="${TT_MLIR_DIR}/python_packages:${PYTHONPATH}"
+# Ensure PYTHONPATH includes tt-mlir installation for runtime modules and ttrt
+# The ttrt package with .so files is in ${TT_MLIR_DIR} directly, not in python_packages
+export PYTHONPATH="${TT_MLIR_DIR}:${TT_MLIR_DIR}/python_packages:${PYTHONPATH}"
 
-# For hardware testing, try to get real system descriptor using ttrt (like tt-mlir does)
-echo "Looking for ttrt binary..."
+# For hardware testing, use ttrt Python package to query the real system descriptor
+echo "Setting up ttrt via Python..."
 echo "TT_MLIR_DIR: ${TT_MLIR_DIR}"
 
+# Try to use ttrt binary first, then fall back to Python module
 if [ -f "/opt/ttmlir-toolchain/venv/bin/ttrt" ]; then
-  TTRT="/opt/ttmlir-toolchain/venv/bin/ttrt"
-  echo "Found ttrt at: ${TTRT}"
-elif [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/ttrt/bin/ttrt" ]; then
-  TTRT="${TT_MLIR_DIR}/ttrt/bin/ttrt"
-  echo "Found ttrt at: ${TTRT}"
-elif [ -n "${TT_MLIR_DIR}" ] && [ -f "${TT_MLIR_DIR}/bin/ttrt" ]; then
-  TTRT="${TT_MLIR_DIR}/bin/ttrt"
-  echo "Found ttrt at: ${TTRT}"
-elif [ -f "/opt/ttmlir-toolchain/venv/bin/ttrt" ]; then
-  TTRT="/opt/ttmlir-toolchain/venv/bin/ttrt"
-  echo "Found ttrt at: ${TTRT}"
+  TTRT_CMD="/opt/ttmlir-toolchain/venv/bin/ttrt"
+  echo "Found ttrt binary at: ${TTRT_CMD}"
 elif command -v ttrt >/dev/null 2>&1; then
-  TTRT="ttrt"
+  TTRT_CMD="ttrt"
   echo "Found ttrt in PATH: $(which ttrt)"
 else
-  TTRT=""
-fi
-
-if [ -z "${TTRT}" ]; then
-  echo "Error: ttrt not found. For hardware testing, ttrt must be available to query the real system descriptor."
-  echo "Install ttrt or ensure it's in PATH."
-  echo ""
-  echo "Searched locations:"
-  echo "  ${TT_MLIR_DIR}/ttrt/bin/ttrt"
-  echo "  ${TT_MLIR_DIR}/bin/ttrt"
-  echo "  /opt/ttmlir-toolchain/venv/bin/ttrt"
-  echo "  PATH: ${PATH}"
-  echo ""
-  echo "Directory contents of ${TT_MLIR_DIR}/bin:"
-  ls -la "${TT_MLIR_DIR}/bin" || echo "  Directory does not exist"
-  echo ""
-  echo "Searching for ttrt in ${TT_MLIR_DIR}:"
-  find "${TT_MLIR_DIR}" -name "ttrt" -type f 2>/dev/null || echo "  No ttrt files found"
-  exit 1
+  # Use Python to invoke ttrt module directly
+  TTRT_CMD="python3 -m ttrt"
+  echo "Using ttrt Python module: ${TTRT_CMD}"
+  echo "PYTHONPATH: ${PYTHONPATH}"
 fi
 
 mkdir -p ttrt-artifacts
 cd ttrt-artifacts
 
-echo "Using ttrt from: ${TTRT}"
+echo "Using ttrt command: ${TTRT_CMD}"
 if [ "${HARDWARE_TYPE}" == "tg" ] || [ "${HARDWARE_TYPE}" == "p150" ]; then
-  ${TTRT} query --save-artifacts --disable-eth-dispatch
+  ${TTRT_CMD} query --save-artifacts --disable-eth-dispatch
 else
-  ${TTRT} query --save-artifacts
+  ${TTRT_CMD} query --save-artifacts
 fi
 
 SYSTEM_DESC=$(find . -name "*.ttsys" -type f | head -1)
