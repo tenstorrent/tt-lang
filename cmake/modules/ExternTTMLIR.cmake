@@ -71,7 +71,20 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
       set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
       message(STATUS "Using TTMLIR library: TTMLIR::TTMLIRCompilerStatic")
     else()
-      message(FATAL_ERROR "Required TTMLIR::TTMLIRCompilerStatic target not found in installed tt-mlir at: ${TTMLIR_CMAKE_DIR}")
+      # TTMLIRCompilerStatic is not properly exported in TTMLIRInstall.cmake.
+      # Try to find the static library file directly.
+      find_library(TTMLIR_COMPILER_STATIC_LIB
+        NAMES libTTMLIRCompilerStatic.a TTMLIRCompilerStatic
+        PATHS "${TTMLIR_PATH}/lib"
+        NO_DEFAULT_PATH
+      )
+
+      if(TTMLIR_COMPILER_STATIC_LIB)
+        message(STATUS "TTMLIRCompilerStatic target not exported, using library file directly: ${TTMLIR_COMPILER_STATIC_LIB}")
+        set(TTMLIR_LINK_LIBS "${TTMLIR_COMPILER_STATIC_LIB}")
+      else()
+        message(FATAL_ERROR "Required TTMLIR::TTMLIRCompilerStatic target not found in installed tt-mlir at: ${TTMLIR_CMAKE_DIR}, and library file not found in ${TTMLIR_PATH}/lib")
+      endif()
     endif()
   endif()
 
