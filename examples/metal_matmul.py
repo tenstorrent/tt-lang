@@ -11,7 +11,7 @@ from utils import assert_with_ulp
 # works for single tile, not for multiple
 # @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 @pytest.mark.parametrize("M,K,N", [(128, 128, 128), (256, 256, 256), (512, 512, 512)])
-def test_singlecore_matmul(M, K, N):
+def test_singlecore_matmul_metal(M, K, N):
     device = ttnn.open_device(device_id=0)
     # single core grid
     core = ttnn.CoreCoord(0, 0)
@@ -150,7 +150,7 @@ from ttl import Program, make_circular_buffer_like, copy
 
 
 @ttl.kernel()
-def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
+def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     blk_size = ttnn.TILE_SIZE
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     a_cb = make_circular_buffer_like(a, shape=(blk_size, blk_size), buffer_factor=2)
@@ -189,7 +189,7 @@ def singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
 
 
-def test_singlecore_matmul():
+def test_singlecore_matmul_tt_lang():
     """Test singlecore matmul kernel."""
     device = ttnn.open_device(device_id=0)
     M, K, N = 256, 256, 256
@@ -197,7 +197,7 @@ def test_singlecore_matmul():
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
 
-    singlecore_matmul(a, b, c)
+    tt_lang_singlecore_matmul(a, b, c)
 
     golden = torch.matmul(
         ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
