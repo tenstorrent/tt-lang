@@ -125,8 +125,6 @@ jobs:
           cd tt-mlir
           source env/activate
           cmake --build build --target ttrt
-          mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
-          cp tt-mlir/build/tools/ttrt/build/*.whl ${{ env.TT_MLIR_DIR }}/wheels/
 
       - name: Install tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -134,6 +132,11 @@ jobs:
           cd tt-mlir
           source env/activate
           cmake --install build
+
+      - name: Move ttrt python package to tt-mlir install location
+        if: runner.os == 'Linux'
+        run: |
+          mv tt-mlir/build/python_packages/ttrt/runtime/* ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
 
       - name: Configure tt-lang
         run: |

@@ -94,24 +94,21 @@ jobs:
           tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
           rm -f "${ARTIFACT_FILE}"
           echo "Checking tt-mlir-install structure..."
-          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ tt-mlir-install/wheels/
-          ls -la /opt/ttmlir-toolchain/venv/bin
+          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
+          ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
 
       - name: Set up environment variables
         run: |
           TT_MLIR_DIR="$(pwd)/tt-mlir-install"
           echo "TT_MLIR_DIR=${TT_MLIR_DIR}" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=${TT_MLIR_DIR}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
-          echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${TT_MLIR_DIR}/ttrt/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
+          echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
           echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
-
-      - name: Install ttrt wheel
-        run: |
-          python3 -m pip install --force-reinstall ${TT_MLIR_DIR}/wheels/*.whl || echo "Error: No wheels found."
 
       - name: Generate system descriptor
         run: |
-          ttrt query --save-artifacts --disable-eth-dispatch
+          set -x
+          python3 ./.github/scripts/trtt_wrapper.py query --save-artifacts --disable-eth-dispatch
 
       - name: Run smoketest
         run: |
