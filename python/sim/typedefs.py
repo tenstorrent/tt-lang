@@ -41,11 +41,13 @@ class Pipe(NamedTuple):
 
     Attributes:
         src_core: Core index of the source/sender
-        dst_core_range: Tuple of core indices of the receivers
+        dst_core_range: Either a single CoreIndex for unicast, or a Tuple[CoreIndex, CoreIndex]
+                       for multicast where the two indices define a rectangular range.
+                       Example: ((0, 0), (1, 1)) defines cores (0,0), (0,1), (1,0), (1,1)
     """
 
     src_core: CoreIndex
-    dst_core_range: Tuple[CoreIndex, ...]
+    dst_core_range: Union[CoreIndex, Tuple[CoreIndex, CoreIndex]]
 
 
 Shape = Tuple[Size, ...]

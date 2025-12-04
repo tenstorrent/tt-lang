@@ -62,8 +62,9 @@ def eltwise_pipe(
     )
 
     # Create multicast address for C using 2D coordinates
-    # Source: (0,0), Destinations: (0,1), (0,2), (0,3)
-    pipe = ttl.Pipe((0, 0), ((0, 1), (0, 2), (0, 3)))
+    # Source: (0,0), Destinations: rectangular range from (0,1) to (0,3)
+    # This expands to cores (0,1), (0,2), (0,3)
+    pipe = ttl.Pipe((0, 0), ((0, 1), (0, 3)))
 
     @ttl.compute()
     def compute_func():
@@ -107,7 +108,7 @@ def eltwise_pipe(
             return  # This core is not participating in C multicast
 
         def pipe_src(p: Pipe) -> None:
-            print("dm0 (C multicast): ", f"core={core_num}")
+            print("dm0 (C multicast SRC): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
             tx = ttl.copy(c_accessor[slice(0, 1), slice(0, 1)], c_block)
@@ -120,6 +121,7 @@ def eltwise_pipe(
             c_in_cb.push()
 
         def pipe_dst(p: Pipe) -> None:
+            print("dm0 (C multicast DST): ", f"core={core_num}")
             c_block = c_in_cb.reserve()
             tx = ttl.copy(
                 p, c_block

@@ -283,7 +283,7 @@ class TestMulticastCopy:
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_block = Block(dst_buf, 1, Span(0, 1))
 
-        pipe = Pipe(210, (211,))
+        pipe = Pipe(210, 211)
 
         tx_send = copy(src_block, pipe)
         tx_send.wait()
@@ -301,7 +301,8 @@ class TestMulticastCopy:
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
 
-        pipe = Pipe(211, (212, 213))
+        # Cores 212 and 213 form a rectangular range in row 26: (26,4) to (26,5)
+        pipe = Pipe((26, 3), ((26, 4), (26, 5)))
 
         tx_send = copy(src_block, pipe)
         tx_send.wait()
@@ -329,7 +330,8 @@ class TestMulticastCopy:
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
 
-        pipe = Pipe(212, (213,))
+        # Single core unicast using 2D coordinates
+        pipe = Pipe((26, 4), (26, 5))
 
         tx_send = copy(src_block, pipe)
         tx_send.wait()
@@ -346,7 +348,7 @@ class TestMulticastCopy:
 
     def test_pipe_receive_timeout(self) -> None:
         """Receiving on an address with no send should timeout."""
-        pipe = Pipe(99, (100,))
+        pipe = Pipe(99, 100)
         dst_buf: List[Optional[torch.Tensor]] = [None]
         dst_ring = Block(dst_buf, 1, Span(0, 1))
 

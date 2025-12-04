@@ -215,8 +215,21 @@ class BlockToPipeHandler:
                 _pipe_buffer[dst] = new_entry
                 entry = new_entry
 
-        # Calculate number of receivers
-        num_receivers = len(dst.dst_core_range)
+        # Calculate number of receivers based on dst_core_range type
+        match dst.dst_core_range:
+            case (tuple() as first, tuple() as second):
+                # Rectangular range: count all cores in the rectangle
+                dims = len(first)
+                num_receivers = 1
+                for i in range(dims):
+                    range_size = abs(second[i] - first[i]) + 1
+                    num_receivers *= range_size
+            case tuple():
+                # Single multi-dimensional core
+                num_receivers = 1
+            case int():
+                # Single 1D core
+                num_receivers = 1
 
         # Add to the queue for this pipe with receiver count
         # and notify any waiting receivers via event

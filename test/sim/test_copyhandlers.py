@@ -188,7 +188,7 @@ class TestBlockToPipeHandler:
         tile = tu.full((32, 32), 42.0)
         src_buf: List[Optional[torch.Tensor]] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
-        pipe = Pipe(0, (1,))
+        pipe = Pipe(0, 1)
 
         # Send via pipe
         send_handler.transfer(src_block, pipe)
@@ -212,7 +212,7 @@ class TestBlockToPipeHandler:
         tile2 = tu.full((32, 32), 2.0)
         src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
-        pipe = Pipe(0, (1,))
+        pipe = Pipe(0, 1)
 
         # Send via pipe
         send_handler.transfer(src_block, pipe)
@@ -233,7 +233,7 @@ class TestPipeToBlockHandler:
     def test_validate_always_succeeds(self):
         """Test that validation always succeeds (no-op)."""
         handler = PipeToBlockHandler()
-        pipe = Pipe(0, (1,))
+        pipe = Pipe(0, 1)
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
@@ -244,7 +244,7 @@ class TestPipeToBlockHandler:
         """Test that transfer times out when no data is available."""
         recv_handler = PipeToBlockHandler()
         # Use a unique address to avoid interference from other tests
-        pipe = Pipe(99, (100,))
+        pipe = Pipe(99, 100)
         buf: List[Optional[torch.Tensor]] = [None]
         block = Block(buf, 1, Span(0, 1))
 
@@ -255,7 +255,7 @@ class TestPipeToBlockHandler:
         """Test successful transfer with single receiver."""
         send_handler = BlockToPipeHandler()
         recv_handler = PipeToBlockHandler()
-        pipe = Pipe(0, (1,))
+        pipe = Pipe(0, 1)
 
         # Sender: send data
         tile = tu.full((32, 32), 99.0)
@@ -276,7 +276,8 @@ class TestPipeToBlockHandler:
         """Test successful transfer with multiple receivers."""
         send_handler = BlockToPipeHandler()
         recv_handler = PipeToBlockHandler()
-        pipe = Pipe(0, (1, 2))
+        # Rectangular range from (0,1) to (0,2) covers 2 cores
+        pipe = Pipe((0, 0), ((0, 1), (0, 2)))
 
         # Sender: send data for 2 receivers
         tile = tu.full((32, 32), 77.0)
@@ -300,7 +301,8 @@ class TestPipeToBlockHandler:
         """Test that transfer fails when Block length doesn't match data."""
         send_handler = BlockToPipeHandler()
         recv_handler = PipeToBlockHandler()
-        pipe = Pipe(0, (1,))
+        # Single core unicast
+        pipe = Pipe((0, 0), (0, 1))
 
         # Sender: send 2 tiles
         tile1 = tu.ones(32, 32)
