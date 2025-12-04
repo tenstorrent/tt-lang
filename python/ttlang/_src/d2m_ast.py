@@ -216,68 +216,73 @@ class D2MGenericCompiler(TTCompilerBase):
 
     def visit_With(self, node):
         """
-        Handle 'with' for CircularBuffer with implicit release at scope end.
+        Handle 'with' for CircularBuffer acquire/release.
 
-        Producer: with cb.reserve() as blk: ... # implicit push()
-        Consumer: with cb.wait() as blk: ...    # implicit pop()
+        Acquire ops (wait/reserve) are generated left-to-right.
+        Release ops (pop/push) are generated in reverse order at scope end.
+
+        Example:
+            with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
+                ...
+                # releases in reverse order: push(out), pop(rhs), pop(lhs)
         """
         with self.loc:
-            if len(node.items) != 1:
-                raise NotImplementedError(
-                    "Only single-item 'with' statements are supported"
-                )
+            # Process each with-item: acquire resources and track for release
+            releases = []  # [(release_op, cb_val), ...] in acquisition order
 
-            item = node.items[0]
-            context_expr = item.context_expr
-            optional_vars = item.optional_vars
+            for item in node.items:
+                context_expr = item.context_expr
+                optional_vars = item.optional_vars
 
-            if not isinstance(context_expr, ast.Call):
-                raise NotImplementedError(
-                    "'with' statement requires a method call (e.g., cb.reserve())"
-                )
-
-            if not isinstance(context_expr.func, ast.Attribute):
-                raise NotImplementedError(
-                    "'with' statement requires a method call on an object"
-                )
-
-            method_name = context_expr.func.attr
-            cb_node = context_expr.func.value
-
-            if method_name not in ("reserve", "wait"):
-                raise NotImplementedError(
-                    f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'"
-                )
-
-            if not isinstance(cb_node, ast.Name):
-                raise NotImplementedError(
-                    "'with' requires a simple variable (e.g., cb.reserve())"
-                )
-
-            cb_table = self._var_exists(cb_node.id)
-            if not cb_table:
-                raise NameError(f"'{cb_node.id}' not found in scope")
-            cb_val = cb_table[cb_node.id]
-
-            cb_underlying = d2m.ir.CBType.cast(cb_val.type).get_underlying()
-            if method_name == "reserve":
-                acquire_result = d2m.reserve(cb_underlying, cb_val)
-                release_op = d2m.push
-            else:  # wait
-                acquire_result = d2m.wait(cb_underlying, cb_val)
-                release_op = d2m.pop
-
-            if optional_vars is not None:
-                if not isinstance(optional_vars, ast.Name):
+                if not isinstance(context_expr, ast.Call):
                     raise NotImplementedError(
-                        "'with ... as var' requires a simple variable name"
+                        "'with' requires a method call (e.g., cb.reserve())"
                     )
-                self.symbol_tables[-1][optional_vars.id] = acquire_result
+
+                if not isinstance(context_expr.func, ast.Attribute):
+                    raise NotImplementedError(
+                        "'with' requires a method call on an object"
+                    )
+
+                method_name = context_expr.func.attr
+                cb_node = context_expr.func.value
+
+                if method_name not in ("reserve", "wait"):
+                    raise NotImplementedError(
+                        f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'"
+                    )
+
+                if not isinstance(cb_node, ast.Name):
+                    raise NotImplementedError(
+                        "'with' requires a simple variable (e.g., cb.reserve())"
+                    )
+
+                cb_table = self._var_exists(cb_node.id)
+                if not cb_table:
+                    raise NameError(f"'{cb_node.id}' not found in scope")
+                cb_val = cb_table[cb_node.id]
+
+                cb_underlying = d2m.ir.CBType.cast(cb_val.type).get_underlying()
+                if method_name == "reserve":
+                    acquire_result = d2m.reserve(cb_underlying, cb_val)
+                    releases.append((d2m.push, cb_val))
+                else:  # wait
+                    acquire_result = d2m.wait(cb_underlying, cb_val)
+                    releases.append((d2m.pop, cb_val))
+
+                if optional_vars is not None:
+                    if not isinstance(optional_vars, ast.Name):
+                        raise NotImplementedError(
+                            "'with ... as var' requires a simple variable name"
+                        )
+                    self.symbol_tables[-1][optional_vars.id] = acquire_result
 
             for stmt in node.body:
                 self.visit(stmt)
 
-            release_op(cb_val)
+            # Release in reverse order
+            for release_op, cb_val in reversed(releases):
+                release_op(cb_val)
 
 
 def syntax(syntax_name):

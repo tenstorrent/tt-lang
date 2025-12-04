@@ -6,9 +6,8 @@
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 
-# Verify: 'with' statement syntax for CircularBuffer reserve()
-# Producer: with cb.reserve() as blk: ... (implicit push at end of scope)
-# Consumer: wait() + pop() (explicit, unchanged)
+# Verify: 'with' statement syntax for CircularBuffer
+# Acquire ops left-to-right, release ops in reverse order
 
 import torch
 from ttlang.d2m_api import *
@@ -20,19 +19,9 @@ def test_cb_with_syntax(lhs, rhs, out):
     def compute_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
-        # Consumer pattern: wait() to acquire, pop() to release (explicit)
-        shard = lhs_cb.wait()
-        shard2 = rhs_cb.wait()
-
-        # Producer pattern using 'with' statement: reserve() with implicit push()
-        with out_cb.reserve() as out_shard:
+        with lhs_cb.wait() as shard, rhs_cb.wait() as shard2, out_cb.reserve() as out_shard:
             result = shard + shard2
             out_shard.store(result)
-            # implicit out_cb.push() at end of scope
-
-        # Explicit releases for consumer
-        lhs_cb.pop()  # Signal consumption of lhs
-        rhs_cb.pop()  # Signal consumption of rhs
 
     @datamovement()
     def dm_thread(
@@ -44,22 +33,24 @@ def test_cb_with_syntax(lhs, rhs, out):
 
 
 # CHECK: func.func @test_cb_with_syntax
+# CHECK: ^compute{{[0-9]+}}(%[[CB0:.+]]: !d2m.cb<{{.*}}>, %[[CB1:.+]]: !d2m.cb<{{.*}}>, %[[CB2:.+]]: !d2m.cb<{{.*}}>):
 
-# Verify: CB operations in compute region
-# CHECK: ^compute{{[0-9]+}}
-# CHECK: %[[SHARD:.+]] = d2m.wait %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
-# CHECK: %[[OUT_SHARD:.+]] = d2m.reserve %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
+# Acquire ops in left-to-right order: wait(cb0), wait(cb1), reserve(cb2)
+# CHECK: d2m.wait %[[CB0]]
+# CHECK: d2m.wait %[[CB1]]
+# CHECK: d2m.reserve %[[CB2]]
 
-# Verify: push is generated from the 'with' statement (implicit at end of scope)
-# CHECK: d2m.push %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
-
-# Verify: pop operations for consumer
-# CHECK: d2m.pop %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
+# Release ops in reverse order: push(cb2), pop(cb1), pop(cb0)
+# CHECK: d2m.push %[[CB2]]
+# CHECK: d2m.pop %[[CB1]]
+# CHECK: d2m.pop %[[CB0]]
 
 # CHECK-LOWERED: func.func @test_cb_with_syntax
 # CHECK-LOWERED: emitc.call_opaque "cb_wait_front"
+# CHECK-LOWERED: emitc.call_opaque "cb_wait_front"
 # CHECK-LOWERED: emitc.call_opaque "cb_reserve_back"
 # CHECK-LOWERED: emitc.call_opaque "cb_push_back"
+# CHECK-LOWERED: emitc.call_opaque "cb_pop_front"
 # CHECK-LOWERED: emitc.call_opaque "cb_pop_front"
 
 lhs = torch.randn(64, 64)
