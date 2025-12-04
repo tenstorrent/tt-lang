@@ -55,5 +55,10 @@ runs:
       shell: bash
       run: |
         cd ${{ inputs.tt-mlir-path }}
-        cmake -B env/build env
+        cmake -GNinja -DCMAKE_BUILD_TYPE=Release -B env/build env
         cmake --build env/build
+
+    - name: Cleanup toolchain to reduce cache size
+      if: steps.check-toolchain.outputs.restored != 'true'
+      shell: bash
+      run: .github/scripts/cleanup-macos-toolchain.sh

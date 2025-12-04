@@ -99,7 +99,6 @@ jobs:
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
         run: |
           set -x
-          df -h
           cd tt-mlir
           source env/activate
           ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
@@ -118,7 +117,15 @@ jobs:
             -DBUILD_TESTING=OFF \
             -S .
           cmake --build build
-          pwd && find . -name "*.whl" -ls
+
+      - name: Build ttrt
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: |
+          set -x
+          cd tt-mlir
+          source env/activate
+          cmake --build build --target ttrt
+          find build -name ttrt -type f
 
       - name: Copy ttrt wheel to install directory
         if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
