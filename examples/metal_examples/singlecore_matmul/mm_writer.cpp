@@ -19,9 +19,9 @@ void kernel_main() {
   constexpr auto s_args = TensorAccessorArgs<0>();
   const auto s = TensorAccessor(s_args, dst_addr, get_tile_size(cb_id_out0));
 
-  // Loop through the matrix dimensions Mt and Nt. bmm will generate C's tiles
-  // C=A*B, MN=MK*KN, in row major order, we just read them from CB and write
-  // out to DRAM
+  // Loop through the matrix dimensions Mt and Nt. mm_compute matmul will
+  // generate C's tiles C=A*B, MN=MK*KN, in row major order, we just read them
+  // from CB and write out to DRAM
   for (uint32_t m = 0; m < Mt; ++m) {
     for (uint32_t n = 0; n < Nt; ++n) {
       // Wait for the matrix multiplication kernel to produce an output

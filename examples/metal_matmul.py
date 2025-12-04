@@ -196,4 +196,13 @@ def test_singlecore_matmul():
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+
     singlecore_matmul(a, b, c)
+
+    golden = torch.matmul(
+        ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
+    )
+    result = ttnn.to_torch(c).to(torch.bfloat16)
+    assert_with_ulp(golden, result)
+
+    ttnn.close_device(device)

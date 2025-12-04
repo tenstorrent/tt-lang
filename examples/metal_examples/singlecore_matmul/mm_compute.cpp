@@ -10,35 +10,6 @@
 using std::uint32_t;
 
 namespace NAMESPACE {
-/**
- * @brief Main kernel function for batched matrix multiplication (BMM).
- *
- * This function performs a blocked outer product matrix multiplication using
- * tiles. It initializes the matrix engine (FPU) and sets up circular buffers
- * for input and output. For each output tile (indexed by mt and nt), it:
- *   - Acquires the destination buffer.
- *   - Iterates over the K dimension (kt), waiting for input tiles to be
- * available in the circular buffers.
- *   - Performs a tile-wise matrix multiplication using `matmul_tiles`.
- *   - Pops the used tiles from the input buffers.
- *   - After processing all K tiles, reserves space in the output buffer, packs
- * the result tile, and pushes it to the output buffer.
- *   - Releases the destination buffer.
- *
- * Compile-time arguments:
- *   - Mt: Number of output tile rows.
- *   - Kt: Number of tiles in the reduction dimension.
- *   - Nt: Number of output tile columns.
- *
- * Circular buffers:
- *   - cb_in0: Input buffer for matrix A tiles.
- *   - cb_in1: Input buffer for matrix B tiles.
- *   - cb_out: Output buffer for result tiles.
- *
- * Assumes that input tiles are provided in the correct order and that the
- * reader is responsible for supplying the appropriate tiles for each output
- * tile computation.
- */
 void MAIN {
   const uint32_t Mt = get_compile_time_arg_val(0);
   const uint32_t Kt = get_compile_time_arg_val(1);
