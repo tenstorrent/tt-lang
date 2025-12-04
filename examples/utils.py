@@ -40,6 +40,7 @@ def assert_allclose(
     Computes both absolute and relative errors with informative failure messages
     showing error statistics and worst-case locations.
 
+
     Args:
         actual: Actual output tensor
         expected: Expected tensor
@@ -114,6 +115,7 @@ Mismatched elements: {(abs_diff > atol + rtol * torch.abs(expected)).sum().item(
             f"max_rel_error={max_rel_error:.6e}, rtol={rtol}, atol={atol}"
         )
 
+
 def ulp(x: torch.Tensor) -> torch.Tensor:
     "Return Unit of Least Precision for each element of a given tensor"
     # Notes:
@@ -172,13 +174,18 @@ def comp_ulp(golden, calculated, ulp_threshold, allow_nonfinite=False):
     # e.g. ulp of float32 rather bfloat16 calculation, which would give us a wrong value.
     ulp_value = ulp(golden.type(calculated.dtype))
 
-    if golden.dtype != calculated.dtype:  # Note: assumes that golden has higher precision than calculated tensor
+    if (
+        golden.dtype != calculated.dtype
+    ):  # Note: assumes that golden has higher precision than calculated tensor
         calculated = calculated.type(golden.dtype)
-        ulp_value = ulp_value.type(golden.dtype)  # Convert ULP to higher precision (for sub-1 ULP measurements)
+        ulp_value = ulp_value.type(
+            golden.dtype
+        )  # Convert ULP to higher precision (for sub-1 ULP measurements)
 
     ulp_delta = torch.max(torch.abs(calculated - golden) / ulp_value)
 
     return (ulp_delta <= ulp_threshold, f"Max ULP Delta: {ulp_delta}")
+
 
 def assert_with_ulp(
     expected_result: torch.Tensor,
@@ -252,6 +259,8 @@ def assert_with_ulp(
             f"ULP threshold {ulp_threshold} is greater than the maximum meaningful ULP threshold of {maximum_meaningful_ulp_threshold} for dtype {expected_result.dtype}"
         )
 
-    ulp_passed, ulp_message = comp_ulp(expected_result, actual_result, ulp_threshold, allow_nonfinite)
+    ulp_passed, ulp_message = comp_ulp(
+        expected_result, actual_result, ulp_threshold, allow_nonfinite
+    )
     assert ulp_passed, ulp_message
     return ulp_passed, ulp_message
