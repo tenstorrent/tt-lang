@@ -216,12 +216,10 @@ class D2MGenericCompiler(TTCompilerBase):
 
     def visit_With(self, node):
         """
-        Handle 'with cb.reserve() as blk:' for implicit push at scope end.
+        Handle 'with' for CircularBuffer with implicit release at scope end.
 
-        Example:
-            with out_cb.reserve() as out_blk:
-                out_blk.store(result)
-                # implicit out_cb.push() here
+        Producer: with cb.reserve() as blk: ... # implicit push()
+        Consumer: with cb.wait() as blk: ...    # implicit pop()
         """
         with self.loc:
             if len(node.items) != 1:
@@ -246,9 +244,9 @@ class D2MGenericCompiler(TTCompilerBase):
             method_name = context_expr.func.attr
             cb_node = context_expr.func.value
 
-            if method_name != "reserve":
+            if method_name not in ("reserve", "wait"):
                 raise NotImplementedError(
-                    f"'with' only supports 'reserve()', got '{method_name}'"
+                    f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'"
                 )
 
             if not isinstance(cb_node, ast.Name):
@@ -261,21 +259,25 @@ class D2MGenericCompiler(TTCompilerBase):
                 raise NameError(f"'{cb_node.id}' not found in scope")
             cb_val = cb_table[cb_node.id]
 
-            reserve_result = d2m.reserve(
-                d2m.ir.CBType.cast(cb_val.type).get_underlying(), cb_val
-            )
+            cb_underlying = d2m.ir.CBType.cast(cb_val.type).get_underlying()
+            if method_name == "reserve":
+                acquire_result = d2m.reserve(cb_underlying, cb_val)
+                release_op = d2m.push
+            else:  # wait
+                acquire_result = d2m.wait(cb_underlying, cb_val)
+                release_op = d2m.pop
 
             if optional_vars is not None:
                 if not isinstance(optional_vars, ast.Name):
                     raise NotImplementedError(
                         "'with ... as var' requires a simple variable name"
                     )
-                self.symbol_tables[-1][optional_vars.id] = reserve_result
+                self.symbol_tables[-1][optional_vars.id] = acquire_result
 
             for stmt in node.body:
                 self.visit(stmt)
 
-            d2m.push(cb_val)
+            release_op(cb_val)
 
 
 def syntax(syntax_name):
