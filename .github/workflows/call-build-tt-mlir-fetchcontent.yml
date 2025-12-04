@@ -97,7 +97,7 @@ jobs:
                   set -x
                   mkdir -p tt-mlir-install/wheels
                   find build -name "*.whl" -exec cp -v {} tt-mlir-install/wheels/ \;
-                  ls -la tt-mlir-install/wheels/ || echo "No wheels found"
+                  mv build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
 
             - name: Clean up tt-mlir build directory to save disk space
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
