@@ -125,15 +125,6 @@ jobs:
           cd tt-mlir
           source env/activate
           cmake --build build --target ttrt
-          find build -name ttrt -type f
-
-      - name: Copy ttrt wheel to install directory
-        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: |
-          # The wheel is built during main build (ttrt has ALL target)
-          # Copy wheel BEFORE install step to prevent rebuild from deleting it
-          # Wheel location after archive: tt-mlir-install/wheels/*.whl
-          set -x
           mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
           cp tt-mlir/build/tools/ttrt/build/*.whl ${{ env.TT_MLIR_DIR }}/wheels/
 

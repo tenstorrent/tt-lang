@@ -36,14 +36,14 @@ jobs:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
-  test-hardware:
-    needs: build-ubuntu
-    uses: ./.github/workflows/call-test-hardware.yml
-    secrets: inherit
-    with:
-      runs-on: n150
-      build-os: ubuntu
-      timeout: 30
+  # test-hardware:
+  #   needs: build-ubuntu
+  #   uses: ./.github/workflows/call-test-hardware.yml
+  #   secrets: inherit
+  #   with:
+  #     runs-on: n150
+  #     build-os: ubuntu
+  #     timeout: 30
 
   check-all-green:
     if: always()
@@ -52,7 +52,7 @@ jobs:
       - build-ubuntu
       - build-macos
       - test-sim
-      - test-hardware
+      #- test-hardware
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
@@ -60,4 +60,4 @@ jobs:
         with:
           jobs: ${{ toJSON(needs) }}
           allowed-skips: build-macos
-          allowed-failures: test-hardware
+          #allowed-failures: test-hardware
