@@ -464,5 +464,5 @@ sed -n '/After D2MAllocate/,/^\/\/ -----\/\/ IR Dump Before/p' /tmp/full_pipelin
 
 ### Miscellaneous
 
-- Do not overuse formatting, e.g., bold fonts. Use emphasis (bold and 
+- Do not overuse formatting, e.g., bold fonts. Use emphasis (bold and
 italics) spearingly. Use proper markdown for any code references.

@@ -835,7 +835,7 @@ def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
     constructs the `ttl.program` MLIR operation with up to three thread regions.
     The `ttl.kernel` operation is an internal representation used during compilation;
     the top-level operation exposed to the Python API is `ttl.program`.
-    
+
     Container for kernel execution. Owns captured tensors and nested thread regions.
     Regions execute in parallel on grid of cores.
   }];
@@ -2931,16 +2931,16 @@ class TensorBlock:
     def __add__(ast_self, rhs):
         # Generate ttl.block_add instead of linalg.generic
         return ttl.block_add(ast_self, rhs)
-    
+
     def __sub__(ast_self, rhs):
         return ttl.block_sub(ast_self, rhs)
-    
+
     def __mul__(ast_self, rhs):
         return ttl.block_mul(ast_self, rhs)
-    
+
     def __truediv__(ast_self, rhs):
         return ttl.block_div(ast_self, rhs)
-    
+
     def __pow__(ast_self, rhs):
         return ttl.block_pow(ast_self, rhs)
 
@@ -2962,11 +2962,11 @@ class MathFunctions:
     @staticmethod
     def sqrt(x):
         return ttl.math.sqrt(x)
-    
+
     @staticmethod
     def exp(x):
         return ttl.math.exp(x)
-    
+
     # ... other math functions
 ```
 
@@ -2990,7 +2990,7 @@ class CircularBuffer:
     def pop(self):
         num_tiles = self.get_num_tiles()
         return ttl.cb_pop(self.handle, num_tiles)
-    
+
     def push(self):
         num_tiles = self.get_num_tiles()
         return ttl.cb_push(self.handle, num_tiles)
@@ -3756,4 +3756,3 @@ composable Transform dialect model for scheduling.
 - **Current D2M Pipeline**: `python/ttlang/d2m_api.py`
 - **TTKernel Dialect**: `../tt-mlir/include/ttmlir/Dialect/TTKernel/IR/`
 - **LLVM Upstream**: https://github.com/llvm/llvm-project/
-
