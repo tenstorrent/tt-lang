@@ -35,6 +35,6 @@ jobs:
 
       - name: Run Python simulation tests
         env:
-          PYTHONPATH: ${{ github.workspace }}/python/sim
+          PYTHONPATH: ${{ github.workspace }}/python:${{ github.workspace }}/examples
         run: |
           pytest test/sim/ -v

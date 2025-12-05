@@ -9,11 +9,12 @@ enabling data transfer operations between tensors and RingViews in the
 CircularBuffer system.
 """
 
-from typing import Union, List
-import torch
-from . import torch_utils as tu
-from .ringview import RingView
-from .constants import TILE_SIZE, TILE_SHAPE
+from .dmahandlers import (
+    DMATransferHandler,
+    DMAEndpoint,
+    DMAEndpointType,
+    handler_registry,
+)
 
 
 class DMATransaction:
@@ -31,107 +32,82 @@ class DMATransaction:
 
     def __init__(
         self,
-        src: Union[torch.Tensor, RingView[torch.Tensor]],
-        dst: Union[torch.Tensor, RingView[torch.Tensor]],
+        src: DMAEndpoint,
+        dst: DMAEndpoint,
     ):
         """
         Initialize a DMA transaction from src to dst.
 
         Args:
-            src: Source data (tensor or RingView)
-            dst: Destination (tensor or RingView)
+            src: Source data (tensor, RingView, or MulticastAddress)
+            dst: Destination (tensor, RingView, or MulticastAddress)
 
         Raises:
             ValueError: If the source and destination types are not supported
         """
-        # Validate supported type combinations immediately
-        if isinstance(src, torch.Tensor) and isinstance(dst, RingView):
-            # tensor → RingView: supported
-            pass
-        elif isinstance(src, RingView) and isinstance(dst, torch.Tensor):
-            # RingView → tensor: supported
-            pass
-        else:
-            # Unsupported type combination
-            src_type = type(src).__name__
-            dst_type = type(dst).__name__
-            raise ValueError(
-                f"Unsupported DMA transfer from {src_type} to {dst_type}. "
-                f"Only tensor↔RingView transfers are supported."
-            )
-
         self._src = src
         self._dst = dst
         self._completed = False
 
-    # In this simulation context, we elect to do the dma transfer right at the
-    # wait() call to render the wait() call meaningful. The alternatives would
-    # be to do the transfer at the time of dma() call (which would make wait() a
-    # no-op) or to spawn a background thread to do the transfer asynchronously
-    # (which would complicate the simulation unnecessarily).
+        # Lookup and store the handler for this type combination
+        handler = self._lookup_handler(type(src), type(dst))
+        self._handler = handler
+
+        # Validate immediately
+        try:
+            handler.validate(src, dst)
+        except Exception as e:
+            src_type = type(src).__name__
+            dst_type = type(dst).__name__
+            raise ValueError(
+                f"Unsupported or invalid DMA transfer from {src_type} to {dst_type}: {e}"
+            ) from e
+
+    @staticmethod
+    def _lookup_handler(
+        src_type: DMAEndpointType, dst_type: DMAEndpointType
+    ) -> DMATransferHandler:
+        """
+        Look up the handler for a given (src_type, dst_type) pair.
+
+        Args:
+            src_type: Source type class (must be a valid DMA endpoint type)
+            dst_type: Destination type class (must be a valid DMA endpoint type)
+
+        Returns:
+            The registered handler for this type combination
+
+        Raises:
+            ValueError: If no handler is registered for this type combination
+        """
+        try:
+            return handler_registry[(src_type, dst_type)]
+        except KeyError:
+            raise ValueError(
+                f"No DMA handler registered for ({src_type.__name__}, {dst_type.__name__})"
+            )
+
     def wait(self) -> None:
         """
         Wait for the DMA transaction to complete.
 
         In this simulation, the transfer is performed immediately when wait()
-        is called. In a real implementation, this would block until the
-        asynchronous transfer completes.
+        is called by delegating to the registered handler's transfer() method.
+        In a real implementation, this would block until the asynchronous
+        transfer completes.
 
         Raises:
             ValueError: If the transfer operation fails
         """
-        if not self._completed:
-            # In simulation, we perform the copy immediately
-            # Type combinations are already validated in __init__
-            if isinstance(self._src, torch.Tensor) and isinstance(self._dst, RingView):
-                # Copying from tensor to RingView - split tensor into individual tiles
-                try:
-                    # Calculate total number of tiles in the tensor
-                    num_tiles = tu.tile_count(self._src.shape, TILE_SHAPE)
-                    expected_tiles = len(self._dst)
+        if self._completed:
+            return
 
-                    if num_tiles != expected_tiles:
-                        raise ValueError(
-                            f"Tensor contains {num_tiles} tiles but RingView has {expected_tiles} slots"
-                        )
+        try:
+            self._handler.transfer(self._src, self._dst)
+        except Exception as e:
+            raise ValueError(f"DMA transfer failed: {e}") from e
 
-                    # Split tensor into individual tiles and place each in a RingView slot
-                    for i in range(num_tiles):
-                        start_row = i * TILE_SIZE
-                        end_row = (i + 1) * TILE_SIZE
-                        tile = self._src[start_row:end_row, :]  # Extract one tile
-                        self._dst[i] = tile
-
-                except Exception as e:
-                    raise ValueError(f"Failed to transfer tensor to RingView: {e}")
-            elif isinstance(self._src, RingView) and isinstance(
-                self._dst, torch.Tensor
-            ):
-                # Copying from RingView to tensor - combine individual tiles into one tensor
-                try:
-
-                    dst_tiles = tu.tile_count(self._dst.shape, TILE_SHAPE)
-                    if len(self._src) != dst_tiles:
-                        raise ValueError(
-                            f"Expected {len(self._src)} tiles but found {dst_tiles}"
-                        )
-
-                    # Collect all tiles from RingView and concatenate them in row-major order
-                    tiles: List[torch.Tensor] = []
-                    for i in range(dst_tiles):
-                        tile = self._src[i]
-                        tiles.append(tile)
-
-                    # Concatenate tiles in row-major order to reconstruct the original tensor
-                    reconstructed_tensor = tu.cat(tiles, dim=0)
-
-                    # Copy reconstructed tensor to destination
-                    self._dst[:] = reconstructed_tensor
-
-                except Exception as e:
-                    raise ValueError(f"Failed to transfer RingView to tensor: {e}")
-            # Note: No else case needed since types are validated in __init__
-            self._completed = True
+        self._completed = True
 
     @property
     def completed(self) -> bool:
@@ -140,8 +116,8 @@ class DMATransaction:
 
 
 def dma(
-    src: Union[torch.Tensor, RingView[torch.Tensor]],
-    dst: Union[torch.Tensor, RingView[torch.Tensor]],
+    src: DMAEndpoint,
+    dst: DMAEndpoint,
 ) -> DMATransaction:
     """
     Create a DMA transaction from source to destination.
@@ -152,10 +128,12 @@ def dma(
     Supported transfer patterns:
     - torch.Tensor → RingView: Load tensor data into circular buffer
     - RingView → torch.Tensor: Extract tensor data from circular buffer
+    - RingView → MulticastAddress: Broadcast data to multiple cores (multicast send)
+    - MulticastAddress → RingView: Receive broadcasted data from multicast (multicast receive)
 
     Args:
-        src: Source data (tensor or RingView)
-        dst: Destination (tensor or RingView)
+        src: Source data (tensor, RingView, or MulticastAddress)
+        dst: Destination (tensor, RingView, or MulticastAddress)
 
     Returns:
         DMATransaction object that can be waited on

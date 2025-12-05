@@ -6,7 +6,9 @@
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 
-# Verify: CircularBuffer.pop() generates d2m.wait and CircularBuffer.reserve() generates d2m.reserve.
+# Verify: Explicit push/pop API for CircularBuffer
+# Consumer: wait() + pop()
+# Producer: reserve() + push()
 
 import torch
 from ttlang.d2m_api import *
@@ -15,20 +17,25 @@ from ttlang.d2m_api import *
 @pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_cb_ops(lhs, rhs, out):
     @compute()
-    async def compute_thread(
+    def compute_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
-        # Verify: CB.pop() generates d2m.wait
-        shard = lhs_cb.pop()
-        shard2 = rhs_cb.pop()
-        # Verify: CB.reserve() generates d2m.reserve
+        # Consumer pattern: wait() to acquire, pop() to release
+        shard = lhs_cb.wait()
+        shard2 = rhs_cb.wait()
+
+        # Producer pattern: reserve() to acquire, push() to release
         out_shard = out_cb.reserve()
         result = shard + shard2
         out_shard.store(result)
-        out_cb.pop()
+
+        # Explicit releases
+        lhs_cb.pop()  # Signal consumption of lhs
+        rhs_cb.pop()  # Signal consumption of rhs
+        out_cb.push()  # Signal production of out
 
     @datamovement()
-    async def dm_thread(
+    def dm_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         pass
@@ -42,10 +49,14 @@ def test_cb_ops(lhs, rhs, out):
 # CHECK: ^compute{{[0-9]+}}
 # CHECK: %[[SHARD:.+]] = d2m.wait %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
 # CHECK: %[[OUT_SHARD:.+]] = d2m.reserve %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
+# CHECK: d2m.pop %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
+# CHECK: d2m.push %{{.+}} : <tensor<1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>>>
 
 # CHECK-LOWERED: func.func @test_cb_ops
 # CHECK-LOWERED: emitc.call_opaque "cb_wait_front"
+# CHECK-LOWERED: emitc.call_opaque "cb_pop_front"
 # CHECK-LOWERED: emitc.call_opaque "cb_reserve_back"
+# CHECK-LOWERED: emitc.call_opaque "cb_push_back"
 
 lhs = torch.randn(64, 64)
 rhs = torch.randn(64, 64)

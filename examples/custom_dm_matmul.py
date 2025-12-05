@@ -40,7 +40,7 @@ def matmul(lhs, rhs, out, block_factors=None, grid=None):
     rhs_accessor = TensorAccessor(rhs)
 
     @compute()
-    async def mm(
+    def mm(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -60,7 +60,7 @@ def matmul(lhs, rhs, out, block_factors=None, grid=None):
                     out_cb.pop()  # compute needs to clear the output
 
     @datamovement()
-    async def dm0(
+    def dm0(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -91,7 +91,7 @@ def matmul(lhs, rhs, out, block_factors=None, grid=None):
                     lhs_sender_sent.wait(1, reset=0)
 
     @datamovement()
-    async def dm1(
+    def dm1(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,

@@ -8,8 +8,8 @@ TensorAccessor implementation for PyTorch tensor access with tile-based indexing
 from typing import Tuple
 import torch
 
-from .constants import TILE_SIZE
-from .idxtype import IndexType
+from .constants import TILE_SHAPE
+from .typedefs import IndexType
 
 
 # TODO: We only support 2D tensors and 32 x 32 tiles for now, just enough to
@@ -21,8 +21,8 @@ class TensorAccessor:
     A TensorAccessor provides tile-indexed access to 2D PyTorch tensors.
 
     TensorAccessors abstract tensor access and enforce tile-aligned reads. All indexing
-    is done in tile coordinates, where each tile is TILE_SIZE x TILE_SIZE
-    (currently 32 x 32). Only 2D tensors are supported currently.
+    is done in tile coordinates, where each tile has shape TILE_SHAPE
+    (currently (32, 32)). Only 2D tensors are supported currently.
 
     Usage:
         tensor = torch.randn(128, 128)  # 4x4 tiles, must be 2D
@@ -42,7 +42,7 @@ class TensorAccessor:
 
         Raises:
             ValueError: If tensor is not 2D
-            ValueError: If tensor dimensions aren't multiples of TILE_SIZE
+            ValueError: If tensor dimensions aren't multiples of tile dimensions
             ValueError: If index_type is not IndexType.TILE
         """
         if index_type != IndexType.TILE:
@@ -57,12 +57,12 @@ class TensorAccessor:
         self.index_type = index_type
         self.shape = tensor.shape
 
-        # Validate tensor is properly tiled (multiples of TILE_SIZE)
+        # Validate tensor is properly tiled (multiples of tile dimensions)
         for i, dim_size in enumerate(self.shape):
-            if dim_size % TILE_SIZE != 0:
+            if dim_size % TILE_SHAPE[i] != 0:
                 raise ValueError(
                     f"Tensor dimension {i} has size {dim_size} which is not "
-                    f"a multiple of TILE_SIZE={TILE_SIZE}"
+                    f"a multiple of tile dimension {TILE_SHAPE[i]} from TILE_SHAPE={TILE_SHAPE}"
                 )
 
     # The slices are restricted to the use cases seen in the examples here:
@@ -116,11 +116,11 @@ class TensorAccessor:
         self._validate_slice_format(col_slice, "col")
 
         # Convert tile slices to element slices
-        row_start = row_slice.start * TILE_SIZE
-        row_stop = row_slice.stop * TILE_SIZE
+        row_start = row_slice.start * TILE_SHAPE[0]
+        row_stop = row_slice.stop * TILE_SHAPE[0]
 
-        col_start = col_slice.start * TILE_SIZE
-        col_stop = col_slice.stop * TILE_SIZE
+        col_start = col_slice.start * TILE_SHAPE[1]
+        col_stop = col_slice.stop * TILE_SHAPE[1]
 
         return self.tensor[slice(row_start, row_stop), slice(col_start, col_stop)]
 
@@ -140,17 +140,17 @@ class TensorAccessor:
         self._validate_slice_format(col_slice, "col")
 
         # Convert tile slices to element slices
-        row_start = row_slice.start * TILE_SIZE
-        row_stop = row_slice.stop * TILE_SIZE
+        row_start = row_slice.start * TILE_SHAPE[0]
+        row_stop = row_slice.stop * TILE_SHAPE[0]
 
-        col_start = col_slice.start * TILE_SIZE
-        col_stop = col_slice.stop * TILE_SIZE
+        col_start = col_slice.start * TILE_SHAPE[1]
+        col_stop = col_slice.stop * TILE_SHAPE[1]
 
         self.tensor[slice(row_start, row_stop), slice(col_start, col_stop)] = value
 
     def get_tile_shape(self) -> Tuple[int, int]:
         """Get the tensor shape in tiles rather than elements."""
-        return (self.shape[0] // TILE_SIZE, self.shape[1] // TILE_SIZE)
+        return (self.shape[0] // TILE_SHAPE[0], self.shape[1] // TILE_SHAPE[1])
 
     def validate_tile_coordinates(self, key: Tuple[slice, slice]) -> bool:
         """Validate that the given coordinates are within tile bounds."""
@@ -179,14 +179,8 @@ class TensorAccessor:
 
         return True
 
-    @property
-    def tile_size(self) -> int:
-        """Get the tile size used by this TensorAccessor."""
-        return TILE_SIZE
-
     def __repr__(self) -> str:
         return (
             f"TensorAccessor(tensor_shape={self.shape}, "
-            f"tile_shape={self.get_tile_shape()}, "
-            f"tile_size={TILE_SIZE})"
+            f"tile_shape={self.get_tile_shape()})"
         )
