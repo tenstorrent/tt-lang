@@ -1,7 +1,7 @@
 # TTL Dialect Design Plan
 
-**Version**: 1.0
-**Date**: 2025-01-XX
+**Version**: 0.5
+**Date**: 2025-12-04
 **Status**: Design Phase
 
 This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermediate representation designed to directly capture the semantics of the TT-lang DSL. The TTL dialect enables multi-stage compilation with explicit transformation passes for synchronization inference, resource allocation, and hardware-specific optimizations before lowering to executable kernels.
@@ -97,6 +97,18 @@ Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTM
 
 *Key difference*: TTL provides DSL-specific IR enabling TT-lang-aware transformations before lowering through TTKernel/TTMetal to C++ kernels. The generated C++ compiles separately and executes on the TTNN runtime.
 
+**Relationship to D2M Dialect:**
+
+TTL and D2M serve different roles in the compilation pipeline:
+
+- **TTL**: New frontend dialect specifically designed for the TT-lang DSL. TTL bypasses D2M and goes directly to TTKernel dialect, enabling TT-lang-specific optimizations and transformations.
+
+- **D2M**: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR → D2M → TTKernel). D2M serves as a general-purpose data movement and compute abstraction.
+
+- **Convergence**: Both TTL and D2M paths converge at the TTKernel dialect, sharing the same backend lowering to EmitC and C++ code generation.
+
+This separation allows TTL to focus on TT-lang DSL semantics while D2M continues to serve framework integration needs.
+
 ---
 
 ## 3. Type System
@@ -145,8 +157,11 @@ def TTL_MemoryTransaction : TTL_Type<"MemoryTransaction", "mem_tx"> {
   let summary = "Handle for DMA operation ordering (lowers to global barrier)";
   let description = [{
     Note: TTKernel doesn't support per-transaction waits. All ttl.wait
-    operations lower to global DMA barriers. This type exists for ordering
+    operations lower to global DMA barriers (`ttkernel.noc_async_read_barrier`
+    or `ttkernel.noc_async_write_barrier`). This type exists for ordering
     and future optimization opportunities.
+    See: `~/tt/tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
+    `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
 }
 
@@ -231,6 +246,12 @@ def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
   );
   let regions = (region VariadicRegion<SizedRegion<1>>:$body);
   let description = [{
+    Python API `ttl.Program(compute_thread, dm_thread0, dm_thread1)(x, y)` maps
+    to this operation. The `ttl.Program()` constructor is a Python API that
+    constructs the `ttl.program` MLIR operation with up to three thread regions.
+    The `ttl.kernel` operation is an internal representation used during compilation;
+    the top-level operation exposed to the Python API is `ttl.program`.
+    
     Container for kernel execution. Owns captured tensors and nested thread regions.
     Regions execute in parallel on grid of cores.
   }];
@@ -291,6 +312,13 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
     TTL_MemorySpaceAttr:$memory_space // L1, DRAM, DST
   );
   let results = (outs TTL_CircularBuffer:$result);
+  let description = [{
+    Python API `ttl.make_circular_buffer_like(tensor, shape=..., buffer_factor=...)`
+    maps to this operation. The Python frontend extracts tensor properties
+    (dtype, tile shape from layout) and calls `ttl.create_cb` with the extracted
+    parameters. The "likeness" refers to deriving tile_type and memory_space
+    from the input tensor's layout and properties.
+  }];
 }
 
 def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
@@ -310,6 +338,39 @@ def TTL_CreateSemaphoreOp : TTL_Op<"create_semaphore"> {
     OptionalAttr<BoolAttr>:$is_remote
   );
   let results = (outs TTL_Semaphore:$semaphore);
+}
+
+def TTL_GetRemoteSemaphoreOp : TTL_Op<"get_remote_semaphore"> {
+  let summary = "Create remote unicast semaphore reference";
+  let arguments = (ins
+    TTL_Semaphore:$semaphore,
+    I64ArrayAttr:$core                     // Target core coordinates
+  );
+  let results = (outs TTL_Semaphore:$remote_semaphore);
+  let description = [{
+    Python API `semaphore.get_remote(core)` maps to this operation.
+    Creates an annotated semaphore reference for remote unicast operations.
+    The returned semaphore reference is used with `ttl.semaphore_set` and
+    `ttl.semaphore_inc` operations. This is a compile-time operation that
+    annotates the semaphore with target core information.
+  }];
+}
+
+def TTL_GetRemoteMulticastSemaphoreOp : TTL_Op<"get_remote_multicast_semaphore"> {
+  let summary = "Create remote multicast semaphore reference";
+  let arguments = (ins
+    TTL_Semaphore:$semaphore,
+    OptionalAttr<ArrayAttr>:$core_range    // Multicast core range, empty = entire grid
+  );
+  let results = (outs TTL_Semaphore:$remote_semaphore);
+  let description = [{
+    Python API `semaphore.get_remote_multicast(core_range)` maps to this operation.
+    When called with no arguments, returns multicast semaphore for entire grid.
+    Creates an annotated semaphore reference for remote multicast operations.
+    The returned semaphore reference is used with `ttl.semaphore_set` operation
+    (multicast semaphores support set but not inc). This is a compile-time
+    operation that annotates the semaphore with multicast range information.
+  }];
 }
 
 def TTL_TensorAccessorOp : TTL_Op<"tensor_accessor"> {
@@ -350,7 +411,12 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve"> {
     TTL_CircularBuffer:$cb,
     I64Attr:$num_tiles                // Number of tiles to reserve
   );
-  // Blocking operation - no result, tiles accessed via pack_tile
+  let description = [{
+    Python API `cb.reserve()` maps to this operation. When used with Python
+    `with` statement (`with cb.reserve() as blk:`), the AST compiler generates
+    `ttl.cb_reserve` at the start of the scope and `ttl.cb_push` at the end.
+    Blocking operation - no result, tiles accessed via pack_tile.
+  }];
 }
 
 def TTL_CBPushOp : TTL_Op<"cb_push"> {
@@ -359,7 +425,10 @@ def TTL_CBPushOp : TTL_Op<"cb_push"> {
     TTL_CircularBuffer:$cb,
     I64Attr:$num_tiles                // Number of tiles to push
   );
-  // Non-blocking operation
+  let description = [{
+    Python API `cb.push()` maps to this operation. Automatically generated
+    at the end of a `with cb.reserve()` scope. Non-blocking operation.
+  }];
 }
 
 def TTL_GetTileOp : TTL_Op<"get_tile"> {
@@ -409,8 +478,16 @@ def TTL_BlockStoreOp : TTL_Op<"block_store"> {
   let summary = "Store computation result to circular buffer block";
   let arguments = (ins AnyTensor:$dst, AnyTensor:$src);
   let description = [{
+    Python API `block.store(value)` maps to this operation.
     Blocking operation that materializes result and stores in block.
     Lowers to per-tile pack operations with DST register management.
+    
+    Block expression semantics:
+    - Block expressions (e.g., `a_blk ** 2`, `a_blk + b_blk`) are evaluated lazily
+    - Python operators (`**`, `+`, `-`, `*`, etc.) map to corresponding TTL block operations
+    - `ttl.math.*` functions map to TTL math operations
+    - `store()` materializes the result and blocks execution until complete
+    - DST register allocation happens during lowering pass
   }];
 }
 
@@ -458,8 +535,57 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     - Memory space from accessor/CB types
     - NOC address calculation from coordinates
 
-    Returns transaction handle for ordering. Note: ttl.wait lowers to
-    global DMA barrier, not per-transaction wait (TTKernel limitation).
+    Returns transaction handle (SSA value of type !ttl.mem_tx) for ordering.
+    Python API `ttl.copy()` returns a transfer handle object with a `wait()`
+    method, which maps to `ttl.wait %tx` operation.
+    
+    Note: ttl.wait lowers to global DMA barrier, not per-transaction wait
+    (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
+    and `ttkernel.noc_async_write_barrier` operations which wait for all pending
+    DMA operations of the respective type, not individual transactions.
+    See: `~/tt/tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
+    `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
+  }];
+}
+
+def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
+  let summary = "Conditionally execute if current core is pipe source";
+  let arguments = (ins
+    Variadic<TTL_Pipe>:$pipes
+  );
+  let regions = (region SizedRegion<1>:$thenRegion);
+  let description = [{
+    Python API `ttl.if_pipe_src(pipes, pipe_src)` maps to this operation.
+    The region contains TTL operations that execute if the current core matches
+    any pipe's source coordinates. For multiple pipes, the compiler generates
+    a loop or nested conditionals to check each pipe.
+    
+    This operation is composable - the region can contain any TTL operations
+    including nested conditionals, DMA operations, CB operations, etc.
+    
+    Lowers to scf.if with ttl.core comparisons against pipe source coordinates.
+    The lowering pass expands multiple pipes into nested conditionals or loops.
+  }];
+}
+
+def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
+  let summary = "Conditionally execute if current core is pipe destination";
+  let arguments = (ins
+    Variadic<TTL_Pipe>:$pipes
+  );
+  let regions = (region SizedRegion<1>:$thenRegion);
+  let description = [{
+    Python API `ttl.if_pipe_dst(pipes, pipe_dst)` maps to this operation.
+    The region contains TTL operations that execute if the current core matches
+    any pipe's destination coordinates (for unicast) or is within the destination
+    range (for multicast). For multiple pipes, the compiler generates a loop
+    or nested conditionals to check each pipe.
+    
+    This operation is composable - the region can contain any TTL operations
+    including nested conditionals, DMA operations, CB operations, etc.
+    
+    Lowers to scf.if with ttl.core comparisons against pipe destination coordinates.
+    The lowering pass expands multiple pipes into nested conditionals or loops.
   }];
 }
 
@@ -467,7 +593,10 @@ def TTL_WaitOp : TTL_Op<"wait"> {
   let summary = "Wait for DMA transfer (lowers to global barrier)";
   let arguments = (ins TTL_MemoryTransaction:$tx);
   let description = [{
-    Explicit wait on transaction handle. Lowers to ttkernel.noc_async_*_barrier.
+    Explicit wait on transaction handle. Lowers to `ttkernel.noc_async_read_barrier`
+    or `ttkernel.noc_async_write_barrier` (global barriers, not per-transaction).
+    See: `~/tt/tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
+    `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
 }
 
@@ -501,6 +630,13 @@ def TTL_SemaphoreSetOp : TTL_Op<"semaphore_set"> {
     OptionalAttr<I64ArrayAttr>:$core,      // For remote unicast
     OptionalAttr<I64ArrayAttr>:$mcast      // For remote multicast
   );
+  let description = [{
+    Python API `semaphore.set(value)` and `remote_semaphore.set(value)` map
+    to this operation. For remote operations, use `ttl.get_remote_semaphore` or
+    `ttl.get_remote_multicast_semaphore` to create annotated semaphore references
+    first. The core/mcast attributes on this operation come from the remote
+    semaphore reference created by those operations.
+  }];
 }
 
 def TTL_SemaphoreIncOp : TTL_Op<"semaphore_inc"> {
@@ -510,19 +646,25 @@ def TTL_SemaphoreIncOp : TTL_Op<"semaphore_inc"> {
     I32Attr:$value,
     I64ArrayAttr:$core                     // Target core
   );
+  let description = [{
+    Python API `unicast_remote_semaphore.inc(value)` maps to this operation.
+    Only supported for unicast remote semaphores (not multicast).
+  }];
 }
 ```
 
 ### 4.7 Utility Operations
 
 ```tablegen
-def TTL_CoreIndexOp : TTL_Op<"core_index", [Pure]> {
+def TTL_CoreOp : TTL_Op<"core", [Pure]> {
   let summary = "Get current core coordinates";
   let arguments = (ins OptionalAttr<I64Attr>:$dims);
   let results = (outs Variadic<Index>:$coordinates);
   let description = [{
     Returns core coordinates in grid. Folds to constants enabling
     later canonicalization and dead code elimination.
+    
+    Note: Python API `ttl.core()` maps to this MLIR operation.
   }];
 }
 
@@ -548,6 +690,10 @@ ttl.kernel (with thread regions, tensor operands)
   ↓
 [Phase 1: Validation & Canonicalization]
   ├─ TTLValidatePass - Verify CB/pipe/semaphore contracts
+  │  ├─ CB protocol validation: wait/pop/reserve/push pairing
+  │  ├─ Thread operation restrictions: compute vs datamovement
+  │  ├─ Type compatibility checks: CB shapes, pipe connectivity
+  │  └─ Resource usage validation: L1 capacity, DST register limits
   ├─ TTLCanonicalizePass - Fold constants, simplify patterns
   └─ TTLVerifyLayoutsPass - Check tensor accessor layouts
   ↓
@@ -571,7 +717,7 @@ func.func @dm_thread_0 (memref args)
   └─ TTLAssignDSTRegisters - Allocate 16 DST registers for compute threads
   ↓
 [Phase 6: Lowering to TTKernel]
-  ├─ TTLLowerCompute - ttl.block_add → scf.for + ttkernel.add_tiles
+  ├─ TTLLowerCompute - ttl.block_add → affine.for + ttkernel.add_tiles
   ├─ TTLLowerDataMovement - ttl.copy → ttkernel.noc_async_*
   └─ TTLLowerSynchronization - ttl.cb_* → ttkernel.cb_*
   ↓
@@ -620,9 +766,20 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 - **Transform**: Extract each thread region into `func.func` with metadata
 - **Output**: Separate functions per thread, preserving grid/memory_space attrs
 
+**TTLAssignDSTRegisters**
+- **Input**: `ttl.kernel` with compute operations and DST hints.
+- **Analysis**: Liveness analysis to determine register lifetime ranges.
+- **Transform**: Allocate 4/8/16 (depending on dtype and config) DST register slots using simple graph coloring or linear scan.
+- **Output**: Compute operations annotated with DST register indices.
+- **Allocation Strategy**:
+  - Liveness-based allocation minimizes register pressure.
+  - First-fit algorithm assigns registers to values based on lifetime.
+  - When register capacity exceeded: compile-time error (spill to L1 not supported in MVP)
+  - Future: Spill strategy for complex kernels that exceed DST capacity.
+
 **TTLLowerCompute**
 - **Input**: `ttl.block_add` operations
-- **Transform**: Generate `scf.for` iterating over tiles, insert `ttkernel.add_tiles_init` and `ttkernel.add_tiles`
+- **Transform**: Generate `affine.for` iterating over tiles, insert `ttkernel.add_tiles_init` and `ttkernel.add_tiles`
 - **Output**: TTKernel operations with explicit tile iteration
 
 **TTLLowerDataMovement**
@@ -857,6 +1014,53 @@ def test_location_tracking():
 
 **See**: MLIR [Location documentation](https://mlir.llvm.org/docs/Diagnostics/#source-locations)
 
+### 5.6 Error Handling and Diagnostics
+
+**Compile-time Error Messages:**
+
+TTL passes emit errors with source location information pointing back to Python source:
+
+```
+error: ttl.cb_wait operation timeout - consumer waiting indefinitely
+  at eltwise_add.py:42:16
+      a_block = a_in_cb.wait()
+                       ^~~~~
+  note: corresponding producer at eltwise_add.py:65:20
+      a_in_cb.push()
+             ^~~~~
+  note: lowered from ttl.cb_wait at eltwise_add.mlir:128
+```
+
+**Error Categories:**
+
+1. **Validation Errors**: CB protocol violations, thread operation restrictions
+   - Emitted by TTLValidatePass
+   - Include source location from Python AST
+
+2. **Resource Errors**: L1 capacity exceeded, DST register overflow
+   - Emitted by TTLAllocateCircularBuffers and TTLAssignDSTRegisters
+   - Provide suggestions for reducing resource usage
+
+3. **Type Errors**: Incompatible CB shapes, pipe connectivity issues
+   - Emitted during type checking passes
+   - Show expected vs actual types
+
+4. **Lowering Errors**: Operations that cannot be lowered to TTKernel
+   - Emitted by lowering passes
+   - Suggest alternative operations or patterns
+
+**Runtime Error Handling:**
+
+- Runtime errors are handled by TTNN runtime
+- TTL-generated kernels include error checking where possible
+- Debugging support via source location mapping (future)
+
+**Debugging Support:**
+
+- Source location tracking enables IDE jump-to-definition
+- Profiler can attribute performance to Python source lines
+- Debugger can map compiled code back to source (future)
+
 ### 5.5 Control Flow: SCF vs Affine Dialect
 
 **Decision**: Use **Affine dialect** for loop nests, SCF for conditionals.
@@ -897,7 +1101,7 @@ Only for **conditionals** and **irregular patterns**:
 
 ```mlir
 // Conditionals use SCF
-%core_num = ttl.core_index(dims = 1)
+%core_num = ttl.core(dims = 1)
 scf.if %is_core_zero {
   // Core-specific work
 }
@@ -922,49 +1126,39 @@ affine.for %i = 0 to %N {
 | **Conditionals** | Native | Not supported | Need SCF for if/else ✓ |
 | **Implementation** | Simple | Complex | Affine worth the cost for TTL ✓ |
 
-**Recommendation**: **Hybrid approach**
 
-1. **MVP (Phase 1)**: Start with **SCF** for simplicity
-   - Generate SCF from Python AST (easier implementation)
-   - Get end-to-end working
-   - Validate semantics
+1. **MVP (Phase 1)**: Start with **Affine** directly
+   - TTLDialectCompiler generates Affine for regular loops from Python AST
+   - Falls back to SCF only for conditionals and non-affine patterns
+   - Higher initial implementation cost but better long-term foundation
 
-2. **Phase 2**: Add **SCF → Affine** conversion
-   - Detect affine loops in SCF
-   - Convert to Affine dialect
-   - Enable polyhedral optimizations
+2. **Phase 2**: **Optimization and transforms**
+   - Leverage upstream Affine transforms immediately
+   - Add TTL-specific scheduling transforms that compose with Affine
+   - Enable polyhedral optimizations from the start
 
-3. **Phase 3**: **Affine-first** generation
-   - TTLDialectCompiler directly emits Affine for regular loops
-   - Falls back to SCF only for conditionals
-   - Best performance
-
-**Code generation evolution:**
+**Code generation:**
 
 ```python
-# Phase 1: Generate SCF
-for i in range(N):
-    ...
-→ scf.for %i = %c0 to %N step %c1 { ... }
-
-# Phase 2: Convert SCF → Affine
-scf.for %i = %c0 to %N step %c1 { ... }
-→ affine.for %i = 0 to %N { ... }
-
-# Phase 3: Generate Affine directly
+# MVP: Generate Affine directly
 for i in range(N):
     ...
 → affine.for %i = 0 to %N { ... }
+
+# Conditionals fall back to SCF
+if condition:
+    ...
+→ scf.if %condition { ... }
 ```
 
 **Pass pipeline with Affine:**
 
 ```
 [Phase 2: Analysis with Affine]
-  ├─ ConvertSCFToAffine (where possible)
   ├─ AffineLoopFusion - Merge adjacent loops
   ├─ AffineDataCopyGeneration - Optimize data movement
-  └─ AffineDependenceAnalysis - Inform scheduling
+  ├─ AffineDependenceAnalysis - Inform scheduling
+  └─ TTLSchedulePipeline - Custom scheduling with affine dependence info
 ```
 
 **Upstream Transform support for Affine:**
@@ -1003,7 +1197,7 @@ transform.sequence {
 - Higher MVP implementation cost for affine generation
 - Worth it for long-term performance, analysis quality, and transform composability
 
-**Decision**: Start SCF (MVP), migrate to Affine (Phase 2), leverage upstream transforms (Phase 3).
+**Decision**: Start with Affine directly (MVP), use SCF only for conditionals, leverage upstream transforms immediately.
 
 **See**: [Transform Dialect](https://mlir.llvm.org/docs/Dialects/Transform/), [Transform Tutorial](https://mlir.llvm.org/docs/Tutorials/transform/)
 
@@ -1015,12 +1209,12 @@ transform.sequence {
 
 | TTL Type | TTKernel Type | Conversion Notes |
 |----------|---------------|------------------|
-| `!ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>` | `!ttkernel.cb<4, !ttcore.tile<32x32,f32>>` | Total tiles = 2×1×2 = 4; memspace drives L1 address |
-| `!ttl.block<tensor<2x1x!ttcore.tile>>` | Elided | Blocks decomposed into tile operations |
+| `!ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>` | `!ttkernel.cb<4, !ttcore.tile<32x32,f32>>` | Total tiles = 2×1×2 = 4; memory space drives L1 address assignment in TTLAllocateCircularBuffers pass; buffer_factor used to compute total tiles but not directly preserved in TTKernel CB type |
+| `!ttl.block<tensor<2x1x!ttcore.tile>>` | Elided | Blocks decomposed into tile operations during lowering |
 | `!ttl.mem_tx` | N/A (elided) | Lowers to global barriers |
 | `!ttl.semaphore` | `!ttkernel.semaphore` | Direct mapping |
 | `!ttl.pipe` | Attributes on ops | Pipe decomposed into core coords + multicast flags |
-| `!ttl.accessor<layout, memspace>` | N/A (resolved) | Resolves to NOC addresses + layout info |
+| `!ttl.accessor<layout, memspace>` | N/A (resolved) | Resolves to NOC addresses + layout info during lowering |
 
 ### 6.2 Operation Lowering Examples
 
@@ -1030,7 +1224,7 @@ transform.sequence {
 ttl.cb_wait %cb, 2
 
 // TTKernel
-ttkernel.cb_wait_front %cb, %c2_i32
+ttkernel.cb_wait_front %cb, 2
 ```
 
 **Tile Extraction:**
@@ -1039,9 +1233,10 @@ ttkernel.cb_wait_front %cb, %c2_i32
 %tile0 = ttl.get_tile %cb, %c0
 %tile1 = ttl.get_tile %cb, %c1
 
-// TTKernel
-%tile0 = ttkernel.get_tile %cb, 0
-%tile1 = ttkernel.get_tile %cb, 1
+// TTKernel (copy from CB to DST register)
+ttkernel.copy_tile_init %cb
+%tile0 = ttkernel.copy_tile %cb, 0, %dst_idx0
+%tile1 = ttkernel.copy_tile %cb, 1, %dst_idx1
 ```
 
 **Block Compute:**
@@ -1055,14 +1250,16 @@ ttl.cb_wait %b_cb, 2
 ttkernel.cb_wait_front %a_cb, 2
 ttkernel.cb_wait_front %b_cb, 2
 ttkernel.tile_regs_acquire
-scf.for %i = %c0 to %c2 step %c1 {
-  %a_tile = ttkernel.get_tile %a_cb, %i
-  %b_tile = ttkernel.get_tile %b_cb, %i
+affine.for %i = 0 to 2 {
+  ttkernel.copy_tile_init %a_cb
+  %a_tile = ttkernel.copy_tile %a_cb, %i, %dst_idx_a
+  ttkernel.copy_tile_init %b_cb
+  %b_tile = ttkernel.copy_tile %b_cb, %i, %dst_idx_b
   ttkernel.add_tiles_init
-  ttkernel.add_tiles %a_tile, %b_tile, %dst_idx
-  ttkernel.pack_tile %dst_idx, %out_cb, %i
+  ttkernel.add_tiles %a_tile, %b_tile, %dst_idx_result
+  ttkernel.pack_tile %dst_idx_result, %out_cb, %i
 }
-ttkernel.tile_regs_release
+ttkernel.tile_regs_commit
 ttkernel.cb_push_back %out_cb, 2
 ```
 
@@ -1136,33 +1333,102 @@ class TTLDialectCompiler(TTCompilerBase):
 
 Update `python/ttlang/operators.py`:
 
+**Block Operations:**
+
 ```python
 @syntax("!tensor")
 class TensorBlock:
     def __add__(ast_self, rhs):
         # Generate ttl.block_add instead of linalg.generic
         return ttl.block_add(ast_self, rhs)
+    
+    def __sub__(ast_self, rhs):
+        return ttl.block_sub(ast_self, rhs)
+    
+    def __mul__(ast_self, rhs):
+        return ttl.block_mul(ast_self, rhs)
+    
+    def __truediv__(ast_self, rhs):
+        return ttl.block_div(ast_self, rhs)
+    
+    def __pow__(ast_self, rhs):
+        return ttl.block_pow(ast_self, rhs)
 
     def __matmul__(ast_self, rhs):
         return ttl.block_matmul(ast_self, rhs)
 
     def store(ast_self, value):
+        # Python API: block.store(value)
+        # Maps to ttl.block_store operation
         return ttl.block_store(ast_self, value)
+```
 
+**Math Functions:**
+
+```python
+# ttl.math.* functions map to TTL math operations
+@syntax("math")
+class MathFunctions:
+    @staticmethod
+    def sqrt(x):
+        return ttl.math.sqrt(x)
+    
+    @staticmethod
+    def exp(x):
+        return ttl.math.exp(x)
+    
+    # ... other math functions
+```
+
+**Circular Buffer Operations:**
+
+```python
 class CircularBuffer:
     def wait(self):
+        # Python API: cb.wait() or with cb.wait() as blk:
         num_tiles = self.get_num_tiles()
         return ttl.cb_wait(self.handle, num_tiles)
 
     def reserve(self):
+        # Python API: cb.reserve() or with cb.reserve() as blk:
+        # AST compiler handles 'with' statement:
+        #   - Generates ttl.cb_reserve at scope start
+        #   - Generates ttl.cb_push at scope end
         num_tiles = self.get_num_tiles()
         return ttl.cb_reserve(self.handle, num_tiles)
 
-    # ... pop, push methods
+    def pop(self):
+        num_tiles = self.get_num_tiles()
+        return ttl.cb_pop(self.handle, num_tiles)
+    
+    def push(self):
+        num_tiles = self.get_num_tiles()
+        return ttl.cb_push(self.handle, num_tiles)
+```
 
+**Data Movement:**
+
+```python
 @syntax("dma")
-def dma(src, dst, **kwargs):
+def copy(src, dst, **kwargs):
+    # Python API: ttl.copy(src, dst)
+    # Returns transfer handle object with wait() method
+    # Transfer handle.wait() maps to ttl.wait %tx
     return ttl.copy(src, dst, **kwargs)
+```
+
+**Pipe Conditionals:**
+
+```python
+def if_pipe_src(pipes, callback):
+    # Python API: ttl.if_pipe_src(pipes, pipe_src)
+    # Maps to ttl.if_pipe_src operation
+    return ttl.if_pipe_src(pipes, callback)
+
+def if_pipe_dst(pipes, callback):
+    # Python API: ttl.if_pipe_dst(pipes, pipe_dst)
+    # Maps to ttl.if_pipe_dst operation
+    return ttl.if_pipe_dst(pipes, callback)
 ```
 
 ### 7.3 API Entry Point
@@ -1281,7 +1547,13 @@ pykernel_gen = ttl_kernel
 
 ### Runtime Architecture
 
-TTL kernels execute using the **TTNN dylib workflow**, similar to the existing TTNN backend. TTL-generated C++ compiles to shared libraries (.so files) that load dynamically into the TTNN runtime.
+TTL supports two runtime integration paths:
+
+1. **TTNN dylib workflow** (primary): TTL-generated C++ compiles to shared libraries (.so files) that load dynamically into the TTNN runtime. This is the primary path for TTNN integration and prefered for iterative development.
+
+2. **TT-Metal flatbuffer workflow** (alternative): TTL can also generate flatbuffer binaries for TT-Metal runtime, similar to the existing D2M pipeline. This path is available for compatibility with TT-Metal workflows and for generating production binaries.
+
+The dylib workflow is described in detail below. The flatbuffer workflow follows the same compilation pipeline but uses flatbuffer generation instead of emitting C++ and relying shared library loading.
 
 ### Execution Flow (Dylib Path)
 
@@ -1827,10 +2099,12 @@ This hybrid approach gets TTL working quickly while building toward the more com
 - Cleaner semantic representation
 - Still compatible with existing TTKernel → EmitC → C++ pipeline
 
-### Why SCF for Control Flow?
-- Reuse proven MLIR infrastructure
-- Inherit canonicalization and analysis passes
-- No need to reinvent loop optimizations
+### Why Affine for Control Flow?
+- Precise dependence analysis critical for DMA/compute scheduling
+- Enables polyhedral optimizations (fusion, tiling, interchange)
+- Better alignment with TTL's regular loop patterns
+- SCF used only for conditionals and non-affine patterns
+- Reuse proven MLIR infrastructure for both dialects
 
 ### Why Memory Space in Types?
 - Makes IR self-descriptive
@@ -1845,7 +2119,8 @@ This hybrid approach gets TTL working quickly while building toward the more com
 - **Build System**: `docs/BUILD_SYSTEM.md`
 - **Testing Guide**: `test/TESTING.md`
 - **Current D2M Pipeline**: `python/ttlang/d2m_api.py`
-- **TTKernel Dialect**: `../tt-mlir/include/ttmlir/Dialect/TTKernel/IR/`
+- **TTKernel Dialect**: `../tt-mlir/include/ttmlir/Dialect/TTKernel/IR/` (tt-mlir is located at `~/tt/tt-mlir`)
+- **LLVM Upstream**: `~/llvm-project` (LLVM upstream repository)
 - **Allocate Pass Experiment**: `_allocate_pass.diff`
 
 ---
