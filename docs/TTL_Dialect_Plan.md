@@ -21,15 +21,22 @@ hardware-specific optimizations before lowering to executable kernels.
 3. [Type System](#3-type-system)
    - 3.1 [Core Types](#31-core-types)
    - 3.2 [Attributes](#32-attributes)
+   - 3.3 [TensorAccessor Support Strategy](#33-tensoraccessor-support-strategy)
 4. [Operations](#4-operations)
    - 4.1 [Structural Operations](#41-structural-operations)
    - 4.2 [Resource Creation](#42-resource-creation)
    - 4.3 [Circular Buffer Operations](#43-circular-buffer-operations)
-   - 4.4 [Compute Operations (Fusion)](#44-compute-operations)
+   - 4.4 [Compute Operations](#44-compute-operations)
+     - 4.4.1 [Fusion Operations](#441-fusion-operations)
+     - 4.4.2 [Arithmetic Operations](#442-arithmetic-operations)
+     - 4.4.3 [Reduction and Broadcast](#443-reduction-and-broadcast-operations)
+     - 4.4.4 [Materialization](#444-materialization-operations)
+     - 4.4.5 [DST Register Management](#445-dst-register-management)
    - 4.5 [Data Movement Operations](#45-data-movement-operations)
    - 4.6 [Synchronization Operations](#46-synchronization-operations)
    - 4.7 [Utility Operations](#47-utility-operations)
    - 4.8 [Compute Operations Inventory](#48-compute-operations-inventory)
+   - 4.9 [MLIR Interface Requirements](#49-mlir-interface-requirements)
 5. [Compilation Pipeline](#5-compilation-pipeline)
    - 5.1 [Pass Architecture](#51-pass-architecture)
    - 5.2 [Key Pass Descriptions](#52-key-pass-descriptions)
@@ -93,8 +100,8 @@ For the TT-lang DSL specifically, a dedicated dialect provides:
 
 - DSL-level IR: Preserve TT-lang abstractions (kernels, threads, circular
   buffers, pipes) longer in compilation
-- SSA semantics: CB operations with explicit SSA values rather than implicit
-  state effects (D2M CB ops use `MemoryEffects<[MemRead, MemWrite]>` for state
+- SSA semantics: `CB` operations with explicit SSA values rather than implicit
+  state effects (D2M `CB` ops use `MemoryEffects<[MemRead, MemWrite]>` for state
   transitions)
 - Analysis opportunities: Synchronization inference, resource allocation, and
   scheduling at DSL semantic level
@@ -201,44 +208,45 @@ to serve framework integration needs.
 def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let summary = "Circular buffer for producer-consumer communication";
   let parameters = (ins
-    "ArrayRef<int64_t>":$shape,          // Elements per block (tiles or scalars)
+    "ArrayRef<int64_t>":$shape,          // Elements per block
     "mlir::Type":$elementType,           // !ttcore.tile<32x32, f32> or scalar type
     "int64_t":$bufferFactor,             // Number of blocks/slots
-    "TTL::MemorySpace":$memorySpace,     // L1, DRAM, DST
-    "bool":$tiled                        // True: tile layout, False: row-major layout
+    "TTL::MemorySpace":$memorySpace      // L1, DRAM, DST
   );
-  let assemblyFormat = "`<` $shape `,` $elementType `,` $bufferFactor `,` $memorySpace `,` $tiled `>`";
+  let assemblyFormat = "`<` $shape `,` $elementType `,` $bufferFactor `,` $memorySpace `>`";
 
   let extraClassDeclaration = [{
     // Calculate total elements for TTKernel CB conversion
-    // For tiled: elements are tiles; for row-major: elements are scalars
     int64_t getTotalElements() const {
       int64_t elementsPerBlock = std::accumulate(
         getShape().begin(), getShape().end(), 1, std::multiplies<int64_t>());
       return elementsPerBlock * getBufferFactor();
     }
 
-    // Helper for lowering to !ttkernel.cb<num_tiles, element_type>
+    // Helper for lowering
     int64_t getElementsPerBlock() const {
       return std::accumulate(
         getShape().begin(), getShape().end(), 1, std::multiplies<int64_t>());
     }
 
-    // Returns true if this CB operates on tiles (vs scalars)
-    bool isTiled() const { return getTiled(); }
+    // Returns true if this CB operates on tiles (derived from elementType)
+    bool isTiled() const {
+      return getElementType().isa<ttcore::TileType>();
+    }
   }];
 
   let description = [{
     Circular buffer supporting both tiled and row-major tensor layouts per TT-Lang spec.
 
-    Layout modes:
-    - Tiled (tiled=true): elementType is !ttcore.tile<32x32, dtype>, shape is in tiles
+    Layout determined by elementType:
+    - Tiled layout: elementType is !ttcore.tile<32x32, dtype>, shape counts tiles
       Example: shape=[2,1], elementType=!ttcore.tile<32x32,f32> → 2 tiles per block
 
-    - Row-major (tiled=false): elementType is scalar type, shape is in elements
-      Example: shape=[64,32], elementType=f32 → 64x32 scalars per block
+    - Row-major layout: elementType is scalar type (f32, bf16, etc.), shape counts scalars
+      Example: shape=[64,32], elementType=f32 → 64×32 scalars per block
 
-    The tiled flag is derived from the source tensor's layout in make_circular_buffer_like.
+    The isTiled() method returns true if elementType is a tile type, false otherwise.
+    Layout is determined by the element type itself.
   }];
 }
 
@@ -249,7 +257,7 @@ def TTL_Block : TTL_Type<"Block", "block"> {
     Represents a block of data (tiles or scalars) consumed/produced by compute operations.
     Carries optional DST register hint for liveness analysis.
 
-    The block's granularity (tile vs scalar) matches the circular buffer it's acquired from.
+    The block's granularity (tile vs scalar) matches the circular buffer's from which it's acquired.
   }];
 }
 
@@ -350,15 +358,15 @@ def TTL_DistributionStrategyAttr : I32EnumAttr<"DistributionStrategy", "TTL dist
 ### 3.3 TensorAccessor Support Strategy
 
 Modern Metalium kernel development uses `TensorAccessor` objects as kernel
-arguments. TensorAccessor APIs like `noc_async_read_shard`,
+arguments. `TensorAccessor` APIs like `noc_async_read_shard`,
 `noc_async_write_shard`, `noc_async_read_page`, and `noc_async_write_page`
 abstract shard addressing and page-based access patterns (see
 [Metalium Guide](https://github.com/tenstorrent/tt-metal/blob/main/METALIUM_GUIDE.md)).
 
-Challenge: TTKernel dialect does not currently have TensorAccessor support.
+Challenge: TTKernel dialect does not currently have `TensorAccessor` support.
 TTKernel NOC operations work with bare addresses.
 
-Requirement: Generated C++ must use TensorAccessor class.
+Requirement: Generated C++ must use `TensorAccessor` class.
 
 #### Option 1: Extend TTKernel with TensorAccessor
 
@@ -463,7 +471,8 @@ sharded tensor support post-MVP.
 MVP approach:
 - TTL generates `ttkernel.noc_async_read_page` for all transfers
 - Interleaved tensors only (simpler layout)
-- Add sharded tensor support in Phase 2 when TensorAccessor infrastructure ready
+- Add sharded `TensorAccessor` support in Phase 2 when `TensorAccessor`
+  infrastructure ready
 
 Pros:
 - Faster MVP (no tt-mlir extension immediately)
@@ -544,13 +553,13 @@ ttl.kernel @sharded_elementwise_add(
   %out: tensor<64x64xf32>
 ) attributes {grid = #ttl.grid<[2, 2]>, block_factors = [[1,1], [1,1], [1,1]]} {
 
-  // Create circular buffers
+  // Create circular buffers (tiled layout inferred from element_type)
   %a_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
-                        buffer_factor=2, memory_space=L1, tiled=true
+                        buffer_factor=2, memory_space=L1
   %b_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
-                        buffer_factor=2, memory_space=L1, tiled=true
+                        buffer_factor=2, memory_space=L1
   %out_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
-                          buffer_factor=2, memory_space=L1, tiled=true
+                          buffer_factor=2, memory_space=L1
 
   // Create TensorAccessors with sharded layout metadata
   %a_accessor = ttl.tensor_accessor %a {
@@ -811,11 +820,10 @@ def TTL_DataMovementThreadOp : TTL_Op<"datamovement_thread"> {
 def TTL_CreateCBOp : TTL_Op<"create_cb"> {
   let summary = "Create circular buffer";
   let arguments = (ins
-    I64ArrayAttr:$shape,                // Elements per block (tiles or scalars depending on layout)
+    I64ArrayAttr:$shape,                // Elements per block
     TypeAttr:$element_type,             // !ttcore.tile<32x32, f32> or scalar type (f32, bf16, etc.)
     I64Attr:$buffer_factor,             // Number of blocks
     TTL_MemorySpaceAttr:$memory_space,  // L1, DRAM, DST
-    BoolAttr:$tiled,                    // True: tile layout, False: row-major layout
     OptionalAttr<I32Attr>:$buffer_index,      // Optional explicit CB number (0-31)
     OptionalAttr<I64Attr>:$page_size,         // Optional page size in bytes
     OptionalAttr<TTL_CoreMaskAttr>:$core_ranges  // Optional per-core CB mapping
@@ -825,17 +833,19 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
     Python API `ttl.make_circular_buffer_like(tensor, shape=..., buffer_factor=...)`
     maps to this operation. The Python frontend extracts tensor properties
     (dtype, layout, memory_space) and calls `ttl.create_cb` with the extracted
-    parameters. The "likeness" refers to deriving element_type, tiled flag, and
-    memory_space from the input tensor's layout and properties.
+    parameters. The "likeness" refers to deriving element_type and memory_space
+    from the input tensor's layout and properties.
 
-    Layout modes per TT-Lang spec:
-    - Tiled (tiled=true): element_type is !ttcore.tile<32x32, dtype>, shape is in tiles
+    Layout determined by element_type per TT-Lang spec:
+    - Tiled layout: element_type is !ttcore.tile<32x32, dtype>, shape counts tiles
       Example: shape=[2,1], element_type=!ttcore.tile<32x32,f32>, buffer_factor=2
       Creates CB holding 2 blocks of 2 tiles each (4 tiles total)
 
-    - Row-major (tiled=false): element_type is scalar type, shape is in scalars
+    - Row-major layout: element_type is scalar type (f32, bf16, etc.), shape counts scalars
       Example: shape=[64,32], element_type=f32, buffer_factor=2
-      Creates CB holding 2 blocks of 64x32 scalars each
+      Creates CB holding 2 blocks of 64×32 scalars each
+
+    The resulting CB type's isTiled() method derives layout from element_type automatically.
 
     Optional attributes enable explicit control when needed:
     - buffer_index: Explicitly assign CB number (default: auto-assign in allocation pass)
@@ -1051,8 +1061,8 @@ exp, reduce_sum, bcast, recip, multiply), so the above pattern requires:
 - Significant memory bandwidth overhead
 
 The `ttl.compute_region` operation enables fusion: all operations execute
-directly on DST registers with values flowing from one operation to the next
-without intermediate CB allocations or L1 traffic. Only the final result is
+directly on `DST` registers with values flowing from one operation to the next
+without intermediate `CB` allocations or `L1` traffic. Only the final result is
 written to memory. This is critical for complex kernels that would otherwise
 exceed L1 capacity or waste bandwidth.
 
@@ -1117,7 +1127,7 @@ def TTL_ComputeRegionOp : TTL_Op<"compute_region", [
     to circular buffers unless necessary for cross-thread communication.
 
     Lowering generates a single affine loop with all operations executing sequentially.
-    TTLAssignDSTRegisters performs liveness analysis to allocate DST registers and
+    `TTLAssignDSTRegisters` performs liveness analysis to allocate `DST` registers and
     minimize register pressure.
   }];
 }
@@ -1298,7 +1308,7 @@ This pattern enables:
 - `ttl.block_store` + `ttl.cb_push` signals result is available for subsequent
   operations
 - `ttl.cb_wait` + `ttl.cb_pop` acknowledges consumption and releases the slot
-- TTLValidatePass verifies proper sequencing: each reserve has matching push,
+- `TTLValidatePass` verifies proper sequencing: each reserve has matching push,
   each wait has matching pop
 
 ```tablegen
@@ -1336,37 +1346,37 @@ def TTL_RequireDSTOp : TTL_Op<"require_dst", [DeclareOpInterfaceMethods<MemoryEf
 }
 ```
 
-#### 4.4.5 DST Register Management
+#### 4.4.5 `DST` Register Management
 
-DST register operations are IR-level constructs for managing register allocation
-at the block abstraction level.
+`DST` register operations are IR-level constructs for managing register
+allocation at the block abstraction level.
 
 Block-to-tile lowering context: TTL operations work on *blocks* (groups of
 tiles, e.g., a 2x1 block = 2 tiles). Hardware operations in TTKernel work on
-*individual tiles* (32x32 elements). During the TTLLowerCompute pass:
+*individual tiles* (32x32 elements). During the `TTLLowerCompute` pass:
 
 - A single `ttl.block_add` operating on a 2x1 block becomes an `affine.for` loop
   with 2 iterations
 - Each iteration performs `ttkernel.add_tiles` on one tile
-- DST register allocation happens *after* this expansion, when we know exactly
+- `DST` register allocation happens *after* this expansion, when we know exactly
   how many tile-level operations execute
 
 This lowering occurs because:
 - Hardware constraint: TTKernel compute operations (add_tiles, mul_tiles, etc.)
   operate on single tiles, not blocks
 - Register allocation: We need to see all tile operations and their lifetimes to
-  allocate DST registers efficiently
+  allocate `DST` registers efficiently
 - Fusion opportunities: Block-level IR enables analysis and fusion before
   committing to tile-level loops
 
-DST register capacity is configuration-dependent (4-16 tiles) based on
+`DST` register capacity is configuration-dependent (4-16 tiles) based on
 `fp32_dest_acc_en` and `dst_full_sync_en` settings in `ComputeKernelConfig` (see
 https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/advanced_topics/compute_engines_and_dataflow_within_tensix.html#dst-register).
-The TTLAssignDSTRegisters pass queries the kernel's compute_config to determine
-capacity.
+The `TTLAssignDSTRegisters` pass queries the kernel's compute_config to
+determine capacity.
 
 Spilling operates at tile granularity: if a kernel's liveness analysis reveals
-more live values than available DST capacity, the compiler inserts spill
+more live values than available `DST` capacity, the compiler inserts spill
 operations. These operate on *individual tiles*, not blocks, because spilling
 occurs after block-to-tile lowering when the affine loops over tiles already
 exist.
@@ -1532,15 +1542,34 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
   let regions = (region SizedRegion<1>:$thenRegion);
   let description = [{
     Python API `ttl.if_pipe_src(pipes, pipe_src)` maps to this operation.
-    The region contains TTL operations that execute if the current core matches
-    any pipe's source coordinates. For multiple pipes, the compiler generates
-    a loop or nested conditionals to check each pipe.
-    
-    This operation is composable - the region can contain any TTL operations
-    including nested conditionals, DMA operations, CB operations, etc.
-    
-    Lowers to scf.if with ttl.core comparisons against pipe source coordinates.
-    The lowering pass expands multiple pipes into nested conditionals or loops.
+    The callback `pipe_src(pipe)` becomes a region with block argument for the pipe.
+
+    For multiple pipes, the lowering pass generates a loop iterating over pipes,
+    invoking the region body for each pipe where current core is the source.
+
+    Example transformation:
+      Python:
+        def pipe_src(pipe):
+            ttl.copy(blk, pipe)
+        ttl.if_pipe_src(pipes, pipe_src)
+
+      TTL IR:
+        ttl.if_pipe_src %pipes {
+          ^bb0(%pipe: !ttl.pipe):
+            ttl.copy %blk, %pipe
+        }
+
+      TTKernel (after lowering):
+        scf.for %i = 0 to num_pipes {
+          %pipe = // Load pipe from array
+          %is_src = // Check if current core matches pipe.src_core
+          scf.if %is_src {
+            // Region body with %pipe available
+            ttkernel.noc_async_write... using pipe coordinates
+          }
+        }
+
+    The region receives the active pipe as a block argument, enabling pipe-specific operations.
   }];
 }
 
@@ -1552,16 +1581,34 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
   let regions = (region SizedRegion<1>:$thenRegion);
   let description = [{
     Python API `ttl.if_pipe_dst(pipes, pipe_dst)` maps to this operation.
-    The region contains TTL operations that execute if the current core matches
-    any pipe's destination coordinates (for unicast) or is within the destination
-    range (for multicast). For multiple pipes, the compiler generates a loop
-    or nested conditionals to check each pipe.
-    
-    This operation is composable - the region can contain any TTL operations
-    including nested conditionals, DMA operations, CB operations, etc.
-    
-    Lowers to scf.if with ttl.core comparisons against pipe destination coordinates.
-    The lowering pass expands multiple pipes into nested conditionals or loops.
+    The callback `pipe_dst(pipe)` becomes a region with block argument for the pipe.
+
+    For multiple pipes, the lowering pass generates a loop iterating over pipes,
+    invoking the region body for each pipe where current core is a destination.
+
+    Example transformation:
+      Python:
+        def pipe_dst(pipe):
+            ttl.copy(pipe, blk)
+        ttl.if_pipe_dst(pipes, pipe_dst)
+
+      TTL IR:
+        ttl.if_pipe_dst %pipes {
+          ^bb0(%pipe: !ttl.pipe):
+            ttl.copy %pipe, %blk
+        }
+
+      TTKernel (after lowering):
+        scf.for %i = 0 to num_pipes {
+          %pipe = // Load pipe from array
+          %is_dst = // Check if current core matches pipe destination/range
+          scf.if %is_dst {
+            // Region body with %pipe available
+            ttkernel.noc_async_read... using pipe coordinates
+          }
+        }
+
+    The region receives the active pipe as a block argument, enabling pipe-specific operations.
   }];
 }
 
@@ -2014,38 +2061,38 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 
 ### 5.2 Key Pass Descriptions
 
-**TTLInsertSynchronization**
+**`TTLInsertSynchronization`**
 - **Input**: `ttl.kernel` with thread regions (tensor operands)
 - **Analysis**: Build producer-consumer DAG for blocks, semaphores, pipes
 - **Transform**: Insert `ttl.dma_barrier` where needed, validate CB usage
   patterns
 - **Output**: `ttl.kernel` with explicit synchronization
 
-**TTLInferDSTRequirements**
+**`TTLInferDSTRequirements`**
 - **Input**: `ttl.kernel` with compute operations
 - **Analysis**: Track which SSA values participate in compute chains
 - **Transform**: Insert `ttl.require_dst` markers for liveness analysis
 - **Output**: `ttl.kernel` with DST hints
 
-**TTLBufferizePass**
+**`TTLBufferizePass`**
 - **Input**: `ttl.kernel` with tensor operands
 - **Analysis**: Determine bufferization strategy for each tensor
 - **Transform**: Convert tensor types to memref types (One-Shot Bufferization)
 - **Output**: `ttl.kernel` with memref operands
 - **Note**: Critical transition - tensor semantics → buffer semantics
 
-**TTLAllocateCircularBuffers**
+**`TTLAllocateCircularBuffers`**
 - **Input**: `ttl.kernel` with memref CBs
 - **Analysis**: Compute liveness ranges for each CB
 - **Transform**: Assign L1 addresses using first-fit allocation
 - **Output**: CBs annotated with address attributes
 
-**TTLExpandThreads**
+**`TTLExpandThreads`**
 - **Input**: `ttl.kernel` with regions
 - **Transform**: Extract each thread region into `func.func` with metadata
 - **Output**: Separate functions per thread, preserving grid/memory_space attrs
 
-**TTLAssignDSTRegisters**
+**`TTLAssignDSTRegisters`**
 - **Input**: `ttl.kernel` with compute operations and DST hints.
 - **Analysis**: Liveness analysis to determine register lifetime ranges.
 - **Transform**: Allocate 4/8/16 (depending on dtype and config) DST register
@@ -2058,14 +2105,14 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
     supported in MVP)
   - Future: Spill strategy for complex kernels that exceed DST capacity.
 
-**TTLLowerCompute**
+**`TTLLowerCompute`**
 - **Input**: `ttl.block_add` operations
 - **Transform**: Generate `affine.for` iterating over tiles, insert
   `ttkernel.add_tiles_init` and `ttkernel.add_tiles`
 - **Output**: TTKernel operations with explicit tile iteration
 
-**TTLLowerDataMovement**
-- **Input**: `ttl.copy` operations with TensorAccessor or Pipe operands
+**`TTLLowerDataMovement`**
+- **Input**: `ttl.copy` operations with `TensorAccessor` or `Pipe` operands
 - **Transform**:
   - Tensor → CB: `ttkernel.tensor_accessor` +
     `ttkernel.noc_async_read_shard/page/tile`
@@ -2073,7 +2120,7 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
     `ttkernel.noc_async_write_shard/page/tile`
   - CB → Pipe → CB: `ttkernel.noc_async_write_multicast` or unicast
   - Layout attribute determines which NOC API variant (shard/page/tile)
-- **Output**: TTKernel NOC operations using TensorAccessor
+- **Output**: TTKernel NOC operations using `TensorAccessor`
 
 ### 5.3 Granularity and Block Shapes
 
@@ -2121,14 +2168,18 @@ def kernel(...):
 ```
 
 ```mlir
-// TTL IR
-%cb = ttl.create_cb shape=[2, 1], tile_type=!ttcore.tile<32x32,f32>, buffer_factor=2
+// TTL IR (tiled layout example - layout inferred from element_type)
+%cb = ttl.create_cb shape=[2, 1], element_type=!ttcore.tile<32x32,f32>,
+                    buffer_factor=2, memory_space=L1
       : !ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>
 ```
 
 **Semantic meaning:**
-- `shape=[2, 1]` means each block contains 2×1 = 2 tiles
-- CB operations (`wait`, `reserve`) always work on `shape[0] * shape[1]` tiles
+- `shape=[2, 1]` means each block contains 2×1 = 2 elements (tiles in this example)
+- CB operations (`wait`, `reserve`) always work on `shape[0] * shape[1]` elements
+- Layout (tiled vs row-major) determined by element_type:
+  - !ttcore.tile<...> → tiled layout, elements are tiles
+  - Scalar types (f32, bf16, etc.) → row-major layout, elements are scalars
 - All CB operations from same CB use same tile count (determined by shape)
 - Loop iterations reduced by granularity factor (`row_tiles // granularity`)
 
@@ -2331,11 +2382,11 @@ error: ttl.cb_wait operation timeout - consumer waiting indefinitely
 **Error Categories:**
 
 1. **Validation Errors**: CB protocol violations, thread operation restrictions
-   - Emitted by TTLValidatePass
+   - Emitted by `TTLValidatePass`
    - Include source location from Python AST
 
 2. **Resource Errors**: L1 capacity exceeded, DST register overflow
-   - Emitted by TTLAllocateCircularBuffers and TTLAssignDSTRegisters
+   - Emitted by `TTLAllocateCircularBuffers` and `TTLAssignDSTRegisters`
    - Provide suggestions for reducing resource usage
 
 3. **Type Errors**: Incompatible CB shapes, pipe connectivity issues
@@ -2513,7 +2564,7 @@ leverage upstream transforms immediately.
 
 | TTL Type | TTKernel Type | Conversion Notes |
 |----------|---------------|------------------|
-| `!ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>` | `!ttkernel.cb<4, !ttcore.tile<32x32,f32>>` | Total tiles = 2×1×2 = 4; memory space drives L1 address assignment in TTLAllocateCircularBuffers pass; buffer_factor used to compute total tiles but not directly preserved in TTKernel CB type |
+| `!ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>` | `!ttkernel.cb<4, !ttcore.tile<32x32,f32>>` | Total elements = 2×1×2 = 4 tiles (layout inferred: element_type is tile → tiled layout); For row-major CBs, element_type is scalar (f32, bf16, etc.); memory space drives L1 address assignment; buffer_factor used to compute total but not preserved in TTKernel CB type |
 | `!ttl.block<tensor<2x1x!ttcore.tile>>` | Elided | Blocks decomposed into tile operations during lowering |
 | `!ttl.mem_tx` | N/A (elided) | Lowers to global barriers |
 | `!ttl.semaphore` | `!ttkernel.semaphore` | Direct mapping |
@@ -2910,14 +2961,14 @@ interfaces
 ### Phase 3: Core Passes (Week 2)
 **Goal**: Validation, thread expansion, and basic lowering
 
-1. TTLValidatePass
+1. `TTLValidatePass`
    - Verify CB/pipe/semaphore contracts
    - Validate store/wait/pop pattern sequencing
    - Check thread operation restrictions (compute vs datamovement)
 
-2. TTLExpandThreads - Extract threads to separate functions (can happen early)
+2. `TTLExpandThreads` - Extract threads to separate functions (can happen early)
 
-3. TTLLowerCompute - Block ops → TTKernel tile ops
+3. `TTLLowerCompute` - Block ops → TTKernel tile ops
    - **MVP operations** (must be implemented):
      - `ttl.block_add` → `add_tiles_init` + `add_tiles`
      - `ttl.block_mul` → `mul_tiles_init` + `mul_tiles`
