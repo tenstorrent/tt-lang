@@ -27,16 +27,15 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
 8. [Implementation Roadmap](#8-implementation-roadmap)
 9. [TTNN Runtime Integration](#9-ttnn-runtime-integration)
 10. [Future Evolution](#10-future-evolution)
-11. [Risk Mitigation](#11-risk-mitigation)
-12. [Success Criteria](#12-success-criteria)
-13. [Appendix: Design Rationale](#13-appendix-design-rationale)
-14. [References](#14-references)
+11. [Success Criteria](#12-success-criteria)
+12. [Appendix: Design Rationale](#13-appendix-design-rationale)
+13. [References](#14-references)
 
 ---
 
 ## Executive Summary
 
-The TTL dialect provides a tensor-level intermediate representation for TT-lang programs (defined in `docs/TT-lang.md`), enabling multi-stage lowering with explicit compiler transformations before generating C++ kernels. Generated kernels execute on the TTNN runtime. TTL is designed specifically for the TT-lang DSL surface language, while D2M serves as a lower-level dialect for data movement and compute operations.
+The TTL dialect provides a tensor-level intermediate representation for TT-lang programs (defined in [TT-lang.md](TT-lang.md)), enabling multi-stage lowering with explicit compiler transformations before generating C++ kernels. Generated kernels can execute on either the TTNN runtime (via dylib workflow) or the TT-Metal runtime (via flatbuffer workflow). TTL is designed specifically for the TT-lang DSL surface language, while D2M serves as a lower-level dialect for data movement and compute operations.
 
 **Key Design Decisions:**
 - **Threading Model**: Simple compute/datamovement threads (MVP), with microcore evolution path documented
@@ -95,13 +94,11 @@ Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTM
                          Register Assignment, Optimization
 ```
 
-*Key difference*: TTL provides DSL-specific IR enabling TT-lang-aware transformations before lowering through TTKernel/TTMetal to C++ kernels. The generated C++ compiles separately and executes on the TTNN runtime.
-
 **Relationship to D2M Dialect:**
 
 TTL and D2M serve different roles in the compilation pipeline:
 
-- **TTL**: New frontend dialect specifically designed for the TT-lang DSL. TTL bypasses D2M and goes directly to TTKernel dialect, enabling TT-lang-specific optimizations and transformations.
+- **TTL**: New frontend dialect specifically designed for the TT-lang DSL. TTL provides DSL-specific IR enabling TT-lang-aware transformations before lowering through TTKernel/TTMetal to C++ kernels. TTL bypasses D2M and goes directly to TTKernel dialect, enabling TT-lang-specific optimizations and transformations. The generated C++ compiles separately and can execute on either the TTNN runtime (dylib workflow) or TT-Metal runtime (flatbuffer workflow).
 
 - **D2M**: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR → D2M → TTKernel). D2M serves as a general-purpose data movement and compute abstraction.
 
@@ -160,7 +157,7 @@ def TTL_MemoryTransaction : TTL_Type<"MemoryTransaction", "mem_tx"> {
     operations lower to global DMA barriers (`ttkernel.noc_async_read_barrier`
     or `ttkernel.noc_async_write_barrier`). This type exists for ordering
     and future optimization opportunities.
-    See: `~/tt/tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
+    See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
 }
@@ -227,6 +224,23 @@ def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {
 def TTL_CoreMaskAttr : AttrDef<TTL_Dialect, "CoreMask"> {
   let summary = "Bitmask of participating cores";
   let parameters = (ins "ArrayRef<int64_t>":$mask);
+}
+
+def TTL_DistributionStrategyAttr : I32EnumAttr<"DistributionStrategy", "TTL distribution strategy", [
+  I32EnumAttrCase<"Sharded", 0>,
+  I32EnumAttrCase<"Interleaved", 1>,
+  I32EnumAttrCase<"Replicated", 2>
+]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let description = [{
+    TTL-specific distribution strategy attribute for distributed tensor types.
+    Similar concepts exist in TTNN (`TTNN_TensorMemoryLayout` with Interleaved,
+    HeightSharded, WidthSharded, BlockSharded) and TTCore (`TTCore_TensorMemoryLayout`),
+    but TTL uses a simplified strategy enum for its distributed tensor type.
+    See: `tt-mlir/include/ttmlir/Dialect/TTNN/IR/TTNNOpsEnums.td` definition
+    `TTNN_TensorMemoryLayout` and `tt-mlir/include/ttmlir/Dialect/TTCore/IR/TTCoreOpsEnums.td`
+    definition `TTCore_TensorMemoryLayout`.
+  }];
 }
 ```
 
@@ -543,7 +557,7 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
     and `ttkernel.noc_async_write_barrier` operations which wait for all pending
     DMA operations of the respective type, not individual transactions.
-    See: `~/tt/tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
+    See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
 }
@@ -595,7 +609,7 @@ def TTL_WaitOp : TTL_Op<"wait"> {
   let description = [{
     Explicit wait on transaction handle. Lowers to `ttkernel.noc_async_read_barrier`
     or `ttkernel.noc_async_write_barrier` (global barriers, not per-transaction).
-    See: `~/tt/tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
+    See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
 }
@@ -935,12 +949,20 @@ Value lowerBlockAdd(ttl::BlockAddOp op) {
 Add optional location metadata to key TTL operations:
 
 ```tablegen
-def TTL_KernelOp : TTL_Op<"kernel"> {
+// Example: Adding location attributes to TTL_KernelOp
+// (modify existing definition near line 258)
+def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
+  let summary = "Kernel with multiple threads on grid";
   let arguments = (ins
-    // ... existing args
+    Variadic<AnyType>:$inputs,
+    TTL_GridAttr:$grid,
+    StrAttr:$memory_space,
+    BoolAttr:$tiled,
     OptionalAttr<StrAttr>:$python_source_file,
     OptionalAttr<I64Attr>:$python_source_line
   );
+  let regions = (region VariadicRegion<SizedRegion<1>>:$threads);
+  let results = (outs Variadic<AnyType>:$results);
 }
 ```
 
@@ -1702,9 +1724,12 @@ assert torch.allclose(result.to_torch(), expected, rtol=1e-2)
 Once the simple threading model is validated, evolve to parametric microcore abstraction:
 
 ```tablegen
+// Future: TTL_MicrocoreConfigAttr definition TBD
+// def TTL_MicrocoreConfigAttr : AttrDef<TTL_Dialect, "MicrocoreConfig"> { ... }
+
 def TTL_TileProcOp : TTL_Op<"tile_proc"> {
   let summary = "Hardware execution unit with declared microcores";
-  let arguments = (ins TTL_MicrocoreConfigAttr:$microcores);
+  let arguments = (ins TTL_MicrocoreConfigAttr:$microcores);  // Future attribute
   let regions = (region VariadicRegion<SizedRegion<1>>:$threads);
 }
 
@@ -1774,7 +1799,7 @@ def TTL_DistributedTensor : TTL_Type<"DistributedTensor", "dist_tensor"> {
     "ArrayRef<int64_t>":$gridShape,      // Distribution grid [8, 8]
     "ArrayRef<int64_t>":$shardShape,     // Per-core shard [32, 32]
     "Type":$elementType,                  // f32, bf16, etc.
-    "DistributionStrategyAttr":$strategy, // Sharded, interleaved, etc.
+    "TTL::DistributionStrategyAttr":$strategy, // Sharded, interleaved, etc.
     "TTL::MemorySpace":$memorySpace
   );
 
@@ -2041,36 +2066,7 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ---
 
-## 11. Risk Mitigation
-
-### 11.1 Complexity Management
-- **Risk**: Dialect too complex, slow MVP
-- **Mitigation**: Start minimal (Phase 1-2), expand incrementally
-- **Fallback**: Keep simple ops, defer advanced features
-
-### 11.2 TTKernel Compatibility
-- **Risk**: TTL doesn't map cleanly to TTKernel
-- **Mitigation**: Study existing pykernel lowering closely, reuse patterns
-- **Validation**: Compare generated TTKernel IR with current pipeline
-
-### 11.3 Python API Stability
-- **Risk**: Breaking changes to user code
-- **Mitigation**: Keep existing decorator names (`@compute`, `@datamovement`)
-- **Backward compat**: Alias `pykernel_gen` to `ttl_kernel`
-
-### 11.4 Pass Pipeline Bugs
-- **Risk**: Transformation passes introduce errors
-- **Mitigation**: Extensive lit tests per pass, save intermediate IR at each stage
-- **Debugging**: `TTLANG_VERBOSE_PASSES=1` environment variable
-
-### 11.5 Memory Allocation Failures
-- **Risk**: L1 capacity exceeded, OOM at runtime
-- **Mitigation**: Validate allocation in pass, error early with clear diagnostics
-- **Future**: Spilling to DRAM, buffer factor optimization
-
----
-
-## 12. Success Criteria
+## 11. Success Criteria
 
 1. **TTL dialect compiles** and is registered in MLIR
 2. **Python AST → TTL** generates valid TTL operations
@@ -2082,11 +2078,11 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ---
 
-## 13. Appendix: Design Rationale
+## 12. Appendix: Design Rationale
 
 ### Why Tensor-Level (Not Tile-Level)?
 - Matches Python DSL semantics (users think in blocks)
-- Enables high-level optimizations before committing to tiles
+- Enables optimizations before committing to tiles
 - Lowering passes make tile iteration explicit when needed
 
 ### Why Simple Threading (Not Microcore)?
@@ -2101,7 +2097,7 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ### Why Affine for Control Flow?
 - Precise dependence analysis critical for DMA/compute scheduling
-- Enables polyhedral optimizations (fusion, tiling, interchange)
+- Enables polyhedral optimizations (fusion, tiling, interchange); builtin `transform` dialect support
 - Better alignment with TTL's regular loop patterns
 - SCF used only for conditionals and non-affine patterns
 - Reuse proven MLIR infrastructure for both dialects
@@ -2113,17 +2109,12 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ---
 
-## 14. References
+## 13. References
 
 - **TT-lang Spec**: `docs/TT-lang.md`
 - **Build System**: `docs/BUILD_SYSTEM.md`
 - **Testing Guide**: `test/TESTING.md`
 - **Current D2M Pipeline**: `python/ttlang/d2m_api.py`
-- **TTKernel Dialect**: `../tt-mlir/include/ttmlir/Dialect/TTKernel/IR/` (tt-mlir is located at `~/tt/tt-mlir`)
-- **LLVM Upstream**: `~/llvm-project` (LLVM upstream repository)
-- **Allocate Pass Experiment**: `_allocate_pass.diff`
+- **TTKernel Dialect**: `../tt-mlir/include/ttmlir/Dialect/TTKernel/IR/`
+- **LLVM Upstream**: https://github.com/llvm/llvm-project/
 
----
-
-**Document Status**: Design phase complete, ready for implementation
-**Next Step**: Phase 1 - Dialect definition (C++)
