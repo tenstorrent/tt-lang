@@ -13,7 +13,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 include(TTLangUtils)
 ttlang_set_version("0.2.0")
 
-option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" OFF)
+option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" ON)
 option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_PERF_TRACE "Enable performance trace" OFF)
