@@ -35,32 +35,36 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
 
 ## Executive Summary
 
-The TTL dialect provides a tensor-level intermediate representation for TT-lang programs (defined in `docs/TT-lang.md`), enabling multi-stage lowering with explicit compiler transformations before generating C++ kernels. TTL replaces the current direct `d2m.generic` approach, allowing the compiler to insert synchronization, allocate resources, and optimize before committing to hardware-specific details.
+The TTL dialect provides a tensor-level intermediate representation for TT-lang programs (defined in `docs/TT-lang.md`), enabling multi-stage lowering with explicit compiler transformations before generating C++ kernels. TTL is designed specifically for the TT-lang DSL surface language, while D2M serves as a lower-level dialect for data movement and compute operations.
 
 **Key Design Decisions:**
 - **Threading Model**: Simple compute/datamovement threads (MVP), with microcore evolution path documented
 - **Abstraction Level**: Tensor-level (blocks of tiles), not individual tiles
 - **Type System**: Memory spaces explicit in types; SSA values for all resources (CBs, pipes, semaphores)
-- **Control Flow**: Reuse `scf` dialect (standard MLIR) with TTL attributes
-- **Lowering Path**: TTL → TTKernel → EmitC → C++ (bypass d2m.generic)
+- **Control Flow**: Hybrid SCF/Affine dialect with TTL attributes
+- **Lowering Path**: TTL → TTKernel → EmitC → C++ kernel source (compiled separately)
 - **Phasing**: Multi-threaded from start (matches current examples)
 
 ---
 
 ## 1. Motivation & Goals
 
-### Current State Issues
-- **No abstraction gap**: Python DSL maps directly to `d2m.generic`, preventing compiler analysis
-- **Hardcoded decisions**: Synchronization, memory allocation, and register assignment happen too early
-- **Limited optimization**: Cannot reason about inter-thread communication or reorder operations
-- **Single backend**: Tied to `ttir-to-ttmetal` pipeline
+### Motivation for TTL Dialect
+
+D2M dialect serves as a general-purpose data movement and compute abstraction. For the TT-lang DSL specifically, a dedicated dialect provides:
+
+- DSL-level IR: Preserve TT-lang abstractions (kernels, threads, circular buffers, pipes) longer in compilation
+- SSA semantics: CB operations with explicit SSA values rather than implicit state effects (D2M CB ops use `MemoryEffects<[MemRead, MemWrite]>` for state transitions)
+- Analysis opportunities: Synchronization inference, resource allocation, and scheduling at DSL semantic level
+- Flexibility: Experiment with TT-lang-specific optimizations and compilation strategies
+- Multiple targets: TTKernel (immediate) and potential standalone C++ backend
 
 ### TTL Dialect Goals
-1. **Capture DSL semantics** in SSA form: kernels, threads, circular buffers, pipes, blocks, semaphores
-2. **Enable analysis passes**: Synchronization inference, memory planning, DST register allocation
-3. **Support transformations**: Liveness analysis, operation reordering, pipelining
-4. **Multiple backends**: TTKernel (immediate) and standalone C++ (future)
-5. **Future-proof**: Extensible to new hardware generations via attributes
+1. Capture DSL semantics in SSA form: kernels, threads, circular buffers, pipes, blocks, semaphores
+2. Enable analysis passes: Synchronization inference, memory planning, DST register allocation
+3. Support transformations: Liveness analysis, operation reordering, pipelining
+4. C++ kernel generation: Produce standalone C++ kernels that compile separately and link with TT-Metal runtime
+5. Future-proof: Extensible to new hardware generations via attributes
 
 ### Non-Goals (MVP)
 - Autotuning algorithms (IR has hooks, algorithms come later)
@@ -73,7 +77,7 @@ The TTL dialect provides a tensor-level intermediate representation for TT-lang 
 
 ### Current Flow
 ```
-Python Kernel → Python AST → D2M Generic Ops → ttir-to-ttmetal Pipeline → TTMetal Ops → Flatbuffer Binary
+Python Kernel → Python AST → D2M Generic Ops → ttir-to-ttmetal Pipeline → TTKernel → EmitC → Flatbuffer Binary
                                                      ↓
                                           (Inside pipeline: fusion,
                                            bufferization, allocation,
@@ -83,14 +87,14 @@ Python Kernel → Python AST → D2M Generic Ops → ttir-to-ttmetal Pipeline �
 
 ### TTL Flow
 ```
-Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTMetal Ops → Flatbuffer Binary
+Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTMetal Ops → EmitC → C++ Kernel Source
                                     ↓
                          Validation, Synchronization,
                          Bufferization, Allocation,
                          Register Assignment, Optimization
 ```
 
-**Key difference**: TTL operations directly represent DSL concepts. Multiple transformation passes can analyze and optimize before lowering to hardware primitives.
+*Key difference*: TTL provides DSL-specific IR enabling TT-lang-aware transformations before lowering through TTKernel/TTMetal to C++ kernels. The generated C++ compiles separately and links with TT-Metal runtime.
 
 ---
 
@@ -554,7 +558,7 @@ ttl.kernel (with thread regions, tensor operands)
 ttl.kernel (with thread regions, memref operands)
   ↓
 [Phase 3: Memory Planning]
-  └─ TTLAllocateCircularBuffers - Assign L1 addresses (liveness-based)
+  └─ TTLAllocateCircularBuffers - Assign L1 addresses/indices (liveness-based)
   ↓
 [Phase 4: Thread Expansion]
   └─ TTLExpandThreads - Convert ttl.kernel regions → separate func.func
@@ -572,14 +576,15 @@ func.func @dm_thread_0 (memref args)
   ↓
 ttkernel.* operations
   ↓
-[Existing: TTKernel → TTMetal Pipeline]
-  ├─ ConvertTTKernelToEmitC (generates C++ kernel source)
-  └─ TTMetal dialect operations
+[Phase 7: C++ Code Generation]
+  └─ ConvertTTKernelToEmitC - Generate C++ kernel source
   ↓
-[Flatbuffer Serialization]
-  └─ ttmetal_to_flatbuffer_bin
+C++ Kernel Source (.cpp/.h files)
   ↓
-Flatbuffer Binary (executable on hardware)
+[Compilation]
+  └─ Standard C++ compiler (g++/clang++)
+  ↓
+Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 ```
 
 ### 5.2 Key Pass Descriptions
@@ -851,28 +856,155 @@ def test_location_tracking():
 
 **See**: MLIR [Location documentation](https://mlir.llvm.org/docs/Diagnostics/#source-locations)
 
-### 5.5 Control Flow Integration
+### 5.5 Control Flow: SCF vs Affine Dialect
 
-TTL reuses SCF dialect for control flow instead of custom operations:
+**Decision**: Use **Affine dialect** for loop nests, SCF for conditionals.
 
-```mlir
-// Python: for i in range(N):
-scf.for %i = %c0 to %N step %c1 {
-  ttl.cb_wait %cb, 1
-  // ... operations
-} {ttl.grid = #ttl.grid<[2, 2]>}
+**Rationale**: TTL kernels have primarily **regular, statically-bounded loops**:
 
-// Python: if core_num == 0:
-%core = ttl.core_index(dims = 1)
-scf.if %cond {
-  // ... operations
-} {ttl.core_mask = #ttl.core_mask<[0]>}
+```python
+# Typical TTL loops - all affine!
+for rt_block in range(row_tiles // granularity):      # Static bound
+    for ct in range(start_col, end_col):              # Affine bounds
+        row_slice = slice(rt_block * granularity, ...)  # Affine indexing
 ```
 
-**Benefits:**
-- Inherit MLIR loop analyses (LICM, dependence analysis)
-- Standard canonicalization patterns
-- No need to reinvent control flow infrastructure
+**Affine dialect advantages for TTL:**
+
+1. **Precise dependence analysis**: Critical for DMA/compute scheduling
+   - Prove which memory operations can overlap
+   - Detect when barriers are unnecessary
+   - Enable DMA prefetching
+
+2. **Loop optimization**: Standard polyhedral transformations
+   - Loop fusion (merge adjacent loops)
+   - Loop tiling (for better locality)
+   - Loop interchange (optimize access patterns)
+
+3. **Parallelization**: Detect parallel dimensions automatically
+   - Mark which loops iterate over grid dimensions
+   - Identify reduction loops vs parallel loops
+
+4. **Memory access analysis**: Understand access patterns
+   - Stride detection for DMA sizing
+   - Locality analysis for CB allocation
+   - Affine maps for multi-dimensional indexing
+
+**When SCF is needed:**
+
+Only for **conditionals** and **irregular patterns**:
+
+```mlir
+// Conditionals use SCF
+%core_num = ttl.core_index(dims = 1)
+scf.if %is_core_zero {
+  // Core-specific work
+}
+
+// Affine for regular loops
+affine.for %i = 0 to %N {
+  affine.for %j = 0 to %M {
+    %idx = affine.apply affine_map<(i,j) -> (i*M + j)>(%i, %j)
+    ttl.copy %accessor[%i, %j], %cb
+  }
+}
+```
+
+**Comparison for TTL:**
+
+| Aspect | SCF | Affine | TTL Need |
+|--------|-----|--------|----------|
+| **Loop bounds** | Dynamic OK | Must be affine | Most TTL loops are static/affine ✓ |
+| **Indexing** | Arbitrary | Affine expressions | TTL uses affine indexing ✓ |
+| **Dependence analysis** | Limited | Precise | Critical for DMA scheduling ✓ |
+| **Loop opts** | Basic | Polyhedral | Useful for performance ✓ |
+| **Conditionals** | Native | Not supported | Need SCF for if/else ✓ |
+| **Implementation** | Simple | Complex | Affine worth the cost for TTL ✓ |
+
+**Recommendation**: **Hybrid approach**
+
+1. **MVP (Phase 1)**: Start with **SCF** for simplicity
+   - Generate SCF from Python AST (easier implementation)
+   - Get end-to-end working
+   - Validate semantics
+
+2. **Phase 2**: Add **SCF → Affine** conversion
+   - Detect affine loops in SCF
+   - Convert to Affine dialect
+   - Enable polyhedral optimizations
+
+3. **Phase 3**: **Affine-first** generation
+   - TTLDialectCompiler directly emits Affine for regular loops
+   - Falls back to SCF only for conditionals
+   - Best performance
+
+**Code generation evolution:**
+
+```python
+# Phase 1: Generate SCF
+for i in range(N):
+    ...
+→ scf.for %i = %c0 to %N step %c1 { ... }
+
+# Phase 2: Convert SCF → Affine
+scf.for %i = %c0 to %N step %c1 { ... }
+→ affine.for %i = 0 to %N { ... }
+
+# Phase 3: Generate Affine directly
+for i in range(N):
+    ...
+→ affine.for %i = 0 to %N { ... }
+```
+
+**Pass pipeline with Affine:**
+
+```
+[Phase 2: Analysis with Affine]
+  ├─ ConvertSCFToAffine (where possible)
+  ├─ AffineLoopFusion - Merge adjacent loops
+  ├─ AffineDataCopyGeneration - Optimize data movement
+  └─ AffineDependenceAnalysis - Inform scheduling
+```
+
+**Upstream Transform support for Affine:**
+
+MLIR's Transform dialect has **interface-based** operations that work with Affine loops:
+- `transform.loop.tile` - Tiles `affine.for` loops (via `LoopLikeInterface`)
+- `transform.loop.unroll` - Unrolls affine loops
+- `transform.loop.coalesce` - Coalesces nested affine loops
+- `transform.affine.simplify_bounded_affine_ops` - Simplifies affine ops with known bounds
+- `transform.affine.simplify_min_max_affine_ops` - Reduces min/max operations
+
+**Key advantage**: TTL's custom `transform.ttl.*` operations can **compose with upstream transforms**:
+
+```mlir
+transform.sequence {
+  %loops = transform.structured.match ops{["affine.for"]}
+
+  // Upstream: tile affine loops
+  %tiled = transform.loop.tile %loops tile_sizes=[32, 32]
+
+  // Custom: schedule TTL operations within tiles
+  %sched = transform.ttl.schedule_pipeline %tiled
+
+  // Upstream: simplify resulting affine expressions
+  transform.affine.simplify_bounded_affine_ops %sched
+}
+```
+
+**Benefits for TTL:**
+- **Better scheduling**: Precise dependence info enables optimal DMA/compute overlap
+- **Automatic optimizations**: Fusion, tiling via upstream + custom transforms
+- **Composability**: Mix upstream affine transforms with TTL-specific scheduling
+- **Future-proof**: Foundation for advanced loop transformations
+
+**Trade-off accepted:**
+- Higher MVP implementation cost for affine generation
+- Worth it for long-term performance, analysis quality, and transform composability
+
+**Decision**: Start SCF (MVP), migrate to Affine (Phase 2), leverage upstream transforms (Phase 3).
+
+**See**: [Transform Dialect](https://mlir.llvm.org/docs/Dialects/Transform/), [Transform Tutorial](https://mlir.llvm.org/docs/Tutorials/transform/)
 
 ---
 
@@ -883,10 +1015,10 @@ scf.if %cond {
 | TTL Type | TTKernel Type | Conversion Notes |
 |----------|---------------|------------------|
 | `!ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>` | `!ttkernel.cb<4, !ttcore.tile<32x32,f32>>` | Total tiles = 2×1×2 = 4; memspace drives L1 address |
-| `!ttl.block<tensor<2x1x!ttcore.tile>>` | Elided | Blocks dissolved into tile operations |
+| `!ttl.block<tensor<2x1x!ttcore.tile>>` | Elided | Blocks decomposed into tile operations |
 | `!ttl.mem_tx` | N/A (elided) | Lowers to global barriers |
 | `!ttl.semaphore` | `!ttkernel.semaphore` | Direct mapping |
-| `!ttl.pipe` | Attributes on ops | Pipe dissolved into core coords + multicast flags |
+| `!ttl.pipe` | Attributes on ops | Pipe decomposed into core coords + multicast flags |
 | `!ttl.accessor<layout, memspace>` | N/A (resolved) | Resolves to NOC addresses + layout info |
 
 ### 6.2 Operation Lowering Examples
@@ -1079,153 +1211,68 @@ pykernel_gen = ttl_kernel
 
 ## 8. Implementation Roadmap
 
-### Phase 1: Foundation (Weeks 1-2)
+### Phase 1: Foundation (Week 1)
 **Goal**: TTL dialect compiles and registers with MLIR
 
-1. **Dialect Definition (C++)**
+1. Dialect Definition (C++)
    - Create `include/ttlang/Dialect/TTL/` and `lib/Dialect/TTL/`
-   - Define types (TTLTypes.td): CB, Block, MemTx, Semaphore, Pipe, Accessor
+   - Define types (TTLTypes.td): CB, MemTx, Semaphore, Pipe, Accessor
    - Define ops (TTLOps.td): structural, CB, compute, DM, sync, utility
-   - Define attributes (TTLOpsAttrs.td): MemorySpace, Grid, CoreMask, Layout
+   - Define attributes (TTLOpsAttrs.td): MemorySpace, Grid, Layout
    - Implement builders, printers, parsers
 
-2. **CMake Integration**
+2. CMake Integration
    - Update `include/ttlang/CMakeLists.txt` and `lib/CMakeLists.txt`
-   - Add TTL subdirectories and dependencies
 
-3. **Basic Testing**
+3. Basic Testing
    - Create `test/ttmlir/Dialect/TTL/` with lit tests
-   - Test type parsing, op syntax, basic verification
 
 **Deliverable**: TTL dialect loads, ops parse/print correctly
 
-### Phase 2: Python Compilation (Weeks 2-3)
+### Phase 2: Python Compilation (Week 1)
 **Goal**: Python AST generates valid TTL operations
 
-1. **TTL Compiler**
+1. TTL Compiler
    - Implement `TTLDialectCompiler` in `python/ttlang/_src/ttl_ast.py`
    - Handle `@compute()` and `@datamovement()` decorators
-   - Map Python operators to TTL ops (@syntax system)
 
-2. **Operator Updates**
+2. Operator Updates
    - Update `python/ttlang/operators.py` for TTL ops
-   - Update `python/ttlang/circular_buffer.py` for TTL CB ops
-   - Update `python/ttlang/semaphore.py` for TTL semaphore ops
 
-3. **Python Bindings**
+3. Python Bindings
    - Create `python/ttlang/dialects/ttl.py` with nanobind
-   - Expose TTL types and op builders to Python
-
-4. **Testing**
-   - Port `test/python/test_simple_add.py` to TTL
-   - Verify IR generation matches expected TTL ops
 
 **Deliverable**: Python examples compile to TTL IR
 
-### Phase 3: Validation & Canonicalization (Weeks 3-4)
-**Goal**: IR validation and optimization patterns work
+### Phase 3: Core Passes (Week 2)
+**Goal**: Validation, thread expansion, and basic lowering
 
-1. **Verifier Implementation**
-   - CB reserve/push and wait/pop pairing
-   - Pipe source/destination consistency
-   - Memory space compatibility
-   - Layout attribute validation
+1. TTLValidatePass - Verify CB/pipe/semaphore contracts
+2. TTLExpandThreads - Extract threads to separate functions (can happen early)
+3. TTLLowerCompute - Basic block ops → TTKernel tiles
+4. TTLLowerSynchronization - CB ops → TTKernel CB ops
 
-2. **Canonicalization Patterns**
-   - Fold constant `ttl.core_index` / `ttl.grid_size`
-   - Eliminate redundant CB ops
-   - Simplify accessor indexing
+**Deliverable**: Simple kernels lower to TTKernel
 
-3. **Testing**
-   - Negative tests for invalid IR
-   - Canonicalization tests
+### Phase 4: Memory & Scheduling (Week 3)
+**Goal**: Resource allocation and optimization
 
-**Deliverable**: TTL IR is validated and optimized
+1. TTLBufferizePass - Tensor → memref conversion
+2. TTLAllocateCircularBuffers - L1 address assignment
+3. TTLAssignDSTRegisters - DST register allocation
+4. TTLInsertSynchronization - Barrier inference
 
-### Phase 4: Analysis Passes (Weeks 4-6)
-**Goal**: Synchronization inference and resource allocation
+**Deliverable**: Full resource allocation working
 
-1. **TTLInsertSynchronization Pass**
-   - Build producer-consumer DAG
-   - Insert `ttl.dma_barrier` where needed
-   - Validate CB/pipe/semaphore usage
+### Phase 5: Data Movement & Integration (Week 4)
+**Goal**: Complete lowering and end-to-end validation
 
-2. **TTLAllocateCircularBuffers Pass**
-   - Liveness analysis for CBs
-   - First-fit allocation in L1
-   - Annotate CBs with addresses
+1. TTLLowerDataMovement - DMA operations → TTKernel NOC ops
+2. End-to-end testing: Python → TTL → TTKernel → C++
+3. Port `examples/eltwise_add.py` to TTL
+4. Verify generated C++
 
-3. **TTLInferDSTRequirements Pass**
-   - Mark values needing DST registers
-   - Propagate `ttl.require_dst` hints
-
-4. **Testing**
-   - Test synchronization insertion on examples
-   - Test CB allocation with various patterns
-
-**Deliverable**: Compiler automatically inserts sync and allocates memory
-
-### Phase 5: Thread Expansion (Week 6)
-**Goal**: Convert regions to separate functions
-
-1. **TTLExpandThreads Pass**
-   - Extract `ttl.compute_thread` → `func.func @compute_X`
-   - Extract `ttl.datamovement_thread` → `func.func @dm_X`
-   - Preserve metadata (grid, memory_space, tiled)
-
-2. **Testing**
-   - Verify function extraction
-   - Check metadata preservation
-
-**Deliverable**: Threads become separate functions
-
-### Phase 6: Lowering Passes (Weeks 7-9)
-**Goal**: TTL → TTKernel conversion
-
-1. **TTLAssignDSTRegisters Pass**
-   - Track 16 DST register slots
-   - Insert `ttkernel.tile_regs_acquire/release`
-
-2. **TTLLowerCompute Pass**
-   - `ttl.block_add` → `scf.for` + `ttkernel.add_tiles`
-   - `ttl.block_matmul` → `ttkernel.matmul_tiles`
-   - Insert init operations
-
-3. **TTLLowerDataMovement Pass**
-   - `ttl.copy(accessor, cb)` → `ttkernel.noc_async_read`
-   - `ttl.copy(cb, accessor)` → `ttkernel.noc_async_write`
-   - `ttl.copy(cb, pipe, cb)` → multicast/unicast NOC ops
-   - Compute NOC addresses
-
-4. **TTLLowerSynchronization Pass**
-   - `ttl.cb_wait` → `ttkernel.cb_wait_front`
-   - `ttl.cb_reserve` → `ttkernel.cb_reserve_back`
-   - `ttl.semaphore_*` → `ttkernel.noc_semaphore_*`
-
-5. **Testing**
-   - Test each pass individually with lit tests
-   - End-to-end test: Python → TTL → TTKernel → C++
-
-**Deliverable**: Complete TTL → TTKernel lowering pipeline
-
-### Phase 7: Integration & Validation (Weeks 9-10)
-**Goal**: End-to-end examples working
-
-1. **Example Porting**
-   - Port `examples/eltwise_add.py` to TTL
-   - Port `examples/custom_dm_matmul.py` to TTL
-   - Compare generated C++ with current pipeline
-
-2. **Performance Validation**
-   - Run on hardware (if available)
-   - Compare performance vs current pipeline
-
-3. **Documentation**
-   - Update `docs/HITCHHIKERS_GUIDE.md`
-   - Document TTL operations
-   - Document pass pipeline
-
-**Deliverable**: Working TTL pipeline for production use
+**Deliverable**: Working end-to-end TTL pipeline
 
 ---
 
@@ -1542,12 +1589,18 @@ lib/Dialect/TTL/Transform/
 ```
 
 **Transform Operations to Implement:**
-- `transform.ttl.allocate_dst_registers`
-- `transform.ttl.schedule_pipeline`
-- `transform.ttl.optimize_buffer_factor`
-- `transform.ttl.coalesce_dma`
-- `transform.ttl.reorder_for_locality`
-- `transform.ttl.insert_prefetch`
+- `transform.ttl.allocate_dst_registers` - DST register allocation
+- `transform.ttl.schedule_pipeline` - Compute/DMA overlap
+- `transform.ttl.optimize_buffer_factor` - CB sizing
+- `transform.ttl.coalesce_dma` - DMA merging
+- `transform.ttl.reorder_for_locality` - Memory access optimization
+- `transform.ttl.insert_prefetch` - Prefetch insertion
+
+**Upstream transforms to leverage:**
+- `transform.loop.tile` - Tile affine loops for locality
+- `transform.loop.unroll` - Unroll small affine loops
+- `transform.affine.simplify_bounded_affine_ops` - Simplify after transformations
+- `transform.apply_registered_pass` - Run standard affine passes
 
 #### Comparison: Traditional Pass vs Transform
 
