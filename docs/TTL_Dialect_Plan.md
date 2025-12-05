@@ -1,12 +1,18 @@
 # TTL Dialect Design Plan
 
-**Version**: 0.5
-**Date**: 2025-12-04
-**Status**: Design Phase
+**Version**: 0.6
 
-This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermediate representation designed to directly capture the semantics of the TT-lang DSL. The TTL dialect enables multi-stage compilation with explicit transformation passes for synchronization inference, resource allocation, and hardware-specific optimizations before lowering to executable kernels.
+**Modified**: 2025-12-05
 
----
+**Status**: Design Phase - Under Revision
+
+This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level
+intermediate representation designed to directly capture the semantics of the
+TT-lang DSL. The TTL dialect enables multi-stage compilation with explicit
+transformation passes for synchronization inference, resource allocation, and
+hardware-specific optimizations before lowering to executable kernels.
+
+
 
 ## Table of Contents
 
@@ -19,7 +25,7 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
    - 4.1 [Structural Operations](#41-structural-operations)
    - 4.2 [Resource Creation](#42-resource-creation)
    - 4.3 [Circular Buffer Operations](#43-circular-buffer-operations)
-   - 4.4 [Compute Operations](#44-compute-operations)
+   - 4.4 [Compute Operations (Fusion)](#44-compute-operations)
    - 4.5 [Data Movement Operations](#45-data-movement-operations)
    - 4.6 [Synchronization Operations](#46-synchronization-operations)
    - 4.7 [Utility Operations](#47-utility-operations)
@@ -29,11 +35,13 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
    - 5.2 [Key Pass Descriptions](#52-key-pass-descriptions)
    - 5.3 [Granularity and Block Shapes](#53-granularity-and-block-shapes)
    - 5.4 [Source Location Tracking](#54-source-location-tracking)
-   - 5.5 [Control Flow: SCF vs Affine Dialect](#55-control-flow-scf-vs-affine-dialect)
+   - 5.5
+     [Control Flow: SCF vs Affine Dialect](#55-control-flow-scf-vs-affine-dialect)
    - 5.6 [Error Handling and Diagnostics](#56-error-handling-and-diagnostics)
 6. [Type Conversion & Lowering Examples](#6-type-conversion--lowering-examples)
    - 6.1 [TTL → TTKernel Type Mapping](#61-ttl--ttkernel-type-mapping)
-   - 6.2 [TTL → TTKernel Operation Mapping](#62-ttl--ttkernel-operation-mapping)
+   - 6.2
+     [TTL → TTKernel Operation Mapping](#62-ttl--ttkernel-operation-mapping)
    - 6.3 [Operation Lowering Examples](#63-operation-lowering-examples)
 7. [Python Integration](#7-python-integration)
    - 7.1 [Frontend Compilation](#71-frontend-compilation)
@@ -43,45 +51,65 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
 9. [TTNN Runtime Integration](#9-ttnn-runtime-integration)
 10. [Future Evolution](#10-future-evolution)
     - 10.1 [Microcore Model (Post-MVP)](#101-microcore-model-post-mvp)
-    - 10.3 [Distributed Tensor Type (Major Extension)](#103-distributed-tensor-type-major-extension)
-    - 10.4 [Transform Dialect Integration for Scheduling](#104-transform-dialect-integration-for-scheduling)
+    - 10.3
+      [Distributed Tensor Type (Major Extension)](#103-distributed-tensor-type-major-extension)
+    - 10.4
+      [Transform Dialect Integration for Scheduling](#104-transform-dialect-integration-for-scheduling)
 11. [Success Criteria](#11-success-criteria)
 12. [Appendix: Design Rationale](#12-appendix-design-rationale)
 13. [References](#13-references)
 
----
+
 
 ## Executive Summary
 
-The TTL dialect provides a tensor-level intermediate representation for TT-lang programs (defined in [TT-lang.md](TT-lang.md)), enabling multi-stage lowering with explicit compiler transformations before generating C++ kernels. Generated kernels can execute on either the TTNN runtime (via dylib workflow) or the TT-Metal runtime (via flatbuffer workflow). TTL is designed specifically for the TT-lang DSL surface language, while D2M serves as a lower-level dialect for data movement and compute operations.
+The TTL dialect provides a tensor-level intermediate representation for TT-lang
+programs (defined in [TT-lang.md](TT-lang.md)), enabling multi-stage lowering
+with explicit compiler transformations before generating C++ kernels. Generated
+kernels can execute on either the TTNN runtime (via dylib workflow) or the
+TT-Metal runtime (via flatbuffer workflow). TTL is designed specifically for the
+TT-lang DSL surface language, while D2M serves as a lower-level dialect for data
+movement and compute operations.
 
 **Key Design Decisions:**
-- **Threading Model**: Simple compute/datamovement threads (MVP), with microcore evolution path documented
+- **Threading Model**: Simple compute/datamovement threads (MVP), with microcore
+  evolution path documented
 - **Abstraction Level**: Tensor-level (blocks of tiles), not individual tiles
-- **Type System**: Memory spaces explicit in types; SSA values for all resources (CBs, pipes, semaphores)
+- **Type System**: Memory spaces explicit in types; SSA values for all resources
+  (CBs, pipes, semaphores)
 - **Control Flow**: Hybrid SCF/Affine dialect with TTL attributes
-- **Lowering Path**: TTL → TTKernel → EmitC → C++ kernel source (compiled separately)
+- **Lowering Path**: TTL → TTKernel → EmitC → C++ kernel source (compiled
+  separately)
 - **Phasing**: Multi-threaded from start (matches current examples)
 
----
+
 
 ## 1. Motivation & Goals
 
 ### Motivation for TTL Dialect
 
-D2M dialect serves as a general-purpose data movement and compute abstraction. For the TT-lang DSL specifically, a dedicated dialect provides:
+D2M dialect serves as a general-purpose data movement and compute abstraction.
+For the TT-lang DSL specifically, a dedicated dialect provides:
 
-- DSL-level IR: Preserve TT-lang abstractions (kernels, threads, circular buffers, pipes) longer in compilation
-- SSA semantics: CB operations with explicit SSA values rather than implicit state effects (D2M CB ops use `MemoryEffects<[MemRead, MemWrite]>` for state transitions)
-- Analysis opportunities: Synchronization inference, resource allocation, and scheduling at DSL semantic level
-- Flexibility: Experiment with TT-lang-specific optimizations and compilation strategies
+- DSL-level IR: Preserve TT-lang abstractions (kernels, threads, circular
+  buffers, pipes) longer in compilation
+- SSA semantics: CB operations with explicit SSA values rather than implicit
+  state effects (D2M CB ops use `MemoryEffects<[MemRead, MemWrite]>` for state
+  transitions)
+- Analysis opportunities: Synchronization inference, resource allocation, and
+  scheduling at DSL semantic level
+- Flexibility: Experiment with TT-lang-specific optimizations and compilation
+  strategies
 - Multiple targets: TTKernel (immediate) and potential standalone C++ backend
 
 ### TTL Dialect Goals
-1. Capture DSL semantics in SSA form: kernels, threads, circular buffers, pipes, blocks, semaphores
-2. Enable analysis passes: Synchronization inference, memory planning, DST register allocation
+1. Capture DSL semantics in SSA form: kernels, threads, circular buffers, pipes,
+   blocks, semaphores
+2. Enable analysis passes: Synchronization inference, memory planning, DST
+   register allocation
 3. Support transformations: Liveness analysis, operation reordering, pipelining
-4. C++ kernel generation: Produce standalone C++ kernels that compile separately and link with TTNN runtime
+4. C++ kernel generation: Produce standalone C++ kernels that compile separately
+   and link with TTNN runtime
 5. Future-proof: Extensible to new hardware generations via attributes
 
 ### Non-Goals (MVP)
@@ -89,7 +117,7 @@ D2M dialect serves as a general-purpose data movement and compute abstraction. F
 - Single-threaded synchronous model (start multi-threaded)
 - Complete TT-lang spec (start minimal, expand incrementally)
 
----
+
 
 ## 2. Architecture Overview
 
@@ -116,15 +144,25 @@ Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTM
 
 TTL and D2M serve different roles in the compilation pipeline:
 
-- **TTL**: New frontend dialect specifically designed for the TT-lang DSL. TTL provides DSL-specific IR enabling TT-lang-aware transformations before lowering through TTKernel/TTMetal to C++ kernels. TTL bypasses D2M and goes directly to TTKernel dialect, enabling TT-lang-specific optimizations and transformations. The generated C++ compiles separately and can execute on either the TTNN runtime (dylib workflow) or TT-Metal runtime (flatbuffer workflow).
+- **TTL**: New frontend dialect specifically designed for the TT-lang DSL. TTL
+  provides DSL-specific IR enabling TT-lang-aware transformations before
+  lowering through TTKernel/TTMetal to C++ kernels. TTL bypasses D2M and goes
+  directly to TTKernel dialect, enabling TT-lang-specific optimizations and
+  transformations. The generated C++ compiles separately and can execute on
+  either the TTNN runtime (dylib workflow) or TT-Metal runtime (flatbuffer
+  workflow).
 
-- **D2M**: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR → D2M → TTKernel). D2M serves as a general-purpose data movement and compute abstraction.
+- **D2M**: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR →
+  D2M → TTKernel). D2M serves as a general-purpose data movement and compute
+  abstraction.
 
-- **Convergence**: Both TTL and D2M paths converge at the TTKernel dialect, sharing the same backend lowering to EmitC and C++ code generation.
+- **Convergence**: Both TTL and D2M paths converge at the TTKernel dialect,
+  sharing the same backend lowering to EmitC and C++ code generation.
 
-This separation allows TTL to focus on TT-lang DSL semantics while D2M continues to serve framework integration needs.
+This separation allows TTL to focus on TT-lang DSL semantics while D2M continues
+to serve framework integration needs.
 
----
+
 
 ## 3. Type System
 
@@ -262,7 +300,7 @@ def TTL_DistributionStrategyAttr : I32EnumAttr<"DistributionStrategy", "TTL dist
 }
 ```
 
----
+
 
 ## 4. Operations
 
@@ -295,10 +333,31 @@ def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
     Variadic<AnyType>:$inputs,
     TTL_GridAttr:$grid,
     StrAttr:$memory_space,
-    BoolAttr:$tiled
+    BoolAttr:$tiled,
+    OptionalAttr<ArrayAttr>:$block_factors,  // Block factors per tensor [[M,N], [K,N], ...]
+    OptionalAttr<ArrayAttr>:$compile_time_args,  // Indices of inputs that are compile-time constants
+    OptionalAttr<DictionaryAttr>:$compute_config  // Math fidelity, precision modes
   );
   let regions = (region VariadicRegion<SizedRegion<1>>:$threads);
   let results = (outs Variadic<AnyType>:$results);
+  let description = [{
+    Kernel operation representing a multi-threaded program on a grid of cores.
+
+    Optional attributes:
+    - block_factors: Array of [rows, cols] tile counts per core for each tensor argument.
+      Example: [[1, 1], [1, 1], [2, 2]] means first two tensors have 1 tile per core,
+      third tensor has 2x2=4 tiles per core. Enables kernel specialization for different
+      parallelization strategies and autotuning.
+
+    - compile_time_args: Indices of input arguments that should be treated as compile-time
+      constants (e.g., tensor layouts, loop bounds). These are baked into the kernel binary
+      during code generation rather than passed as runtime parameters.
+
+    - compute_config: Dictionary with hardware configuration:
+      - "math_fidelity": "HiFi4" | "HiFi2" | "LoFi"
+      - "fp32_dest_acc_en": true | false (FP32 accumulation in DST registers)
+      - "math_approx_mode": true | false (approximation mode for math ops)
+  }];
 }
 
 def TTL_ComputeThreadOp : TTL_Op<"compute_thread"> {
@@ -309,7 +368,7 @@ def TTL_ComputeThreadOp : TTL_Op<"compute_thread"> {
   );
   let regions = (region SizedRegion<1>:$body);
   let description = [{
-    Thread for mathematical operations on tiles. Executes on MATH microcore.
+    Thread for mathematical operations on tiles. Executes on MATH microcore(s).
     Can use: block arithmetic, CB wait/pop/reserve/push, tile operations.
     Cannot use: DMA operations (use datamovement_thread).
 
@@ -341,7 +400,10 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
     I64ArrayAttr:$shape,              // Tiles per block [2, 1]
     TypeAttr:$tile_type,              // !ttcore.tile<32x32, f32>
     I64Attr:$buffer_factor,           // Number of blocks
-    TTL_MemorySpaceAttr:$memory_space // L1, DRAM, DST
+    TTL_MemorySpaceAttr:$memory_space, // L1, DRAM, DST
+    OptionalAttr<I32Attr>:$buffer_index,  // Optional explicit CB number (0-31)
+    OptionalAttr<I64Attr>:$page_size,     // Optional page size in bytes
+    OptionalAttr<TTL_CoreMaskAttr>:$core_ranges  // Optional per-core CB mapping
   );
   let results = (outs TTL_CircularBuffer:$result);
   let description = [{
@@ -350,6 +412,14 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
     (dtype, tile shape from layout) and calls `ttl.create_cb` with the extracted
     parameters. The "likeness" refers to deriving tile_type and memory_space
     from the input tensor's layout and properties.
+
+    Optional attributes enable explicit control when needed:
+    - buffer_index: Explicitly assign CB number (default: auto-assign in allocation pass)
+    - page_size: Override computed page size for custom configurations
+    - core_ranges: Specify which cores can access this CB (default: all cores in grid)
+
+    These optional attributes support TTNN KernelDescriptor compatibility and
+    enable fine-grained control for hand-optimized kernels.
   }];
 }
 
@@ -425,7 +495,13 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait"> {
     TTL_CircularBuffer:$cb,
     I64Attr:$num_tiles                // Number of tiles to wait for
   );
-  // Blocking operation - no result, tiles accessed via get_tile
+  let description = [{
+    Blocking operation that waits until the specified number of tiles are available
+    in the circular buffer. Used by consumers to acquire data from producers.
+
+    Maps to TTKernel operation:
+    - ttkernel.cb_wait_front(cb, num_tiles)
+  }];
 }
 
 def TTL_CBPopOp : TTL_Op<"cb_pop"> {
@@ -434,7 +510,13 @@ def TTL_CBPopOp : TTL_Op<"cb_pop"> {
     TTL_CircularBuffer:$cb,
     I64Attr:$num_tiles                // Number of tiles to release
   );
-  // Non-blocking operation
+  let description = [{
+    Non-blocking operation that signals tiles have been consumed and can be
+    reused by the producer.
+
+    Maps to TTKernel operation:
+    - ttkernel.cb_pop_front(cb, num_tiles)
+  }];
 }
 
 def TTL_CBReserveOp : TTL_Op<"cb_reserve"> {
@@ -447,7 +529,12 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve"> {
     Python API `cb.reserve()` maps to this operation. When used with Python
     `with` statement (`with cb.reserve() as blk:`), the AST compiler generates
     `ttl.cb_reserve` at the start of the scope and `ttl.cb_push` at the end.
-    Blocking operation - no result, tiles accessed via pack_tile.
+
+    Blocking operation that waits until space is available in the circular buffer.
+    Used by producers to reserve space for writing data.
+
+    Maps to TTKernel operation:
+    - ttkernel.cb_reserve_back(cb, num_tiles)
   }];
 }
 
@@ -459,7 +546,12 @@ def TTL_CBPushOp : TTL_Op<"cb_push"> {
   );
   let description = [{
     Python API `cb.push()` maps to this operation. Automatically generated
-    at the end of a `with cb.reserve()` scope. Non-blocking operation.
+    at the end of a `with cb.reserve()` scope.
+
+    Non-blocking operation that signals data is ready for consumers.
+
+    Maps to TTKernel operation:
+    - ttkernel.cb_push_back(cb, num_tiles)
   }];
 }
 
@@ -470,6 +562,14 @@ def TTL_GetTileOp : TTL_Op<"get_tile"> {
     Index:$tile_idx                   // Tile index within CB
   );
   let results = (outs AnyType:$tile);  // !ttcore.tile<32x32, f32>
+  let description = [{
+    Copies a tile from circular buffer to DST register for computation.
+    Used in compute threads to load operands.
+
+    Maps to TTKernel operations:
+    - ttkernel.copy_tile_init(cb)
+    - ttkernel.copy_tile(cb, tile_idx, dst_idx)
+  }];
 }
 
 def TTL_PackTileOp : TTL_Op<"pack_tile"> {
@@ -479,47 +579,322 @@ def TTL_PackTileOp : TTL_Op<"pack_tile"> {
     TTL_CircularBuffer:$cb,
     Index:$tile_idx                   // Tile index within CB
   );
+  let description = [{
+    Copies a tile from DST register back to circular buffer.
+    Used to materialize computation results.
+
+    Maps to TTKernel operation:
+    - ttkernel.pack_tile(dst_idx, cb, tile_idx)
+  }];
 }
 ```
 
 ### 4.4 Compute Operations
 
+TTL compute operations work at the **block abstraction level** (blocks of
+tiles), providing a higher-level interface than individual tile operations.
+During lowering to TTKernel, each block operation expands into loops over tiles
+with explicit DST register management.
+
+This section is organized into:
+- **[4.4.1 Fusion Operations](#441-fusion-operations)**: Operations for fusing
+  computation chains
+- **[4.4.2 Arithmetic Operations](#442-arithmetic-operations)**: Element-wise
+  math (add, mul, matmul)
+- **[4.4.3 Reduction and Broadcast](#443-reduction-and-broadcast-operations)**:
+  Operations for tensor dimension manipulation
+- **[4.4.4 Materialization](#444-materialization-operations)**: Operations for
+  storing results
+- **[4.4.5 DST Register Management](#445-dst-register-management)**: IR-level
+  constructs for register allocation
+
+#### 4.4.1 Fusion Operations
+
+Without fusion, each block operation requires a full circular buffer round-trip:
+1. Reserve output CB slot
+2. Store result to CB (DST → L1 write)
+3. Push CB slot to signal data ready
+4. Wait for CB slot (in next operation)
+5. Load from CB (L1 → DST read)
+6. Pop CB slot after consumption
+
+Flash attention kernels, for example, have 7+ intermediate results (Q@K, scale,
+exp, reduce_sum, bcast, recip, multiply), so the above pattern requires:
+- 7 intermediate CB allocations (consuming precious L1 capacity)
+- 14 L1 memory transfers (7 writes + 7 reads)
+- Significant memory bandwidth overhead
+
+The `ttl.compute_region` operation enables fusion: all operations execute
+directly on DST registers with values flowing from one operation to the next
+without intermediate CB allocations or L1 traffic. Only the final result is
+written to memory. This is critical for complex kernels that would otherwise
+exceed L1 capacity or waste bandwidth.
+
+**Dense Layer Fusion Example:**
+
+A dense layer (fully connected layer) in neural networks computes
+`output = activation(X @ W + bias)` followed by optional normalization. This
+pattern fuses matmul, element-wise operations, and reductions:
+
+```mlir
+# Dense layer with ReLU activation and layer normalization
+# Computation: matmul → add bias → ReLU → compute mean → center values
+
+result = ttl.compute_region ins(x_blk, w_blk, bias_blk, ones_blk) outs(o_blk) {
+  ^bb0(%x, %w, %b, %ones):
+    %matmul_result = ttl.block_matmul %x, %w         // X @ W
+    %with_bias = ttl.block_add %matmul_result, %b    // + bias
+    %activated = ttl.block_relu %with_bias           // ReLU activation
+    %mean = ttl.block_reduce_sum %activated, %ones   // Sum for mean
+    %mean_bcast = ttl.block_bcast %mean              // Broadcast mean
+    %centered = ttl.block_sub %activated, %mean_bcast // Center values
+    ttl.yield %centered
+} {keep_in_dst = true}
+```
+
+Without fusion: 5 intermediate CB allocations + 10 L1 transfers. With fusion: 0
+intermediate allocations, all operations execute on DST registers.
+
+The lowering pass generates a single affine loop with sequential TTKernel
+operations, reusing DST registers as values become dead.
+
 ```tablegen
+def TTL_ComputeRegionOp : TTL_Op<"compute_region", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Fused compute region with DST register reuse";
+  let arguments = (ins
+    Variadic<AnyType>:$inputs,
+    OptionalAttr<BoolAttr>:$keep_in_dst  // Hint: keep intermediates in DST, don't spill to L1
+  );
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region SizedRegion<1>:$body);
+  let description = [{
+    Wraps a chain of block compute operations for fusion into a single execution unit.
+    All intermediate results remain in DST registers.
+
+    Example: Simple attention kernel fusion
+      %result = ttl.compute_region ins(%q, %k, %v, %scale : ...) outs(%out : ...) {
+        ^bb0(%q_blk, %k_blk, %v_blk, %scale_blk):
+          %s = ttl.block_matmul %q_blk, %k_blk
+          %s_scaled = ttl.block_mul %s, %scale_blk
+          %exp_s = ttl.block_exp %s_scaled
+          %sum = ttl.block_reduce_sum %exp_s, %ones
+          %sum_bcast = ttl.block_bcast %sum
+          %recip = ttl.block_recip %sum_bcast
+          %p = ttl.block_mul %exp_s, %recip
+          %o = ttl.block_matmul %p, %v_blk
+          ttl.yield %o
+      } {keep_in_dst = true}
+
+    The keep_in_dst attribute hints that intermediate values should not be materialized
+    to circular buffers unless necessary for cross-thread communication.
+
+    Lowering generates a single affine loop with all operations executing sequentially.
+    TTLAssignDSTRegisters performs liveness analysis to allocate DST registers and
+    minimize register pressure.
+  }];
+}
+
 def TTL_BlockComputeOp : TTL_Op<"block_compute"> {
   let summary = "Compute region operating on blocks";
   let regions = (region SizedRegion<1>:$body);
   let description = [{
     Region containing only ttl.math.* operations and structural ops.
     Dedicated lowering pass rewrites to arith/math/tosa or TT intrinsics.
+
+    For fused operation chains, ttl.compute_region provides explicit fusion control.
   }];
 }
+```
 
+#### 4.4.2 Arithmetic Operations
+
+Element-wise operations on blocks. Each operation lowers to an affine loop over
+tiles with corresponding TTKernel tile operations.
+
+```tablegen
 def TTL_BlockAddOp : TTL_Op<"block_add"> {
   let summary = "Element-wise addition on tensor blocks";
   let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
   let results = (outs AnyTensor:$result);
+  let description = [{
+    Element-wise addition of two blocks.
+
+    Maps to TTKernel operations:
+    - ttkernel.add_tiles_init(in0_cb, in1_cb)
+    - affine.for loop over block tiles:
+      - ttkernel.add_tiles(in0_cb, in1_cb, in0_idx, in1_idx, dst_idx)
+  }];
+}
+
+def TTL_BlockMulOp : TTL_Op<"block_mul"> {
+  let summary = "Element-wise multiplication on tensor blocks";
+  let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
+  let results = (outs AnyTensor:$result);
+  let description = [{
+    Element-wise multiplication of two blocks.
+
+    Maps to TTKernel operations:
+    - ttkernel.mul_tiles_init(in0_cb, in1_cb)
+    - affine.for loop over block tiles:
+      - ttkernel.mul_tiles(in0_cb, in1_cb, in0_idx, in1_idx, dst_idx)
+  }];
 }
 
 def TTL_BlockMatmulOp : TTL_Op<"block_matmul"> {
   let summary = "Matrix multiplication on tensor blocks";
   let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
   let results = (outs AnyTensor:$result);
+  let description = [{
+    Matrix multiplication of two blocks.
+
+    Maps to TTKernel operations:
+    - ttkernel.mm_init(in0_cb, in1_cb, out_cb, transpose) (once per kernel)
+    - affine.for loop over block tiles (outer product iteration for block matmul):
+      - ttkernel.mm_init_short(in0_cb, in1_cb, transpose) (if other init called between)
+      - ttkernel.matmul_tiles(in0_cb, in1_cb, in0_idx, in1_idx, dst_idx, transpose)
+
+    Note: Matmul operations can be fused with element-wise and reduction operations
+    within ttl.compute_region. See section 4.4.1 for dense layer fusion example.
+  }];
 }
 
+// Additional arithmetic ops: sub, div, exp, recip, relu, sigmoid, etc.
+```
+
+#### 4.4.3 Reduction and Broadcast Operations
+
+Operations for reducing tensor dimensions and broadcasting values. Critical for
+attention mechanisms and normalization patterns.
+
+```tablegen
+def TTL_BlockReduceSumOp : TTL_Op<"block_reduce_sum"> {
+  let summary = "Reduce sum along specified axis";
+  let arguments = (ins
+    AnyTensor:$input,
+    AnyTensor:$scaling,  // Scaling tensor (typically ones) for reduction
+    I64Attr:$axis        // Axis to reduce along
+  );
+  let results = (outs AnyTensor:$result);
+  let description = [{
+    Reduces input tensor along specified axis using sum operation.
+    Used in normalization patterns such as attention mechanisms.
+
+    Example: reduce_sum(exp_S, ones, dim=1) sums along dimension 1.
+
+    Maps to TTKernel operations:
+    - ttkernel.reduce_init(in_cb, scaling_cb, out_cb, ReduceFunc::Sum, reduce_dim)
+    - affine.for loop over reduction dimension tiles:
+      - ttkernel.reduce_tile(in_cb, scaling_cb, in_idx, scaling_idx, dst_idx, Sum, reduce_dim)
+    - ttkernel.reduce_uninit() (if next operation needs default packer state)
+
+    Note: TTKernel reduce operations require a scaling_cb. The axis parameter maps
+    to TTKernel ReduceDim enum.
+  }];
+}
+
+def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
+  let summary = "Reduce max along specified axis";
+  let arguments = (ins
+    AnyTensor:$input,
+    I64Attr:$axis  // Axis to reduce along
+  );
+  let results = (outs AnyTensor:$result);
+  let description = [{
+    Reduces input tensor along specified axis using max operation.
+    Used for numerical stability in normalization patterns.
+
+    Maps to TTKernel operations:
+    - ttkernel.reduce_init(in_cb, scaling_cb, out_cb, ReduceFunc::Max, reduce_dim)
+    - affine.for loop over reduction dimension tiles:
+      - ttkernel.reduce_tile(in_cb, scaling_cb, in_idx, scaling_idx, dst_idx, Max, reduce_dim)
+    - ttkernel.reduce_uninit() (if next operation needs default packer state)
+
+    Note: Max reduction may also require scaling_cb depending on hardware requirements.
+  }];
+}
+
+def TTL_BlockBcastOp : TTL_Op<"block_bcast"> {
+  let summary = "Broadcast along specified axis";
+  let arguments = (ins
+    AnyTensor:$input,
+    I64Attr:$axis  // Broadcast axis
+  );
+  let results = (outs AnyTensor:$result);
+  let description = [{
+    Broadcasts input tensor along the specified axis by replicating values.
+    Useful for normalization patterns (such as attention mechanisms) where
+    reduction fills one dimension and broadcast replicates across the other.
+
+    Example: bcast(reduced_val, dim=1) replicates values along dimension 1.
+
+    Maps to TTKernel operations:
+    - ttkernel.unary_bcast_init(in_cb, out_cb, bcast_type)
+    - affine.for loop over tiles:
+      - ttkernel.unary_bcast(in_cb, in_idx, dst_idx, bcast_type)
+
+    Note: The axis parameter maps to TTKernel BcastType enum.
+  }];
+}
+```
+
+#### 4.4.4 Materialization Operations
+
+Operations for storing computed results from DST registers back to circular
+buffers or memory.
+
+**Store/Wait/Pop Pattern for Intermediate Result Reuse:**
+
+A common pattern for reusing circular buffers efficiently within the same thread
+is the store/wait/pop sequence. This enables minimal buffer_factor allocation
+while reusing CB slots for multiple intermediate results:
+
+```python
+# Pattern for reusing intermediate results within same thread
+o = out_cb.reserve()        # Reserve output slot
+o.store(intermediate)       # Materialize result
+out_cb.push()               # Signal available
+
+intermediate = out_cb.wait()  # Re-acquire from CB
+# ... use intermediate in next computation ...
+out_cb.pop()                # Release slot
+
+o = out_cb.reserve()        # Reuse same CB slot for next result
+```
+
+This pattern enables:
+1. Minimal buffer_factor (often 2 is sufficient even for complex pipelines)
+2. Intra-thread handoff of intermediate values
+3. Efficient CB reuse without exceeding L1 capacity
+
+**Semantics:**
+- `ttl.block_store` + `ttl.cb_push` signals result is available for subsequent
+  operations
+- `ttl.cb_wait` + `ttl.cb_pop` acknowledges consumption and releases the slot
+- TTLValidatePass verifies proper sequencing: each reserve has matching push,
+  each wait has matching pop
+
+```tablegen
 def TTL_BlockStoreOp : TTL_Op<"block_store"> {
   let summary = "Store computation result to circular buffer block";
   let arguments = (ins AnyTensor:$dst, AnyTensor:$src);
   let description = [{
     Python API `block.store(value)` maps to this operation.
-    Blocking operation that materializes result and stores in block.
-    Lowers to per-tile pack operations with DST register management.
-    
+    Blocking operation that materializes computation result and stores in block.
+
     Block expression semantics:
     - Block expressions (e.g., `a_blk ** 2`, `a_blk + b_blk`) are evaluated lazily
     - Python operators (`**`, `+`, `-`, `*`, etc.) map to corresponding TTL block operations
     - `ttl.math.*` functions map to TTL math operations
     - `store()` materializes the result and blocks execution until complete
-    - DST register allocation happens during lowering pass
+
+    Lowers to TTKernel operations:
+    - affine.for loop over block tiles:
+      - ttkernel.pack_tile(dst_idx, cb, tile_idx)
+
+    Common usage: Part of store/wait/pop pattern for intermediate value reuse
+    (see pattern explanation above).
   }];
 }
 
@@ -529,10 +904,147 @@ def TTL_RequireDSTOp : TTL_Op<"require_dst", [DeclareOpInterfaceMethods<MemoryEf
   let description = [{
     Hint for liveness analysis to track which values need DST registers.
     Enables optimization passes to reorder operations and minimize register pressure.
+
+    This is an IR-level marker removed during lowering after register allocation.
+  }];
+}
+```
+
+#### 4.4.5 DST Register Management
+
+DST register operations are **IR-level constructs** for managing register
+allocation at the block abstraction level.
+
+**Block-to-tile lowering context**: TTL operations work on *blocks* (groups of
+tiles, e.g., a 2x1 block = 2 tiles). Hardware operations in TTKernel work on
+*individual tiles* (32x32 elements). During the TTLLowerCompute pass:
+
+- A single `ttl.block_add` operating on a 2x1 block becomes an `affine.for` loop
+  with 2 iterations
+- Each iteration performs `ttkernel.add_tiles` on one tile
+- DST register allocation happens *after* this expansion, when we know exactly
+  how many tile-level operations execute
+
+This lowering occurs because:
+- Hardware constraint: TTKernel compute operations (add_tiles, mul_tiles, etc.)
+  operate on single tiles, not blocks
+- Register allocation: We need to see all tile operations and their lifetimes to
+  allocate DST registers efficiently
+- Fusion opportunities: Block-level IR enables analysis and fusion before
+  committing to tile-level loops
+
+**DST register capacity** is configuration-dependent (4-16 tiles) based on
+`fp32_dest_acc_en` and `dst_full_sync_en` settings in `ComputeKernelConfig` (see
+[docs/dst_register_capacity.md](dst_register_capacity.md)). The
+TTLAssignDSTRegisters pass queries the kernel's compute_config to determine
+capacity.
+
+**Spilling** operates at tile granularity: if a kernel's liveness analysis
+reveals more live values than available DST capacity, the compiler inserts spill
+operations. These operate on *individual tiles*, not blocks, because spilling
+occurs after block-to-tile lowering when the affine loops over tiles already
+exist.
+
+```tablegen
+def TTL_AcquireDSTOp : TTL_Op<"acquire_dst"> {
+  let summary = "Acquire DST register (IR marker, removed during lowering)";
+  let arguments = (ins OptionalAttr<I32Attr>:$index);
+  let results = (outs Index:$dst_reg);
+  let description = [{
+    Marks DST register acquisition for liveness analysis. Removed during lowering
+    after register allocation completes.
+
+    Example transformation through the pipeline:
+      TTL IR (block level):
+        %dst0 = ttl.acquire_dst
+        %result = ttl.block_add %a, %b {dst_reg = %dst0}  // 2x1 block
+        ttl.release_dst %dst0
+
+      After TTLLowerCompute (tile level, DST ops still present):
+        %dst0 = ttl.acquire_dst
+        affine.for %i = 0 to 2 {  // 2 tiles in block
+          %a_tile = ttkernel.copy_tile %a_cb, %i, 0
+          %b_tile = ttkernel.copy_tile %b_cb, %i, 1
+          ttkernel.add_tiles_init
+          ttkernel.add_tiles 0, 1, 2
+          ttkernel.pack_tile 2, %out_cb, %i
+        }
+        ttl.release_dst %dst0
+
+      After TTLAssignDSTRegisters (DST ops removed, explicit indices):
+        ttkernel.tile_regs_acquire
+        affine.for %i = 0 to 2 {
+          %a_tile = ttkernel.copy_tile %a_cb, %i, 0  // DST[0]
+          %b_tile = ttkernel.copy_tile %b_cb, %i, 1  // DST[1]
+          ttkernel.add_tiles_init
+          ttkernel.add_tiles 0, 1, 2                  // DST[0] + DST[1] → DST[2]
+          ttkernel.pack_tile 2, %out_cb, %i
+        }
+        ttkernel.tile_regs_commit
+
+    Register indices (0, 1, 2) computed by TTLAssignDSTRegisters based on liveness.
   }];
 }
 
-// Additional ops: sub, mul, div, relu, sigmoid, etc.
+def TTL_ReleaseDSTOp : TTL_Op<"release_dst"> {
+  let summary = "Release DST register (IR marker, removed during lowering)";
+  let arguments = (ins Index:$dst_reg);
+  let description = [{
+    Marks DST register release for liveness analysis. Removed during lowering.
+  }];
+}
+
+def TTL_SpillTileToL1Op : TTL_Op<"spill_tile_to_l1"> {
+  let summary = "Spill single tile from DST to L1 (operates at tile level)";
+  let arguments = (ins
+    Index:$tile_value,    // SSA value of tile currently in DST
+    Index:$dst_reg        // DST register index
+  );
+  let results = (outs Index:$spilled_tile);
+  let description = [{
+    Spills a single tile from DST register to L1 when register pressure exceeds
+    available capacity. Inserted by TTLAssignDSTRegisters after block-to-tile lowering.
+
+    Operates at tile granularity: this operation appears inside affine loops after
+    blocks have been lowered to per-tile operations. It spills individual tiles, not
+    entire blocks.
+
+    Example: Kernel with liveness exceeding DST capacity needs spilling:
+      affine.for %i = 0 to %N {
+        %t0 = ttkernel.copy_tile %cb0, %i, 0
+        %t1 = ttkernel.copy_tile %cb1, %i, 1
+        // ... operations filling available DST registers
+        %t_result = ttkernel.add_tiles 0, 1, 2
+
+        // Register pressure exceeded - spill oldest tile
+        %spilled = ttl.spill_tile_to_l1 %t0, 0
+
+        // DST[0] now available for reuse
+        %t_next = ttkernel.mul_tiles 3, 4, 0  // Reuse DST[0]
+
+        // Later restore if needed
+        %restored = ttl.restore_tile_from_l1 %spilled
+      }
+
+    Lowers to TTKernel operations:
+      %temp_cb = ttl.create_cb shape=[1,1], ...  // 1-tile temporary CB
+      ttkernel.pack_tile %dst_reg, %temp_cb, 0   // DST → L1
+  }];
+}
+
+def TTL_RestoreTileFromL1Op : TTL_Op<"restore_tile_from_l1"> {
+  let summary = "Restore spilled tile from L1 to DST (operates at tile level)";
+  let arguments = (ins Index:$spilled_tile);
+  let results = (outs Index:$tile_value);
+  let description = [{
+    Restores a previously spilled tile from L1 back to DST register.
+    Paired with ttl.spill_tile_to_l1.
+
+    Lowers to TTKernel operations:
+      %new_dst = ttl.acquire_dst
+      ttkernel.copy_tile %temp_cb, 0, %new_dst  // L1 → DST
+  }];
+}
 ```
 
 ### 4.5 Data Movement Operations
@@ -649,9 +1161,30 @@ def TTL_SemaphoreWaitOp : TTL_Op<"semaphore_wait"> {
   let arguments = (ins
     TTL_Semaphore:$semaphore,
     I32Attr:$value,
-    OptionalAttr<I32Attr>:$reset_value,
-    OptionalAttr<StrAttr>:$comparison  // "equal" or "min"
+    OptionalAttr<I32Attr>:$reset_value,  // Optional: set to this value after wait completes
+    OptionalAttr<StrAttr>:$comparison    // "equal" (default) or "min" (>=)
   );
+  let description = [{
+    Blocking operation that waits until semaphore meets the specified condition.
+    Comparison modes: "equal" (wait for exact value) or "min" (wait for value >= target).
+
+    Optional reset_value enables atomic wait-and-reset pattern for producer/consumer
+    coordination: wait for condition, then immediately reset semaphore to specified value.
+
+    Example producer/consumer barrier pattern:
+      // Consumer waits for N items, then resets to 0
+      ttl.semaphore_wait %sem, 5 {reset_value = 0, comparison = "equal"}
+
+    Maps to TTKernel operations:
+      Without reset:
+        ttkernel.noc_semaphore_wait(sem_addr, value)  // or wait_min
+
+      With reset (sequence):
+        ttkernel.noc_semaphore_wait(sem_addr, value)
+        ttkernel.noc_semaphore_set(local_core, sem_addr, reset_value)
+
+    Note: Reset is a software pattern (wait + local set), not atomic hardware operation.
+  }];
 }
 
 def TTL_SemaphoreSetOp : TTL_Op<"semaphore_set"> {
@@ -660,14 +1193,25 @@ def TTL_SemaphoreSetOp : TTL_Op<"semaphore_set"> {
     TTL_Semaphore:$semaphore,
     I32Attr:$value,
     OptionalAttr<I64ArrayAttr>:$core,      // For remote unicast
-    OptionalAttr<I64ArrayAttr>:$mcast      // For remote multicast
+    OptionalAttr<ArrayAttr>:$mcast_range   // For remote multicast [[x0,y0],[x1,y1]]
   );
   let description = [{
     Python API `semaphore.set(value)` and `remote_semaphore.set(value)` map
     to this operation. For remote operations, use `ttl.get_remote_semaphore` or
     `ttl.get_remote_multicast_semaphore` to create annotated semaphore references
-    first. The core/mcast attributes on this operation come from the remote
-    semaphore reference created by those operations.
+    first. The core/mcast_range attributes come from the remote semaphore reference.
+
+    Maps to TTKernel operations:
+      Local:
+        ttkernel.noc_semaphore_set(local_core, sem_addr, value)
+
+      Remote unicast:
+        ttkernel.noc_semaphore_set(target_core, sem_addr, value)
+
+      Remote multicast:
+        ttkernel.noc_semaphore_set_multicast(noc_multicast_addr, value)
+
+    Note: Multicast semaphores support set but not increment (hardware limitation).
   }];
 }
 
@@ -681,6 +1225,9 @@ def TTL_SemaphoreIncOp : TTL_Op<"semaphore_inc"> {
   let description = [{
     Python API `unicast_remote_semaphore.inc(value)` maps to this operation.
     Only supported for unicast remote semaphores (not multicast).
+
+    Maps to TTKernel operation:
+    - ttkernel.noc_semaphore_inc(target_core, sem_addr, increment_value)
   }];
 }
 ```
@@ -704,6 +1251,55 @@ def TTL_GridSizeOp : TTL_Op<"grid_size", [Pure]> {
   let summary = "Get grid dimensions";
   let arguments = (ins OptionalAttr<I64Attr>:$dims);
   let results = (outs Variadic<Index>:$sizes);
+  let description = [{
+    Returns grid dimensions. Folds to constants.
+
+    Note: Python API `ttl.grid_size()` maps to this MLIR operation.
+  }];
+}
+
+def TTL_CoreLinearOp : TTL_Op<"core_linear", [Pure]> {
+  let summary = "Get linear core index in grid";
+  let results = (outs Index:$linear_index);
+  let description = [{
+    Returns linearized core index for grid-based data distribution.
+    For a 2D grid (X, Y), computes: core_y * grid_x + core_x.
+    For higher dimensions, uses row-major linearization.
+
+    Example: In 2x2 grid, cores map to linear indices:
+      (0,0)→0, (0,1)→1, (1,0)→2, (1,1)→3
+
+    Useful for distributing data across cores:
+      linear_idx = ttl.core_linear()
+      my_slice = tensor_accessor[linear_idx, :]
+
+    Lowers to:
+      %y = ttl.core(dims=0)
+      %x = ttl.core(dims=1)
+      %grid_x = ttl.grid_size(dims=1)
+      %linear = affine.apply affine_map<(y, x, grid_x) -> (y * grid_x + x)>(%y, %x, %grid_x)
+  }];
+}
+
+def TTL_GridSliceOp : TTL_Op<"grid_slice", [Pure]> {
+  let summary = "Compute grid-strided tensor slice for current core";
+  let arguments = (ins
+    TTL_TensorAccessor:$accessor,
+    I64ArrayAttr:$block_factors  // Tiles per core per dimension
+  );
+  let results = (outs TTL_TensorAccessor:$sliced_accessor);
+  let description = [{
+    Computes tensor slice for current core based on grid position and block factors.
+    Automates the pattern of distributing tensor data across grid cores.
+
+    Example: 2x2 grid, block_factors=[1, 1] (1 tile per core per dimension):
+      Core (0,0) accesses tensor[0:1, 0:1]
+      Core (0,1) accesses tensor[0:1, 1:2]
+      Core (1,0) accesses tensor[1:2, 0:1]
+      Core (1,1) accesses tensor[1:2, 1:2]
+
+    Lowers to affine expressions computing slice bounds from core coordinates.
+  }];
 }
 ```
 
@@ -759,7 +1355,173 @@ def TTL_GridSizeOp : TTL_Op<"grid_size", [Pure]> {
    - Lowering pattern in TTLLowerCompute.cpp
    - Lit test for validation
 
----
+
+
+## 4.9 MLIR Interface Requirements
+
+To enable effective compiler analysis and optimization, TTL operations must
+implement appropriate MLIR interfaces. This section specifies which operations
+should implement which interfaces and why.
+
+### 4.9.1 MemoryEffectsOpInterface
+
+All operations that read from or write to memory must implement
+`MemoryEffectsOpInterface`. This enables standard MLIR optimizations such as
+common subexpression elimination (CSE), loop-invariant code motion (LICM), and
+dead code elimination (DCE).
+
+**Operations requiring MemoryEffectsOpInterface:**
+
+```cpp
+// Circular Buffer Operations
+TTL_CBWaitOp        // Reads: CB state (waits for available data)
+TTL_CBPopOp         // Writes: CB state (updates read pointer)
+TTL_CBReserveOp     // Reads: CB state (waits for free space)
+TTL_CBPushOp        // Writes: CB state (updates write pointer)
+TTL_GetTileOp       // Reads: CB memory
+TTL_PackTileOp      // Writes: CB memory
+
+// Data Movement Operations
+TTL_CopyOp          // Reads source, Writes destination
+TTL_WaitOp          // Memory fence (all pending DMAs)
+TTL_DMABarrierOp    // Memory fence (global DMA barrier)
+
+// Synchronization Operations
+TTL_SemaphoreWaitOp // Reads: semaphore value
+TTL_SemaphoreSetOp  // Writes: semaphore value
+TTL_SemaphoreIncOp  // Reads+Writes: semaphore value (atomic)
+
+// Compute Operations (with side effects)
+TTL_ComputeRegionOp // Contains operations with memory effects
+TTL_BlockStoreOp    // Writes: block memory
+
+// DST Register Management
+TTL_RequireDSTOp    // Reads+Writes: DST register file
+TTL_SpillTileToL1Op // Reads: DST, Writes: L1
+TTL_RestoreTileFromL1Op // Reads: L1, Writes: DST
+```
+
+### 4.9.2 Custom TTL Interfaces
+
+**TTLSynchronizationInterface:**
+
+Operations that provide synchronization semantics should implement a custom
+interface enabling scheduling passes to understand barrier properties.
+
+```tablegen
+def TTLSynchronizationInterface : OpInterface<"TTLSynchronization"> {
+  let description = [{
+    Interface for operations that provide synchronization barriers.
+    Enables scheduling passes to understand ordering constraints.
+  }];
+
+  let methods = [
+    InterfaceMethod<
+      "Returns the barrier type (DMA read, DMA write, CB, semaphore)",
+      "TTL::BarrierType", "getBarrierType"
+    >,
+    InterfaceMethod<
+      "Returns true if this is a global barrier affecting all operations",
+      "bool", "isGlobalBarrier"
+    >,
+  ];
+}
+```
+
+**Operations implementing TTLSynchronizationInterface:**
+- `TTL_WaitOp`: DMA barrier (read or write based on transaction type)
+- `TTL_DMABarrierOp`: Global DMA barrier
+- `TTL_SemaphoreWaitOp`: Semaphore barrier
+
+### 4.9.3 Bufferization Interfaces
+
+TTL tensor types should implement `bufferization::TensorLikeType` to integrate
+with MLIR's One-Shot Bufferization framework.
+
+```cpp
+// In TTLTypes.cpp
+struct TTLBlockType : public bufferization::TensorLikeType {
+  FailureOr<Type> getBufferType(const BufferizationOptions &options) const override {
+    // Return memref with appropriate memory space attribute
+    return MemRefType::get(getShape(), getElementType(),
+                          MemorySpaceAttr::get(getMemorySpace()));
+  }
+};
+```
+
+TTL operations on tensors should implement `BufferizableOpInterface`:
+
+```cpp
+// In TTLOps.cpp
+struct TTLBlockAddOp : public BufferizableOpInterface {
+  FailureOr<Operation*> bufferize(RewriterBase &rewriter,
+                                   const BufferizationOptions &options) override {
+    // Convert tensor operands to memrefs
+    // Replace with memref-based operation
+  }
+};
+```
+
+**Benefits:**
+- Eliminates custom bufferization code
+- Integrates with MLIR deallocation infrastructure (automatic memory management)
+- Leverages upstream optimizations
+
+### 4.9.4 Liveness Analysis Integration
+
+MLIR provides built-in liveness analysis via `mlir::Liveness` utility. TTL
+operations must properly implement `MemoryEffectsOpInterface` and
+`RegionBranchOpInterface` (for operations with regions) to enable the built-in
+liveness analysis.
+
+**Requirements for built-in liveness:**
+
+1. **MemoryEffectsOpInterface**: All operations that access memory (CB, DMA,
+   DST) must declare their memory effects correctly. This allows liveness
+   analysis to track data dependencies.
+
+2. **RegionBranchOpInterface**: Operations with regions (ttl.compute_region,
+   ttl.if_pipe_src, ttl.if_pipe_dst) must implement this interface to enable
+   liveness analysis across region boundaries.
+
+3. **SSA Form**: TTL operations produce SSA values (block references,
+   transaction handles, DST registers) that can be tracked by standard MLIR
+   liveness analysis.
+
+**Usage in allocation passes:**
+
+```cpp
+// In TTLAllocateCircularBuffers.cpp
+void runOnOperation() override {
+  auto func = getOperation();
+  mlir::Liveness liveness(func);  // Use built-in liveness analysis
+
+  // Query live ranges for values
+  for (auto &block : func) {
+    auto liveIn = liveness.getLiveIn(&block);
+    auto liveOut = liveness.getLiveOut(&block);
+    // Use liveness info for allocation decisions
+  }
+}
+```
+
+**Benefits:**
+- No custom liveness pass implementation needed
+- Proven correct analysis from MLIR upstream
+- Automatically handles complex control flow
+- Works across region boundaries
+
+### 4.9.5 Implementation Priority
+
+| Priority | Interface | Operations | Benefit |
+|----------|-----------|------------|---------|
+| **HIGH** | `MemoryEffectsOpInterface` | All CB, DMA, sync ops | Enables CSE, LICM, DCE, liveness |
+| **HIGH** | `RegionBranchOpInterface` | compute_region, if_pipe_* | Enables liveness across regions |
+| **MEDIUM** | `TTLSynchronizationInterface` | Barrier operations | Enables scheduling analysis |
+| **MEDIUM** | `bufferization::TensorLikeType` | Block tensor types | Reuses One-Shot Bufferization |
+| **LOW** | Additional interfaces | As needed | Future extensibility |
+
+
 
 ## 5. Compilation Pipeline
 
@@ -823,7 +1585,8 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 **TTLInsertSynchronization**
 - **Input**: `ttl.kernel` with thread regions (tensor operands)
 - **Analysis**: Build producer-consumer DAG for blocks, semaphores, pipes
-- **Transform**: Insert `ttl.dma_barrier` where needed, validate CB usage patterns
+- **Transform**: Insert `ttl.dma_barrier` where needed, validate CB usage
+  patterns
 - **Output**: `ttl.kernel` with explicit synchronization
 
 **TTLInferDSTRequirements**
@@ -853,17 +1616,20 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 **TTLAssignDSTRegisters**
 - **Input**: `ttl.kernel` with compute operations and DST hints.
 - **Analysis**: Liveness analysis to determine register lifetime ranges.
-- **Transform**: Allocate 4/8/16 (depending on dtype and config) DST register slots using simple graph coloring or linear scan.
+- **Transform**: Allocate 4/8/16 (depending on dtype and config) DST register
+  slots using simple graph coloring or linear scan.
 - **Output**: Compute operations annotated with DST register indices.
 - **Allocation Strategy**:
   - Liveness-based allocation minimizes register pressure.
   - First-fit algorithm assigns registers to values based on lifetime.
-  - When register capacity exceeded: compile-time error (spill to L1 not supported in MVP)
+  - When register capacity exceeded: compile-time error (spill to L1 not
+    supported in MVP)
   - Future: Spill strategy for complex kernels that exceed DST capacity.
 
 **TTLLowerCompute**
 - **Input**: `ttl.block_add` operations
-- **Transform**: Generate `affine.for` iterating over tiles, insert `ttkernel.add_tiles_init` and `ttkernel.add_tiles`
+- **Transform**: Generate `affine.for` iterating over tiles, insert
+  `ttkernel.add_tiles_init` and `ttkernel.add_tiles`
 - **Output**: TTKernel operations with explicit tile iteration
 
 **TTLLowerDataMovement**
@@ -876,7 +1642,8 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 
 ### 5.3 Granularity and Block Shapes
 
-**Concept**: Granularity defines how many tiles are grouped into blocks for transfer and processing.
+**Concept**: Granularity defines how many tiles are grouped into blocks for
+transfer and processing.
 
 **From TT-lang.md example:**
 ```python
@@ -960,7 +1727,8 @@ def kernel(...):
 
 ### 5.4 Source Location Tracking
 
-**Goal**: Maintain Python source locations throughout compilation for debugging and IDE integration.
+**Goal**: Maintain Python source locations throughout compilation for debugging
+and IDE integration.
 
 **Requirements:**
 1. **Error diagnostics** point to original Python source
@@ -1104,13 +1872,15 @@ def test_location_tracking():
 - `lib/Dialect/TTL/IR/*.cpp` - Preserve locations in passes
 - `include/ttlang/Dialect/TTL/IR/TTLOps.td` - Optional source attrs
 
-**See**: MLIR [Location documentation](https://mlir.llvm.org/docs/Diagnostics/#source-locations)
+**See**: MLIR
+[Location documentation](https://mlir.llvm.org/docs/Diagnostics/#source-locations)
 
 ### 5.6 Error Handling and Diagnostics
 
 **Compile-time Error Messages:**
 
-TTL passes emit errors with source location information pointing back to Python source:
+TTL passes emit errors with source location information pointing back to Python
+source:
 
 ```
 error: ttl.cb_wait operation timeout - consumer waiting indefinitely
@@ -1255,14 +2025,17 @@ if condition:
 
 **Upstream Transform support for Affine:**
 
-MLIR's Transform dialect has **interface-based** operations that work with Affine loops:
+MLIR's Transform dialect has **interface-based** operations that work with
+Affine loops:
 - `transform.loop.tile` - Tiles `affine.for` loops (via `LoopLikeInterface`)
 - `transform.loop.unroll` - Unrolls affine loops
 - `transform.loop.coalesce` - Coalesces nested affine loops
-- `transform.affine.simplify_bounded_affine_ops` - Simplifies affine ops with known bounds
+- `transform.affine.simplify_bounded_affine_ops` - Simplifies affine ops with
+  known bounds
 - `transform.affine.simplify_min_max_affine_ops` - Reduces min/max operations
 
-**Key advantage**: TTL's custom `transform.ttl.*` operations can **compose with upstream transforms**:
+**Key advantage**: TTL's custom `transform.ttl.*` operations can **compose with
+upstream transforms**:
 
 ```mlir
 transform.sequence {
@@ -1280,20 +2053,24 @@ transform.sequence {
 ```
 
 **Benefits for TTL:**
-- **Better scheduling**: Precise dependence info enables optimal DMA/compute overlap
+- **Better scheduling**: Precise dependence info enables optimal DMA/compute
+  overlap
 - **Automatic optimizations**: Fusion, tiling via upstream + custom transforms
 - **Composability**: Mix upstream affine transforms with TTL-specific scheduling
 - **Future-proof**: Foundation for advanced loop transformations
 
 **Trade-off accepted:**
 - Higher MVP implementation cost for affine generation
-- Worth it for long-term performance, analysis quality, and transform composability
+- Worth it for long-term performance, analysis quality, and transform
+  composability
 
-**Decision**: Start with Affine directly (MVP), use SCF only for conditionals, leverage upstream transforms immediately.
+**Decision**: Start with Affine directly (MVP), use SCF only for conditionals,
+leverage upstream transforms immediately.
 
-**See**: [Transform Dialect](https://mlir.llvm.org/docs/Dialects/Transform/), [Transform Tutorial](https://mlir.llvm.org/docs/Tutorials/transform/)
+**See**: [Transform Dialect](https://mlir.llvm.org/docs/Dialects/Transform/),
+[Transform Tutorial](https://mlir.llvm.org/docs/Tutorials/transform/)
 
----
+
 
 ## 6. Type Conversion & Lowering Examples
 
@@ -1350,7 +2127,8 @@ transform.sequence {
 - **MVP (5-10 ops)**: Focus on arithmetic (add/sub/mul/matmul) + CB + DMA
 - **Phase 2 (10-15 ops)**: Add common SFPU (exp/log/sqrt/relu/gelu)
 - **Phase 3+**: Add remaining ops as needed (60+ SFPU variants)
-- **Lowering Pattern**: Once established for first few ops, adding more is straightforward
+- **Lowering Pattern**: Once established for first few ops, adding more is
+  straightforward
 
 ### 6.3 Operation Lowering Examples
 
@@ -1427,7 +2205,7 @@ ttkernel.noc_async_write_multicast %src_addr, %noc_addrs, %size
 ttkernel.noc_async_write_barrier
 ```
 
----
+
 
 ## 7. Python Integration
 
@@ -1610,7 +2388,7 @@ def ttl_kernel(
 pykernel_gen = ttl_kernel
 ```
 
----
+
 
 ## 8. Implementation Roadmap
 
@@ -1619,18 +2397,28 @@ pykernel_gen = ttl_kernel
 
 1. Dialect Definition (C++)
    - Create `include/ttlang/Dialect/TTL/` and `lib/Dialect/TTL/`
-   - Define types (TTLTypes.td): CB, MemTx, Semaphore, Pipe, Accessor
-   - Define ops (TTLOps.td): structural, CB, compute, DM, sync, utility
-   - Define attributes (TTLOpsAttrs.td): MemorySpace, Grid, Layout
+   - Define types (TTLTypes.td): CB (with optional buffer_index, page_size,
+     core_ranges), MemTx, Semaphore, Pipe, Accessor
+   - Define ops (TTLOps.td): structural (with block_factors, compile_time_args,
+     compute_config), CB, compute, DM, sync, utility
+   - Define attributes (TTLOpsAttrs.td): MemorySpace, Grid, Layout (define
+     concrete parameters)
    - Implement builders, printers, parsers
 
-2. CMake Integration
+2. Interface Implementations (HIGH PRIORITY)
+   - Implement `MemoryEffectsOpInterface` for all CB, DMA, and synchronization
+     ops
+   - Define `TTLSynchronizationInterface` for barrier operations
+   - Implement `bufferization::TensorLikeType` for block tensor types
+
+3. CMake Integration
    - Update `include/ttlang/CMakeLists.txt` and `lib/CMakeLists.txt`
 
-3. Basic Testing
+4. Basic Testing
    - Create `test/ttmlir/Dialect/TTL/` with lit tests
 
-**Deliverable**: TTL dialect loads, ops parse/print correctly
+**Deliverable**: TTL dialect loads, ops parse/print correctly with proper
+interfaces
 
 ### Phase 2: Python Compilation (Week 1)
 **Goal**: Python AST generates valid TTL operations
@@ -1650,22 +2438,58 @@ pykernel_gen = ttl_kernel
 ### Phase 3: Core Passes (Week 2)
 **Goal**: Validation, thread expansion, and basic lowering
 
-1. TTLValidatePass - Verify CB/pipe/semaphore contracts
+1. TTLValidatePass
+   - Verify CB/pipe/semaphore contracts
+   - Validate store/wait/pop pattern sequencing
+   - Check thread operation restrictions (compute vs datamovement)
+
 2. TTLExpandThreads - Extract threads to separate functions (can happen early)
-3. TTLLowerCompute - Basic block ops → TTKernel tiles
+
+3. TTLLowerCompute - Block ops → TTKernel tile ops
+   - **MVP operations** (must be implemented):
+     - `ttl.block_add` → `add_tiles_init` + `add_tiles`
+     - `ttl.block_mul` → `mul_tiles_init` + `mul_tiles`
+     - `ttl.block_matmul` → `mm_init` + `matmul_tiles`
+     - `ttl.block_reduce_sum` → `reduce_init` + `reduce_tile` + `reduce_uninit`
+     - `ttl.block_bcast` → `unary_bcast_init` + `unary_bcast`
+   - Generate affine loops over tiles
+   - Handle compute_region fusion
+
 4. TTLLowerSynchronization - CB ops → TTKernel CB ops
 
-**Deliverable**: Simple kernels lower to TTKernel (and C++)
+**Deliverable**: Kernels with reduction/broadcast/fusion lower to TTKernel (and
+C++)
 
 ### Phase 4: Memory & Scheduling (Week 3)
 **Goal**: Resource allocation and optimization
 
 1. TTLBufferizePass - Tensor → memref conversion
-2. TTLAllocateCircularBuffers - L1 address assignment
-3. TTLAssignDSTRegisters - DST register allocation
-4. TTLInsertSynchronization - Barrier inference
+   - Use One-Shot Bufferization with BufferizableOpInterface implementations
+   - Leverage upstream infrastructure
 
-**Deliverable**: Full resource allocation working
+2. Liveness Analysis Integration
+   - Ensure TTL operations implement proper interfaces for MLIR's built-in
+     liveness analysis
+   - Use `mlir::Liveness` utility for computing live ranges
+   - No custom liveness pass needed - use upstream infrastructure
+
+3. TTLAllocateCircularBuffers - L1 address assignment
+   - Query liveness information via `mlir::Liveness`
+   - Implement graph coloring (replace first-fit for better fragmentation)
+   - Use liveness data to minimize L1 footprint
+
+4. TTLAssignDSTRegisters - DST register allocation
+   - Query compute_config for capacity (4-16 tiles depending on configuration)
+   - Use `mlir::Liveness` for register allocation
+   - Insert spill/restore operations when capacity exceeded
+   - Linear scan or graph coloring algorithm
+
+5. TTLInsertSynchronization - Barrier inference
+   - Use dataflow analysis to compute minimal barrier placement
+   - Validate synchronization correctness
+
+**Deliverable**: Full resource allocation working with liveness-based
+optimization using MLIR built-in infrastructure
 
 ### Phase 5: Data Movement & Integration (Week 4)
 **Goal**: Complete lowering and end-to-end validation of simple kernels
@@ -1677,7 +2501,7 @@ pykernel_gen = ttl_kernel
 
 **Deliverable**: Working end-to-end TTL pipeline
 
----
+
 
 ## 9. TTNN Runtime Integration
 
@@ -1685,11 +2509,18 @@ pykernel_gen = ttl_kernel
 
 TTL supports two runtime integration paths:
 
-1. **TTNN dylib workflow** (primary): TTL-generated C++ compiles to shared libraries (.so files) that load dynamically into the TTNN runtime. This is the primary path for TTNN integration and prefered for iterative development.
+1. **TTNN dylib workflow** (primary): TTL-generated C++ compiles to shared
+   libraries (.so files) that load dynamically into the TTNN runtime. This is
+   the primary path for TTNN integration and prefered for iterative development.
 
-2. **TT-Metal flatbuffer workflow** (alternative): TTL can also generate flatbuffer binaries for TT-Metal runtime, similar to the existing D2M pipeline. This path is available for compatibility with TT-Metal workflows and for generating production binaries.
+2. **TT-Metal flatbuffer workflow** (alternative): TTL can also generate
+   flatbuffer binaries for TT-Metal runtime, similar to the existing D2M
+   pipeline. This path is available for compatibility with TT-Metal workflows
+   and for generating production binaries.
 
-The dylib workflow is described in detail below. The flatbuffer workflow follows the same compilation pipeline but uses flatbuffer generation instead of emitting C++ and relying shared library loading.
+The dylib workflow is described in detail below. The flatbuffer workflow follows
+the same compilation pipeline but uses flatbuffer generation instead of emitting
+C++ and relying shared library loading.
 
 ### Execution Flow (Dylib Path)
 
@@ -1721,7 +2552,8 @@ std::vector<ttnn::Tensor> create_inputs_for_kernel_name(ttnn::MeshDevice& device
 
 ### Compilation Pipeline
 
-**TTL-specific EmitC backend pipeline** (similar to TTNN); note that this will be implemented in python, but we are showing the CLI commands here for clarity.
+**TTL-specific EmitC backend pipeline** (similar to TTNN); note that this will
+be implemented in python, but we are showing the CLI commands here for clarity.
 
 ```bash
 # 1. TTL → TTKernel (TTL passes)
@@ -1746,7 +2578,8 @@ python ci_compile_dylib.py --file generated.cpp --mode dylib
 
 ### Runtime Loading and Execution
 
-The kernels are loaded using code similar to the following (which can also be generated by the compiler):
+The kernels are loaded using code similar to the following (which can also be
+generated by the compiler):
 
 ```cpp
 // Runtime execution (tt-mlir pattern)
@@ -1829,13 +2662,14 @@ assert torch.allclose(result.to_torch(), expected, rtol=1e-2)
 - Debugging: Source mapping, kernel profiling
 - Distributed execution support
 
----
+
 
 ## 10. Future Evolution
 
 ### 10.1 Microcore Model (Post-MVP)
 
-Once the simple threading model is validated, evolve to parametric microcore abstraction:
+Once the simple threading model is validated, evolve to parametric microcore
+abstraction:
 
 ```tablegen
 // Future: TTL_MicrocoreConfigAttr definition TBD
@@ -1878,15 +2712,19 @@ Benefits:
 
 ### 10.3 Distributed Tensor Type (Major Extension)
 
-**Goal**: Enable programming of larger distributed systems with explicit tensor distribution across cores.
+**Goal**: Enable programming of larger distributed systems with explicit tensor
+distribution across cores.
 
-**Problem**: Current TTL uses implicit SPMD model (all cores run same program with implicit sharding). For complex distributed algorithms, need explicit control over:
+**Problem**: Current TTL uses implicit SPMD model (all cores run same program
+with implicit sharding). For complex distributed algorithms, need explicit
+control over:
 - How tensors are partitioned across cores
 - Different programs on different core subsets
 - Explicit redistribution strategies
 - Per-core shard shapes
 
-**Proposal**: `!ttl.dist_tensor` type implementing `bufferization::TensorLikeType`
+**Proposal**: `!ttl.dist_tensor` type implementing
+`bufferization::TensorLikeType`
 
 ```tablegen
 def TTL_DistributedTensor : TTL_Type<"DistributedTensor", "dist_tensor"> {
@@ -1918,9 +2756,12 @@ def TTL_DistributedTensor : TTL_Type<"DistributedTensor", "dist_tensor"> {
 
 **Key characteristics:**
 - **Tensor-level distribution**: Keeps high-level optimizations on tensors
-- **Bufferizes to plain memrefs**: Each core gets standard `memref<shard_shape, memspace>`
-- **Metadata tracking**: Transient `ttcore.shard_group<tensor_id, shard_idx>` attribute for DMA planning
-- **Reuses MLIR bufferization**: Plugs into One-Shot Bufferization infrastructure
+- **Bufferizes to plain memrefs**: Each core gets standard
+  `memref<shard_shape, memspace>`
+- **Metadata tracking**: Transient `ttcore.shard_group<tensor_id, shard_idx>`
+  attribute for DMA planning
+- **Reuses MLIR bufferization**: Plugs into One-Shot Bufferization
+  infrastructure
 
 **Integration with TTL:**
 
@@ -1964,20 +2805,24 @@ func.func @distributed_matmul(
 - Explicit control over tensor distribution
 - Type-safe distributed programming
 - Reuse MLIR bufferization infrastructure
-- Enable complex multi-core algorithms (e.g., distributed attention, pipeline parallelism)
+- Enable complex multi-core algorithms (e.g., distributed attention, pipeline
+  parallelism)
 
 ### 10.4 Transform Dialect Integration for Scheduling
 
-**Goal**: Use MLIR's Transform dialect for composable scheduling and optimization instead of monolithic optimization passes.
+**Goal**: Use MLIR's Transform dialect for composable scheduling and
+optimization instead of monolithic optimization passes.
 
 **Motivation**: Transform dialect provides:
 - **Composability**: Build complex schedules from simple transform operations
-- **Precise targeting**: Apply transformations to specific operations via handles
+- **Precise targeting**: Apply transformations to specific operations via
+  handles
 - **Debugging**: Inspect intermediate IR after each transformation
 - **Reusability**: Define scheduling strategies as transform sequences
 - **DSL alignment**: Map TT-lang scheduling concepts directly to transform ops
 
-**Scope**: Use Transform dialect for scheduling/optimization; keep traditional passes for lowering (TTL → TTKernel).
+**Scope**: Use Transform dialect for scheduling/optimization; keep traditional
+passes for lowering (TTL → TTKernel).
 
 #### Custom Transform Operations for TTL
 
@@ -2111,7 +2956,8 @@ module {
 1. **Separation of concerns**: Lowering logic separate from scheduling logic
 2. **Experimentation**: Try different schedules without modifying passes
 3. **Debugging**: Inspect IR after each transform step
-4. **Autotuning**: Search space of scheduling strategies by varying transform sequences
+4. **Autotuning**: Search space of scheduling strategies by varying transform
+   sequences
 5. **User control**: Advanced users can write custom transform sequences
 
 #### Files to Create (Phase 2)
@@ -2137,7 +2983,8 @@ lib/Dialect/TTL/Transform/
 **Upstream transforms to leverage:**
 - `transform.loop.tile` - Tile affine loops for locality
 - `transform.loop.unroll` - Unroll small affine loops
-- `transform.affine.simplify_bounded_affine_ops` - Simplify after transformations
+- `transform.affine.simplify_bounded_affine_ops` - Simplify after
+  transformations
 - `transform.apply_registered_pass` - Run standard affine passes
 
 #### Comparison: Traditional Pass vs Transform
@@ -2154,11 +3001,13 @@ lib/Dialect/TTL/Transform/
 **Recommendation**:
 - **MVP**: Traditional passes (TTLAssignDSTRegisters, etc.)
 - **Phase 2**: Add transform.ttl.* operations alongside traditional passes
-- **Phase 3**: Migrate optimization logic to transform sequences, keep lowering as passes
+- **Phase 3**: Migrate optimization logic to transform sequences, keep lowering
+  as passes
 
-This hybrid approach gets TTL working quickly while building toward the more composable Transform dialect model for scheduling.
+This hybrid approach gets TTL working quickly while building toward the more
+composable Transform dialect model for scheduling.
 
----
+
 
 ## 11. Success Criteria
 
@@ -2170,7 +3019,7 @@ This hybrid approach gets TTL working quickly while building toward the more com
 6. **Performance parity** with current d2m.generic approach
 7. **No D2M dependencies** in the TTL path
 
----
+
 
 ## 12. Appendix: Design Rationale
 
@@ -2191,7 +3040,8 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ### Why Affine for Control Flow?
 - Precise dependence analysis critical for DMA/compute scheduling
-- Enables polyhedral optimizations (fusion, tiling, interchange); builtin `transform` dialect support
+- Enables polyhedral optimizations (fusion, tiling, interchange); builtin
+  `transform` dialect support
 - Better alignment with TTL's regular loop patterns
 - SCF used only for conditionals and non-affine patterns
 - Reuse proven MLIR infrastructure for both dialects
@@ -2201,7 +3051,7 @@ This hybrid approach gets TTL working quickly while building toward the more com
 - Enables early validation of illegal transfers
 - Simplifies lowering (memspace dictates NOC operations)
 
----
+
 
 ## 13. References
 
