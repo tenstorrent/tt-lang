@@ -79,8 +79,7 @@ TT-lang DSL surface language, while D2M serves as a lower-level dialect for data
 movement and compute operations.
 
 **Key Design Decisions:**
-- **Threading Model**: Simple compute/datamovement threads (MVP), with microcore
-  evolution path documented
+- **Threading Model**: Simple compute/datamovement threads (MVP)
 - **Abstraction Level**: Tensor-level (blocks of tiles), not individual tiles
 - **Type System**: Memory spaces explicit in types; SSA values for all resources
   (CBs, pipes, semaphores)
@@ -1748,10 +1747,22 @@ def TTL_CoreOp : TTL_Op<"core", [Pure]> {
   let arguments = (ins OptionalAttr<I64Attr>:$dims);
   let results = (outs Variadic<Index>:$coordinates);
   let description = [{
-    Returns core coordinates in grid. Folds to constants enabling
-    later canonicalization and dead code elimination.
-    
-    Note: Python API `ttl.core()` maps to this MLIR operation.
+    Returns core coordinates per TT-Lang spec v. TODO.
+
+    Dimension rules (defaults to dims=2):
+    - dims < grid_rank: Flatten highest dimensions
+      grid=(8,8,8), dims=1 → x ∈ [0,64) where x = core_y*8 + core_z
+    - dims > grid_rank: Pad highest dimensions with 0
+      grid=(8,8), dims=3 → (x, y, 0)
+    - dims == grid_rank: Return as-is
+
+    Examples from TT-Lang spec:
+      grid=(8,8), dims=1 → x ∈ [0,64)
+      grid=(8,8,8), dims=2 → x ∈ [0,8), y ∈ [0,64)
+      grid=(8,8), dims=3 → x ∈ [0,8), y ∈ [0,8), z=0
+
+    Python API: `ttl.core()` or `ttl.core(dims=N)`
+    Folds to constants. Validation enforced in frontend and TTLValidatePass.
   }];
 }
 
@@ -1760,9 +1771,22 @@ def TTL_GridSizeOp : TTL_Op<"grid_size", [Pure]> {
   let arguments = (ins OptionalAttr<I64Attr>:$dims);
   let results = (outs Variadic<Index>:$sizes);
   let description = [{
-    Returns grid dimensions. Folds to constants.
+    Returns grid dimensions per TT-Lang spec v. TODO.
 
-    Note: Python API `ttl.grid_size()` maps to this MLIR operation.
+    Dimension rules (defaults to dims=2):
+    - dims < grid_rank: Flatten highest dimensions (multiply)
+      grid=(8,8,8), dims=1 → 64 (8×8)
+    - dims > grid_rank: Pad highest dimensions with 1
+      grid=(8,8), dims=3 → (8, 8, 1)
+    - dims == grid_rank: Return as-is
+
+    Examples from TT-Lang spec:
+      grid=(8,8), dims=1 → 64
+      grid=(8,8,8), dims=2 → (8, 64)
+      grid=(8,8), dims=3 → (8, 8, 1)
+
+    Python API: `ttl.grid_size()` or `ttl.grid_size(dims=N)`
+    Folds to constants. Validation enforced in frontend.
   }];
 }
 
