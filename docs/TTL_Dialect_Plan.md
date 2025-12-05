@@ -25,17 +25,18 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
 6. [Type Conversion & Lowering Examples](#6-type-conversion--lowering-examples)
 7. [Python Integration](#7-python-integration)
 8. [Implementation Roadmap](#8-implementation-roadmap)
-9. [Future Evolution](#9-future-evolution)
-10. [Risk Mitigation](#10-risk-mitigation)
-11. [Success Criteria](#11-success-criteria)
-12. [Appendix: Design Rationale](#12-appendix-design-rationale)
-13. [References](#13-references)
+9. [TTNN Runtime Integration](#9-ttnn-runtime-integration)
+10. [Future Evolution](#10-future-evolution)
+11. [Risk Mitigation](#11-risk-mitigation)
+12. [Success Criteria](#12-success-criteria)
+13. [Appendix: Design Rationale](#13-appendix-design-rationale)
+14. [References](#14-references)
 
 ---
 
 ## Executive Summary
 
-The TTL dialect provides a tensor-level intermediate representation for TT-lang programs (defined in `docs/TT-lang.md`), enabling multi-stage lowering with explicit compiler transformations before generating C++ kernels. TTL is designed specifically for the TT-lang DSL surface language, while D2M serves as a lower-level dialect for data movement and compute operations.
+The TTL dialect provides a tensor-level intermediate representation for TT-lang programs (defined in `docs/TT-lang.md`), enabling multi-stage lowering with explicit compiler transformations before generating C++ kernels. Generated kernels execute on the TTNN runtime. TTL is designed specifically for the TT-lang DSL surface language, while D2M serves as a lower-level dialect for data movement and compute operations.
 
 **Key Design Decisions:**
 - **Threading Model**: Simple compute/datamovement threads (MVP), with microcore evolution path documented
@@ -63,7 +64,7 @@ D2M dialect serves as a general-purpose data movement and compute abstraction. F
 1. Capture DSL semantics in SSA form: kernels, threads, circular buffers, pipes, blocks, semaphores
 2. Enable analysis passes: Synchronization inference, memory planning, DST register allocation
 3. Support transformations: Liveness analysis, operation reordering, pipelining
-4. C++ kernel generation: Produce standalone C++ kernels that compile separately and link with TT-Metal runtime
+4. C++ kernel generation: Produce standalone C++ kernels that compile separately and link with TTNN runtime
 5. Future-proof: Extensible to new hardware generations via attributes
 
 ### Non-Goals (MVP)
@@ -94,7 +95,7 @@ Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTM
                          Register Assignment, Optimization
 ```
 
-*Key difference*: TTL provides DSL-specific IR enabling TT-lang-aware transformations before lowering through TTKernel/TTMetal to C++ kernels. The generated C++ compiles separately and links with TT-Metal runtime.
+*Key difference*: TTL provides DSL-specific IR enabling TT-lang-aware transformations before lowering through TTKernel/TTMetal to C++ kernels. The generated C++ compiles separately and executes on the TTNN runtime.
 
 ---
 
@@ -1252,7 +1253,7 @@ pykernel_gen = ttl_kernel
 3. TTLLowerCompute - Basic block ops → TTKernel tiles
 4. TTLLowerSynchronization - CB ops → TTKernel CB ops
 
-**Deliverable**: Simple kernels lower to TTKernel
+**Deliverable**: Simple kernels lower to TTKernel (and C++)
 
 ### Phase 4: Memory & Scheduling (Week 3)
 **Goal**: Resource allocation and optimization
@@ -1265,7 +1266,7 @@ pykernel_gen = ttl_kernel
 **Deliverable**: Full resource allocation working
 
 ### Phase 5: Data Movement & Integration (Week 4)
-**Goal**: Complete lowering and end-to-end validation
+**Goal**: Complete lowering and end-to-end validation of simple kernels
 
 1. TTLLowerDataMovement - DMA operations → TTKernel NOC ops
 2. End-to-end testing: Python → TTL → TTKernel → C++
@@ -1276,9 +1277,155 @@ pykernel_gen = ttl_kernel
 
 ---
 
-## 9. Future Evolution
+## 9. TTNN Runtime Integration
 
-### 9.1 Microcore Model (Post-MVP)
+### Runtime Architecture
+
+TTL kernels execute using the **TTNN dylib workflow**, similar to the existing TTNN backend. TTL-generated C++ compiles to shared libraries (.so files) that load dynamically into the TTNN runtime.
+
+### Execution Flow (Dylib Path)
+
+```
+TTKernel → EmitC → C++ Source → C++ Compiler → Shared Library (.so) → Dynamic Loading → TTNN Runtime → Hardware
+```
+
+**Key components:**
+1. EmitC code generation (existing `ConvertTTKernelToEmitC` pass)
+2. TTNN standalone build system compiles C++ to .so
+3. Runtime uses `dlopen()` to load shared library
+4. Function dispatch via name mangling and `dlsym()`
+5. Execution on TTNN runtime with ttnn::Tensor types
+
+### Dylib Interface Requirements
+
+**Generated C++ must provide:**
+
+```cpp
+// Main kernel function (mangled name)
+std::vector<ttnn::Tensor> kernel_name(std::vector<ttnn::Tensor> inputs);
+
+// Device context setter
+void setDevice(ttnn::MeshDevice* device);
+
+// Optional: Input creation helper
+std::vector<ttnn::Tensor> create_inputs_for_kernel_name(ttnn::MeshDevice& device);
+```
+
+### Compilation Pipeline
+
+**TTL-specific EmitC backend pipeline** (similar to TTNN); note that this will be implemented in python, but we are showing the CLI commands here for clarity.
+
+```bash
+# 1. TTL → TTKernel (TTL passes)
+ttlang-opt --ttl-lower-to-ttkernel input.mlir -o ttkernel.mlir
+
+# 2. TTKernel → EmitC (existing pass with dylib mode)
+ttlang-opt --ttkernel-to-emitc-pipeline="target-dylib=true" ttkernel.mlir -o emitc.mlir
+
+# 3. EmitC → C++
+ttlang-translate --mlir-to-cpp emitc.mlir > generated.cpp
+
+# 4. C++ → Shared Library
+cd tools/ttnn-standalone
+python ci_compile_dylib.py --file generated.cpp --mode dylib
+```
+
+**Dylib-specific transformations:**
+- Input tuplification (forced even for empty inputs)
+- Tensor argument wrapping for ABI compatibility
+- Device context management functions
+- RPATH configuration for runtime library discovery
+
+### Runtime Loading and Execution
+
+The kernels are loaded using code similar to the following (which can also be generated by the compiler):
+
+```cpp
+// Runtime execution (tt-mlir pattern)
+void* so = dlopen("ttl_kernel.so", RTLD_LAZY);
+
+// Get setDevice function
+auto setDeviceFunc = reinterpret_cast<void(*)(ttnn::MeshDevice*)>(
+    dlsym(so, "setDevice")
+);
+setDeviceFunc(&meshDevice);
+
+// Get kernel function (with mangled name)
+std::string mangledName = getMangledName("kernel_name");
+auto kernelFunc = reinterpret_cast<
+    std::vector<ttnn::Tensor>(*)(std::vector<ttnn::Tensor>)
+>(dlsym(so, mangledName.c_str()));
+
+// Execute
+std::vector<ttnn::Tensor> outputs = kernelFunc(ttnnInputs);
+
+dlclose(so);
+```
+
+### Build System Integration
+
+**CMakeLists.txt configuration** (reuse TTNN standalone):
+- Link against: `tt_metal`, `device`, `tt_stl`, `_ttnncpp.so`
+- Compiler flags: `-march=x86-64-v3` for performance
+- RPATH: `$ORIGIN:${METAL_LIB_DIR}` for library discovery
+
+### TTL-Specific Considerations
+
+1. **Circular Buffer Metadata**: Include CB configurations in generated C++
+   - L1 addresses from TTLAllocateCircularBuffers pass
+   - Buffer sizes and tile counts
+
+2. **Thread Mapping**: Map TTL threads to TT-Metal program structure
+   - Compute thread → Math kernel
+   - Datamovement threads → NOC kernels
+
+3. **Synchronization**: Emit barrier/semaphore operations
+   - DMA barriers from TTLInsertSynchronization
+   - Semaphore setup for inter-core communication
+
+### MVP Integration (Week 2-3)
+
+Phase 3 deliverable:
+- Reuse `ConvertTTKernelToEmitC` with dylib target
+- Generate C++ matching TTNN dylib interface requirements
+- Build using ttnn-standalone build system
+- Test loading and execution via runtime API
+
+### Validation
+
+```python
+# Test TTL kernel via Python runtime API
+import ttnn
+import torch
+from ttrt.runtime import Device
+
+device = Device()
+so = load_dylib("ttl_matmul.so")
+
+# TTNN tensors as inputs
+a = ttnn.from_torch(torch.randn(128, 128), device=device)
+b = ttnn.from_torch(torch.randn(128, 128), device=device)
+
+# Execute TTL kernel
+result = run_dylib_function(so, "matmul", [a, b], device)
+
+# Verify correctness
+expected = torch.matmul(a.to_torch(), b.to_torch())
+assert torch.allclose(result.to_torch(), expected, rtol=1e-2)
+```
+
+### Future Enhancements
+
+- Flatbuffer generation (alternative to dylib for deployment)
+- Performance comparison: TTL vs D2M pipeline
+- Debugging: Source mapping, kernel profiling
+- Distributed execution support
+
+---
+
+## 10. Future Evolution
+
+### 10.1 Microcore Model (Post-MVP)
 
 Once the simple threading model is validated, evolve to parametric microcore abstraction:
 
@@ -1336,7 +1483,7 @@ Compiler automatically:
 - Inserts synchronization
 - Allocates resources
 
-### 9.4 Distributed Tensor Type (Major Extension)
+### 10.3 Distributed Tensor Type (Major Extension)
 
 **Goal**: Enable programming of larger distributed systems with explicit tensor distribution across cores.
 
@@ -1428,7 +1575,7 @@ func.func @distributed_matmul(
 
 **See**: `docs/DistributedTensorType.md` for complete proposal
 
-### 9.5 Transform Dialect Integration for Scheduling
+### 10.4 Transform Dialect Integration for Scheduling
 
 **Goal**: Use MLIR's Transform dialect for composable scheduling and optimization instead of monolithic optimization passes.
 
@@ -1622,36 +1769,36 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ---
 
-## 10. Risk Mitigation
+## 11. Risk Mitigation
 
-### 10.1 Complexity Management
+### 11.1 Complexity Management
 - **Risk**: Dialect too complex, slow MVP
 - **Mitigation**: Start minimal (Phase 1-2), expand incrementally
 - **Fallback**: Keep simple ops, defer advanced features
 
-### 10.2 TTKernel Compatibility
+### 11.2 TTKernel Compatibility
 - **Risk**: TTL doesn't map cleanly to TTKernel
 - **Mitigation**: Study existing pykernel lowering closely, reuse patterns
 - **Validation**: Compare generated TTKernel IR with current pipeline
 
-### 10.3 Python API Stability
+### 11.3 Python API Stability
 - **Risk**: Breaking changes to user code
 - **Mitigation**: Keep existing decorator names (`@compute`, `@datamovement`)
 - **Backward compat**: Alias `pykernel_gen` to `ttl_kernel`
 
-### 10.4 Pass Pipeline Bugs
+### 11.4 Pass Pipeline Bugs
 - **Risk**: Transformation passes introduce errors
 - **Mitigation**: Extensive lit tests per pass, save intermediate IR at each stage
 - **Debugging**: `TTLANG_VERBOSE_PASSES=1` environment variable
 
-### 10.5 Memory Allocation Failures
+### 11.5 Memory Allocation Failures
 - **Risk**: L1 capacity exceeded, OOM at runtime
 - **Mitigation**: Validate allocation in pass, error early with clear diagnostics
 - **Future**: Spilling to DRAM, buffer factor optimization
 
 ---
 
-## 11. Success Criteria
+## 12. Success Criteria
 
 1. **TTL dialect compiles** and is registered in MLIR
 2. **Python AST → TTL** generates valid TTL operations
@@ -1663,7 +1810,7 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ---
 
-## 12. Appendix: Design Rationale
+## 13. Appendix: Design Rationale
 
 ### Why Tensor-Level (Not Tile-Level)?
 - Matches Python DSL semantics (users think in blocks)
@@ -1692,7 +1839,7 @@ This hybrid approach gets TTL working quickly while building toward the more com
 
 ---
 
-## 13. References
+## 14. References
 
 - **TT-lang Spec**: `docs/TT-lang.md`
 - **Build System**: `docs/BUILD_SYSTEM.md`
