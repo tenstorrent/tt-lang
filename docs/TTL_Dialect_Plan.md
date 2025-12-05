@@ -41,7 +41,8 @@ hardware-specific optimizations before lowering to executable kernels.
    - 5.1 [Pass Architecture](#51-pass-architecture)
    - 5.2 [Key Pass Descriptions](#52-key-pass-descriptions)
    - 5.3 [Source Location Tracking](#53-source-location-tracking)
-   - 5.4 [Control Flow: SCF vs Affine Dialect](#54-control-flow-scf-vs-affine-dialect)
+   - 5.4
+     [Control Flow: SCF vs Affine Dialect](#54-control-flow-scf-vs-affine-dialect)
    - 5.6 [Error Handling and Diagnostics](#55-error-handling-and-diagnostics)
 6. [Type Conversion & Lowering Examples](#6-type-conversion--lowering-examples)
    - 6.1 [TTL → TTKernel Type Mapping](#61-ttl--ttkernel-type-mapping)
@@ -317,13 +318,13 @@ def TTL_Block : TTL_Type<"Block", "block"> {
   }];
 }
 
-def TTL_MemoryTransaction : TTL_Type<"MemoryTransaction", "mem_tx"> {
-  let summary = "Handle for DMA operation ordering (lowers to global barrier)";
+def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
+  let summary = "Handle for asynchronous transfer ordering (lowers to global barrier)";
   let description = [{
-    Note: TTKernel doesn't support per-transaction waits. All ttl.wait
-    operations lower to global DMA barriers (`ttkernel.noc_async_read_barrier`
-    or `ttkernel.noc_async_write_barrier`). This type exists for ordering
-    and future optimization opportunities.
+    Note: TTKernel doesn't support per-transfer waits. All ttl.wait operations
+    lower to global DMA barriers (`ttkernel.noc_async_read_barrier` or
+    `ttkernel.noc_async_write_barrier`). This handle exists for ordering and
+    future optimization opportunities.
     See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
@@ -560,7 +561,7 @@ TTL lowering:
 ```mlir
 // TTL IR
 %accessor = ttl.tensor_accessor %tensor {layout = #ttl.layout<sharded, grid=[2,2]>}
-%tx = ttl.copy %accessor[%shard_id], %cb
+%xf = ttl.copy %accessor[%shard_id], %cb
 
 // After TTLLowerDataMovement → TTKernel
 %ttk_accessor = // Convert TTL layout attr → TTKernel layout attr
@@ -628,13 +629,13 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         shard_id = ttl.core(dim=1) # 0-3 for 2x2 grid
 
         a_blk = a_cb.reserve()
-        tx = ttl.copy(a[shard_id], a_blk)  # Read shard using TensorAccessor
-        tx.wait()
+        xf = ttl.copy(a[shard_id], a_blk)  # Read shard using TensorAccessor
+        xf.wait()
         a_cb.push()
 
         b_blk = b_cb.reserve()
-        tx = ttl.copy(b[shard_id], b_blk)
-        tx.wait()
+        xf = ttl.copy(b[shard_id], b_blk)
+        xf.wait()
         b_cb.push()
 
     @ttl.compute()
@@ -655,8 +656,8 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         shard_id = ttl.core_dim(1)
 
         o_blk = out_cb.wait()
-        tx = ttl.copy(o_blk, out[shard_id])  # Write shard
-        tx.wait()
+        xf = ttl.copy(o_blk, out[shard_id])  # Write shard
+        xf.wait()
         out_cb.pop()
 
     return ttl.Program(compute, dm_reader, dm_writer)(a, b, out)
@@ -697,13 +698,13 @@ ttl.kernel @sharded_elementwise_add(
     %shard_id = ttl.core_dim(1) : index
 
     %a_blk = ttl.cb_reserve %a_cb : !ttl.block<...>
-    %tx_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.mem_tx
-    ttl.wait %tx_a
+    %xf_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.xf
+    ttl.wait %xf_a
     ttl.cb_push %a_blk
 
     %b_blk = ttl.cb_reserve %b_cb : !ttl.block<...>
-    %tx_b = ttl.copy %b_accessor[%shard_id], %b_blk : !ttl.mem_tx
-    ttl.wait %tx_b
+    %xf_b = ttl.copy %b_accessor[%shard_id], %b_blk : !ttl.xf
+    ttl.wait %xf_b
     ttl.cb_push %b_blk
   }
 
@@ -724,8 +725,8 @@ ttl.kernel @sharded_elementwise_add(
     %shard_id = ttl.core_dim(1) : index
 
     %o_blk = ttl.cb_wait %out_cb : !ttl.block<...>
-    %tx_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.mem_tx
-    ttl.wait %tx_out
+    %xf_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.xf
+    ttl.wait %xf_out
     ttl.cb_pop %o_blk
   }
 }
@@ -1645,7 +1646,7 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     OptionalAttr<I64ArrayAttr>:$src_coords,  // Tile coordinates if accessor
     OptionalAttr<I64ArrayAttr>:$dst_coords   // Tile coordinates if accessor
   );
-  let results = (outs TTL_MemoryTransaction:$tx);
+  let results = (outs TTL_TransferHandle:$xf);
   let description = [{
     Unified DMA operation handling all transfer combinations:
     - Tensor slice → CB (read from DRAM/L1 using TensorAccessor)
@@ -1657,9 +1658,9 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     - Pipe operands: lower to ttkernel.noc_async_write_multicast or unicast
     - TensorAccessor layout determines which NOC API: shard, page, or tile
 
-    Returns transaction handle (SSA value of type !ttl.mem_tx) for ordering.
+    Returns transfer handle (SSA value of type !ttl.xf) for ordering.
     Python API `ttl.copy()` returns a transfer handle object with a `wait()`
-    method, which maps to `ttl.wait %tx` operation.
+    method, which maps to `ttl.wait %xf` operation.
 
     TensorAccessor lowering based on layout:
     - Sharded layout: ttkernel.noc_async_read_shard / ttkernel.noc_async_write_shard
@@ -1676,10 +1677,10 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     - Unguarded pipe copies are invalid per TT-Lang spec
     - TTLValidatePass enforces this requirement and rejects unguarded or unmatched pipes
 
-    Note: ttl.wait lowers to global DMA barrier, not per-transaction wait
+    Note: ttl.wait lowers to global DMA barrier, not per-transfer wait
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
     and `ttkernel.noc_async_write_barrier` operations which wait for all pending
-    DMA operations of the respective type, not individual transactions.
+    DMA operations of the respective type, not individual transfers.
     See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
@@ -1762,10 +1763,10 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
 
 def TTL_WaitOp : TTL_Op<"wait"> {
   let summary = "Wait for DMA transfer (lowers to global barrier)";
-  let arguments = (ins TTL_MemoryTransaction:$tx);
+  let arguments = (ins TTL_TransferHandle:$xf);
   let description = [{
-    Explicit wait on transaction handle. Lowers to `ttkernel.noc_async_read_barrier`
-    or `ttkernel.noc_async_write_barrier` (global barriers, not per-transaction).
+    Explicit wait on transfer handle. Lowers to `ttkernel.noc_async_read_barrier`
+    or `ttkernel.noc_async_write_barrier` (global barriers, not per-transfer).
     See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
@@ -1775,7 +1776,7 @@ def TTL_DMABarrierOp : TTL_Op<"dma_barrier"> {
   let summary = "Global DMA barrier - wait for all pending DMAs";
   let description = [{
     Ensures all prior DMA operations complete. More efficient than
-    individual waits when multiple transactions are pending.
+    individual waits when multiple transfers are pending.
   }];
 }
 ```
@@ -2092,7 +2093,7 @@ def TTLSynchronizationInterface : OpInterface<"TTLSynchronization"> {
 ```
 
 **Operations implementing TTLSynchronizationInterface:**
-- `TTL_WaitOp`: DMA barrier (read or write based on transaction type)
+- `TTL_WaitOp`: DMA barrier (read or write based on transfer direction)
 - `TTL_DMABarrierOp`: Global DMA barrier
 - `TTL_SemaphoreWaitOp`: Semaphore barrier
 
@@ -2147,9 +2148,9 @@ liveness analysis.
    ttl.if_pipe_src, ttl.if_pipe_dst) must implement this interface to enable
    liveness analysis across region boundaries.
 
-3. **SSA Form**: TTL operations produce SSA values (block references,
-   transaction handles, DST registers) that can be tracked by standard MLIR
-   liveness analysis.
+3. **SSA Form**: TTL operations produce SSA values (block references, transfer
+   handles, DST registers) that can be tracked by standard MLIR liveness
+   analysis.
 
 **Usage in allocation passes:**
 
@@ -2661,7 +2662,7 @@ leverage upstream transforms immediately.
 |----------|---------------|------------------|
 | `!ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>` | `!ttkernel.cb<4, !ttcore.tile<32x32,f32>>` | Total elements = 2×1×2 = 4 tiles (layout inferred: element_type is tile → tiled layout); For row-major CBs, element_type is scalar (f32, bf16, etc.); memory space drives L1 address assignment; buffer_factor used to compute total but not preserved in TTKernel CB type |
 | `!ttl.block<tensor<2x1x!ttcore.tile>>` | Elided | Blocks decomposed into tile operations during lowering |
-| `!ttl.mem_tx` | N/A (elided) | Lowers to global barriers |
+| `!ttl.xf` | N/A (elided) | Lowers to global barriers |
 | `!ttl.semaphore` | `!ttkernel.semaphore` | Direct mapping |
 | `!ttl.pipe` | Attributes on ops | Pipe decomposed into core coords + multicast flags |
 | `!ttl.accessor<layout, memspace>` | `!ttkernel.tensor_accessor<tensor_type, layout>` | Layout attributes converted from TTL to TTKernel format |
@@ -2769,8 +2770,8 @@ ttkernel.cb_push_back %out_cb, 2
   layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
   memspace = DRAM
 }
-%tx = ttl.copy %accessor[%shard_id], %cb
-ttl.wait %tx
+%xf = ttl.copy %accessor[%shard_id], %cb
+ttl.wait %xf
 
 // TTKernel (TensorAccessor preserved)
 %ttk_accessor = ttkernel.tensor_accessor %input_addr {
@@ -2793,8 +2794,8 @@ noc_async_read_shard(shard_id, input, cb_l1_addr);
   layout = #ttl.layout<interleaved>,
   memspace = DRAM
 }
-%tx = ttl.copy %accessor[%page_id], %cb
-ttl.wait %tx
+%xf = ttl.copy %accessor[%page_id], %cb
+ttl.wait %xf
 
 // TTKernel (TensorAccessor preserved)
 %ttk_accessor = ttkernel.tensor_accessor %input_addr {
@@ -2814,8 +2815,8 @@ noc_async_read_page(page_id, input, cb_l1_addr, offset);
 ```mlir
 // TTL
 %pipe = ttl.create_pipe src_core=[0,0] dst_core_range=[[0,0],[1,3]]
-%tx = ttl.copy %block, %pipe
-ttl.wait %tx
+%xf = ttl.copy %block, %pipe
+ttl.wait %xf
 
 // TTKernel
 %noc_addrs = // Compute multicast address range
@@ -2945,7 +2946,7 @@ class CircularBuffer:
 def copy(src, dst, **kwargs):
     # Python API: ttl.copy(src, dst)
     # Returns transfer handle object with wait() method
-    # Transfer handle.wait() maps to ttl.wait %tx
+    # Transfer handle.wait() maps to ttl.wait %xf
     return ttl.copy(src, dst, **kwargs)
 ```
 
@@ -3020,7 +3021,7 @@ This leverages existing tt-mlir infrastructure. Direct TTL → C++ emission
 1. Dialect Definition (C++)
    - Create `include/ttlang/Dialect/TTL/` and `lib/Dialect/TTL/`
    - Define types (TTLTypes.td): CB (with optional buffer_index, page_size,
-     core_ranges), MemTx, Semaphore, Pipe, Accessor
+     core_ranges), TransferHandle, Semaphore, Pipe, Accessor
    - Define ops (TTLOps.td): structural (with block_factors, compile_time_args,
      compute_config), CB, compute, DM, sync, utility
    - Define attributes (TTLOpsAttrs.td): MemorySpace, Grid, Layout (define
