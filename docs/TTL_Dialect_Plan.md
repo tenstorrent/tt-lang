@@ -500,17 +500,18 @@ arguments. `TensorAccessor` APIs like `noc_async_read_shard`,
 abstract shard addressing and page-based access patterns (see
 [Metalium Guide](https://github.com/tenstorrent/tt-metal/blob/main/METALIUM_GUIDE.md)).
 
-Challenge: TTKernel dialect does not currently have `TensorAccessor` support.
-TTKernel NOC operations work with bare addresses.
+Challenge: TTL lowering must preserve tensor indexing metadata all the way to
+TTKernel so generated C++ can rely on the Metalium `TensorAccessor` class.
+Fortunately, TTKernel already provides the necessary abstractions.
 
-Requirement: Generated C++ must use `TensorAccessor` class.
+#### Existing TTKernel Support
 
-#### Option 1: Extend TTKernel with TensorAccessor
+`ttkernel.tensor_accessor` and the associated NOC ops landed in
+[`TTKernelOpsTypes.td`](https://github.com/tenstorrent/tt-mlir/blob/884462ecb00571f71faceb8df0da14d84edcdf9c/include/ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td#L89).
+TTL does not need to extend TT-MLIR—our lowering simply has to materialize the
+existing type and ops.
 
-Add `!ttkernel.tensor_accessor` type and shard/page/tile NOC operations to
-TTKernel dialect.
-
-Implementation in tt-mlir:
+For reference, the TTKernel definitions look like:
 
 ```tablegen
 // TTKernelOpsTypes.td
@@ -587,40 +588,20 @@ TTL lowering:
 ttkernel.noc_async_read_shard %shard_id, %ttk_accessor, %cb_l1_addr, %noc
 ```
 
-Pros:
-- Generated C++ uses TensorAccessor class (requirement satisfied)
-- TTKernel becomes a more complete Metalium abstraction
-- Reuses proven Metalium addressing logic
-- TensorAccessor is tensor-like, fits MLIR bufferization framework
-- Future Metalium improvements automatically available
-- Enables sharded tensors
+**Integration benefits:**
+- Generated C++ already relies on these TTKernel constructs, so TTL inherits the
+  proven Metalium addressing logic for shard/page/tile accesses.
+- TensorAccessor is tensor-like, fitting neatly into MLIR bufferization
+  pipelines and simplifying metadata propagation.
+- Future TT-MLIR improvements to TensorAccessor automatically benefit TTL.
 
-Cons:
-- Requires extending TT-MLIR (external repository)
-- ConvertTTKernelToEmitC needs updates (~200 lines)
-- Coordination between tt-lang and tt-mlir
-
-
-#### Option 2: Defer to Post-MVP
-
-Use interleaved tensors with simple page-based addressing for MVP. Add full
-sharded tensor support post-MVP.
-
-MVP approach:
-- TTL generates `ttkernel.noc_async_read_page` for all transfers
-- Interleaved tensors only (simpler layout)
-- Add sharded `TensorAccessor` support in Phase 2 when `TensorAccessor`
-  infrastructure ready
-
-Pros:
-- Faster MVP (no tt-mlir extension immediately)
-- Validates TTL pipeline end-to-end
-- Still generates TensorAccessor C++ (via page API)
-
-Cons:
-- Limits MVP to interleaved tensors (no sharding)
-- Attention mechanisms need sharded layouts for performance
-- Must extend TTKernel for sharding anyway (just deferred)
+**TTL implementation tasks:**
+- Map `TTL_TensorEncodingAttr` (layout + memory space) to the TTKernel layout
+  attribute when creating `ttkernel.tensor_accessor` values.
+- Ensure `ttl.copy` lowering selects the appropriate TTKernel NOC op (shard,
+  page, tile) based on the tensor encoding.
+- Verify existing ConvertTTKernelToEmitC support covers TTL use cases; only
+  descriptor plumbing in TTL should be required.
 
 
 #### Complete Lowering Example: Sharded Tensor Read
