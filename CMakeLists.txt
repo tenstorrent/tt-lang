@@ -78,7 +78,6 @@ endif()
 add_subdirectory(test)
 
 # Install wheel files to prefix/wheels
-# Collect all .whl files from the build directory
 file(GLOB_RECURSE WHEEL_FILES "${CMAKE_BINARY_DIR}/*.whl")
 if(WHEEL_FILES)
   install(FILES ${WHEEL_FILES} DESTINATION wheels)

@@ -2,24 +2,25 @@ name: Build
 
 on:
   workflow_dispatch:
-    inputs:
-      os:
-        description: 'Target OS to build (ubuntu-latest, macos-26)'
-        required: true
-        type: string
   workflow_call:
-    inputs:
-      os:
-        description: 'Target OS to build (ubuntu-latest, macos-26)'
-        required: true
-        type: string
 
 jobs:
   build:
-    runs-on: ${{ inputs.os }}
-    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            timeout: 240
+            use-container: true
+          - os: macos-26
+            timeout: 360
+            use-container: false
 
-    container: ${{ inputs.os == 'ubuntu-latest' && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+
+    container: ${{ matrix.use-container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
 
     defaults:
       run:
@@ -27,6 +28,7 @@ jobs:
 
     env:
       TT_LANG_HOME: ${{ github.workspace }}
+      TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
       TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
       TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
 
@@ -86,27 +88,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ runner.os }}-ttlang-llvm${{ steps.llvm-version.outputs.version }}
-          max-size: 500M
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
         run: |
-          set -x
           cd tt-mlir
           source env/activate
           ${{ runner.os == 'macOS' && 'export CMAKE_BUILD_PARALLEL_LEVEL=2' || 'echo ""' }}
           cmake -G Ninja \
             -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
             -DCMAKE_BUILD_TYPE=Release \
+            -DTTMLIR_ENABLE_SHARED_LIB=ON \
             -DTTMLIR_ENABLE_PYKERNEL=ON \
-            -DTTMLIR_ENABLE_RUNTIME=ON \
+            -DTTMLIR_ENABLE_RUNTIME=OFF \
             -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
             -DTTMLIR_ENABLE_STABLEHLO=OFF \
             -DTTMLIR_ENABLE_OPMODEL=OFF \
@@ -116,29 +113,15 @@ jobs:
             -DTTMLIR_ENABLE_EXPLORER=OFF \
             -DBUILD_TESTING=OFF \
             -S .
-          cmake --build build
-
-      - name: Build ttrt
-        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: |
-          set -x
-          cd tt-mlir
-          source env/activate
-          cmake --build build --target ttrt
-
-      - name: Install tt-mlir
-        if: steps.cache-ttmlir.outputs.cache-hit != 'true'
-        run: |
-          cd tt-mlir
-          source env/activate
+          cmake --build build --target all --target TTMLIRPythonModules
           cmake --install build
+          cmake --install build --component TTMLIRPythonWheel
 
-      - name: Move ttrt python package to tt-mlir install location
-        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: |
-          set -x
-          mkdir -p tt-mlir-install/python_packages/ttrt/runtime || echo "Error: Could not create directory"
-          mv tt-mlir/build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/ || echo "Error: Could not move ttrt python_packages."
+      - name: Setup ccache for tt-lang
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-ttlang-llvm${{ steps.llvm-version.outputs.version }}
+          max-size: 200M
 
       - name: Configure tt-lang
         run: |
@@ -147,14 +130,14 @@ jobs:
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
-            -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir \
+            -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
             -S .
 
       - name: Build tt-lang
         run: |
           source build/env/activate
-          cmake --build build
+          cmake --build build --config Release
 
       - name: Test the build
         run: |
