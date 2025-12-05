@@ -144,21 +144,10 @@ jobs:
           source build/env/activate
           python test/python/smoketest.py
 
-      - name: Archive the current build
-        if: runner.os == 'Linux'
-        run: |
-          set -x
-          ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
-          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
-          tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
-            -C ${{ github.workspace }} tt-mlir-install build/python_packages build/test build/env sim/
-          ls -lh "${ARTIFACT_NAME}"
-
-      - name: Upload build artifacts for hardware tests
-        if: runner.os == 'Linux'
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ttlang-ttmlir-install-ubuntu
-          path: ${{ env.ARTIFACT_NAME }}
-          if-no-files-found: error
+          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          path: |
+            build/python_packages
           retention-days: 1
