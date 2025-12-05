@@ -108,14 +108,19 @@ For the TT-lang DSL specifically, a dedicated dialect provides:
 2. Enable analysis passes: Synchronization inference, memory planning, DST
    register allocation
 3. Support transformations: Liveness analysis, operation reordering, pipelining
-4. C++ kernel generation: Produce standalone C++ kernels that compile separately
-   and link with TTNN runtime
+4. C++ kernel generation via TTKernel: Lower TTL to TTKernel dialect, then use
+   existing tt-mlir ConvertTTKernelToEmitC pass to generate C++ source. The C++
+   compiles to shared libraries (.so) that load into TTNN runtime (dylib
+   workflow). This is the MVP target.
 5. Future-proof: Extensible to new hardware generations via attributes
 
 ### Non-Goals (MVP)
 - Autotuning algorithms (IR has hooks, algorithms come later)
 - Single-threaded synchronous model (start multi-threaded)
 - Complete TT-lang spec (start minimal, expand incrementally)
+- Direct C++ backend (TTL→C++ without TTKernel): Post-MVP, see section 10.2
+- Custom ConvertTTLToEmitC pass: Not needed, use existing ConvertTTKernelToEmitC
+  from tt-mlir
 
 
 
@@ -132,13 +137,37 @@ Python Kernel → Python AST → D2M Generic Ops → ttir-to-ttmetal Pipeline �
 ```
 
 ### TTL Flow
+
+TTL supports two backend paths after TTKernel lowering:
+
+**Path 1: TTNN Dylib Workflow (Primary for MVP)**
 ```
-Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTMetal Ops → EmitC → C++ Kernel Source
-                                    ↓
-                         Validation, Synchronization,
+Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → ConvertTTKernelToEmitC → C++ Source
+                                    ↓                                                            ↓
+                         Validation, Synchronization,                                    C++ Compiler
+                         Bufferization, Allocation,                                            ↓
+                         Register Assignment, Optimization                              Shared Library (.so)
+                                                                                               ↓
+                                                                                        TTNN Runtime (dlopen)
+```
+
+**Path 2: TT-Metal Flatbuffer Workflow (Alternative)**
+```
+Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → ConvertTTKernelToTTMetal → Flatbuffer Binary
+                                    ↓                                                              ↓
+                         Validation, Synchronization,                                      TT-Metal Runtime
                          Bufferization, Allocation,
                          Register Assignment, Optimization
 ```
+
+**Key Points:**
+- TTL → TTKernel lowering is shared between both paths
+- No TTMetal dialect operations in the C++ dylib path (corrected from earlier
+  diagram)
+- ConvertTTKernelToEmitC and ConvertTTKernelToTTMetal are existing tt-mlir
+  passes in TT-MLIR
+- The dylib workflow is the MVP target; flatbuffer workflow provides TT-Metal
+  compatibility
 
 **Relationship to D2M Dialect:**
 
@@ -146,18 +175,16 @@ TTL and D2M serve different roles in the compilation pipeline:
 
 - **TTL**: New frontend dialect specifically designed for the TT-lang DSL. TTL
   provides DSL-specific IR enabling TT-lang-aware transformations before
-  lowering through TTKernel/TTMetal to C++ kernels. TTL bypasses D2M and goes
-  directly to TTKernel dialect, enabling TT-lang-specific optimizations and
-  transformations. The generated C++ compiles separately and can execute on
-  either the TTNN runtime (dylib workflow) or TT-Metal runtime (flatbuffer
-  workflow).
+  lowering to TTKernel. TTL bypasses D2M and goes directly to TTKernel dialect,
+  enabling TT-lang-specific optimizations and transformations.
 
 - **D2M**: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR →
   D2M → TTKernel). D2M serves as a general-purpose data movement and compute
   abstraction.
 
 - **Convergence**: Both TTL and D2M paths converge at the TTKernel dialect,
-  sharing the same backend lowering to EmitC and C++ code generation.
+  sharing the same backend lowering infrastructure (ConvertTTKernelToEmitC or
+  ConvertTTKernelToTTMetal passes from tt-mlir).
 
 This separation allows TTL to focus on TT-lang DSL semantics while D2M continues
 to serve framework integration needs.
@@ -174,26 +201,44 @@ to serve framework integration needs.
 def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let summary = "Circular buffer for producer-consumer communication";
   let parameters = (ins
-    "ArrayRef<int64_t>":$shape,          // [2, 1] tiles per block
-    "mlir::Type":$tileType,              // !ttcore.tile<32x32, f32>
+    "ArrayRef<int64_t>":$shape,          // Elements per block (tiles or scalars)
+    "mlir::Type":$elementType,           // !ttcore.tile<32x32, f32> or scalar type
     "int64_t":$bufferFactor,             // Number of blocks/slots
-    "TTL::MemorySpace":$memorySpace      // L1, DRAM, DST
+    "TTL::MemorySpace":$memorySpace,     // L1, DRAM, DST
+    "bool":$tiled                        // True: tile layout, False: row-major layout
   );
-  let assemblyFormat = "`<` $shape `,` $tileType `,` $bufferFactor `,` $memorySpace `>`";
+  let assemblyFormat = "`<` $shape `,` $elementType `,` $bufferFactor `,` $memorySpace `,` $tiled `>`";
 
   let extraClassDeclaration = [{
-    // Calculate total tiles for TTKernel CB conversion
-    int64_t getTotalTiles() const {
-      int64_t tilesPerBlock = std::accumulate(
+    // Calculate total elements for TTKernel CB conversion
+    // For tiled: elements are tiles; for row-major: elements are scalars
+    int64_t getTotalElements() const {
+      int64_t elementsPerBlock = std::accumulate(
         getShape().begin(), getShape().end(), 1, std::multiplies<int64_t>());
-      return tilesPerBlock * getBufferFactor();
+      return elementsPerBlock * getBufferFactor();
     }
 
-    // Helper for lowering to !ttkernel.cb<num_tiles, tile_type>
-    int64_t getTilesPerBlock() const {
+    // Helper for lowering to !ttkernel.cb<num_tiles, element_type>
+    int64_t getElementsPerBlock() const {
       return std::accumulate(
         getShape().begin(), getShape().end(), 1, std::multiplies<int64_t>());
     }
+
+    // Returns true if this CB operates on tiles (vs scalars)
+    bool isTiled() const { return getTiled(); }
+  }];
+
+  let description = [{
+    Circular buffer supporting both tiled and row-major tensor layouts per TT-Lang spec.
+
+    Layout modes:
+    - Tiled (tiled=true): elementType is !ttcore.tile<32x32, dtype>, shape is in tiles
+      Example: shape=[2,1], elementType=!ttcore.tile<32x32,f32> → 2 tiles per block
+
+    - Row-major (tiled=false): elementType is scalar type, shape is in elements
+      Example: shape=[64,32], elementType=f32 → 64x32 scalars per block
+
+    The tiled flag is derived from the source tensor's layout in make_circular_buffer_like.
   }];
 }
 
@@ -201,8 +246,10 @@ def TTL_Block : TTL_Type<"Block", "block"> {
   let summary = "Logical unit of data exchanged via circular buffers";
   let parameters = (ins "TensorType":$tensorType);
   let description = [{
-    Represents a block of tiles consumed/produced by compute operations.
+    Represents a block of data (tiles or scalars) consumed/produced by compute operations.
     Carries optional DST register hint for liveness analysis.
+
+    The block's granularity (tile vs scalar) matches the circular buffer it's acquired from.
   }];
 }
 
@@ -300,6 +347,366 @@ def TTL_DistributionStrategyAttr : I32EnumAttr<"DistributionStrategy", "TTL dist
 }
 ```
 
+### 3.3 TensorAccessor Support Strategy
+
+Modern Metalium kernel development uses `TensorAccessor` objects as kernel
+arguments. TensorAccessor APIs like `noc_async_read_shard`,
+`noc_async_write_shard`, `noc_async_read_page`, and `noc_async_write_page`
+abstract shard addressing and page-based access patterns (see
+[Metalium Guide](https://github.com/tenstorrent/tt-metal/blob/main/METALIUM_GUIDE.md)).
+
+**Challenge**: TTKernel dialect (in TT-MLIR) does not currently have
+TensorAccessor support. TTKernel NOC operations work with bare addresses.
+
+**Requirement**: Generated C++ must use TensorAccessor class.
+
+#### Option 1: Extend TTKernel with TensorAccessor
+
+Add `!ttkernel.tensor_accessor` type and shard/page NOC operations to TTKernel
+dialect in TT-MLIR.
+
+Implementation in TT-MLIR:
+
+```tablegen
+// TTKernelOpsTypes.td
+def TTKernel_TensorAccessor : TTKernel_Type<"TensorAccessor"> {
+  let summary = "Handle for indexed tensor access with layout metadata";
+  let parameters = (ins "TensorType":$tensorType, "LayoutAttr":$layout);
+  let description = [{
+    Represents a tensor with addressing capability for shard and page-based access.
+    Carries layout metadata (sharded vs interleaved, grid dimensions, page size).
+
+    Corresponds to Metalium TensorAccessor class. ConvertTTKernelToEmitC generates
+    TensorAccessor construction and usage matching Metalium patterns.
+  }];
+}
+
+// TTKernelOps.td
+def TTKernel_NocAsyncReadShardOp : TTKernel_Op<"noc_async_read_shard"> {
+  let arguments = (ins I32:$shard_id, TTKernel_TensorAccessor:$accessor,
+                       I32:$dst_local_l1_addr, I8:$noc);
+  let description = [{
+    Async read of shard from sharded tensor using TensorAccessor.
+    Corresponds to: noc_async_read_shard(shard_id, accessor, dst_addr, noc)
+  }];
+}
+
+def TTKernel_NocAsyncReadPageOp : TTKernel_Op<"noc_async_read_page"> {
+  let arguments = (ins I32:$page_id, TTKernel_TensorAccessor:$accessor,
+                       I32:$dst_local_l1_addr, OptionalAttr<I32Attr>:$offset, I8:$noc);
+  let description = [{
+    Async read of page from tensor using TensorAccessor.
+    Corresponds to: noc_async_read_page(page_id, accessor, dst_addr, offset, noc)
+  }];
+}
+
+// Plus write_shard and write_page variants
+```
+
+ConvertTTKernelToEmitC generates Metalium TensorAccessor code:
+
+```cpp
+// Generated from ttkernel.tensor_accessor + noc_async_read_shard
+constexpr auto args_a = TensorAccessorArgs<0>();
+const auto a = TensorAccessor(args_a, a_addr, tile_size_bytes);
+
+for (uint32_t i = 0; i < n_shards; i++) {
+    cb_reserve_back(cb_in0, 1);
+    const uint32_t cb_addr = get_write_ptr(cb_in0);
+    noc_async_read_shard(i, a, cb_addr);
+    noc_async_read_barrier();
+    cb_push_back(cb_in0, 1);
+}
+```
+
+TTL lowering:
+
+```mlir
+// TTL IR
+%accessor = ttl.tensor_accessor %tensor {layout = #ttl.layout<sharded, grid=[2,2]>}
+%tx = ttl.copy %accessor[%shard_id], %cb
+
+// After TTLLowerDataMovement → TTKernel
+%ttk_accessor = // Convert TTL layout attr → TTKernel layout attr
+ttkernel.noc_async_read_shard %shard_id, %ttk_accessor, %cb_l1_addr, %noc
+```
+
+Pros:
+- Generated C++ uses TensorAccessor class (requirement satisfied)
+- TTKernel becomes a more complete Metalium abstraction
+- Reuses proven Metalium addressing logic
+- TensorAccessor is tensor-like, fits MLIR bufferization framework
+- Future Metalium improvements automatically available
+- Enables sharded tensors
+
+Cons:
+- Requires extending TT-MLIR (external repository)
+- ConvertTTKernelToEmitC needs updates (~200 lines)
+- Coordination between tt-lang and tt-mlir
+
+
+#### Option 2: Defer to Post-MVP
+
+Use interleaved tensors with simple page-based addressing for MVP. Add full
+sharded tensor support post-MVP.
+
+MVP approach:
+- TTL generates `ttkernel.noc_async_read_page` for all transfers
+- Interleaved tensors only (simpler layout)
+- Add sharded tensor support in Phase 2 when TensorAccessor infrastructure ready
+
+Pros:
+- Faster MVP (no tt-mlir extension immediately)
+- Validates TTL pipeline end-to-end
+- Still generates TensorAccessor C++ (via page API)
+
+Cons:
+- Limits MVP to interleaved tensors (no sharding)
+- Attention mechanisms need sharded layouts for performance
+- Must extend TTKernel for sharding anyway (just deferred)
+
+
+
+#### Complete Lowering Example: Sharded Tensor Read
+
+This example shows the complete pipeline from Python code through TTL, TTKernel,
+to generated C++ using TensorAccessor.
+
+**Python Kernel (TT-Lang DSL)**:
+
+```python
+import ttnn
+from ttlang import ttl
+
+@ttl.kernel(grid=(2, 2))
+def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
+    # Tensors are sharded across 2x2 grid
+    # Each core processes 1 shard (1 tile in this example)
+
+    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.datamovement()
+    def dm_reader():
+        shard_id = ttl.core_linear()  # 0-3 for 2x2 grid
+
+        a_blk = a_cb.reserve()
+        tx = ttl.copy(a[shard_id], a_blk)  # Read shard using TensorAccessor
+        tx.wait()
+        a_cb.push()
+
+        b_blk = b_cb.reserve()
+        tx = ttl.copy(b[shard_id], b_blk)
+        tx.wait()
+        b_cb.push()
+
+    @ttl.compute()
+    def compute():
+        a_blk = a_cb.wait()
+        b_blk = b_cb.wait()
+        o = out_cb.reserve()
+
+        result = a_blk + b_blk  # ttl.block_add
+        o.store(result)
+
+        a_cb.pop()
+        b_cb.pop()
+        out_cb.push()
+
+    @ttl.datamovement()
+    def dm_writer():
+        shard_id = ttl.core_linear()
+
+        o_blk = out_cb.wait()
+        tx = ttl.copy(o_blk, out[shard_id])  # Write shard
+        tx.wait()
+        out_cb.pop()
+
+    return ttl.Program(compute, dm_reader, dm_writer)(a, b, out)
+```
+
+**TTL IR (After Python AST Compilation)**:
+
+```mlir
+ttl.kernel @sharded_elementwise_add(
+  %a: tensor<64x64xf32>,
+  %b: tensor<64x64xf32>,
+  %out: tensor<64x64xf32>
+) attributes {grid = #ttl.grid<[2, 2]>, block_factors = [[1,1], [1,1], [1,1]]} {
+
+  // Create circular buffers
+  %a_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
+                        buffer_factor=2, memory_space=L1, tiled=true
+  %b_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
+                        buffer_factor=2, memory_space=L1, tiled=true
+  %out_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
+                          buffer_factor=2, memory_space=L1, tiled=true
+
+  // Create TensorAccessors with sharded layout metadata
+  %a_accessor = ttl.tensor_accessor %a {
+    layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
+    memory_space = DRAM
+  }
+  %b_accessor = ttl.tensor_accessor %b {
+    layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
+    memory_space = DRAM
+  }
+  %out_accessor = ttl.tensor_accessor %out {
+    layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
+    memory_space = DRAM
+  }
+
+  ttl.datamovement_thread {
+    %shard_id = ttl.core_linear() : index
+
+    %a_blk = ttl.cb_reserve %a_cb : !ttl.block<...>
+    %tx_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.mem_tx
+    ttl.wait %tx_a
+    ttl.cb_push %a_blk
+
+    %b_blk = ttl.cb_reserve %b_cb : !ttl.block<...>
+    %tx_b = ttl.copy %b_accessor[%shard_id], %b_blk : !ttl.mem_tx
+    ttl.wait %tx_b
+    ttl.cb_push %b_blk
+  }
+
+  ttl.compute_thread {
+    %a_blk = ttl.cb_wait %a_cb : !ttl.block<...>
+    %b_blk = ttl.cb_wait %b_cb : !ttl.block<...>
+    %o_blk = ttl.cb_reserve %out_cb : !ttl.block<...>
+
+    %result = ttl.block_add %a_blk, %b_blk
+    ttl.block_store %o_blk, %result
+
+    ttl.cb_pop %a_blk
+    ttl.cb_pop %b_blk
+    ttl.cb_push %o_blk
+  }
+
+  ttl.datamovement_thread {
+    %shard_id = ttl.core_linear() : index
+
+    %o_blk = ttl.cb_wait %out_cb : !ttl.block<...>
+    %tx_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.mem_tx
+    ttl.wait %tx_out
+    ttl.cb_pop %o_blk
+  }
+}
+```
+
+**After TTLExpandThreads + TTLLowerDataMovement → TTKernel IR**:
+
+```mlir
+// Thread functions extracted, TensorAccessor preserved in TTKernel
+
+func.func @dm_reader_0(
+  %a_addr: i64,  // Runtime arg: buffer address
+  %b_addr: i64
+) attributes {
+  // Compile-time args encode TensorAccessor layout
+  ttkernel.compile_time_args = [
+    #ttkernel.tensor_accessor_args<layout=sharded, grid=[2,2], shard_shape=[1,1]>,
+    #ttkernel.tensor_accessor_args<layout=sharded, grid=[2,2], shard_shape=[1,1]>
+  ]
+} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+
+  // Compute shard_id
+  %shard_id = affine.apply affine_map<(y, x, gx) -> (y * gx + x)>(%c0, %c0, %c2)
+  %shard_id_i32 = arith.index_cast %shard_id : index to i32
+
+  // Create TTKernel TensorAccessor values
+  %a_accessor = ttkernel.tensor_accessor %a_addr {
+    layout = #ttkernel.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>
+  } : !ttkernel.tensor_accessor<tensor<64x64xf32>>
+
+  %b_accessor = ttkernel.tensor_accessor %b_addr {
+    layout = #ttkernel.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>
+  } : !ttkernel.tensor_accessor<tensor<64x64xf32>>
+
+  // Read shard A
+  %a_cb = // CB reference
+  ttkernel.cb_reserve_back %a_cb, 1
+  %a_write_ptr = ttkernel.get_write_ptr %a_cb
+  ttkernel.noc_async_read_shard %shard_id_i32, %a_accessor, %a_write_ptr, 0
+  ttkernel.noc_async_read_barrier
+  ttkernel.cb_push_back %a_cb, 1
+
+  // Read shard B
+  %b_cb = // CB reference
+  ttkernel.cb_reserve_back %b_cb, 1
+  %b_write_ptr = ttkernel.get_write_ptr %b_cb
+  ttkernel.noc_async_read_shard %shard_id_i32, %b_accessor, %b_write_ptr, 0
+  ttkernel.noc_async_read_barrier
+  ttkernel.cb_push_back %b_cb, 1
+
+  return
+}
+
+// compute_0 and dm_writer_1 similar structure
+```
+
+**After ConvertTTKernelToEmitC → Generated C++ (Metalium)**:
+
+```cpp
+// dm_reader_0.cpp
+#include <dataflow_api.h>
+
+void kernel_main() {
+    // Runtime arguments
+    const uint32_t a_addr = get_arg_val<uint32_t>(0);
+    const uint32_t b_addr = get_arg_val<uint32_t>(1);
+
+    // Compile-time TensorAccessorArgs (from ttkernel.compile_time_args attribute)
+    constexpr auto args_a = TensorAccessorArgs<0>();
+    constexpr auto args_b = TensorAccessorArgs<args_a.next_compile_time_args_offset()>();
+
+    constexpr auto cb_in0 = tt::CBIndex::c_0;
+    constexpr auto cb_in1 = tt::CBIndex::c_1;
+    const uint32_t tile_size_bytes = get_tile_size(cb_in0);
+
+    // Construct TensorAccessors (from ttkernel.tensor_accessor ops)
+    const auto a = TensorAccessor(args_a, a_addr, tile_size_bytes);
+    const auto b = TensorAccessor(args_b, b_addr, tile_size_bytes);
+
+    // Compute shard_id
+    const uint32_t core_y = my_y[0];
+    const uint32_t core_x = my_x[0];
+    const uint32_t shard_id = core_y * 2 + core_x;
+
+    // Read shard A (from ttkernel.noc_async_read_shard)
+    cb_reserve_back(cb_in0, 1);
+    const uint32_t a_cb_addr = get_write_ptr(cb_in0);
+    noc_async_read_shard(shard_id, a, a_cb_addr);
+    noc_async_read_barrier();
+    cb_push_back(cb_in0, 1);
+
+    // Read shard B
+    cb_reserve_back(cb_in1, 1);
+    const uint32_t b_cb_addr = get_write_ptr(cb_in1);
+    noc_async_read_shard(shard_id, b, b_cb_addr);
+    noc_async_read_barrier();
+    cb_push_back(cb_in1, 1);
+}
+```
+
+This matches the TensorAccessor pattern in Metalium Guide (lines 193-213).
+
+**Lowering Strategy Summary**:
+
+| Stage | TensorAccessor Representation | Key Information |
+|-------|------------------------------|-----------------|
+| **Python** | `a[shard_id]` tensor indexing | Layout inferred from ttnn.Tensor properties |
+| **TTL IR** | `ttl.tensor_accessor` + `ttl.copy` | Layout in `#ttl.layout<sharded, ...>` attribute |
+| **TTKernel IR** | `ttkernel.tensor_accessor` + `noc_async_read_shard` | Layout in `#ttkernel.layout<...>` + function compile_time_args |
+| **C++ Code** | `TensorAccessor(args, addr, size)` + `noc_async_read_shard(id, accessor, ...)` | Layout encoded in `TensorAccessorArgs<N>()` template |
+
+The layout metadata flows through all stages, enabling ConvertTTKernelToEmitC to
+generate correct TensorAccessor construction code.
+
 
 
 ## 4. Operations
@@ -371,8 +778,6 @@ def TTL_ComputeThreadOp : TTL_Op<"compute_thread"> {
     Thread for mathematical operations on tiles. Executes on MATH microcore(s).
     Can use: block arithmetic, CB wait/pop/reserve/push, tile operations.
     Cannot use: DMA operations (use datamovement_thread).
-
-    Future: microcore_hint enables explicit microcore targeting for optimization.
   }];
 }
 
@@ -397,21 +802,31 @@ def TTL_DataMovementThreadOp : TTL_Op<"datamovement_thread"> {
 def TTL_CreateCBOp : TTL_Op<"create_cb"> {
   let summary = "Create circular buffer";
   let arguments = (ins
-    I64ArrayAttr:$shape,              // Tiles per block [2, 1]
-    TypeAttr:$tile_type,              // !ttcore.tile<32x32, f32>
-    I64Attr:$buffer_factor,           // Number of blocks
-    TTL_MemorySpaceAttr:$memory_space, // L1, DRAM, DST
-    OptionalAttr<I32Attr>:$buffer_index,  // Optional explicit CB number (0-31)
-    OptionalAttr<I64Attr>:$page_size,     // Optional page size in bytes
+    I64ArrayAttr:$shape,                // Elements per block (tiles or scalars depending on layout)
+    TypeAttr:$element_type,             // !ttcore.tile<32x32, f32> or scalar type (f32, bf16, etc.)
+    I64Attr:$buffer_factor,             // Number of blocks
+    TTL_MemorySpaceAttr:$memory_space,  // L1, DRAM, DST
+    BoolAttr:$tiled,                    // True: tile layout, False: row-major layout
+    OptionalAttr<I32Attr>:$buffer_index,      // Optional explicit CB number (0-31)
+    OptionalAttr<I64Attr>:$page_size,         // Optional page size in bytes
     OptionalAttr<TTL_CoreMaskAttr>:$core_ranges  // Optional per-core CB mapping
   );
   let results = (outs TTL_CircularBuffer:$result);
   let description = [{
     Python API `ttl.make_circular_buffer_like(tensor, shape=..., buffer_factor=...)`
     maps to this operation. The Python frontend extracts tensor properties
-    (dtype, tile shape from layout) and calls `ttl.create_cb` with the extracted
-    parameters. The "likeness" refers to deriving tile_type and memory_space
-    from the input tensor's layout and properties.
+    (dtype, layout, memory_space) and calls `ttl.create_cb` with the extracted
+    parameters. The "likeness" refers to deriving element_type, tiled flag, and
+    memory_space from the input tensor's layout and properties.
+
+    Layout modes per TT-Lang spec:
+    - Tiled (tiled=true): element_type is !ttcore.tile<32x32, dtype>, shape is in tiles
+      Example: shape=[2,1], element_type=!ttcore.tile<32x32,f32>, buffer_factor=2
+      Creates CB holding 2 blocks of 2 tiles each (4 tiles total)
+
+    - Row-major (tiled=false): element_type is scalar type, shape is in scalars
+      Example: shape=[64,32], element_type=f32, buffer_factor=2
+      Creates CB holding 2 blocks of 64x32 scalars each
 
     Optional attributes enable explicit control when needed:
     - buffer_index: Explicitly assign CB number (default: auto-assign in allocation pass)
@@ -491,67 +906,69 @@ def TTL_TensorAccessorOp : TTL_Op<"tensor_accessor"> {
 ```tablegen
 def TTL_CBWaitOp : TTL_Op<"cb_wait"> {
   let summary = "Consumer acquire: wait for data in circular buffer";
-  let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I64Attr:$num_tiles                // Number of tiles to wait for
-  );
+  let arguments = (ins TTL_CircularBuffer:$cb);
+  let results = (outs TTL_Block:$block);
   let description = [{
-    Blocking operation that waits until the specified number of tiles are available
-    in the circular buffer. Used by consumers to acquire data from producers.
+    Blocking operation that waits until a block of data is available in the circular buffer.
+    Returns a block whose shape matches the CB's block shape. Per TT-Lang spec, users never
+    specify element counts - the block shape is determined by the CB itself.
+
+    Python API: `blk = cb.wait()` or `with cb.wait() as blk:`
 
     Maps to TTKernel operation:
-    - ttkernel.cb_wait_front(cb, num_tiles)
+    - ttkernel.cb_wait_front(cb, num_elements)
+      where num_elements = cb.shape[0] * cb.shape[1] * ... (computed from CB type)
   }];
 }
 
 def TTL_CBPopOp : TTL_Op<"cb_pop"> {
-  let summary = "Consumer release: signal tiles consumed";
-  let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I64Attr:$num_tiles                // Number of tiles to release
-  );
+  let summary = "Consumer release: signal block consumed";
+  let arguments = (ins TTL_Block:$block);
   let description = [{
-    Non-blocking operation that signals tiles have been consumed and can be
-    reused by the producer.
+    Non-blocking operation that signals the block has been consumed and can be
+    reused by the producer. Takes the block returned by cb.wait().
+
+    Python API: `cb.pop()` (implicit: pops the block acquired by most recent wait)
 
     Maps to TTKernel operation:
-    - ttkernel.cb_pop_front(cb, num_tiles)
+    - ttkernel.cb_pop_front(cb, num_elements)
+      where num_elements is derived from the block's shape
   }];
 }
 
 def TTL_CBReserveOp : TTL_Op<"cb_reserve"> {
   let summary = "Producer acquire: reserve space in circular buffer";
-  let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I64Attr:$num_tiles                // Number of tiles to reserve
-  );
+  let arguments = (ins TTL_CircularBuffer:$cb);
+  let results = (outs TTL_Block:$block);
   let description = [{
-    Python API `cb.reserve()` maps to this operation. When used with Python
-    `with` statement (`with cb.reserve() as blk:`), the AST compiler generates
-    `ttl.cb_reserve` at the start of the scope and `ttl.cb_push` at the end.
-
     Blocking operation that waits until space is available in the circular buffer.
-    Used by producers to reserve space for writing data.
+    Returns a block whose shape matches the CB's block shape. Per TT-Lang spec, users never
+    specify element counts - the block shape is determined by the CB itself.
+
+    Python API: `blk = cb.reserve()` or `with cb.reserve() as blk:`
+
+    When used with Python `with` statement, the AST compiler generates `ttl.cb_reserve`
+    at the start of the scope and `ttl.cb_push` at the end.
 
     Maps to TTKernel operation:
-    - ttkernel.cb_reserve_back(cb, num_tiles)
+    - ttkernel.cb_reserve_back(cb, num_elements)
+      where num_elements = cb.shape[0] * cb.shape[1] * ... (computed from CB type)
   }];
 }
 
 def TTL_CBPushOp : TTL_Op<"cb_push"> {
-  let summary = "Producer release: signal data ready";
-  let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I64Attr:$num_tiles                // Number of tiles to push
-  );
+  let summary = "Producer release: signal block ready";
+  let arguments = (ins TTL_Block:$block);
   let description = [{
-    Python API `cb.push()` maps to this operation. Automatically generated
-    at the end of a `with cb.reserve()` scope.
+    Non-blocking operation that signals the block is ready for consumers.
+    Takes the block returned by cb.reserve(). Automatically generated at the
+    end of a `with cb.reserve()` scope.
 
-    Non-blocking operation that signals data is ready for consumers.
+    Python API: `cb.push()` (implicit: pushes the block acquired by most recent reserve)
 
     Maps to TTKernel operation:
-    - ttkernel.cb_push_back(cb, num_tiles)
+    - ttkernel.cb_push_back(cb, num_elements)
+      where num_elements is derived from the block's shape
   }];
 }
 
@@ -1070,19 +1487,25 @@ def TTL_CopyOp : TTL_Op<"copy"> {
   let results = (outs TTL_MemoryTransaction:$tx);
   let description = [{
     Unified DMA operation handling all transfer combinations:
-    - Tensor slice → CB (read from DRAM/L1)
-    - CB → Tensor slice (write to DRAM/L1)
+    - Tensor slice → CB (read from DRAM/L1 using TensorAccessor)
+    - CB → Tensor slice (write to DRAM/L1 using TensorAccessor)
     - CB → Pipe → CB (inter-core transfer)
 
     Operand types and attributes determine lowering:
-    - Unicast/multicast from pipe parameters
-    - Memory space from accessor/CB types
-    - NOC address calculation from coordinates
+    - TensorAccessor operands: lower to ttkernel.tensor_accessor + ttkernel NOC operations
+    - Pipe operands: lower to ttkernel.noc_async_write_multicast or unicast
+    - TensorAccessor layout determines which NOC API: shard, page, or tile
 
     Returns transaction handle (SSA value of type !ttl.mem_tx) for ordering.
     Python API `ttl.copy()` returns a transfer handle object with a `wait()`
     method, which maps to `ttl.wait %tx` operation.
-    
+
+    TensorAccessor lowering based on layout:
+    - Sharded layout: ttkernel.noc_async_read_shard / ttkernel.noc_async_write_shard
+    - Interleaved layout: ttkernel.noc_async_read_page / ttkernel.noc_async_write_page
+    - Tiled layout: ttkernel.noc_async_read_tile / ttkernel.noc_async_write_tile
+    All variants use ttkernel.tensor_accessor - see section 3.3 for complete example.
+
     Note: ttl.wait lowers to global DMA barrier, not per-transaction wait
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
     and `ttkernel.noc_async_write_barrier` operations which wait for all pending
@@ -2083,7 +2506,7 @@ leverage upstream transforms immediately.
 | `!ttl.mem_tx` | N/A (elided) | Lowers to global barriers |
 | `!ttl.semaphore` | `!ttkernel.semaphore` | Direct mapping |
 | `!ttl.pipe` | Attributes on ops | Pipe decomposed into core coords + multicast flags |
-| `!ttl.accessor<layout, memspace>` | N/A (resolved) | Resolves to NOC addresses + layout info during lowering |
+| `!ttl.accessor<layout, memspace>` | `!ttkernel.tensor_accessor<tensor_type, layout>` | Layout attributes converted from TTL to TTKernel format |
 
 ### 6.2 TTL → TTKernel Operation Mapping
 
@@ -2108,8 +2531,12 @@ leverage upstream transforms immediately.
 | `ttl.block_relu` | `ttkernel.init_sfpu`, `ttkernel.relu_tile` | Medium | MEDIUM |
 | `ttl.block_gelu` | `ttkernel.init_sfpu`, `ttkernel.gelu_tile` | Medium | MEDIUM |
 | **Data Movement** ||||
-| `ttl.copy` (DRAM→CB) | `ttkernel.get_noc_addr`, `ttkernel.noc_async_read` | High | **HIGH** |
-| `ttl.copy` (CB→DRAM) | `ttkernel.get_noc_addr`, `ttkernel.noc_async_write` | High | **HIGH** |
+| `ttl.copy` (Tensor→CB sharded) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_read_shard` | High | **HIGH** |
+| `ttl.copy` (Tensor→CB interleaved) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_read_page` | High | **HIGH** |
+| `ttl.copy` (Tensor→CB tiled) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_read_tile` | High | **HIGH** |
+| `ttl.copy` (CB→Tensor sharded) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_write_shard` | High | **HIGH** |
+| `ttl.copy` (CB→Tensor interleaved) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_write_page` | High | **HIGH** |
+| `ttl.copy` (CB→Tensor tiled) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_write_tile` | High | **HIGH** |
 | `ttl.copy` (CB→Pipe→CB) | `ttkernel.noc_async_write_multicast` or unicast | High | MEDIUM |
 | `ttl.wait` | `ttkernel.noc_async_read_barrier` or `write_barrier` | Low | **HIGH** |
 | `ttl.dma_barrier` | `ttkernel.noc_async_read_barrier`, `write_barrier` | Low | **HIGH** |
@@ -2177,19 +2604,52 @@ ttkernel.tile_regs_commit
 ttkernel.cb_push_back %out_cb, 2
 ```
 
-**DMA Operations:**
+**DMA Operations (Sharded Tensor):**
 ```mlir
 // TTL (high-level)
-%accessor = ttl.tensor_accessor %input {layout = #ttl.layout<...>, memspace = L1}
-%idx = ttl.index_accessor %accessor, %row, %col
-%tx = ttl.copy %idx, %cb
+%accessor = ttl.tensor_accessor %input {
+  layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
+  memspace = DRAM
+}
+%tx = ttl.copy %accessor[%shard_id], %cb
 ttl.wait %tx
 
-// TTKernel (hardware-specific)
-%noc_addr = ttkernel.get_noc_addr %src_core, %src_l1_addr
+// TTKernel (TensorAccessor preserved)
+%ttk_accessor = ttkernel.tensor_accessor %input_addr {
+  layout = #ttkernel.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>
+} : !ttkernel.tensor_accessor<...>
 %cb_l1_addr = // From TTLAllocateCircularBuffers pass
-ttkernel.noc_async_read %noc_addr, %cb_l1_addr, %size_bytes
+ttkernel.noc_async_read_shard %shard_id, %ttk_accessor, %cb_l1_addr, %noc
 ttkernel.noc_async_read_barrier
+
+// Generated C++ (uses TensorAccessor class)
+constexpr auto args = TensorAccessorArgs<0>();
+const auto input = TensorAccessor(args, input_addr, tile_size_bytes);
+noc_async_read_shard(shard_id, input, cb_l1_addr);
+```
+
+**DMA Operations (Interleaved Tensor):**
+```mlir
+// TTL
+%accessor = ttl.tensor_accessor %input {
+  layout = #ttl.layout<interleaved>,
+  memspace = DRAM
+}
+%tx = ttl.copy %accessor[%page_id], %cb
+ttl.wait %tx
+
+// TTKernel (TensorAccessor preserved)
+%ttk_accessor = ttkernel.tensor_accessor %input_addr {
+  layout = #ttkernel.layout<interleaved>
+} : !ttkernel.tensor_accessor<...>
+%cb_l1_addr = // From TTLAllocateCircularBuffers pass
+ttkernel.noc_async_read_page %page_id, %ttk_accessor, %cb_l1_addr, %offset, %noc
+ttkernel.noc_async_read_barrier
+
+// Generated C++ (uses TensorAccessor class)
+constexpr auto args = TensorAccessorArgs<0>();
+const auto input = TensorAccessor(args, input_addr, tile_size_bytes);
+noc_async_read_page(page_id, input, cb_l1_addr, offset);
 ```
 
 **Multicast Pipe:**
@@ -2696,19 +3156,34 @@ def TTL_ThreadOp : TTL_Op<"thread"> {
 3. Create automatic conversion pass: simple threads → microcore model
 4. Update examples incrementally
 
-### 10.2 C++ Backend (Post-TTKernel)
+### 10.2 Direct C++ Backend (Post-MVP Extension)
 
-After TTL → TTKernel is stable, add direct C++ emission:
+**Status:** Post-MVP, deferred until TTL → TTKernel → EmitC path is stable.
+
+**Goal:** Add direct TTL → C++ lowering bypassing TTKernel dialect.
 
 ```
-TTL → TTKernel → EmitC → C++ (current)
-TTL → EmitC → C++ (future)
+MVP (uses existing tt-mlir passes):
+  TTL → TTKernel → ConvertTTKernelToEmitC → C++
+
+Future (direct emission):
+  TTL → ConvertTTLToEmitC → C++
 ```
 
-Benefits:
-- Standalone kernels (no TTKernel dependency)
-- Potential for custom optimizations
-- Better debugging (direct C++ inspection)
+**Rationale for deferring:**
+- MVP leverages existing, proven ConvertTTKernelToEmitC pass from tt-mlir
+- No need to duplicate C++ code generation logic
+- TTKernel provides validated abstraction for hardware operations
+- Direct emission is optimization, not requirement
+
+**Potential benefits (post-MVP):**
+- Standalone kernels without TTKernel dependency
+- Potential for TT-lang-specific C++ optimizations
+- Simplified debugging (direct C++ inspection)
+
+**Note:** This is an optimization, not a functional requirement. The MVP path
+through TTKernel is sufficient and avoids duplicating the mature
+ConvertTTKernelToEmitC infrastructure.
 
 ### 10.3 Distributed Tensor Type (Major Extension)
 

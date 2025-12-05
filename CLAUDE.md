@@ -461,3 +461,8 @@ sed -n '/After D2MAllocate/,/^\/\/ -----\/\/ IR Dump Before/p' /tmp/full_pipelin
 - If example/test is unclear which to run
 - If multiple possible approaches exist for solving a problem
 - If error is ambiguous and user context would help
+
+### Miscellaneous
+
+- Do not overuse formatting, e.g., bold fonts. Use emphasis (bold and 
+italics) spearingly. Use proper markdown for any code references.
