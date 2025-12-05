@@ -308,10 +308,23 @@ def TTL_Semaphore : TTL_Type<"Semaphore", "semaphore"> {
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Inter-core communication channel (first-class SSA value)";
   let parameters = (ins
-    "ArrayRef<int64_t>":$srcCore,        // Source core coordinates
-    "ArrayRef<int64_t>":$dstCore,        // Destination (unicast)
-    OptionalParameter<"ArrayRef<ArrayRef<int64_t>>">:$dstCoreRange  // Multicast range
+    "ArrayRef<int64_t>":$srcCore,           // Source core coordinates [x, y]
+    OptionalParameter<"ArrayRef<int64_t>">:$dstCore,  // Destination (unicast) [x, y]
+    OptionalParameter<"ArrayRef<TTL_SliceAttr>">:$dstCoreRange  // Multicast range (slice per dim)
   );
+  let description = [{
+    Represents a pipe for inter-core communication.
+
+    Unicast: src_core=[x,y], dst_core=[x',y']
+    Multicast: src_core=[x,y], dst_core_range=[slice(x0,x1,step), slice(y0,y1,step)]
+
+    Each slice in dst_core_range is a tuple (start, stop, step) per TT-Lang spec.
+    The range is half-open: [start, stop). Step defaults to 1 if not specified.
+
+    Example from TT-Lang (multicast column):
+      ttl.Pipe(src_core=(x, 0), dst_core_range=(slice(x, x+1), slice(1, grid_y)))
+      Creates pipe from (x,0) to cores (x, 1), (x, 2), ..., (x, grid_y-1)
+  }];
 }
 
 def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
@@ -357,6 +370,55 @@ def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {
     Allows lossless representation of all TensorAccessor configurations.
   }];
   // Parameters TBD based on MetalLayoutConfig from layouts.py
+}
+
+def TTL_SliceAttr : AttrDef<TTL_Dialect, "Slice"> {
+  let summary = "Slice specification for core range (start, stop, step)";
+  let parameters = (ins
+    "int64_t":$start,
+    "int64_t":$stop,
+    "int64_t":$step
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let description = [{
+    Encodes a Python slice(start, stop, step) for pipe multicast ranges.
+    Half-open interval: [start, stop). Step defaults to 1 in Python API.
+
+    Examples from TT-Lang spec:
+    - slice(1, grid_y) → SliceAttr<1, grid_y, 1>
+    - slice(x, x+1) → SliceAttr<x, x+1, 1>
+    - slice(0, grid_x, 2) → SliceAttr<0, grid_x, 2> (every other core)
+
+    Negative indices and None are resolved by Python frontend before IR generation.
+
+    Lowering to TTKernel:
+    SliceAttr converts to affine loops and TTKernel multicast NOC operations.
+
+    Case 1: Contiguous rectangular range (step=1 for all dimensions)
+      dst_core_range = [slice(x0,x1,1), slice(y0,y1,1)]
+
+      Lowers directly to TTKernel rectangular multicast:
+        %noc_addr = ttkernel.get_noc_multicast_addr(
+          noc_xy_start = (x0, y0),
+          noc_xy_end = (x1-1, y1-1)  // Convert half-open to inclusive
+        )
+        ttkernel.noc_async_write_multicast(%src_addr, %noc_addr, %size)
+
+    Case 2: Strided range (step != 1 in any dimension)
+      dst_core_range = [slice(0,8,2), slice(0,4,1)]  // Every other core in x
+
+      Lowers to affine loop with unicast per core:
+        affine.for %x = 0 to 8 step 2 {  // Affine loop encodes step directly
+          affine.for %y = 0 to 4 {
+            %noc_addr = ttkernel.get_noc_addr(noc_x=%x, noc_y=%y, ...)
+            ttkernel.noc_async_write(%src_addr, %noc_addr, %size)
+          }
+        }
+
+    The affine.for operation natively supports start/stop/step, so SliceAttr maps
+    directly to affine loop bounds. No membership test needed - the affine loop
+    iterates exactly over the slice range.
+  }];
 }
 
 def TTL_CoreMaskAttr : AttrDef<TTL_Dialect, "CoreMask"> {
@@ -887,11 +949,27 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
 def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
   let summary = "Create inter-core pipe for unicast or multicast";
   let arguments = (ins
-    I64ArrayAttr:$src_core,
-    OptionalAttr<I64ArrayAttr>:$dst_core,         // For unicast
-    OptionalAttr<ArrayAttr>:$dst_core_range       // For multicast [[x0,y0],[x1,y1]]
+    I64ArrayAttr:$src_core,                       // Source core [x, y, ...]
+    OptionalAttr<I64ArrayAttr>:$dst_core,         // Unicast destination [x, y, ...]
+    OptionalAttr<ArrayAttr>:$dst_core_range       // Multicast range [SliceAttr, SliceAttr, ...]
   );
   let results = (outs TTL_Pipe:$pipe);
+  let description = [{
+    Python API `ttl.Pipe(src_core=..., dst_core=...)` or
+    `ttl.Pipe(src_core=..., dst_core_range=...)` maps to this operation.
+
+    Unicast example:
+      Python: ttl.Pipe(src_core=(1,0), dst_core=(0,0))
+      TTL IR: ttl.create_pipe src_core=[1,0], dst_core=[0,0]
+
+    Multicast example (preserves slice semantics):
+      Python: ttl.Pipe(src_core=(x,0), dst_core_range=(slice(x,x+1), slice(1,grid_y)))
+      TTL IR: ttl.create_pipe src_core=[x,0],
+                              dst_core_range=[#ttl.slice<x,x+1,1>, #ttl.slice<1,grid_y,1>]
+
+    The dst_core_range encodes Python slice objects per dimension with (start, stop, step).
+    Half-open intervals: [start, stop). Step enables patterns like "every other core".
+  }];
 }
 
 def TTL_CreateSemaphoreOp : TTL_Op<"create_semaphore"> {
@@ -1555,6 +1633,15 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     - Interleaved layout: ttkernel.noc_async_read_page / ttkernel.noc_async_write_page
     - Tiled layout: ttkernel.noc_async_read_tile / ttkernel.noc_async_write_tile
     All variants use ttkernel.tensor_accessor - see section 3.3 for complete example.
+
+    Pipe guard requirement (TT-Lang spec compliance):
+    - Every ttl.copy with a Pipe operand MUST be guarded by ttl.if_pipe_src (pipe as dst)
+      or ttl.if_pipe_dst (pipe as src)
+    - For each pipe, there must be a matching send/receive pair:
+      - One core uses ttl.copy(block, pipe) inside ttl.if_pipe_src
+      - One or more cores use ttl.copy(pipe, block) inside ttl.if_pipe_dst
+    - Unguarded pipe copies are invalid per TT-Lang spec
+    - TTLValidatePass enforces this requirement and rejects unguarded or unmatched pipes
 
     Note: ttl.wait lowers to global DMA barrier, not per-transaction wait
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
