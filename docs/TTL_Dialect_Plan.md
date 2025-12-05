@@ -1,10 +1,35 @@
-# TTL Dialect Design Plan (Integrated)
+# TTL Dialect Design Plan
 
 **Version**: 1.0
 **Date**: 2025-01-XX
 **Status**: Design Phase
 
-This document integrates design decisions from two planning efforts to define the TTL (TT-Lang) MLIR dialect for representing TT-lang DSL programs with explicit transformation passes.
+This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermediate representation designed to directly capture the semantics of the TT-lang DSL. The TTL dialect enables multi-stage compilation with explicit transformation passes for synchronization inference, resource allocation, and hardware-specific optimizations before lowering to executable kernels.
+
+---
+
+## Table of Contents
+
+1. [Motivation & Goals](#1-motivation--goals)
+2. [Architecture Overview](#2-architecture-overview)
+3. [Type System](#3-type-system)
+4. [Operations](#4-operations)
+   - 4.1 [Structural Operations](#41-structural-operations)
+   - 4.2 [Resource Creation](#42-resource-creation)
+   - 4.3 [Circular Buffer Operations](#43-circular-buffer-operations)
+   - 4.4 [Compute Operations](#44-compute-operations)
+   - 4.5 [Data Movement Operations](#45-data-movement-operations)
+   - 4.6 [Synchronization Operations](#46-synchronization-operations)
+   - 4.7 [Utility Operations](#47-utility-operations)
+5. [Compilation Pipeline](#5-compilation-pipeline)
+6. [Type Conversion & Lowering Examples](#6-type-conversion--lowering-examples)
+7. [Python Integration](#7-python-integration)
+8. [Implementation Roadmap](#8-implementation-roadmap)
+9. [Future Evolution](#9-future-evolution)
+10. [Risk Mitigation](#10-risk-mitigation)
+11. [Success Criteria](#11-success-criteria)
+12. [Appendix: Design Rationale](#12-appendix-design-rationale)
+13. [References](#13-references)
 
 ---
 
@@ -48,14 +73,20 @@ The TTL dialect provides a tensor-level intermediate representation for TT-lang 
 
 ### Current Flow
 ```
-Python Kernel → Python AST → D2M Generic Ops → TTIR Pipeline → TTKernel → EmitC → C++
+Python Kernel → Python AST → D2M Generic Ops → ttir-to-ttmetal Pipeline → TTMetal Ops → Flatbuffer Binary
+                                                     ↓
+                                          (Inside pipeline: fusion,
+                                           bufferization, allocation,
+                                           DST register assignment,
+                                           DMA lowering in D2M passes)
 ```
 
 ### TTL Flow
 ```
-Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → EmitC → C++
+Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → TTMetal Ops → Flatbuffer Binary
                                     ↓
-                         Synchronization, Allocation,
+                         Validation, Synchronization,
+                         Bufferization, Allocation,
                          Register Assignment, Optimization
 ```
 
@@ -508,7 +539,7 @@ Python Kernel (@compute/@datamovement decorators)
   ↓
 Python AST Parsing (TTLDialectCompiler)
   ↓
-ttl.kernel (with thread regions)
+ttl.kernel (with thread regions, tensor operands)
   ↓
 [Phase 1: Validation & Canonicalization]
   ├─ TTLValidatePass - Verify CB/pipe/semaphore contracts
@@ -517,41 +548,63 @@ ttl.kernel (with thread regions)
   ↓
 [Phase 2: Analysis & Inference]
   ├─ TTLInsertSynchronization - Analyze inter-thread dataflow, insert barriers
-  ├─ TTLAllocateCircularBuffers - Assign L1 addresses (liveness-based)
-  └─ TTLInferDSTRequirements - Mark values needing DST registers
+  ├─ TTLInferDSTRequirements - Mark values needing DST registers
+  └─ TTLBufferizePass - Tensor → memref conversion (One-Shot Bufferization)
   ↓
-[Phase 3: Thread Expansion]
+ttl.kernel (with thread regions, memref operands)
+  ↓
+[Phase 3: Memory Planning]
+  └─ TTLAllocateCircularBuffers - Assign L1 addresses (liveness-based)
+  ↓
+[Phase 4: Thread Expansion]
   └─ TTLExpandThreads - Convert ttl.kernel regions → separate func.func
   ↓
-func.func @compute_thread_0
-func.func @dm_thread_0
+func.func @compute_thread_0 (memref args)
+func.func @dm_thread_0 (memref args)
   ↓
-[Phase 4: Resource Assignment]
+[Phase 5: Resource Assignment]
   └─ TTLAssignDSTRegisters - Allocate 16 DST registers for compute threads
   ↓
-[Phase 5: Lowering to TTKernel]
+[Phase 6: Lowering to TTKernel]
   ├─ TTLLowerCompute - ttl.block_add → scf.for + ttkernel.add_tiles
   ├─ TTLLowerDataMovement - ttl.copy → ttkernel.noc_async_*
   └─ TTLLowerSynchronization - ttl.cb_* → ttkernel.cb_*
   ↓
 ttkernel.* operations
   ↓
-[Existing Pipeline]
-  └─ ConvertTTKernelToEmitC
+[Existing: TTKernel → TTMetal Pipeline]
+  ├─ ConvertTTKernelToEmitC (generates C++ kernel source)
+  └─ TTMetal dialect operations
   ↓
-EmitC → C++ Code
+[Flatbuffer Serialization]
+  └─ ttmetal_to_flatbuffer_bin
+  ↓
+Flatbuffer Binary (executable on hardware)
 ```
 
 ### 5.2 Key Pass Descriptions
 
 **TTLInsertSynchronization**
-- **Input**: `ttl.kernel` with thread regions
+- **Input**: `ttl.kernel` with thread regions (tensor operands)
 - **Analysis**: Build producer-consumer DAG for blocks, semaphores, pipes
 - **Transform**: Insert `ttl.dma_barrier` where needed, validate CB usage patterns
 - **Output**: `ttl.kernel` with explicit synchronization
 
+**TTLInferDSTRequirements**
+- **Input**: `ttl.kernel` with compute operations
+- **Analysis**: Track which SSA values participate in compute chains
+- **Transform**: Insert `ttl.require_dst` markers for liveness analysis
+- **Output**: `ttl.kernel` with DST hints
+
+**TTLBufferizePass**
+- **Input**: `ttl.kernel` with tensor operands
+- **Analysis**: Determine bufferization strategy for each tensor
+- **Transform**: Convert tensor types to memref types (One-Shot Bufferization)
+- **Output**: `ttl.kernel` with memref operands
+- **Note**: Critical transition - tensor semantics → buffer semantics
+
 **TTLAllocateCircularBuffers**
-- **Input**: `ttl.kernel` with CBs
+- **Input**: `ttl.kernel` with memref CBs
 - **Analysis**: Compute liveness ranges for each CB
 - **Transform**: Assign L1 addresses using first-fit allocation
 - **Output**: CBs annotated with address attributes
@@ -574,7 +627,231 @@ EmitC → C++ Code
   - CB → Pipe → CB: `ttkernel.noc_async_write_multicast*` or unicast
 - **Output**: TTKernel NOC operations with computed addresses
 
-### 5.3 Control Flow Integration
+### 5.3 Granularity and Block Shapes
+
+**Concept**: Granularity defines how many tiles are grouped into blocks for transfer and processing.
+
+**From TT-lang.md example:**
+```python
+g = 2  # granularity - process 2 tiles at a time
+
+for rt in range(row_tiles // g):
+    # Transfer g tiles as one block
+    a_xf = ttl.copy(
+        a[(rt * g):((rt + 1) * g), ct:(ct + 1)],  # g rows, 1 col
+        a_blk)
+```
+
+**From kostas/spec simulator:**
+```python
+@ttl.kernel(granularity=2)  # Kernel-level parameter
+def eltwise_add(a_in, b_in, out):
+    # Use granularity to create CBs
+    a_in_cb = ttl.make_circular_buffer_like(
+        a_in, shape=(granularity, 1), buffer_factor=2
+    )
+
+    @ttl.datamovement()
+    def dm():
+        for rt_block in range(row_tiles // granularity):
+            # Transfer granularity tiles as one block
+            row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
+            a_block = a_in_cb.reserve()
+            tx = ttl.copy(a_accessor[row_slice, :], a_block)
+```
+
+**Mapping to TTL:**
+
+Granularity is encoded in CB `shape` parameter:
+
+```python
+# Python DSL (kostas/spec)
+@ttl.kernel(granularity=2)
+def kernel(...):
+    cb = ttl.make_circular_buffer_like(tensor, shape=(granularity, 1), buffer_factor=2)
+```
+
+```mlir
+// TTL IR
+%cb = ttl.create_cb shape=[2, 1], tile_type=!ttcore.tile<32x32,f32>, buffer_factor=2
+      : !ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>
+```
+
+**Semantic meaning:**
+- `shape=[2, 1]` means each block contains 2×1 = 2 tiles
+- CB operations (`wait`, `reserve`) always work on `shape[0] * shape[1]` tiles
+- All CB operations from same CB use same tile count (determined by shape)
+- Loop iterations reduced by granularity factor (`row_tiles // granularity`)
+
+**Design implications:**
+
+1. **CB shape determines operation granularity**:
+   - `shape=[2, 1]` → process 2 tiles at a time
+   - `shape=[1, 1]` → process 1 tile at a time (fine-grained)
+   - `shape=[4, 2]` → process 8 tiles at a time (coarse-grained)
+
+2. **No separate granularity parameter in TTL types**:
+   - Granularity is implicit in CB shape
+   - More explicit and type-safe
+   - Aligns with TTKernel's requirement for exact tile counts
+
+3. **Python API**:
+   ```python
+   # Option A: Explicit shape (current)
+   cb = CircularBuffer(shape=(2, 1), buffer_factor=2)
+
+   # Option B: Kernel-level granularity parameter (future)
+   @ttl.kernel(granularity=2)  # Sets default for all CBs
+   def kernel(...):
+       cb = CircularBuffer(buffer_factor=2)  # Uses kernel granularity
+   ```
+
+4. **Validation**:
+   - Compiler verifies all CBs in a producer-consumer chain have same shape
+   - DMA transfers match CB block dimensions
+   - Loop bounds are multiples of granularity
+
+### 5.4 Source Location Tracking
+
+**Goal**: Maintain Python source locations throughout compilation for debugging and IDE integration.
+
+**Requirements:**
+1. **Error diagnostics** point to original Python source
+2. **IDE integration** enables jump-to-definition from MLIR to Python
+3. **Debugging** maps compiled code back to source lines
+4. **Profiling** attributes performance to Python code locations
+
+**Implementation Strategy:**
+
+**Phase 1: Python AST → TTL**
+
+Capture source location during AST parsing:
+
+```python
+# TTLDialectCompiler in python/ttlang/_src/ttl_ast.py
+class TTLDialectCompiler(TTCompilerBase):
+    def visit_Call(self, node):
+        # Get Python source location from AST node
+        filename = self.source_file
+        line = node.lineno
+        col = node.col_offset
+
+        # Create MLIR location
+        loc = Location.file(filename, line, col, context=self.ctx)
+
+        # Attach to generated ops
+        with loc:
+            result = self.emit_ttl_operation(node)
+        return result
+```
+
+**Phase 2: Location Propagation Through Passes**
+
+TTL passes must preserve and update locations:
+
+```cpp
+// Example from TTLLowerCompute.cpp
+Value lowerBlockAdd(ttl::BlockAddOp op) {
+    OpBuilder builder(op);
+    Location loc = op.getLoc();  // Original Python location
+
+    // Create loop with fused location showing transformation
+    auto fusedLoc = builder.getFusedLoc({
+        loc,  // Original Python source
+        builder.getUnknownLoc()  // Or NameLoc for "TTLLowerCompute"
+    });
+
+    auto loop = builder.create<scf::ForOp>(fusedLoc, ...);
+    // Child operations inherit or refine location
+    builder.create<ttkernel::AddTilesOp>(loc, ...);
+}
+```
+
+**Phase 3: Location Attributes on Operations**
+
+Add optional location metadata to key TTL operations:
+
+```tablegen
+def TTL_KernelOp : TTL_Op<"kernel"> {
+  let arguments = (ins
+    // ... existing args
+    OptionalAttr<StrAttr>:$python_source_file,
+    OptionalAttr<I64Attr>:$python_source_line
+  );
+}
+```
+
+**Error Diagnostic Example:**
+
+```
+error: ttl.cb_wait operation timeout - consumer waiting indefinitely
+  at eltwise_add.py:42:16
+      a_block = a_in_cb.wait()
+                       ^~~~~
+  note: corresponding producer at eltwise_add.py:65:20
+      a_in_cb.push()
+             ^~~~~
+  note: lowered from ttl.cb_wait at eltwise_add.mlir:128
+```
+
+**Implementation Details:**
+
+1. **TTLDialectCompiler tracks source context**:
+   ```python
+   self.source_file = inspect.getsourcefile(f)
+   self.source_lines = inspect.getsourcelines(f)
+   ```
+
+2. **MLIR FileLineColLoc for all operations**:
+   ```python
+   loc = Location.file(filename, line, col, context=self.ctx)
+   with loc:
+       op = ttl.create_cb(...)  # Op gets location
+   ```
+
+3. **Pass preservation**:
+   - Use `op.getLoc()` when creating replacement ops
+   - Create `FusedLoc` for multi-step transformations
+   - Add `NameLoc` for compiler-generated code
+
+4. **Verification and error emission**:
+   ```cpp
+   if (failed(validateCBUsage(op))) {
+       return op.emitError("circular buffer protocol violation")
+           << "wait() called without matching push()";
+       // Automatically includes file:line:col from op.getLoc()
+   }
+   ```
+
+**Benefits:**
+- Python error messages show source location
+- IDE can jump from error to source
+- Debugger can map back to Python (future)
+- Profiler shows Python-level hotspots
+
+**Testing:**
+```python
+# Verify location tracking
+def test_location_tracking():
+    @ttl.kernel(grid=(1,1))
+    def bad_kernel():
+        cb = CircularBuffer(shape=(1,1))
+        cb.pop()  # Error: pop without wait
+
+    try:
+        bad_kernel(a, b)
+    except Exception as e:
+        assert "bad_kernel.py:5" in str(e)  # Points to cb.pop() line
+```
+
+**Files to Modify:**
+- `python/ttlang/_src/ttl_ast.py` - Capture locations in compiler
+- `lib/Dialect/TTL/IR/*.cpp` - Preserve locations in passes
+- `include/ttlang/Dialect/TTL/IR/TTLOps.td` - Optional source attrs
+
+**See**: MLIR [Location documentation](https://mlir.llvm.org/docs/Diagnostics/#source-locations)
+
+### 5.5 Control Flow Integration
 
 TTL reuses SCF dialect for control flow instead of custom operations:
 
@@ -1104,12 +1381,191 @@ func.func @distributed_matmul(
 
 **See**: `docs/DistributedTensorType.md` for complete proposal
 
-### 9.5 Optimization Passes
+### 9.5 Transform Dialect Integration for Scheduling
 
-- **TTLPipelineOptimization**: Overlap compute and DMA
-- **TTLCBBufferOptimization**: Minimize buffer factors
-- **TTLDMACoalescing**: Merge adjacent transfers
-- **TTLLoopInvariantCodeMotion**: Hoist ops out of loops
+**Goal**: Use MLIR's Transform dialect for composable scheduling and optimization instead of monolithic optimization passes.
+
+**Motivation**: Transform dialect provides:
+- **Composability**: Build complex schedules from simple transform operations
+- **Precise targeting**: Apply transformations to specific operations via handles
+- **Debugging**: Inspect intermediate IR after each transformation
+- **Reusability**: Define scheduling strategies as transform sequences
+- **DSL alignment**: Map TT-lang scheduling concepts directly to transform ops
+
+**Scope**: Use Transform dialect for scheduling/optimization; keep traditional passes for lowering (TTL → TTKernel).
+
+#### Custom Transform Operations for TTL
+
+**DST Register Scheduling:**
+```tablegen
+def TTLAllocateDSTRegistersOp : TransformDialectOp<"ttl.allocate_dst_registers"> {
+  let summary = "Allocate DST registers for compute operations";
+  let description = [{
+    Schedules TTL compute operations to use the 16 available DST register slots.
+    Performs liveness analysis and assigns register indices to minimize spills.
+
+    Returns handle to modified compute operations with register assignments.
+  }];
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+}
+```
+
+**Compute/DMA Overlap Scheduling:**
+```tablegen
+def TTLSchedulePipelineOp : TransformDialectOp<"ttl.schedule_pipeline"> {
+  let summary = "Schedule compute/DMA overlap for maximum throughput";
+  let description = [{
+    Reorders DMA and compute operations to maximize pipeline overlap.
+    Inserts barriers only where necessary for correctness.
+
+    Strategy:
+    - Issue DMAs early (prefetch next tiles)
+    - Overlap compute with pending DMAs
+    - Minimize bubble time
+  }];
+  let arguments = (ins
+    TransformHandleTypeInterface:$kernel,
+    OptionalAttr<StrAttr>:$strategy  // "aggressive", "conservative", "auto"
+  );
+  let results = (outs TransformHandleTypeInterface:$scheduled_kernel);
+}
+```
+
+**CB Buffer Factor Optimization:**
+```tablegen
+def TTLOptimizeBufferFactorOp : TransformDialectOp<"ttl.optimize_buffer_factor"> {
+  let summary = "Determine optimal circular buffer sizes";
+  let description = [{
+    Analyzes CB usage patterns and adjusts buffer_factor for each CB:
+    - Single buffering (factor=1) when no overlap possible
+    - Double buffering (factor=2) for basic pipelining
+    - Triple+ buffering (factor=3+) for deep pipelines
+
+    Considers L1 capacity constraints.
+  }];
+  let arguments = (ins TransformHandleTypeInterface:$cbs);
+  let results = (outs TransformHandleTypeInterface:$optimized_cbs);
+}
+```
+
+**DMA Coalescing:**
+```tablegen
+def TTLCoalesceDMAOp : TransformDialectOp<"ttl.coalesce_dma"> {
+  let summary = "Merge adjacent DMA operations";
+  let description = [{
+    Combines multiple small DMA operations into larger transfers when:
+    - Source/destination addresses are contiguous
+    - No intervening operations create dependencies
+    - Total size fits within NOC packet limits
+  }];
+  let arguments = (ins TransformHandleTypeInterface:$dma_ops);
+  let results = (outs TransformHandleTypeInterface:$coalesced);
+}
+```
+
+#### Example Transform Sequence
+
+```mlir
+// TTL IR with transform sequence
+module {
+  // Target TTL kernel
+  func.func @matmul(...) {
+    ttl.kernel {
+      ttl.compute_thread { ... }
+      ttl.datamovement_thread { ... }
+    }
+  }
+
+  // Transform sequence (applied by interpreter or pass)
+  transform.sequence failures(propagate) {
+  ^bb0(%root: !transform.any_op):
+    // 1. Get handle to kernel
+    %kernel = transform.structured.match ops{["ttl.kernel"]} in %root
+
+    // 2. Optimize CB buffer factors
+    %cbs = transform.structured.match ops{["ttl.create_cb"]} in %kernel
+    %opt_cbs = transform.ttl.optimize_buffer_factor %cbs
+
+    // 3. Schedule pipeline overlap
+    %sched_kernel = transform.ttl.schedule_pipeline %kernel {strategy = "aggressive"}
+
+    // 4. Allocate DST registers
+    %compute_ops = transform.structured.match ops{["ttl.block_add", "ttl.block_matmul"]}
+                   in %sched_kernel
+    %with_dst = transform.ttl.allocate_dst_registers %compute_ops
+
+    // 5. Coalesce DMAs
+    %dma_ops = transform.structured.match ops{["ttl.copy"]} in %sched_kernel
+    %coalesced = transform.ttl.coalesce_dma %dma_ops
+
+    // 6. Apply standard lowering (traditional pass)
+    transform.apply_registered_pass "ttl-lower-to-ttkernel" to %sched_kernel
+  }
+}
+```
+
+#### Integration Architecture
+
+**Phase 1 (MVP)**: Traditional passes only
+- Implement basic lowering without Transform dialect
+- Get end-to-end working quickly
+- Establish baseline performance
+
+**Phase 2**: Add Transform operations for scheduling
+- Define custom transform ops (`transform.ttl.*`)
+- Implement interpreters for each transform
+- Keep traditional lowering passes unchanged
+
+**Phase 3**: Composable scheduling strategies
+- Define scheduling "recipes" as transform sequences
+- Enable user-controlled optimization (like Halide schedules)
+- Potential: Python API for scheduling (`kernel.schedule().tile(...).fuse(...)`)
+
+**Benefits for TTL:**
+1. **Separation of concerns**: Lowering logic separate from scheduling logic
+2. **Experimentation**: Try different schedules without modifying passes
+3. **Debugging**: Inspect IR after each transform step
+4. **Autotuning**: Search space of scheduling strategies by varying transform sequences
+5. **User control**: Advanced users can write custom transform sequences
+
+#### Files to Create (Phase 2)
+
+```
+include/ttlang/Dialect/TTL/Transform/
+  TTLTransformOps.td           // Transform operation definitions
+  TTLTransformOps.h
+
+lib/Dialect/TTL/Transform/
+  TTLTransformOps.cpp          // Transform interpreters
+  CMakeLists.txt
+```
+
+**Transform Operations to Implement:**
+- `transform.ttl.allocate_dst_registers`
+- `transform.ttl.schedule_pipeline`
+- `transform.ttl.optimize_buffer_factor`
+- `transform.ttl.coalesce_dma`
+- `transform.ttl.reorder_for_locality`
+- `transform.ttl.insert_prefetch`
+
+#### Comparison: Traditional Pass vs Transform
+
+| Aspect | Traditional Pass | Transform Dialect |
+|--------|------------------|-------------------|
+| **Flexibility** | Fixed algorithm | Composable sequences |
+| **Targeting** | Pattern matching | Explicit handles |
+| **Debugging** | Black box | Step-by-step IR |
+| **Reusability** | Monolithic | Mix-and-match transforms |
+| **MVP Complexity** | Lower | Higher (infrastructure needed) |
+| **Long-term Composability** | Limited | Excellent |
+
+**Recommendation**:
+- **MVP**: Traditional passes (TTLAssignDSTRegisters, etc.)
+- **Phase 2**: Add transform.ttl.* operations alongside traditional passes
+- **Phase 3**: Migrate optimization logic to transform sequences, keep lowering as passes
+
+This hybrid approach gets TTL working quickly while building toward the more composable Transform dialect model for scheduling.
 
 ---
 
