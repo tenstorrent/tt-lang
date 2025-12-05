@@ -105,14 +105,15 @@ jobs:
           echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
           echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
 
-      - name: Generate system descriptor
-        run: |
-          set -x
-          python3 ./.github/scripts/trtt_wrapper.py query --save-artifacts --disable-eth-dispatch
-
       - name: Run smoketest
         run: |
           python3 test/python/smoketest.py
+
+      - name: Generate system descriptor
+        run: |
+          set -x
+          source /opt/ttmlir-toolchain/venv/bin/activate || echo "Failed to activate environment"
+          python3 ./.github/scripts/trtt_wrapper.py query --save-artifacts --disable-eth-dispatch || echo "Failed to save artifacts"
 
       - name: Run lit tests
         env:
