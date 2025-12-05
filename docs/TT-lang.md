@@ -4,50 +4,50 @@
 
 TT-Lang is a Python-based DSL that enables authoring of programs for TT-hardware at the abstraction level similar to SoTA “tile-level” DSLs for GPUs with. First-class aspects on TT-Lang include, in the order of significance:
 
-1. Ability to express optimizations that achieve **performance within close range (95%)** of hand written TT-Metalium programs;  
-2. Robust and safe abstractions capable of representing a simplified model of hardware that **eliminates whole classes of mistakes** that are possible when writing TT-Metalium programs; Specifically:  
-   1. Reduce duplication of information that is typical in mult-threaded separation of kernels;  
-   2. Infer CBs operations to eliminate errors in asynchronous code that would be causing hangs or data races (All in single threaded, pop/push guarded by “with” scope in multithreaded);  
-   3. Infer xxx\_init/xxx\_tile(s) etc calls based on functional compute expression;  
-   4. Use compile time memory allocation (DRAM, L1 and DST register) to eliminate OOMs and clobberring at runtime;  
-   5. In addition to (d) use relative memory sizing instead of explicit memory sizing to eliminate OOMs at runtime. With such relative memory sizing the actual size can be maximized at compile time by the allocator or autotuned (see below) at runtime;  
-3. Allow TT-Lang programs to be **portable across multiple generations** of TT-hardware. Enable generation-specific details to be expressed as autotunable hyper-parameters;  
-4. SoTA **ergonomics**. Specifically:   
-   1. Functional simulator;  
-   2. VSCode (or similar) integration via language server;  
-   3. As-you-type compilation errors;  
-   4. As-you-type sanitization (based on functional simulator) errors;  
-   5. VSCode integrated line-by-line profiler (ala NSight);  
-5. Ability to be authored by **Generative AI** from scratch or in translation from “tile-level” DSLs for GPUs. Ability for the compiler, the sanitizer and the simulator to provide ergonomic errors, warnings, correctness and performance feedback for Generative AI to be able to iterate in an agentic workflow.  
-6. Ability to **autotune** within a space of user-defined hyper-parameters;  
-7. Ability to **serve as a bootstrap (EmitMetal)** that generates C++ TT-Metalium program for further optimization;  
-8. Ability to **augment TT-NN programs** with custom TT-Lang kernels;  
-9. Being **Python-based** as to support a limited subset of Python to express programs as well as being able to integrate into the Python environment. This makes TT-Lang more familiar and convenient for the target audience;  
+1. Ability to express optimizations that achieve **performance within close range (95%)** of hand written TT-Metalium programs;
+2. Robust and safe abstractions capable of representing a simplified model of hardware that **eliminates whole classes of mistakes** that are possible when writing TT-Metalium programs; Specifically:
+   1. Reduce duplication of information that is typical in mult-threaded separation of kernels;
+   2. Infer CBs operations to eliminate errors in asynchronous code that would be causing hangs or data races (All in single threaded, pop/push guarded by “with” scope in multithreaded);
+   3. Infer xxx\_init/xxx\_tile(s) etc calls based on functional compute expression;
+   4. Use compile time memory allocation (DRAM, L1 and DST register) to eliminate OOMs and clobberring at runtime;
+   5. In addition to (d) use relative memory sizing instead of explicit memory sizing to eliminate OOMs at runtime. With such relative memory sizing the actual size can be maximized at compile time by the allocator or autotuned (see below) at runtime;
+3. Allow TT-Lang programs to be **portable across multiple generations** of TT-hardware. Enable generation-specific details to be expressed as autotunable hyper-parameters;
+4. SoTA **ergonomics**. Specifically:
+   1. Functional simulator;
+   2. VSCode (or similar) integration via language server;
+   3. As-you-type compilation errors;
+   4. As-you-type sanitization (based on functional simulator) errors;
+   5. VSCode integrated line-by-line profiler (ala NSight);
+5. Ability to be authored by **Generative AI** from scratch or in translation from “tile-level” DSLs for GPUs. Ability for the compiler, the sanitizer and the simulator to provide ergonomic errors, warnings, correctness and performance feedback for Generative AI to be able to iterate in an agentic workflow.
+6. Ability to **autotune** within a space of user-defined hyper-parameters;
+7. Ability to **serve as a bootstrap (EmitMetal)** that generates C++ TT-Metalium program for further optimization;
+8. Ability to **augment TT-NN programs** with custom TT-Lang kernels;
+9. Being **Python-based** as to support a limited subset of Python to express programs as well as being able to integrate into the Python environment. This makes TT-Lang more familiar and convenient for the target audience;
 10. Ability to develop TT-Lang programs **out of tree** and without rebuilding TT-NN from source;
 
 # Motivation
 
 There is a number of outcomes we are looking for that motivate TT-Lang:
 
-* Adoption by internal Models Team as a tool that materially speeds up supporting new models in inference;  
-* Adoption by internal Training Team as a tool that enables fast iteration and experimentation without sacrificing performance;  
+* Adoption by internal Models Team as a tool that materially speeds up supporting new models in inference;
+* Adoption by internal Training Team as a tool that enables fast iteration and experimentation without sacrificing performance;
 * Adoption by external users on inference and training tracks as an authoring tool that leverages their experiences with “tile-level” DSLs for GPUs and provides robust abstraction over multiple generations of TT-hardware.
 
 # Open questions
 
-1) The programming model can be either single-threaded with a program expressed as a synchronous dataflow using load/store and math operations or it can be multi-threaded and asynchronous with separate data movement and compute kernels using abstractions mapped to CBs and NOC transfers. Can both be supported? If so, which one do we start with?  
-   1) In the initial milestone we plan for multi-threaded model will allow the author to fully control the pipeline and order of operations as well as require explicit synchronization;  
-   2) The single-threaded model will allow the compiler to “design” the pipeline, reorder operations when necessary and infer necessary synchronization. We will explore the single-threaded model in the context of evaluation of applicability of SoTA “tile-level” DSLs.  
-2) Explicit loop nests versus metadata declarations. For-temporal? For-spatial?  
-   1) We want to provide a choice of expressing for-temporal loops as either explicit for statements in Python or implicitly as specified in metadata declarations.  
-   2) For-spacial looks would only be specified implicitly by grid metadata.  
-3) Python code for DSL can be either analyzed at AST level or traced. How much empirical runtime code is allowed/needed? What do we need to write a performant FA?  
-   1) We will take the approach of taking AST representation from the kernel's Python code. This will limit what can be used in kernel’s code to a subset of Python that is representable in Arith, Scf and TT-Kernel dialects. We will allow utility functions with the same limitation to be called from kernel’s code.  
-4) What is the user experience? Is TT-Lang embedded in TT-NN? In PyTorch? Standalone?  
-   1) In the initial milestone we plan for a standalone version of the environment where only TT-Lang kernels can be expressed.  
+1) The programming model can be either single-threaded with a program expressed as a synchronous dataflow using load/store and math operations or it can be multi-threaded and asynchronous with separate data movement and compute kernels using abstractions mapped to CBs and NOC transfers. Can both be supported? If so, which one do we start with?
+   1) In the initial milestone we plan for multi-threaded model will allow the author to fully control the pipeline and order of operations as well as require explicit synchronization;
+   2) The single-threaded model will allow the compiler to “design” the pipeline, reorder operations when necessary and infer necessary synchronization. We will explore the single-threaded model in the context of evaluation of applicability of SoTA “tile-level” DSLs.
+2) Explicit loop nests versus metadata declarations. For-temporal? For-spatial?
+   1) We want to provide a choice of expressing for-temporal loops as either explicit for statements in Python or implicitly as specified in metadata declarations.
+   2) For-spacial looks would only be specified implicitly by grid metadata.
+3) Python code for DSL can be either analyzed at AST level or traced. How much empirical runtime code is allowed/needed? What do we need to write a performant FA?
+   1) We will take the approach of taking AST representation from the kernel's Python code. This will limit what can be used in kernel’s code to a subset of Python that is representable in Arith, Scf and TT-Kernel dialects. We will allow utility functions with the same limitation to be called from kernel’s code.
+4) What is the user experience? Is TT-Lang embedded in TT-NN? In PyTorch? Standalone?
+   1) In the initial milestone we plan for a standalone version of the environment where only TT-Lang kernels can be expressed.
    2) For the immediately following milestone we will add TT-NN integration to allow mixing TT-NN code with TT-Lang. TT-Lang will be installed as a separate wheel compatible with TT-NN.
 
-# 
+#
 
 # Language Specification
 
@@ -113,7 +113,7 @@ There are two acquisition functions on a circular buffer object: wait and reserv
 ## Example
 
 ```py
-    x_cb = ttl.make_circular_buffer_like(x, 
+    x_cb = ttl.make_circular_buffer_like(x,
         shape = (2, 2),
         buffer_factor = 2)
 
@@ -134,7 +134,7 @@ There are two acquisition functions on a circular buffer object: wait and reserv
         x_cb.pop() # explicit
 ```
 
-## 
+##
 
 | Function | Description |
 | :---- | :---- |
@@ -155,7 +155,7 @@ A block represents memory acquired from a circular buffer. Block size is determi
         # acquire a_blk and b_blk ...
 
         # source is a tensor slice, destination is a block
-        a_xf = ttl.copy(a[0:1], a_blk) 
+        a_xf = ttl.copy(a[0:1], a_blk)
         b_xf = ttl.copy(b[0:1], b_blk)
         a_xf.wait()
         b_xf.wait()
@@ -178,7 +178,7 @@ A block represents memory acquired from a circular buffer. Block size is determi
         y_xf.wait()
 ```
 
-## 
+##
 
 | Function | Description |
 | :---- | :---- |
@@ -195,10 +195,10 @@ The ttl.core function returns coordinates of the current Tensix core. The functi
 x = ttl.core(dims = 1)
 
 # for (8, 8, 8) multi-chip grid gets x = [0, 8), y = [0, 64)
-x, y = ttl.core() 
+x, y = ttl.core()
 
 # for (8, 8) single-chip gets x = [0, 8), y = [0, 8), z = 0
-x, y, z = ttl.core(dims = 3) 
+x, y, z = ttl.core(dims = 3)
 ```
 
 ## Pipe
@@ -372,7 +372,7 @@ A tensor slice is a view into a TTNN tensor defined in terms of a range for each
 
 ## Semaphore
 
-A semaphore is a communication primitive for synchronizing data transfers between data movement threads on different Tensix cores. Each semaphore has an associated 32-bit unsigned integer value for each Tensix core. This value can be changed (set or incremented) by a data movement thread on the local or a remote core. When changing semaphore value remotely a single core coordinate for unicast change or a core range for multicast change is specified. Only setting the semaphore value is supported as multicast change. A data movement can wait on semaphore until its value satisfies a condition. It is possible to specify either a condition with exact value or a condition with minimum value. Only local data movement threads can wait on a semaphore. 
+A semaphore is a communication primitive for synchronizing data transfers between data movement threads on different Tensix cores. Each semaphore has an associated 32-bit unsigned integer value for each Tensix core. This value can be changed (set or incremented) by a data movement thread on the local or a remote core. When changing semaphore value remotely a single core coordinate for unicast change or a core range for multicast change is specified. Only setting the semaphore value is supported as multicast change. A data movement can wait on semaphore until its value satisfies a condition. It is possible to specify either a condition with exact value or a condition with minimum value. Only local data movement threads can wait on a semaphore.
 
 ttl.Semaphore class is constructed with its initial value that defaults to zero. A ttl.Semaphore instance can be constructed in kernel function scope. A ttl.Semaphore instance provides wait\_for, wait\_for\_min and set functions for managing local semaphore value. To change remote semaphore value an instance of ttl.UnicastRemoteSemaphore or ttl.MulticastRemoteSemaphore is obtained by calling get\_remote and get\_remote\_multicast functions correspondingly. The ttl.UnicastRemoteSemaphore supports inc and set while ttl.MulticastRemoteSemaphore supports only set. Functions that change the value or wait on condition can be used only in the scope of a data movement thread function. Functions that obtain remote semaphores can be used in both kernel and thread function scopes.
 
@@ -421,4 +421,3 @@ ttl.Semaphore class is constructed with its initial value that defaults to zero.
 | ttl.UnicastRemoteSemaphore.set | Set remote unicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 | ttl.UnicastRemoteSemaphore.inc | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 | ttl.MulticastRemoteSemaphore.set | Set remote multicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
-
