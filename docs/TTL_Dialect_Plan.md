@@ -627,7 +627,7 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     @ttl.datamovement()
     def dm_reader():
-        shard_id = ttl.core_linear()  # 0-3 for 2x2 grid
+        shard_id = ttl.core(dim=1) # 0-3 for 2x2 grid
 
         a_blk = a_cb.reserve()
         tx = ttl.copy(a[shard_id], a_blk)  # Read shard using TensorAccessor
@@ -654,7 +654,7 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     @ttl.datamovement()
     def dm_writer():
-        shard_id = ttl.core_linear()
+        shard_id = ttl.core_dim(1)
 
         o_blk = out_cb.wait()
         tx = ttl.copy(o_blk, out[shard_id])  # Write shard
@@ -696,7 +696,7 @@ ttl.kernel @sharded_elementwise_add(
   }
 
   ttl.datamovement_thread {
-    %shard_id = ttl.core_linear() : index
+    %shard_id = ttl.core_dim(1) : index
 
     %a_blk = ttl.cb_reserve %a_cb : !ttl.block<...>
     %tx_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.mem_tx
@@ -723,7 +723,7 @@ ttl.kernel @sharded_elementwise_add(
   }
 
   ttl.datamovement_thread {
-    %shard_id = ttl.core_linear() : index
+    %shard_id = ttl.core_dim(1) : index
 
     %o_blk = ttl.cb_wait %out_cb : !ttl.block<...>
     %tx_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.mem_tx
@@ -1924,7 +1924,7 @@ def TTL_CoreLinearOp : TTL_Op<"core_linear", [Pure]> {
       (0,0)→0, (0,1)→1, (1,0)→2, (1,1)→3
 
     Useful for distributing data across cores:
-      linear_idx = ttl.core_linear()
+      linear_idx = ttl.core_dim(1)
       my_slice = tensor_accessor[linear_idx, :]
 
     Lowers to:
