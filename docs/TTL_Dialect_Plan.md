@@ -72,13 +72,13 @@ hardware-specific optimizations before lowering to executable kernels.
 The TTL dialect provides a tensor-level intermediate representation for TT-lang
 programs (defined in [TT-lang.md](TT-lang.md)), enabling multi-stage lowering
 with explicit compiler transformations before generating C++ kernels. Generated
-kernels can execute on either the TTNN runtime (via dylib workflow) or the
-TT-Metal runtime (via flatbuffer workflow). TTL is designed specifically for the
-TT-lang DSL surface language, while D2M serves as a lower-level dialect for data
-movement and compute operations.
+kernels execute on TTNN runtime via the `ttnn.generic_op` API, which accepts
+C++ kernel source code and metadata through Python descriptors. TTL is designed
+specifically for the TT-lang DSL surface language, while D2M serves as a
+lower-level dialect for data movement and compute operations.
 
 **Key Design Decisions:**
-- **Threading Model**: Simple compute/datamovement threads (MVP)
+- **Threading Model**: Simple compute/data movement threads (MVP)
 - **Abstraction Level**: Tensor-level (blocks of tiles), not individual tiles
 - **Type System**: Memory spaces explicit in types; SSA values for all resources
   (CBs, pipes, semaphores)
@@ -113,10 +113,9 @@ For the TT-lang DSL specifically, a dedicated dialect provides:
 2. Enable analysis passes: Synchronization inference, memory planning, DST
    register allocation
 3. Support transformations: Liveness analysis, operation reordering, pipelining
-4. C++ kernel generation via TTKernel: Lower TTL to TTKernel dialect, then use
-   existing tt-mlir ConvertTTKernelToEmitC pass to generate C++ source. The C++
-   compiles to shared libraries (.so) that load into TTNN runtime (dylib
-   workflow). This is the MVP target.
+4. C++ kernel generation: Generate C++ kernel source strings with metadata that
+   are passed to `ttnn.generic_op` for runtime compilation and execution. This is
+   the MVP target.
 5. Future-proof: Extensible to new hardware generations via attributes
 
 ### Non-Goals (MVP)
@@ -143,53 +142,37 @@ Python Kernel → Python AST → D2M Generic Ops → ttir-to-ttmetal Pipeline �
 
 ### TTL Flow
 
-TTL supports two backend paths after TTKernel lowering:
-
-**Path 1: TTNN Dylib Workflow (Primary for MVP)**
 ```
-Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → ConvertTTKernelToEmitC → C++ Source
-                                    ↓                                                            ↓
-                         Validation, Synchronization,                                    C++ Compiler
-                         Bufferization, Allocation,                                            ↓
-                         Register Assignment, Optimization                              Shared Library (.so)
-                                                                                               ↓
-                                                                                        TTNN Runtime (dlopen)
+Python Kernel → Python AST → TTL Dialect → TTL Passes → Kernel Descriptor Generation → ttnn.generic_op → TTNN Runtime → Hardware
+                                    ↓                                ↓
+                         Validation, Synchronization,     C++ Kernel Source Strings
+                         Bufferization, Allocation,       + Compile-time Args
+                         Register Assignment,             + Runtime Args
+                         Optimization                     + CB Metadata
 ```
 
-**Path 2: TT-Metal Flatbuffer Workflow (Alternative)**
-```
-Python Kernel → Python AST → TTL Dialect → TTL Passes → TTKernel → ConvertTTKernelToTTMetal → Flatbuffer Binary
-                                    ↓                                                              ↓
-                         Validation, Synchronization,                                      TT-Metal Runtime
-                         Bufferization, Allocation,
-                         Register Assignment, Optimization
-```
-
-**Key Points:**
-- TTL → TTKernel lowering is shared between both paths
-- No TTMetal dialect operations in the C++ dylib path (corrected from earlier
-  diagram)
-- ConvertTTKernelToEmitC and ConvertTTKernelToTTMetal are existing tt-mlir
-  passes in TT-MLIR
-- The dylib workflow is the MVP target; flatbuffer workflow provides TT-Metal
-  compatibility
+Key components:
+- TTL passes perform all analysis and optimization at the IR level
+- Kernel descriptor generator produces C++ source strings and metadata from TTL IR
+- Python runtime constructs `ttnn.KernelDescriptor`, `ttnn.CBDescriptor`, and `ttnn.ProgramDescriptor` objects
+- `ttnn.generic_op` handles kernel compilation and device execution
+- No separate build step required - kernels provided as source strings to runtime
 
 **Relationship to D2M Dialect:**
 
 TTL and D2M serve different roles in the compilation pipeline:
 
-- **TTL**: New frontend dialect specifically designed for the TT-lang DSL. TTL
-  provides DSL-specific IR enabling TT-lang-aware transformations before
-  lowering to TTKernel. TTL bypasses D2M and goes directly to TTKernel dialect,
-  enabling TT-lang-specific optimizations and transformations.
+- TTL: New frontend dialect specifically designed for the TT-lang DSL. TTL
+  provides DSL-specific IR enabling TT-lang-aware transformations. TTL bypasses
+  D2M and generates C++ kernel descriptors directly for `ttnn.generic_op`.
 
-- **D2M**: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR →
+- D2M: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR →
   D2M → TTKernel). D2M serves as a general-purpose data movement and compute
   abstraction.
 
-- **Convergence**: Both TTL and D2M paths converge at the TTKernel dialect,
-  sharing the same backend lowering infrastructure (ConvertTTKernelToEmitC or
-  ConvertTTKernelToTTMetal passes from tt-mlir).
+- Convergence: Both TTL and D2M can target TTNN runtime, but through different
+  mechanisms. TTL uses `ttnn.generic_op` with kernel descriptors, while D2M uses
+  the traditional flatbuffer workflow.
 
 This separation allows TTL to focus on TT-lang DSL semantics while D2M continues
 to serve framework integration needs.
@@ -1680,7 +1663,8 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     Note: ttl.wait lowers to global DMA barrier, not per-transfer wait
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
     and `ttkernel.noc_async_write_barrier` operations which wait for all pending
-    DMA operations of the respective type, not individual transfers.
+    DMA operations of the respective type, not individual transfers. When a copy
+    involves a Pipe operand, ttl.wait instead lowers to a semaphore wait.
     See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
@@ -1767,6 +1751,8 @@ def TTL_WaitOp : TTL_Op<"wait"> {
   let description = [{
     Explicit wait on transfer handle. Lowers to `ttkernel.noc_async_read_barrier`
     or `ttkernel.noc_async_write_barrier` (global barriers, not per-transfer).
+    For pipe transfers, the wait resolves to a semaphore synchronization that
+    coordinates pipe producers and consumers instead of a DMA barrier.
     See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
@@ -3130,160 +3116,359 @@ optimization using MLIR built-in infrastructure
 
 ### Runtime Architecture
 
-TTL supports two runtime integration paths:
+TTL integrates with TTNN runtime using the `ttnn.generic_op` API, which allows execution of custom C++ kernels by providing kernel source code and metadata through Python descriptors. This approach enables:
 
-1. **TTNN dylib workflow** (primary): TTL-generated C++ compiles to shared
-   libraries (.so files) that load dynamically into the TTNN runtime. This is
-   the primary path for TTNN integration and prefered for iterative development.
+- Direct kernel specification: Provide C++ kernel source files as strings with compile-time and runtime arguments
+- Tensor metadata integration: Attach circular buffer configurations and memory layout information to operations
+- Python-first workflow: Initially implemented in Python for rapid development and testing
+- No separate compilation step: Kernels are provided as source strings and compiled by the TTNN runtime
 
-2. **TT-Metal flatbuffer workflow** (alternative): TTL can also generate
-   flatbuffer binaries for TT-Metal runtime, similar to the existing D2M
-   pipeline. This path is available for compatibility with TT-Metal workflows
-   and for generating production binaries.
+The TTL compilation pipeline generates the necessary kernel descriptors and metadata that are then passed to `ttnn.generic_op` for execution.
 
-The dylib workflow is described in detail below. The flatbuffer workflow follows
-the same compilation pipeline but uses flatbuffer generation instead of emitting
-C++ and relying shared library loading.
-
-### Execution Flow (Dylib Path)
+### Execution Flow
 
 ```
-TTKernel → EmitC → C++ Source → C++ Compiler → Shared Library (.so) → Dynamic Loading → TTNN Runtime → Hardware
+TTL Dialect → TTL Passes → Kernel Descriptor Generation → ttnn.generic_op → TTNN Runtime → Hardware
+                ↓
+     Validation, Synchronization,
+     Bufferization, Allocation,
+     Register Assignment, Optimization
 ```
 
-**Key components:**
-1. EmitC code generation (existing `ConvertTTKernelToEmitC` pass)
-2. TTNN standalone build system compiles C++ to .so
-3. Runtime uses `dlopen()` to load shared library
-4. Function dispatch via name mangling and `dlsym()`
-5. Execution on TTNN runtime with ttnn::Tensor types
+Key components:
+1. TTL passes perform memory planning, synchronization inference, and resource allocation
+2. Kernel descriptor generator produces C++ kernel strings with metadata
+3. Python API constructs `ttnn.KernelDescriptor`, `ttnn.CBDescriptor`, and `ttnn.ProgramDescriptor` objects
+4. `ttnn.generic_op` compiles and executes kernels on device
+5. Results returned as `ttnn.Tensor` objects
 
-### Dylib Interface Requirements
+### TTNN Generic Operation API
 
-**Generated C++ must provide:**
+The `ttnn.generic_op` API requires three descriptor types:
 
-```cpp
-// Main kernel function (mangled name)
-std::vector<ttnn::Tensor> kernel_name(std::vector<ttnn::Tensor> inputs);
+KernelDescriptor - specifies kernel source and execution parameters:
+```python
+reader_kernel = ttnn.KernelDescriptor(
+    kernel_source="<C++ kernel source code as string>",  # Or file path
+    source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,  # Or INLINE
+    core_ranges=core_grid,
+    compile_time_args=[...],  # Shape info, addresses, etc.
+    runtime_args=[[...]],     # Buffer addresses, tile counts
+    defines=[("MACRO_NAME", "value"), ...],  # Preprocessor defines
+    config=ttnn.ReaderConfigDescriptor(),  # Or Writer/ComputeConfigDescriptor
+)
+```
 
-// Device context setter
-void setDevice(ttnn::MeshDevice* device);
+CBDescriptor - defines circular buffer configurations:
+```python
+input_cb = ttnn.CBDescriptor(
+    total_size=cb_total_size,      # Total CB size in bytes
+    core_ranges=core_grid,          # Cores with this CB
+    format_descriptors=[
+        ttnn.CBFormatDescriptor(
+            format=ttnn.DataFormat.Float16_b,
+            page_size=tile_size,
+        )
+    ],
+)
+```
 
-// Optional: Input creation helper
-std::vector<ttnn::Tensor> create_inputs_for_kernel_name(ttnn::MeshDevice& device);
+ProgramDescriptor - combines kernels and CBs:
+```python
+program = ttnn.ProgramDescriptor(
+    kernels=[reader_kernel, compute_kernel, writer_kernel],
+    semaphores=[],  # Synchronization primitives if needed
+    cbs=[input_cb, output_cb],
+)
+
+# Execute with tensors
+output = ttnn.generic_op([input_tensor, output_tensor], program)
 ```
 
 ### Compilation Pipeline
 
-**TTL-specific EmitC backend pipeline** (similar to TTNN); note that this will
-be implemented in python, but we are showing the CLI commands here for clarity.
-
-```bash
-# 1. TTL → TTKernel (TTL passes)
-ttlang-opt --ttl-lower-to-ttkernel input.mlir -o ttkernel.mlir
-
-# 2. TTKernel → EmitC (existing pass with dylib mode)
-ttlang-opt --ttkernel-to-emitc-pipeline="target-dylib=true" ttkernel.mlir -o emitc.mlir
-
-# 3. EmitC → C++
-ttlang-translate --mlir-to-cpp emitc.mlir > generated.cpp
-
-# 4. C++ → Shared Library
-cd tools/ttnn-standalone
-python ci_compile_dylib.py --file generated.cpp --mode dylib
-```
-
-**Dylib-specific transformations:**
-- Input tuplification (forced even for empty inputs)
-- Tensor argument wrapping for ABI compatibility
-- Device context management functions
-- RPATH configuration for runtime library discovery
-
-### Runtime Loading and Execution
-
-The kernels are loaded using code similar to the following (which can also be
-generated by the compiler):
-
-```cpp
-// Runtime execution (tt-mlir pattern)
-void* so = dlopen("ttl_kernel.so", RTLD_LAZY);
-
-// Get setDevice function
-auto setDeviceFunc = reinterpret_cast<void(*)(ttnn::MeshDevice*)>(
-    dlsym(so, "setDevice")
-);
-setDeviceFunc(&meshDevice);
-
-// Get kernel function (with mangled name)
-std::string mangledName = getMangledName("kernel_name");
-auto kernelFunc = reinterpret_cast<
-    std::vector<ttnn::Tensor>(*)(std::vector<ttnn::Tensor>)
->(dlsym(so, mangledName.c_str()));
-
-// Execute
-std::vector<ttnn::Tensor> outputs = kernelFunc(ttnnInputs);
-
-dlclose(so);
-```
-
-### Build System Integration
-
-**CMakeLists.txt configuration** (reuse TTNN standalone):
-- Link against: `tt_metal`, `device`, `tt_stl`, `_ttnncpp.so`
-- Compiler flags: `-march=x86-64-v3` for performance
-- RPATH: `$ORIGIN:${METAL_LIB_DIR}` for library discovery
-
-### TTL-Specific Considerations
-
-1. **Circular Buffer Metadata**: Include CB configurations in generated C++
-   - L1 addresses from TTLAllocateCircularBuffers pass
-   - Buffer sizes and tile counts
-
-2. **Thread Mapping**: Map TTL threads to TT-Metal program structure
-   - Compute thread → Math kernel
-   - Datamovement threads → NOC kernels
-
-3. **Synchronization**: Emit barrier/semaphore operations
-   - DMA barriers from TTLInsertSynchronization
-   - Semaphore setup for inter-core communication
-
-### MVP Integration (Week 2-3)
-
-Phase 3 deliverable:
-- Reuse `ConvertTTKernelToEmitC` with dylib target
-- Generate C++ matching TTNN dylib interface requirements
-- Build using ttnn-standalone build system
-- Test loading and execution via runtime API
-
-### Validation
+The TTL compilation pipeline generates kernel descriptors and metadata for `ttnn.generic_op`:
 
 ```python
-# Test TTL kernel via Python runtime API
+# Python API workflow (ttlang runtime)
+from ttlang.d2m_api import compile_ttl_kernel
+
+# 1. TTL IR → TTL passes (validation, allocation, optimization)
+# 2. Generate kernel descriptors with C++ source strings
+kernel_descriptors = compile_ttl_kernel(ttl_ir, device_info)
+
+# 3. Create TTNN descriptors
+reader_desc = ttnn.KernelDescriptor(
+    kernel_source=kernel_descriptors['reader_source'],
+    compile_time_args=kernel_descriptors['reader_ct_args'],
+    runtime_args=kernel_descriptors['reader_rt_args'],
+    config=ttnn.ReaderConfigDescriptor(),
+)
+
+compute_desc = ttnn.KernelDescriptor(
+    kernel_source=kernel_descriptors['compute_source'],
+    compile_time_args=kernel_descriptors['compute_ct_args'],
+    defines=kernel_descriptors['compute_defines'],
+    config=ttnn.ComputeConfigDescriptor(),
+)
+
+writer_desc = ttnn.KernelDescriptor(
+    kernel_source=kernel_descriptors['writer_source'],
+    compile_time_args=kernel_descriptors['writer_ct_args'],
+    runtime_args=kernel_descriptors['writer_rt_args'],
+    config=ttnn.WriterConfigDescriptor(),
+)
+
+# 4. Create CB descriptors from TTL allocation pass results
+cb_descs = [
+    ttnn.CBDescriptor(
+        total_size=cb.size,
+        core_ranges=cb.cores,
+        format_descriptors=[ttnn.CBFormatDescriptor(format=cb.format, page_size=cb.page_size)]
+    )
+    for cb in kernel_descriptors['circular_buffers']
+]
+
+# 5. Combine and execute
+program = ttnn.ProgramDescriptor(
+    kernels=[reader_desc, compute_desc, writer_desc],
+    cbs=cb_descs,
+)
+output = ttnn.generic_op(io_tensors, program)
+```
+
+### C++ Kernel Generation from TTL
+
+TTL operations lower to C++ kernel strings following the TT-Metalium three-kernel pattern:
+
+Reader kernel (data movement):
+```cpp
+// Generated from TTL datamovement thread
+void MAIN {
+    uint32_t src_addr = get_compile_time_arg_val(0);
+    uint32_t num_tiles = get_arg_val<uint32_t>(0);
+
+    constexpr uint32_t cb_id_in0 = 0;
+
+    for (uint32_t i = 0; i < num_tiles; ++i) {
+        cb_reserve_back(cb_id_in0, 1);
+        uint32_t l1_write_addr = get_write_ptr(cb_id_in0);
+        noc_async_read(src_addr, l1_write_addr, tile_size);
+        noc_async_read_barrier();
+        cb_push_back(cb_id_in0, 1);
+        src_addr += tile_size;
+    }
+}
+```
+
+Compute kernel:
+```cpp
+// Generated from TTL compute thread
+#include "compute_kernel_api/eltwise_binary.h"
+
+namespace NAMESPACE {
+void MAIN {
+    uint32_t num_tiles = get_compile_time_arg_val(0);
+
+    constexpr uint32_t cb_in0 = 0;
+    constexpr uint32_t cb_in1 = 1;
+    constexpr uint32_t cb_out0 = 16;
+
+    binary_op_init_common(cb_in0, cb_in1, cb_out0);
+
+    for (uint32_t i = 0; i < num_tiles; ++i) {
+        cb_wait_front(cb_in0, 1);
+        cb_wait_front(cb_in1, 1);
+        cb_reserve_back(cb_out0, 1);
+
+        acquire_dst(tt::DstMode::Half);
+        add_tiles(cb_in0, cb_in1, 0, 0, 0);
+        pack_tile(0, cb_out0);
+        release_dst(tt::DstMode::Half);
+
+        cb_pop_front(cb_in0, 1);
+        cb_pop_front(cb_in1, 1);
+        cb_push_back(cb_out0, 1);
+    }
+}
+}  // namespace NAMESPACE
+```
+
+Writer kernel (data movement):
+```cpp
+// Generated from TTL datamovement thread
+void MAIN {
+    uint32_t dst_addr = get_compile_time_arg_val(0);
+    uint32_t num_tiles = get_arg_val<uint32_t>(0);
+
+    constexpr uint32_t cb_id_out0 = 16;
+
+    for (uint32_t i = 0; i < num_tiles; ++i) {
+        cb_wait_front(cb_id_out0, 1);
+        uint32_t l1_read_addr = get_read_ptr(cb_id_out0);
+        noc_async_write(l1_read_addr, dst_addr, tile_size);
+        noc_async_write_barrier();
+        cb_pop_front(cb_id_out0, 1);
+        dst_addr += tile_size;
+    }
+}
+```
+
+### TTL-Specific Metadata Generation
+
+The TTL compilation pipeline generates metadata required by `ttnn.generic_op`:
+
+1. Circular buffer metadata (from `TTLAllocateCircularBuffers` pass):
+```python
+# CB allocation results
+cb_metadata = {
+    'cb_id': 0,
+    'address': 0x12000,  # L1 address
+    'size': 32 * 1024,   # 32KB
+    'num_pages': 16,
+    'page_size': 2048,
+    'format': 'Float16_b',
+}
+
+# Convert to TTNN CBDescriptor
+cb_desc = ttnn.CBDescriptor(
+    total_size=cb_metadata['size'],
+    core_ranges=core_grid,
+    format_descriptors=[
+        ttnn.CBFormatDescriptor(
+            format=getattr(ttnn.DataFormat, cb_metadata['format']),
+            page_size=cb_metadata['page_size'],
+        )
+    ],
+)
+```
+
+2. Kernel compile-time arguments (from TTL passes):
+```python
+# From TTL IR analysis
+compile_time_args = [
+    tensor_shape[0],           # Rows
+    tensor_shape[1],           # Cols
+    cb_metadata['address'],    # L1 address
+    tile_size,                 # Tile dimensions
+    num_tiles,                 # Total tiles to process
+]
+```
+
+3. Kernel runtime arguments (per-core parameters):
+```python
+# Generated per core from TTL grid information
+runtime_args = [
+    [buffer_address, core_tile_count, start_tile_idx]
+    for core in core_grid
+]
+```
+
+4. Thread mapping (TTL threads → TT-Metal kernels):
+   - `ttl.compute_thread` → Compute kernel with SFPU/matmul operations
+   - `ttl.datamovement_thread` (reader) → Reader kernel with NOC operations
+   - `ttl.datamovement_thread` (writer) → Writer kernel with NOC operations
+
+5. Synchronization metadata (from `TTLInsertSynchronization` pass):
+```python
+# DMA barrier insertion points
+barriers = [
+    {'type': 'noc_async_read_barrier', 'location': 'after_read'},
+    {'type': 'noc_async_write_barrier', 'location': 'after_write'},
+]
+
+# Semaphore configurations for inter-core communication
+semaphores = [
+    ttnn.SemaphoreDescriptor(
+        initial_value=0,
+        core_ranges=producer_cores,
+    )
+]
+```
+
+### MVP Integration Implementation
+
+Phase 3 deliverable (Week 2-3):
+
+1. Kernel descriptor generation pass - create `TTLGenerateKernelDescriptors` pass that:
+   - Traverses TTL IR after allocation and synchronization passes
+   - Generates C++ kernel source strings for reader, compute, writer
+   - Collects compile-time and runtime arguments
+   - Produces CB metadata from allocation results
+
+2. Python runtime API - implement `ttlang.runtime` module:
+   ```python
+   from ttlang.runtime import execute_ttl_kernel
+
+   # High-level API wrapping ttnn.generic_op
+   result = execute_ttl_kernel(
+       ttl_module,          # Compiled TTL IR
+       input_tensors,       # ttnn.Tensor inputs
+       device,              # ttnn.Device
+   )
+   ```
+
+3. Integration with `@pykernel_gen` decorator:
+   ```python
+   @pykernel_gen
+   def my_kernel(a: Tensor, b: Tensor) -> Tensor:
+       # TT-lang DSL code
+       ...
+
+   # Decorator handles:
+   # 1. Python AST → TTL IR
+   # 2. TTL passes (validation, allocation, sync)
+   # 3. Kernel descriptor generation
+   # 4. ttnn.generic_op invocation
+   result = my_kernel(ttnn_tensor_a, ttnn_tensor_b)
+   ```
+
+### Validation and Testing
+
+```python
+# Test TTL kernel via ttnn.generic_op
 import ttnn
 import torch
-from ttrt.runtime import Device
+from ttlang.d2m_api import compile_ttl_kernel
 
-device = Device()
-so = load_dylib("ttl_matmul.so")
+# Create device
+device = ttnn.open_device(device_id=0)
 
-# TTNN tensors as inputs
-a = ttnn.from_torch(torch.randn(128, 128), device=device)
-b = ttnn.from_torch(torch.randn(128, 128), device=device)
+# Compile TTL to kernel descriptors
+ttl_ir = parse_ttl_source(kernel_source)
+kernel_info = compile_ttl_kernel(ttl_ir, device)
 
-# Execute TTL kernel
-result = run_dylib_function(so, "matmul", [a, b], device)
+# Create TTNN tensors
+a = ttnn.from_torch(torch.randn(128, 128), device=device, dtype=ttnn.float32)
+b = ttnn.from_torch(torch.randn(128, 128), device=device, dtype=ttnn.float32)
+output = ttnn.allocate_tensor_on_device(
+    ttnn.Shape([128, 128]), ttnn.float32, ttnn.TILE_LAYOUT, device
+)
+
+# Build program descriptor
+program = ttnn.ProgramDescriptor(
+    kernels=kernel_info['kernel_descriptors'],
+    cbs=kernel_info['cb_descriptors'],
+)
+
+# Execute
+result = ttnn.generic_op([a, b, output], program)
 
 # Verify correctness
 expected = torch.matmul(a.to_torch(), b.to_torch())
-assert torch.allclose(result.to_torch(), expected, rtol=1e-2)
+actual = result.to_torch()
+assert torch.allclose(actual, expected, rtol=1e-2)
+
+ttnn.close_device(device)
 ```
 
 ### Future Enhancements
 
-- Flatbuffer generation (alternative to dylib for deployment)
-- Performance comparison: TTL vs D2M pipeline
-- Debugging: Source mapping, kernel profiling
-- Distributed execution support
+- C++ API support: Extend to C++ `ttnn::generic_op` for performance-critical paths
+- Kernel caching: Cache compiled kernels to avoid recompilation
+- Debugging support: Source-level debugging with kernel source mapping
+- Performance profiling: Integration with TTNN profiling tools
+- Distributed execution: Multi-device kernel execution with explicit data movement
 
 
 
