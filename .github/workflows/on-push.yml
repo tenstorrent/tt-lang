@@ -41,8 +41,7 @@ jobs:
     with:
       runs-on: n150
       build-os: ubuntu
-      # TODO(bnorris): Update to 30 when ready for merge.
-      timeout: 3
+      timeout: 30
 
   check-all-green:
     if: always()

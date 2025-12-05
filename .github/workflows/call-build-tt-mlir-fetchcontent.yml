@@ -92,11 +92,9 @@ jobs:
                   source build/env/activate
                   python test/python/smoketest.py
 
-            - name: Move ttrt packages to tt-mlir-install
+            - name: Move ttrt runtime to tt-mlir-install
               run: |
                   set -x
-                  #mkdir -p tt-mlir-install/wheels
-                  #find build -name "*.whl" -exec cp -v {} tt-mlir-install/wheels/ \;
                   mv build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
 
             - name: Clean up tt-mlir build directory to save disk space
