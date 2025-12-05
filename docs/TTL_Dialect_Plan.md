@@ -13,6 +13,8 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
 1. [Motivation & Goals](#1-motivation--goals)
 2. [Architecture Overview](#2-architecture-overview)
 3. [Type System](#3-type-system)
+   - 3.1 [Core Types](#31-core-types)
+   - 3.2 [Attributes](#32-attributes)
 4. [Operations](#4-operations)
    - 4.1 [Structural Operations](#41-structural-operations)
    - 4.2 [Resource Creation](#42-resource-creation)
@@ -21,15 +23,32 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
    - 4.5 [Data Movement Operations](#45-data-movement-operations)
    - 4.6 [Synchronization Operations](#46-synchronization-operations)
    - 4.7 [Utility Operations](#47-utility-operations)
+   - 4.8 [Compute Operations Inventory](#48-compute-operations-inventory)
 5. [Compilation Pipeline](#5-compilation-pipeline)
+   - 5.1 [Pass Architecture](#51-pass-architecture)
+   - 5.2 [Key Pass Descriptions](#52-key-pass-descriptions)
+   - 5.3 [Granularity and Block Shapes](#53-granularity-and-block-shapes)
+   - 5.4 [Source Location Tracking](#54-source-location-tracking)
+   - 5.5 [Control Flow: SCF vs Affine Dialect](#55-control-flow-scf-vs-affine-dialect)
+   - 5.6 [Error Handling and Diagnostics](#56-error-handling-and-diagnostics)
 6. [Type Conversion & Lowering Examples](#6-type-conversion--lowering-examples)
+   - 6.1 [TTL → TTKernel Type Mapping](#61-ttl--ttkernel-type-mapping)
+   - 6.2 [TTL → TTKernel Operation Mapping](#62-ttl--ttkernel-operation-mapping)
+   - 6.3 [Operation Lowering Examples](#63-operation-lowering-examples)
 7. [Python Integration](#7-python-integration)
+   - 7.1 [Frontend Compilation](#71-frontend-compilation)
+   - 7.2 [Operator Mapping](#72-operator-mapping)
+   - 7.3 [API Entry Point](#73-api-entry-point)
 8. [Implementation Roadmap](#8-implementation-roadmap)
 9. [TTNN Runtime Integration](#9-ttnn-runtime-integration)
 10. [Future Evolution](#10-future-evolution)
-11. [Success Criteria](#12-success-criteria)
-12. [Appendix: Design Rationale](#13-appendix-design-rationale)
-13. [References](#14-references)
+    - 10.1 [Microcore Model (Post-MVP)](#101-microcore-model-post-mvp)
+    - 10.2 [Single-Threaded Mode](#102-single-threaded-mode)
+    - 10.3 [Distributed Tensor Type (Major Extension)](#103-distributed-tensor-type-major-extension)
+    - 10.4 [Transform Dialect Integration for Scheduling](#104-transform-dialect-integration-for-scheduling)
+11. [Success Criteria](#11-success-criteria)
+12. [Appendix: Design Rationale](#12-appendix-design-rationale)
+13. [References](#13-references)
 
 ---
 
@@ -689,6 +708,58 @@ def TTL_GridSizeOp : TTL_Op<"grid_size", [Pure]> {
 }
 ```
 
+### 4.8 Compute Operations Inventory
+
+**TTL → TTKernel Math Operation Mapping:**
+
+| TTL Operation | TTKernel Operations | Implementation Complexity | MVP Priority |
+|---------------|---------------------|---------------------------|--------------|
+| **FPU Binary Operations** ||||
+| `ttl.block_add` | `ttkernel.add_tiles_init`, `ttkernel.add_tiles` | Medium | **HIGH** |
+| `ttl.block_sub` | `ttkernel.sub_tiles_init`, `ttkernel.sub_tiles` | Medium | **HIGH** |
+| `ttl.block_mul` | `ttkernel.mul_tiles_init`, `ttkernel.mul_tiles` | Medium | **HIGH** |
+| **FPU Matrix Operations** ||||
+| `ttl.block_matmul` | `ttkernel.mm_init`, `ttkernel.matmul_tiles` | Medium | **HIGH** |
+| **SFPU Unary Operations (Phase 2)** ||||
+| `ttl.block_exp` | `ttkernel.init_sfpu`, `ttkernel.exp_tile` | Medium | MEDIUM |
+| `ttl.block_log` | `ttkernel.init_sfpu`, `ttkernel.log_tile` | Medium | MEDIUM |
+| `ttl.block_sqrt` | `ttkernel.init_sfpu`, `ttkernel.sqrt_tile` | Medium | MEDIUM |
+| `ttl.block_rsqrt` | `ttkernel.init_sfpu`, `ttkernel.rsqrt_tile` | Medium | MEDIUM |
+| `ttl.block_relu` | `ttkernel.init_sfpu`, `ttkernel.relu_tile` | Medium | MEDIUM |
+| `ttl.block_gelu` | `ttkernel.init_sfpu`, `ttkernel.gelu_tile` | Medium | MEDIUM |
+| `ttl.block_sigmoid` | `ttkernel.init_sfpu`, `ttkernel.sigmoid_tile` | Medium | MEDIUM |
+| `ttl.block_tanh` | `ttkernel.init_sfpu`, `ttkernel.tanh_tile` | Medium | MEDIUM |
+| **SFPU Trigonometric (Phase 3+)** ||||
+| `ttl.block_sin` | `ttkernel.init_sfpu`, `ttkernel.sin_tile` | Medium | LOW |
+| `ttl.block_cos` | `ttkernel.init_sfpu`, `ttkernel.cos_tile` | Medium | LOW |
+| `ttl.block_tan` | `ttkernel.init_sfpu`, `ttkernel.tan_tile` | Medium | LOW |
+
+**Operation Count Summary:**
+
+- **MVP (Week 2-3)**: ~5 operations
+  - 3 FPU binary: add, sub, mul
+  - 1 FPU matrix: matmul
+  - 1 special: block_store
+
+- **Phase 2**: +8 operations
+  - Common SFPU: exp, log, sqrt, rsqrt, relu, gelu, sigmoid, tanh
+
+- **Full Coverage**: ~40-50 TTL math ops mapping to ~120+ TTKernel ops
+  - All SFPU variants (~60 ops)
+  - Reduction operations
+  - Broadcast operations
+  - Type conversion operations
+
+**Implementation Strategy:**
+
+1. **Establish pattern** with 3-5 operations (Week 2)
+2. **Replicate pattern** for additional ops (incremental)
+3. **Each TTL op requires:**
+   - Operation definition in TTLOps.td
+   - Python operator overload in operators.py
+   - Lowering pattern in TTLLowerCompute.cpp
+   - Lit test for validation
+
 ---
 
 ## 5. Compilation Pipeline
@@ -1238,7 +1309,51 @@ transform.sequence {
 | `!ttl.pipe` | Attributes on ops | Pipe decomposed into core coords + multicast flags |
 | `!ttl.accessor<layout, memspace>` | N/A (resolved) | Resolves to NOC addresses + layout info during lowering |
 
-### 6.2 Operation Lowering Examples
+### 6.2 TTL → TTKernel Operation Mapping
+
+| TTL Operation | TTKernel Operations | Implementation Complexity | MVP Priority |
+|---------------|---------------------|---------------------------|--------------|
+| **Circular Buffer** ||||
+| `ttl.cb_wait` | `ttkernel.cb_wait_front` | Low | **HIGH** |
+| `ttl.cb_pop` | `ttkernel.cb_pop_front` | Low | **HIGH** |
+| `ttl.cb_reserve` | `ttkernel.cb_reserve_back` | Low | **HIGH** |
+| `ttl.cb_push` | `ttkernel.cb_push_back` | Low | **HIGH** |
+| `ttl.get_tile` | `ttkernel.copy_tile_init`, `ttkernel.copy_tile` | Medium | **HIGH** |
+| `ttl.pack_tile` | `ttkernel.pack_tile` | Low | **HIGH** |
+| **Compute (FPU)** ||||
+| `ttl.block_add` | `ttkernel.add_tiles_init`, `ttkernel.add_tiles` | Medium | **HIGH** |
+| `ttl.block_sub` | `ttkernel.sub_tiles_init`, `ttkernel.sub_tiles` | Medium | **HIGH** |
+| `ttl.block_mul` | `ttkernel.mul_tiles_init`, `ttkernel.mul_tiles` | Medium | **HIGH** |
+| `ttl.block_matmul` | `ttkernel.mm_init`, `ttkernel.matmul_tiles` | Medium | **HIGH** |
+| **Compute (SFPU - Phase 2)** ||||
+| `ttl.block_exp` | `ttkernel.init_sfpu`, `ttkernel.exp_tile` | Medium | MEDIUM |
+| `ttl.block_log` | `ttkernel.init_sfpu`, `ttkernel.log_tile` | Medium | MEDIUM |
+| `ttl.block_sqrt` | `ttkernel.init_sfpu`, `ttkernel.sqrt_tile` | Medium | MEDIUM |
+| `ttl.block_relu` | `ttkernel.init_sfpu`, `ttkernel.relu_tile` | Medium | MEDIUM |
+| `ttl.block_gelu` | `ttkernel.init_sfpu`, `ttkernel.gelu_tile` | Medium | MEDIUM |
+| **Data Movement** ||||
+| `ttl.copy` (DRAM→CB) | `ttkernel.get_noc_addr`, `ttkernel.noc_async_read` | High | **HIGH** |
+| `ttl.copy` (CB→DRAM) | `ttkernel.get_noc_addr`, `ttkernel.noc_async_write` | High | **HIGH** |
+| `ttl.copy` (CB→Pipe→CB) | `ttkernel.noc_async_write_multicast` or unicast | High | MEDIUM |
+| `ttl.wait` | `ttkernel.noc_async_read_barrier` or `write_barrier` | Low | **HIGH** |
+| `ttl.dma_barrier` | `ttkernel.noc_async_read_barrier`, `write_barrier` | Low | **HIGH** |
+| **Synchronization** ||||
+| `ttl.semaphore_wait` | `ttkernel.noc_semaphore_wait` | Medium | MEDIUM |
+| `ttl.semaphore_set` | `ttkernel.noc_semaphore_set` (or multicast variant) | Medium | MEDIUM |
+| `ttl.semaphore_inc` | `ttkernel.noc_semaphore_inc` | Medium | MEDIUM |
+| **Tile Management** ||||
+| `ttl.require_dst` | `ttkernel.tile_regs_acquire`, `ttkernel.tile_regs_commit` | Low | **HIGH** |
+| **Total Operations for MVP** | **~15-20 TTL ops → ~25-30 TTKernel ops** | | **Week 2-3** |
+| **Full Coverage (Future)** | **~40-50 TTL ops → ~120+ TTKernel ops** | | **Incremental** |
+
+**Implementation Notes:**
+
+- **MVP (5-10 ops)**: Focus on arithmetic (add/sub/mul/matmul) + CB + DMA
+- **Phase 2 (10-15 ops)**: Add common SFPU (exp/log/sqrt/relu/gelu)
+- **Phase 3+**: Add remaining ops as needed (60+ SFPU variants)
+- **Lowering Pattern**: Once established for first few ops, adding more is straightforward
+
+### 6.3 Operation Lowering Examples
 
 **Circular Buffer Operations:**
 ```mlir
