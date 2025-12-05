@@ -219,7 +219,27 @@ class TTL_Op<string mnemonic, list<Trait> traits = []>
   : Op<TTL_Dialect, mnemonic, traits> {}
 
 // Type constraints for TTL operations
-def TTL_Tensor : TensorOf<[F32, F16, BF16, AnyTypeOf<[TTCore_Tile]>]>;
+def TTL_Tile : TTL_Type<"Tile", "tile"> {
+  let summary = "Tile type for tiled tensor layouts";
+  let parameters = (ins
+    "int64_t":$height,    // Tile height (32, 16, 4, 2, 1)
+    "int64_t":$width,     // Tile width (32)
+    "Type":$elementType   // Element type (f32, f16, bf16)
+  );
+  let description = [{
+    Represents a tile for tiled tensor layouts. Hardware supports variable tile heights
+    (32×32, 16×32, 4×32, 2×32, 1×32) for different operation types.
+
+    Standard tile: !ttl.tile<32x32, f32>
+    SFPU optimized: !ttl.tile<16x32, f32>
+    Narrow tile: !ttl.tile<4x32, f16>
+
+    The tile dimensions must be hardware-supported combinations. Validation enforced
+    during type construction and in TTLValidatePass.
+  }];
+}
+
+def TTL_Tensor : TensorOf<[F32, F16, BF16, TTL_Tile]>;
 
 // TTL Types (TTLTypes.td)
 
@@ -280,7 +300,7 @@ def TTL_Block : TTL_Type<"Block", "block"> {
   let summary = "Logical unit of data exchanged via circular buffers";
   let parameters = (ins
     "TensorType":$tensorType,
-    "TTL_CircularBuffer":$circularBuffer  // Reference to originating CB
+    TTL_CircularBuffer:$circularBuffer  // Reference to originating CB
   );
   let description = [{
     Represents a block of data (tiles or scalars) consumed/produced by compute operations.
@@ -346,9 +366,9 @@ def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
     Used in DMA operations to specify source/destination with coordinates.
   }];
   let parameters = (ins
-    "TensorType":$tensorType,
-    "TTL_LayoutAttr":$layout,           // Reuses create_metal_layout metadata
-    "TTL_MemorySpace":$memorySpace
+    TTL_Tensor:$tensor,
+    TTL_LayoutAttr:$layout,              // Reuses create_metal_layout metadata
+    TTL_MemorySpaceAttr:$memorySpace
   );
 }
 ```
@@ -3440,11 +3460,11 @@ control over:
 def TTL_DistributedTensor : TTL_Type<"DistributedTensor", "dist_tensor"> {
   let summary = "Distributed tensor across grid of cores";
   let parameters = (ins
-    "ArrayRef<int64_t>":$gridShape,      // Distribution grid [8, 8]
-    "ArrayRef<int64_t>":$shardShape,     // Per-core shard [32, 32]
-    "Type":$elementType,                  // f32, bf16, etc.
-    "TTL_DistributionStrategyAttr":$strategy, // Sharded, interleaved, etc.
-    "TTL_MemorySpace":$memorySpace
+    ArrayRefParameter<"int64_t">:$gridShape,      // Distribution grid [8, 8]
+    ArrayRefParameter<"int64_t">:$shardShape,     // Per-core shard [32, 32]
+    "Type":$elementType,                          // f32, bf16, etc.
+    TTL_DistributionStrategyAttr:$strategy,     // Sharded, interleaved, etc.
+    TTL_MemorySpaceAttr:$memorySpace
   );
 
   let extraClassDeclaration = [{
