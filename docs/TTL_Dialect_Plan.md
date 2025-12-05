@@ -40,11 +40,9 @@ hardware-specific optimizations before lowering to executable kernels.
 5. [Compilation Pipeline](#5-compilation-pipeline)
    - 5.1 [Pass Architecture](#51-pass-architecture)
    - 5.2 [Key Pass Descriptions](#52-key-pass-descriptions)
-   - 5.3 [Granularity and Block Shapes](#53-granularity-and-block-shapes)
-   - 5.4 [Source Location Tracking](#54-source-location-tracking)
-   - 5.5
-     [Control Flow: SCF vs Affine Dialect](#55-control-flow-scf-vs-affine-dialect)
-   - 5.6 [Error Handling and Diagnostics](#56-error-handling-and-diagnostics)
+   - 5.3 [Source Location Tracking](#53-source-location-tracking)
+   - 5.4 [Control Flow: SCF vs Affine Dialect](#54-control-flow-scf-vs-affine-dialect)
+   - 5.6 [Error Handling and Diagnostics](#55-error-handling-and-diagnostics)
 6. [Type Conversion & Lowering Examples](#6-type-conversion--lowering-examples)
    - 6.1 [TTL → TTKernel Type Mapping](#61-ttl--ttkernel-type-mapping)
    - 6.2
@@ -643,10 +641,10 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     def compute():
         a_blk = a_cb.wait()
         b_blk = b_cb.wait()
-        o = out_cb.reserve()
+        o_blk = out_cb.reserve()
 
         result = a_blk + b_blk  # ttl.block_add
-        o.store(result)
+        o_blk.store(result)
 
         a_cb.pop()
         b_cb.pop()
@@ -2308,98 +2306,7 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
   - Layout attribute determines which NOC API variant (shard/page/tile)
 - **Output**: TTKernel NOC operations using `TensorAccessor`
 
-### 5.3 Granularity and Block Shapes
-
-**Concept**: Granularity defines how many tiles are grouped into blocks for
-transfer and processing.
-
-**From TT-lang.md example:**
-```python
-g = 2  # granularity - process 2 tiles at a time
-
-for rt in range(row_tiles // g):
-    # Transfer g tiles as one block
-    a_xf = ttl.copy(
-        a[(rt * g):((rt + 1) * g), ct:(ct + 1)],  # g rows, 1 col
-        a_blk)
-```
-
-**From kostas/spec simulator:**
-```python
-@ttl.kernel(granularity=2)  # Kernel-level parameter
-def eltwise_add(a_in, b_in, out):
-    # Use granularity to create CBs
-    a_in_cb = ttl.make_circular_buffer_like(
-        a_in, shape=(granularity, 1), buffer_factor=2
-    )
-
-    @ttl.datamovement()
-    def dm():
-        for rt_block in range(row_tiles // granularity):
-            # Transfer granularity tiles as one block
-            row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
-            a_block = a_in_cb.reserve()
-            tx = ttl.copy(a_accessor[row_slice, :], a_block)
-```
-
-**Mapping to TTL:**
-
-Granularity is encoded in CB `shape` parameter:
-
-```python
-# Python DSL (kostas/spec)
-@ttl.kernel(granularity=2)
-def kernel(...):
-    cb = ttl.make_circular_buffer_like(tensor, shape=(granularity, 1), buffer_factor=2)
-```
-
-```mlir
-// TTL IR (tiled layout example - layout inferred from element_type)
-%cb = ttl.create_cb shape=[2, 1], element_type=!ttcore.tile<32x32,f32>,
-                    buffer_factor=2, memory_space=L1
-      : !ttl.cb<[2,1], !ttcore.tile<32x32,f32>, 2, L1>
-```
-
-**Semantic meaning:**
-- `shape=[2, 1]` means each block contains 2×1 = 2 elements (tiles in this
-  example)
-- CB operations (`wait`, `reserve`) always work on `shape[0] * shape[1]`
-  elements
-- Layout (tiled vs row-major) determined by element_type:
-  - !ttcore.tile<...> → tiled layout, elements are tiles
-  - Scalar types (f32, bf16, etc.) → row-major layout, elements are scalars
-- All CB operations from same CB use same tile count (determined by shape)
-- Loop iterations reduced by granularity factor (`row_tiles // granularity`)
-
-**Design implications:**
-
-1. **CB shape determines operation granularity**:
-   - `shape=[2, 1]` → process 2 tiles at a time
-   - `shape=[1, 1]` → process 1 tile at a time (fine-grained)
-   - `shape=[4, 2]` → process 8 tiles at a time (coarse-grained)
-
-2. **No separate granularity parameter in TTL types**:
-   - Granularity is implicit in CB shape
-   - More explicit and type-safe
-   - Aligns with TTKernel's requirement for exact tile counts
-
-3. **Python API**:
-   ```python
-   # Option A: Explicit shape (current)
-   cb = CircularBuffer(shape=(2, 1), buffer_factor=2)
-
-   # Option B: Kernel-level granularity parameter (future)
-   @ttl.kernel(granularity=2)  # Sets default for all CBs
-   def kernel(...):
-       cb = CircularBuffer(buffer_factor=2)  # Uses kernel granularity
-   ```
-
-4. **Validation**:
-   - Compiler verifies all CBs in a producer-consumer chain have same shape
-   - DMA transfers match CB block dimensions
-   - Loop bounds are multiples of granularity
-
-### 5.4 Source Location Tracking
+### 5.3 Source Location Tracking
 
 **Goal**: Maintain Python source locations throughout compilation for debugging
 and IDE integration.
@@ -2549,7 +2456,7 @@ def test_location_tracking():
 **See**: MLIR
 [Location documentation](https://mlir.llvm.org/docs/Diagnostics/#source-locations)
 
-### 5.6 Error Handling and Diagnostics
+### 5.5 Error Handling and Diagnostics
 
 **Compile-time Error Messages:**
 
@@ -2597,7 +2504,7 @@ error: ttl.cb_wait operation timeout - consumer waiting indefinitely
 - Profiler can attribute performance to Python source lines
 - Debugger can map compiled code back to source (future)
 
-### 5.5 Control Flow: SCF vs Affine Dialect
+### 5.4 Control Flow: SCF vs Affine Dialect
 
 **Decision**: Use **Affine dialect** for loop nests, SCF for conditionals.
 
