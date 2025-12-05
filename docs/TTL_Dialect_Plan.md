@@ -355,17 +355,17 @@ arguments. TensorAccessor APIs like `noc_async_read_shard`,
 abstract shard addressing and page-based access patterns (see
 [Metalium Guide](https://github.com/tenstorrent/tt-metal/blob/main/METALIUM_GUIDE.md)).
 
-**Challenge**: TTKernel dialect (in TT-MLIR) does not currently have
-TensorAccessor support. TTKernel NOC operations work with bare addresses.
+Challenge: TTKernel dialect does not currently have TensorAccessor support.
+TTKernel NOC operations work with bare addresses.
 
-**Requirement**: Generated C++ must use TensorAccessor class.
+Requirement: Generated C++ must use TensorAccessor class.
 
 #### Option 1: Extend TTKernel with TensorAccessor
 
-Add `!ttkernel.tensor_accessor` type and shard/page NOC operations to TTKernel
-dialect in TT-MLIR.
+Add `!ttkernel.tensor_accessor` type and shard/page/tile NOC operations to
+TTKernel dialect.
 
-Implementation in TT-MLIR:
+Implementation in tt-mlir:
 
 ```tablegen
 // TTKernelOpsTypes.td
@@ -373,8 +373,8 @@ def TTKernel_TensorAccessor : TTKernel_Type<"TensorAccessor"> {
   let summary = "Handle for indexed tensor access with layout metadata";
   let parameters = (ins "TensorType":$tensorType, "LayoutAttr":$layout);
   let description = [{
-    Represents a tensor with addressing capability for shard and page-based access.
-    Carries layout metadata (sharded vs interleaved, grid dimensions, page size).
+    Represents a tensor with addressing capability for shard, page, and tile-based access.
+    Carries layout metadata (sharded, interleaved, or tiled; grid dimensions; shard/page/tile size).
 
     Corresponds to Metalium TensorAccessor class. ConvertTTKernelToEmitC generates
     TensorAccessor construction and usage matching Metalium patterns.
@@ -395,12 +395,22 @@ def TTKernel_NocAsyncReadPageOp : TTKernel_Op<"noc_async_read_page"> {
   let arguments = (ins I32:$page_id, TTKernel_TensorAccessor:$accessor,
                        I32:$dst_local_l1_addr, OptionalAttr<I32Attr>:$offset, I8:$noc);
   let description = [{
-    Async read of page from tensor using TensorAccessor.
+    Async read of page from interleaved tensor using TensorAccessor.
     Corresponds to: noc_async_read_page(page_id, accessor, dst_addr, offset, noc)
   }];
 }
 
-// Plus write_shard and write_page variants
+def TTKernel_NocAsyncReadTileOp : TTKernel_Op<"noc_async_read_tile"> {
+  let arguments = (ins I32:$tile_id, TTKernel_TensorAccessor:$accessor,
+                       I32:$dst_local_l1_addr, I8:$noc);
+  let description = [{
+    Async read of tile from tiled tensor using TensorAccessor.
+    Corresponds to: noc_async_read_tile(tile_id, accessor, dst_addr, noc)
+    Used for tiled DRAM/L1 tensors (common pattern in Metalium).
+  }];
+}
+
+// Plus write_shard, write_page, and write_tile variants
 ```
 
 ConvertTTKernelToEmitC generates Metalium TensorAccessor code:
@@ -464,7 +474,6 @@ Cons:
 - Limits MVP to interleaved tensors (no sharding)
 - Attention mechanisms need sharded layouts for performance
 - Must extend TTKernel for sharding anyway (just deferred)
-
 
 
 #### Complete Lowering Example: Sharded Tensor Read
@@ -1014,15 +1023,15 @@ During lowering to TTKernel, each block operation expands into loops over tiles
 with explicit DST register management.
 
 This section is organized into:
-- **[4.4.1 Fusion Operations](#441-fusion-operations)**: Operations for fusing
+- [4.4.1 Fusion Operations](#441-fusion-operations): Operations for fusing
   computation chains
-- **[4.4.2 Arithmetic Operations](#442-arithmetic-operations)**: Element-wise
-  math (add, mul, matmul)
-- **[4.4.3 Reduction and Broadcast](#443-reduction-and-broadcast-operations)**:
+- [4.4.2 Arithmetic Operations](#442-arithmetic-operations): Element-wise math
+  (add, mul, matmul)
+- [4.4.3 Reduction and Broadcast](#443-reduction-and-broadcast-operations):
   Operations for tensor dimension manipulation
-- **[4.4.4 Materialization](#444-materialization-operations)**: Operations for
+- [4.4.4 Materialization](#444-materialization-operations): Operations for
   storing results
-- **[4.4.5 DST Register Management](#445-dst-register-management)**: IR-level
+- [4.4.5 DST Register Management](#445-dst-register-management): IR-level
   constructs for register allocation
 
 #### 4.4.1 Fusion Operations
@@ -1329,10 +1338,10 @@ def TTL_RequireDSTOp : TTL_Op<"require_dst", [DeclareOpInterfaceMethods<MemoryEf
 
 #### 4.4.5 DST Register Management
 
-DST register operations are **IR-level constructs** for managing register
-allocation at the block abstraction level.
+DST register operations are IR-level constructs for managing register allocation
+at the block abstraction level.
 
-**Block-to-tile lowering context**: TTL operations work on *blocks* (groups of
+Block-to-tile lowering context: TTL operations work on *blocks* (groups of
 tiles, e.g., a 2x1 block = 2 tiles). Hardware operations in TTKernel work on
 *individual tiles* (32x32 elements). During the TTLLowerCompute pass:
 
@@ -1350,14 +1359,14 @@ This lowering occurs because:
 - Fusion opportunities: Block-level IR enables analysis and fusion before
   committing to tile-level loops
 
-**DST register capacity** is configuration-dependent (4-16 tiles) based on
+DST register capacity is configuration-dependent (4-16 tiles) based on
 `fp32_dest_acc_en` and `dst_full_sync_en` settings in `ComputeKernelConfig` (see
-[docs/dst_register_capacity.md](dst_register_capacity.md)). The
-TTLAssignDSTRegisters pass queries the kernel's compute_config to determine
+https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/advanced_topics/compute_engines_and_dataflow_within_tensix.html#dst-register).
+The TTLAssignDSTRegisters pass queries the kernel's compute_config to determine
 capacity.
 
-**Spilling** operates at tile granularity: if a kernel's liveness analysis
-reveals more live values than available DST capacity, the compiler inserts spill
+Spilling operates at tile granularity: if a kernel's liveness analysis reveals
+more live values than available DST capacity, the compiler inserts spill
 operations. These operate on *individual tiles*, not blocks, because spilling
 occurs after block-to-tile lowering when the affine loops over tiles already
 exist.
@@ -1987,7 +1996,7 @@ func.func @dm_thread_0 (memref args)
   ↓
 [Phase 6: Lowering to TTKernel]
   ├─ TTLLowerCompute - ttl.block_add → affine.for + ttkernel.add_tiles
-  ├─ TTLLowerDataMovement - ttl.copy → ttkernel.noc_async_*
+  ├─ TTLLowerDataMovement - ttl.copy → ttkernel.tensor_accessor + ttkernel.noc_async_shard/page/tile
   └─ TTLLowerSynchronization - ttl.cb_* → ttkernel.cb_*
   ↓
 ttkernel.* operations
@@ -2056,12 +2065,15 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 - **Output**: TTKernel operations with explicit tile iteration
 
 **TTLLowerDataMovement**
-- **Input**: `ttl.copy` operations
+- **Input**: `ttl.copy` operations with TensorAccessor or Pipe operands
 - **Transform**:
-  - Tensor → CB: `ttkernel.noc_async_read`
-  - CB → Tensor: `ttkernel.noc_async_write`
-  - CB → Pipe → CB: `ttkernel.noc_async_write_multicast*` or unicast
-- **Output**: TTKernel NOC operations with computed addresses
+  - Tensor → CB: `ttkernel.tensor_accessor` +
+    `ttkernel.noc_async_read_shard/page/tile`
+  - CB → Tensor: `ttkernel.tensor_accessor` +
+    `ttkernel.noc_async_write_shard/page/tile`
+  - CB → Pipe → CB: `ttkernel.noc_async_write_multicast` or unicast
+  - Layout attribute determines which NOC API variant (shard/page/tile)
+- **Output**: TTKernel NOC operations using TensorAccessor
 
 ### 5.3 Granularity and Block Shapes
 
