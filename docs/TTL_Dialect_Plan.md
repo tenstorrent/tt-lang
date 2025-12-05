@@ -203,6 +203,25 @@ to serve framework integration needs.
 ### 3.1 Core Types
 
 ```tablegen
+// TTLBase.td - Base class definitions
+
+def TTL_Dialect : Dialect {
+  let name = "ttl";
+  let cppNamespace = "::mlir::tt::ttl";
+  let description = [{
+    The TTL (TT-Lang) dialect provides a tensor-level IR for the TT-Lang DSL.
+  }];
+}
+
+class TTL_Type<string name, string mnemonic>
+  : TypeDef<TTL_Dialect, name, mnemonic> {}
+
+class TTL_Op<string mnemonic, list<Trait> traits = []>
+  : Op<TTL_Dialect, mnemonic, traits> {}
+
+// Type constraints for TTL operations
+def TTL_Tensor : TensorOf<[F32, F16, BF16, AnyTypeOf<[TTCore_Tile]>]>;
+
 // TTL Types (TTLTypes.td)
 
 def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
@@ -210,10 +229,11 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let parameters = (ins
     "ArrayRef<int64_t>":$shape,          // Elements per block
     "mlir::Type":$elementType,           // !ttcore.tile<32x32, f32> or scalar type
-    "int64_t":$bufferFactor,             // Number of blocks/slots
-    "TTL::MemorySpace":$memorySpace      // L1, DRAM, DST
+    "int64_t":$bufferFactor              // Number of blocks/slots
   );
-  let assemblyFormat = "`<` $shape `,` $elementType `,` $bufferFactor `,` $memorySpace `>`";
+  // Note: ArrayRef<int64_t> in assemblyFormat requires custom print/parse methods
+  // let assemblyFormat = "`<` $shape `,` $elementType `,` $bufferFactor `>`";
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     // Calculate total elements for TTKernel CB conversion
@@ -304,8 +324,8 @@ def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
   }];
   let parameters = (ins
     "TensorType":$tensorType,
-    "TTL::LayoutAttr":$layout,           // Reuses create_metal_layout metadata
-    "TTL::MemorySpace":$memorySpace
+    "TTL_LayoutAttr":$layout,           // Reuses create_metal_layout metadata
+    "TTL_MemorySpace":$memorySpace
   );
 }
 ```
@@ -747,7 +767,7 @@ def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
     StrAttr:$memory_space,
     BoolAttr:$tiled
   );
-  let regions = (region VariadicRegion<SizedRegion<1>>:$body);
+  let regions = (region VariadicRegion<AnyRegion>:$body);
   let description = [{
     Python API `ttl.Program(compute_thread, dm_thread0, dm_thread1)(x, y)` maps
     to this operation. The `ttl.Program()` constructor is a Python API that
@@ -763,7 +783,7 @@ def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
 def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
   let summary = "Kernel with multiple threads on grid";
   let arguments = (ins
-    Variadic<AnyType>:$inputs,
+    Variadic<AnyType>:$inputs,   // TODO: define and use a more specific type constraint
     TTL_GridAttr:$grid,
     StrAttr:$memory_space,
     BoolAttr:$tiled,
@@ -771,7 +791,7 @@ def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
     OptionalAttr<ArrayAttr>:$compile_time_args,  // Indices of inputs that are compile-time constants
     OptionalAttr<DictionaryAttr>:$compute_config  // Math fidelity, precision modes
   );
-  let regions = (region VariadicRegion<SizedRegion<1>>:$threads);
+  let regions = (region VariadicRegion<AnyRegion>:$threads);
   let results = (outs Variadic<AnyType>:$results);
   let description = [{
     Kernel operation representing a multi-threaded program on a grid of cores.
@@ -796,7 +816,7 @@ def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
 def TTL_ComputeThreadOp : TTL_Op<"compute_thread"> {
   let summary = "Compute thread executing on Tensix core";
   let arguments = (ins
-    Variadic<AnyType>:$operands,
+    Variadic<AnyType>:$operands,  // TODO: define and use a more specific type constraint
     OptionalAttr<StrAttr>:$microcore_hint  // Future evolution path
   );
   let regions = (region SizedRegion<1>:$body);
@@ -920,7 +940,7 @@ def TTL_GetRemoteMulticastSemaphoreOp : TTL_Op<"get_remote_multicast_semaphore">
 def TTL_TensorAccessorOp : TTL_Op<"tensor_accessor"> {
   let summary = "Create accessor for indexed tensor access";
   let arguments = (ins
-    AnyTensor:$tensor,
+    TTL_Tensor:$tensor,
     TTL_LayoutAttr:$layout,           // From create_metal_layout()
     TTL_MemorySpaceAttr:$memory_space
   );
@@ -1164,8 +1184,8 @@ tiles with corresponding TTKernel tile operations.
 ```tablegen
 def TTL_BlockAddOp : TTL_Op<"block_add"> {
   let summary = "Element-wise addition on tensor blocks";
-  let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
-  let results = (outs AnyTensor:$result);
+  let arguments = (ins TTL_Tensor:$lhs, TTL_Tensor:$rhs);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
     Element-wise addition of two blocks.
 
@@ -1178,8 +1198,8 @@ def TTL_BlockAddOp : TTL_Op<"block_add"> {
 
 def TTL_BlockMulOp : TTL_Op<"block_mul"> {
   let summary = "Element-wise multiplication on tensor blocks";
-  let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
-  let results = (outs AnyTensor:$result);
+  let arguments = (ins TTL_Tensor:$lhs, TTL_Tensor:$rhs);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
     Element-wise multiplication of two blocks.
 
@@ -1192,8 +1212,8 @@ def TTL_BlockMulOp : TTL_Op<"block_mul"> {
 
 def TTL_BlockMatmulOp : TTL_Op<"block_matmul"> {
   let summary = "Matrix multiplication on tensor blocks";
-  let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
-  let results = (outs AnyTensor:$result);
+  let arguments = (ins TTL_Tensor:$lhs, TTL_Tensor:$rhs);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
     Matrix multiplication of two blocks.
 
@@ -1220,11 +1240,11 @@ attention mechanisms and normalization patterns.
 def TTL_BlockReduceSumOp : TTL_Op<"block_reduce_sum"> {
   let summary = "Reduce sum along specified axis";
   let arguments = (ins
-    AnyTensor:$input,
-    AnyTensor:$scaling,  // Scaling tensor (typically ones) for reduction
+    TTL_Tensor:$input,
+    TTL_Tensor:$scaling,  // Scaling tensor (typically ones) for reduction
     I64Attr:$axis        // Axis to reduce along
   );
-  let results = (outs AnyTensor:$result);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
     Reduces input tensor along specified axis using sum operation.
     Used in normalization patterns such as attention mechanisms.
@@ -1245,10 +1265,10 @@ def TTL_BlockReduceSumOp : TTL_Op<"block_reduce_sum"> {
 def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
   let summary = "Reduce max along specified axis";
   let arguments = (ins
-    AnyTensor:$input,
+    TTL_Tensor:$input,
     I64Attr:$axis  // Axis to reduce along
   );
-  let results = (outs AnyTensor:$result);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
     Reduces input tensor along specified axis using max operation.
     Used for numerical stability in normalization patterns.
@@ -1266,10 +1286,10 @@ def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
 def TTL_BlockBcastOp : TTL_Op<"block_bcast"> {
   let summary = "Broadcast along specified axis";
   let arguments = (ins
-    AnyTensor:$input,
+    TTL_Tensor:$input,
     I64Attr:$axis  // Broadcast axis
   );
-  let results = (outs AnyTensor:$result);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
     Broadcasts input tensor along the specified axis by replicating values.
     Useful for normalization patterns (such as attention mechanisms) where
@@ -1326,7 +1346,7 @@ This pattern enables:
 ```tablegen
 def TTL_BlockStoreOp : TTL_Op<"block_store"> {
   let summary = "Store computation result to circular buffer block";
-  let arguments = (ins AnyTensor:$dst, AnyTensor:$src);
+  let arguments = (ins TTL_Tensor:$dst, TTL_Tensor:$src);
   let description = [{
     Python API `block.store(value)` maps to this operation.
     Blocking operation that materializes computation result and stores in block.
@@ -1897,6 +1917,17 @@ Operations that provide synchronization semantics should implement a custom
 interface enabling scheduling passes to understand barrier properties.
 
 ```tablegen
+// Define barrier type enum (in TTLOpsEnums.td)
+def TTL_BarrierType : I32EnumAttr<"BarrierType", "TTL barrier type", [
+  I32EnumAttrCase<"DMARead", 0>,
+  I32EnumAttrCase<"DMAWrite", 1>,
+  I32EnumAttrCase<"CB", 2>,
+  I32EnumAttrCase<"Semaphore", 3>
+]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+// Define synchronization interface (in TTLInterfaces.td)
 def TTLSynchronizationInterface : OpInterface<"TTLSynchronization"> {
   let description = [{
     Interface for operations that provide synchronization barriers.
@@ -1905,8 +1936,8 @@ def TTLSynchronizationInterface : OpInterface<"TTLSynchronization"> {
 
   let methods = [
     InterfaceMethod<
-      "Returns the barrier type (DMA read, DMA write, CB, semaphore)",
-      "TTL::BarrierType", "getBarrierType"
+      "Returns the barrier type",
+      "::mlir::tt::ttl::BarrierType", "getBarrierType"
     >,
     InterfaceMethod<
       "Returns true if this is a global barrier affecting all operations",
@@ -2184,8 +2215,10 @@ def kernel(...):
 ```
 
 **Semantic meaning:**
-- `shape=[2, 1]` means each block contains 2×1 = 2 elements (tiles in this example)
-- CB operations (`wait`, `reserve`) always work on `shape[0] * shape[1]` elements
+- `shape=[2, 1]` means each block contains 2×1 = 2 elements (tiles in this
+  example)
+- CB operations (`wait`, `reserve`) always work on `shape[0] * shape[1]`
+  elements
 - Layout (tiled vs row-major) determined by element_type:
   - !ttcore.tile<...> → tiled layout, elements are tiles
   - Scalar types (f32, bf16, etc.) → row-major layout, elements are scalars
@@ -2294,7 +2327,7 @@ def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
     OptionalAttr<StrAttr>:$python_source_file,
     OptionalAttr<I64Attr>:$python_source_line
   );
-  let regions = (region VariadicRegion<SizedRegion<1>>:$threads);
+  let regions = (region VariadicRegion<AnyRegion>:$threads);
   let results = (outs Variadic<AnyType>:$results);
 }
 ```
@@ -2633,16 +2666,16 @@ leverage upstream transforms immediately.
 
 **Circular Buffer Operations:**
 ```mlir
-// TTL
-ttl.cb_wait %cb, 2
+// TTL (Python/user-facing)
+%blk = ttl.cb_wait %cb : !ttl.block<...>
 
-// TTKernel
-ttkernel.cb_wait_front %cb, 2
+// TTKernel (lowered - count derived from CB type)
+ttkernel.cb_wait_front %cb, 2  // 2 computed from CB.shape
 ```
 
 **Tile Extraction:**
 ```mlir
-// TTL
+// TTL (lowered form - internal IR)
 %tile0 = ttl.get_tile %cb, %c0
 %tile1 = ttl.get_tile %cb, %c1
 
@@ -2654,13 +2687,13 @@ ttkernel.copy_tile_init %cb
 
 **Block Compute:**
 ```mlir
-// TTL (block-level abstraction)
-ttl.cb_wait %a_cb, 2
-ttl.cb_wait %b_cb, 2
-%result = ttl.block_add %a_blk, %b_blk  // Abstract 2x1 block addition
+// TTL (user-facing block-level abstraction)
+%a_blk = ttl.cb_wait %a_cb : !ttl.block<...>
+%b_blk = ttl.cb_wait %b_cb : !ttl.block<...>
+%result = ttl.block_add %a_blk, %b_blk
 
-// TTKernel (explicit per-tile)
-ttkernel.cb_wait_front %a_cb, 2
+// TTKernel (explicit per-tile - lowered from block ops)
+ttkernel.cb_wait_front %a_cb, 2  // 2 from CB shape
 ttkernel.cb_wait_front %b_cb, 2
 ttkernel.tile_regs_acquire
 affine.for %i = 0 to 2 {
@@ -2924,7 +2957,9 @@ pykernel_gen = ttl_kernel
 
 ## 8. Implementation Roadmap
 
-The MVP delivers TTL → TTKernel → ConvertTTKernelToEmitC → C++ kernel source. This leverages existing tt-mlir infrastructure. Direct TTL → C++ emission (bypassing TTKernel) is deferred to post-MVP (see section 10.2).
+The MVP delivers TTL → TTKernel → ConvertTTKernelToEmitC → C++ kernel source.
+This leverages existing tt-mlir infrastructure. Direct TTL → C++ emission
+(bypassing TTKernel) is deferred to post-MVP (see section 10.2).
 
 ### Phase 1: Foundation (Week 1)
 **Goal**: TTL dialect compiles and registers with MLIR
@@ -3212,7 +3247,7 @@ abstraction:
 def TTL_TileProcOp : TTL_Op<"tile_proc"> {
   let summary = "Hardware execution unit with declared microcores";
   let arguments = (ins TTL_MicrocoreConfigAttr:$microcores);  // Future attribute
-  let regions = (region VariadicRegion<SizedRegion<1>>:$threads);
+  let regions = (region VariadicRegion<AnyRegion>:$threads);
 }
 
 def TTL_ThreadOp : TTL_Op<"thread"> {
@@ -3282,8 +3317,8 @@ def TTL_DistributedTensor : TTL_Type<"DistributedTensor", "dist_tensor"> {
     "ArrayRef<int64_t>":$gridShape,      // Distribution grid [8, 8]
     "ArrayRef<int64_t>":$shardShape,     // Per-core shard [32, 32]
     "Type":$elementType,                  // f32, bf16, etc.
-    "TTL::DistributionStrategyAttr":$strategy, // Sharded, interleaved, etc.
-    "TTL::MemorySpace":$memorySpace
+    "TTL_DistributionStrategyAttr":$strategy, // Sharded, interleaved, etc.
+    "TTL_MemorySpace":$memorySpace
   );
 
   let extraClassDeclaration = [{
