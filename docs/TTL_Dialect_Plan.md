@@ -43,7 +43,6 @@ This document specifies the TTL (TT-Lang) MLIR dialect, a tensor-level intermedi
 9. [TTNN Runtime Integration](#9-ttnn-runtime-integration)
 10. [Future Evolution](#10-future-evolution)
     - 10.1 [Microcore Model (Post-MVP)](#101-microcore-model-post-mvp)
-    - 10.2 [Single-Threaded Mode](#102-single-threaded-mode)
     - 10.3 [Distributed Tensor Type (Major Extension)](#103-distributed-tensor-type-major-extension)
     - 10.4 [Transform Dialect Integration for Scheduling](#104-transform-dialect-integration-for-scheduling)
 11. [Success Criteria](#11-success-criteria)
@@ -1863,7 +1862,7 @@ def TTL_ThreadOp : TTL_Op<"thread"> {
 3. Create automatic conversion pass: simple threads → microcore model
 4. Update examples incrementally
 
-### 9.2 C++ Backend (Post-TTKernel)
+### 10.2 C++ Backend (Post-TTKernel)
 
 After TTL → TTKernel is stable, add direct C++ emission:
 
@@ -1876,24 +1875,6 @@ Benefits:
 - Standalone kernels (no TTKernel dependency)
 - Potential for custom optimizations
 - Better debugging (direct C++ inspection)
-
-### 9.3 Single-Threaded Mode
-
-For simpler kernels, support single-threaded synchronous model:
-
-```python
-@ttl.kernel(mode="single_threaded")
-def simple_add(a, b, out):
-    # No explicit threads - compiler designs pipeline
-    for i in range(N):
-        result = a[i] + b[i]
-        out[i].store(result)
-```
-
-Compiler automatically:
-- Fissions into threads
-- Inserts synchronization
-- Allocates resources
 
 ### 10.3 Distributed Tensor Type (Major Extension)
 
@@ -1967,7 +1948,7 @@ func.func @distributed_matmul(
 ```
 
 **Phasing:**
-1. **Phase 1 (MVP)**: TTL with implicit sharding (current plan)
+1. **Phase 1 (MVP)**: TTL w/o sharding (current plan)
 2. **Phase 2**: Add `!ttl.dist_tensor` type
 3. **Phase 3**: Implement bufferization for distributed tensors
 4. **Phase 4**: Add redistribution operations and strategies
@@ -1984,8 +1965,6 @@ func.func @distributed_matmul(
 - Type-safe distributed programming
 - Reuse MLIR bufferization infrastructure
 - Enable complex multi-core algorithms (e.g., distributed attention, pipeline parallelism)
-
-**See**: `docs/DistributedTensorType.md` for complete proposal
 
 ### 10.4 Transform Dialect Integration for Scheduling
 
