@@ -134,9 +134,11 @@ jobs:
           cmake --install build
 
       - name: Move ttrt python package to tt-mlir install location
-        if: runner.os == 'Linux'
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
-          mv tt-mlir/build/python_packages/ttrt/runtime/* ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
+          set -x
+          mkdir -p tt-mlir-install/python_packages/ttrt/runtime || echo "Error: Could not create directory"
+          mv tt-mlir/build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/ || echo "Error: Could not move ttrt python_packages."
 
       - name: Configure tt-lang
         run: |
