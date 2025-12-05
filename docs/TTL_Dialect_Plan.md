@@ -257,15 +257,22 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let description = [{
     Circular buffer supporting both tiled and row-major tensor layouts per TT-Lang spec.
 
+    Shape units: The shape parameter is expressed in shape units derived from the source
+    tensor's layout (tiles for tiled tensors, scalars for row-major tensors).
+
     Layout determined by elementType:
-    - Tiled layout: elementType is !ttcore.tile<32x32, dtype>, shape counts tiles
+    - Tiled layout: elementType is !ttcore.tile<32x32, dtype>, shape in tiles
       Example: shape=[2,1], elementType=!ttcore.tile<32x32,f32> → 2 tiles per block
 
-    - Row-major layout: elementType is scalar type (f32, bf16, etc.), shape counts scalars
+    - Row-major layout: elementType is scalar type (f32, bf16, etc.), shape in scalars
       Example: shape=[64,32], elementType=f32 → 64×32 scalars per block
 
+    L1 memory allocation: Total L1 storage = block_size × buffer_factor
+      - block_size = shape[0] × shape[1] × ... × sizeof(elementType)
+      - buffer_factor determines number of blocks for producer-consumer pipelining
+      - Example: shape=[2,1], tile<32x32,f32>, buffer_factor=2 → 2 tiles × 2 blocks = 4 tiles in L1
+
     The isTiled() method returns true if elementType is a tile type, false otherwise.
-    Layout is determined by the element type itself.
   }];
 }
 
@@ -279,9 +286,13 @@ def TTL_Block : TTL_Type<"Block", "block"> {
     Represents a block of data (tiles or scalars) consumed/produced by compute operations.
     Tied to the originating circular buffer for proper pop/push semantics.
 
-    The block's shape and granularity match the circular buffer from which it was acquired.
-    This linkage enables ttl.cb_pop and ttl.cb_push to operate on the block alone,
-    determining which CB to use from the block's circularBuffer parameter.
+    Memory model per TT-Lang spec: Block memory is pre-allocated when the circular buffer
+    is created. The block inherits the CB's shape-unit granularity (tiles for tiled layout,
+    scalars for row-major layout). No dynamic allocation occurs during block acquisition.
+
+    The block's shape matches the CB's shape parameter. This linkage enables ttl.cb_pop
+    and ttl.cb_push to operate on the block alone, determining which CB to use from the
+    block's circularBuffer parameter.
 
     Per TT-Lang spec, blocks are acquired via cb.wait() or cb.reserve() and carry
     implicit association with their source CB for subsequent pop/push operations.
@@ -925,16 +936,20 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
     parameters. The "likeness" refers to deriving element_type and memory_space
     from the input tensor's layout and properties.
 
-    Layout determined by element_type per TT-Lang spec:
-    - Tiled layout: element_type is !ttcore.tile<32x32, dtype>, shape counts tiles
-      Example: shape=[2,1], element_type=!ttcore.tile<32x32,f32>, buffer_factor=2
-      Creates CB holding 2 blocks of 2 tiles each (4 tiles total)
+    Shape units and L1 allocation per TT-Lang spec:
+    - Shape parameter is in shape units (tiles for tiled, scalars for row-major)
+    - Total L1 storage = block_size × buffer_factor
+    - block_size = shape[0] × shape[1] × ... × sizeof(element_type)
 
-    - Row-major layout: element_type is scalar type (f32, bf16, etc.), shape counts scalars
-      Example: shape=[64,32], element_type=f32, buffer_factor=2
-      Creates CB holding 2 blocks of 64×32 scalars each
+    Layout examples:
+    - Tiled: shape=[2,1], element_type=!ttcore.tile<32x32,f32>, buffer_factor=2
+      → 2 tiles per block × 2 blocks = 4 tiles total L1 allocation
+
+    - Row-major: shape=[64,32], element_type=f32, buffer_factor=2
+      → 64×32 scalars per block × 2 blocks total L1 allocation
 
     The resulting CB type's isTiled() method derives layout from element_type automatically.
+    Buffer factor enables producer-consumer pipelining (typically 2 for double-buffering).
 
     Optional attributes enable explicit control when needed:
     - buffer_index: Explicitly assign CB number (default: auto-assign in allocation pass)
