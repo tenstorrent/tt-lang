@@ -7,12 +7,11 @@ import threading
 import time
 import torch
 from typing import List, Tuple, Optional
-from python.sim.errors import CBContractError
 
 from python.sim.cbapi import CBAPI
 from python.sim.errors import CBContractError, CBTimeoutError
 from python.sim.typedefs import CBID
-from sim.cb import CircularBuffer
+from python.sim.cb import CircularBuffer
 
 
 # Pytest fixtures to reduce redundant setup code

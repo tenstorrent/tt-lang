@@ -105,7 +105,7 @@ class TestTensorToBlockCopy:
         with pytest.raises(
             ValueError, match="Tensor contains 3 tiles but Block has 2 slots"
         ):
-            tx = copy(source, block)  # type: ignore
+            copy(source, block)  # type: ignore
 
     def test_transfer_to_single_slot_block(self) -> None:
         """Test transferring to a Block with a single slot."""
@@ -170,7 +170,7 @@ class TestBlockToTensorCopy:
         destination = tu.zeros(96, 32)  # 3 tiles, but Block has 2
 
         with pytest.raises(ValueError, match="Expected 2 tiles but found 3"):
-            tx = copy(block, destination)  # type: ignore
+            copy(block, destination)  # type: ignore
 
     def test_transfer_from_single_slot_block(self) -> None:
         """Test transferring from a Block with a single slot."""
@@ -268,7 +268,7 @@ class TestCopyErrorHandling:
 
         # Should fail when trying to create copy to empty Block
         with pytest.raises(ValueError):
-            tx = copy(source, block)  # type: ignore
+            copy(source, block)  # type: ignore
 
 
 class TestMulticastCopy:

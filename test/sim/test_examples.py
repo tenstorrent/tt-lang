@@ -25,9 +25,9 @@ class TestExamples:
         """Test that the eltwise_add example runs without assertions being hit."""
         # Use the same parameters as the original example
         dim = 256
-        a_in = torch.randn(dim, dim)  # type: ignore
-        b_in = torch.randn(dim, dim)  # type: ignore
-        out = torch.zeros(dim, dim)  # type: ignore
+        a_in = torch.randn(dim, dim)
+        b_in = torch.randn(dim, dim)
+        out = torch.zeros(dim, dim)
 
         eltwise_add(a_in, b_in, out)
 
@@ -38,10 +38,10 @@ class TestExamples:
         """Test that the eltwise_pipe example runs without assertions being hit."""
         # Use parameters that match the eltwise_pipe requirements
         dim = 128
-        a_in = torch.randn(dim, dim)  # type: ignore
-        b_in = torch.randn(dim, dim)  # type: ignore
-        c_in = torch.randn(1, 1)  # type: ignore (single tile)
-        out = torch.zeros(dim, dim)  # type: ignore
+        a_in = torch.randn(dim, dim)
+        b_in = torch.randn(dim, dim)
+        c_in = torch.randn(1, 1)
+        out = torch.zeros(dim, dim)
 
         eltwise_pipe(a_in, b_in, c_in, out)
         print(out)

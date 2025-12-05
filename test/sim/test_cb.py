@@ -142,7 +142,7 @@ def test_error_handling():
 
     # Test unsupported copy operations with wrong types
     with pytest.raises(ValueError, match="No copy handler registered"):
-        tx = copy("invalid_source", "invalid_dest")  # type: ignore
+        copy("invalid_source", "invalid_dest")  # type: ignore
 
     print("Error handling test passed!")
 

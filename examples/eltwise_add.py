@@ -125,4 +125,4 @@ def eltwise_add(
                 # out_cb.pop() # double pop should fail
 
     # Execute the program across all cores
-    return ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
+    ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)

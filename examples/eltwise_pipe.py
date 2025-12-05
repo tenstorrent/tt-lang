@@ -174,4 +174,4 @@ def eltwise_pipe(
                 out_cb.pop()
 
     # Execute the program across all cores
-    return ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
+    ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)

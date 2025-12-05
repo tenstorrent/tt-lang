@@ -14,7 +14,7 @@ from collections import deque
 import threading
 import time
 import torch
-from . import torch_utils as tu
+from .torch_utils import tile_count
 from .block import Block
 from .constants import TILE_SHAPE, COPY_PIPE_TIMEOUT
 from .typedefs import Pipe, Count
@@ -127,7 +127,7 @@ class TensorToBlockHandler:
                 f"Copy only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
             )
 
-        num_tiles = tu.tile_count(src.shape, TILE_SHAPE)
+        num_tiles = tile_count(src.shape, TILE_SHAPE)
         expected_tiles = len(dst)
 
         if num_tiles != expected_tiles:
@@ -137,7 +137,7 @@ class TensorToBlockHandler:
 
     def transfer(self, src: torch.Tensor, dst: Block[torch.Tensor]) -> None:
         """Transfer tensor data to Block by splitting into tiles."""
-        num_tiles = tu.tile_count(src.shape, TILE_SHAPE)
+        num_tiles = tile_count(src.shape, TILE_SHAPE)
         width_tiles = src.shape[1] // TILE_SHAPE[1]
 
         # Extract tiles in row-major order
@@ -167,13 +167,13 @@ class BlockToTensorHandler:
                 f"Copy only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
             )
 
-        dst_tiles = tu.tile_count(dst.shape, TILE_SHAPE)
+        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
         if len(src) != dst_tiles:
             raise ValueError(f"Expected {len(src)} tiles but found {dst_tiles}")
 
     def transfer(self, src: Block[torch.Tensor], dst: torch.Tensor) -> None:
         """Transfer Block data to tensor by combining tiles."""
-        dst_tiles = tu.tile_count(dst.shape, TILE_SHAPE)
+        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
         width_tiles = dst.shape[1] // TILE_SHAPE[1]
 
         # Reconstruct tensor by placing tiles in their proper 2D positions
