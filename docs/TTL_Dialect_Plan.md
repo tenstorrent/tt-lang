@@ -252,12 +252,20 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
 
 def TTL_Block : TTL_Type<"Block", "block"> {
   let summary = "Logical unit of data exchanged via circular buffers";
-  let parameters = (ins "TensorType":$tensorType);
+  let parameters = (ins
+    "TensorType":$tensorType,
+    "TTL_CircularBuffer":$circularBuffer  // Reference to originating CB
+  );
   let description = [{
     Represents a block of data (tiles or scalars) consumed/produced by compute operations.
-    Carries optional DST register hint for liveness analysis.
+    Tied to the originating circular buffer for proper pop/push semantics.
 
-    The block's granularity (tile vs scalar) matches the circular buffer's from which it's acquired.
+    The block's shape and granularity match the circular buffer from which it was acquired.
+    This linkage enables ttl.cb_pop and ttl.cb_push to operate on the block alone,
+    determining which CB to use from the block's circularBuffer parameter.
+
+    Per TT-Lang spec, blocks are acquired via cb.wait() or cb.reserve() and carry
+    implicit association with their source CB for subsequent pop/push operations.
   }];
 }
 
@@ -992,15 +1000,17 @@ def TTL_CBPushOp : TTL_Op<"cb_push"> {
 }
 
 def TTL_GetTileOp : TTL_Op<"get_tile"> {
-  let summary = "Extract tile from circular buffer for compute";
+  let summary = "Extract tile from circular buffer (internal IR use)";
   let arguments = (ins
     TTL_CircularBuffer:$cb,
     Index:$tile_idx                   // Tile index within CB
   );
   let results = (outs AnyType:$tile);  // !ttcore.tile<32x32, f32>
   let description = [{
+    Internal IR operation generated when lowering block operations to tile loops.
+    Not exposed in TT-Lang Python DSL.
+
     Copies a tile from circular buffer to DST register for computation.
-    Used in compute threads to load operands.
 
     Maps to TTKernel operations:
     - ttkernel.copy_tile_init(cb)
@@ -1009,15 +1019,17 @@ def TTL_GetTileOp : TTL_Op<"get_tile"> {
 }
 
 def TTL_PackTileOp : TTL_Op<"pack_tile"> {
-  let summary = "Pack computed tile into circular buffer";
+  let summary = "Pack computed tile into circular buffer (internal IR use)";
   let arguments = (ins
     Index:$dst_idx,                   // DST register index
     TTL_CircularBuffer:$cb,
     Index:$tile_idx                   // Tile index within CB
   );
   let description = [{
+    Internal IR operation generated when lowering block store to tile loops.
+    Not exposed in TT-Lang Python DSL.
+
     Copies a tile from DST register back to circular buffer.
-    Used to materialize computation results.
 
     Maps to TTKernel operation:
     - ttkernel.pack_tile(dst_idx, cb, tile_idx)
@@ -1535,80 +1547,77 @@ def TTL_CopyOp : TTL_Op<"copy"> {
 }
 
 def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
-  let summary = "Conditionally execute if current core is pipe source";
-  let arguments = (ins
-    Variadic<TTL_Pipe>:$pipes
-  );
-  let regions = (region SizedRegion<1>:$thenRegion);
+  let summary = "Execute region for each pipe where current core is source";
+  let arguments = (ins Variadic<TTL_Pipe>:$pipes);
+  let regions = (region SizedRegion<1>:$body);
   let description = [{
     Python API `ttl.if_pipe_src(pipes, pipe_src)` maps to this operation.
-    The callback `pipe_src(pipe)` becomes a region with block argument for the pipe.
 
-    For multiple pipes, the lowering pass generates a loop iterating over pipes,
-    invoking the region body for each pipe where current core is the source.
+    Semantics: For each pipe where current core matches src_core, logically invoke
+    the region body with that pipe as block argument. Invocations for different pipes
+    may execute in parallel (independent pipe transfers).
 
-    Example transformation:
-      Python:
+    Example:
+      Python (TT-Lang spec):
         def pipe_src(pipe):
-            ttl.copy(blk, pipe)
-        ttl.if_pipe_src(pipes, pipe_src)
+            xf = ttl.copy(blk, pipe)
+            xf.wait()
+        ttl.if_pipe_src([pipe1, pipe2, pipe3], pipe_src)
 
       TTL IR:
-        ttl.if_pipe_src %pipes {
+        ttl.if_pipe_src %pipe1, %pipe2, %pipe3 {
           ^bb0(%pipe: !ttl.pipe):
-            ttl.copy %blk, %pipe
+            %xf = ttl.copy %blk, %pipe
+            ttl.wait %xf
         }
 
-      TTKernel (after lowering):
-        scf.for %i = 0 to num_pipes {
-          %pipe = // Load pipe from array
-          %is_src = // Check if current core matches pipe.src_core
-          scf.if %is_src {
-            // Region body with %pipe available
-            ttkernel.noc_async_write... using pipe coordinates
-          }
+    Lowering to TTKernel:
+      The pass determines which pipes match current core and generates code for each.
+      Execution model (parallel vs serial) determined by dependency analysis:
+        - If region operations are independent: parallel execution (scf.forall or unrolled)
+        - If region has dependencies: serial execution (scf.for)
+
+      Example (parallel - independent pipe writes):
+        // Core (0,0): matches pipe1 and pipe3 src_core
+        scf.forall (%pipe_idx) in (0, 2) {  // Parallel over pipe1, pipe3
+          %pipe = select %pipe_idx : pipe1 or pipe3
+          ttkernel.noc_async_write... using %pipe coordinates
         }
 
-    The region receives the active pipe as a block argument, enabling pipe-specific operations.
+    The region block argument receives each matching pipe, enabling pipe-specific operations.
   }];
 }
 
 def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
-  let summary = "Conditionally execute if current core is pipe destination";
-  let arguments = (ins
-    Variadic<TTL_Pipe>:$pipes
-  );
-  let regions = (region SizedRegion<1>:$thenRegion);
+  let summary = "Execute region for each pipe where current core is destination";
+  let arguments = (ins Variadic<TTL_Pipe>:$pipes);
+  let regions = (region SizedRegion<1>:$body);
   let description = [{
     Python API `ttl.if_pipe_dst(pipes, pipe_dst)` maps to this operation.
-    The callback `pipe_dst(pipe)` becomes a region with block argument for the pipe.
 
-    For multiple pipes, the lowering pass generates a loop iterating over pipes,
-    invoking the region body for each pipe where current core is a destination.
+    Semantics: For each pipe where current core matches the pipe's dst_core (unicast)
+    or is within dst_core_range (multicast), logically invoke the region body with
+    that pipe as block argument. Invocations for different pipes may execute in parallel.
 
-    Example transformation:
-      Python:
+    Example:
+      Python (TT-Lang spec):
         def pipe_dst(pipe):
-            ttl.copy(pipe, blk)
-        ttl.if_pipe_dst(pipes, pipe_dst)
+            xf = ttl.copy(pipe, blk)
+            xf.wait()
+        ttl.if_pipe_dst([pipe1, pipe2], pipe_dst)
 
       TTL IR:
-        ttl.if_pipe_dst %pipes {
+        ttl.if_pipe_dst %pipe1, %pipe2 {
           ^bb0(%pipe: !ttl.pipe):
-            ttl.copy %pipe, %blk
+            %xf = ttl.copy %pipe, %blk
+            ttl.wait %xf
         }
 
-      TTKernel (after lowering):
-        scf.for %i = 0 to num_pipes {
-          %pipe = // Load pipe from array
-          %is_dst = // Check if current core matches pipe destination/range
-          scf.if %is_dst {
-            // Region body with %pipe available
-            ttkernel.noc_async_read... using pipe coordinates
-          }
-        }
+    Lowering to TTKernel:
+      The pass determines which pipes match current core (checking dst_core or dst_core_range).
+      Execution model determined by dependency analysis (parallel vs serial).
 
-    The region receives the active pipe as a block argument, enabling pipe-specific operations.
+    The region block argument receives each matching pipe, enabling pipe-specific operations.
   }];
 }
 
@@ -2914,6 +2923,8 @@ pykernel_gen = ttl_kernel
 
 
 ## 8. Implementation Roadmap
+
+The MVP delivers TTL → TTKernel → ConvertTTKernelToEmitC → C++ kernel source. This leverages existing tt-mlir infrastructure. Direct TTL → C++ emission (bypassing TTKernel) is deferred to post-MVP (see section 10.2).
 
 ### Phase 1: Foundation (Week 1)
 **Goal**: TTL dialect compiles and registers with MLIR
