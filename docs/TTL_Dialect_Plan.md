@@ -72,8 +72,8 @@ hardware-specific optimizations before lowering to executable kernels.
 The TTL dialect provides a tensor-level intermediate representation for TT-lang
 programs (defined in [TT-lang.md](TT-lang.md)), enabling multi-stage lowering
 with explicit compiler transformations before generating C++ kernels. Generated
-kernels execute on TTNN runtime via the `ttnn.generic_op` API, which accepts
-C++ kernel source code and metadata through Python descriptors. TTL is designed
+kernels execute on TTNN runtime via the `ttnn.generic_op` API, which accepts C++
+kernel source code and metadata through Python descriptors. TTL is designed
 specifically for the TT-lang DSL surface language, while D2M serves as a
 lower-level dialect for data movement and compute operations.
 
@@ -114,8 +114,8 @@ For the TT-lang DSL specifically, a dedicated dialect provides:
    register allocation
 3. Support transformations: Liveness analysis, operation reordering, pipelining
 4. C++ kernel generation: Generate C++ kernel source strings with metadata that
-   are passed to `ttnn.generic_op` for runtime compilation and execution. This is
-   the MVP target.
+   are passed to `ttnn.generic_op` for runtime compilation and execution. This
+   is the MVP target.
 5. Future-proof: Extensible to new hardware generations via attributes
 
 ### Non-Goals (MVP)
@@ -153,10 +153,13 @@ Python Kernel → Python AST → TTL Dialect → TTL Passes → Kernel Descripto
 
 Key components:
 - TTL passes perform all analysis and optimization at the IR level
-- Kernel descriptor generator produces C++ source strings and metadata from TTL IR
-- Python runtime constructs `ttnn.KernelDescriptor`, `ttnn.CBDescriptor`, and `ttnn.ProgramDescriptor` objects
+- Kernel descriptor generator produces C++ source strings and metadata from TTL
+  IR
+- Python runtime constructs `ttnn.KernelDescriptor`, `ttnn.CBDescriptor`, and
+  `ttnn.ProgramDescriptor` objects
 - `ttnn.generic_op` handles kernel compilation and device execution
-- No separate build step required - kernels provided as source strings to runtime
+- No separate build step required - kernels provided as source strings to
+  runtime
 
 **Relationship to D2M Dialect:**
 
@@ -166,8 +169,8 @@ TTL and D2M serve different roles in the compilation pipeline:
   provides DSL-specific IR enabling TT-lang-aware transformations. TTL bypasses
   D2M and generates C++ kernel descriptors directly for `ttnn.generic_op`.
 
-- D2M: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR →
-  D2M → TTKernel). D2M serves as a general-purpose data movement and compute
+- D2M: Remains the primary dialect for framework paths (JAX/PyTorch → TTIR → D2M
+  → TTKernel). D2M serves as a general-purpose data movement and compute
   abstraction.
 
 - Convergence: Both TTL and D2M can target TTNN runtime, but through different
@@ -221,7 +224,38 @@ def TTL_Tile : TTL_Type<"Tile", "tile"> {
   }];
 }
 
-def TTL_Tensor : TensorOf<[F32, F16, BF16, TTL_Tile]>;
+def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
+  let summary = "TTL tensor encoding combining memory space and layout";
+  let parameters = (ins
+    TTL_MemorySpaceAttr:$memorySpace,
+    TTL_LayoutAttr:$layout
+  );
+  let assemblyFormat = "`<` $memorySpace `,` $layout `>`";
+  let description = [{
+    Encoding attached to `tensor<...>` types to carry both the memory-space
+    placement (L1/DRAM/DST/System) and layout metadata (tiled, sharded,
+    interleaved, etc.).
+  }];
+}
+
+// TODO: We may need more information here to match the TTNN tensor type
+// TODO: Use a TTL_ElementType once defined
+def TTL_Tensor : TensorOf<[F32, F16, BF16, TTL_Tile]> {
+  let summary = "TTL tensor with layout and memory space";
+  let parameters = (ins
+    ArrayRefParameter<"int64_t">:$shape,
+    "Type":$elementType,
+    TTL_TensorEncodingAttr:$encoding
+  );
+  let hasCustomAssemblyFormat = 1;
+  let description = [{
+    Tensors in TTL always include explicit layout and memory-space metadata via
+    the `TTL_TensorEncodingAttr`, e.g.,
+    `tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+    #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>`.
+  }];
+}
+
 
 // TTL Types (TTLTypes.td)
 
@@ -239,9 +273,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let extraClassDeclaration = [{
     // Calculate total elements for TTKernel CB conversion
     int64_t getTotalElements() const {
-      int64_t elementsPerBlock = std::accumulate(
-        getShape().begin(), getShape().end(), 1, std::multiplies<int64_t>());
-      return elementsPerBlock * getBufferFactor();
+      return getElementsPerBlock() * getBufferFactor();
     }
 
     // Helper for lowering
@@ -344,13 +376,12 @@ def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
   let summary = "Handle for indexed tensor access";
   let description = [{
     Represents a tensor with indexing capability for slicing operations.
-    Carries layout metadata from python/ttlang/layouts.py (tiled, sharded, interleaved).
+    Carries layout metadata from python/ttlang/layouts.py (tiled, sharded, interleaved)
+    via the encoding on the `TTL_Tensor` parameter (which also captures memory space).
     Used in DMA operations to specify source/destination with coordinates.
   }];
   let parameters = (ins
-    TTL_Tensor:$tensor,
-    TTL_LayoutAttr:$layout,              // Reuses create_metal_layout metadata
-    TTL_MemorySpaceAttr:$memorySpace
+    TTL_Tensor:$tensor
   );
 }
 ```
@@ -358,6 +389,7 @@ def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
 ### 3.2 Attributes
 
 ```tablegen
+// TODO: Convett to an enum attribute
 def TTL_MemorySpaceAttr : I32EnumAttr<"MemorySpace", "TTL memory space", [
   I32EnumAttrCase<"L1", 0>,
   I32EnumAttrCase<"DRAM", 1>,
@@ -367,10 +399,10 @@ def TTL_MemorySpaceAttr : I32EnumAttr<"MemorySpace", "TTL memory space", [
   let cppNamespace = "::mlir::tt::ttl";
 }
 
-def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {
-  let summary = "Grid topology description";
-  let parameters = (ins "ArrayRef<int64_t>":$dimensions);
-  let assemblyFormat = "`<` $dimensions `>`";
+def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {  
+  let summary = "Grid topology description";  
+  let parameters = (ins ArrayRefParameter<"int64_t">:$dimensions);  
+  let assemblyFormat = "`<` custom<DynamicIndexList>($dimensions, $static_dimensions) `>`";  
 }
 
 def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {
@@ -380,7 +412,10 @@ def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {
     - tiled vs row-major
     - sharded grids
     - interleaved patterns
-    Allows lossless representation of all TensorAccessor configurations.
+    Allows lossless representation of all TensorAccessor configurations. The
+    attribute participates in the `TTL_TensorEncodingAttr` attached to
+    `tensor<...>` types, so every `TTL_Tensor` carries explicit layout alongside
+    its memory-space annotation.
   }];
   // Parameters TBD based on MetalLayoutConfig from layouts.py
 }
@@ -542,12 +577,13 @@ for (uint32_t i = 0; i < n_shards; i++) {
 TTL lowering:
 
 ```mlir
-// TTL IR
-%accessor = ttl.tensor_accessor %tensor {layout = #ttl.layout<sharded, grid=[2,2]>}
+// TTL IR (%tensor : tensor<..., #ttl.tensor_encoding<DRAM,
+//                      #ttl.layout<sharded, grid=[2,2]>>>)
+%accessor = ttl.tensor_accessor %tensor
 %xf = ttl.copy %accessor[%shard_id], %cb
 
 // After TTLLowerDataMovement → TTKernel
-%ttk_accessor = // Convert TTL layout attr → TTKernel layout attr
+%ttk_accessor = // Convert tensor layout encoding → TTKernel layout attr
 ttkernel.noc_async_read_shard %shard_id, %ttk_accessor, %cb_l1_addr, %noc
 ```
 
@@ -650,9 +686,12 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
 ```mlir
 ttl.kernel @sharded_elementwise_add(
-  %a: tensor<64x64xf32>,
-  %b: tensor<64x64xf32>,
-  %out: tensor<64x64xf32>
+    %a: tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+      #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>,
+    %b: tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+      #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>,
+    %out: tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+      #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>
 ) attributes {grid = #ttl.grid<[2, 2]>, block_factors = [[1,1], [1,1], [1,1]]} {
 
   // Create circular buffers (tiled layout inferred from element_type)
@@ -663,19 +702,10 @@ ttl.kernel @sharded_elementwise_add(
   %out_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
                           buffer_factor=2, memory_space=L1
 
-  // Create TensorAccessors with sharded layout metadata
-  %a_accessor = ttl.tensor_accessor %a {
-    layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
-    memory_space = DRAM
-  }
-  %b_accessor = ttl.tensor_accessor %b {
-    layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
-    memory_space = DRAM
-  }
-  %out_accessor = ttl.tensor_accessor %out {
-    layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
-    memory_space = DRAM
-  }
+  // Create TensorAccessors (layout taken from tensor types)
+  %a_accessor = ttl.tensor_accessor %a
+  %b_accessor = ttl.tensor_accessor %b
+  %out_accessor = ttl.tensor_accessor %out
 
   ttl.datamovement_thread {
     %shard_id = ttl.core_dim(1) : index
@@ -820,7 +850,7 @@ This matches the TensorAccessor pattern in Metalium Guide (lines 193-213).
 | Stage | TensorAccessor Representation | Key Information |
 |-------|------------------------------|-----------------|
 | **Python** | `a[shard_id]` tensor indexing | Layout inferred from ttnn.Tensor properties |
-| **TTL IR** | `ttl.tensor_accessor` + `ttl.copy` | Layout in `#ttl.layout<sharded, ...>` attribute |
+| **TTL IR** | `ttl.tensor_accessor` + `ttl.copy` | Layout/memory in `#ttl.tensor_encoding<...>` |
 | **TTKernel IR** | `ttkernel.tensor_accessor` + `noc_async_read_shard` | Layout in `#ttkernel.layout<...>` + function compile_time_args |
 | **C++ Code** | `TensorAccessor(args, addr, size)` + `noc_async_read_shard(id, accessor, ...)` | Layout encoded in `TensorAccessorArgs<N>()` template |
 
@@ -1035,10 +1065,13 @@ def TTL_TensorAccessorOp : TTL_Op<"tensor_accessor"> {
   let summary = "Create accessor for indexed tensor access";
   let arguments = (ins
     TTL_Tensor:$tensor,
-    TTL_LayoutAttr:$layout,           // From create_metal_layout()
-    TTL_MemorySpaceAttr:$memory_space
   );
   let results = (outs TTL_TensorAccessor:$accessor);
+  let description = [{
+    Materializes a tensor accessor for the given tensor. The tensor's type
+    already encodes layout metadata (e.g., sharded vs interleaved) via its
+    encoding attribute, so no extra layout argument is required.
+  }];
 }
 ```
 
@@ -2751,11 +2784,9 @@ ttkernel.cb_push_back %out_cb, 2
 
 **DMA Operations (Sharded Tensor):**
 ```mlir
-// TTL (high-level)
-%accessor = ttl.tensor_accessor %input {
-  layout = #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>,
-  memspace = DRAM
-}
+// TTL (high-level, %input : tensor<..., #ttl.tensor_encoding<DRAM,
+//                     #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>)
+%accessor = ttl.tensor_accessor %input
 %xf = ttl.copy %accessor[%shard_id], %cb
 ttl.wait %xf
 
@@ -2775,11 +2806,8 @@ noc_async_read_shard(shard_id, input, cb_l1_addr);
 
 **DMA Operations (Interleaved Tensor):**
 ```mlir
-// TTL
-%accessor = ttl.tensor_accessor %input {
-  layout = #ttl.layout<interleaved>,
-  memspace = DRAM
-}
+// TTL (%input : tensor<..., #ttl.tensor_encoding<DRAM, #ttl.layout<interleaved>>> )
+%accessor = ttl.tensor_accessor %input
 %xf = ttl.copy %accessor[%page_id], %cb
 ttl.wait %xf
 
@@ -3116,14 +3144,21 @@ optimization using MLIR built-in infrastructure
 
 ### Runtime Architecture
 
-TTL integrates with TTNN runtime using the `ttnn.generic_op` API, which allows execution of custom C++ kernels by providing kernel source code and metadata through Python descriptors. This approach enables:
+TTL integrates with TTNN runtime using the `ttnn.generic_op` API, which allows
+execution of custom C++ kernels by providing kernel source code and metadata
+through Python descriptors. This approach enables:
 
-- Direct kernel specification: Provide C++ kernel source files as strings with compile-time and runtime arguments
-- Tensor metadata integration: Attach circular buffer configurations and memory layout information to operations
-- Python-first workflow: Initially implemented in Python for rapid development and testing
-- No separate compilation step: Kernels are provided as source strings and compiled by the TTNN runtime
+- Direct kernel specification: Provide C++ kernel source files as strings with
+  compile-time and runtime arguments
+- Tensor metadata integration: Attach circular buffer configurations and memory
+  layout information to operations
+- Python-first workflow: Initially implemented in Python for rapid development
+  and testing
+- No separate compilation step: Kernels are provided as source strings and
+  compiled by the TTNN runtime
 
-The TTL compilation pipeline generates the necessary kernel descriptors and metadata that are then passed to `ttnn.generic_op` for execution.
+The TTL compilation pipeline generates the necessary kernel descriptors and
+metadata that are then passed to `ttnn.generic_op` for execution.
 
 ### Execution Flow
 
@@ -3136,9 +3171,11 @@ TTL Dialect → TTL Passes → Kernel Descriptor Generation → ttnn.generic_op 
 ```
 
 Key components:
-1. TTL passes perform memory planning, synchronization inference, and resource allocation
+1. TTL passes perform memory planning, synchronization inference, and resource
+   allocation
 2. Kernel descriptor generator produces C++ kernel strings with metadata
-3. Python API constructs `ttnn.KernelDescriptor`, `ttnn.CBDescriptor`, and `ttnn.ProgramDescriptor` objects
+3. Python API constructs `ttnn.KernelDescriptor`, `ttnn.CBDescriptor`, and
+   `ttnn.ProgramDescriptor` objects
 4. `ttnn.generic_op` compiles and executes kernels on device
 5. Results returned as `ttnn.Tensor` objects
 
@@ -3187,7 +3224,8 @@ output = ttnn.generic_op([input_tensor, output_tensor], program)
 
 ### Compilation Pipeline
 
-The TTL compilation pipeline generates kernel descriptors and metadata for `ttnn.generic_op`:
+The TTL compilation pipeline generates kernel descriptors and metadata for
+`ttnn.generic_op`:
 
 ```python
 # Python API workflow (ttlang runtime)
@@ -3239,7 +3277,8 @@ output = ttnn.generic_op(io_tensors, program)
 
 ### C++ Kernel Generation from TTL
 
-TTL operations lower to C++ kernel strings following the TT-Metalium three-kernel pattern:
+TTL operations lower to C++ kernel strings following the TT-Metalium
+three-kernel pattern:
 
 Reader kernel (data movement):
 ```cpp
@@ -3390,7 +3429,8 @@ semaphores = [
 
 Phase 3 deliverable (Week 2-3):
 
-1. Kernel descriptor generation pass - create `TTLGenerateKernelDescriptors` pass that:
+1. Kernel descriptor generation pass - create `TTLGenerateKernelDescriptors`
+   pass that:
    - Traverses TTL IR after allocation and synchronization passes
    - Generates C++ kernel source strings for reader, compute, writer
    - Collects compile-time and runtime arguments
@@ -3464,11 +3504,13 @@ ttnn.close_device(device)
 
 ### Future Enhancements
 
-- C++ API support: Extend to C++ `ttnn::generic_op` for performance-critical paths
+- C++ API support: Extend to C++ `ttnn::generic_op` for performance-critical
+  paths
 - Kernel caching: Cache compiled kernels to avoid recompilation
 - Debugging support: Source-level debugging with kernel source mapping
 - Performance profiling: Integration with TTNN profiling tools
-- Distributed execution: Multi-device kernel execution with explicit data movement
+- Distributed execution: Multi-device kernel execution with explicit data
+  movement
 
 
 
