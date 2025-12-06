@@ -2,7 +2,9 @@
 
 ## Build/Lint/Test Commands
 - **Environment**: `source env/activate` (activate virtual environment first)
-- **Configure**: `cmake -G Ninja -B build -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`
+- **Configure**: with internal tt-mlir build `cmake -G Ninja -B build`; 
+with pre-build tt-mlir `cmake -G Ninja -B build -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build`;
+with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mlir/build/lib/cmake/ttmlir`
 - **Build**: `cmake --build build`
 - **Lint**: `pre-commit run --all-files` (includes clang-format, black,
   copyright checks)
@@ -14,8 +16,6 @@
   `SYSTEM_DESC_PATH`)
 - **Simulation tests**: `pytest test/sim/` (software simulation of runtime
   behavior)
-- **Performance tests**: `cmake --build build --target check-perf` (requires
-  `-DTTMLIR_ENABLE_OPMODEL=ON`)
 
 ## Code Style Guidelines
 - **C++ Style**: LLVM style (see .clang-format, .clang-tidy)
