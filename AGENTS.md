@@ -2,7 +2,7 @@
 
 ## Build/Lint/Test Commands
 - **Environment**: `source env/activate` (activate virtual environment first)
-- **Configure**: with internal tt-mlir build `cmake -G Ninja -B build`; 
+- **Configure**: with internal tt-mlir build `cmake -G Ninja -B build`;
 with pre-build tt-mlir `cmake -G Ninja -B build -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build`;
 with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mlir/build/lib/cmake/ttmlir`
 - **Build**: `cmake --build build`

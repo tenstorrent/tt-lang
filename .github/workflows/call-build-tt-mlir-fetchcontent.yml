@@ -95,22 +95,14 @@ jobs:
             - name: Move ttrt runtime to tt-mlir-install
               run: |
                   set -x
-                  mv build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
+                  cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
 
-            - name: Clean up tt-mlir build directory to save disk space
+            - name: Clean up tt-mlir build directory
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |
-                  echo "Disk usage before cleanup:"
-                  df -h
-                  du -sh build/tt-mlir-build 2>/dev/null || echo "tt-mlir-build directory not found"
-
-                  # Remove the large tt-mlir build directory after installation
                   # We only need tt-mlir-install for caching and artifacts
                   rm -rf build/tt-mlir-build
                   rm -rf build/_deps/tt-mlir-src
-
-                  echo "Disk usage after cleanup:"
-                  df -h
 
             - name: Archive build artifacts
               run: |
