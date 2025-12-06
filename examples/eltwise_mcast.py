@@ -9,8 +9,9 @@ from sim import (
     TILE_SHAPE,
     TensorAccessor,
     IndexType,
-    CoreIndex,
     CircularBuffer,
+    MulticastAddress,
+    MulticastType,
     dma,
     Program,
     compute,
@@ -28,9 +29,10 @@ if TYPE_CHECKING:
     grid="auto",  # NOTE: allow compiler to choose grid
     granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
-def eltwise_add(
+def eltwise_mcast(
     a_in: torch.Tensor,
     b_in: torch.Tensor,
+    c_in: torch.Tensor,
     out: torch.Tensor,
 ) -> None:
     # Assuming lightweight op input validation should be here
@@ -38,29 +40,44 @@ def eltwise_add(
     assert all(is_tiled(tensor, TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
 
+    # Check that c_in is 1x1 and expand it to TILE_SHAPE
+    assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
+    c_expanded = c_in.expand(TILE_SHAPE[0], TILE_SHAPE[1])
+
     row_tiles = a_in.shape[0] // TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // TILE_SHAPE[1]
 
     # Parallelizing by columns here to get reuse on C
     cols_per_core = math.ceil(col_tiles / (grid[0] * grid[1]))
-    buffer_factor = 2
+    buffer_factor = 2  # TODO: Should buffer factor be tunable by the user? Or tuned by pykernel_gen?
 
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
     b_accessor = TensorAccessor(b_in, index_type=IndexType.TILE)
+    c_accessor = TensorAccessor(c_expanded, index_type=IndexType.TILE)
     out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
 
     # Create circular buffers
     a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
     b_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
+    c_in_cb = CircularBuffer(shape=(1, 1), buffer_factor=buffer_factor)
     out_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=buffer_factor)
+
+    # Create multicast address for C
+    # Convention: mcast_addr.core_indices[0] is the sender, rest are receivers
+    mcast_addr = MulticastAddress(MulticastType.PUSH, (0, 1, 2, 3))
 
     @compute()
     def compute_func():
-        core_num: CoreIndex = core_index()  # core number in 2d grid
+        core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
+        c_block = c_in_cb.wait()  # blocking
+
         for ct in range(start_col_tile, end_col_tile):
+            # Reuse C across rows of A, B
             # TODO: Perhaps consider making RingView pointers that come from wait()/reserve() read/write only respectively?
             for rt_block in range(row_tiles // granularity):
                 print(
@@ -73,7 +90,7 @@ def eltwise_add(
                 out_block = out_cb.reserve()  # blocking
 
                 # Use store() to properly populate the RingView with computed results
-                result = a_block + b_block
+                result = a_block * b_block + c_block
                 out_block.store(result)
 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
@@ -83,12 +100,41 @@ def eltwise_add(
                 a_in_cb.pop()
                 # ditto
                 b_in_cb.pop()
+        c_in_cb.pop()
 
     @datamovement()
     def dm0():
-        core_num: CoreIndex = core_index()  # core number in 2d grid
+        core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
+
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+
+        if core_num == mcast_addr.core_indices[0]:
+            print("dm0 (C multicast): ", f"core={core_num}")
+            # C is only 1 tile
+            c_block = c_in_cb.reserve()
+            tx = dma(c_accessor[slice(0, 1), slice(0, 1)], c_block)
+            tx.wait()
+            tx2 = dma(
+                c_block, mcast_addr
+            )  # start sending the data to all cores in the mcast address. Non-blocking
+            tx2.wait()  # wait for all cores to do their corresponding dma receive
+            # NoC layer meaning: receive ACKs from all cores in the mcast(?)
+            c_in_cb.push()
+
+        elif core_num in mcast_addr.core_indices[1:]:
+            c_block = c_in_cb.reserve()
+            tx = dma(
+                mcast_addr, c_block
+            )  # start receiving data from the mcast address and store them in c_block. Non-blocking
+            # NoC layer meaning: wait for packets with that mcast address
+            tx.wait()  # Wait until all data from the mcast address is in c_block and sender is informed
+            # NoC layer meaning: all data received and ACK is sent back to sender core, assuming reliable delivery
+            c_in_cb.push()
+        else:
+            raise Exception(f"Core not in multicast address: {core_num}")
 
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
@@ -107,7 +153,9 @@ def eltwise_add(
 
     @datamovement()
     def dm1():
-        core_num: CoreIndex = core_index()  # core number in 2d grid
+        core_num = core_index()  # core number in 2d grid
+        if core_num not in mcast_addr.core_indices:
+            return  # This core is not participating in C multicast
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -118,16 +166,10 @@ def eltwise_add(
                 col_slice = slice(ct, ct + 1)
 
                 out_block = out_cb.wait()
-                # out_block[100] # accessing out of bounds should fail
 
                 tx = dma(out_block, out_accessor[row_slice, col_slice])
                 tx.wait()
                 out_cb.pop()
-                # TODO: We might want better error messages, most of them come from the underlying CBAPI
-                #       which might be confusing to the higher level CircularBuffer user.
-                # TODO: What if another thread writes to the same positions this RingView points to?
-                # out_block[0] # using pointer on stale data should fail
-                # out_cb.pop() # double pop should fail
 
     # Execute the program across all cores
     return Program(compute_func, dm0, dm1)(a_in, b_in, out)

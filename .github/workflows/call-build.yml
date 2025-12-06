@@ -2,24 +2,25 @@ name: Build
 
 on:
   workflow_dispatch:
-    inputs:
-      os:
-        description: 'Target OS to build (ubuntu-latest, macos-26)'
-        required: true
-        type: string
   workflow_call:
-    inputs:
-      os:
-        description: 'Target OS to build (ubuntu-latest, macos-26)'
-        required: true
-        type: string
 
 jobs:
   build:
-    runs-on: ${{ inputs.os }}
-    timeout-minutes: ${{ inputs.os == 'ubuntu-latest' && 240 || 360 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            timeout: 240
+            use-container: true
+          - os: macos-26
+            timeout: 360
+            use-container: false
 
-    container: ${{ inputs.os == 'ubuntu-latest' && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+
+    container: ${{ matrix.use-container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
 
     defaults:
       run:
@@ -29,8 +30,13 @@ jobs:
       TT_LANG_HOME: ${{ github.workspace }}
       TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
       TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
+      TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
 
     steps:
+      - name: Maximize space
+        if: inputs.os == 'ubuntu-latest'
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - name: Checkout tt-lang
         uses: actions/checkout@v4
         with:
@@ -84,7 +90,7 @@ jobs:
           path: |
             ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -97,8 +103,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_ENABLE_SHARED_LIB=ON \
             -DTTMLIR_ENABLE_PYKERNEL=ON \
-            -DTTMLIR_ENABLE_RUNTIME=ON \
-            -DTTMLIR_ENABLE_RUNTIME_TESTS=ON \
+            -DTTMLIR_ENABLE_RUNTIME=OFF \
+            -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
             -DTTMLIR_ENABLE_STABLEHLO=OFF \
             -DTTMLIR_ENABLE_OPMODEL=OFF \
             -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
@@ -107,15 +113,9 @@ jobs:
             -DTTMLIR_ENABLE_EXPLORER=OFF \
             -DBUILD_TESTING=OFF \
             -S .
-          cmake --build build
-          cmake --build build -t ttrt
+          cmake --build build --target all --target TTMLIRPythonModules
           cmake --install build
           cmake --install build --component TTMLIRPythonWheel
-          # Copy runtime Python module to install directory
-          cp build/runtime/python/_ttmlir_runtime*.so ${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/
-          # Copy ttrt wheel to install directory for artifact upload
-          mkdir -p ${{ env.TT_MLIR_DIR }}/wheels
-          cp build/tools/ttrt/build/ttrt*.whl ${{ env.TT_MLIR_DIR }}/wheels/
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
@@ -125,11 +125,11 @@ jobs:
 
       - name: Configure tt-lang
         run: |
-          source /opt/ttmlir-toolchain/venv/bin/activate
+          source ${{ env.TTMLIR_TOOLCHAIN_DIR }}/venv/bin/activate
           cmake -G Ninja \
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DTTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain \
+            -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
             -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
             -S .
@@ -147,37 +147,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ttlang-build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
           path: |
             build/python_packages
-            build/test
-            build/env
-            sim/
           retention-days: 1
-
-      - name: Archive tt-mlir installation
-        if: runner.os == 'Linux'
-        run: |
-          tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf tt-mlir-install.tar.zst -C ${{ env.TT_MLIR_DIR }} .
-
-      - name: Upload ttrt wheels for hardware tests
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ttlang-ttrt-whl-ubuntu
-          path: ${{ env.TT_MLIR_DIR }}/wheels/ttrt*.whl
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload tt-mlir installation for hardware tests
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ttlang-ttmlir-install-ubuntu
-          path: tt-mlir-install.tar.zst
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Clean up tt-mlir installation archive
-        if: runner.os == 'Linux'
-        run: rm -f tt-mlir-install.tar.zst

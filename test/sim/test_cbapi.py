@@ -159,7 +159,7 @@ def test_cb_pages_reservable_out_of_range_error(configured_cb: Tuple[CBAPI[int],
 
 
 def test_cb_pages_reservable_divisibility_error(
-    configured_cb8: Tuple[CBAPI[int], CBID]
+    configured_cb8: Tuple[CBAPI[int], CBID],
 ):
     api, cb = configured_cb8
     with pytest.raises(
@@ -242,6 +242,56 @@ def test_multiple_producers_error(timeout_api: CBAPI[int]):
         "Only one producer thread may reserve on a CB at a time" in msg
         for msg in errors
     )
+
+
+def test_allocate_cb_id(api: CBAPI[int]):
+    """Test that allocate_cb_id allocates sequential IDs."""
+    cb_id0 = api.allocate_cb_id()
+    cb_id1 = api.allocate_cb_id()
+    cb_id2 = api.allocate_cb_id()
+
+    assert cb_id0 == 0
+    assert cb_id1 == 1
+    assert cb_id2 == 2
+
+
+def test_allocate_cb_id_thread_safe(api: CBAPI[int]):
+    """Test that allocate_cb_id is thread-safe."""
+    allocated_ids: List[CBID] = []
+    lock = threading.Lock()
+
+    def allocate():
+        cb_id = api.allocate_cb_id()
+        with lock:
+            allocated_ids.append(cb_id)
+
+    threads = [threading.Thread(target=allocate) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # All IDs should be unique
+    assert len(allocated_ids) == 10
+    assert len(set(allocated_ids)) == 10
+    # IDs should be sequential (in some order)
+    assert sorted(allocated_ids) == list(range(10))
+
+
+def test_allocate_cb_id_exceeds_max():
+    """Test that allocating more than MAX_CBS raises RuntimeError."""
+    from python.sim.constants import MAX_CBS
+
+    api = CBAPI[int]()
+    # Allocate up to MAX_CBS
+    for _ in range(MAX_CBS):
+        api.allocate_cb_id()
+
+    # Next allocation should fail
+    with pytest.raises(
+        RuntimeError, match=f"Maximum number of circular buffers exceeded: {MAX_CBS}"
+    ):
+        api.allocate_cb_id()
 
 
 if __name__ == "__main__":

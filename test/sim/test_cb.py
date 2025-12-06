@@ -9,7 +9,7 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 """
 
 import pytest
-from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SIZE, dma
+from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SHAPE, dma
 from python.sim import torch_utils as tu
 from python.sim.errors import CBContractError
 
@@ -30,7 +30,7 @@ def test_circular_buffer_basic():
     assert len(write_view) == 1  # Should have space for 1 tile
 
     # Simulate writing data
-    test_data = tu.ones(TILE_SIZE, TILE_SIZE)
+    test_data = tu.ones(*TILE_SHAPE)
     write_view[0] = test_data
     cb.push()
 
@@ -62,7 +62,7 @@ def test_circular_buffer_multi_tile():
 
     # Fill with test data
     for i in range(2):
-        write_view[i] = tu.ones(TILE_SIZE, TILE_SIZE) * (i + 1)
+        write_view[i] = tu.ones(*TILE_SHAPE) * (i + 1)
 
     cb.push()
 
@@ -83,7 +83,7 @@ def test_circular_buffer_multi_tile():
 def test_dma_operations():
     """Test DMA operations between TensorAccessor and CircularBuffer."""
     # Create test tensors
-    tensor_a = tu.randn(TILE_SIZE * 2, TILE_SIZE * 2)  # 2x2 tiles
+    tensor_a = tu.randn(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
 
     accessor_a = TensorAccessor(tensor_a, index_type=IndexType.TILE)
 
@@ -101,7 +101,7 @@ def test_dma_operations():
 
     # Test DMA from circular buffer to tensor
     cb_read_view = cb_a.wait()
-    output_tensor = tu.zeros(TILE_SIZE, TILE_SIZE)  # Single tile output
+    output_tensor = tu.zeros(*TILE_SHAPE)  # Single tile output
 
     # Copy through DMA
     tx2 = dma(cb_read_view, output_tensor)
@@ -109,7 +109,7 @@ def test_dma_operations():
     cb_a.pop()
 
     # Verify the data was transferred
-    assert output_tensor.shape == (TILE_SIZE, TILE_SIZE)
+    assert output_tensor.shape == TILE_SHAPE
     # The output tensor should now contain the data from the circular buffer
 
     print("DMA operations test passed!")
@@ -140,7 +140,7 @@ def test_error_handling():
         cb.pop()
 
     # Test unsupported DMA operations with wrong types
-    with pytest.raises(ValueError, match="Unsupported DMA transfer"):
+    with pytest.raises(ValueError, match="No DMA handler registered"):
         tx = dma("invalid_source", "invalid_dest")  # type: ignore
 
     print("Error handling test passed!")
@@ -153,7 +153,9 @@ def test_example_usage_pattern():
     granularity = 4
 
     a_in = tu.randn(rows, cols)
-    c_in = tu.randn(TILE_SIZE, cols)  # Make c_in a full tile height for proper tiling
+    c_in = tu.randn(
+        TILE_SHAPE[0], cols
+    )  # Make c_in a full tile height for proper tiling
 
     # Create accessors
     a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)

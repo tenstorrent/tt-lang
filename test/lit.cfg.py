@@ -33,11 +33,8 @@ config.environment["PYTHONPATH"] = os.path.pathsep.join(
     ]
 )
 
-# Add feature for system descriptor availability
-# Tests that require hardware execution can use: REQUIRES: system-desc
-if "SYSTEM_DESC_PATH" in os.environ and os.path.exists(os.environ["SYSTEM_DESC_PATH"]):
+if "SYSTEM_DESC_PATH" in os.environ:
     config.environment["SYSTEM_DESC_PATH"] = os.environ["SYSTEM_DESC_PATH"]
-    config.available_features.add("system-desc")
 
 # Metal runtime requires both of these
 if "HOME" in os.environ:

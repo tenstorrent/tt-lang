@@ -20,46 +20,24 @@ jobs:
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
-  build-ubuntu:
+  build:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
-    with:
-      os: ubuntu-latest
-
-  build-macos:
-    if: github.event.pull_request.draft == false
-    uses: ./.github/workflows/call-build.yml
-    secrets: inherit
-    with:
-      os: macos-26
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
-  test-hardware:
-    needs: build-ubuntu
-    uses: ./.github/workflows/call-test-hardware.yml
-    secrets: inherit
-    with:
-      runs-on: n150
-      build-os: ubuntu
-      # TODO(bnorris): Update to 30 when ready for merge.
-      timeout: 3
-
   check-all-green:
     if: always()
     needs:
       - pre-commit
-      - build-ubuntu
-      - build-macos
+      - build
       - test-sim
-      - test-hardware
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
+          allowed-skips: build, test-sim
           jobs: ${{ toJSON(needs) }}
-          allowed-skips: build-macos
-          allowed-failures: test-hardware

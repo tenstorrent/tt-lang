@@ -12,12 +12,10 @@ operations.
 
 from typing import Tuple, Optional
 import torch
-from threading import Lock
 
 from .cbapi import CBAPI
 from .ringview import RingView
-from .typedefs import CBID, Size
-from .constants import MAX_CBS
+from .typedefs import CBID, Size, Shape
 
 
 # TODO: Perhaps make CircularBuffer generic as well? Currently supports
@@ -47,24 +45,12 @@ class CircularBuffer:
         cb.pop()  # Free consumed tiles
     """
 
-    # Class-level CB allocator for default API instance
-    _cb_allocator_lock = Lock()
-    _next_cb_id = 0
+    # Class-level default API instance
     _default_api = CBAPI[torch.Tensor]()
-
-    @classmethod
-    def _allocate_cb_id(cls) -> CBID:
-        """Allocate a unique CB ID. Thread-safe."""
-        with cls._cb_allocator_lock:
-            cb_id = cls._next_cb_id
-            cls._next_cb_id += 1
-            if cls._next_cb_id >= MAX_CBS:
-                raise RuntimeError("Maximum number of circular buffers exceeded")
-            return cb_id
 
     def __init__(
         self,
-        shape: Tuple[Size, Size],
+        shape: Shape,
         buffer_factor: Size = 2,
         api: Optional[CBAPI[torch.Tensor]] = None,
     ):
@@ -83,12 +69,6 @@ class CircularBuffer:
         if len(shape) != 2:
             raise ValueError(f"Shape must be a 2-tuple, got {shape}")
 
-        if shape[0] <= 0 or shape[1] <= 0:
-            raise ValueError(f"Shape dimensions must be positive, got {shape}")
-
-        if buffer_factor <= 0:
-            raise ValueError(f"Buffer factor must be positive, got {buffer_factor}")
-
         self._shape = shape
         self._buffer_factor = buffer_factor
 
@@ -99,8 +79,8 @@ class CircularBuffer:
         self._tiles_per_operation = shape[0] * shape[1]
         self._capacity_tiles = self._tiles_per_operation * buffer_factor
 
-        # Allocate and configure CB
-        self._cb_id = self._allocate_cb_id()
+        # Allocate and configure CB from the API instance
+        self._cb_id = self._api.allocate_cb_id()
         self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
 
     def wait(self) -> RingView[torch.Tensor]:

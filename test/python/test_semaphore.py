@@ -15,7 +15,7 @@ from ttlang.d2m_api import *
 @pykernel_gen(grid=(2, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_sem_ops(lhs, rhs, out):
     @compute()
-    async def comp(
+    def comp(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,
@@ -24,15 +24,17 @@ def test_sem_ops(lhs, rhs, out):
         # Semaphore in signature to match datamovement arg count, but unused in compute.
         # Compute threads skip semaphore conversion (D2MToTTKernel.cpp:1300-1301).
         # TODO(#11): Addition required to create linalg.generic with tile ops.
-        lhs_shard = lhs_cb.pop()
-        rhs_shard = rhs_cb.pop()
+        lhs_shard = lhs_cb.wait()
+        rhs_shard = rhs_cb.wait()
         out_shard = out_cb.reserve()
         result = lhs_shard + rhs_shard
         out_shard.store(result)
-        out_cb.pop()
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
 
     @datamovement()
-    async def dm(
+    def dm(
         lhs_cb: CircularBuffer,
         rhs_cb: CircularBuffer,
         out_cb: CircularBuffer,

@@ -9,6 +9,7 @@
 # and TTLANG_VERSION as the full version string.
 macro(ttlang_set_version VERSION)
   string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$" _match "${VERSION}")
+
   if(NOT _match)
     message(FATAL_ERROR "Invalid version format: ${VERSION}. Expected format: MAJOR.MINOR.PATCH (e.g., 0.2.0)")
   endif()
@@ -25,16 +26,18 @@ endmacro()
 # For example: PATH="/a/b/c/d", LEVELS=2 returns "/a/b".
 function(ttlang_get_parent_dir PATH LEVELS OUTPUT_VAR)
   set(_current_path "${PATH}")
+
   foreach(_i RANGE 1 ${LEVELS})
     get_filename_component(_current_path "${_current_path}" DIRECTORY)
   endforeach()
+
   set(${OUTPUT_VAR} "${_current_path}" PARENT_SCOPE)
 endfunction()
 
 # ttlang_execute_with_env(
-#   COMMAND <command_string>
-#   ENV_SCRIPT <path_to_activate_script>
-#   [WORKING_DIRECTORY <directory>]
+# COMMAND <command_string>
+# ENV_SCRIPT <path_to_activate_script>
+# [WORKING_DIRECTORY <directory>]
 # )
 # Executes a command with an environment activation script sourced.
 # The command is run in a bash shell with the environment script sourced first.
@@ -48,6 +51,7 @@ function(ttlang_execute_with_env)
   if(NOT ARG_COMMAND)
     message(FATAL_ERROR "ttlang_execute_with_env: COMMAND is required")
   endif()
+
   if(NOT ARG_ENV_SCRIPT)
     message(FATAL_ERROR "ttlang_execute_with_env: ENV_SCRIPT is required")
   endif()
@@ -56,6 +60,7 @@ function(ttlang_execute_with_env)
     COMMAND_ECHO STDOUT
     COMMAND_ERROR_IS_FATAL ANY
   )
+
   if(ARG_WORKING_DIRECTORY)
     list(APPEND _exec_args WORKING_DIRECTORY "${ARG_WORKING_DIRECTORY}")
   endif()
@@ -65,8 +70,6 @@ function(ttlang_execute_with_env)
     ${_exec_args}
   )
 endfunction()
-
-
 
 # ttlang_collect_ttmlir_link_libs(OUTPUT_VAR)
 # Collects all tt-mlir and MLIR libraries needed for linking when using a build tree.
@@ -94,15 +97,33 @@ macro(ttlang_collect_ttmlir_link_libs OUTPUT_VAR)
 
   # Filter out targets that don't exist (e.g. StableHLO when disabled)
   set(_ttmlir_targets_existing "")
+
   foreach(target ${_ttmlir_targets})
     if(TARGET ${target})
       list(APPEND _ttmlir_targets_existing ${target})
     endif()
   endforeach()
 
+  # Check for StableHLO libraries that might not be in export targets
+  # These are conditionally built so we check if they exist
+  set(_stablehlo_libs
+    TTMLIRStableHLOToTTIR
+    TTMLIRStableHLOUtils
+    MLIRStableHLOTransforms
+    MLIRStableHLOPipelines
+  )
+  set(_stablehlo_libs_existing "")
+
+  foreach(target ${_stablehlo_libs})
+    if(TARGET ${target})
+      list(APPEND _stablehlo_libs_existing ${target})
+    endif()
+  endforeach()
+
   set(${OUTPUT_VAR}
     TTMLIRCompilerStatic
     ${_ttmlir_targets_existing}
+    ${_stablehlo_libs_existing}
     ${dialect_libs}
     ${conversion_libs}
     ${extension_libs}
@@ -141,6 +162,7 @@ macro(ttlang_setup_ttmlir_build_tree BUILD_DIR)
   if(DEFINED _TTMLIR__Python3_EXECUTABLE)
     set(Python3_EXECUTABLE "${_TTMLIR__Python3_EXECUTABLE}" CACHE FILEPATH "Python 3 executable from tt-mlir build" FORCE)
     message(STATUS "Using Python from tt-mlir build: ${Python3_EXECUTABLE}")
+
     # Only extract toolchain dir from Python if TTMLIR_TOOLCHAIN_DIR was not set from environment.
     if(NOT _TTMLIR_TOOLCHAIN_DIR_FROM_ENV)
       # Python is at /path/to/toolchain/venv/bin/python3, so go up 3 directories to get toolchain root
@@ -152,6 +174,7 @@ macro(ttlang_setup_ttmlir_build_tree BUILD_DIR)
   if(DEFINED _TTMLIR_CMAKE_HOME_DIRECTORY)
     # Using a tt-mlir build tree
     set(_TTMLIR_SOURCE_DIR "${_TTMLIR_CMAKE_HOME_DIRECTORY}")
+
     if(EXISTS "${_TTMLIR_SOURCE_DIR}/cmake/modules")
       message(STATUS "Found tt-mlir source directory: ${_TTMLIR_SOURCE_DIR}")
       list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_SOURCE_DIR}/cmake/modules")

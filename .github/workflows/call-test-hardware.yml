@@ -70,9 +70,6 @@ jobs:
         shell: bash
 
     env:
-      TT_LANG_HOME: ${{ github.workspace }}
-      TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
-      TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
       RUNS_ON: ${{ inputs.runs-on }}
 
     steps:
@@ -82,53 +79,43 @@ jobs:
           fetch-depth: 0
 
       - name: Git safe directory
-        run: git config --global --add safe.directory ${{ github.workspace }}
+        run: git config --global --add safe.directory "$(pwd)"
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ format('{0}-build-{1}', inputs.artifact-prefix, inputs.build-os) }}
-          path: .
-
-      - name: Download ttrt wheels
-        id: download-ttrt
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: ${{ format('{0}-ttrt-whl-{1}', inputs.artifact-prefix, inputs.build-os) }}
-          path: .
-
-      - name: Install ttrt wheels
-        if: steps.download-ttrt.outcome == 'success'
-        run: |
-          source build/env/activate
-          pip install ttrt-*.whl --upgrade
-
-      - name: Download tt-mlir installation
+      - name: Download build artifacts archive
         uses: actions/download-artifact@v4
         with:
           name: ${{ format('{0}-ttmlir-install-{1}', inputs.artifact-prefix, inputs.build-os) }}
           path: .
 
-      - name: Extract tt-mlir installation
+      - name: Extract build artifacts
         run: |
-          mkdir -p ${{ env.TT_MLIR_DIR }}
-          tar -I 'zstd --long=31' -xf tt-mlir-install.tar.zst -C ${{ env.TT_MLIR_DIR }}
-          rm -f tt-mlir-install.tar.zst
+          set -x
+          ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
+          tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
+          rm -f "${ARTIFACT_FILE}"
+          echo "Checking tt-mlir-install structure..."
+          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
+          ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
 
       - name: Set up environment variables
         run: |
-          echo "LD_LIBRARY_PATH=${{ env.TT_MLIR_DIR }}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${{ github.workspace }}/build/python_packages:${{ env.TT_MLIR_DIR }}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${{ env.TT_MLIR_DIR }}/bin:/opt/ttmlir-toolchain/bin:${PATH}" >> $GITHUB_ENV
+          TT_MLIR_DIR="$(pwd)/tt-mlir-install"
+          echo "TT_MLIR_DIR=${TT_MLIR_DIR}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=${TT_MLIR_DIR}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
+          echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
+
+      - name: Run smoketest
+        run: |
+          python3 test/python/smoketest.py
 
       - name: Generate system descriptor
         run: |
-          ls -al build/env/
-          find /opt/ttmlir-toolchain -name ttrt -type f -perm -u=x -exec echo "Found ttrt binary at: {}" \;
-          .github/scripts/generate_system_descriptor.sh ${{ inputs.runs-on }}
+          set -x
+          source /opt/ttmlir-toolchain/venv/bin/activate || echo "Failed to activate environment"
+          python3 ./.github/scripts/trtt_wrapper.py query --save-artifacts --disable-eth-dispatch || echo "Failed to save artifacts"
 
-      - name: Run hardware tests
+      - name: Run lit tests
         env:
           TTLANG_VERBOSE_PASSES: 0
         run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }} || true

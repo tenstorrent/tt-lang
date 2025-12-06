@@ -43,3 +43,16 @@ Issues = "https://github.com/tenstorrent/tt-lang/issues"
 build = "cp311-manylinux_x86_64*"
 skip = "*-musllinux_*"
 build-verbosity = 2
+
+[tool.pyright]
+typeCheckingMode = "strict"
+reportMissingTypeStubs = "warning"
+reportMissingImports = "error"
+reportUnknownParameterType = "error"
+reportUnknownArgumentType = "error"
+reportUnknownVariableType = "error"
+reportUnknownMemberType = "error"
+reportUntypedFunctionDecorator = "error"
+reportPrivateUsage = "warning"
+reportImportCycles = "error"
+reportUnnecessaryIsInstance = "warning"
