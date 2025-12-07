@@ -1,6 +1,6 @@
 # TTL Dialect Data Movement Operations
 
-**Part of**: [TTL Dialect Design Plan](TTL_Dialect_Plan.md)
+**Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
 This document specifies data movement operations, resource creation, synchronization, and MLIR interface requirements for the TTL dialect.
 
@@ -18,10 +18,10 @@ This document specifies data movement operations, resource creation, synchroniza
 
 ## Related Documents
 
-- [Back to Overview](TTL_Dialect_Plan.md)
-- [Type System](TTL_Type_System.md) - Types used by these operations
-- [Compute Operations](TTL_Compute_Operations.md) - Compute operations
-- [Compilation Pipeline](TTL_Compilation_Pipeline.md) - How these operations are lowered
+- [Back to Overview](01_TTL_Dialect_Plan.md)
+- [Type System](02_TTL_Type_System.md) - Types used by these operations
+- [Compute Operations](03_TTL_Compute_Operations.md) - Compute operations
+- [Compilation Pipeline](05_TTL_Compilation_Pipeline.md) - How these operations are lowered
 
 ---
 

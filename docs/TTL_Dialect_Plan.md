@@ -6,15 +6,15 @@
 
 **This monolithic document has been split into modular documents for better organization and readability.**
 
-**Please see the new modular documentation at: [docs/ttl/TTL_Dialect_Plan.md](ttl/TTL_Dialect_Plan.md)**
+**Please see the new modular documentation at: [docs/ttl/01_TTL_Dialect_Plan.md](ttl/01_TTL_Dialect_Plan.md)**
 
 The new structure includes:
-- **[TTL_Dialect_Plan.md](ttl/TTL_Dialect_Plan.md)** - Top-level overview
-- **[TTL_Type_System.md](ttl/TTL_Type_System.md)** - Type system specification
-- **[TTL_Compute_Operations.md](ttl/TTL_Compute_Operations.md)** - Compute operations and DST tiling
-- **[TTL_Data_Movement_Operations.md](ttl/TTL_Data_Movement_Operations.md)** - Data movement and synchronization
-- **[TTL_Compilation_Pipeline.md](ttl/TTL_Compilation_Pipeline.md)** - Compilation passes and lowering
-- **[TTL_Implementation_and_Runtime.md](ttl/TTL_Implementation_and_Runtime.md)** - Integration and roadmap
+- **[01_TTL_Dialect_Plan.md](ttl/01_TTL_Dialect_Plan.md)** - Top-level overview
+- **[02_TTL_Type_System.md](ttl/02_TTL_Type_System.md)** - Type system specification
+- **[03_TTL_Compute_Operations.md](ttl/03_TTL_Compute_Operations.md)** - Compute operations and DST tiling
+- **[04_TTL_Data_Movement_Operations.md](ttl/04_TTL_Data_Movement_Operations.md)** - Data movement and synchronization
+- **[05_TTL_Compilation_Pipeline.md](ttl/05_TTL_Compilation_Pipeline.md)** - Compilation passes and lowering
+- **[06_TTL_Implementation_and_Runtime.md](ttl/06_TTL_Implementation_and_Runtime.md)** - Integration and roadmap
 
 **This file is kept for historical reference only and will not be updated.**
 

@@ -1,6 +1,6 @@
 # TTL Dialect Type System
 
-**Part of**: [TTL Dialect Design Plan](TTL_Dialect_Plan.md)
+**Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
 This document specifies the type system for the TTL (TT-Lang) MLIR dialect, including core types, attributes, and TensorAccessor support strategy.
 
@@ -12,10 +12,10 @@ This document specifies the type system for the TTL (TT-Lang) MLIR dialect, incl
 
 ## Related Documents
 
-- [Back to Overview](TTL_Dialect_Plan.md)
-- [Compute Operations](TTL_Compute_Operations.md) - Operations using these types
-- [Data Movement Operations](TTL_Data_Movement_Operations.md) - Data movement with these types
-- [Compilation Pipeline](TTL_Compilation_Pipeline.md) - How types are converted during compilation
+- [Back to Overview](01_TTL_Dialect_Plan.md)
+- [Compute Operations](03_TTL_Compute_Operations.md) - Operations using these types
+- [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement with these types
+- [Compilation Pipeline](05_TTL_Compilation_Pipeline.md) - How types are converted during compilation
 
 ---
 

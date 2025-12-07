@@ -1,6 +1,6 @@
 # TTL Dialect Implementation and Runtime Integration
 
-**Part of**: [TTL Dialect Design Plan](TTL_Dialect_Plan.md)
+**Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
 This document covers Python integration, implementation roadmap, TTNN runtime integration, future evolution, success criteria, design rationale, and references.
 
@@ -23,11 +23,11 @@ This document covers Python integration, implementation roadmap, TTNN runtime in
 
 ## Related Documents
 
-- [Back to Overview](TTL_Dialect_Plan.md)
-- [Type System](TTL_Type_System.md)
-- [Compute Operations](TTL_Compute_Operations.md)
-- [Data Movement Operations](TTL_Data_Movement_Operations.md)
-- [Compilation Pipeline](TTL_Compilation_Pipeline.md)
+- [Back to Overview](01_TTL_Dialect_Plan.md)
+- [Type System](02_TTL_Type_System.md)
+- [Compute Operations](03_TTL_Compute_Operations.md)
+- [Data Movement Operations](04_TTL_Data_Movement_Operations.md)
+- [Compilation Pipeline](05_TTL_Compilation_Pipeline.md)
 
 ---
 

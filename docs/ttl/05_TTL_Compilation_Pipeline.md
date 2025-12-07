@@ -1,6 +1,6 @@
 # TTL Dialect Compilation Pipeline
 
-**Part of**: [TTL Dialect Design Plan](TTL_Dialect_Plan.md)
+**Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
 This document specifies the compilation pipeline, including pass architecture, lowering strategies, and type conversions.
 
@@ -19,11 +19,11 @@ This document specifies the compilation pipeline, including pass architecture, l
 
 ## Related Documents
 
-- [Back to Overview](TTL_Dialect_Plan.md)
-- [Type System](TTL_Type_System.md) - Types being converted
-- [Compute Operations](TTL_Compute_Operations.md) - Includes DST register tiling (section 5.6)
-- [Data Movement Operations](TTL_Data_Movement_Operations.md) - Data movement lowering
-- [Implementation and Runtime](TTL_Implementation_and_Runtime.md) - Python integration
+- [Back to Overview](01_TTL_Dialect_Plan.md)
+- [Type System](02_TTL_Type_System.md) - Types being converted
+- [Compute Operations](03_TTL_Compute_Operations.md) - Includes DST register tiling (section 5.6)
+- [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement lowering
+- [Implementation and Runtime](06_TTL_Implementation_and_Runtime.md) - Python integration
 
 ---
 

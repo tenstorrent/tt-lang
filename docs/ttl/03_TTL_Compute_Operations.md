@@ -1,6 +1,6 @@
 # TTL Dialect Compute Operations
 
-**Part of**: [TTL Dialect Design Plan](TTL_Dialect_Plan.md)
+**Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
 This document specifies compute operations, circular buffers, fusion, and DST register capacity management for the TTL dialect.
 
@@ -20,10 +20,10 @@ This document specifies compute operations, circular buffers, fusion, and DST re
 
 ## Related Documents
 
-- [Back to Overview](TTL_Dialect_Plan.md)
-- [Type System](TTL_Type_System.md) - Types used by these operations
-- [Data Movement Operations](TTL_Data_Movement_Operations.md) - Data movement and synchronization
-- [Compilation Pipeline](TTL_Compilation_Pipeline.md) - How these operations are lowered
+- [Back to Overview](01_TTL_Dialect_Plan.md)
+- [Type System](02_TTL_Type_System.md) - Types used by these operations
+- [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement and synchronization
+- [Compilation Pipeline](05_TTL_Compilation_Pipeline.md) - How these operations are lowered
 
 ---
 
