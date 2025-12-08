@@ -11,8 +11,8 @@ Output = exp(A + B) + C
 - Block-based processing: Processes tiles in 8×8 blocks (64 tiles per block).
 - Maximum DST utilization: Processes 4 tiles per DST acquire/release cycle (uses all 8 DST registers, which is the max
 available for f16 with `dst_full_sync_en=false`; this is the default, not modified in this example).
-- No intermediate CB storage: All operations happen in DST registers.
-- Reduced memory bandwidth: Only read inputs and write final output (eliminates intermediate writes/reads).
+- No intermediate CB storage; all operations happen in DST registers.
+- Only read inputs and write final output (eliminates intermediate writes/reads).
 
 ## File Structure
 
@@ -22,12 +22,12 @@ ttnn_fused_example/
 │   ├── compute/
 │   │   └── fused_elementwise.cpp    # Compute kernel (3 fused ops, block processing)
 │   └── dataflow/
-│       ├── reader_ternary.cpp        # Single-buffered reader
-│       ├── reader_ternary_db.cpp     # Double-buffered reader
-│       └── writer_unary.cpp          # Writes output tensor in blocks
-├── test_fused_kernel.py         # Python test using ttnn.generic_op
-├── utils.py                           # Tensor comparison utilities
-└── README.md                          # This file
+│       ├── reader_ternary.cpp       # Single-buffered reader
+│       ├── reader_ternary_db.cpp    # Double-buffered reader
+│       └── writer_unary.cpp         # Writes output tensor in blocks
+├── test_fused_kernel.py             # Python test using ttnn.generic_op
+├── utils.py                         # Tensor comparison utilities
+└── README.md                        # This file
 ```
 
 ## Prerequisites
@@ -72,7 +72,10 @@ The compute kernel processes tiles in blocks, with inner loops over DST-sized ch
 
 ```
 for each block (64 tiles):
-    wait for block from reader
+    cb_wait_front(cb_in0, block_size)
+    cb_wait_front(cb_in1, block_size)
+    cb_wait_front(cb_in2, block_size)
+
     for each DST cycle (4 tiles):
         tile_regs_acquire()
 
@@ -88,31 +91,44 @@ for each block (64 tiles):
         add_binary_tile_init()
         for i in 0..3: add_binary_tile(i, i+4, i)
 
-        # exp(A+B) in-place on registers 0-3
-        exp_tile_init()
-        for i in 0..3: exp_tile(i)
+        # f(A+B) in-place on registers 0-3 (f = exp or relu)
+        unary_tile_init()  # exp_tile_init() or relu_tile_init()
+        for i in 0..3: unary_tile(i)
 
         # Copy C to DST registers 4-7
         copy_tile_init(cb_in2)
         for i in 0..3: copy_tile(cb_in2, base+i, i+4)
 
-        # exp(A+B) + C → registers 0-3
+        # f(A+B) + C → registers 0-3
         add_binary_tile_init()
         for i in 0..3: add_binary_tile(i, i+4, i)
 
+        # Commit and pack results
         tile_regs_commit()
         tile_regs_wait()
-        pack 4 tiles from registers 0-3
+
+        cb_reserve_back(cb_out, 4)
+        for i in 0..3: pack_tile(i, cb_out)
         tile_regs_release()
 
-    pop block from input CBs
+        cb_push_back(cb_out, 4)
+
+    # Pop entire block from input CBs
+    cb_pop_front(cb_in0, block_size)
+    cb_pop_front(cb_in1, block_size)
+    cb_pop_front(cb_in2, block_size)
+
+# Note: If block_size is not divisible by 4, a remainder loop handles the last
+# few tiles within each block. If n_tiles is not divisible by block_size, a
+# final remainder section processes the remaining tiles after all blocks.
 ```
 
 ### Circular Buffer Sizing
 
 CBs must hold an entire block of tiles:
 - Page size: 2KB per tile (32×32 × 2 bytes for bfloat16)
-- Total CB size: 64 tiles × 2KB = 128KB per CB
+- Single-buffered: 64 tiles × 2KB = 128KB per CB
+- Double-buffered: 2 × 64 tiles × 2KB = 256KB per CB (allows reader/compute overlap)
 
 ## Running the Test
 
@@ -121,14 +137,19 @@ CBs must hold an entire block of tiles:
 source $TT_METAL_ROOT/python_env/bin/activate && pytest -svx test_fused_kernel.py
 ```
 
-Or with specific tile counts:
+Or just the double buffered version with 1024 tiles:
 ```bash
-source $TT_METAL_ROOT/python_env/bin/activate && pytest -svx test_fused_kernel.py -k "num_tiles-64"
+source $TT_METAL_ROOT/python_env/bin/activate && pytest -svx test_fused_kernel.py -k "double_buf-1024"
 ```
 
 Note: No pre-compilation needed. The kernels are compiled JIT (just-in-time) by `ttnn.generic_op` when the test runs.
 
-Test parameters: 64, 128, 256 tiles × single/double buffering modes.
+Test parameters:
+- **Tile counts**: 64, 128, 256, 512, 1024
+- **Buffering modes**: single-buffered, double-buffered
+- **Core modes**: single-core, multi-core
+- **Unary operations**: exp, relu
+- **Remainder tests**: 3×3, 5×5, 7×3 block sizes (single-core, single-buffered)
 
 ## Example Output
 ```plaintext
