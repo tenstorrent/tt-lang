@@ -346,6 +346,47 @@ out_cb.pop()                      # Release (signal consumed)
 
 The acquire operations (`wait()`, `reserve()`) block until resources are available and return TensorBlock (memref views). The release operations (`pop()`, `push()`) are non-blocking, return nothing, and signal completion to the other thread. DMA operations perform the actual data movement to/from these views.
 
+**Loops**
+
+Loops use Python `for` with `range()`:
+
+```python
+for i in range(2):  # Must be literal - cannot capture variables
+    a = acc_cb.wait()
+    # ...
+```
+
+**Limitation:** Loop bounds must be literals. Variables and constants cannot be captured into the kernel.
+
+**Output Streaming Requirement**
+
+Loops that push to output CBs require `ttnn_interop=True` mode. Without it, the runtime doesn't consume output between iterations, causing deadlock when the output CB fills.
+
+**Accumulation Pattern**
+
+For true accumulation (read-modify-write same tensor across iterations), the DM thread handling the accumulator must serialize read and write operations:
+
+```python
+@datamovement()
+def dm_acc(acc_cb, addend_cb, out_cb):
+    for i in range(2):
+        # Read acc
+        acc_shard = acc_cb.reserve()
+        tx = dma(acc_accessor[0, 0], acc_shard)
+        tx.wait()
+        acc_cb.push()
+
+        # Wait for compute, then write back (serializes read-compute-write)
+        out_shard = out_cb.wait()
+        tx = dma(out_shard, out_accessor[0, 0])
+        tx.wait()
+        out_cb.pop()
+```
+
+This ensures iteration N+1 reads the value written by iteration N.
+
+See: `test/python/test_loop_basic.py`, `test/python/test_loop_nested.py`
+
 **TensorAccessor**
 
 TensorAccessor wraps function arguments to enable indexed tile-level access for DMA operations between memory hierarchies.
