@@ -7,10 +7,10 @@
 # RUN: FileCheck %s < %t.output.txt
 
 # Verify: Accumulating loop - proves loop runs multiple times.
-# out acts as accumulator: out = out + rhs each iteration.
-# Initial: out=3, rhs=3
-# Iter 1: out = 3 + 3 = 6
-# Iter 2: out = 6 + 3 = 9
+# acc tensor is read and written each iteration.
+# Initial: acc=3, addend=3
+# Iter 1: acc = 3 + 3 = 6
+# Iter 2: acc = 6 + 3 = 9
 # Final result: 9 (proves loop ran twice)
 
 import torch
@@ -24,52 +24,51 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)], ttnn_interop=True)
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], ttnn_interop=True)
 def test_loop_accumulate(acc, addend, out):
-    """Accumulating add: out = acc + addend, where acc is read/written each iter."""
+    """Accumulating add: acc = acc + addend each iteration."""
     acc_accessor = TensorAccessor(acc)
     addend_accessor = TensorAccessor(addend)
     out_accessor = TensorAccessor(out)
 
     @compute()
     def accum_compute(
-        acc_cb: CircularBuffer, addend_cb: CircularBuffer
+        acc_cb: CircularBuffer, addend_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         for i in range(2):
             a = acc_cb.wait()
             b = addend_cb.wait()
-            o = acc_cb.reserve()
+            o = out_cb.reserve()
             result = a + b
             o.store(result)
             acc_cb.pop()
             addend_cb.pop()
-            acc_cb.push()
+            out_cb.push()
 
     @datamovement()
-    def dm_read(acc_cb: CircularBuffer, addend_cb: CircularBuffer):
+    def dm_acc(acc_cb: CircularBuffer, addend_cb: CircularBuffer, out_cb: CircularBuffer):
         for i in range(2):
             # Read current accumulator value
             acc_shard = acc_cb.reserve()
-            tx_acc = dma(acc_accessor[0, 0], acc_shard)
-            tx_acc.wait()
+            tx = dma(acc_accessor[0, 0], acc_shard)
+            tx.wait()
             acc_cb.push()
 
-            # Read addend
-            addend_shard = addend_cb.reserve()
-            tx_add = dma(addend_accessor[0, 0], addend_shard)
-            tx_add.wait()
-            addend_cb.push()
-
-    @datamovement()
-    def dm_write(acc_cb: CircularBuffer, addend_cb: CircularBuffer):
-        for i in range(2):
-            # Write result back to accumulator
-            out_shard = acc_cb.wait()
+            # Wait for compute result, then write back to acc tensor
+            out_shard = out_cb.wait()
             tx = dma(out_shard, out_accessor[0, 0])
             tx.wait()
-            acc_cb.pop()
+            out_cb.pop()
 
-    return Program(accum_compute, dm_read, dm_write)(acc, addend, out)
+    @datamovement()
+    def dm_addend(acc_cb: CircularBuffer, addend_cb: CircularBuffer, out_cb: CircularBuffer):
+        for i in range(2):
+            addend_shard = addend_cb.reserve()
+            tx = dma(addend_accessor[0, 0], addend_shard)
+            tx.wait()
+            addend_cb.push()
+
+    return Program(accum_compute, dm_acc, dm_addend)(acc, addend, out)
 
 
 # CHECK: === Accumulating Loop Test ===
@@ -83,7 +82,6 @@ try:
     # Iter 2: 6 + 3 = 9
     acc_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
     addend_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
-    out_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)  # Start same as acc
     expected_value = 9.0  # 3 + 3 + 3 = 9 after 2 iterations
 
     # Create DRAM tensors
@@ -96,13 +94,6 @@ try:
     )
     addend_dram = ttnn.from_torch(
         addend_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out_dram = ttnn.from_torch(
-        out_torch,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
@@ -122,7 +113,7 @@ try:
     )
     acc = ttnn.to_memory_config(acc_dram, memory_config=l1_config)
     addend = ttnn.to_memory_config(addend_dram, memory_config=l1_config)
-    out = ttnn.to_memory_config(out_dram, memory_config=l1_config)
+    # NOTE: out = acc, same tensor! This enables true accumulation.
 
     print(f"Running accumulating loop (2 iterations)...")
     print(f"  Initial acc: 3.0, addend: 3.0")
@@ -130,10 +121,11 @@ try:
     print(f"  Iter 2: 6 + 3 = 9")
     print(f"  Expected final: {expected_value}")
 
-    test_loop_accumulate(acc, addend, out)
+    # Pass acc as both input and output - enables accumulation
+    test_loop_accumulate(acc, addend, acc)
 
-    # Get result
-    out_result = ttnn.to_torch(out)
+    # Get result from acc (which was updated in place)
+    out_result = ttnn.to_torch(acc)
 
     print(f"\n=== AFTER KERNEL ===")
     print(f"out[0,0] = {out_result[0,0].item()}")
