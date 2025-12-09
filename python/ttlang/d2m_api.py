@@ -72,8 +72,8 @@ class CompilerConfig:
     - TTNN: Compiles to C++ for ttnn.generic_op
     """
 
-    def __init__(self, ttnn_interop: bool = False):
-        self._compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
+    def __init__(self, ttnn_interop: bool = False, compile_only: bool = False):
+        self._compile_only = compile_only or os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
         self._runtime_available = binary is not None and runtime is not None
         self._is_macos = platform.system() == "Darwin"
         self._ttnn_interop = ttnn_interop
@@ -81,10 +81,6 @@ class CompilerConfig:
     @property
     def is_ttnn(self) -> bool:
         return self._ttnn_interop
-
-    @property
-    def is_metal(self) -> bool:
-        return not self._ttnn_interop
 
     @property
     def ttnn_mode(self) -> int:
@@ -689,7 +685,7 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        config = CompilerConfig(ttnn_interop)
+        config = CompilerConfig(ttnn_interop, compile_only)
 
         # fmt: off
         # Common pipeline passes up through EmitC conversion
@@ -775,8 +771,7 @@ def _compile_and_run_kernel(
         if config.is_ttnn:
             # TTNN interop path: compile to CompiledTTNNKernel
             compiled_kernel = _compile_ttnn_kernel(module, args, grid, num_outs)
-            if compiled_kernel is not None and not compile_only:
-                # Execute immediately for regular calls (not .compile())
+            if compiled_kernel is not None and config.should_execute():
                 compiled_kernel(*args)
             return compiled_kernel
 
