@@ -17,6 +17,8 @@ CBElemTypeVar = TypeVar("CBElemTypeVar", int, torch.Tensor)
 CBSlot = Optional[CBElemTypeVar]
 
 
+# TODO: Expand IndexType as needed, see relevant issue:
+#       https://github.com/tenstorrent/tt-lang/issues/69
 class IndexType(Enum):
     """
     Enumeration of indexing types for TensorAccessors.
