@@ -15,7 +15,7 @@ This document specifies the type system for the TTL (TT-Lang) MLIR dialect, incl
 - [Back to Overview](01_TTL_Dialect_Plan.md)
 - [Compute Operations](03_TTL_Compute_Operations.md) - Operations using these types
 - [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement with these types
-- [Compilation Pipeline](05_TTL_Compilation_Pipeline.md) - How types are converted during compilation
+- [Compilation Pipeline](06_TTL_Compilation_Pipeline.md) - How types are converted during compilation
 
 ---
 
@@ -203,9 +203,28 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
     Each slice in dst_core_range is a tuple (start, stop, step) per TT-Lang spec.
     The range is half-open: [start, stop). Step defaults to 1 if not specified.
 
-    Example from TT-Lang (multicast column):
-      ttl.Pipe(src_core=(x, 0), dst_core_range=(slice(x, x+1), slice(1, grid_y)))
-      Creates pipe from (x,0) to cores (x, 1), (x, 2), ..., (x, grid_y-1)
+    Loopback inference:
+    The compiler automatically detects when src_core is within dst_core_range and
+    selects the appropriate loopback multicast operation during lowering in
+    TTLLowerDataMovement pass.
+
+    Lowering:
+    - If src_core NOT in dst_core_range → ttkernel.noc_async_write_multicast, ttkernel.noc_semaphore_set_multicast
+    - If src_core IN dst_core_range → ttkernel.noc_async_write_multicast_loopback_src, ttkernel.noc_semaphore_set_multicast_loopback_src
+
+    Examples from TT-Lang:
+      Multicast column (sender excluded):
+        ttl.Pipe(src_core=(x, 0), dst_core_range=(slice(x, x+1), slice(1, grid_y)))
+        Pipe from (x,0) to cores (x, 1), (x, 2), ..., (x, grid_y-1)
+        Sender at (x,0) not in range [1, grid_y) → non-loopback operation
+
+      Symmetric barrier (sender included):
+        ttl.Pipe(src_core=(0, 0), dst_core_range=(slice(0, 4), 0))
+        All cores in range [0,4) receive signal, including sender at (0,0)
+        Sender at (0,0) in range [0, 4) → loopback operation automatically selected
+
+    See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for
+    detailed multicast patterns.
   }];
 }
 

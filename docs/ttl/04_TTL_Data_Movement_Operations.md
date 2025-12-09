@@ -2,7 +2,8 @@
 
 **Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
-This document specifies data movement operations, resource creation, synchronization, and MLIR interface requirements for the TTL dialect.
+This document specifies data movement operations, resource creation,
+synchronization, and MLIR interface requirements for the TTL dialect.
 
 ## Table of Contents
 
@@ -21,9 +22,10 @@ This document specifies data movement operations, resource creation, synchroniza
 - [Back to Overview](01_TTL_Dialect_Plan.md)
 - [Type System](02_TTL_Type_System.md) - Types used by these operations
 - [Compute Operations](03_TTL_Compute_Operations.md) - Compute operations
-- [Compilation Pipeline](05_TTL_Compilation_Pipeline.md) - How these operations are lowered
+- [Compilation Pipeline](06_TTL_Compilation_Pipeline.md) - How these operations
+  are lowered
 
----
+
 
 # 4. Data Movement Operations (Selected Sections)
 
@@ -313,6 +315,39 @@ def TTL_DMABarrierOp : TTL_Op<"dma_barrier"> {
   }];
 }
 ```
+
+Note: Atomic barriers for semaphore operations are inserted automatically during
+lowering by `TTLLowerDataMovement` based on memory effects analysis. No explicit
+`ttl.atomic_barrier` operation is provided at the TTL level but could be added
+in future.
+
+### 4.5.1 Pipe Synchronization and Semaphore Inference
+
+Pipes in TTL are high-level abstractions that lower to hardware DMAs plus
+semaphore-based synchronization. The compiler automatically infers and inserts
+semaphores for correct pipe operation through the `TTLInferPipeSemaphores` pass.
+
+For each pipe in a PipeNet, two semaphores are created:
+
+1. Ready semaphore: Receivers signal readiness to sender
+2. Validity semaphore: Sender signals data availability to receivers
+
+Pattern for multicast pipe (1 sender → N receivers):
+- Sender waits for ready_sem == N, then resets to 0
+- Sender performs DMA multicast
+- Sender sets validity_sem via multicast
+- Each receiver increments ready_sem (unicast to sender)
+- Each receiver waits for validity_sem == 1
+
+Pattern for unicast pipe (1 sender → 1 receiver):
+- Simplified protocol without multicast operations
+- May omit ready semaphore for single-producer-single-consumer patterns
+
+Users can override automatic inference by explicitly creating semaphores and
+using manual synchronization operations within pipe condition bodies.
+
+See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for
+detailed multicast patterns and C++ code generation examples.
 
 ### 4.6 Synchronization Operations
 

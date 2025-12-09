@@ -27,7 +27,7 @@ This document covers Python integration, implementation roadmap, TTNN runtime in
 - [Type System](02_TTL_Type_System.md)
 - [Compute Operations](03_TTL_Compute_Operations.md)
 - [Data Movement Operations](04_TTL_Data_Movement_Operations.md)
-- [Compilation Pipeline](05_TTL_Compilation_Pipeline.md)
+- [Compilation Pipeline](06_TTL_Compilation_Pipeline.md)
 
 ---
 
@@ -283,10 +283,17 @@ interfaces
    - Generate affine loops over tiles
    - Handle compute_region fusion
 
-4. TTLLowerSynchronization - CB ops → TTKernel CB ops
+4. `TTLLowerSynchronization` - CB ops → TTKernel CB ops
+
+5. `TTLInferPipeSemaphores` - Automatic semaphore creation for pipes
+   - Analyze pipe nets to determine required semaphore count
+   - Create two semaphores per pipe: ready and validity
+   - Insert semaphore operations in if_src and if_dst bodies
+   - Handle unicast vs multicast patterns
+   - See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for patterns
 
 **Deliverable**: Kernels with reduction/broadcast/fusion lower to TTKernel (and
-C++)
+C++), pipes lower with automatic semaphore synchronization
 
 ### Phase 4: Memory & Scheduling (Week 3)
 **Goal**: Resource allocation and optimization

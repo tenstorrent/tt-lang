@@ -20,8 +20,9 @@ For detailed specifications, see the linked documents below.
 3. **[Type System](02_TTL_Type_System.md)** - Core types, attributes, and TensorAccessor support
 4. **[Compute Operations](03_TTL_Compute_Operations.md)** - Compute operations, circular buffers, fusion, and DST register management
 5. **[Data Movement Operations](04_TTL_Data_Movement_Operations.md)** - Data movement, pipes, synchronization, and MLIR interfaces
-6. **[Compilation Pipeline](05_TTL_Compilation_Pipeline.md)** - Pass architecture, lowering strategies, and type conversions
-7. **[Implementation and Runtime](06_TTL_Implementation_and_Runtime.md)** - Python integration, TTNN runtime, roadmap, and design rationale
+6. **[Multicast Implementation](05_TTL_Multicast_Implementation.md)** - Multicast patterns, semaphore inference, and coordinate translation
+7. **[Compilation Pipeline](06_TTL_Compilation_Pipeline.md)** - Pass architecture, lowering strategies, and type conversions
+8. **[Implementation and Runtime](07_TTL_Implementation_and_Runtime.md)** - Python integration, TTNN runtime, roadmap, and design rationale
 
 ## Executive Summary
 
@@ -114,9 +115,10 @@ Continue reading the detailed specifications:
 1. **[Type System](02_TTL_Type_System.md)** - Understand the type system, attributes, and TensorAccessor support
 2. **[Compute Operations](03_TTL_Compute_Operations.md)** - Learn about compute operations and DST register management
 3. **[Data Movement Operations](04_TTL_Data_Movement_Operations.md)** - Understand data movement and synchronization
-4. **[Compilation Pipeline](05_TTL_Compilation_Pipeline.md)** - See how the compiler transforms TTL IR
-5. **[Implementation and Runtime](06_TTL_Implementation_and_Runtime.md)** - Integration details and roadmap
+4. **[Multicast Implementation](05_TTL_Multicast_Implementation.md)** - Multicast patterns and semaphore inference
+5. **[Compilation Pipeline](06_TTL_Compilation_Pipeline.md)** - See how the compiler transforms TTL IR
+6. **[Implementation and Runtime](07_TTL_Implementation_and_Runtime.md)** - Integration details and roadmap
 
 ## References
 
-See the [Implementation and Runtime](06_TTL_Implementation_and_Runtime.md#13-references) document for complete references.
+See the [Implementation and Runtime](07_TTL_Implementation_and_Runtime.md#13-references) document for complete references.

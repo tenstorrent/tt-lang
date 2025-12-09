@@ -23,7 +23,7 @@ This document specifies the compilation pipeline, including pass architecture, l
 - [Type System](02_TTL_Type_System.md) - Types being converted
 - [Compute Operations](03_TTL_Compute_Operations.md) - Includes DST register tiling (section 5.6)
 - [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement lowering
-- [Implementation and Runtime](06_TTL_Implementation_and_Runtime.md) - Python integration
+- [Implementation and Runtime](07_TTL_Implementation_and_Runtime.md) - Python integration
 
 ---
 
@@ -152,7 +152,62 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
     `ttkernel.noc_async_write_shard/page/tile`
   - CB → Pipe → CB: `ttkernel.noc_async_write_multicast` or unicast
   - Layout attribute determines which NOC API variant (shard/page/tile)
-- **Output**: TTKernel NOC operations using `TensorAccessor`
+  - Coordinate translation: logical → virtual/physical (see section 5.2.1)
+- **Output**: TTKernel NOC operations with device-specific coordinates
+
+### 5.2.1 Coordinate Space Translation
+
+TTL operates on logical grid coordinates, but NOC hardware operations require
+device-specific coordinate addressing. The `TTLLowerDataMovement` pass handles
+coordinate translation based on device architecture.
+
+Coordinate spaces:
+
+Logical Grid Coordinates:
+- Used by TTL operations: `ttl.core()`, `ttl.Pipe(src_core=...)`
+- User-facing abstraction: contiguous 0-indexed coordinates
+- Example: 2x2 grid has cores (0,0), (0,1), (1,0), (1,1)
+- Architecture-independent representation
+
+Device-Specific Coordinates:
+- Required by TTKernel NOC operations: `ttkernel.get_noc_addr(...)`, `ttkernel.get_noc_multicast_addr(...)`
+- May be virtual coordinates (Blackhole) or physical coordinates (Wormhole/Grayskull)
+- Obtained via device coordinate translation APIs
+- Architecture-dependent implementation
+
+Translation approach:
+
+The lowering pass uses device APIs to obtain appropriate coordinates for NOC operations.
+On newer architectures (Blackhole), coordinate virtualization is handled by the device
+layer. On older architectures (Wormhole/Grayskull), physical coordinates are computed
+directly. The TTL dialect abstracts these differences.
+
+Lowering strategy:
+
+For multicast operations, the pass generates coordinate computation at kernel runtime:
+1. Use `ttkernel.my_x[0]` / `ttkernel.my_y[0]` to get current core's device coordinates
+2. Compute multicast range bounds using affine arithmetic on these coordinates
+3. Pass computed coordinates to `ttkernel.get_noc_multicast_addr`
+4. Device coordinate APIs handle architecture-specific translation
+
+Example lowering:
+```
+TTL (logical): ttl.Pipe(src_core=(0,0), dst_core_range=(slice(1,4), 0))
+
+TTKernel (device-specific):
+  %my_x = ttkernel.my_x[0]
+  %my_y = ttkernel.my_y[0]
+  %mcast_start_x = affine.apply affine_map<(x) -> (x + 1)>(%my_x)
+  %mcast_end_x = affine.apply affine_map<(x) -> (x + 3)>(%my_x)
+  %mcast_addr = ttkernel.get_noc_multicast_addr(
+    %mcast_start_x, %my_y, %mcast_end_x, %my_y, %l1_addr)
+```
+
+The device coordinate translation layer ensures portability across hardware generations
+without requiring TTL dialect changes.
+
+See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for
+complete multicast coordinate handling examples.
 
 ### 5.3 Source Location Tracking
 
