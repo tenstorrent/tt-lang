@@ -2,7 +2,8 @@
 
 **Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
-This document specifies the type system for the TTL (TT-Lang) MLIR dialect, including core types, attributes, and TensorAccessor support strategy.
+This document specifies the type system for the TTL (TT-Lang) MLIR dialect,
+including core types, attributes, and TensorAccessor support strategy.
 
 ## Table of Contents
 
@@ -13,11 +14,14 @@ This document specifies the type system for the TTL (TT-Lang) MLIR dialect, incl
 ## Related Documents
 
 - [Back to Overview](01_TTL_Dialect_Plan.md)
-- [Compute Operations](03_TTL_Compute_Operations.md) - Operations using these types
-- [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement with these types
-- [Compilation Pipeline](06_TTL_Compilation_Pipeline.md) - How types are converted during compilation
+- [Compute Operations](03_TTL_Compute_Operations.md) - Operations using these
+  types
+- [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement
+  with these types
+- [Compilation Pipeline](06_TTL_Compilation_Pipeline.md) - How types are
+  converted during compilation
 
----
+
 
 ## 3. Type System
 
@@ -75,21 +79,21 @@ def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
   }];
 }
 
-// TODO: We may need more information here to match the TTNN tensor type
-// TODO: Use a TTL_ElementType once defined
+// Note: TTL uses standard MLIR tensor types with encoding attributes rather than
+// a custom tensor type. This avoids defining a new type and reuses upstream tensor
+// infrastructure. The TTL_TensorEncodingAttr provides layout and memory space metadata.
+//
+// Type constraint for operations:
 def TTL_Tensor : TensorOf<[F32, F16, BF16, TTL_Tile]> {
-  let summary = "TTL tensor with layout and memory space";
-  let parameters = (ins
-    ArrayRefParameter<"int64_t">:$shape,
-    "Type":$elementType,
-    TTL_TensorEncodingAttr:$encoding
-  );
-  let hasCustomAssemblyFormat = 1;
+  let summary = "MLIR tensor with TTL encoding attribute";
   let description = [{
-    Tensors in TTL always include explicit layout and memory-space metadata via
-    the `TTL_TensorEncodingAttr`, e.g.,
+    TTL tensors are standard MLIR RankedTensorType with TTL_TensorEncodingAttr
+    encoding attribute. The encoding carries layout and memory-space metadata, e.g.,
     `tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
     #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>`.
+
+    This approach reuses upstream tensor infrastructure and enables compatibility
+    with standard MLIR transformations (bufferization, tiling, etc.).
   }];
 }
 
@@ -182,11 +186,20 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
   }];
 }
 
+```
+
+#### Semaphore Type
+
+```tablegen
 def TTL_Semaphore : TTL_Type<"Semaphore", "semaphore"> {
   let summary = "Synchronization primitive for inter-core coordination";
   let parameters = (ins OptionalParameter<"bool">:$isRemote);
 }
+```
 
+#### Pipe Type
+
+```tablegen
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Inter-core communication channel (first-class SSA value)";
   let parameters = (ins
@@ -222,9 +235,26 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
         ttl.Pipe(src_core=(0, 0), dst_core_range=(slice(0, 4), 0))
         All cores in range [0,4) receive signal, including sender at (0,0)
         Sender at (0,0) in range [0, 4) → loopback operation automatically selected
+  }];
+}
+```
+See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for
+detailed multicast patterns.
 
-    See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for
-    detailed multicast patterns.
+#### PipeNet Type
+
+```tablegen
+def TTL_PipeNet : TTL_Type<"PipeNet", "pipenet"> {
+  let summary = "Network of pipes with shared topology";
+  let description = [{
+    Represents a collection of pipes that together form a communication network.
+    Provides validation that all pipes form a valid topology and enables network-wide
+    analysis and optimization.
+
+    Python API: ttl.PipeNet([pipe1, pipe2, ...])
+
+    The PipeNet type is used with ttl.if_pipe_src and ttl.if_pipe_dst operations to
+    execute code conditionally based on the current core's role in the network.
   }];
 }
 
@@ -245,20 +275,23 @@ def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
 ### 3.2 Attributes
 
 ```tablegen
-// TODO: Convett to an enum attribute
 def TTL_MemorySpaceAttr : I32EnumAttr<"MemorySpace", "TTL memory space", [
   I32EnumAttrCase<"L1", 0>,
   I32EnumAttrCase<"DRAM", 1>,
-  I32EnumAttrCase<"DST", 2>,
-  I32EnumAttrCase<"System", 3>
+  I32EnumAttrCase<"System", 2>
 ]> {
   let cppNamespace = "::mlir::tt::ttl";
+  let description = [{
+    Memory spaces for TTL tensors and circular buffers. Note: DST registers are
+    not included as they are exclusively managed by the TTLAssignDSTRegisters pass
+    and do not participate in the tensor/CB memory space system.
+  }];
 }
 
-def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {  
-  let summary = "Grid topology description";  
-  let parameters = (ins ArrayRefParameter<"int64_t">:$dimensions);  
-  let assemblyFormat = "`<` custom<DynamicIndexList>($dimensions, $static_dimensions) `>`";  
+def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {
+  let summary = "Grid topology description";
+  let parameters = (ins ArrayRefParameter<"int64_t">:$dimensions);
+  let assemblyFormat = "`<` custom<DynamicIndexList>($dimensions, $static_dimensions) `>`";
 }
 
 def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {
@@ -693,6 +726,3 @@ This matches the TensorAccessor pattern in Metalium Guide (lines 193-213).
 
 The layout metadata flows through all stages, enabling ConvertTTKernelToEmitC to
 generate correct TensorAccessor construction code.
-
-
-

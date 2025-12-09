@@ -102,6 +102,39 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
   }];
 }
 
+def TTL_CreatePipeNetOp : TTL_Op<"create_pipenet"> {
+  let summary = "Create pipe network from list of pipes";
+  let arguments = (ins Variadic<TTL_Pipe>:$pipes);
+  let results = (outs TTL_PipeNet:$net);
+  let description = [{
+    Python API `ttl.PipeNet([pipe1, pipe2, ...])` maps to this operation.
+
+    Constructs a pipe network that encapsulates communication topology. The PipeNet
+    provides:
+    - Validation: Ensures all pipes form valid topology (every pipe has matching src/dst guards)
+    - Analysis: Single handle for semaphore inference and resource planning
+    - Lowering: Shared metadata (core lists, loopback flags, multicast descriptors)
+
+    Example:
+      Python:
+        net = ttl.PipeNet([
+          ttl.Pipe(src_core=(0,0), dst_core_range=(slice(1,4), 0)),
+          ttl.Pipe(src_core=(1,0), dst_core=(0,0))
+        ])
+
+      TTL IR:
+        %pipe1 = ttl.create_pipe src_core=[0,0], dst_core_range=[#ttl.slice<1,4,1>, 0]
+        %pipe2 = ttl.create_pipe src_core=[1,0], dst_core=[0,0]
+        %net = ttl.create_pipenet %pipe1, %pipe2
+
+    The PipeNet is used with ttl.if_pipe_src and ttl.if_pipe_dst operations.
+  }];
+}
+```
+
+#### Semaphore Operations
+
+```tablegen
 def TTL_CreateSemaphoreOp : TTL_Op<"create_semaphore"> {
   let summary = "Create semaphore with initial value";
   let arguments = (ins
@@ -159,6 +192,8 @@ def TTL_TensorAccessorOp : TTL_Op<"tensor_accessor"> {
 ```
 
 ### 4.5 Data Movement Operations
+
+#### Copy and Accessor Operations
 
 ```tablegen
 def TTL_IndexAccessorOp : TTL_Op<"index_accessor"> {
@@ -218,27 +253,53 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
 }
+```
 
+#### Pipe Conditional Operations
+
+```tablegen
 def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
   let summary = "Execute region for each pipe where current core is source";
-  let arguments = (ins Variadic<TTL_Pipe>:$pipes);
+  let arguments = (ins TTL_PipeNet:$net);
   let regions = (region SizedRegion<1>:$body);
   let description = [{
-    Python API `ttl.if_pipe_src(pipes, pipe_src)` maps to this operation.
+    Python API `net.if_src(pipe_src_callback)` maps to this operation, where `net`
+    is a PipeNet object returned by `ttl.PipeNet([...])`.
 
-    Semantics: For each pipe where current core matches src_core, logically invoke
-    the region body with that pipe as block argument. Invocations for different pipes
-    may execute in parallel (independent pipe transfers).
+    Semantics: For each pipe in the network where current core matches src_core,
+    logically invoke the region body with that pipe as block argument. Invocations
+    for different pipes may execute in parallel (independent pipe transfers).
+
+    The PipeNet argument enables:
+    - Validation: Verify all pipes in network have matching src/dst guards
+    - Analysis: Access full topology for semaphore inference
+    - Lowering: Reuse precomputed metadata (core lists, loopback flags)
 
     Example:
       Python (TT-Lang spec):
+        net = ttl.PipeNet([pipe1, pipe2, pipe3])
         def pipe_src(pipe):
             xf = ttl.copy(blk, pipe)
             xf.wait()
-        ttl.if_pipe_src([pipe1, pipe2, pipe3], pipe_src)
+        net.if_src(pipe_src)
 
       TTL IR:
-        ttl.if_pipe_src %pipe1, %pipe2, %pipe3 {
+        // Example 1: Explicit pipe list
+        %pipe1 = ttl.create_pipe src_core=[0,0], dst_core=[1,0]
+        %pipe2 = ttl.create_pipe src_core=[0,0], dst_core=[2,0]
+        %pipe3 = ttl.create_pipe src_core=[0,0], dst_core=[3,0]
+        %net = ttl.create_pipenet %pipe1, %pipe2, %pipe3
+
+        // Example 2: Pipes created in loop (from Python list comprehension)
+        %grid_x = ttl.grid_size dims=1
+        %pipes = scf.for %x = 1 to %grid_x iter_args(%acc = initial_list) {
+          %pipe = ttl.create_pipe src_core=[0,0], dst_core=[%x,0]
+          %new_acc = append_to_list %acc, %pipe
+          scf.yield %new_acc
+        }
+        %net = ttl.create_pipenet %pipes
+
+        ttl.if_pipe_src %net {
           ^bb0(%pipe: !ttl.pipe):
             %xf = ttl.copy %blk, %pipe
             ttl.wait %xf
@@ -263,32 +324,49 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
 
 def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
   let summary = "Execute region for each pipe where current core is destination";
-  let arguments = (ins Variadic<TTL_Pipe>:$pipes);
+  let arguments = (ins TTL_PipeNet:$net);
   let regions = (region SizedRegion<1>:$body);
   let description = [{
-    Python API `ttl.if_pipe_dst(pipes, pipe_dst)` maps to this operation.
+    Python API `net.if_dst(pipe_dst_callback)` maps to this operation, where `net`
+    is a PipeNet object returned by `ttl.PipeNet([...])`.
 
-    Semantics: For each pipe where current core matches the pipe's dst_core (unicast)
-    or is within dst_core_range (multicast), logically invoke the region body with
-    that pipe as block argument. Invocations for different pipes may execute in parallel.
+    Semantics: For each pipe in the network where current core matches the pipe's
+    dst_core (unicast) or is within dst_core_range (multicast), logically invoke
+    the region body with that pipe as block argument. Invocations for different
+    pipes may execute in parallel.
+
+    The PipeNet argument enables validation, analysis, and lowering optimizations
+    as described in ttl.if_pipe_src.
 
     Example:
       Python (TT-Lang spec):
+        net = ttl.PipeNet([
+          ttl.Pipe(src_core=(x, 0), dst_core_range=(x, slice(1, grid_y)))
+          for x in range(grid_x)
+        ])
         def pipe_dst(pipe):
             xf = ttl.copy(pipe, blk)
             xf.wait()
-        ttl.if_pipe_dst([pipe1, pipe2], pipe_dst)
+        net.if_dst(pipe_dst)
 
       TTL IR:
-        ttl.if_pipe_dst %pipe1, %pipe2 {
+        // Pipes created in scf.for loop (from Python list comprehension)
+        %pipes = scf.for %x = 0 to %grid_x iter_args(%acc = ...) {
+          %pipe = ttl.create_pipe src_core=[%x,0], dst_core_range=[%x, #ttl.slice<1,grid_y,1>]
+          %new_acc = ... // Append pipe to accumulator
+          scf.yield %new_acc
+        }
+        %net = ttl.create_pipenet %pipes
+
+        ttl.if_pipe_dst %net {
           ^bb0(%pipe: !ttl.pipe):
             %xf = ttl.copy %pipe, %blk
             ttl.wait %xf
         }
 
     Lowering to TTKernel:
-      The pass determines which pipes match current core (checking dst_core or dst_core_range).
-      Execution model determined by dependency analysis (parallel vs serial).
+      The pass queries the PipeNet for pipes matching current core (checking
+      dst_core or dst_core_range). Execution model determined by dependency analysis.
 
     The region block argument receives each matching pipe, enabling pipe-specific operations.
   }];
@@ -602,6 +680,3 @@ void runOnOperation() override {
 | **MEDIUM** | `TTLSynchronizationInterface` | Barrier operations | Enables scheduling analysis |
 | **MEDIUM** | `bufferization::TensorLikeType` | Block tensor types | Reuses One-Shot Bufferization |
 | **LOW** | Additional interfaces | As needed | Future extensibility |
-
-
-

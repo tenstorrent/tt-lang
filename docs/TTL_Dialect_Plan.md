@@ -419,10 +419,10 @@ def TTL_MemorySpaceAttr : I32EnumAttr<"MemorySpace", "TTL memory space", [
   let cppNamespace = "::mlir::tt::ttl";
 }
 
-def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {  
-  let summary = "Grid topology description";  
-  let parameters = (ins ArrayRefParameter<"int64_t">:$dimensions);  
-  let assemblyFormat = "`<` custom<DynamicIndexList>($dimensions, $static_dimensions) `>`";  
+def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {
+  let summary = "Grid topology description";
+  let parameters = (ins ArrayRefParameter<"int64_t">:$dimensions);
+  let assemblyFormat = "`<` custom<DynamicIndexList>($dimensions, $static_dimensions) `>`";
 }
 
 def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {

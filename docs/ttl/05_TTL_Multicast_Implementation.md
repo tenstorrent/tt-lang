@@ -135,8 +135,6 @@ Best practices observed across patterns:
 
 ## TTL Dialect Coverage
 
-### What TTL Captures Correctly
-
 The pipe abstraction captures multicast topology:
 
 ```python
@@ -159,10 +157,12 @@ net.if_dst(pipe_dst)
 ```
 
 Captured information:
-- Source core coordinates
-- Destination core range with slice semantics
-- Multicast vs unicast distinction
-- Send/receive pairing via if_src/if_dst
+- PipeNet owning full pipe topology
+- Per pipe:
+  - Source core coordinates
+  - Destination core range with slice semantics
+  - Multicast vs unicast distinction
+  - Send/receive pairing via if_src/if_dst
 
 Semaphore operations:
 
@@ -209,11 +209,46 @@ Conclusion: TTKernel has complete coverage for generating multicast C++ kernels.
 
 ## Multicast Implementation Design
 
+### PipeNet as First-Class Abstraction
+
+The TTL dialect represents pipe networks as first-class SSA values through the
+[`TTL_PipeNet` type](02_TTL_Type_System.md#pipenet-type) and
+[`ttl.create_pipenet` operation](04_TTL_Data_Movement_Operations.md#42-resource-creation).
+This design preserves the TT-Lang spec's `PipeNet` abstraction and provides the
+following capabilities.
+
+Validation: The PipeNet owns the complete pipe topology, enabling whole-network
+validation. The compiler can verify that every pipe has matching source and
+destination guards, ensure each multicast has at least one receiver, and detect
+pipes that are only used on one side. Without PipeNet, the IR only sees
+unrelated pipe values at each guard, making these checks impossible.
+
+Synchronization inference: The `TTLInferPipeSemaphores` pass operates on PipeNet
+SSA values to construct semaphores. Having the full topology in a single
+defining operation allows the pass to count destinations, determine loopback
+requirements, and handle multi-pipe coordination (e.g., ready/valid cascades)
+without re-deriving topology at each usage site.
+
+Lowering optimization: The PipeNet's defining `ttl.create_pipenet` operation can
+cache precomputed metadata (destination core lists, loopback flags, multicast
+descriptors) that multiple `ttl.if_pipe_src` and `ttl.if_pipe_dst` regions
+reuse. This avoids recomputing slice expansions and loopback detection for each
+guard.
+
+Lowering strategy:
+- Python `ttl.PipeNet([...])` → `ttl.create_pipenet` operation
+- `net.if_src(callback)` → `ttl.if_pipe_src %net { ... }`
+- `net.if_dst(callback)` → `ttl.if_pipe_dst %net { ... }`
+- During lowering to TTKernel, the pass queries the PipeNet's defining operation
+  for topology information
+
 ### Automatic Semaphore Inference
 
-The `TTLInferPipeSemaphores` pass automatically creates semaphores for pipe
-synchronization. This design is mandatory to ensure correctness by preventing
-users from forgetting critical synchronization operations.
+The `TTLInferPipeSemaphores` pass automatically creates semaphores (see
+[`TTL_Semaphore` type](02_TTL_Type_System.md#semaphore-type) and
+[`ttl.create_semaphore` operation](04_TTL_Data_Movement_Operations.md#semaphore-operations))
+for pipe synchronization. This design is mandatory to ensure correctness by
+preventing users from forgetting critical synchronization operations.
 
 For each pipe, two semaphores are created:
 1. Ready semaphore: Receivers signal readiness to sender
@@ -425,6 +460,3 @@ Files created:
 ```
 PR 1 (Semaphore Unicast) ─→ PR 2 (Semaphore Multicast) ─→ PR 3 (Coordinate/Loopback/Barriers) ─→ PR 4 (Integration)
 ```
-
-PR 1 can be developed independently. PR 2 depends on PR 1. PR 3 depends on PR 2.
-PR 4 depends on PR 3.

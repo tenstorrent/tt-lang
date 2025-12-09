@@ -469,6 +469,25 @@ def TTL_BlockComputeOp : TTL_Op<"block_compute"> {
     For fused operation chains, ttl.compute_region provides explicit fusion control.
   }];
 }
+
+def TTL_YieldOp : TTL_Op<"yield", [Pure, ReturnLike, Terminator]> {
+  let summary = "Yield values from a region";
+  let arguments = (ins Variadic<AnyType>:$values);
+  let description = [{
+    Terminates TTL regions (ttl.compute_region, ttl.if_pipe_src, ttl.if_pipe_dst)
+    and yields values to the parent operation.
+
+    Example:
+      ttl.compute_region ins(%a, %b) outs(%out) {
+      ^bb0(%a_blk, %b_blk):
+        %result = ttl.block_add %a_blk, %b_blk
+        ttl.yield %result : !ttl.block<...>
+      }
+
+    The operation is a terminator and must be the last operation in a block.
+  }];
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+}
 ```
 
 #### 4.4.2 Arithmetic Operations
@@ -477,10 +496,22 @@ Element-wise operations on blocks. Each operation lowers to an affine loop over
 tiles with corresponding TTKernel tile operations.
 
 ```tablegen
-def TTL_BlockAddOp : TTL_Op<"block_add"> {
-  let summary = "Element-wise addition on tensor blocks";
-  let arguments = (ins TTL_Tensor:$lhs, TTL_Tensor:$rhs);
-  let results = (outs TTL_Tensor:$result);
+// Base class for binary block operations
+class TTL_BinaryBlockOp<string mnemonic, list<Trait> traits = []>
+  : TTL_Op<mnemonic, traits> {
+  let arguments = (ins TTL_Block:$lhs, TTL_Block:$rhs);
+  let results = (outs TTL_Block:$result);
+}
+
+// Base class for unary block operations
+class TTL_UnaryBlockOp<string mnemonic, list<Trait> traits = []>
+  : TTL_Op<mnemonic, traits> {
+  let arguments = (ins TTL_Block:$input);
+  let results = (outs TTL_Block:$result);
+}
+
+def TTL_BlockAddOp : TTL_BinaryBlockOp<"block_add"> {
+  let summary = "Element-wise addition on blocks";
   let description = [{
     Element-wise addition of two blocks.
 
@@ -491,10 +522,8 @@ def TTL_BlockAddOp : TTL_Op<"block_add"> {
   }];
 }
 
-def TTL_BlockMulOp : TTL_Op<"block_mul"> {
-  let summary = "Element-wise multiplication on tensor blocks";
-  let arguments = (ins TTL_Tensor:$lhs, TTL_Tensor:$rhs);
-  let results = (outs TTL_Tensor:$result);
+def TTL_BlockMulOp : TTL_BinaryBlockOp<"block_mul"> {
+  let summary = "Element-wise multiplication on blocks";
   let description = [{
     Element-wise multiplication of two blocks.
 
@@ -505,10 +534,8 @@ def TTL_BlockMulOp : TTL_Op<"block_mul"> {
   }];
 }
 
-def TTL_BlockMatmulOp : TTL_Op<"block_matmul"> {
-  let summary = "Matrix multiplication on tensor blocks";
-  let arguments = (ins TTL_Tensor:$lhs, TTL_Tensor:$rhs);
-  let results = (outs TTL_Tensor:$result);
+def TTL_BlockMatmulOp : TTL_BinaryBlockOp<"block_matmul"> {
+  let summary = "Matrix multiplication on blocks";
   let description = [{
     Matrix multiplication of two blocks.
 
@@ -535,11 +562,11 @@ attention mechanisms and normalization patterns.
 def TTL_BlockReduceSumOp : TTL_Op<"block_reduce_sum"> {
   let summary = "Reduce sum along specified axis";
   let arguments = (ins
-    TTL_Tensor:$input,
-    TTL_Tensor:$scaling,  // Scaling tensor (typically ones) for reduction
+    TTL_Block:$input,
+    TTL_Block:$scaling,  // Scaling block (typically ones) for reduction
     I64Attr:$axis        // Axis to reduce along
   );
-  let results = (outs TTL_Tensor:$result);
+  let results = (outs TTL_Block:$result);
   let description = [{
     Reduces input tensor along specified axis using sum operation.
     Used in normalization patterns such as attention mechanisms.
@@ -563,7 +590,7 @@ def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
     TTL_Tensor:$input,
     I64Attr:$axis  // Axis to reduce along
   );
-  let results = (outs TTL_Tensor:$result);
+  let results = (outs TTL_Block:$result);
   let description = [{
     Reduces input tensor along specified axis using max operation.
     Used for numerical stability in normalization patterns.
@@ -584,7 +611,7 @@ def TTL_BlockBcastOp : TTL_Op<"block_bcast"> {
     TTL_Tensor:$input,
     I64Attr:$axis  // Broadcast axis
   );
-  let results = (outs TTL_Tensor:$result);
+  let results = (outs TTL_Block:$result);
   let description = [{
     Broadcasts input tensor along the specified axis by replicating values.
     Useful for normalization patterns (such as attention mechanisms) where
@@ -641,7 +668,7 @@ This pattern enables:
 ```tablegen
 def TTL_BlockStoreOp : TTL_Op<"block_store"> {
   let summary = "Store computation result to circular buffer block";
-  let arguments = (ins TTL_Tensor:$dst, TTL_Tensor:$src);
+  let arguments = (ins TTL_Block:$dst, TTL_Block:$src);
   let description = [{
     Python API `block.store(value)` maps to this operation.
     Blocking operation that materializes computation result and stores in block.
@@ -1342,5 +1369,3 @@ See:
 - TilingInterface: `mlir/include/mlir/Interfaces/TilingInterface.td`
 - SCF tiling utilities:
   `mlir/include/mlir/Dialect/SCF/Transforms/TileUsingInterface.h`
-
-

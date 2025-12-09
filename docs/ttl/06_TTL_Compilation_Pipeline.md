@@ -2,7 +2,8 @@
 
 **Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
-This document specifies the compilation pipeline, including pass architecture, lowering strategies, and type conversions.
+This document specifies the compilation pipeline, including pass architecture,
+lowering strategies, and type conversions.
 
 ## Table of Contents
 
@@ -21,11 +22,14 @@ This document specifies the compilation pipeline, including pass architecture, l
 
 - [Back to Overview](01_TTL_Dialect_Plan.md)
 - [Type System](02_TTL_Type_System.md) - Types being converted
-- [Compute Operations](03_TTL_Compute_Operations.md) - Includes DST register tiling (section 5.6)
-- [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement lowering
-- [Implementation and Runtime](07_TTL_Implementation_and_Runtime.md) - Python integration
+- [Compute Operations](03_TTL_Compute_Operations.md) - Includes DST register
+  tiling (section 5.6)
+- [Data Movement Operations](04_TTL_Data_Movement_Operations.md) - Data movement
+  lowering
+- [Implementation and Runtime](07_TTL_Implementation_and_Runtime.md) - Python
+  integration
 
----
+
 
 ## 5. Compilation Pipeline
 
@@ -48,6 +52,7 @@ ttl.kernel (with thread regions, tensor operands)
   └─ TTLVerifyLayoutsPass - Check tensor accessor layouts
   ↓
 [Phase 2: Analysis & Inference]
+  ├─ TTLInferPipeSemaphores - Create semaphores for pipes
   ├─ TTLInsertSynchronization - Analyze inter-thread dataflow, insert barriers
   ├─ TTLInferDSTRequirements - Mark values needing DST registers
   └─ TTLBufferizePass - Tensor → memref conversion (One-Shot Bufferization)
@@ -85,6 +90,17 @@ Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 ```
 
 ### 5.2 Key Pass Descriptions
+
+**`TTLInferPipeSemaphores`**
+- **Input**: `ttl.kernel` with pipe operations in datamovement threads
+- **Analysis**: Analyze pipe nets to determine synchronization requirements
+- **Transform**: Create required semaphores per pipe, insert semaphore
+  operations in if_src/if_dst bodies
+- **Output**: `ttl.kernel` with explicit semaphore operations for pipe
+  synchronization
+- **See**:
+  [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for
+  detailed semaphore inference strategy
 
 **`TTLInsertSynchronization`**
 - **Input**: `ttl.kernel` with thread regions (tensor operands)
@@ -170,22 +186,27 @@ Logical Grid Coordinates:
 - Architecture-independent representation
 
 Device-Specific Coordinates:
-- Required by TTKernel NOC operations: `ttkernel.get_noc_addr(...)`, `ttkernel.get_noc_multicast_addr(...)`
-- May be virtual coordinates (Blackhole) or physical coordinates (Wormhole/Grayskull)
+- Required by TTKernel NOC operations: `ttkernel.get_noc_addr(...)`,
+  `ttkernel.get_noc_multicast_addr(...)`
+- May be virtual coordinates (Blackhole) or physical coordinates
+  (Wormhole/Grayskull)
 - Obtained via device coordinate translation APIs
 - Architecture-dependent implementation
 
 Translation approach:
 
-The lowering pass uses device APIs to obtain appropriate coordinates for NOC operations.
-On newer architectures (Blackhole), coordinate virtualization is handled by the device
-layer. On older architectures (Wormhole/Grayskull), physical coordinates are computed
-directly. The TTL dialect abstracts these differences.
+The lowering pass uses device APIs to obtain appropriate coordinates for NOC
+operations. On newer architectures (Blackhole), coordinate virtualization is
+handled by the device layer. On older architectures (Wormhole/Grayskull),
+physical coordinates are computed directly. The TTL dialect abstracts these
+differences.
 
 Lowering strategy:
 
-For multicast operations, the pass generates coordinate computation at kernel runtime:
-1. Use `ttkernel.my_x[0]` / `ttkernel.my_y[0]` to get current core's device coordinates
+For multicast operations, the pass generates coordinate computation at kernel
+runtime:
+1. Use `ttkernel.my_x[0]` / `ttkernel.my_y[0]` to get current core's device
+   coordinates
 2. Compute multicast range bounds using affine arithmetic on these coordinates
 3. Pass computed coordinates to `ttkernel.get_noc_multicast_addr`
 4. Device coordinate APIs handle architecture-specific translation
@@ -203,8 +224,8 @@ TTKernel (device-specific):
     %mcast_start_x, %my_y, %mcast_end_x, %my_y, %l1_addr)
 ```
 
-The device coordinate translation layer ensures portability across hardware generations
-without requiring TTL dialect changes.
+The device coordinate translation layer ensures portability across hardware
+generations without requiring TTL dialect changes.
 
 See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for
 complete multicast coordinate handling examples.
@@ -720,6 +741,3 @@ ttl.wait %xf
 ttkernel.noc_async_write_multicast %src_addr, %noc_addrs, %size
 ttkernel.noc_async_write_barrier
 ```
-
-
-
