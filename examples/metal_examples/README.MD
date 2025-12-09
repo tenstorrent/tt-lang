@@ -8,7 +8,7 @@ source ./python_env/bin/activate
 ```
 Now go to the tt-lang and run the desired metal kernels, such as the singlecore matmul kernel.
 ```bash
-pytest ./examples/metal_matmul.py::test_singlecore_matmul_metal
+pytest ./examples/metal_examples/singlecore_matmul/metal/singlecore_matmul.py
 ```
 
 # TT-Lang Examples
