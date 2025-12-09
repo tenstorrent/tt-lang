@@ -23,6 +23,7 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, recip
 import math
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def test_fa_second_half(exp_S, sum_exp, V, out):
     exp_S_accessor = TensorAccessor(exp_S)
@@ -121,7 +122,9 @@ V = torch.ones((32, 32)) * 0.2  # Simple uniform values
 print("=== BEFORE KERNEL ===")
 print(f"Testing FA second half: softmax normalization → P @ V")
 print(f"exp_S shape: {exp_S.shape}, sample value: {exp_S[0, 0].item():.6f}")
-print(f"sum_exp shape (after broadcast): {sum_exp.shape}, sample value: {sum_exp[0, 0].item():.6f}")
+print(
+    f"sum_exp shape (after broadcast): {sum_exp.shape}, sample value: {sum_exp[0, 0].item():.6f}"
+)
 print(f"V shape: {V.shape}, all values: {V[0, 0].item()}")
 
 # Compute expected on CPU
@@ -151,7 +154,10 @@ print(f"Expected (P @ V): {O_expected[0, 0].item():.6f}")
 # Also possible mismatch between CPU-computed sum_exp vs hardware reduce_sum output.
 # Consider using actual hardware output from test_fa_first_half.py as input.
 tolerance = 0.2  # 20% tolerance for chained low-precision ops
-if abs(out[0, 0].item() - O_expected[0, 0].item()) / O_expected[0, 0].item() < tolerance:
+if (
+    abs(out[0, 0].item() - O_expected[0, 0].item()) / O_expected[0, 0].item()
+    < tolerance
+):
     print(f"PASS: FA second half produced correct result")
     # CHECK-OUTPUT: PASS: FA second half produced correct result
 else:

@@ -11,6 +11,7 @@ import torch
 from ttlang.d2m_api import *
 from ttlang.operators import exp, sqrt
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
 def test_chained_unary(input_tensor, out):
     input_accessor = TensorAccessor(input_tensor)
@@ -69,6 +70,7 @@ print(f"out[0, 0] = {out[0, 0].item():.3f}")
 # CHECK-OUTPUT: out[0, 0] =
 
 import math
+
 expected_val = math.sqrt(math.exp(2.0))
 print(f"Expected: {expected_val:.3f}")
 

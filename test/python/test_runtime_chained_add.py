@@ -107,4 +107,6 @@ if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
     print("\nPASS: Output matches expected ((10+20)+100=130)")
     # CHECK-OUTPUT: PASS: Output matches expected
 else:
-    print(f"\nFAIL: Expected 130.0, got range [{out.min().item():.1f}, {out.max().item():.1f}]")
+    print(
+        f"\nFAIL: Expected 130.0, got range [{out.min().item():.1f}, {out.max().item():.1f}]"
+    )

@@ -17,6 +17,7 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, sqrt, recip
 import math
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
 def test_chained_8ops(input_tensor, out):
     input_accessor = TensorAccessor(input_tensor)

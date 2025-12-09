@@ -17,7 +17,10 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, reduce_sum, recip, bcast
 import math
 
-@pykernel_gen(grid=(2, 2), block_factors=[(2, 1), (2, 1), (2, 1), (2, 1), (2, 1), (2, 1)])
+
+@pykernel_gen(
+    grid=(2, 2), block_factors=[(2, 1), (2, 1), (2, 1), (2, 1), (2, 1), (2, 1)]
+)
 def flash_attention_benchmark(Q, K, V, scale, ones, out):
     Q_accessor = TensorAccessor(Q)
     K_accessor = TensorAccessor(K)
@@ -181,7 +184,11 @@ print(f"Expected: {O_expected[0, 0].item():.6f}")
 # CHECK-OUTPUT: Hardware:
 
 tolerance = 0.2
-error = abs(out[0, 0].item() - O_expected[0, 0].item()) / abs(O_expected[0, 0].item()) if O_expected[0, 0].item() != 0 else 1.0
+error = (
+    abs(out[0, 0].item() - O_expected[0, 0].item()) / abs(O_expected[0, 0].item())
+    if O_expected[0, 0].item() != 0
+    else 1.0
+)
 
 print(f"Error: {error*100:.1f}%")
 

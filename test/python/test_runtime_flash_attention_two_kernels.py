@@ -16,6 +16,7 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, reduce_sum, recip, bcast
 import math
 
+
 # Kernel 1: Q @ K^T → scale → exp (outputs exp_S)
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def fa_first_half(Q, K, scale, out):

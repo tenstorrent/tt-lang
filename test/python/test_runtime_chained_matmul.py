@@ -20,7 +20,9 @@ def matmul_ab(a, b, temp_out):
     b_accessor = TensorAccessor(b)
 
     @compute()
-    async def compute_ab(a_cb: CircularBuffer, b_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def compute_ab(
+        a_cb: CircularBuffer, b_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         a_val = a_cb.wait()
         b_val = b_cb.wait()
         o = out_cb.reserve()
@@ -52,7 +54,9 @@ def matmul_temp_c(temp_in, c, out):
     c_accessor = TensorAccessor(c)
 
     @compute()
-    async def compute_temp_c(temp_cb: CircularBuffer, c_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def compute_temp_c(
+        temp_cb: CircularBuffer, c_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         temp_val = temp_cb.wait()
         c_val = c_cb.wait()
         o = out_cb.reserve()
@@ -63,13 +67,17 @@ def matmul_temp_c(temp_in, c, out):
         out_cb.push()
 
     @datamovement()
-    async def dm_temp(temp_cb: CircularBuffer, c_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_temp(
+        temp_cb: CircularBuffer, c_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         temp_shard = temp_cb.reserve()
         tx = dma(temp_accessor[0, 0], temp_shard)
         tx.wait()
 
     @datamovement()
-    async def dm_c(temp_cb: CircularBuffer, c_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_c(
+        temp_cb: CircularBuffer, c_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         c_shard = c_cb.reserve()
         tx = dma(c_accessor[0, 0], c_shard)
         tx.wait()
@@ -109,4 +117,6 @@ if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
     print(f"PASS: Output matches expected (all 192.0)")
     # CHECK-OUTPUT: PASS: Output matches expected
 else:
-    print(f"FAIL: Expected all 192.0, got values from {out.min().item():.1f} to {out.max().item():.1f}")
+    print(
+        f"FAIL: Expected all 192.0, got values from {out.min().item():.1f} to {out.max().item():.1f}"
+    )

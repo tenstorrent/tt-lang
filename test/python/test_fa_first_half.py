@@ -21,6 +21,7 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, reduce_sum
 import math
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
 def test_fa_first_half(Q, K, scale, ones, out):
     Q_accessor = TensorAccessor(Q)
@@ -158,8 +159,14 @@ print(f"Expected (sum of exp): {sum_exp_expected[0, 0].item():.6f}")
 
 # Check result (should be sum of exp values in first column)
 tolerance = 0.1  # 10% tolerance
-if abs(out[0, 0].item() - sum_exp_expected[0, 0].item()) / sum_exp_expected[0, 0].item() < tolerance:
+if (
+    abs(out[0, 0].item() - sum_exp_expected[0, 0].item())
+    / sum_exp_expected[0, 0].item()
+    < tolerance
+):
     print(f"PASS: FA first half produced correct result")
     # CHECK-OUTPUT: PASS: FA first half produced correct result
 else:
-    print(f"FAIL: Expected {sum_exp_expected[0, 0].item():.6f}, got {out[0, 0].item():.6f}")
+    print(
+        f"FAIL: Expected {sum_exp_expected[0, 0].item():.6f}, got {out[0, 0].item():.6f}"
+    )

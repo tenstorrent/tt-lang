@@ -263,9 +263,11 @@ class TensorBlock:
             TypeError: If operands are not ranked tensors
             ValueError: If ranks are < 2 or inner dimensions don't match
         """
-        print("WARNING: matmul uses DST register as accumulator. "
-              "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
-              "See GitHub issue #31 for details.")
+        print(
+            "WARNING: matmul uses DST register as accumulator. "
+            "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
+            "See GitHub issue #31 for details."
+        )
         lhs = ast_self
 
         if not isinstance(lhs.type, RankedTensorType):
@@ -372,7 +374,9 @@ def dma(
 def exp(input_tensor: TensorBlock) -> TensorBlock:
     """Element-wise exponential function."""
     if not isinstance(input_tensor.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+        raise TypeError(
+            f"Expected RankedTensorType, got {type(input_tensor.type).__name__}"
+        )
 
     ctx = input_tensor.type.context
     rank = len(input_tensor.type.shape)
@@ -393,7 +397,9 @@ def exp(input_tensor: TensorBlock) -> TensorBlock:
 def sqrt(input_tensor: TensorBlock) -> TensorBlock:
     """Element-wise square root function."""
     if not isinstance(input_tensor.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+        raise TypeError(
+            f"Expected RankedTensorType, got {type(input_tensor.type).__name__}"
+        )
 
     ctx = input_tensor.type.context
     rank = len(input_tensor.type.shape)
@@ -414,7 +420,9 @@ def sqrt(input_tensor: TensorBlock) -> TensorBlock:
 def rsqrt(input_tensor: TensorBlock) -> TensorBlock:
     """Element-wise reciprocal square root function."""
     if not isinstance(input_tensor.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+        raise TypeError(
+            f"Expected RankedTensorType, got {type(input_tensor.type).__name__}"
+        )
 
     ctx = input_tensor.type.context
     rank = len(input_tensor.type.shape)
@@ -435,7 +443,9 @@ def rsqrt(input_tensor: TensorBlock) -> TensorBlock:
 def recip(input_tensor: TensorBlock) -> TensorBlock:
     """Element-wise reciprocal function."""
     if not isinstance(input_tensor.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+        raise TypeError(
+            f"Expected RankedTensorType, got {type(input_tensor.type).__name__}"
+        )
 
     ctx = input_tensor.type.context
     rank = len(input_tensor.type.shape)
@@ -476,9 +486,9 @@ def maximum(lhs: TensorBlock, rhs: TensorBlock) -> TensorBlock:
 
 def _extract_int_from_mlir_value(value):
     """Extract integer from MLIR constant or return the value as-is."""
-    if hasattr(value, 'literal_value'):
+    if hasattr(value, "literal_value"):
         return value.literal_value
-    elif hasattr(value, 'value'):
+    elif hasattr(value, "value"):
         return int(value.value)
     else:
         return int(value)
@@ -533,22 +543,28 @@ def _create_reduction_linalg(
     if dim_value == 1:
         # Column reduction: iterate rows (parallel), reduce cols (reduction)
         # Output only to column 0 (hardware behavior)
-        output_map = AffineMap.get(2, 0, [AffineDimExpr.get(0, ctx), AffineConstantExpr.get(0, ctx)], ctx)
+        output_map = AffineMap.get(
+            2, 0, [AffineDimExpr.get(0, ctx), AffineConstantExpr.get(0, ctx)], ctx
+        )
         iter_types = ["parallel", "reduction"]
     else:
         # Row reduction: reduce rows (reduction), iterate cols (parallel)
         # Output only to row 0 (hardware behavior)
-        output_map = AffineMap.get(2, 0, [AffineConstantExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx)
+        output_map = AffineMap.get(
+            2, 0, [AffineConstantExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx
+        )
         iter_types = ["reduction", "parallel"]
 
     out_type = RankedTensorType.get(out_shape, a.type.element_type, a.type.encoding)
     empty = d2m.empty(out_type)
 
-    affine_maps_attr = ArrayAttr.get([
-        AffineMapAttr.get(identity_map),
-        AffineMapAttr.get(zero_map),
-        AffineMapAttr.get(output_map)
-    ])
+    affine_maps_attr = ArrayAttr.get(
+        [
+            AffineMapAttr.get(identity_map),
+            AffineMapAttr.get(zero_map),
+            AffineMapAttr.get(output_map),
+        ]
+    )
     iter_types_attr = ArrayAttr.get(
         [Attribute.parse(f"#linalg.iterator_type<{it}>", ctx) for it in iter_types]
     )
@@ -561,17 +577,23 @@ def _create_reduction_linalg(
         iterator_types=iter_types_attr,
     )
 
-    block_arg_types = [a.type.element_type, b.type.element_type, empty.type.element_type]
+    block_arg_types = [
+        a.type.element_type,
+        b.type.element_type,
+        empty.type.element_type,
+    ]
     block = generic_op.regions[0].blocks.append(*block_arg_types)
 
     with InsertionPoint(block):
-        reduce_dim_mlir_attr = Attribute.parse(f"#d2m<reduce_dim {reduce_dim_attr.name}>", ctx)
+        reduce_dim_mlir_attr = Attribute.parse(
+            f"#d2m<reduce_dim {reduce_dim_attr.name}>", ctx
+        )
         tile_result = tile_op_builder(
             a.type.element_type,
             block.arguments[0],
             block.arguments[1],
             block.arguments[2],
-            reduce_dim_mlir_attr
+            reduce_dim_mlir_attr,
         )
         linalg.YieldOp([tile_result])
 
@@ -595,7 +617,9 @@ def bcast(input_tensor: TensorBlock, dim: int = 1) -> TensorBlock:
         Tensor with broadcasted values
     """
     if not isinstance(input_tensor.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+        raise TypeError(
+            f"Expected RankedTensorType, got {type(input_tensor.type).__name__}"
+        )
 
     ctx = input_tensor.type.context
     rank = len(input_tensor.type.shape)
@@ -604,18 +628,21 @@ def bcast(input_tensor: TensorBlock, dim: int = 1) -> TensorBlock:
     identity_map = AffineMap.get_identity(rank, ctx)
 
     out_type = RankedTensorType.get(
-        list(input_tensor.type.shape), input_tensor.type.element_type, input_tensor.type.encoding
+        list(input_tensor.type.shape),
+        input_tensor.type.element_type,
+        input_tensor.type.encoding,
     )
     empty = d2m.empty(out_type)
 
-    affine_maps_attr = ArrayAttr.get([
-        AffineMapAttr.get(identity_map),
-        AffineMapAttr.get(identity_map)
-    ])
-    iter_types_attr = ArrayAttr.get([
-        Attribute.parse("#linalg.iterator_type<parallel>", ctx),
-        Attribute.parse("#linalg.iterator_type<parallel>", ctx)
-    ])
+    affine_maps_attr = ArrayAttr.get(
+        [AffineMapAttr.get(identity_map), AffineMapAttr.get(identity_map)]
+    )
+    iter_types_attr = ArrayAttr.get(
+        [
+            Attribute.parse("#linalg.iterator_type<parallel>", ctx),
+            Attribute.parse("#linalg.iterator_type<parallel>", ctx),
+        ]
+    )
 
     generic_op = linalg.GenericOp(
         result_tensors=[out_type],
@@ -630,17 +657,19 @@ def bcast(input_tensor: TensorBlock, dim: int = 1) -> TensorBlock:
 
     with InsertionPoint(block):
         from ttmlir.dialects.d2m import TileBcastType
+
         bcast_type = TileBcastType.Col if dim_value == 1 else TileBcastType.Row
-        bcast_type_attr = Attribute.parse(f"#d2m<tile_bcast_type {bcast_type.name.lower()}>", ctx)
+        bcast_type_attr = Attribute.parse(
+            f"#d2m<tile_bcast_type {bcast_type.name.lower()}>", ctx
+        )
 
         tile_result = d2m.tile_bcast(
-            input_tensor.type.element_type,
-            block.arguments[0],
-            bcast_type_attr
+            input_tensor.type.element_type, block.arguments[0], bcast_type_attr
         )
         linalg.YieldOp([tile_result])
 
     return generic_op.result
+
 
 # Reduction operations
 @syntax("reduce_sum")
@@ -664,9 +693,11 @@ def reduce_sum(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     Returns:
         Reduced tensor with only first column (dim=1) or first row (dim=0) valid.
     """
-    print("WARNING: reduce_sum uses DST register as accumulator. "
-          "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
-          "See GitHub issue #31 for details.")
+    print(
+        "WARNING: reduce_sum uses DST register as accumulator. "
+        "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
+        "See GitHub issue #31 for details."
+    )
     return _create_reduction_linalg(a, b, dim, d2m.tile_reduce_sum)
 
 
@@ -691,9 +722,11 @@ def reduce_max(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     Returns:
         Reduced tensor with only first column (dim=1) or first row (dim=0) valid.
     """
-    print("WARNING: reduce_max uses DST register as accumulator. "
-          "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
-          "See GitHub issue #31 for details.")
+    print(
+        "WARNING: reduce_max uses DST register as accumulator. "
+        "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
+        "See GitHub issue #31 for details."
+    )
     return _create_reduction_linalg(a, b, dim, d2m.tile_reduce_max)
 
 
@@ -734,7 +767,11 @@ def add_into(lhs: TensorBlock, rhs: TensorBlock, out: TensorBlock) -> TensorBloc
         iterator_types=iter_types_attr,
     )
 
-    block_arg_types = [lhs.type.element_type, rhs.type.element_type, out.type.element_type]
+    block_arg_types = [
+        lhs.type.element_type,
+        rhs.type.element_type,
+        out.type.element_type,
+    ]
     block = generic_op.regions[0].blocks.append(*block_arg_types)
 
     with InsertionPoint(block):
@@ -748,7 +785,9 @@ def add_into(lhs: TensorBlock, rhs: TensorBlock, out: TensorBlock) -> TensorBloc
 def transpose(input_tensor: TensorBlock) -> TensorBlock:
     """Transpose the input tensor (swap last two dimensions)."""
     if not isinstance(input_tensor.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(input_tensor.type).__name__}")
+        raise TypeError(
+            f"Expected RankedTensorType, got {type(input_tensor.type).__name__}"
+        )
 
     ctx = input_tensor.type.context
     rank = len(input_tensor.type.shape)

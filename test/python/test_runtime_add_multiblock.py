@@ -13,6 +13,7 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(2, 2), (2, 2), (2, 2)])
 def test_add_multiblock(lhs, rhs, out):
     lhs_accessor = TensorAccessor(lhs)
@@ -32,7 +33,9 @@ def test_add_multiblock(lhs, rhs, out):
         out_cb.push()
 
     @datamovement()
-    async def dm_loader(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_loader(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         lhs_shard = lhs_cb.reserve()
         tx = dma(lhs_accessor[0, 0], lhs_shard)
         tx.wait()

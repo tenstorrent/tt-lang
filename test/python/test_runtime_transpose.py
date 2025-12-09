@@ -43,7 +43,9 @@ out = torch.full((32, 32), -999.0)
 
 print("=== BEFORE KERNEL ===")
 print(f"input[0, 1] = {input[0, 1].item():.1f}, input[1, 0] = {input[1, 0].item():.1f}")
-print(f"Expected after transpose: out[0, 1] = {input[1, 0].item():.1f}, out[1, 0] = {input[0, 1].item():.1f}")
+print(
+    f"Expected after transpose: out[0, 1] = {input[1, 0].item():.1f}, out[1, 0] = {input[0, 1].item():.1f}"
+)
 
 test_runtime_transpose(input, out)
 

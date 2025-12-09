@@ -15,7 +15,10 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, reduce_sum, recip, bcast
 import math
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
+
+@pykernel_gen(
+    grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)]
+)
 def flash_attention(Q, K, V, scale, ones, out):
     Q_accessor = TensorAccessor(Q)
     K_accessor = TensorAccessor(K)
@@ -201,9 +204,7 @@ V_torch = V.unsqueeze(0).unsqueeze(0)  # (1, 1, 32, 32)
 # PyTorch FA with same scale factor
 with torch.no_grad():
     O_torch_fa = torch.nn.functional.scaled_dot_product_attention(
-        Q_torch, K_torch, V_torch,
-        dropout_p=0.0,
-        scale=scale[0, 0].item()
+        Q_torch, K_torch, V_torch, dropout_p=0.0, scale=scale[0, 0].item()
     )
 O_torch_fa = O_torch_fa.squeeze()  # Remove batch and head dims
 
@@ -240,4 +241,6 @@ if error_manual < tolerance:
     # CHECK-OUTPUT: PASS: Full Flash Attention produced correct result
 else:
     ratio = out[0, 0].item() / O_manual[0, 0].item()
-    print(f"FAIL: Expected {O_manual[0, 0].item():.6f}, got {out[0, 0].item():.6f} (ratio: {ratio:.3f})")
+    print(
+        f"FAIL: Expected {O_manual[0, 0].item():.6f}, got {out[0, 0].item():.6f} (ratio: {ratio:.3f})"
+    )

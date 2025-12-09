@@ -15,7 +15,10 @@ from ttlang.d2m_api import *
 from ttlang.operators import exp, reduce_sum, recip, bcast
 import math
 
-@pykernel_gen(grid=(1, 1), block_factors=[(2, 2), (2, 2), (2, 2), (2, 2), (2, 2), (2, 2)])
+
+@pykernel_gen(
+    grid=(1, 1), block_factors=[(2, 2), (2, 2), (2, 2), (2, 2), (2, 2), (2, 2)]
+)
 def flash_attention_64head(Q, K, V, scale, ones, out):
     Q_accessor = TensorAccessor(Q)
     K_accessor = TensorAccessor(K)

@@ -16,6 +16,7 @@ import torch
 from ttlang.d2m_api import *
 from ttlang.operators import reduce_sum, exp
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def test_chained_reduce(input_tensor, scaler, bias, out):
     input_accessor = TensorAccessor(input_tensor)
@@ -23,7 +24,12 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
     bias_accessor = TensorAccessor(bias)
 
     @compute()
-    async def compute_chained(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def compute_chained(
+        input_cb: CircularBuffer,
+        scaler_cb: CircularBuffer,
+        bias_cb: CircularBuffer,
+        out_cb: CircularBuffer,
+    ):
         inp = input_cb.wait()
         scale = scaler_cb.wait()
         bias_val = bias_cb.wait()
@@ -65,7 +71,12 @@ def test_chained_reduce(input_tensor, scaler, bias, out):
         out_cb.push()
 
     @datamovement()
-    async def dm_loader(input_cb: CircularBuffer, scaler_cb: CircularBuffer, bias_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_loader(
+        input_cb: CircularBuffer,
+        scaler_cb: CircularBuffer,
+        bias_cb: CircularBuffer,
+        out_cb: CircularBuffer,
+    ):
         # Load all three inputs sequentially
         input_shard = input_cb.reserve()
         tx = dma(input_accessor[0, 0], input_shard)
@@ -111,6 +122,7 @@ print(f"out[0, 0] = {out[0, 0].item():.3e}")
 
 # Expected: exp(32) + 2 ≈ 7.9e13
 import math
+
 expected_val = math.exp(32) + 2.0
 print(f"Expected in first column: {expected_val:.3e}")
 if out[0, 0].item() > 1e13:

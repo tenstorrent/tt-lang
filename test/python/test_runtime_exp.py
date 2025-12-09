@@ -74,6 +74,4 @@ if torch.allclose(out, expected, rtol=1e-2, atol=1e-2):
     print("PASS: Output matches expected exp(1.0) ≈ 2.718")
     # CHECK-OUTPUT: PASS: Output matches expected
 else:
-    print(
-        f"FAIL: Expected {expected.mean().item():.3f}, got {out.mean().item():.3f}"
-    )
+    print(f"FAIL: Expected {expected.mean().item():.3f}, got {out.mean().item():.3f}")

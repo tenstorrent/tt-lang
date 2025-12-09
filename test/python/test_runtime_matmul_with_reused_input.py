@@ -13,13 +13,16 @@
 import torch
 from ttlang.d2m_api import *
 
+
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_matmul_reuse(A, B, out):
     A_accessor = TensorAccessor(A)
     B_accessor = TensorAccessor(B)
 
     @compute()
-    async def compute_chain(A_cb: CircularBuffer, B_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def compute_chain(
+        A_cb: CircularBuffer, B_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         a = A_cb.wait()
         b = B_cb.wait()
         o = out_cb.reserve()
@@ -41,7 +44,9 @@ def test_matmul_reuse(A, B, out):
         out_cb.push()
 
     @datamovement()
-    async def dm_loader(A_cb: CircularBuffer, B_cb: CircularBuffer, out_cb: CircularBuffer):
+    async def dm_loader(
+        A_cb: CircularBuffer, B_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         a_shard = A_cb.reserve()
         tx = dma(A_accessor[0, 0], a_shard)
         tx.wait()
@@ -85,5 +90,6 @@ if error < tolerance:
     print(f"PASS: Matmul with reused input produced correct result!")
     # CHECK-OUTPUT: PASS: Matmul with reused input produced correct result
 else:
-    print(f"FAIL: Expected {expected:.1f}, got {out[0, 0].item():.1f} (error: {error*100:.1f}%)")
-
+    print(
+        f"FAIL: Expected {expected:.1f}, got {out[0, 0].item():.1f} (error: {error*100:.1f}%)"
+    )
