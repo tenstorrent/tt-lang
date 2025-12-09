@@ -57,6 +57,7 @@ from .dtype_utils import (
     TORCH_TO_RUNTIME_DTYPE_INT,
     create_borrowed_tensors,
     torch_dtype_to_ttnn_datatype,
+    tile_bytes_from_dtype,
     _is_ttnn_tensor,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
@@ -117,30 +118,6 @@ def _resolve_grid_params(grid, block_factors, args, kwargs):
     return resolved_grid, resolved_block_factors
 
 
-def _tile_bytes_from_dtype(dtype) -> int:
-    """
-    Calculate tile size in bytes from ttnn dtype.
-
-    For tiled tensors, each tile is 32x32 elements. The byte size depends on
-    the data type's element size plus any format-specific overhead.
-    """
-    dtype_int = int(dtype)
-    # Map ttnn DataType enum values to tile sizes
-    # Reference: tt-buda/pybuda/csrc/balancer/balancer_utils.hpp
-    if dtype_int in (0, 6):  # BFloat16, UInt16
-        return 32 * 32 * 2  # 2048
-    elif dtype_int in (1, 2, 7):  # Float32, Int32, UInt32
-        return 32 * 32 * 4  # 4096
-    elif dtype_int == 3:  # BFP8
-        return 32 * 32 + 64  # 1088
-    elif dtype_int == 5:  # UInt8/Int8
-        return 32 * 32  # 1024
-    elif dtype_int == 4:  # BFP4
-        return 512 + 64  # 576
-    else:
-        raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
-
-
 class CompiledTTNNKernel:
     """
     A compiled tt-lang kernel ready for execution via ttnn.generic_op.
@@ -179,6 +156,8 @@ class CompiledTTNNKernel:
         ):
             # TODO: Derive compile-time args from kernel IR (CB indices, tile counts, etc.)
             compile_time_args = list(range(self.num_tensors))
+            # runtime_args structure: [cores][core_ranges][args_per_core]
+            # For single-core execution, this is one empty list per core range.
             # TODO: Support per-core runtime args for multi-core grids
             runtime_args = [[[]]]
 
@@ -209,7 +188,7 @@ class CompiledTTNNKernel:
             else:
                 data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
 
-            page_size = _tile_bytes_from_dtype(data_format)
+            page_size = tile_bytes_from_dtype(data_format)
             if hasattr(tensor, 'volume'):
                 num_tiles = max(1, tensor.volume() // 1024)
             else:
@@ -602,12 +581,11 @@ def _compile_and_run_kernel(
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
-    effective_memory_space = memory_space
     if has_ttnn_tensors:
         first_ttnn_tensor = next((arg for arg in args if _is_ttnn_tensor(arg)), None)
         if first_ttnn_tensor is not None:
-            effective_memory_space = _detect_memory_space_from_tensor(first_ttnn_tensor, memory_space)
-            print(f"[TTNN interop] Detected {effective_memory_space} memory space")
+            memory_space = _detect_memory_space_from_tensor(first_ttnn_tensor, memory_space)
+            print(f"[TTNN interop] Detected {memory_space} memory space")
 
     for param_name, arg in zip(f_params, args):
         register_tensor_name(arg, param_name)
@@ -615,7 +593,7 @@ def _compile_and_run_kernel(
     inject_kwargs = [
         ("block_factors", block_factors),
         ("grid", grid),
-        ("memory_space", effective_memory_space),
+        ("memory_space", memory_space),
         ("tiled", tiled),
     ]
     for injected_kwarg, val in inject_kwargs:
@@ -630,7 +608,7 @@ def _compile_and_run_kernel(
 
     injected_program_kwargs = {
         "grid": grid,
-        "memory_space": effective_memory_space,
+        "memory_space": memory_space,
         "tiled": tiled,
     }
     program = Program(

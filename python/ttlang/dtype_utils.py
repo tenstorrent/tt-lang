@@ -382,3 +382,36 @@ def create_borrowed_tensors(torch_tensors):
         )
         result.append(rt_tensor)
     return result
+
+
+def tile_bytes_from_dtype(dtype) -> int:
+    """
+    Calculate tile size in bytes from ttnn dtype.
+
+    For tiled tensors, each tile is 32x32 elements. The byte size depends on
+    the data type's element size plus any format-specific overhead.
+
+    Args:
+        dtype: ttnn.DataType enum value
+
+    Returns:
+        Tile size in bytes
+
+    Raises:
+        ValueError: If dtype is not supported
+    """
+    dtype_int = int(dtype)
+    # Map ttnn DataType enum values to tile sizes
+    # Reference: tt-metal/tt_metal/common/constants.hpp
+    if dtype_int in (0, 6):  # BFloat16, UInt16
+        return 32 * 32 * 2  # 2048
+    elif dtype_int in (1, 2, 7):  # Float32, Int32, UInt32
+        return 32 * 32 * 4  # 4096
+    elif dtype_int == 3:  # BFP8
+        return 32 * 32 + 64  # 1088
+    elif dtype_int == 5:  # UInt8/Int8
+        return 32 * 32  # 1024
+    elif dtype_int == 4:  # BFP4
+        return 512 + 64  # 576
+    else:
+        raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
