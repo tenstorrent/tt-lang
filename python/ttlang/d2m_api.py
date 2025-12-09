@@ -294,13 +294,18 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
             f"Mixed tensor types would generate extra bounce kernels."
         )
 
-    # Validate TTNN tensors memory space - currently support L1 (sharded) and DRAM (interleaved)
+    # Validate TTNN tensors - currently support L1 (sharded) and DRAM (interleaved), must be tilized
     for i, arg in enumerate(args):
         if _is_ttnn_tensor(arg):
             mem_space = _detect_memory_space_from_tensor(arg, "unknown")
             if mem_space not in ("L1", "DRAM"):
                 raise ValueError(
                     f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
+                )
+            if hasattr(arg, 'layout') and "TILE" not in str(arg.layout()):
+                raise ValueError(
+                    f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout()}. "
+                    f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
                 )
 
     # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
