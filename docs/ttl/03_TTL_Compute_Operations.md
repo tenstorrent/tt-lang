@@ -49,6 +49,42 @@ def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
 
     Container for kernel execution. Owns captured tensors and nested thread regions.
     Regions execute in parallel on grid of cores.
+
+    Example - Python to MLIR lowering:
+
+    Python:
+      @ttl.compute()
+      def my_compute(a_cb, b_cb):
+          a_blk = a_cb.wait()
+          # ... compute operations
+
+      prog = ttl.Program(my_compute)
+      prog(input_tensor, output_tensor)
+
+    Initial MLIR (from Python AST):
+      %result = ttl.program @my_kernel(%input, %output) grid=(8,8) memory_space="L1" {
+        ^compute_region:
+          ttl.compute_thread {
+            %a_cb = ttl.create_cb ...
+            %a_blk = ttl.cb_wait %a_cb
+            // ... compute operations
+          }
+      }
+
+    After TTLExpandThreads pass (internal lowering):
+      ttl.kernel @my_kernel(%input, %output) grid=(8,8) memory_space="L1" {
+        ^compute_region:
+          ttl.compute_thread {
+            // ... thread body
+          }
+      }
+      // Eventually expands to:
+      func.func @my_kernel_compute_thread_0(%arg0, %arg1) attributes {grid=(8,8)} {
+        // Expanded thread body
+      }
+
+    The ttl.program operation is the user-facing entry point, while ttl.kernel is an
+    intermediate representation that facilitates multi-threaded lowering and analysis.
   }];
 }
 
@@ -704,6 +740,11 @@ def TTL_RequireDSTOp : TTL_Op<"require_dst", [DeclareOpInterfaceMethods<MemoryEf
 
 `DST` register operations are IR-level constructs for managing register
 allocation at the block abstraction level.
+
+**MVP Limitation**: Spilling (`ttl.spill_tile_to_l1` and `ttl.restore_tile_from_l1`)
+is a post-MVP feature. The initial compiler implementation will error out if DST
+register pressure exceeds available capacity. Users must structure kernels to fit
+within DST constraints during the MVP phase.
 
 Block-to-tile lowering context: TTL operations work on *blocks* (groups of
 tiles, e.g., a 2x1 block = 2 tiles). Hardware operations in TTKernel work on

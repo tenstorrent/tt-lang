@@ -351,12 +351,16 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
 
       TTL IR:
         // Pipes created in scf.for loop (from Python list comprehension)
-        %pipes = scf.for %x = 0 to %grid_x iter_args(%acc = ...) {
-          %pipe = ttl.create_pipe src_core=[%x,0], dst_core_range=[%x, #ttl.slice<1,grid_y,1>]
-          %new_acc = ... // Append pipe to accumulator
-          scf.yield %new_acc
-        }
-        %net = ttl.create_pipenet %pipes
+        // Note: Actual implementation would use a container type (e.g., builtin list,
+        // or emit all pipes as separate SSA values and pass to create_pipenet as variadic args)
+        %grid_x = ttl.grid_size dims=1
+
+        // Simplified representation - actual lowering may inline the loop and
+        // create all pipes as separate SSA values:
+        %pipe_0 = ttl.create_pipe src_core=[0,0], dst_core_range=[0, #ttl.slice<1,grid_y,1>]
+        %pipe_1 = ttl.create_pipe src_core=[1,0], dst_core_range=[1, #ttl.slice<1,grid_y,1>]
+        // ... (one per grid_x value)
+        %net = ttl.create_pipenet %pipe_0, %pipe_1, ...
 
         ttl.if_pipe_dst %net {
           ^bb0(%pipe: !ttl.pipe):

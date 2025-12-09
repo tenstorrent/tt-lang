@@ -74,8 +74,11 @@ def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
   let assemblyFormat = "`<` $memorySpace `,` $layout `>`";
   let description = [{
     Encoding attached to `tensor<...>` types to carry both the memory-space
-    placement (L1/DRAM/DST/System) and layout metadata (tiled, sharded,
-    interleaved, etc.).
+    placement (L1/DRAM/System) and layout metadata (tiled, sharded, interleaved, etc.).
+
+    Note: DST is not a valid memory space for tensors. DST registers are managed
+    exclusively by the TTLAssignDSTRegisters pass and do not participate in the
+    tensor memory space system.
   }];
 }
 
@@ -216,6 +219,14 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
     Each slice in dst_core_range is a tuple (start, stop, step) per TT-Lang spec.
     The range is half-open: [start, stop). Step defaults to 1 if not specified.
 
+    **Arity requirement**: The dst_core_range tuple MUST have the same arity as the
+    grid rank to prevent ambiguity. For a 2D grid (grid_x, grid_y), both dimensions
+    must be specified explicitly. Use slice(x, x+1) for a single core in that dimension.
+
+    Example (2D grid):
+      Valid: dst_core_range=(slice(x, x+1), slice(1, grid_y))  // Explicit in both dims
+      Invalid: dst_core_range=(x, slice(1, grid_y))  // Ambiguous: int x slice interpretation
+
     Loopback inference:
     The compiler automatically detects when src_core is within dst_core_range and
     selects the appropriate loopback multicast operation during lowering in
@@ -301,12 +312,18 @@ def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {
     - tiled vs row-major
     - sharded grids
     - interleaved patterns
+
     Allows lossless representation of all TensorAccessor configurations. The
     attribute participates in the `TTL_TensorEncodingAttr` attached to
     `tensor<...>` types, so every `TTL_Tensor` carries explicit layout alongside
     its memory-space annotation.
+
+    Note: Consider reusing `ttnn::LayoutAttr` from tt-mlir instead of defining a
+    bespoke attribute. Reuse would avoid duplicate parsing/printing and maintain
+    descriptor compatibility. Investigation needed to determine if TTL has layout
+    requirements not covered by the existing TTNN attribute.
   }];
-  // Parameters TBD based on MetalLayoutConfig from layouts.py
+  // Parameters TBD based on MetalLayoutConfig from layouts.py or ttnn::LayoutAttr
 }
 
 def TTL_SliceAttr : AttrDef<TTL_Dialect, "Slice"> {

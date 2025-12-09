@@ -89,6 +89,30 @@ C++ Kernel Source (.cpp/.h files)
 Compiled Kernel Object (.o files, linkable with TT-Metal runtime)
 ```
 
+**Control Flow and Optimization Strategy**
+
+TTL uses three complementary MLIR components for control flow and optimization:
+
+1. **Affine dialect** for structured loops: TTL kernels iterate over grid dimensions and
+   tile indices with static or affine bounds. Affine dialect provides dependence analysis
+   that determines when DMA operations can overlap and when barriers can be elided. The
+   polyhedral transformations (fusion, tiling, interchange) are directly applicable to
+   TTL's access patterns.
+
+2. **SCF dialect** for conditionals: Core-specific conditionals (`if core_x == 0`) and
+   dynamic control flow use SCF operations. SCF also provides the outer iteration
+   constructs when transform-based tiling generates sub-block loops.
+
+3. **Linalg structured ops** for compute operations: Block compute operations lower to
+   `linalg.generic` to access transform dialect tiling primitives. The transform dialect's
+   `multitile_sizes` operation computes sub-block dimensions that respect DST register
+   capacity constraints, enabling automatic register-constrained tiling without custom
+   heuristics.
+
+See [Section 5.5](#55-control-flow-scf-vs-affine-dialect) for affine vs SCF rationale and
+[Section 5.6 in Compute Operations](03_TTL_Compute_Operations.md#56-structured-ops-for-dst-register-capacity-based-tiling)
+for DST capacity-based tiling via linalg and transform dialect.
+
 ### 5.2 Key Pass Descriptions
 
 **`TTLInferPipeSemaphores`**

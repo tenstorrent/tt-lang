@@ -3134,9 +3134,10 @@ See:
 ttkernel.cb_wait_front %cb, 2  // 2 computed from CB.shape
 ```
 
-**Tile Extraction:**
+**Tile Extraction (Internal Lowering Artifacts):**
 ```mlir
-// TTL (lowered form - internal IR)
+// TTL (lowered form - internal IR only, not emitted by TT-Lang frontend)
+// Generated during block→tile lowering pass
 %tile0 = ttl.get_tile %cb, %c0
 %tile1 = ttl.get_tile %cb, %c1
 
@@ -3145,6 +3146,8 @@ ttkernel.copy_tile_init %cb
 %tile0 = ttkernel.copy_tile %cb, 0, %dst_idx0
 %tile1 = ttkernel.copy_tile %cb, 1, %dst_idx1
 ```
+
+Note: `ttl.get_tile` and `ttl.pack_tile` operations are generated automatically during block-to-tile lowering and are not exposed in the TT-Lang Python DSL. Users work with block-level abstractions exclusively.
 
 **Block Compute:**
 ```mlir

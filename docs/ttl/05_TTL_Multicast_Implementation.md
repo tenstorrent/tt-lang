@@ -351,8 +351,7 @@ Barrier insertion strategy:
 1. Collect memory effects between consecutive semaphore operations
 2. Check for read-after-write, write-after-write conflicts on semaphore
    resources
-3. Insert barrier only when conflicts exist (hybrid conservative/aggressive
-   approach)
+3. Insert barrier only when conflicts exist
 
 Conservative insertion points:
 - Before semaphore wait operations that depend on prior remote sets/increments
