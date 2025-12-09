@@ -29,13 +29,14 @@ void kernel_main() {
       // Write the output tile to DRAM.
       uint32_t l1_read_addr = get_read_ptr(cb_id_out0);
       noc_async_write_tile(m * Nt + n, s, l1_read_addr);
-      noc_async_write_barrier(); // This will wait until the write is done. As
-                                 // an alternative, noc_async_write_flushed()
-                                 // can be faster because it waits until the
-                                 // write request is sent. In that case, you
-                                 // have to use noc_async_write_barrier() at
-                                 // least once at the end of data movement
-                                 // kernel to make sure all writes are done.
+      // This will wait until the write is done. As
+      // an alternative, noc_async_write_flushed()
+      // can be faster because it waits until the
+      // write request is sent. In that case, you
+      // have to use noc_async_write_barrier() at
+      // least once at the end of data movement
+      // kernel to make sure all writes are done.
+      noc_async_write_barrier();
       cb_pop_front(cb_id_out0, 1);
     }
   }

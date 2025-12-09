@@ -7,12 +7,25 @@ import torch
 
 from metal_examples.utils import assert_with_ulp
 
+
 # (M * N) % (32 *32) == 0 for this implemention
-@pytest.mark.parametrize("M,K,N", [(32, 32, 32), (64, 32, 32), (128, 128, 128), (256, 256, 256), (512, 512, 512), (640, 640, 640)])
-def test_multicore_matmul(M, K, N): 
+@pytest.mark.parametrize(
+    "M,K,N",
+    [
+        (32, 32, 32),
+        (64, 32, 32),
+        (128, 128, 128),
+        (256, 256, 256),
+        (512, 512, 512),
+        (640, 640, 640),
+    ],
+)
+def test_multicore_matmul(M, K, N):
     # might be some l1 config stuff
     device = ttnn.open_device(device_id=0)
-    assert (M * N) % (ttnn.TILE_SIZE * ttnn.TILE_SIZE) == 0, "M*N must be multiple of TILE_SIZE*TILE_SIZE"
+    assert (M * N) % (
+        ttnn.TILE_SIZE * ttnn.TILE_SIZE
+    ) == 0, "M*N must be multiple of TILE_SIZE*TILE_SIZE"
     Mt = M // ttnn.TILE_SIZE
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
@@ -20,30 +33,43 @@ def test_multicore_matmul(M, K, N):
 
     # device.compute_with_storage_grid_size() # size, not limit. Hardcode for now
     upper_bound_core = ttnn.CoreCoord(7, 7)
-    core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)])
-    print(f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}", flush=True)
+    core_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)]
+    )
+    print(
+        f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}",
+        flush=True,
+    )
     try:
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
+        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+            ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
+        )
     except Exception as e:
-        print(f"Error splitting work to cores: {e}, trying again with row wise splitting")
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
-    print(f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}")
+        print(
+            f"Error splitting work to cores: {e}, trying again with row wise splitting"
+        )
+        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+            ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
+        )
+    print(
+        f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
+    )
 
     # allocate a, b and output tensors for matmul on device dram
     dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
     a_tensor = ttnn.rand(
-        (M, K), 
-        dtype=ttnn.bfloat16, 
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config
-    )
-    b_tensor = ttnn.rand(
-        (K, N), 
+        (M, K),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
-        memory_config=dram_memory_config
+        memory_config=dram_memory_config,
+    )
+    b_tensor = ttnn.rand(
+        (K, N),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
     )
     output_tensor = ttnn.empty(
         (M, N),
@@ -94,12 +120,16 @@ def test_multicore_matmul(M, K, N):
 
     # TODO inconsistent metal access patterns for compile/runtime args
     reader_compile_time_args = ttnn.TensorAccessorArgs(a_tensor).get_compile_time_args()
-    reader_compile_time_args.extend(ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args())
-    writer_compile_time_args = ttnn.TensorAccessorArgs(output_tensor).get_compile_time_args()
-    
+    reader_compile_time_args.extend(
+        ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args()
+    )
+    writer_compile_time_args = ttnn.TensorAccessorArgs(
+        output_tensor
+    ).get_compile_time_args()
+
     # iterate over cores and assign work via runtime args
     # Both core groups should only be one core_range, but handling more just in case
-    # will always be a smaller core grid than input grid, setting up runtime list 
+    # will always be a smaller core grid than input grid, setting up runtime list
     # as the larger one to enable indexing in
     num_x_cores = upper_bound_core.x + 1
     num_y_cores = upper_bound_core.y + 1
@@ -108,20 +138,48 @@ def test_multicore_matmul(M, K, N):
     compute_rt_args = [[[] for _ in range(num_y_cores)] for _ in range(num_x_cores)]
     current_tile = 0
     for core_range in core_group_1.ranges():
-        for x in range(core_range.start.x, core_range.end.x+1):
-            for y in range(core_range.start.y, core_range.end.y+1):
-                print(f"Assigning core ({x},{y}) tile {current_tile} work_per_core1 {work_per_core1}")
-                reader_rt_args[x][y] = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt, current_tile, work_per_core1]
-                writer_rt_args[x][y] = [output_tensor.buffer_address(), work_per_core1, current_tile]
+        for x in range(core_range.start.x, core_range.end.x + 1):
+            for y in range(core_range.start.y, core_range.end.y + 1):
+                print(
+                    f"Assigning core ({x},{y}) tile {current_tile} work_per_core1 {work_per_core1}"
+                )
+                reader_rt_args[x][y] = [
+                    a_tensor.buffer_address(),
+                    b_tensor.buffer_address(),
+                    Mt,
+                    Kt,
+                    Nt,
+                    current_tile,
+                    work_per_core1,
+                ]
+                writer_rt_args[x][y] = [
+                    output_tensor.buffer_address(),
+                    work_per_core1,
+                    current_tile,
+                ]
                 compute_rt_args[x][y] = [work_per_core1, Kt]
                 current_tile += work_per_core1
 
     for core_range in core_group_2.ranges():
-        for x in range(core_range.start.x, core_range.end.x+1):
-            for y in range(core_range.start.y, core_range.end.y+1):
-                print(f"Assigning core ({x},{y}) tile {current_tile} work_per_core2 {work_per_core2}")
-                reader_rt_args[x][y] = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt, current_tile, work_per_core2]
-                writer_rt_args[x][y] = [output_tensor.buffer_address(), work_per_core2, current_tile]
+        for x in range(core_range.start.x, core_range.end.x + 1):
+            for y in range(core_range.start.y, core_range.end.y + 1):
+                print(
+                    f"Assigning core ({x},{y}) tile {current_tile} work_per_core2 {work_per_core2}"
+                )
+                reader_rt_args[x][y] = [
+                    a_tensor.buffer_address(),
+                    b_tensor.buffer_address(),
+                    Mt,
+                    Kt,
+                    Nt,
+                    current_tile,
+                    work_per_core2,
+                ]
+                writer_rt_args[x][y] = [
+                    output_tensor.buffer_address(),
+                    work_per_core2,
+                    current_tile,
+                ]
                 compute_rt_args[x][y] = [work_per_core2, Kt]
                 current_tile += work_per_core2
 
@@ -157,7 +215,11 @@ def test_multicore_matmul(M, K, N):
     )
 
     program_descriptor = ttnn.ProgramDescriptor(
-        kernels=[reader_kernel_descriptor, writer_kernel_descriptor, compute_kernel_descriptor],
+        kernels=[
+            reader_kernel_descriptor,
+            writer_kernel_descriptor,
+            compute_kernel_descriptor,
+        ],
         semaphores=[],
         cbs=[a_cb_descriptor, b_cb_descriptor, out_cb_descriptor],
     )

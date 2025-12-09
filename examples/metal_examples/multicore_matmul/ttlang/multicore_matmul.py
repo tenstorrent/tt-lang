@@ -42,15 +42,28 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     )
 
     x_size, y_size = ttl.grid_size(dims=2)
-    upper_bound_core = ttnn.CoreCoord(x_size-1, y_size-1)
-    core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)])
-    print(f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}", flush=True)
+    upper_bound_core = ttnn.CoreCoord(x_size - 1, y_size - 1)
+    core_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)]
+    )
+    print(
+        f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}",
+        flush=True,
+    )
     try:
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
+        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+            ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
+        )
     except Exception as e:
-        print(f"Error splitting work to cores: {e}, trying again with row wise splitting")
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
-    print(f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}")
+        print(
+            f"Error splitting work to cores: {e}, trying again with row wise splitting"
+        )
+        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+            ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
+        )
+    print(
+        f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
+    )
 
     num_cores_group_1 = get_number_of_cores(core_group_1)
     num_cores_group_2 = get_number_of_cores(core_group_2)
@@ -60,15 +73,18 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             return work_per_core1
         elif core_id < num_cores_group_1 + num_cores_group_2:
             return work_per_core2
-        else: # no work assigned
+        else:  # no work assigned
             return 0
 
     def get_start_tile_id(core_id):
         if core_id < num_cores_group_1:
             return core_id * work_per_core1
         elif core_id < num_cores_group_1 + num_cores_group_2:
-            return num_cores_group_1 * work_per_core1 + (core_id - num_cores_group_1) * work_per_core2
-        else: # no work assigned
+            return (
+                num_cores_group_1 * work_per_core1
+                + (core_id - num_cores_group_1) * work_per_core2
+            )
+        else:  # no work assigned
             return 0
 
     @ttl.compute()
@@ -90,7 +106,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             out_col = current_tile_id % Nt
             for k in range(Kt):
                 with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                    a_wr = copy(a[out_row: (out_row + 1), k : (k + 1)], a_blk)
+                    a_wr = copy(a[out_row : (out_row + 1), k : (k + 1)], a_blk)
                     b_wr = copy(b[k : (k + 1), out_col : (out_col + 1)], b_blk)
                     a_wr.wait()
                     b_wr.wait()
@@ -104,7 +120,9 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             out_row = current_tile_id // Nt
             out_col = current_tile_id % Nt
             with out_cb.wait() as out_blk:
-                out_wr = copy(out_blk, out[out_row : (out_row + 1), out_col : (out_col + 1)])
+                out_wr = copy(
+                    out_blk, out[out_row : (out_row + 1), out_col : (out_col + 1)]
+                )
                 out_wr.wait()
 
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
