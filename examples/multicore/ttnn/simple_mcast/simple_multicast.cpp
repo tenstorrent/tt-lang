@@ -21,13 +21,7 @@ void kernel_main() {
     // Compile-time args
     constexpr uint32_t start_sem_idx = get_compile_time_arg_val(0);
     constexpr uint32_t done_sem_idx = get_compile_time_arg_val(1);
-    constexpr uint32_t reduce_core_x = get_compile_time_arg_val(2);
-    constexpr uint32_t reduce_core_y = get_compile_time_arg_val(3);
-    constexpr uint32_t mcast_start_x = get_compile_time_arg_val(4);
-    constexpr uint32_t mcast_start_y = get_compile_time_arg_val(5);
-    constexpr uint32_t mcast_end_x = get_compile_time_arg_val(6);
-    constexpr uint32_t mcast_end_y = get_compile_time_arg_val(7);
-    constexpr uint32_t num_dests = get_compile_time_arg_val(8);
+    constexpr uint32_t num_cores = get_compile_time_arg_val(2);
 
     // Get semaphore addresses
     const uint32_t start_sem_addr = get_semaphore(start_sem_idx);
@@ -40,16 +34,28 @@ void kernel_main() {
 
     const bool is_reduce_core = (core_id == 0);
 
-    // Print physical NOC coordinates
-    DPRINT << "Core " << core_id << " started at physical NOC coords (" << (uint32_t)my_x[0] << "," << (uint32_t)my_y[0] << ")" << ENDL();
+    // Get my physical NOC coordinates
+    const uint32_t my_phys_x = my_x[0];
+    const uint32_t my_phys_y = my_y[0];
 
-    // NOC addresses for signaling - use actual physical coordinates
-    const uint64_t done_sem_noc_addr = get_noc_addr(reduce_core_x, reduce_core_y, done_sem_addr);
+    DPRINT << "Core " << core_id << " started at physical NOC coords (" << my_phys_x << "," << my_phys_y << ")" << ENDL();
 
-    // For multicast, we need to compute the actual physical coordinate range
-    // Since all cores are on the same row (y=2 for all), and x goes from 1 to 4,
-    // we can use compile-time args if they were physical, or compute dynamically
-    // For now, let's use the passed coordinates but note they should be physical
+    // For multicast, compute the range based on number of cores
+    // All cores are in a row with same y coordinate, x coordinates are consecutive
+    // Multicast from my_phys_x to my_phys_x + (num_cores - 1)
+    const uint32_t mcast_start_x = my_phys_x;
+    const uint32_t mcast_start_y = my_phys_y;
+    const uint32_t mcast_end_x = my_phys_x + (num_cores - 1);
+    const uint32_t mcast_end_y = my_phys_y;
+
+    // NOC address for signaling done to reduce core
+    // Reduce core is core_id 0. If I'm the reduce core, use my coords. Otherwise, need to know reduce core's coords.
+    // Since all cores are in a row, reduce core is at (my_phys_x - core_id, my_phys_y)
+    const uint32_t reduce_core_phys_x = my_phys_x - core_id;
+    const uint32_t reduce_core_phys_y = my_phys_y;
+    const uint64_t done_sem_noc_addr = get_noc_addr(reduce_core_phys_x, reduce_core_phys_y, done_sem_addr);
+
+    DPRINT << "Core " << core_id << ": Reduce core at (" << reduce_core_phys_x << "," << reduce_core_phys_y << ")" << ENDL();
     const uint64_t start_sem_mcast_addr = get_noc_multicast_addr(
         mcast_start_x, mcast_start_y, mcast_end_x, mcast_end_y, start_sem_addr);
 
@@ -65,22 +71,23 @@ void kernel_main() {
         // Reset done semaphore before starting
         noc_semaphore_set(done_sem_ptr, 0);
 
-        // Reduce core: multicast start signal to ALL cores (including self with loopback)
-        noc_semaphore_set(start_sem_ptr, 1);
-        DPRINT << "Core 0: Multicasting start signal to " << num_dests << " other cores" << ENDL();
-
-        // num_dests is the number of OTHER cores (loopback_src includes sender automatically)
-        noc_semaphore_set_multicast_loopback_src(start_sem_addr, start_sem_mcast_addr, num_dests);
-        noc_async_atomic_barrier();
-        DPRINT << "Core 0: Multicast complete" << ENDL();
-
-        // Reduce core also signals itself as done
+        // Reduce core signals itself as done BEFORE multicasting
+        // (to avoid race where workers finish before reduce core increments)
         noc_semaphore_inc(done_sem_noc_addr, 1);
         noc_async_atomic_barrier();
-        DPRINT << "Core 0: Incremented done_sem, waiting for " << (num_dests + 1) << ENDL();
+        DPRINT << "Core 0: Incremented done_sem to 1" << ENDL();
 
-        // Wait for all cores (num_dests + 1 = total cores including self)
-        noc_semaphore_wait(done_sem_ptr, num_dests + 1);
+        // Multicast start signal to ALL cores (including self with loopback)
+        noc_semaphore_set(start_sem_ptr, 1);
+        DPRINT << "Core 0: Multicasting start signal to " << (num_cores - 1) << " other cores" << ENDL();
+
+        // num_cores - 1 = number of OTHER cores (loopback_src includes sender automatically)
+        noc_semaphore_set_multicast_loopback_src(start_sem_addr, start_sem_mcast_addr, num_cores - 1);
+        noc_async_atomic_barrier();
+        DPRINT << "Core 0: Multicast complete, waiting for " << num_cores << " total" << ENDL();
+
+        // Wait for all cores (num_cores total)
+        noc_semaphore_wait(done_sem_ptr, num_cores);
         DPRINT << "Core 0: All cores done!" << ENDL();
     } else {
         DPRINT << "Core " << core_id << ": Worker waiting for start signal" << ENDL();

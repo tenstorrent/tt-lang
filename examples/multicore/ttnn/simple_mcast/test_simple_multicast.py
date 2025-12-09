@@ -26,58 +26,7 @@ def test_simple_multicast():
         num_cores = 4
 
         print(f"Testing multicast with {num_cores} cores")
-
-        # IMPORTANT: Get physical coordinates for multicast
-        print(f"Device type: {type(device)}")
-        print(f"Device attributes: {[a for a in dir(device) if not a.startswith('_')][:10]}")
-
-        # Try different methods to access coordinate translation
-        coord_method_found = False
-
-        # Method 1: Direct access
-        if hasattr(device, 'worker_core_from_logical_core'):
-            reduce_core_phys = device.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
-            start_core_phys = device.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
-            end_core_phys = device.worker_core_from_logical_core(ttnn.CoreCoord(3, 0))
-            print(f"Method 1: Using device.worker_core_from_logical_core")
-            coord_method_found = True
-
-        # Method 2: Check for devices attribute (MeshDevice might have this)
-        elif hasattr(device, 'devices'):
-            print(f"Method 2: Trying device.devices")
-            devices_list = device.devices
-            if devices_list and hasattr(devices_list[0], 'worker_core_from_logical_core'):
-                underlying_dev = devices_list[0]
-                reduce_core_phys = underlying_dev.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
-                start_core_phys = underlying_dev.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
-                end_core_phys = underlying_dev.worker_core_from_logical_core(ttnn.CoreCoord(3, 0))
-                coord_method_found = True
-
-        # Method 3: Try getting device from mesh
-        elif hasattr(device, 'get_device'):
-            print(f"Method 3: Trying device.get_device()")
-            underlying_dev = device.get_device(0)
-            if hasattr(underlying_dev, 'worker_core_from_logical_core'):
-                reduce_core_phys = underlying_dev.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
-                start_core_phys = underlying_dev.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
-                end_core_phys = underlying_dev.worker_core_from_logical_core(ttnn.CoreCoord(3, 0))
-                coord_method_found = True
-
-        if coord_method_found:
-            print(f"Using virtual coordinates from device API:")
-            print(f"  Reduce core: ({reduce_core_phys.x}, {reduce_core_phys.y})")
-            print(f"  Multicast range: ({start_core_phys.x}, {start_core_phys.y}) to ({end_core_phys.x}, {end_core_phys.y})")
-        else:
-            # Hardcode virtual coordinates for Blackhole
-            # Based on DPRINT output, physical (1,2)-(4,2)
-            # For Blackhole, virtual == physical for worker cores
-            print("WARNING: Could not find worker_core_from_logical_core method")
-            print("Using hardcoded virtual coordinates for Blackhole device")
-            reduce_core_phys = ttnn.CoreCoord(1, 2)  # Virtual coords for logical (0,0)
-            start_core_phys = ttnn.CoreCoord(1, 2)   # Virtual coords for logical (0,0)
-            end_core_phys = ttnn.CoreCoord(4, 2)     # Virtual coords for logical (3,0)
-            print(f"  Reduce core (virtual): ({reduce_core_phys.x}, {reduce_core_phys.y})")
-            print(f"  Multicast range (virtual): ({start_core_phys.x}, {start_core_phys.y}) to ({end_core_phys.x}, {end_core_phys.y})")
+        print("NOTE: Kernel computes multicast coordinates dynamically using my_x[0]/my_y[0]")
 
         # Create semaphores
         start_sem_descriptor = ttnn.SemaphoreDescriptor(
@@ -91,17 +40,11 @@ def test_simple_multicast():
             initial_value=0,
         )
 
-        # Compile-time args (using logical coordinates - works on this device)
+        # Compile-time args (kernel computes coordinates dynamically)
         compile_time_args = [
             0,  # start_sem_idx
             1,  # done_sem_idx
-            reduce_core_phys.x,  # reduce_core_x
-            reduce_core_phys.y,  # reduce_core_y
-            start_core_phys.x,   # mcast_start_x
-            start_core_phys.y,   # mcast_start_y
-            end_core_phys.x,     # mcast_end_x
-            end_core_phys.y,     # mcast_end_y
-            num_cores - 1,       # num_dests (number of OTHER cores for loopback multicast)
+            num_cores,  # num_cores
         ]
 
         # Runtime args per core
