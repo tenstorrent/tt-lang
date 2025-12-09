@@ -294,14 +294,13 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
             f"Mixed tensor types would generate extra bounce kernels."
         )
 
-    # Validate TTNN tensors are in L1 memory space
+    # Validate TTNN tensors memory space - currently support L1 (sharded) and DRAM (interleaved)
     for i, arg in enumerate(args):
         if _is_ttnn_tensor(arg):
             mem_space = _detect_memory_space_from_tensor(arg, "unknown")
-            if mem_space != "L1":
+            if mem_space not in ("L1", "DRAM"):
                 raise ValueError(
-                    f"TTNN interop requires L1 memory space, but tensor {i} is in {mem_space}. "
-                    f"Use ttnn.to_memory_config() to move tensors to L1."
+                    f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
                 )
 
     # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
@@ -652,7 +651,7 @@ def _compile_and_run_kernel(
                 num_outs,
                 args,
                 tiled,
-                memory_space,
+                effective_memory_space,
             )
 
         initial_mlir_path = os.environ.get("TTLANG_INITIAL_MLIR")

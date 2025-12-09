@@ -15,13 +15,18 @@ from .constants import DEFAULT_TILE_SHAPE, DEFAULT_TENSOR_MEMORY_LAYOUT
 
 @dataclass(frozen=True)
 class MetalLayoutConfig:
-    """Immutable configuration for metal layout creation."""
+    """Immutable configuration for metal layout creation.
+
+    Note: sharded defaults to None, which means:
+      - L1 memory space: sharded=True (uses Sharded tensor memory layout)
+      - DRAM memory space: sharded=False (uses Interleaved tensor memory layout)
+    """
 
     logical_shape: List[int]
     grid: List[int]
     tiled: bool = True
     memory_space: str = "L1"
-    sharded: bool = True
+    sharded: Optional[bool] = None  # None = auto-detect from memory_space
 
 
 @dataclass(frozen=True)
@@ -102,16 +107,25 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
             f"Invalid memory_space: {config.memory_space}. Must be 'L1' or 'DRAM'"
         )
 
-    if config.sharded:
+    # Determine sharded: if None, auto-detect from memory_space
+    # L1 -> Sharded (default), DRAM -> Interleaved (default)
+    sharded = config.sharded
+    if sharded is None:
+        sharded = (config.memory_space == "L1")
+
+    if sharded:
         memory_layout = DEFAULT_TENSOR_MEMORY_LAYOUT
     else:
         memory_layout = ttcore.TensorMemoryLayout.Interleaved
 
-    for i in range(len(config.logical_shape)):
-        if config.logical_shape[i] % config.grid[i] != 0:
-            raise ValueError(
-                f"Logical dimension {i} ({config.logical_shape[i]}) must be evenly divisible by grid dimension {i} ({config.grid[i]})"
-            )
+    # Only check grid divisibility for sharded layouts
+    # DRAM interleaved doesn't require grid divisibility
+    if sharded:
+        for i in range(len(config.logical_shape)):
+            if config.logical_shape[i] % config.grid[i] != 0:
+                raise ValueError(
+                    f"Logical dimension {i} ({config.logical_shape[i]}) must be evenly divisible by grid dimension {i} ({config.grid[i]})"
+                )
 
     layout = ttcore.ir.MetalLayoutAttr.get(
         ctx,
@@ -138,6 +152,9 @@ def create_stream_layout_for_input(
     bufferization). Result uses MetalLayoutAttr WITH identity index_map (becomes
     ViewLayoutAttr after bufferization).
 
+    For DRAM interleaved inputs, the storage is still created in L1 (CB backing
+    is always L1), but the result type preserves the input's memory space.
+
     Args:
         ctx: MLIR context
         input_arg: Function argument to wrap with stream layout
@@ -160,19 +177,32 @@ def create_stream_layout_for_input(
     if metal_layout is None:
         raise RuntimeError("Input argument must have MetalLayoutAttr encoding")
 
+    # Storage (CB backing) is always L1, even for DRAM inputs
+    # The DMA will transfer from DRAM to L1 CB
     storage_layout = create_metal_layout(
         ctx,
         MetalLayoutConfig(
             logical_shape=config.logical_shape,
             grid=config.grid,
             tiled=config.tiled,
-            memory_space=config.memory_space,
+            memory_space="L1",  # CB backing is always L1
+            sharded=True,  # CB storage is sharded
         ),
     )
     storage_type = RankedTensorType.get(device_shape, element_type, storage_layout)
     storage = d2m.EmptyOp(storage_type)
 
-    result_type = RankedTensorType.get(device_shape, element_type, storage_layout)
+    # Result type preserves the input's memory space for proper DMA lowering
+    result_layout = create_metal_layout(
+        ctx,
+        MetalLayoutConfig(
+            logical_shape=config.logical_shape,
+            grid=config.grid,
+            tiled=config.tiled,
+            memory_space=config.memory_space,  # Preserve input memory space
+        ),
+    )
+    result_type = RankedTensorType.get(device_shape, element_type, result_layout)
 
     stream = d2m.StreamLayoutOp(result_type, input_arg, storage.result)
     return stream.result
