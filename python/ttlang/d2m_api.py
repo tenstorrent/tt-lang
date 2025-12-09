@@ -675,7 +675,7 @@ def _compile_and_run_kernel(
             "ttcore-one-shot-bufferize",
             "func.func(d2m-simple-allocate)",              # Our simplified allocator
             "d2m-linalg-to-affine{use-tile-matmul=1}",     # Convert all linalg including matmul
-            "func.func(d2m-insert-dst-register-gc)",       # Boyana's graph coloring DST allocator
+            "d2m-insert-dst-register-access",
             "lower-affine",
             "d2m-generic-linearize-memref",
             "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
