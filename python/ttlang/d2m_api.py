@@ -29,6 +29,8 @@ from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
+import ttlang._mlir_libs._ttlang  # Register tt-lang passes
+
 from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
 
@@ -48,9 +50,26 @@ from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
 
 
-def _should_execute_on_metal_runtime():
-    """Check if we should execute on Metal runtime (skip on macOS)."""
-    return platform.system() != "Darwin" and binary is not None and runtime is not None
+class CompilerConfig:
+    """
+    Configuration for the compiler pipeline and runtime execution.
+
+    Encapsulates environment flags and runtime availability checks.
+    """
+
+    def __init__(self):
+        self.compile_only = os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
+        self._runtime_available = binary is not None and runtime is not None
+        self._is_macos = platform.system() == "Darwin"
+
+    def should_run_metal(self) -> bool:
+        """Check if Metal runtime execution should proceed."""
+        return not self.compile_only and not self._is_macos and self._runtime_available
+
+    def should_run_ttnn(self) -> bool:
+        """Check if TTNN runtime execution should proceed."""
+        # TTNN mode not yet supported - PR #50 will add this
+        return False
 
 
 def _execute_on_metal_runtime(flatbuffer_binary, args):
@@ -360,15 +379,45 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        use_tile_matmul = True
-        ttnn_mode = False
-        pipeline = f"d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{{use-tile-matmul={1 if use_tile_matmul else 0} ttnn-mode={1 if ttnn_mode else 0}}}"
+        config = CompilerConfig()
+
+        # fmt: off
+        pipeline_passes = [
+            "d2m-generic-replace-globals",
+            "d2m-lower-to-layout",                         # Lower to_layout to data movement
+            "d2m-elementwise-fusion",                      # Fuse d2m.generic operations
+            "canonicalize",                                # Cleanup and simplify
+            "ttcore-one-shot-bufferize",
+            "func.func(d2m-simple-allocate)",              # Our simplified allocator
+            "d2m-linalg-to-affine{use-tile-matmul=1}",     # Convert all linalg including matmul
+            "d2m-insert-dst-register-access",              # DST register allocation (graph coloring)
+            "lower-affine",
+            "d2m-generic-linearize-memref",
+            "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
+            "d2m-generic-lower-dmas",                      # Lower DMAs to hardware
+            "canonicalize",                                # Simplify before region extraction
+            "loop-invariant-code-motion",                  # Hoist invariants
+            "sccp",                                        # Sparse conditional constant propagation
+            "cse",                                         # Eliminate common subexpressions
+            "d2m-generic-regions-to-funcs",                # Extract regions to functions
+            "convert-d2m-to-ttkernel{ttnn-mode=0}",
+            "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
+            "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
+            "convert-d2m-to-ttmetal",                      # Convert to_layout to ttmetal enqueue ops
+            "canonicalize",                                # Cleanup after conversion
+            "loop-invariant-code-motion",                  # Hoist again after backend lowering
+            "sccp",                                        # Propagate constants
+            "cse",                                         # Final deduplication
+            "symbol-dce"                                   # Remove unused functions
+        ]
+        pipeline = ",".join(pipeline_passes)
 
         register_device = "ttcore-register-device"
         if device_register_options:
             register_device = f"{register_device}{{{device_register_options}}}"
 
         pipeline_str = f"builtin.module({','.join([register_device, pipeline])})"
+        # fmt: on
         pm = PassManager.parse(pipeline_str)
         pm.enable_verifier(verify)
 
@@ -407,9 +456,7 @@ def _compile_and_run_kernel(
             binary_obj.store(flatbuffer_path)
             print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
 
-        # Metal runtime execution (enabled by default when runtime is available)
-        # Skip on macOS since hardware is not available
-        if _should_execute_on_metal_runtime():
+        if config.should_run_metal():
             try:
                 _execute_on_metal_runtime(flatbuffer_binary, args)
             except Exception as e:
@@ -419,8 +466,7 @@ def _compile_and_run_kernel(
 
                 traceback.print_exc()
 
-        # TTNN runtime execution (not yet implemented - requires TTNN integration)
-        if ttnn_mode and binary is not None and runtime is not None:
+        if config.should_run_ttnn():
             try:
                 _execute_on_ttnn_runtime(flatbuffer_binary, args)
             except Exception as e:
