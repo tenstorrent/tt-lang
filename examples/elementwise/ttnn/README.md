@@ -3,9 +3,10 @@
 This example demonstrates how to create a fused element-wise operation that performs three consecutive operations without storing intermediate results:
 
 ```
-Output = exp(A + B) + C
+Output = unary(A + B) + C
 ```
 
+where `unary` is either the exponential function (`exp`) or the ReLU function (`relu`) selected through a pytest parameter.
 ## Features
 
 - Block-based processing: Processes tiles in 8×8 blocks (64 tiles per block).
@@ -35,6 +36,8 @@ ttnn_fused_example/
 - TT-Metal (https://github.com/tenstorrent/tt-metal) built with Python bindings;
 set the `TT_METAL_ROOT` environment variable to the installed location.
 By default, that's the top-level `tt-metal/` directory.
+
+-
 
 ## How It Works
 

@@ -8,12 +8,20 @@ Test for fused operations: f(A + B) + C where f is exp or relu
 All operations happen in DST registers without intermediate CB storage.
 """
 
+import sys
+from pathlib import Path
+
 import torch
 import pytest
 import ttnn
 from loguru import logger
 
-from utils import check_tensors_match, log_mismatch_diagnostics
+# Support both running as module and directly
+try:
+    from ...utils import assert_allclose
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+    from examples.utils import assert_allclose
 
 # Configure logger to show INFO messages
 logger.remove()  # Remove default handler
@@ -334,17 +342,8 @@ def _run_fused_kernel_test(
         logger.debug(f"Expected second tile output sample: {torch_result[0, 1, 0, :5]}")
         logger.debug(f"Actual second tile output sample: {torch_output[0, 1, 0, :5]}")
 
-    # Check if results match
-    matching = check_tensors_match(torch_result, torch_output)
-
-    if not matching:
-        log_mismatch_diagnostics(
-            torch_result, torch_output, inputs={"A": data_a, "B": data_b, "C": data_c}
-        )
-
-    assert (
-        matching
-    ), f"Fused {unary_op} operation f(A+B)+C failed to match expected result"
+    # Check if results match (using tolerances suitable for bfloat16)
+    assert_allclose(torch_output, torch_result, rtol=5e-2, atol=1e-1)
 
 
 if __name__ == "__main__":
