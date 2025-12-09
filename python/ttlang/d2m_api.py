@@ -308,9 +308,9 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
                 raise ValueError(
                     f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
                 )
-            if hasattr(arg, "layout") and "TILE" not in str(arg.layout()):
+            if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
                 raise ValueError(
-                    f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout()}. "
+                    f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout}. "
                     f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
                 )
 
