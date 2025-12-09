@@ -664,7 +664,7 @@ def _compile_and_run_kernel(
                 num_outs,
                 args,
                 tiled,
-                effective_memory_space,
+                memory_space,
             )
 
         initial_mlir_path = os.environ.get("TTLANG_INITIAL_MLIR")
