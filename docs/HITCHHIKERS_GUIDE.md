@@ -86,6 +86,22 @@ Python DSL Code
   Binary runs on hardware
 ```
 
+**Path 1b: DSL Path with TTNN Interop**
+
+```
+Python DSL Code with ttnn_interop=True
+  @pykernel_gen(grid=(1,1), ttnn_interop=True)
+  def add(lhs, rhs, out): ...
+      ↓
+  (same compilation as Path 1 through EmitC)
+      ↓
+  C++ kernel source files
+      ↓
+  ttnn.generic_op(tensors, ProgramDescriptor)
+      ↓
+  Executes on TTNN runtime with tensors already on device
+```
+
 **Path 2: TTNN Bindings**
 
 ```
@@ -361,6 +377,35 @@ for i in range(2):  # Must be literal - cannot capture variables
 **Output Streaming Requirement**
 
 Loops that push to output CBs require `ttnn_interop=True` mode. Without it, the runtime doesn't consume output between iterations, causing deadlock when the output CB fills.
+
+**TTNN Interop Mode**
+
+Compile kernels for execution via `ttnn.generic_op` instead of the Metal flatbuffer path. Use when integrating custom kernels into TTNN workflows with tensors already on device.
+
+```python
+@pykernel_gen(grid=(1, 1), ttnn_interop=True)
+def add(lhs, rhs, out, block_factors=None, grid=None):
+    # ... kernel code ...
+    return Program(compute_add, dm)(lhs, rhs, out)
+
+# Execute with TTNN tensors (already on device)
+import ttnn
+device = ttnn.open_device(device_id=0)
+lhs = ttnn.from_torch(torch.randn(32, 32), device=device, layout=ttnn.TILE_LAYOUT)
+rhs = ttnn.from_torch(torch.randn(32, 32), device=device, layout=ttnn.TILE_LAYOUT)
+out = ttnn.from_torch(torch.zeros(32, 32), device=device, layout=ttnn.TILE_LAYOUT)
+add(lhs, rhs, out)
+```
+
+**Compile-Once Pattern**
+
+For repeated execution, compile once and call multiple times:
+
+```python
+compiled = add.compile(lhs, rhs, out)  # Returns CompiledTTNNKernel
+compiled(lhs, rhs, out)                 # Execute
+compiled(lhs2, rhs2, out2)              # Execute again (same shapes)
+```
 
 **Accumulation Pattern**
 
@@ -1195,3 +1240,7 @@ To save kernel sources, use `kernel_source_mode="store"` parameter in `@pykernel
 **Collapsed Intervals**: Encoding of how logical dims map to device dims.
 
 **OOB Val**: Out-of-bounds value. Usually undef.
+
+**TTNN Interop**: Mode that compiles DSL kernels to C++ for execution via `ttnn.generic_op` instead of Metal flatbuffer. Enables custom kernels with TTNN tensors already on device.
+
+**CompiledTTNNKernel**: Cached kernel artifacts for TTNN interop. Compile once, execute many times with different tensors of same shape.
