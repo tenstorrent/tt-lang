@@ -28,7 +28,9 @@ def matmul_dram_direct(lhs, rhs, out):
     out_accessor = TensorAccessor(out)
 
     @compute()
-    def compute_matmul(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def compute_matmul(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -51,7 +53,9 @@ def matmul_dram_direct(lhs, rhs, out):
         rhs_cb.push()
 
     @datamovement()
-    def dm_write(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         out_shard = out_cb.wait()
         tx = dma(out_shard, out_accessor[0, 0])
         tx.wait()

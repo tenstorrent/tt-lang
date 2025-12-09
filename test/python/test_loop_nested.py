@@ -129,13 +129,17 @@ try:
 
     print(f"\n=== AFTER KERNEL ===")
     print(f"out[0,0] = {out_result[0,0].item()}")
-    print(f"out min/max/mean: {out_result.min().item():.1f} / {out_result.max().item():.1f} / {out_result.float().mean().item():.1f}")
+    print(
+        f"out min/max/mean: {out_result.min().item():.1f} / {out_result.max().item():.1f} / {out_result.float().mean().item():.1f}"
+    )
 
     if torch.allclose(out_result.float(), expected.float(), rtol=1e-2, atol=1e-2):
         print("\nPASS: Nested loop test completed (2 + 5 = 7, 4 iterations)")
         # CHECK: PASS
     else:
-        print(f"\nFAIL: Expected all 7.0, got {out_result.min().item()} to {out_result.max().item()}")
+        print(
+            f"\nFAIL: Expected all 7.0, got {out_result.min().item()} to {out_result.max().item()}"
+        )
 
 finally:
     ttnn.close_device(device)

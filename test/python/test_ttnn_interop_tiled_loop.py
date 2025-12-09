@@ -89,7 +89,9 @@ try:
     total_tiles = num_tiles_h * num_tiles_w
 
     size_mb = H * W * 2 / (1024 * 1024)
-    print(f"Tensor size: {H}x{W} = {size_mb:.1f}MB per tensor ({size_mb*3:.1f}MB total)")
+    print(
+        f"Tensor size: {H}x{W} = {size_mb:.1f}MB per tensor ({size_mb*3:.1f}MB total)"
+    )
     print(f"Tile grid: {num_tiles_h}x{num_tiles_w} = {total_tiles} tiles")
 
     # Create input tensors with distinct values per tile for easy verification
@@ -100,8 +102,12 @@ try:
     for ti in range(num_tiles_h):
         for tj in range(num_tiles_w):
             tile_val = float(ti * num_tiles_w + tj)  # 0, 1, 2, ... 15
-            lhs_torch[ti*TILE_H:(ti+1)*TILE_H, tj*TILE_W:(tj+1)*TILE_W] = tile_val
-            rhs_torch[ti*TILE_H:(ti+1)*TILE_H, tj*TILE_W:(tj+1)*TILE_W] = 1.0
+            lhs_torch[
+                ti * TILE_H : (ti + 1) * TILE_H, tj * TILE_W : (tj + 1) * TILE_W
+            ] = tile_val
+            rhs_torch[
+                ti * TILE_H : (ti + 1) * TILE_H, tj * TILE_W : (tj + 1) * TILE_W
+            ] = 1.0
 
     expected = lhs_torch + rhs_torch
     out_torch = torch.full((H, W), -999.0, dtype=torch.bfloat16)
@@ -130,7 +136,9 @@ try:
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
-    print(f"DRAM tensors: lhs={lhs_dram.shape}, rhs={rhs_dram.shape}, out={out_dram.shape}")
+    print(
+        f"DRAM tensors: lhs={lhs_dram.shape}, rhs={rhs_dram.shape}, out={out_dram.shape}"
+    )
 
     l1_config = create_sharded_l1_config(device)
 
@@ -140,16 +148,13 @@ try:
 
     # Get first tile to use as sample for compilation
     sample_lhs = ttnn.to_memory_config(
-        ttnn.slice(lhs_dram, [0, 0], [TILE_H, TILE_W]),
-        memory_config=l1_config
+        ttnn.slice(lhs_dram, [0, 0], [TILE_H, TILE_W]), memory_config=l1_config
     )
     sample_rhs = ttnn.to_memory_config(
-        ttnn.slice(rhs_dram, [0, 0], [TILE_H, TILE_W]),
-        memory_config=l1_config
+        ttnn.slice(rhs_dram, [0, 0], [TILE_H, TILE_W]), memory_config=l1_config
     )
     sample_out = ttnn.to_memory_config(
-        ttnn.slice(out_dram, [0, 0], [TILE_H, TILE_W]),
-        memory_config=l1_config
+        ttnn.slice(out_dram, [0, 0], [TILE_H, TILE_W]), memory_config=l1_config
     )
 
     # Compile and get reusable kernel
@@ -183,7 +188,9 @@ try:
 
             # Copy result back to the output DRAM tensor
             # First move result back to DRAM
-            out_tile_result = ttnn.to_memory_config(out_l1, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            out_tile_result = ttnn.to_memory_config(
+                out_l1, memory_config=ttnn.DRAM_MEMORY_CONFIG
+            )
 
             # Get result as torch for verification
             out_tile_torch = ttnn.to_torch(out_tile_result)
@@ -200,8 +207,12 @@ try:
 
     # Verify results
     print("\n=== Verification ===")
-    print(f"Expected corner values: [0,0]={expected[0,0].item()}, [0,32]={expected[0,32].item()}, [32,0]={expected[32,0].item()}")
-    print(f"Got corner values:      [0,0]={out_torch[0,0].item()}, [0,32]={out_torch[0,32].item()}, [32,0]={out_torch[32,0].item()}")
+    print(
+        f"Expected corner values: [0,0]={expected[0,0].item()}, [0,32]={expected[0,32].item()}, [32,0]={expected[32,0].item()}"
+    )
+    print(
+        f"Got corner values:      [0,0]={out_torch[0,0].item()}, [0,32]={out_torch[0,32].item()}, [32,0]={out_torch[32,0].item()}"
+    )
 
     if torch.allclose(out_torch.float(), expected.float(), rtol=1e-2, atol=1e-2):
         print("\nPASS: All tiles computed correctly!")

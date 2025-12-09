@@ -46,7 +46,9 @@ def test_loop_accumulate(acc, addend, out):
             out_cb.push()
 
     @datamovement()
-    def dm_acc(acc_cb: CircularBuffer, addend_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_acc(
+        acc_cb: CircularBuffer, addend_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         for i in range(2):
             # Read current accumulator value
             acc_shard = acc_cb.reserve()
@@ -61,7 +63,9 @@ def test_loop_accumulate(acc, addend, out):
             out_cb.pop()
 
     @datamovement()
-    def dm_addend(acc_cb: CircularBuffer, addend_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_addend(
+        acc_cb: CircularBuffer, addend_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         for i in range(2):
             addend_shard = addend_cb.reserve()
             tx = dma(addend_accessor[0, 0], addend_shard)
@@ -129,17 +133,25 @@ try:
 
     print(f"\n=== AFTER KERNEL ===")
     print(f"out[0,0] = {out_result[0,0].item()}")
-    print(f"out min/max/mean: {out_result.min().item():.1f} / {out_result.max().item():.1f} / {out_result.float().mean().item():.1f}")
+    print(
+        f"out min/max/mean: {out_result.min().item():.1f} / {out_result.max().item():.1f} / {out_result.float().mean().item():.1f}"
+    )
 
-    if torch.allclose(out_result.float(), torch.full((32, 32), expected_value), rtol=1e-2, atol=1e-2):
-        print(f"\nPASS: Accumulating loop produced {expected_value} (proves 2 iterations)")
+    if torch.allclose(
+        out_result.float(), torch.full((32, 32), expected_value), rtol=1e-2, atol=1e-2
+    ):
+        print(
+            f"\nPASS: Accumulating loop produced {expected_value} (proves 2 iterations)"
+        )
         # CHECK: PASS
     else:
-        actual = out_result[0,0].item()
+        actual = out_result[0, 0].item()
         if abs(actual - 6.0) < 0.1:
             print(f"\nFAIL: Got 6.0 - loop only ran once!")
         else:
-            print(f"\nFAIL: Expected {expected_value}, got {out_result.min().item()} to {out_result.max().item()}")
+            print(
+                f"\nFAIL: Expected {expected_value}, got {out_result.min().item()} to {out_result.max().item()}"
+            )
 
 finally:
     ttnn.close_device(device)

@@ -111,7 +111,7 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
     # L1 -> Sharded (default), DRAM -> Interleaved (default)
     sharded = config.sharded
     if sharded is None:
-        sharded = (config.memory_space == "L1")
+        sharded = config.memory_space == "L1"
 
     if sharded:
         memory_layout = DEFAULT_TENSOR_MEMORY_LAYOUT

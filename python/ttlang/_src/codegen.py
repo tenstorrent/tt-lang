@@ -18,7 +18,11 @@ from ..layouts import (
     MetalLayoutConfig,
 )
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
-from ..dtype_utils import tensor_dtype_to_mlir_type, tensor_dtype_to_ttcore_datatype, _is_ttnn_tensor
+from ..dtype_utils import (
+    tensor_dtype_to_mlir_type,
+    tensor_dtype_to_ttcore_datatype,
+    _is_ttnn_tensor,
+)
 
 
 def create_device_tensor_type(
@@ -268,7 +272,10 @@ def create_generic_func(
             # This fixes issue #31 by ensuring DST always has valid initial data.
             device_output_empty = d2m.EmptyOp(device_output_type)
             device_output_buffer = d2m.ToLayoutOp(
-                [device_output_type], outputs[0], device_output_empty.result, layout=None
+                [device_output_type],
+                outputs[0],
+                device_output_empty.result,
+                layout=None,
             )
             output_buffer_result = device_output_buffer.results[0]
 

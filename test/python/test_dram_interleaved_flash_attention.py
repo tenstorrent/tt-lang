@@ -22,7 +22,11 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)], ttnn_interop=True)
+@pykernel_gen(
+    grid=(1, 1),
+    block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)],
+    ttnn_interop=True,
+)
 def flash_attention_dram(Q, K, V, scale, ones, out):
     """Full Flash Attention reading directly from DRAM interleaved tensors."""
     Q_accessor = TensorAccessor(Q)
@@ -266,7 +270,9 @@ try:
         print("\nPASS: DRAM interleaved Flash Attention works!")
         # CHECK: PASS: DRAM interleaved Flash Attention
     else:
-        print(f"\nFAIL: Expected {O_expected[0, 0].item():.6f}, got {result[0, 0].item():.6f}")
+        print(
+            f"\nFAIL: Expected {O_expected[0, 0].item():.6f}, got {result[0, 0].item():.6f}"
+        )
 
 finally:
     ttnn.close_device(device)

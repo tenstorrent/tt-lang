@@ -74,7 +74,9 @@ class CompilerConfig:
     """
 
     def __init__(self, ttnn_interop: bool = False, compile_only: bool = False):
-        self._compile_only = compile_only or os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
+        self._compile_only = (
+            compile_only or os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
+        )
         self._runtime_available = binary is not None and runtime is not None
         self._is_macos = platform.system() == "Darwin"
         self._ttnn_interop = ttnn_interop
@@ -100,7 +102,7 @@ class CompilerConfig:
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
-    if hasattr(mem_config, 'buffer_type'):
+    if hasattr(mem_config, "buffer_type"):
         buffer_type_str = str(mem_config.buffer_type)
         if "L1" in buffer_type_str:
             return "L1"
@@ -112,7 +114,9 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
 def _resolve_grid_params(grid, block_factors, args, kwargs):
     """Resolve grid and block_factors, evaluating callables if needed."""
     resolved_grid = grid(*args, **kwargs) if callable(grid) else grid
-    resolved_block_factors = block_factors(*args, **kwargs) if callable(block_factors) else block_factors
+    resolved_block_factors = (
+        block_factors(*args, **kwargs) if callable(block_factors) else block_factors
+    )
     if resolved_block_factors is None:
         resolved_block_factors = [1] * len(resolved_grid)
     return resolved_grid, resolved_block_factors
@@ -126,7 +130,9 @@ class CompiledTTNNKernel:
     can be executed multiple times with different tensors without recompiling.
     """
 
-    def __init__(self, kernel_paths, kernel_configs, kernel_arg_specs, num_tensors, core_ranges):
+    def __init__(
+        self, kernel_paths, kernel_configs, kernel_arg_specs, num_tensors, core_ranges
+    ):
         """
         Initialize with pre-compiled kernel artifacts.
 
@@ -183,13 +189,13 @@ class CompiledTTNNKernel:
         # Build CB descriptors
         cb_descriptors = []
         for i, tensor in enumerate(args):
-            if hasattr(tensor, 'dtype') and hasattr(tensor.dtype, 'name'):
+            if hasattr(tensor, "dtype") and hasattr(tensor.dtype, "name"):
                 data_format = tensor.dtype
             else:
                 data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
 
             page_size = tile_bytes_from_dtype(data_format)
-            if hasattr(tensor, 'volume'):
+            if hasattr(tensor, "volume"):
                 num_tiles = max(1, tensor.volume() // 1024)
             else:
                 num_tiles = 1
@@ -302,7 +308,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
                 raise ValueError(
                     f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
                 )
-            if hasattr(arg, 'layout') and "TILE" not in str(arg.layout()):
+            if hasattr(arg, "layout") and "TILE" not in str(arg.layout()):
                 raise ValueError(
                     f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout()}. "
                     f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
@@ -588,7 +594,9 @@ def _compile_and_run_kernel(
     if has_ttnn_tensors:
         first_ttnn_tensor = next((arg for arg in args if _is_ttnn_tensor(arg)), None)
         if first_ttnn_tensor is not None:
-            memory_space = _detect_memory_space_from_tensor(first_ttnn_tensor, memory_space)
+            memory_space = _detect_memory_space_from_tensor(
+                first_ttnn_tensor, memory_space
+            )
             print(f"[TTNN interop] Detected {memory_space} memory space")
 
     for param_name, arg in zip(f_params, args):

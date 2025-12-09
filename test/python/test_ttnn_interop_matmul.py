@@ -27,7 +27,9 @@ def test_ttnn_interop_matmul(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
 
     @compute()
-    def compute_matmul(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def compute_matmul(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -64,7 +66,9 @@ try:
     # Match test_runtime_matmul.py exactly
     lhs_torch = torch.eye(32, dtype=torch.bfloat16)
     rhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
-    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)  # Pre-initialize with zeros (issue #31)
+    out_torch = torch.zeros(
+        (32, 32), dtype=torch.bfloat16
+    )  # Pre-initialize with zeros (issue #31)
 
     expected = torch.full((32, 32), 2.0, dtype=torch.bfloat16)  # I @ 2s = 2s
 

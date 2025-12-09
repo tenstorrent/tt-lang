@@ -23,6 +23,7 @@ def _is_ttnn_tensor(tensor) -> bool:
         return False
     return isinstance(tensor, ttnn.Tensor)
 
+
 from ttmlir import ir
 from ttmlir.dialects import ttcore
 
@@ -298,7 +299,9 @@ def ttnn_dtype_to_ttcore_datatype(ttnn_dtype):
         case ttnn.DataType.UINT8:
             return ttcore.DataType.UInt8
         case _:
-            raise ValueError(f"Unsupported ttnn dtype for ttcore.DataType: {ttnn_dtype}")
+            raise ValueError(
+                f"Unsupported ttnn dtype for ttcore.DataType: {ttnn_dtype}"
+            )
 
 
 def tensor_dtype_to_ttcore_datatype(dtype):
@@ -349,7 +352,9 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
         case torch.uint16:
             return ttnn.DataType.UINT16
         case _:
-            raise ValueError(f"Unsupported torch dtype for ttnn.DataType: {torch_dtype}")
+            raise ValueError(
+                f"Unsupported torch dtype for ttnn.DataType: {torch_dtype}"
+            )
 
 
 def create_borrowed_tensors(torch_tensors):

@@ -22,7 +22,11 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)], ttnn_interop=True)
+@pykernel_gen(
+    grid=(1, 1),
+    block_factors=[(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)],
+    ttnn_interop=True,
+)
 def flash_attention_head_dram(Q, K, V, scale, ones, out):
     """Flash Attention for a single head, reading directly from DRAM interleaved."""
     Q_accessor = TensorAccessor(Q)
@@ -214,34 +218,42 @@ try:
     out_heads = []
 
     for h in range(NUM_HEADS):
-        Q_heads.append(ttnn.from_torch(
-            Q_all[h],
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        ))
-        K_heads.append(ttnn.from_torch(
-            K_all[h],
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        ))
-        V_heads.append(ttnn.from_torch(
-            V_all[h],
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        ))
-        out_heads.append(ttnn.from_torch(
-            out_all[h],
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        ))
+        Q_heads.append(
+            ttnn.from_torch(
+                Q_all[h],
+                dtype=ttnn.bfloat16,
+                layout=ttnn.TILE_LAYOUT,
+                device=device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            )
+        )
+        K_heads.append(
+            ttnn.from_torch(
+                K_all[h],
+                dtype=ttnn.bfloat16,
+                layout=ttnn.TILE_LAYOUT,
+                device=device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            )
+        )
+        V_heads.append(
+            ttnn.from_torch(
+                V_all[h],
+                dtype=ttnn.bfloat16,
+                layout=ttnn.TILE_LAYOUT,
+                device=device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            )
+        )
+        out_heads.append(
+            ttnn.from_torch(
+                out_all[h],
+                dtype=ttnn.bfloat16,
+                layout=ttnn.TILE_LAYOUT,
+                device=device,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            )
+        )
 
     # Shared scale and ones (reused across heads)
     scale = ttnn.from_torch(
@@ -293,12 +305,16 @@ try:
         result = ttnn.to_torch(out_heads[h])
         expected = compute_expected_attention(Q_all[h], K_all[h], V_all[h], scale_val)
 
-        error = abs(result[0, 0].item() - expected[0, 0].item()) / (abs(expected[0, 0].item()) + 1e-6)
+        error = abs(result[0, 0].item() - expected[0, 0].item()) / (
+            abs(expected[0, 0].item()) + 1e-6
+        )
 
         if error < tolerance:
             num_correct += 1
         else:
-            print(f"  Head {h}: FAIL - expected {expected[0,0].item():.6f}, got {result[0,0].item():.6f}")
+            print(
+                f"  Head {h}: FAIL - expected {expected[0,0].item():.6f}, got {result[0,0].item():.6f}"
+            )
 
     print(f"\nResults: {num_correct}/{NUM_HEADS} heads correct")
 
