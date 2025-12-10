@@ -42,14 +42,13 @@ Python AST Parsing (TTLDialectCompiler)
   ↓
 ttl.kernel (with thread regions, tensor operands)
   ↓
-[Phase 1: Validation & Canonicalization]
-  ├─ TTLValidatePass - Verify CB/pipe/semaphore contracts
-  │  ├─ CB protocol validation: wait/pop/reserve/push pairing
-  │  ├─ Thread operation restrictions: compute vs datamovement
-  │  ├─ Type compatibility checks: CB shapes, pipe connectivity
-  │  └─ Resource usage validation: L1 capacity, DST register limits
+[Phase 1: Canonicalization & Layout Verification]
   ├─ TTLCanonicalizePass - Fold constants, simplify patterns
   └─ TTLVerifyLayoutsPass - Check tensor accessor layouts
+
+Note: Operation and type validation (CB protocol, thread operation restrictions,
+type compatibility, etc.) is performed by individual op/type verifiers during IR
+construction, not by a separate validation pass.
   ↓
 [Phase 2: Analysis & Inference]
   ├─ TTLInferPipeSemaphores - Create semaphores for pipes
@@ -425,7 +424,7 @@ error: ttl.cb_wait operation timeout - consumer waiting indefinitely
 **Error Categories:**
 
 1. **Validation Errors**: CB protocol violations, thread operation restrictions
-   - Emitted by `TTLValidatePass`
+   - Emitted by individual operation verifiers during IR construction
    - Include source location from Python AST
 
 2. **Resource Errors**: L1 capacity exceeded, DST register overflow
@@ -433,7 +432,7 @@ error: ttl.cb_wait operation timeout - consumer waiting indefinitely
    - Provide suggestions for reducing resource usage
 
 3. **Type Errors**: Incompatible CB shapes, pipe connectivity issues
-   - Emitted during type checking passes
+   - Emitted by type verifiers and type-checking operations
    - Show expected vs actual types
 
 4. **Lowering Errors**: Operations that cannot be lowered to TTKernel

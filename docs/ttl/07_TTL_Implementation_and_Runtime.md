@@ -264,14 +264,13 @@ interfaces
 **Deliverable**: Python examples compile to TTL IR
 
 ### Phase 3: Core Passes (Week 2)
-**Goal**: Validation, thread expansion, and basic lowering
+**Goal**: Thread expansion and basic lowering
 
-1. `TTLValidatePass`
-   - Verify CB/pipe/semaphore contracts
-   - Validate store/wait/pop pattern sequencing
-   - Check thread operation restrictions (compute vs datamovement)
+Note: Validation (CB/pipe/semaphore contracts, store/wait/pop sequencing, thread
+operation restrictions) is handled by individual operation and type verifiers
+during IR construction, not by a separate pass.
 
-2. `TTLExpandThreads` - Extract threads to separate functions (can happen early)
+1. `TTLExpandThreads` - Extract threads to separate functions (can happen early)
 
 3. `TTLLowerCompute` - Block ops → TTKernel tile ops
    - **MVP operations** (must be implemented):

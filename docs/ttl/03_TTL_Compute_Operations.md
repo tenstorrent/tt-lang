@@ -698,7 +698,7 @@ This pattern enables:
 - `ttl.block_store` + `ttl.cb_push` signals result is available for subsequent
   operations
 - `ttl.cb_wait` + `ttl.cb_pop` acknowledges consumption and releases the slot
-- `TTLValidatePass` verifies proper sequencing: each reserve has matching push,
+- Operation verifiers ensure proper sequencing: each reserve has matching push,
   each wait has matching pop
 
 ```tablegen
@@ -901,7 +901,7 @@ def TTL_CoreOp : TTL_Op<"core", [Pure]> {
       grid=(8,8), dims=3 → x ∈ [0,8), y ∈ [0,8), z=0
 
     Python API: `ttl.core()` or `ttl.core(dims=N)`
-    Folds to constants. Validation enforced in frontend and TTLValidatePass.
+    Folds to constants. Validation enforced in frontend and operation verifiers.
   }];
 }
 

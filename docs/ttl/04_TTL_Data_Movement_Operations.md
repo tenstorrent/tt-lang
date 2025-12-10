@@ -242,7 +242,7 @@ def TTL_CopyOp : TTL_Op<"copy"> {
       - One core uses ttl.copy(block, pipe) inside ttl.if_pipe_src
       - One or more cores use ttl.copy(pipe, block) inside ttl.if_pipe_dst
     - Unguarded pipe copies are invalid per TT-Lang spec
-    - TTLValidatePass enforces this requirement and rejects unguarded or unmatched pipes
+    - Operation verifiers enforce this requirement and reject unguarded or unmatched pipes
 
     Note: ttl.wait lowers to global DMA barrier, not per-transfer wait
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`

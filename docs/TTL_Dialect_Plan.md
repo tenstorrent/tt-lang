@@ -240,7 +240,7 @@ def TTL_Tile : TTL_Type<"Tile", "tile"> {
     Narrow tile: !ttl.tile<4x32, f16>
 
     The tile dimensions must be hardware-supported combinations. Validation enforced
-    during type construction and in TTLValidatePass.
+    during type construction by the type verifier.
   }];
 }
 
@@ -1468,7 +1468,7 @@ This pattern enables:
 - `ttl.block_store` + `ttl.cb_push` signals result is available for subsequent
   operations
 - `ttl.cb_wait` + `ttl.cb_pop` acknowledges consumption and releases the slot
-- `TTLValidatePass` verifies proper sequencing: each reserve has matching push,
+- Operation verifiers ensure proper sequencing: each reserve has matching push,
   each wait has matching pop
 
 ```tablegen
@@ -1692,7 +1692,7 @@ def TTL_CopyOp : TTL_Op<"copy"> {
       - One core uses ttl.copy(block, pipe) inside ttl.if_pipe_src
       - One or more cores use ttl.copy(pipe, block) inside ttl.if_pipe_dst
     - Unguarded pipe copies are invalid per TT-Lang spec
-    - TTLValidatePass enforces this requirement and rejects unguarded or unmatched pipes
+    - Operation verifiers enforce this requirement and reject unguarded or unmatched pipes
 
     Note: ttl.wait lowers to global DMA barrier, not per-transfer wait
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
@@ -1903,7 +1903,7 @@ def TTL_CoreOp : TTL_Op<"core", [Pure]> {
       grid=(8,8), dims=3 → x ∈ [0,8), y ∈ [0,8), z=0
 
     Python API: `ttl.core()` or `ttl.core(dims=N)`
-    Folds to constants. Validation enforced in frontend and TTLValidatePass.
+    Folds to constants. Validation enforced in frontend and operation verifiers.
   }];
 }
 
@@ -2218,14 +2218,13 @@ Python AST Parsing (TTLDialectCompiler)
   ↓
 ttl.kernel (with thread regions, tensor operands)
   ↓
-[Phase 1: Validation & Canonicalization]
-  ├─ TTLValidatePass - Verify CB/pipe/semaphore contracts
-  │  ├─ CB protocol validation: wait/pop/reserve/push pairing
-  │  ├─ Thread operation restrictions: compute vs datamovement
-  │  ├─ Type compatibility checks: CB shapes, pipe connectivity
-  │  └─ Resource usage validation: L1 capacity, DST register limits
+[Phase 1: Canonicalization & Layout Verification]
   ├─ TTLCanonicalizePass - Fold constants, simplify patterns
   └─ TTLVerifyLayoutsPass - Check tensor accessor layouts
+
+Note: Operation and type validation (CB protocol, thread operation restrictions,
+type compatibility, etc.) is performed by individual op/type verifiers during IR
+construction, not by a separate validation pass.
   ↓
 [Phase 2: Analysis & Inference]
   ├─ TTLInsertSynchronization - Analyze inter-thread dataflow, insert barriers
@@ -2505,7 +2504,7 @@ error: ttl.cb_wait operation timeout - consumer waiting indefinitely
 **Error Categories:**
 
 1. **Validation Errors**: CB protocol violations, thread operation restrictions
-   - Emitted by `TTLValidatePass`
+   - Emitted by individual operation verifiers during IR construction
    - Include source location from Python AST
 
 2. **Resource Errors**: L1 capacity exceeded, DST register overflow
@@ -3464,14 +3463,13 @@ interfaces
 **Deliverable**: Python examples compile to TTL IR
 
 ### Phase 3: Core Passes (Week 2)
-**Goal**: Validation, thread expansion, and basic lowering
+**Goal**: Thread expansion and basic lowering
 
-1. `TTLValidatePass`
-   - Verify CB/pipe/semaphore contracts
-   - Validate store/wait/pop pattern sequencing
-   - Check thread operation restrictions (compute vs datamovement)
+Note: Validation (CB/pipe/semaphore contracts, store/wait/pop sequencing, thread
+operation restrictions) is handled by individual operation and type verifiers
+during IR construction, not by a separate pass.
 
-2. `TTLExpandThreads` - Extract threads to separate functions (can happen early)
+1. `TTLExpandThreads` - Extract threads to separate functions (can happen early)
 
 3. `TTLLowerCompute` - Block ops → TTKernel tile ops
    - **MVP operations** (must be implemented):

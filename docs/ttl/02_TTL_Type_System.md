@@ -61,7 +61,7 @@ def TTL_Tile : TTL_Type<"Tile", "tile"> {
     Narrow tile: !ttl.tile<4x32, f16>
 
     The tile dimensions must be hardware-supported combinations. Validation enforced
-    during type construction and in TTLValidatePass.
+    during type construction by the type verifier.
   }];
 }
 
