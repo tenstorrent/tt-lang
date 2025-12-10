@@ -13,22 +13,21 @@ from metal_examples.utils import assert_with_ulp
 def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
-    blk_size = ttnn.TILE_SIZE
     M = a.shape[0]
     N = b.shape[1]
     K = a.shape[1]
-    Mt = M // blk_size
-    Kt = K // blk_size
-    Nt = N // blk_size
+    Mt = M // ttnn.TILE_SIZE
+    Kt = K // ttnn.TILE_SIZE
+    Nt = N // ttnn.TILE_SIZE
     buffering_factor = 2
     a_cb = make_circular_buffer_like(
-        a, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+        a, shape=(1, 1), buffer_factor=buffering_factor
     )
     b_cb = make_circular_buffer_like(
-        b, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+        b, shape=(1, 1), buffer_factor=buffering_factor
     )
     out_cb = make_circular_buffer_like(
-        out, shape=(blk_size, blk_size), buffer_factor=buffering_factor
+        out, shape=(1, 1), buffer_factor=buffering_factor
     )
 
     @ttl.compute()
