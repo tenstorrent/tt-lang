@@ -88,11 +88,27 @@ See the `examples/` directory for complete working examples, including:
 
 ## Testing
 
-Run the test suite using LLVM's lit framework:
+Run tests using CMake targets:
 
 ```bash
 source build/env/activate
-llvm-lit -sv test/python/
+
+# All tests (MLIR + Python)
+cmake --build build --target check-ttlang
+
+# MLIR dialect tests only
+cmake --build build --target check-ttlang-mlir
+
+# Python runtime tests only
+cmake --build build --target check-ttlang-python
+```
+
+Or run specific test suites using lit directly:
+
+```bash
+source build/env/activate
+llvm-lit -sv test/ttlang/     # MLIR dialect tests
+llvm-lit -sv test/python/     # Python runtime tests
 ```
 
 For more information on testing, including how to write new tests and interpret results, see [test/TESTING.md](test/TESTING.md).
