@@ -18,6 +18,7 @@ find_package(nanobind CONFIG REQUIRED)
 
 nanobind_add_module(_ttlang
   TTLangModule.cpp
+  TTLModule.cpp
 )
 
 # Suppress warnings for nanobind sources
@@ -28,6 +29,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     -Wno-nested-anon-types
     -Wno-c++98-compat-extra-semi
     -Wno-covered-switch-default
+  )
+  # Also suppress nanobind warnings in our extension module
+  target_compile_options(_ttlang PRIVATE
+    -Wno-cast-qual
+    -Wno-zero-length-array
   )
 endif()
 
@@ -41,6 +47,7 @@ find_library(TTMLIR_PYTHON_CAPI_LIB
 
 target_link_libraries(_ttlang PRIVATE
   TTLangTransforms
+  TTLangCAPI
   ${TTMLIR_PYTHON_CAPI_LIB}
 )
 

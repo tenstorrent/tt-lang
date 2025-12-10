@@ -7,6 +7,7 @@ config.lit_tools_dir = "@LLVM_LIT_TOOLS_DIR@"
 config.ttlang_obj_root = "@CMAKE_BINARY_DIR@"
 config.ttlang_source_dir = "@CMAKE_SOURCE_DIR@"
 config.python_executable = sys.executable
+config.TTLANG_PYTHON_PACKAGES_DIR = "@TTLANG_PYTHON_PACKAGES_DIR@"
 
 import lit.llvm
 lit.llvm.initialize(lit_config, config)

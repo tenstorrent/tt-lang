@@ -65,14 +65,20 @@ config.substitutions.append(
     )
 )
 
-# Set up PYTHONPATH for Python tests
-python_dir = os.path.join(config.ttlang_source_dir, "python")
-config.environment["PYTHONPATH"] = os.path.pathsep.join(
-    [python_dir, os.environ.get("PYTHONPATH", "")]
-)
+# Get Python packages directory from site config, or fall back to default build location.
+build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)
+if build_python is None:
+    # Fallback to default build location if not set by site config.
+    build_python = os.path.join(project_root, "build", "python_packages")
 
-if "SYSTEM_DESC_PATH" in os.environ:
-    config.environment["SYSTEM_DESC_PATH"] = os.environ["SYSTEM_DESC_PATH"]
+python_paths = [
+    build_python,
+    os.path.join(project_root, "python"),
+    os.environ.get("PYTHONPATH", ""),
+]
+
+# Prefer built bindings so ttlang._mlir_libs is found.
+config.environment["PYTHONPATH"] = os.path.pathsep.join([p for p in python_paths if p])
 
 # Enable FileCheck variable scoping (MLIR default)
 config.environment["FILECHECK_OPTS"] = "-enable-var-scope --allow-unused-prefixes=false"
