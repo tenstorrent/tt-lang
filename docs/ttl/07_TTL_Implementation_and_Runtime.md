@@ -826,8 +826,8 @@ def TTL_DistributedTensor : TTL_Type<"DistributedTensor", "dist_tensor"> {
     ArrayRefParameter<"int64_t">:$gridShape,      // Distribution grid [8, 8]
     ArrayRefParameter<"int64_t">:$shardShape,     // Per-core shard [32, 32]
     "Type":$elementType,                          // f32, bf16, etc.
-    TTL_DistributionStrategyAttr:$strategy,     // Sharded, interleaved, etc.
-    TTL_MemorySpaceAttr:$memorySpace
+    "ttnn::TensorMemoryLayoutAttr":$strategy,  // Reuse ttnn::TensorMemoryLayoutAttr from tt-mlir
+    "ttcore::MemorySpaceAttr":$memorySpace     // Reuse ttcore::MemorySpaceAttr from tt-mlir
   );
 
   let extraClassDeclaration = [{

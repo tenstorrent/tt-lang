@@ -40,7 +40,7 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
     I64Attr:$buffer_factor,             // Number of blocks
     OptionalAttr<I32Attr>:$buffer_index,      // Optional explicit CB number (0-31)
     OptionalAttr<I64Attr>:$page_size,         // Optional page size in bytes
-    OptionalAttr<TTL_CoreMaskAttr>:$core_ranges  // Optional per-core CB mapping
+    OptionalAttr<"ttnn::CoreRangeSetAttr">:$core_ranges  // Reuse ttnn::CoreRangeSetAttr from tt-mlir
   );
   let results = (outs TTL_CircularBuffer:$result);
   let description = [{

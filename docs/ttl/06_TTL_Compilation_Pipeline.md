@@ -321,7 +321,7 @@ def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
   let summary = "Kernel with multiple threads on grid";
   let arguments = (ins
     Variadic<AnyType>:$inputs,
-    TTL_GridAttr:$grid,
+    "ttcore::GridAttr":$grid,  // Reuse ttcore::GridAttr from tt-mlir
     StrAttr:$memory_space,
     BoolAttr:$tiled,
     OptionalAttr<StrAttr>:$python_source_file,

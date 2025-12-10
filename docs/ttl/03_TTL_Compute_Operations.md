@@ -35,7 +35,7 @@ This document specifies compute operations, circular buffers, fusion, and DST re
 def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
   let summary = "Top-level kernel program with captured tensors";
   let arguments = (ins
-    TTL_GridAttr:$grid,
+    "ttcore::GridAttr":$grid,  // Reuse ttcore::GridAttr from tt-mlir
     StrAttr:$memory_space,
     BoolAttr:$tiled
   );
@@ -92,7 +92,7 @@ def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
   let summary = "Kernel with multiple threads on grid";
   let arguments = (ins
     Variadic<AnyType>:$inputs,   // TODO: define and use a more specific type constraint
-    TTL_GridAttr:$grid,
+    "ttcore::GridAttr":$grid,  // Reuse ttcore::GridAttr from tt-mlir
     StrAttr:$memory_space,
     BoolAttr:$tiled,
     OptionalAttr<ArrayAttr>:$block_factors,  // Block factors per tensor [[M,N], [K,N], ...]
@@ -161,7 +161,7 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
     I64Attr:$buffer_factor,             // Number of blocks
     OptionalAttr<I32Attr>:$buffer_index,      // Optional explicit CB number (0-31)
     OptionalAttr<I64Attr>:$page_size,         // Optional page size in bytes
-    OptionalAttr<TTL_CoreMaskAttr>:$core_ranges  // Optional per-core CB mapping
+    OptionalAttr<"ttnn::CoreRangeSetAttr">:$core_ranges  // Reuse ttnn::CoreRangeSetAttr from tt-mlir
   );
   let results = (outs TTL_CircularBuffer:$result);
   let description = [{

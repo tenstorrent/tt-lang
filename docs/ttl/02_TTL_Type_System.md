@@ -46,32 +46,6 @@ class TTL_Type<string name, string typeMnemonic, list<Trait> traits = []>
 class TTL_Op<string mnemonic, list<Trait> traits = []>
   : Op<TTL_Dialect, mnemonic, traits> {}
 
-def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
-  let summary = "TTL tensor encoding combining memory space and layout";
-  let parameters = (ins
-    TTL_MemorySpaceAttr:$memorySpace,
-    "ttnn::LayoutAttr":$layout  // Reuse ttnn::LayoutAttr from tt-mlir
-  );
-  let assemblyFormat = "`<` $memorySpace `,` $layout `>`";
-  let description = [{
-    Encoding attached to `tensor<...>` types to carry both the memory-space
-    placement (L1/DRAM/System) and layout metadata (tiled, sharded, interleaved, etc.).
-
-    Layout attribute: Reuses ttnn::LayoutAttr from tt-mlir to maintain compatibility with
-    runtime descriptors and avoid duplicate layout representation. The layout attribute
-    captures tiling patterns, sharding configuration, and memory layout details.
-
-    Tile layout information: For tiled tensors, the layout attribute specifies
-    tile dimensions (e.g., 32x32, 16x32) and tiling pattern. The tensor element type
-    remains scalar (f32, f16, bf16). During lowering, the compiler generates ttcore::TileType
-    values as needed for tile-level operations.
-
-    Note: DST is not a valid memory space for tensors. DST registers are managed
-    exclusively by the TTLAssignDSTRegisters pass and do not participate in the
-    tensor memory space system.
-  }];
-}
-
 // Note: TTL uses standard MLIR tensor types with encoding attributes rather than
 // a custom tensor type. This avoids defining a new type and reuses upstream tensor
 // infrastructure. The TTL_TensorEncodingAttr provides layout and memory space metadata.
@@ -82,7 +56,7 @@ def TTL_Tensor : TensorOf<[F32, F16, BF16]> {
   let description = [{
     TTL tensors are standard MLIR RankedTensorType with TTL_TensorEncodingAttr
     encoding attribute. The encoding carries layout and memory-space metadata, e.g.,
-    `tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+    `tensor<64x64xf32, #ttl.tensor_encoding<DeviceDRAM,
     #ttl.layout<tiled, tile_shape=[32,32], grid=[2,2]>>>`.
 
     Element types: Tensors have scalar element types (f32, f16, bf16). Tile layout
@@ -347,43 +321,19 @@ def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
 
 ### 3.2 Attributes
 
+TTL reuses the following tt-mlir attributes instead of defining custom ones:
+
+| TTL Usage | tt-mlir Attribute | Source File |
+|-----------|-------------------|-------------|
+| Memory space | `ttcore::MemorySpaceAttr` | `TTCoreOpsEnums.td` |
+| Grid topology | `ttcore::GridAttr` | `TTCoreOpsAttrs.td` |
+| Tensor layout | `ttnn::LayoutAttr` | `TTNNOpsAttrs.td` |
+| Core ranges | `ttnn::CoreRangeSetAttr` | `TTNNOpsAttrs.td` |
+| Distribution strategy | `ttnn::TensorMemoryLayoutAttr` | `TTNNOpsEnums.td` |
+
+TTL-specific attributes are defined below:
+
 ```tablegen
-def TTL_MemorySpaceAttr : I32EnumAttr<"MemorySpace", "TTL memory space", [
-  I32EnumAttrCase<"L1", 0>,
-  I32EnumAttrCase<"DRAM", 1>,
-  I32EnumAttrCase<"System", 2>
-]> {
-  let cppNamespace = "::mlir::tt::ttl";
-  let description = [{
-    Memory spaces for TTL tensors and circular buffers. Note: DST registers are
-    not included as they are exclusively managed by the TTLAssignDSTRegisters pass
-    and do not participate in the tensor/CB memory space system.
-  }];
-}
-
-def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {
-  let summary = "Grid topology description";
-  let parameters = (ins ArrayRefParameter<"int64_t">:$dimensions);
-  let assemblyFormat = "`<` `[` $dimensions `]` `>`";
-}
-
-// Note: TTL reuses ttnn::LayoutAttr from tt-mlir instead of defining a custom layout
-// attribute. This decision provides:
-// - Compatibility with tt-metal runtime descriptors
-// - Avoids duplicate parsing/printing logic
-// - Ensures layout metadata flows correctly through the entire compilation pipeline
-//   (TTL → TTKernel → TTNN → runtime)
-//
-// The ttnn::LayoutAttr captures:
-// - Layout type (tiled, row-major, sharded, interleaved)
-// - Grid dimensions for sharded layouts
-// - Shard/page/tile shapes
-// - Memory layout patterns
-//
-// TTL_TensorEncodingAttr wraps ttnn::LayoutAttr with TTL-specific memory space information.
-// This allows TTL to reuse TTNN's mature layout representation while maintaining TTL's
-// memory space semantics (L1/DRAM/System distinction).
-
 def TTL_SliceAttr : AttrDef<TTL_Dialect, "Slice"> {
   let summary = "Slice specification for core range (start, stop, step)";
   let parameters = (ins
@@ -433,25 +383,35 @@ def TTL_SliceAttr : AttrDef<TTL_Dialect, "Slice"> {
   }];
 }
 
-def TTL_CoreMaskAttr : AttrDef<TTL_Dialect, "CoreMask"> {
-  let summary = "Bitmask of participating cores";
-  let parameters = (ins "ArrayRef<int64_t>":$mask);
-}
-
-def TTL_DistributionStrategyAttr : I32EnumAttr<"DistributionStrategy", "TTL distribution strategy", [
-  I32EnumAttrCase<"Sharded", 0>,
-  I32EnumAttrCase<"Interleaved", 1>,
-  I32EnumAttrCase<"Replicated", 2>
-]> {
-  let cppNamespace = "::mlir::tt::ttl";
+def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
+  let summary = "TTL tensor encoding combining memory space and layout";
+  let parameters = (ins
+    "ttcore::MemorySpaceAttr":$memorySpace,  // Reuse ttcore::MemorySpaceAttr from tt-mlir
+    "ttnn::LayoutAttr":$layout               // Reuse ttnn::LayoutAttr from tt-mlir
+  );
+  let assemblyFormat = "`<` $memorySpace `,` $layout `>`";
   let description = [{
-    TTL-specific distribution strategy attribute for distributed tensor types.
-    Similar concepts exist in TTNN (`TTNN_TensorMemoryLayout` with Interleaved,
-    HeightSharded, WidthSharded, BlockSharded) and TTCore (`TTCore_TensorMemoryLayout`),
-    but TTL uses a simplified strategy enum for its distributed tensor type.
-    See: `tt-mlir/include/ttmlir/Dialect/TTNN/IR/TTNNOpsEnums.td` definition
-    `TTNN_TensorMemoryLayout` and `tt-mlir/include/ttmlir/Dialect/TTCore/IR/TTCoreOpsEnums.td`
-    definition `TTCore_TensorMemoryLayout`.
+    Encoding attached to `tensor<...>` types to carry both the memory-space
+    placement (DeviceL1/DeviceDRAM/System) and layout metadata (tiled, sharded, interleaved, etc.).
+
+    Memory space: Reuses ttcore::MemorySpaceAttr from tt-mlir to maintain consistency
+    with the rest of the tt-mlir ecosystem. Valid values for tensors:
+    - DeviceDRAM: Device HBM (default for TTNN tensors)
+    - DeviceL1: On-chip SRAM
+    - System/SystemMMIO: Host memory (for host-side tensors)
+
+    Layout attribute: Reuses ttnn::LayoutAttr from tt-mlir to maintain compatibility with
+    runtime descriptors and avoid duplicate layout representation. The layout attribute
+    captures tiling patterns, sharding configuration, and memory layout details.
+
+    Tile layout information: For tiled tensors, the layout attribute specifies
+    tile dimensions (e.g., 32x32, 16x32) and tiling pattern. The tensor element type
+    remains scalar (f32, f16, bf16). During lowering, the compiler generates ttcore::TileType
+    values as needed for tile-level operations.
+
+    Note: RegisterDst is not a valid memory space for tensors. DST registers are managed
+    exclusively by the TTLAssignDSTRegisters pass and do not participate in the
+    tensor memory space system.
   }];
 }
 ```
@@ -542,7 +502,7 @@ for (uint32_t i = 0; i < n_shards; i++) {
 TTL lowering:
 
 ```mlir
-// TTL IR (%tensor : tensor<..., #ttl.tensor_encoding<DRAM,
+// TTL IR (%tensor : tensor<..., #ttl.tensor_encoding<DeviceDRAM,
 //                      #ttl.layout<sharded, grid=[2,2]>>>)
 %accessor = ttl.tensor_accessor %tensor
 %xf = ttl.copy %accessor[%shard_id], %cb
@@ -631,13 +591,13 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
 ```mlir
 ttl.kernel @sharded_elementwise_add(
-    %a: tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+    %a: tensor<64x64xf32, #ttl.tensor_encoding<DeviceDRAM,
       #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>,
-    %b: tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+    %b: tensor<64x64xf32, #ttl.tensor_encoding<DeviceDRAM,
       #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>,
-    %out: tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
+    %out: tensor<64x64xf32, #ttl.tensor_encoding<DeviceDRAM,
       #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>
-) attributes {grid = #ttl.grid<[2, 2]>, block_factors = [[1,1], [1,1], [1,1]]} {
+) attributes {grid = #ttcore.grid<2x2>, block_factors = [[1,1], [1,1], [1,1]]} {
 
   // Create circular buffers (tiled layout inferred from element_type)
   %a_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
