@@ -112,11 +112,11 @@ def TTL_CreatePipeNetOp : TTL_Op<"create_pipenet"> {
   let description = [{
     Python API `ttl.PipeNet([pipe1, pipe2, ...])` maps to this operation.
 
-    Constructs a pipe network that encapsulates communication topology. The PipeNet
-    provides:
-    - Validation: Ensures all pipes form valid topology (every pipe has matching src/dst guards)
-    - Analysis: Single handle for semaphore inference and resource planning
-    - Lowering: Shared metadata (core lists, loopback flags, multicast descriptors)
+    Creates a compile-time PipeNet value grouping the provided pipes. The PipeNet stores
+    the pipe list in its operands (not in the type) and provides:
+    - Validation: Verifiers check all pipes have matching src/dst guards in if_pipe_src/if_pipe_dst
+    - Analysis: Semaphore inference pass queries the pipe list to generate synchronization
+    - Lowering: TTLLowerDataMovement extracts pipes, generates ttkernel NOC ops per pipe
 
     Example:
       Python:
@@ -247,11 +247,13 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     - Unguarded pipe copies are invalid per TT-Lang spec
     - Operation verifiers enforce this requirement and reject unguarded or unmatched pipes
 
-    Note: ttl.wait lowers to global DMA barrier, not per-transfer wait
-    (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
-    and `ttkernel.noc_async_write_barrier` operations which wait for all pending
-    DMA operations of the respective type, not individual transfers.
-    In contrast, TRID-specific barriers (`noc_async_read_barrier_with_trid`/`noc_async_write_barrier_with_trid`) wait only for transactions with matching IDs (0-15), enabling fine-grained synchronization and better DMA overlap by allowing independent tracking of up to 16 concurrent transfers.
+    Note: TRID-specific barrier operations (`ttkernel.noc_async_read_barrier_with_trid`,
+    `ttkernel.noc_async_write_barrier_with_trid`) and TensorAccessor-specific operations
+    (`ttkernel.noc_async_read_shard`, `ttkernel.noc_async_write_shard`,
+    `ttkernel.noc_async_read_page`, `ttkernel.noc_async_write_page`) need to be added to
+    TTKernel dialect before TTL lowering can be implemented. These are straightforward
+    additions following existing TTKernel operation patterns. The underlying TT-Metal
+    runtime already provides these functions.
 
     See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
@@ -275,9 +277,9 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
     for different pipes may execute in parallel (independent pipe transfers).
 
     The PipeNet argument enables:
-    - Validation: Verify all pipes in network have matching src/dst guards
-    - Analysis: Access full topology for semaphore inference
-    - Lowering: Reuse precomputed metadata (core lists, loopback flags)
+    - Validation: Verifiers check all pipes have matching src/dst guards
+    - Analysis: Semaphore inference queries the pipe list from create_pipenet operands
+    - Lowering: TTLLowerDataMovement extracts pipes, determines core matches, generates NOC ops
 
     Example:
       Python (TT-Lang spec):
@@ -294,14 +296,15 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
         %pipe3 = ttl.create_pipe src_core=[0,0], dst_core=[3,0]
         %net = ttl.create_pipenet %pipe1, %pipe2, %pipe3
 
-        // Example 2: Pipes created in loop (from Python list comprehension)
+        // Example 2: Pipes from Python list comprehension (conceptual representation)
+        // Note: This shows the logical structure. The Python frontend will typically
+        // unroll list comprehensions at compile time and emit all pipes as separate SSA
+        // values passed to create_pipenet as variadic arguments, as shown in Example 1.
         %grid_x = ttl.grid_size dims=1
-        %pipes = scf.for %x = 1 to %grid_x iter_args(%acc = initial_list) {
-          %pipe = ttl.create_pipe src_core=[0,0], dst_core=[%x,0]
-          %new_acc = append_to_list %acc, %pipe
-          scf.yield %new_acc
-        }
-        %net = ttl.create_pipenet %pipes
+        %pipe_0 = ttl.create_pipe src_core=[0,0], dst_core=[1,0]
+        %pipe_1 = ttl.create_pipe src_core=[0,0], dst_core=[2,0]
+        // ... (one per grid_x value, unrolled at compile time)
+        %net = ttl.create_pipenet %pipe_0, %pipe_1, ...
 
         ttl.if_pipe_src %net {
           ^bb0(%pipe: !ttl.pipe):
@@ -339,8 +342,8 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
     the region body with that pipe as block argument. Invocations for different
     pipes may execute in parallel.
 
-    The PipeNet argument enables validation, analysis, and lowering optimizations
-    as described in ttl.if_pipe_src.
+    The PipeNet argument provides same benefits as ttl.if_pipe_src: validation via
+    verifiers, semaphore inference via pipe list query, and lowering to ttkernel NOC ops.
 
     Example:
       Python (TT-Lang spec):

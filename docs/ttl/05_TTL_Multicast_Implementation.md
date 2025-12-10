@@ -157,7 +157,7 @@ net.if_dst(pipe_dst)
 ```
 
 Captured information:
-- PipeNet owning full pipe topology
+- PipeNet storing pipe list in create_pipenet operation operands
 - Per pipe:
   - Source core coordinates
   - Destination core range with slice semantics
@@ -217,14 +217,14 @@ The TTL dialect represents pipe networks as first-class SSA values through the
 This design preserves the TT-Lang spec's `PipeNet` abstraction and provides the
 following capabilities.
 
-Validation: The PipeNet owns the complete pipe topology, enabling whole-network
-validation. The compiler can verify that every pipe has matching source and
-destination guards, ensure each multicast has at least one receiver, and detect
-pipes that are only used on one side. Without PipeNet, the IR only sees
-unrelated pipe values at each guard, making these checks impossible.
+Validation: The PipeNet SSA value groups all pipes, enabling whole-network validation.
+The compiler traces the PipeNet value to its defining create_pipenet operation, extracts
+the pipe operands, and verifies that every pipe has matching source and destination guards,
+each multicast has at least one receiver, and no pipes are only used on one side. Without
+PipeNet, the IR only sees unrelated pipe values at each guard, making these checks impossible.
 
-Synchronization inference: The `TTLInferPipeSemaphores` pass operates on PipeNet
-SSA values to construct semaphores. Having the full topology in a single
+Synchronization inference: The `TTLInferPipeSemaphores` pass operates on PipeNet SSA values
+to construct semaphores. The pass extracts the pipe list from create_pipenet operands, having
 defining operation allows the pass to count destinations, determine loopback
 requirements, and handle multi-pipe coordination (e.g., ready/valid cascades)
 without re-deriving topology at each usage site.

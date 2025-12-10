@@ -952,7 +952,7 @@ def TTL_CoreLinearOp : TTL_Op<"core_linear", [Pure]> {
       (0,0)→0, (0,1)→1, (1,0)→2, (1,1)→3
 
     Useful for distributing data across cores:
-      linear_idx = ttl.core_dim(1)
+      linear_idx = ttl.core(dims=1)
       my_slice = tensor_accessor[linear_idx, :]
 
     Lowers to:

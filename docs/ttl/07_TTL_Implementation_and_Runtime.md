@@ -2,7 +2,9 @@
 
 **Part of**: [TTL Dialect Design Plan](01_TTL_Dialect_Plan.md)
 
-This document covers Python integration, implementation roadmap, TTNN runtime integration, future evolution, success criteria, design rationale, and references.
+This document covers Python integration, implementation roadmap, TTNN runtime
+integration, future evolution, success criteria, design rationale, and
+references.
 
 ## Table of Contents
 
@@ -29,7 +31,7 @@ This document covers Python integration, implementation roadmap, TTNN runtime in
 - [Data Movement Operations](04_TTL_Data_Movement_Operations.md)
 - [Compilation Pipeline](06_TTL_Compilation_Pipeline.md)
 
----
+
 
 ## 7. Python Integration
 
@@ -220,6 +222,33 @@ The MVP delivers TTL → TTKernel → ConvertTTKernelToEmitC → C++ kernel sour
 This leverages existing tt-mlir infrastructure. Direct TTL → C++ emission
 (bypassing TTKernel) is deferred to post-MVP (see section 10.2).
 
+### Prerequisites and Dependencies
+
+Before implementing TTL, the following operations need to be added to TTKernel
+dialect in tt-mlir:
+
+1. **TRID barrier operations** (required for per-transfer wait semantics):
+   - `ttkernel.noc_async_read_barrier_with_trid(trid, noc)`
+   - `ttkernel.noc_async_write_barrier_with_trid(trid, noc)`
+   - `ttkernel.noc_async_write_set_trid(trid, noc)`
+   - Straightforward additions following existing barrier patterns
+   - TT-Metal runtime already provides these in `tt_metal/hw/inc/dataflow_api.h`
+
+2. **TensorAccessor operations** (required for shard/page access):
+   - `ttkernel.noc_async_read_shard(shard_id, accessor, dst_addr, noc)`
+   - `ttkernel.noc_async_write_shard(shard_id, accessor, src_addr, noc)`
+   - `ttkernel.noc_async_read_page(page_id, accessor, dst_addr, offset, noc)`
+   - `ttkernel.noc_async_write_page(page_id, accessor, src_addr, offset, noc)`
+   - Follow existing TTKernel operation patterns
+   - TT-Metal runtime provides these functions
+
+3. **TTNN runtime interface validation** (required for kernel execution):
+   - Status: Validated in bnorris/ttnn-elementwise-example branch
+   - Confirmed `ttnn.generic_op` accepts C++ kernel source and descriptors
+     matching TTL target format
+   - Tested with elementwise and multicore examples using CB-based kernels
+     similar to proposed TTL-generated code
+
 ### Phase 1: Foundation (Week 1)
 **Goal**: TTL dialect compiles and registers with MLIR
 
@@ -289,7 +318,9 @@ during IR construction, not by a separate pass.
    - Create two semaphores per pipe: ready and validity
    - Insert semaphore operations in if_src and if_dst bodies
    - Handle unicast vs multicast patterns
-   - See [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md) for patterns
+   - See
+     [05_TTL_Multicast_Implementation.md](05_TTL_Multicast_Implementation.md)
+     for patterns
 
 **Deliverable**: Kernels with reduction/broadcast/fusion lower to TTKernel (and
 C++), pipes lower with automatic semaphore synchronization

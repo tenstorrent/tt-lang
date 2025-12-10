@@ -38,8 +38,10 @@ def TTL_Dialect : Dialect {
   }];
 }
 
-class TTL_Type<string name, string mnemonic>
-  : TypeDef<TTL_Dialect, name, mnemonic> {}
+class TTL_Type<string name, string typeMnemonic, list<Trait> traits = []>
+    : TypeDef<TTL_Dialect, name, traits> {
+  let mnemonic = typeMnemonic;
+}
 
 class TTL_Op<string mnemonic, list<Trait> traits = []>
   : Op<TTL_Dialect, mnemonic, traits> {}
@@ -74,7 +76,7 @@ def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
 // a custom tensor type. This avoids defining a new type and reuses upstream tensor
 // infrastructure. The TTL_TensorEncodingAttr provides layout and memory space metadata.
 //
-// Type constraint for operations:
+// Type constraint for operations (this is a constraint, not a TypeDef):
 def TTL_Tensor : TensorOf<[F32, F16, BF16]> {
   let summary = "MLIR tensor with TTL encoding attribute";
   let description = [{
@@ -111,6 +113,14 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   // Note: ArrayRef<int64_t> in assemblyFormat requires custom print/parse methods
   // let assemblyFormat = "`<` $shape `,` $elementType `,` $bufferFactor `>`";
   let hasCustomAssemblyFormat = 1;
+
+  // Design note: Memory space is NOT a type parameter because CBs are always L1.
+  // This design choice:
+  // - Simplifies type system (no invalid memory space combinations to reject)
+  // - Matches hardware constraint (CBs are L1-only per TT-Metal architecture)
+  // - Avoids surface for user error (cannot accidentally request DRAM CB)
+  // Future SRAM tiers: If additional fast memory tiers are added, they would likely
+  // require new CB types or explicit opt-in rather than memory-space parameter.
 
   let extraClassDeclaration = [{
     // Calculate total elements for TTKernel CB conversion
@@ -160,11 +170,19 @@ def TTL_Block : TTL_Type<"Block", "block"> {
   let summary = "Logical unit of data exchanged via circular buffers (L1 memory only)";
   let parameters = (ins
     "TensorType":$tensorType,
-    TTL_CircularBuffer:$circularBuffer  // Reference to originating CB
+    TTL_CircularBuffer:$circularBuffer  // Reference to originating CB type (not value)
   );
   let description = [{
     Represents a block of data (tiles or scalars) consumed/produced by compute operations.
     Tied to the originating circular buffer for proper pop/push semantics.
+
+    Design note: The block type references the CircularBuffer type (not a CB SSA value)
+    to capture the structural relationship and enable type-level shape/layout queries.
+    The specific CB instance is tracked through SSA def-use chains (blocks are produced
+    by ttl.cb_wait/ttl.cb_reserve operations on specific CB values). This design enables:
+    - Type-level validation of block shapes against CB shapes
+    - Simplified operation signatures (ttl.cb_pop takes only the block, CB derived from type)
+    - Static shape propagation through block operations
 
     Memory model per TT-Lang spec: Blocks always reside in L1 memory, inheriting the
     L1-only constraint from their originating circular buffer. Block memory is pre-allocated
@@ -182,14 +200,26 @@ def TTL_Block : TTL_Type<"Block", "block"> {
 }
 
 def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
-  let summary = "Handle for asynchronous transfer ordering (lowers to global barrier)";
+  let summary = "Handle for asynchronous transfer with transaction ID tracking";
   let description = [{
-    Note: TTKernel doesn't support per-transfer waits. All ttl.wait operations
-    lower to global DMA barriers (`ttkernel.noc_async_read_barrier` or
-    `ttkernel.noc_async_write_barrier`). This handle exists for ordering and
-    future optimization opportunities.
-    See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
-    `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
+    Transfer handle for DMA operations that maps to a TTKernel transaction ID (TRID).
+    Each ttl.copy operation receives a unique TRID (0-15), and ttl.wait operations
+    use the handle to wait for the specific transfer via TRID-based barriers.
+
+    Lowering: ttl.wait(%xf) lowers to:
+    - `ttkernel.noc_async_read_barrier_with_trid(trid, noc)` for read transfers
+    - `ttkernel.noc_async_write_barrier_with_trid(trid, noc)` for write transfers
+
+    Implementation note: TRID-specific barrier operations need to be added to TTKernel
+    dialect (straightforward addition following existing barrier patterns). The underlying
+    TT-Metal runtime provides these functions in `tt_metal/hw/inc/dataflow_api.h`.
+
+    TRID allocation: Compiler manages TRID assignment and barrier counter resets. When
+    more than 16 concurrent transfers exist, compiler may fall back to global barriers
+    or insert intermediate waits to free TRIDs.
+
+    See: `tt-metal/hw/inc/dataflow_api.h` for TRID barrier functions and
+    `tests/tt_metal/tt_metal/data_movement/transaction_id/README.md` for usage examples.
   }];
 }
 
@@ -200,7 +230,7 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
 ```tablegen
 def TTL_Semaphore : TTL_Type<"Semaphore", "semaphore"> {
   let summary = "Synchronization primitive for inter-core coordination";
-  let parameters = (ins OptionalParameter<"bool">:$isRemote);
+  let parameters = (ins DefaultValuedParameter<"bool", "false">:$isRemote);
 }
 ```
 
@@ -210,10 +240,11 @@ def TTL_Semaphore : TTL_Type<"Semaphore", "semaphore"> {
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Inter-core communication channel (first-class SSA value)";
   let parameters = (ins
-    "ArrayRef<int64_t>":$srcCore,           // Source core coordinates [x, y]
-    OptionalParameter<"ArrayRef<int64_t>">:$dstCore,  // Destination (unicast) [x, y]
-    OptionalParameter<"ArrayRef<TTL_SliceAttr>">:$dstCoreRange  // Multicast range (slice per dim)
+    ArrayRefParameter<"int64_t">:$srcCore,           // Source core coordinates [x, y]
+    OptionalArrayRefParameter<"int64_t">:$dstCore,  // Destination (unicast) [x, y]
+    OptionalArrayRefParameter<"TTL_SliceAttr">:$dstCoreRange  // Multicast range (slice per dim)
   );
+  let hasCustomAssemblyFormat = 1;
   let description = [{
     Represents a pipe for inter-core communication.
 
@@ -266,11 +297,32 @@ detailed multicast patterns.
 
 ```tablegen
 def TTL_PipeNet : TTL_Type<"PipeNet", "pipenet"> {
-  let summary = "Network of pipes with shared topology";
+  let summary = "Network of pipes";
   let description = [{
-    Represents a collection of pipes that together form a communication network.
-    Provides validation that all pipes form a valid topology and enables network-wide
-    analysis and optimization.
+    Compile-time abstraction representing a collection of pipes for validation and
+    conditional code generation. PipeNet values exist only during compilation and are
+    eliminated during lowering to TTKernel.
+
+    Design note: PipeNet is an opaque type with no parameters. The topology information
+    is not stored in the type itself but in the defining ttl.create_pipenet operation's
+    variadic operands. This design:
+    - Simplifies type system (all PipeNet values share the same type)
+    - Follows standard MLIR pattern for compile-time tokens
+    - Enables dynamic pipe construction (variadic operation arguments)
+    - Topology accessible via SSA def-use chain analysis
+
+    Runtime representation: PipeNet carries no runtime data. During lowering to TTKernel,
+    PipeNet operations are expanded and removed:
+    - ttl.create_pipenet %pipe1, %pipe2, ... → stores pipe list in operation operands
+    - ttl.if_pipe_src %net → compiler extracts pipes from create_pipenet, inlines region
+      body for each pipe where current core matches src_core, generates ttkernel NOC operations
+    - ttl.if_pipe_dst %net → compiler extracts pipes, inlines body for cores matching dst_core
+      or dst_core_range, generates ttkernel NOC operations
+    - After TTLLowerDataMovement pass: PipeNet SSA values and operations are removed, replaced
+      with ttkernel.noc_async_write and semaphore operations
+
+    Topology access: Compiler passes query the defining ttl.create_pipenet operation
+    to extract the variadic pipe operands. Standard MLIR def-use chain traversal.
 
     Python API: ttl.PipeNet([pipe1, pipe2, ...])
 
@@ -312,7 +364,7 @@ def TTL_MemorySpaceAttr : I32EnumAttr<"MemorySpace", "TTL memory space", [
 def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {
   let summary = "Grid topology description";
   let parameters = (ins ArrayRefParameter<"int64_t">:$dimensions);
-  let assemblyFormat = "`<` custom<DynamicIndexList>($dimensions, $static_dimensions) `>`";
+  let assemblyFormat = "`<` `[` $dimensions `]` `>`";
 }
 
 // Note: TTL reuses ttnn::LayoutAttr from tt-mlir instead of defining a custom layout
@@ -565,7 +617,7 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     @ttl.datamovement()
     def dm_writer():
-        shard_id = ttl.core_dim(1)
+        shard_id = ttl.core(dims=1)
 
         o_blk = out_cb.wait()
         xf = ttl.copy(o_blk, out[shard_id])  # Write shard
@@ -601,7 +653,7 @@ ttl.kernel @sharded_elementwise_add(
   %out_accessor = ttl.tensor_accessor %out
 
   ttl.datamovement_thread {
-    %shard_id = ttl.core_dim(1) : index
+    %shard_id = ttl.core(dims=1) : index
 
     %a_blk = ttl.cb_reserve %a_cb : !ttl.block<...>
     %xf_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.xf
@@ -628,7 +680,7 @@ ttl.kernel @sharded_elementwise_add(
   }
 
   ttl.datamovement_thread {
-    %shard_id = ttl.core_dim(1) : index
+    %shard_id = ttl.core(dims=1) : index
 
     %o_blk = ttl.cb_wait %out_cb : !ttl.block<...>
     %xf_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.xf
