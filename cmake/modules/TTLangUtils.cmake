@@ -155,6 +155,14 @@ macro(ttlang_setup_ttmlir_build_tree BUILD_DIR)
     _Python3_EXECUTABLE
   )
 
+  if(_TTMLIR_TTMLIR_ENABLE_STABLEHLO)
+    message(FATAL_ERROR "tt-lang requires tt-mlir to be built with StableHLO support disabled (OFF). Please rebuild tt-mlir with -DTTMLIR_ENABLE_STABLEHLO=OFF.")
+  endif()
+
+  if(NOT _TTMLIR_TTMLIR_ENABLE_TNN_JIT)
+    message(FATAL_ERROR "tt-lang requires tt-mlir to be built with TNN JIT support enabled (ON). Please rebuild tt-mlir with -DTTMLIR_ENABLE_TNN_JIT=ON.")
+  endif()
+
   if(DEFINED _TTMLIR_LLVM_DIR)
     list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_LLVM_DIR}/cmake")
   endif()
