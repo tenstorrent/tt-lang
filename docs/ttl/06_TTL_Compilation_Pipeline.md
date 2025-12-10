@@ -228,8 +228,8 @@ Lowering strategy:
 
 For multicast operations, the pass generates coordinate computation at kernel
 runtime:
-1. Use `ttkernel.my_x[0]` / `ttkernel.my_y[0]` to get current core's device
-   coordinates
+1. Use `ttkernel.my_x` / `ttkernel.my_y` to get current core's virtual
+   coordinates (operations take NOC index as argument)
 2. Compute multicast range bounds using affine arithmetic on these coordinates
 3. Pass computed coordinates to `ttkernel.get_noc_multicast_addr`
 4. Device coordinate APIs handle architecture-specific translation
@@ -239,8 +239,9 @@ Example lowering:
 TTL (logical): ttl.Pipe(src_core=(0,0), dst_core_range=(slice(1,4), 0))
 
 TTKernel (device-specific):
-  %my_x = ttkernel.my_x[0]
-  %my_y = ttkernel.my_y[0]
+  %noc = arith.constant 0 : i32
+  %my_x = ttkernel.my_x %noc
+  %my_y = ttkernel.my_y %noc
   %mcast_start_x = affine.apply affine_map<(x) -> (x + 1)>(%my_x)
   %mcast_end_x = affine.apply affine_map<(x) -> (x + 3)>(%my_x)
   %mcast_addr = ttkernel.get_noc_multicast_addr(

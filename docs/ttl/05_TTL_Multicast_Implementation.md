@@ -201,7 +201,7 @@ All required operations exist in TTKernel dialect (verified in
 | `get_noc_multicast_addr(...)` | `ttkernel.get_noc_multicast_addr` | 2611 |
 | `noc_async_write_multicast(...)` | `ttkernel.noc_async_write_multicast` | 2653 |
 | `noc_async_write_multicast_loopback_src(...)` | `ttkernel.noc_async_write_multicast_loopback_src` | 2686 |
-| `my_x[0]` / `my_y[0]` | `ttkernel.my_x` / `ttkernel.my_y` | Physical coords |
+| `my_x[noc]` / `my_y[noc]` | `ttkernel.my_x` / `ttkernel.my_y` | Virtual coords (take NOC index arg) |
 | `get_noc_addr(x, y, addr)` | `ttkernel.get_noc_addr` | Unicast |
 
 Conclusion: TTKernel has complete coverage for generating multicast C++ kernels.
@@ -282,16 +282,15 @@ Logical coordinates (TTL):
 - Architecture-independent representation
 
 Device-specific coordinates (TTKernel):
-- `ttkernel.my_x[0]` / `ttkernel.my_y[0]` return device coordinates for NOC
-  operations
+- `ttkernel.my_x` / `ttkernel.my_y` return virtual coordinates for NOC
+  operations (take NOC index as argument)
 - Required by `get_noc_multicast_addr` and `get_noc_addr` functions
-- May be virtual coordinates (Blackhole) or physical coordinates
-  (Wormhole/Grayskull)
-- Architecture-specific, handled by device coordinate translation layer
+- Return virtual coordinates (may differ from physical on some architectures)
+- Architecture-specific translation handled by device coordinate translation layer
 
 Translation approach in `TTLLowerDataMovement`:
-- Generate runtime coordinate computation using `ttkernel.my_x[0]` /
-  `ttkernel.my_y[0]`
+- Generate runtime coordinate computation using `ttkernel.my_x` /
+  `ttkernel.my_y`
 - Compute multicast ranges using affine arithmetic on device coordinates
 - Device layer handles architecture-specific virtualization
 - TTL dialect remains architecture-agnostic
@@ -412,7 +411,7 @@ Files created:
 
 Tasks:
 - Update `TTLLowerDataMovement` pass to handle device coordinate generation
-- Insert `ttkernel.my_x[0]` / `ttkernel.my_y[0]` for current core coordinates
+- Insert `ttkernel.my_x` / `ttkernel.my_y` for current core coordinates
 - Compute multicast range bounds using affine arithmetic
 - Detect loopback by checking if src_core falls within dst_core_range
 - Select loopback vs non-loopback TTKernel operations based on detection
@@ -420,7 +419,7 @@ Tasks:
   `SemaphoreResource`
 - Collect memory effects between semaphore operations using MLIR effect
   collection APIs
-- Insert `ttkernel.noc_async_atomic_barrier` based on conflict detection (hybrid
+- Insert `ttkernel.noc_async_write_barrier` based on conflict detection (hybrid
   conservative/aggressive strategy)
 - Add lit tests for coordinate computation, loopback detection, and barrier
   insertion

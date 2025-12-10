@@ -1128,7 +1128,7 @@ composable Transform dialect model for scheduling.
 
 ### Why Direct to TTKernel (Not via D2M)?
 - Avoids `d2m.generic` complexity
-- Cleaner semantic representation
+- Cleaner semantic representation that matches the python dsl
 - Still compatible with existing TTKernel → EmitC → C++ pipeline
 
 ### Why Affine for Control Flow?
