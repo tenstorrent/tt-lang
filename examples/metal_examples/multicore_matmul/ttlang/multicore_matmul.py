@@ -30,12 +30,8 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     Nt = N // ttnn.TILE_SIZE
     num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
     buffering_factor = 2
-    a_cb = make_circular_buffer_like(
-        a, shape=(1, 1), buffer_factor=buffering_factor
-    )
-    b_cb = make_circular_buffer_like(
-        b, shape=(1, 1), buffer_factor=buffering_factor
-    )
+    a_cb = make_circular_buffer_like(a, shape=(1, 1), buffer_factor=buffering_factor)
+    b_cb = make_circular_buffer_like(b, shape=(1, 1), buffer_factor=buffering_factor)
     out_cb = make_circular_buffer_like(
         out, shape=(1, 1), buffer_factor=buffering_factor
     )
