@@ -95,7 +95,7 @@ macro(ttlang_collect_ttmlir_link_libs OUTPUT_VAR)
     set(_ttmlir_targets "")
   endif()
 
-  # Filter out targets that don't exist (e.g. StableHLO when disabled)
+  # Filter out targets that don't exist
   set(_ttmlir_targets_existing "")
 
   foreach(target ${_ttmlir_targets})
@@ -104,26 +104,25 @@ macro(ttlang_collect_ttmlir_link_libs OUTPUT_VAR)
     endif()
   endforeach()
 
-  # Check for StableHLO libraries that might not be in export targets
-  # These are conditionally built so we check if they exist
-  set(_stablehlo_libs
-    TTMLIRStableHLOToTTIR
-    TTMLIRStableHLOUtils
-    MLIRStableHLOTransforms
-    MLIRStableHLOPipelines
-  )
-  set(_stablehlo_libs_existing "")
 
-  foreach(target ${_stablehlo_libs})
+  # Some tt-mlir pipeline libraries (TTIR/TTNN) are not exported, so add them
+  # explicitly when available.
+  set(_ttmlir_pipeline_libs
+    MLIRTTIRPipelines
+    MLIRTTNNPipelines
+  )
+  set(_ttmlir_pipeline_libs_existing "")
+
+  foreach(target ${_ttmlir_pipeline_libs})
     if(TARGET ${target})
-      list(APPEND _stablehlo_libs_existing ${target})
+      list(APPEND _ttmlir_pipeline_libs_existing ${target})
     endif()
   endforeach()
 
   set(${OUTPUT_VAR}
     TTMLIRCompilerStatic
     ${_ttmlir_targets_existing}
-    ${_stablehlo_libs_existing}
+    ${_ttmlir_pipeline_libs_existing}
     ${dialect_libs}
     ${conversion_libs}
     ${extension_libs}
@@ -155,12 +154,12 @@ macro(ttlang_setup_ttmlir_build_tree BUILD_DIR)
     _Python3_EXECUTABLE
   )
 
-  if(_TTMLIR_TTMLIR_ENABLE_STABLEHLO)
-    message(FATAL_ERROR "tt-lang requires tt-mlir to be built with StableHLO support disabled (OFF). Please rebuild tt-mlir with -DTTMLIR_ENABLE_STABLEHLO=OFF.")
+  if(DEFINED _TTMLIR_TTMLIR_ENABLE_STABLEHLO AND _TTMLIR_TTMLIR_ENABLE_STABLEHLO)
+    message(STATUS "tt-lang detected tt-mlir built with StableHLO support enabled.")
   endif()
 
-  if(NOT _TTMLIR_TTMLIR_ENABLE_TNN_JIT)
-    message(FATAL_ERROR "tt-lang requires tt-mlir to be built with TNN JIT support enabled (ON). Please rebuild tt-mlir with -DTTMLIR_ENABLE_TNN_JIT=ON.")
+  if(DEFINED _TTMLIR_TTMLIR_ENABLE_TNN_JIT AND NOT _TTMLIR_TTMLIR_ENABLE_TNN_JIT)
+    message(WARNING "tt-lang recommends tt-mlir builds with -DTTMLIR_ENABLE_TNN_JIT=ON; continuing without TNN JIT support may disable certain pipelines.")
   endif()
 
   if(DEFINED _TTMLIR_LLVM_DIR)
