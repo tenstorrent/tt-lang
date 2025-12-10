@@ -154,12 +154,11 @@ def TTL_DataMovementThreadOp : TTL_Op<"datamovement_thread"> {
 
 ```tablegen
 def TTL_CreateCBOp : TTL_Op<"create_cb"> {
-  let summary = "Create circular buffer";
+  let summary = "Create circular buffer in L1 memory";
   let arguments = (ins
     I64ArrayAttr:$shape,                // Elements per block
     TypeAttr:$element_type,             // !ttcore.tile<32x32, f32> or scalar type (f32, bf16, etc.)
     I64Attr:$buffer_factor,             // Number of blocks
-    TTL_MemorySpaceAttr:$memory_space,  // L1, DRAM, DST
     OptionalAttr<I32Attr>:$buffer_index,      // Optional explicit CB number (0-31)
     OptionalAttr<I64Attr>:$page_size,         // Optional page size in bytes
     OptionalAttr<TTL_CoreMaskAttr>:$core_ranges  // Optional per-core CB mapping
@@ -168,9 +167,13 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
   let description = [{
     Python API `ttl.make_circular_buffer_like(tensor, shape=..., buffer_factor=...)`
     maps to this operation. The Python frontend extracts tensor properties
-    (dtype, layout, memory_space) and calls `ttl.create_cb` with the extracted
-    parameters. The "likeness" refers to deriving element_type and memory_space
-    from the input tensor's layout and properties.
+    (dtype, layout) and calls `ttl.create_cb` with the extracted parameters.
+    The "likeness" refers to deriving element_type from the input tensor's layout
+    and properties.
+
+    Memory space: Circular buffers always reside in L1 memory. DRAM, DST, and System
+    memory are not valid memory spaces for circular buffers. DST registers are managed
+    exclusively by the TTLAssignDSTRegisters pass.
 
     Shape units and L1 allocation per TT-Lang spec:
     - Shape parameter is in shape units (tiles for tiled, scalars for row-major)
@@ -623,13 +626,17 @@ def TTL_BlockReduceSumOp : TTL_Op<"block_reduce_sum"> {
 def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
   let summary = "Reduce max along specified axis";
   let arguments = (ins
-    TTL_Tensor:$input,
+    TTL_Block:$input,
     I64Attr:$axis  // Axis to reduce along
   );
   let results = (outs TTL_Block:$result);
   let description = [{
-    Reduces input tensor along specified axis using max operation.
+    Reduces input block along specified axis using max operation.
     Used for numerical stability in normalization patterns.
+
+    Operates on blocks acquired from circular buffers via cb.wait() or cb.reserve().
+    The input block's circular buffer provenance enables proper CB lineage tracking
+    for wait/pop validation and DST allocation.
 
     Maps to TTKernel operations:
     - ttkernel.reduce_init(in_cb, scaling_cb, out_cb, ReduceFunc::Max, reduce_dim)
@@ -644,14 +651,18 @@ def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
 def TTL_BlockBcastOp : TTL_Op<"block_bcast"> {
   let summary = "Broadcast along specified axis";
   let arguments = (ins
-    TTL_Tensor:$input,
+    TTL_Block:$input,
     I64Attr:$axis  // Broadcast axis
   );
   let results = (outs TTL_Block:$result);
   let description = [{
-    Broadcasts input tensor along the specified axis by replicating values.
+    Broadcasts input block along the specified axis by replicating values.
     Useful for normalization patterns (such as attention mechanisms) where
     reduction fills one dimension and broadcast replicates across the other.
+
+    Operates on blocks acquired from circular buffers via cb.wait() or cb.reserve().
+    The input block's circular buffer provenance enables proper CB lineage tracking
+    for wait/pop validation and DST allocation.
 
     Example: bcast(reduced_val, dim=1) replicates values along dimension 1.
 

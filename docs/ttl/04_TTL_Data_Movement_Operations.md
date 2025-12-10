@@ -33,12 +33,11 @@ synchronization, and MLIR interface requirements for the TTL dialect.
 
 ```tablegen
 def TTL_CreateCBOp : TTL_Op<"create_cb"> {
-  let summary = "Create circular buffer";
+  let summary = "Create circular buffer in L1 memory";
   let arguments = (ins
     I64ArrayAttr:$shape,                // Elements per block
     TypeAttr:$element_type,             // !ttcore.tile<32x32, f32> or scalar type (f32, bf16, etc.)
     I64Attr:$buffer_factor,             // Number of blocks
-    TTL_MemorySpaceAttr:$memory_space,  // L1, DRAM, DST
     OptionalAttr<I32Attr>:$buffer_index,      // Optional explicit CB number (0-31)
     OptionalAttr<I64Attr>:$page_size,         // Optional page size in bytes
     OptionalAttr<TTL_CoreMaskAttr>:$core_ranges  // Optional per-core CB mapping
@@ -47,9 +46,13 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
   let description = [{
     Python API `ttl.make_circular_buffer_like(tensor, shape=..., buffer_factor=...)`
     maps to this operation. The Python frontend extracts tensor properties
-    (dtype, layout, memory_space) and calls `ttl.create_cb` with the extracted
-    parameters. The "likeness" refers to deriving element_type and memory_space
-    from the input tensor's layout and properties.
+    (dtype, layout) and calls `ttl.create_cb` with the extracted parameters.
+    The "likeness" refers to deriving element_type from the input tensor's layout
+    and properties.
+
+    Memory space: Circular buffers always reside in L1 memory. DRAM, DST, and System
+    memory are not valid memory spaces for circular buffers. DST registers are managed
+    exclusively by the TTLAssignDSTRegisters pass.
 
     Shape units and L1 allocation per TT-Lang spec:
     - Shape parameter is in shape units (tiles for tiled, scalars for row-major)
@@ -247,8 +250,9 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     Note: ttl.wait lowers to global DMA barrier, not per-transfer wait
     (TTKernel limitation). TTKernel only provides `ttkernel.noc_async_read_barrier`
     and `ttkernel.noc_async_write_barrier` operations which wait for all pending
-    DMA operations of the respective type, not individual transfers. When a copy
-    involves a Pipe operand, ttl.wait instead lowers to a semaphore wait.
+    DMA operations of the respective type, not individual transfers.
+    In contrast, TRID-specific barriers (`noc_async_read_barrier_with_trid`/`noc_async_write_barrier_with_trid`) wait only for transactions with matching IDs (0-15), enabling fine-grained synchronization and better DMA overlap by allowing independent tracking of up to 16 concurrent transfers.
+
     See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
     `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
   }];
@@ -377,15 +381,42 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
 }
 
 def TTL_WaitOp : TTL_Op<"wait"> {
-  let summary = "Wait for DMA transfer (lowers to global barrier)";
+  let summary = "Wait for DMA transfer to complete";
   let arguments = (ins TTL_TransferHandle:$xf);
   let description = [{
-    Explicit wait on transfer handle. Lowers to `ttkernel.noc_async_read_barrier`
-    or `ttkernel.noc_async_write_barrier` (global barriers, not per-transfer).
-    For pipe transfers, the wait resolves to a semaphore synchronization that
-    coordinates pipe producers and consumers instead of a DMA barrier.
-    See: `tt-mlir/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td` definitions
-    `TTKernel_NocAsyncReadBarrierOp` and `TTKernel_NocAsyncWriteBarrierOp`.
+    Explicit wait on transfer handle.
+
+    Lowering strategy: TTL transfer handles map to TTKernel transaction IDs (TRIDs) enabling
+    per-transfer wait semantics. The compiler assigns each ttl.copy operation a unique TRID
+    (0-15) and lowers ttl.wait to TRID-specific barriers:
+    - `ttkernel.noc_async_read_barrier_with_trid(trid, noc)` for read transfers
+    - `ttkernel.noc_async_write_barrier_with_trid(trid, noc)` for write transfers
+
+    Implementation note: These TRID-specific barrier operations need to be added to the
+    TTKernel dialect (straightforward addition following existing barrier operation patterns).
+    The underlying TT-Metal runtime already provides these functions in `tt_metal/hw/inc/dataflow_api.h`.
+    See implementation roadmap in `docs/ttl/07_TTL_Implementation_and_Runtime.md` for details.
+
+    Per-transfer synchronization: Unlike global barriers that wait for all pending DMAs,
+    TRID-based barriers wait only for the specific transfer with matching ID. This enables
+    better DMA overlap by allowing other transfers to remain in flight.
+
+    TRID allocation: The compiler manages TRID assignment (16 IDs available: 0x0-0xF) and
+    barrier counter resets. When more than 16 concurrent transfers exist, the compiler may
+    fall back to global barriers or insert intermediate waits to free TRIDs.
+
+    Pipe transfers: For transfers involving pipes (inter-core communication), the wait
+    resolves to semaphore synchronization that coordinates pipe producers and consumers
+    instead of a DMA barrier.
+
+    Direction determination: The barrier direction (read vs write) is determined from the
+    transfer handle's source and destination:
+    - Tensor/CB → CB: read barrier (DMA read from DRAM/L1)
+    - CB → Tensor/CB: write barrier (DMA write to DRAM/L1)
+    - CB → Pipe or Pipe → CB: semaphore wait (no DMA barrier)
+
+    See: `tt-metal/hw/inc/dataflow_api.h` for TRID barrier functions and
+    `tests/tt_metal/tt_metal/data_movement/transaction_id/README.md` for usage examples.
   }];
 }
 

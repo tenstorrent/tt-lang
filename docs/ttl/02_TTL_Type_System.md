@@ -44,37 +44,25 @@ class TTL_Type<string name, string mnemonic>
 class TTL_Op<string mnemonic, list<Trait> traits = []>
   : Op<TTL_Dialect, mnemonic, traits> {}
 
-// Type constraints for TTL operations
-def TTL_Tile : TTL_Type<"Tile", "tile"> {
-  let summary = "Tile type for tiled tensor layouts";
-  let parameters = (ins
-    "int64_t":$height,    // Tile height (32, 16, 4, 2, 1)
-    "int64_t":$width,     // Tile width (32)
-    "Type":$elementType   // Element type (f32, f16, bf16)
-  );
-  let description = [{
-    Represents a tile for tiled tensor layouts. Hardware supports variable tile heights
-    (32×32, 16×32, 4×32, 2×32, 1×32) for different operation types.
-
-    Standard tile: !ttl.tile<32x32, f32>
-    SFPU optimized: !ttl.tile<16x32, f32>
-    Narrow tile: !ttl.tile<4x32, f16>
-
-    The tile dimensions must be hardware-supported combinations. Validation enforced
-    during type construction by the type verifier.
-  }];
-}
-
 def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
   let summary = "TTL tensor encoding combining memory space and layout";
   let parameters = (ins
     TTL_MemorySpaceAttr:$memorySpace,
-    TTL_LayoutAttr:$layout
+    "ttnn::LayoutAttr":$layout  // Reuse ttnn::LayoutAttr from tt-mlir
   );
   let assemblyFormat = "`<` $memorySpace `,` $layout `>`";
   let description = [{
     Encoding attached to `tensor<...>` types to carry both the memory-space
     placement (L1/DRAM/System) and layout metadata (tiled, sharded, interleaved, etc.).
+
+    Layout attribute: Reuses ttnn::LayoutAttr from tt-mlir to maintain compatibility with
+    runtime descriptors and avoid duplicate layout representation. The layout attribute
+    captures tiling patterns, sharding configuration, and memory layout details.
+
+    Tile layout information: For tiled tensors, the layout attribute specifies
+    tile dimensions (e.g., 32x32, 16x32) and tiling pattern. The tensor element type
+    remains scalar (f32, f16, bf16). During lowering, the compiler generates ttcore::TileType
+    values as needed for tile-level operations.
 
     Note: DST is not a valid memory space for tensors. DST registers are managed
     exclusively by the TTLAssignDSTRegisters pass and do not participate in the
@@ -87,13 +75,23 @@ def TTL_TensorEncodingAttr : TTL_Attr<"TensorEncoding", "tensor_encoding"> {
 // infrastructure. The TTL_TensorEncodingAttr provides layout and memory space metadata.
 //
 // Type constraint for operations:
-def TTL_Tensor : TensorOf<[F32, F16, BF16, TTL_Tile]> {
+def TTL_Tensor : TensorOf<[F32, F16, BF16]> {
   let summary = "MLIR tensor with TTL encoding attribute";
   let description = [{
     TTL tensors are standard MLIR RankedTensorType with TTL_TensorEncodingAttr
     encoding attribute. The encoding carries layout and memory-space metadata, e.g.,
     `tensor<64x64xf32, #ttl.tensor_encoding<DRAM,
-    #ttl.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>>>`.
+    #ttl.layout<tiled, tile_shape=[32,32], grid=[2,2]>>>`.
+
+    Element types: Tensors have scalar element types (f32, f16, bf16). Tile layout
+    information is encoded in the TTL_TensorEncodingAttr, not the element type.
+    This design choice:
+    - Reuses ttcore::TileType from tt-mlir (avoids duplicate tile type definitions)
+    - Keeps tensor element types consistent with standard MLIR conventions
+    - Defers tile-level representation to lowering passes (TTL operates at tensor/block level)
+
+    During lowering to TTKernel, tiled tensors produce ttcore::TileType values where needed.
+    Circular buffers store tiles using ttcore::TileType directly in their element_type parameter.
 
     This approach reuses upstream tensor infrastructure and enables compatibility
     with standard MLIR transformations (bufferization, tiling, etc.).
@@ -104,7 +102,7 @@ def TTL_Tensor : TensorOf<[F32, F16, BF16, TTL_Tile]> {
 // TTL Types (TTLTypes.td)
 
 def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
-  let summary = "Circular buffer for producer-consumer communication";
+  let summary = "Circular buffer for producer-consumer communication (L1 memory only)";
   let parameters = (ins
     "ArrayRef<int64_t>":$shape,          // Elements per block
     "mlir::Type":$elementType,           // !ttcore.tile<32x32, f32> or scalar type
@@ -135,6 +133,10 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let description = [{
     Circular buffer supporting both tiled and row-major tensor layouts per TT-Lang spec.
 
+    Memory model: Circular buffers always reside in L1 memory. DRAM and System memory
+    are not valid memory spaces for circular buffers. DST registers are managed exclusively
+    by the TTLAssignDSTRegisters pass and do not participate in the CB memory space system.
+
     Shape units: The shape parameter is expressed in shape units derived from the source
     tensor's layout (tiles for tiled tensors, scalars for row-major tensors).
 
@@ -155,7 +157,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
 }
 
 def TTL_Block : TTL_Type<"Block", "block"> {
-  let summary = "Logical unit of data exchanged via circular buffers";
+  let summary = "Logical unit of data exchanged via circular buffers (L1 memory only)";
   let parameters = (ins
     "TensorType":$tensorType,
     TTL_CircularBuffer:$circularBuffer  // Reference to originating CB
@@ -164,9 +166,11 @@ def TTL_Block : TTL_Type<"Block", "block"> {
     Represents a block of data (tiles or scalars) consumed/produced by compute operations.
     Tied to the originating circular buffer for proper pop/push semantics.
 
-    Memory model per TT-Lang spec: Block memory is pre-allocated when the circular buffer
-    is created. The block inherits the CB's shape-unit granularity (tiles for tiled layout,
-    scalars for row-major layout). No dynamic allocation occurs during block acquisition.
+    Memory model per TT-Lang spec: Blocks always reside in L1 memory, inheriting the
+    L1-only constraint from their originating circular buffer. Block memory is pre-allocated
+    when the circular buffer is created. The block inherits the CB's shape-unit granularity
+    (tiles for tiled layout, scalars for row-major layout). No dynamic allocation occurs
+    during block acquisition.
 
     The block's shape matches the CB's shape parameter. This linkage enables ttl.cb_pop
     and ttl.cb_push to operate on the block alone, determining which CB to use from the
@@ -213,13 +217,19 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let description = [{
     Represents a pipe for inter-core communication.
 
+    MVP restriction: 2D grids only. The initial implementation supports two-dimensional
+    grids (x, y coordinates). Multi-chip grids with three or more dimensions are post-MVP.
+    The TT-Lang spec supports higher-dimensional grids with flatten/pad semantics, but
+    the TTL dialect MVP restricts to 2D to simplify coordinate translation and multicast
+    range construction during lowering.
+
     Unicast: src_core=[x,y], dst_core=[x',y']
     Multicast: src_core=[x,y], dst_core_range=[slice(x0,x1,step), slice(y0,y1,step)]
 
     Each slice in dst_core_range is a tuple (start, stop, step) per TT-Lang spec.
     The range is half-open: [start, stop). Step defaults to 1 if not specified.
 
-    **Arity requirement**: The dst_core_range tuple MUST have the same arity as the
+    Arity requirement: The dst_core_range tuple must have the same arity as the
     grid rank to prevent ambiguity. For a 2D grid (grid_x, grid_y), both dimensions
     must be specified explicitly. Use slice(x, x+1) for a single core in that dimension.
 
@@ -305,26 +315,22 @@ def TTL_GridAttr : AttrDef<TTL_Dialect, "Grid"> {
   let assemblyFormat = "`<` custom<DynamicIndexList>($dimensions, $static_dimensions) `>`";
 }
 
-def TTL_LayoutAttr : AttrDef<TTL_Dialect, "Layout"> {
-  let summary = "Tensor layout metadata (from python layouts.py)";
-  let description = [{
-    Captures layout information generated by create_metal_layout():
-    - tiled vs row-major
-    - sharded grids
-    - interleaved patterns
-
-    Allows lossless representation of all TensorAccessor configurations. The
-    attribute participates in the `TTL_TensorEncodingAttr` attached to
-    `tensor<...>` types, so every `TTL_Tensor` carries explicit layout alongside
-    its memory-space annotation.
-
-    Note: Consider reusing `ttnn::LayoutAttr` from tt-mlir instead of defining a
-    bespoke attribute. Reuse would avoid duplicate parsing/printing and maintain
-    descriptor compatibility. Investigation needed to determine if TTL has layout
-    requirements not covered by the existing TTNN attribute.
-  }];
-  // Parameters TBD based on MetalLayoutConfig from layouts.py or ttnn::LayoutAttr
-}
+// Note: TTL reuses ttnn::LayoutAttr from tt-mlir instead of defining a custom layout
+// attribute. This decision provides:
+// - Compatibility with tt-metal runtime descriptors
+// - Avoids duplicate parsing/printing logic
+// - Ensures layout metadata flows correctly through the entire compilation pipeline
+//   (TTL → TTKernel → TTNN → runtime)
+//
+// The ttnn::LayoutAttr captures:
+// - Layout type (tiled, row-major, sharded, interleaved)
+// - Grid dimensions for sharded layouts
+// - Shard/page/tile shapes
+// - Memory layout patterns
+//
+// TTL_TensorEncodingAttr wraps ttnn::LayoutAttr with TTL-specific memory space information.
+// This allows TTL to reuse TTNN's mature layout representation while maintaining TTL's
+// memory space semantics (L1/DRAM/System distinction).
 
 def TTL_SliceAttr : AttrDef<TTL_Dialect, "Slice"> {
   let summary = "Slice specification for core range (start, stop, step)";
