@@ -49,14 +49,12 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out, shape=(per_core_M, per_core_N), buffer_factor=1
     )
 
-
     @ttl.compute()
     def mm_compute():
         with out_cb.reserve() as out_blk:  # per_core_M * per_core_N
             for _ in range(Kt // K_block_size):
                 with a_cb.wait() as a_blk, b_cb.wait() as b_blk:  # a per_core_M x K_block_size, b K_block_size x per_core_N
                     out_blk.store(out_blk + a_blk @ b_blk)
-                    
 
     @ttl.datamovement()
     def mm_reader():
