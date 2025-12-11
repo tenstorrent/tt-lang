@@ -34,7 +34,6 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
 }
 
 def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
-  let summary = "Handle for asynchronous TTL DMA transfers";
+  let summary = "Handle for asynchronous TTL memory transfers";
 }
-
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

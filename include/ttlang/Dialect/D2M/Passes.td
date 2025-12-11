@@ -23,4 +23,3 @@ def D2MSimpleAllocate : Pass<"d2m-simple-allocate", "::mlir::func::FuncOp"> {
 }
 
 #endif // TTLANG_DIALECT_D2M_PASSES_TD
-

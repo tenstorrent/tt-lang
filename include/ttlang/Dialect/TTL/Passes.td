@@ -20,4 +20,3 @@ def TTLConvertTTLToTTKernel
 }
 
 #endif // TTLANG_DIALECT_TTL_PASSES_TD
-

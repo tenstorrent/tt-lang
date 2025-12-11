@@ -4,25 +4,34 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
+#include "ttlang/Dialect/TTL/Passes.h"
+#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
+
+#include "mlir/Dialect/EmitC/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
-#include "ttlang/Dialect/TTL/Passes.h"
 
 using namespace mlir;
 
 namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
-                                 const TTLToTTKernelPipelineOptions &) {
+                                 const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
+  if (options.lowerToEmitC) {
+    pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(mlir::emitc::createFormExpressionsPass());
+  }
 }
 
 void registerTTLPipelines() {
   PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
       "ttl-to-ttkernel-pipeline",
-      "Lower TTL to TTKernel and run cleanup canonicalization/CSE",
+      "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "
+      "lower TTKernel to EmitC.",
       createTTLToTTKernelPipeline);
 }
 

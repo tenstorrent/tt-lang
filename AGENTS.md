@@ -32,14 +32,14 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   not and)
 
 ## MLIR implementation
-- Follow the conventions in llvm-project for directory organization and naming 
+- Follow the conventions in llvm-project for directory organization and naming
   conventions.
 - **MLIR passes (modern pattern)**: Define passes in `Passes.td` with
   `cppNamespace`; let TableGen emit factories/registration. In the `.cpp`,
   include `Passes.h.inc` with `GEN_PASS_DEF_...`, derive from the generated
   `...Base`, implement `runOnOperation()`, and rely on the generated
   `create*Pass()` (no manual constructors).
-- **Transforms layout**: Dialect-specific pass definitions in `include/ttlang/<Dialect>/Passes.td`, 
+- **Transforms layout**: Dialect-specific pass definitions in `include/ttlang/<Dialect>/Passes.td`,
   headers in `include/ttlang/Dialect/<Dialect>/{IR,Transofrms,TransformOps,Utils}` and
   implementations in `lib/Dialect/<Dialect>/{IR,Transforms,TransformOps,Utils}`.
 - **Pass naming and deps**: Prefix pass names with the dialect acronym

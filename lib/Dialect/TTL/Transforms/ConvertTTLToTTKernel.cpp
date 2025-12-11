@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinDialect.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
@@ -18,6 +19,8 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 
 namespace mlir::tt::ttl {
@@ -34,6 +37,30 @@ using mlir::UnrealizedConversionCastOp;
 using mlir::ValueRange;
 
 namespace ttk = mlir::tt::ttkernel;
+
+class TTLToTTKernelTypeConverter : public TypeConverter {
+public:
+  TTLToTTKernelTypeConverter() {
+    // Specific conversions first; identity fallback last.
+    // CB: lower to TTKernel CB type with flattened element count.
+    addConversion([](CircularBufferType t) -> Type {
+      return ttk::CBType::get(t.getContext(), t.getTotalElements(),
+                              t.getElementType());
+    });
+    // Transfer handle: keep as-is for now (identity).
+    addConversion([](TransferHandleType t) -> Type { return t; });
+    // Identity fallback must be last.
+    addConversion([](Type t) { return t; });
+
+    auto castMaterialization = [](OpBuilder &builder, Type resultType,
+                                  ValueRange inputs, Location loc) -> Value {
+      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+          .getResult(0);
+    };
+    addSourceMaterialization(castMaterialization);
+    addTargetMaterialization(castMaterialization);
+  }
+};
 
 struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -200,21 +227,7 @@ struct TTLConvertTTLToTTKernelPass
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
 
-    TypeConverter typeConverter;
-    typeConverter.addConversion([](Type t) { return t; });
-    typeConverter.addConversion([](CircularBufferType t) -> Type {
-      return ttk::CBType::get(t.getContext(), t.getTotalElements(),
-                              t.getElementType());
-    });
-    typeConverter.addConversion([](TransferHandleType t) -> Type {
-      // TODO(ttl): Use a real handle representation once available.
-      return IntegerType::get(t.getContext(), 32);
-    });
-    typeConverter.addTargetMaterialization(
-        [](OpBuilder &builder, Type type, ValueRange inputs, Location loc) {
-          return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
-              .getResult(0);
-        });
+    TTLToTTKernelTypeConverter typeConverter;
 
     ConversionTarget target(ctx);
     target.addIllegalDialect<tt::ttl::TTLDialect>();
@@ -241,6 +254,54 @@ struct TTLConvertTTLToTTKernelPass
     if (failed(applyPartialConversion(mod, target, frozen))) {
       signalPassFailure();
     }
+
+    // Tag kernels with a thread type so downstream TTKernel->EmitC/C++ passes
+    // will process them. Default to NOC for DMA-style kernels.
+    mod.walk([&](func::FuncOp func) {
+      if (func->hasAttr(ttk::ThreadTypeAttr::name)) {
+        return;
+      }
+
+      bool hasTTKernelOps = false;
+      func.walk([&](Operation *nested) {
+        if (nested->getDialect() &&
+            nested->getDialect()->getNamespace() ==
+                ttk::TTKernelDialect::getDialectNamespace()) {
+          hasTTKernelOps = true;
+        }
+      });
+
+      if (!hasTTKernelOps) {
+        return;
+      }
+
+      func->setAttr(ttk::ThreadTypeAttr::name,
+                    ttk::ThreadTypeAttr::get(&ctx, ttk::ThreadType::Noc));
+
+      // Downstream TTKernel->EmitC expects kernels with no function arguments.
+      // While we still produce placeholder kernels without real inputs, drop
+      // unused arguments to keep conversion simple.
+      // TODO (ttl): Lower tensor inputs to concrete TTKernel tensor accessor
+      // arguments and keep them instead of erasing. Issue: #000.
+      if (func.getNumArguments() == 0) {
+        return;
+      }
+
+      if (llvm::any_of(func.getArguments(),
+                       [](BlockArgument arg) { return !arg.use_empty(); })) {
+        return;
+      }
+
+      llvm::BitVector argsToErase(func.getNumArguments());
+      for (unsigned idx = 0; idx < func.getNumArguments(); ++idx) {
+        argsToErase.set(idx);
+      }
+      if (succeeded(func.eraseArguments(argsToErase))) {
+        auto newType = FunctionType::get(&ctx, TypeRange{},
+                                         func.getFunctionType().getResults());
+        func.setType(newType);
+      }
+    });
   }
 };
 

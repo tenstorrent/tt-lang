@@ -14,7 +14,11 @@ class OpPassManager;
 namespace mlir::tt::ttl {
 
 struct TTLToTTKernelPipelineOptions
-    : public mlir::PassPipelineOptions<TTLToTTKernelPipelineOptions> {};
+    : public mlir::PassPipelineOptions<TTLToTTKernelPipelineOptions> {
+  Option<bool> lowerToEmitC{*this, "lower-to-emitc",
+                            llvm::cl::desc("Lower TTKernel to EmitC."),
+                            llvm::cl::init(false)};
+};
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
