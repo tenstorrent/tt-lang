@@ -46,6 +46,7 @@ build-verbosity = 2
 
 [tool.pyright]
 typeCheckingMode = "strict"
+reportMissingParameterType = "error"
 reportMissingTypeStubs = "warning"
 reportMissingImports = "error"
 reportUnknownParameterType = "error"
@@ -53,6 +54,6 @@ reportUnknownArgumentType = "error"
 reportUnknownVariableType = "error"
 reportUnknownMemberType = "error"
 reportUntypedFunctionDecorator = "error"
-reportPrivateUsage = "warning"
+reportPrivateUsage = "error"
 reportImportCycles = "error"
 reportUnnecessaryIsInstance = "warning"

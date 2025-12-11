@@ -5,23 +5,24 @@
 import pytest
 import threading
 import time
+import torch
 from typing import List, Tuple, Optional
-from python.sim.errors import CBContractError
 
 from python.sim.cbapi import CBAPI
 from python.sim.errors import CBContractError, CBTimeoutError
 from python.sim.typedefs import CBID
+from python.sim.cb import CircularBuffer
 
 
 # Pytest fixtures to reduce redundant setup code
 @pytest.fixture
-def api() -> CBAPI[int]:
+def api() -> CBAPI:
     """Create a fresh CBAPI instance for each test."""
-    return CBAPI[int]()
+    return CBAPI()
 
 
 @pytest.fixture
-def configured_cb(api: CBAPI[int]) -> Tuple[CBAPI[int], CBID]:
+def configured_cb(api: CBAPI) -> Tuple[CBAPI, CBID]:
     """Create a configured CB with capacity 4."""
     cb_id = 0
     api.host_configure_cb(cb_id, 4)
@@ -29,7 +30,7 @@ def configured_cb(api: CBAPI[int]) -> Tuple[CBAPI[int], CBID]:
 
 
 @pytest.fixture
-def configured_cb8(api: CBAPI[int]) -> Tuple[CBAPI[int], CBID]:
+def configured_cb8(api: CBAPI) -> Tuple[CBAPI, CBID]:
     """Create a configured CB with capacity 8."""
     cb_id = 0
     api.host_configure_cb(cb_id, 8)
@@ -37,12 +38,12 @@ def configured_cb8(api: CBAPI[int]) -> Tuple[CBAPI[int], CBID]:
 
 
 @pytest.fixture
-def timeout_api() -> CBAPI[int]:
+def timeout_api() -> CBAPI:
     """Create a CBAPI instance with short timeout for timeout tests."""
-    return CBAPI[int](timeout=0.1)
+    return CBAPI(timeout=0.1)
 
 
-def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI[int], CBID]):
+def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI, CBID]):
     api, cb0 = configured_cb8
     stats = api.cb_stats(cb0)
     assert stats.capacity == 8
@@ -85,7 +86,7 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI[int], CBID]):
 
 def test_per_instance_timeout_effect():
     # consumer should timeout based on instance timeout
-    api = CBAPI[int](timeout=0.01)
+    api = CBAPI(timeout=0.01)
     cb = 3
     api.host_configure_cb(cb, 4)
     start = time.time()
@@ -95,7 +96,7 @@ def test_per_instance_timeout_effect():
     assert elapsed < 0.1
 
 
-def test_threaded_produce_consume(configured_cb: Tuple[CBAPI[int], CBID]):
+def test_threaded_produce_consume(configured_cb: Tuple[CBAPI, CBID]):
     api, cb0 = configured_cb
     result: List[List[Optional[int]]] = []
 
@@ -119,7 +120,7 @@ def test_threaded_produce_consume(configured_cb: Tuple[CBAPI[int], CBID]):
     assert result == [[100, 200, 300, 400]]
 
 
-def test_cb_pages_nonblocking(configured_cb8: Tuple[CBAPI[int], CBID]):
+def test_cb_pages_nonblocking(configured_cb8: Tuple[CBAPI, CBID]):
     api, cb2 = configured_cb8
 
     # No pages initially; test non-error behavior
@@ -146,20 +147,20 @@ def test_cb_pages_nonblocking(configured_cb8: Tuple[CBAPI[int], CBID]):
 
 
 # Focused error tests for page operations
-def test_cb_pages_available_out_of_range_error(configured_cb: Tuple[CBAPI[int], CBID]):
+def test_cb_pages_available_out_of_range_error(configured_cb: Tuple[CBAPI, CBID]):
     api, cb = configured_cb
     with pytest.raises(CBContractError, match="num_tiles must be <= capacity"):
         api.cb_pages_available_at_front(cb, 5)
 
 
-def test_cb_pages_reservable_out_of_range_error(configured_cb: Tuple[CBAPI[int], CBID]):
+def test_cb_pages_reservable_out_of_range_error(configured_cb: Tuple[CBAPI, CBID]):
     api, cb = configured_cb
     with pytest.raises(CBContractError, match="num_tiles must be <= capacity"):
         api.cb_pages_reservable_at_back(cb, 5)
 
 
 def test_cb_pages_reservable_divisibility_error(
-    configured_cb8: Tuple[CBAPI[int], CBID],
+    configured_cb8: Tuple[CBAPI, CBID],
 ):
     api, cb = configured_cb8
     with pytest.raises(
@@ -168,7 +169,7 @@ def test_cb_pages_reservable_divisibility_error(
         api.cb_pages_reservable_at_back(cb, 5)
 
 
-def test_cb_pages_available_divisibility_error(configured_cb8: Tuple[CBAPI[int], CBID]):
+def test_cb_pages_available_divisibility_error(configured_cb8: Tuple[CBAPI, CBID]):
     api, cb = configured_cb8
     api.cb_reserve_back(cb, 4)
     ptr = api.get_write_ptr(cb)
@@ -181,7 +182,7 @@ def test_cb_pages_available_divisibility_error(configured_cb8: Tuple[CBAPI[int],
 
 
 # Pointer requirement error tests
-def test_get_read_ptr_requires_wait(configured_cb: Tuple[CBAPI[int], CBID]):
+def test_get_read_ptr_requires_wait(configured_cb: Tuple[CBAPI, CBID]):
     api, cb = configured_cb
     with pytest.raises(
         CBContractError, match="get_read_ptr requires prior cb_wait_front"
@@ -189,7 +190,7 @@ def test_get_read_ptr_requires_wait(configured_cb: Tuple[CBAPI[int], CBID]):
         api.get_read_ptr(cb)
 
 
-def test_get_write_ptr_requires_reserve(configured_cb: Tuple[CBAPI[int], CBID]):
+def test_get_write_ptr_requires_reserve(configured_cb: Tuple[CBAPI, CBID]):
     api, cb = configured_cb
     with pytest.raises(
         CBContractError, match="get_write_ptr requires prior cb_reserve_back"
@@ -197,7 +198,7 @@ def test_get_write_ptr_requires_reserve(configured_cb: Tuple[CBAPI[int], CBID]):
         api.get_write_ptr(cb)
 
 
-def test_multiple_consumers_error(timeout_api: CBAPI[int]):
+def test_multiple_consumers_error(timeout_api: CBAPI):
     api = timeout_api
     cb = 0
     api.host_configure_cb(cb, 4)
@@ -220,7 +221,7 @@ def test_multiple_consumers_error(timeout_api: CBAPI[int]):
     )
 
 
-def test_multiple_producers_error(timeout_api: CBAPI[int]):
+def test_multiple_producers_error(timeout_api: CBAPI):
     api = timeout_api
     cb = 0
     api.host_configure_cb(cb, 4)
@@ -244,7 +245,7 @@ def test_multiple_producers_error(timeout_api: CBAPI[int]):
     )
 
 
-def test_allocate_cb_id(api: CBAPI[int]):
+def test_allocate_cb_id(api: CBAPI):
     """Test that allocate_cb_id allocates sequential IDs."""
     cb_id0 = api.allocate_cb_id()
     cb_id1 = api.allocate_cb_id()
@@ -255,7 +256,7 @@ def test_allocate_cb_id(api: CBAPI[int]):
     assert cb_id2 == 2
 
 
-def test_allocate_cb_id_thread_safe(api: CBAPI[int]):
+def test_allocate_cb_id_thread_safe(api: CBAPI):
     """Test that allocate_cb_id is thread-safe."""
     allocated_ids: List[CBID] = []
     lock = threading.Lock()
@@ -282,7 +283,7 @@ def test_allocate_cb_id_exceeds_max():
     """Test that allocating more than MAX_CBS raises RuntimeError."""
     from python.sim.constants import MAX_CBS
 
-    api = CBAPI[int]()
+    api = CBAPI()
     # Allocate up to MAX_CBS
     for _ in range(MAX_CBS):
         api.allocate_cb_id()
@@ -292,6 +293,69 @@ def test_allocate_cb_id_exceeds_max():
         RuntimeError, match=f"Maximum number of circular buffers exceeded: {MAX_CBS}"
     ):
         api.allocate_cb_id()
+
+
+def test_heterogeneous_cbs_in_same_api():
+    """Test that a single CBAPI instance can handle circular buffers with different element types."""
+    # Create a shared CBAPI instance
+    api = CBAPI()
+
+    # Create circular buffers with different element types
+    int_cb = CircularBuffer[int](shape=(2, 2), buffer_factor=2, api=api)
+    tensor_cb = CircularBuffer[torch.Tensor](shape=(2, 2), buffer_factor=2, api=api)
+
+    # Test integer circular buffer
+    int_write = int_cb.reserve()
+    for i in range(len(int_write)):
+        int_write[i] = i + 1
+    int_cb.push()
+
+    int_read = int_cb.wait()
+    for i in range(len(int_read)):
+        assert int_read[i] == i + 1
+    int_cb.pop()
+
+    # Test tensor circular buffer
+    tensor_write = tensor_cb.reserve()
+    for i in range(len(tensor_write)):
+        tensor_write[i] = torch.ones(32, 32) * (i + 10)
+    tensor_cb.push()
+
+    tensor_read = tensor_cb.wait()
+    for i in range(len(tensor_read)):
+        assert torch.allclose(tensor_read[i], torch.ones(32, 32) * (i + 10))
+    tensor_cb.pop()
+
+    # Verify both CBs used the same API instance
+    assert int_cb._api is api  # type: ignore
+    assert tensor_cb._api is api  # type: ignore
+
+
+def test_default_api_heterogeneous():
+    """Test that the default API can handle heterogeneous circular buffers."""
+    # Create circular buffers using default API (different element types)
+    int_cb = CircularBuffer[int](shape=(1, 1), buffer_factor=2)
+    tensor_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+
+    # Both should use the same default API instance
+    assert int_cb._api is tensor_cb._api  # type: ignore
+
+    # Test that both work correctly
+    int_write = int_cb.reserve()
+    int_write[0] = 42
+    int_cb.push()
+
+    tensor_write = tensor_cb.reserve()
+    tensor_write[0] = torch.zeros(32, 32)
+    tensor_cb.push()
+
+    int_read = int_cb.wait()
+    assert int_read[0] == 42
+    int_cb.pop()
+
+    tensor_read = tensor_cb.wait()
+    assert torch.allclose(tensor_read[0], torch.zeros(32, 32))
+    tensor_cb.pop()
 
 
 if __name__ == "__main__":
