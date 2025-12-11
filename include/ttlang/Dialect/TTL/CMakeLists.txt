@@ -1,4 +1,5 @@
 add_subdirectory(IR)
+add_subdirectory(Pipelines)
 
 set(LLVM_TARGET_DEFINITIONS Passes.td)
 mlir_tablegen(Passes.h.inc -gen-pass-decls -name TTL)

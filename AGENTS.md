@@ -31,7 +31,7 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
   not and)
 
-## MLIR source code organization and naming
+## MLIR implementation
 - Follow the conventions in llvm-project for directory organization and naming 
   conventions.
 - **MLIR passes (modern pattern)**: Define passes in `Passes.td` with
@@ -45,13 +45,9 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - **Pass naming and deps**: Prefix pass names with the dialect acronym
   (e.g., `TTLConvert...`). In `dependentDialects`, list only dialects for ops
   the pass creates; do not include the starting dialect.
+- **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
 
-### Lit tests
-- Always add a brief comment in front of tests to specify the purpose of the test. Add a concise summary on top of the test file about what is being tested.
-- In lit tests, use `--split-input-file` for multiple tests in the same file.
-- Always include negative/invalid tests, which should be in a file named *_invalid.<suffix>. For invalid tests, use `--verify-diagnostics` and `expected-error @below` as well as `--split-input-file` if file contains multiple tests.
-
-## Pattern Rewriter Error Handling
+### Pattern Rewriter Error Handling
 - **NEVER call `emitOpError()` inside a pattern rewriter** - causes pass to
   succeed while emitting diagnostics
 - Inside patterns: Use `rewriter.notifyMatchFailure()` for pattern match
@@ -63,6 +59,11 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   occur (e.g., pytest failing with
   `mlir::python::PyMlirContext::ErrorCapture::~ErrorCapture(): Assertion `errors.empty()
   && "unhandled captured errors"' failed.`)
+
+### Lit tests
+- Always add a brief comment in front of tests to specify the purpose of the test. Add a concise summary on top of the test file about what is being tested.
+- In lit tests, use `--split-input-file` for multiple tests in the same file.
+- Always include negative/invalid tests, which should be in a file named *_invalid.<suffix>. For invalid tests, use `--verify-diagnostics` and `expected-error @below` as well as `--split-input-file` if file contains multiple tests.
 
 ## Additional Notes
 - **Agent Design Principle**: Implement only the minimum necessary

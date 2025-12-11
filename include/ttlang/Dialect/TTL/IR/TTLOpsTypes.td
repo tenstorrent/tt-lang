@@ -19,7 +19,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
     "mlir::Type":$elementType,
     "int64_t":$bufferFactor
   );
-  let assemblyFormat = "`<` $shape `,` $elementType `,` $bufferFactor `>`";
+  let assemblyFormat = "`<` `[` $shape `]` `,` $elementType `,` $bufferFactor `>`";
 
   let extraClassDeclaration = [{
     int64_t getElementsPerBlock() const {

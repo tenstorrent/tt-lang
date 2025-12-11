@@ -8,5 +8,6 @@ target_link_libraries(ttlang-opt PRIVATE
   MLIRRegisterAllPasses
   TTLangD2MTransforms
   TTLangTTLTransforms
+  TTLangTTLPipelines
   MLIRTTLDialect
 )
