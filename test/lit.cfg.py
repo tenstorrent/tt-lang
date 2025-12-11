@@ -67,13 +67,13 @@ config.substitutions.append(
 
 # Get Python packages directory from site config, or fall back to default build location.
 build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)
-if build_python is None:
+if build_python is None or not build_python:
     # Fallback to default build location if not set by site config.
-    build_python = os.path.join(project_root, "build", "python_packages")
+    build_python = os.path.join(config.ttlang_obj_root, "python_packages")
 
 python_paths = [
     build_python,
-    os.path.join(project_root, "python"),
+    os.path.join(config.ttlang_source_dir, "python"),
     os.environ.get("PYTHONPATH", ""),
 ]
 

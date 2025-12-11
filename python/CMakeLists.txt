@@ -8,6 +8,9 @@ set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang")
 # tt-lang passes into ttmlir's MLIR registry.
 ################################################################################
 
+# Use the same MLIR Python package prefix as tt-mlir so type casters work
+add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ttmlir.")
+
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import nanobind; print(nanobind.cmake_dir())"
   OUTPUT_VARIABLE nanobind_DIR
@@ -88,6 +91,8 @@ set(TTLANG_PYTHON_SOURCES
   _src/codegen.py
   _src/d2m_ast.py
   _src/tensor_accessor.py
+  dialects/__init__.py
+  dialects/ttl.py
 )
 
 # Use absolute path to ensure we write to the correct location
