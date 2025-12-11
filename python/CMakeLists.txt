@@ -54,10 +54,10 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
     TTLangModule.cpp
     TTLModule.cpp
   EMBED_CAPI_LINK_LIBS
-    MLIRCAPITransforms
-  PRIVATE_LINK_LIBS
-    TTLangTransforms
     TTLangCAPI
+  PRIVATE_LINK_LIBS
+    TTLangCAPI
+    TTLangTransforms
     ${TTMLIR_PYTHON_CAPI_LIB}
   PYTHON_BINDINGS_LIBRARY nanobind
 )
@@ -99,27 +99,38 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
 # Generate packages and shared library
 # ###############################################################################
 
-# Link against ttmlir's Python CAPI to share the same MLIR registry
+# Link against ttmlir's Python CAPI to share the same MLIR registry.
+# Try the build tree, install tree, and the toolchain venv site-packages.
+set(_TTMLIR_PYTHON_CAPI_HINTS)
+if(DEFINED TTMLIR_BUILD_DIR)
+  list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
+    "${TTMLIR_BUILD_DIR}/python_packages/ttmlir/_mlir_libs")
+endif()
+if(DEFINED TTMLIR_PATH)
+  list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
+    "${TTMLIR_PATH}/python_packages/ttmlir/_mlir_libs")
+endif()
+list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
+  "${TTMLIR_TOOLCHAIN_DIR}/python_packages/ttmlir/_mlir_libs"
+  "${TTMLIR_TOOLCHAIN_DIR}/venv/lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages/ttmlir/_mlir_libs")
+
 find_library(TTMLIR_PYTHON_CAPI_LIB
   NAMES TTMLIRPythonCAPI
-  PATHS "${TTMLIR_BUILD_DIR}/python_packages/ttmlir/_mlir_libs"
-  NO_DEFAULT_PATH
+  HINTS ${_TTMLIR_PYTHON_CAPI_HINTS}
+  PATH_SUFFIXES _mlir_libs
   REQUIRED
 )
+
+# Use the upstream tt-mlir common CAPI directly and expose a lightweight
+# interface target for tt-lang.
+add_library(TTLangPythonCAPI INTERFACE)
+target_link_libraries(TTLangPythonCAPI INTERFACE ${TTMLIR_PYTHON_CAPI_LIB} TTLangCAPI)
 
 set(TTLANG_PYTHON_SOURCES
   TTLangPythonSources
   TTLangPythonExtensions
   TTLangPythonCommon
   TTLangPythonSiteInitialize
-)
-
-add_mlir_python_common_capi_library(TTLangPythonCAPI
-  INSTALL_COMPONENT TTLangPythonModules
-  INSTALL_DESTINATION python_packages/ttlang/_mlir_libs
-  OUTPUT_DIRECTORY "${TTLANG_PYTHON_PACKAGES_DIR}/ttlang/_mlir_libs"
-  RELATIVE_INSTALL_ROOT ".."
-  DECLARED_SOURCES ${TTLANG_PYTHON_SOURCES}
 )
 
 add_mlir_python_modules(TTLangPythonModules

@@ -15,7 +15,7 @@ using namespace mlir::python::nanobind_adaptors;
 NB_MODULE(_ttlang, m) {
   m.doc() = "tt-lang Python bindings for TTL dialect";
 
-  // Register tt-lang passes
+  // Register tt-lang passes and TTL dialect when the module is loaded.
   mlir::tt::d2m::registerD2MPasses();
 
   // Register TTL dialect with any Context that loads this module

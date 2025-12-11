@@ -30,9 +30,23 @@ config.suffixes = [".mlir", ".py"]
 config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
-config.test_exec_root = os.path.join(
-    getattr(config, "ttlang_obj_root", os.environ.get("TTLANG_OBJ_ROOT", "")), "test"
+_default_obj_root = os.environ.get("TTLANG_OBJ_ROOT")
+if not _default_obj_root:
+    _default_obj_root = os.path.abspath(
+        os.path.join(config.test_source_root, os.pardir, "build")
+    )
+
+config.ttlang_obj_root = getattr(config, "ttlang_obj_root", _default_obj_root)
+config.ttlang_source_dir = getattr(
+    config,
+    "ttlang_source_dir",
+    os.environ.get(
+        "TTLANG_SOURCE_DIR",
+        os.path.abspath(os.path.join(config.test_source_root, os.pardir)),
+    ),
 )
+
+config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
 
 config.excludes = [
     "Inputs",
