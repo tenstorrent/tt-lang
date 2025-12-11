@@ -6,5 +6,7 @@ target_link_libraries(ttlang-opt PRIVATE
   ${TTMLIR_LINK_LIBS}
   MLIROptLib
   MLIRRegisterAllPasses
+  TTLangD2MTransforms
+  TTLangTTLTransforms
   MLIRTTLDialect
 )

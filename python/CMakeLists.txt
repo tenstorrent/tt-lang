@@ -57,7 +57,8 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
     TTLangCAPI
   PRIVATE_LINK_LIBS
     TTLangCAPI
-    TTLangTransforms
+    TTLangD2MTransforms
+    TTLangTTLTransforms
     ${TTMLIR_PYTHON_CAPI_LIB}
   PYTHON_BINDINGS_LIBRARY nanobind
 )

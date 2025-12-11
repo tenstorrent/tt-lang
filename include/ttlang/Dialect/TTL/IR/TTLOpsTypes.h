@@ -8,6 +8,8 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 
+#include <numeric>
+
 #define GET_TYPEDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h.inc"
 

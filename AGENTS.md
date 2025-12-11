@@ -31,6 +31,26 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
   not and)
 
+## MLIR source code organization and naming
+- Follow the conventions in llvm-project for directory organization and naming 
+  conventions.
+- **MLIR passes (modern pattern)**: Define passes in `Passes.td` with
+  `cppNamespace`; let TableGen emit factories/registration. In the `.cpp`,
+  include `Passes.h.inc` with `GEN_PASS_DEF_...`, derive from the generated
+  `...Base`, implement `runOnOperation()`, and rely on the generated
+  `create*Pass()` (no manual constructors).
+- **Transforms layout**: Dialect-specific pass definitions in `include/ttlang/<Dialect>/Passes.td`, 
+  headers in `include/ttlang/Dialect/<Dialect>/{IR,Transofrms,TransformOps,Utils}` and
+  implementations in `lib/Dialect/<Dialect>/{IR,Transforms,TransformOps,Utils}`.
+- **Pass naming and deps**: Prefix pass names with the dialect acronym
+  (e.g., `TTLConvert...`). In `dependentDialects`, list only dialects for ops
+  the pass creates; do not include the starting dialect.
+
+### Lit tests
+- Always add a brief comment in front of tests to specify the purpose of the test. Add a concise summary on top of the test file about what is being tested.
+- In lit tests, use `--split-input-file` for multiple tests in the same file.
+- Always include negative/invalid tests, which should be in a file named *_invalid.<suffix>. For invalid tests, use `--verify-diagnostics` and `expected-error @below` as well as `--split-input-file` if file contains multiple tests.
+
 ## Pattern Rewriter Error Handling
 - **NEVER call `emitOpError()` inside a pattern rewriter** - causes pass to
   succeed while emitting diagnostics
@@ -59,7 +79,9 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   - [ ] New/Existing tests provide coverage for changes
   ```
 - Use `pre-commit run --all-files` before commits
+- Prefer `git mv` to deleting and adding files that are in git. Stop and ask user to do if you can't do it.
 - Create GitHub issues for TODOs with format:
   `TODO (alias): description. Issue: #123`
+- Generate commit messages and PR summaries in plain ASCII format using github markdown. When appropriate, include plain ASCII diagrams.
 - Follow LLVM coding standards: https://llvm.org/docs/CodingStandards.html
 - Follow best practices: https://llvm.org/docs/ProgrammersManual.html
