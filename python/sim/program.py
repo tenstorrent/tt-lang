@@ -21,7 +21,6 @@ import torch
 from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .tensoraccessor import TensorAccessor
-from .typedefs import CoreIndex
 
 
 # Protocol for templates that have a bind method
@@ -76,26 +75,6 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def core_index() -> CoreIndex:
-    """Get the current core index from injected context.
-
-    Returns:
-        CoreIndex: The index of the current core in the grid
-
-    Raises:
-        RuntimeError: If called outside of a Program context
-    """
-    frame = inspect.currentframe()
-
-    # Check the calling frame's globals for the injected '_core' variable
-    if frame and frame.f_back and "_core" in frame.f_back.f_globals:
-        return frame.f_back.f_globals["_core"]
-
-    raise RuntimeError(
-        "core not available - function must be called within Program context"
-    )
-
-
 def Program(*funcs: BindableTemplate) -> Any:
     """Program class that combines compute and data movement functions."""
 
@@ -119,7 +98,10 @@ def Program(*funcs: BindableTemplate) -> Any:
                 self.context.update(frame.f_back.f_locals)
 
             grid = self.context.get("grid", (1, 1))
-            total_cores = grid[0] * grid[1]
+            # Calculate total cores for any dimension grid
+            total_cores = 1
+            for dim_size in grid:
+                total_cores *= dim_size
 
             compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
 
@@ -130,7 +112,7 @@ def Program(*funcs: BindableTemplate) -> Any:
                 # build per-core context
                 memo: Dict[int, Any] = {}
                 core_context: Dict[str, Any] = {}
-                api = CBAPI[torch.Tensor]()  # new CBAPI per core
+                api = CBAPI()  # new CBAPI per core
 
                 for key, value in self.context.items():
                     match value:
