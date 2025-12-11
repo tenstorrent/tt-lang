@@ -30,3 +30,11 @@ func.func @test_slice_invalid_step() attributes {s = #ttl.slice<start = 0, stop 
 func.func @test_slice_missing_field() attributes {s = #ttl.slice<start = 0, stop = 8>} {
   return
 }
+
+// -----
+
+// Missing step (same as missing_field, kept for clarity)
+// expected-error @below {{expected ','}}
+func.func @test_slice_missing_step() attributes {s = #ttl.slice<start = 0, stop = 8>} {
+  return
+}

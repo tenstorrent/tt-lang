@@ -34,3 +34,11 @@ add_lit_testsuite(check-ttlang-python "Running ttlang Python tests"
     DEPENDS ${TTLANG_TEST_DEPENDS}
 )
 set_target_properties(check-ttlang-python PROPERTIES FOLDER "Tests")
+
+# Python bindings tests only
+add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding tests"
+    ${CMAKE_CURRENT_BINARY_DIR}/bindings/python
+    --verbose
+    DEPENDS ${TTLANG_TEST_DEPENDS}
+)
+set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")

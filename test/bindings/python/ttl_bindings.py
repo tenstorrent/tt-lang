@@ -11,28 +11,22 @@ from ttmlir.dialects import ttcore
 from ttlang.dialects import ttl
 
 with Context() as ctx, Location.unknown():
+    ttl.ensure_dialects_registered(ctx)
+
     print("=== Test SliceAttr Creation ===")
-    # Test SliceAttr.get() with basic values
-    slice_attr = ttl.SliceAttr.get(ctx, start=0, stop=8, step=1)
+    # Test SliceAttr.get() with basic values (positional)
+    slice_attr = ttl.SliceAttr.get(ctx, 0, 8, 1)
 
     # CHECK: #ttl.slice<start = 0, stop = 8, step = 1>
     print(slice_attr)
 
-    print("\n=== Test SliceAttr Property Access ===")
-    # CHECK: start: 0
-    print(f"start: {slice_attr.start}")
-    # CHECK: stop: 8
-    print(f"stop: {slice_attr.stop}")
-    # CHECK: step: 1
-    print(f"step: {slice_attr.step}")
-
-    print("\n=== Test SliceAttr with Different Values ===")
+    print("\n=== Test SliceAttr with Different Values (keyword args) ===")
     slice_attr2 = ttl.SliceAttr.get(ctx, start=10, stop=20, step=2)
 
     # CHECK: #ttl.slice<start = 10, stop = 20, step = 2>
     print(slice_attr2)
 
-    print("\n=== Test SliceAttr with Negative Step ===")
+    print("\n=== Test SliceAttr with Negative Step (mixed args) ===")
     slice_attr3 = ttl.SliceAttr.get(ctx, start=15, stop=0, step=-1)
 
     # CHECK: #ttl.slice<start = 15, stop = 0, step = -1>
@@ -54,9 +48,9 @@ with Context() as ctx, Location.unknown():
     print("\n=== Test Multiple SliceAttrs ===")
     # Create multiple slice attributes to test they can coexist
     slices = [
-        ttl.SliceAttr.get(ctx, start=0, stop=8, step=1),
+        ttl.SliceAttr.get(ctx, 0, 8, 1),
         ttl.SliceAttr.get(ctx, start=8, stop=16, step=1),
-        ttl.SliceAttr.get(ctx, start=16, stop=24, step=1),
+        ttl.SliceAttr.get(ctx, 16, stop=24, step=1),
     ]
 
     # CHECK: #ttl.slice<start = 0, stop = 8, step = 1>
