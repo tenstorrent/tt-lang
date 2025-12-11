@@ -33,7 +33,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                 with out_cb.reserve() as out_blk:
                     for _ in range(Kt):
                         with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                            out_blk += a_blk @ b_blk
+                            out_blk.store(out_blk + a_blk @ b_blk)
 
     @ttl.datamovement()
     def mm_reader():
@@ -41,8 +41,8 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             for n in range(Nt):
                 for k in range(Kt):
                     with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                        a_wr = copy(a[m : (m + 1), k : (k + 1)], a_blk)
-                        b_wr = copy(b[k : (k + 1), n : (n + 1)], b_blk)
+                        a_wr = copy(a[m, k], a_blk)
+                        b_wr = copy(b[k, n], b_blk)
                         a_wr.wait()
                         b_wr.wait()
 
@@ -51,7 +51,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         for m in range(Mt):
             for n in range(Nt):
                 with out_cb.wait() as out_blk:
-                    out_wr = copy(out_blk, out[m : (m + 1), n : (n + 1)])
+                    out_wr = copy(out_blk, out[m, n])
                     out_wr.wait()
 
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
