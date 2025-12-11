@@ -20,7 +20,7 @@ bool ttlangMlirAttributeIsATTLSliceAttr(MlirAttribute attr) {
 }
 
 MlirAttribute ttlangTTLSliceAttrGet(MlirContext ctx, int64_t start,
-                                     int64_t stop, int64_t step) {
+                                    int64_t stop, int64_t step) {
   return wrap(SliceAttr::get(unwrap(ctx), start, stop, step));
 }
 

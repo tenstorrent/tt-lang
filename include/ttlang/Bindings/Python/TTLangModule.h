@@ -5,10 +5,10 @@
 #ifndef TTLANG_BINDINGS_PYTHON_TTLANGMODULE_H
 #define TTLANG_BINDINGS_PYTHON_TTLANGMODULE_H
 
+#include "mlir-c/IR.h"
 #include "mlir/Bindings/Python/Nanobind.h"
 #include "mlir/Bindings/Python/NanobindAdaptors.h"
 #include "mlir/CAPI/IR.h"
-#include "mlir-c/IR.h"
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/variant.h>
 #include <variant>

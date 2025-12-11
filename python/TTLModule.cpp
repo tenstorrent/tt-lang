@@ -23,12 +23,11 @@ void populateTTLModule(nb::module_ &m) {
   //===--------------------------------------------------------------------===//
 
   tt_attribute_class<SliceAttr>(m, "SliceAttr")
-      .def_static("get",
-                  [](MlirContext ctx, int64_t start, int64_t stop,
-                     int64_t step) {
-                    return wrap(
-                        SliceAttr::get(unwrap(ctx), start, stop, step));
-                  })
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t start, int64_t stop, int64_t step) {
+            return wrap(SliceAttr::get(unwrap(ctx), start, stop, step));
+          })
       .def_prop_ro("start", &SliceAttr::getStart)
       .def_prop_ro("stop", &SliceAttr::getStop)
       .def_prop_ro("step", &SliceAttr::getStep);

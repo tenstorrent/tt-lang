@@ -20,9 +20,9 @@ MLIR_CAPI_EXPORTED bool ttlangMlirAttributeIsATTLSliceAttr(MlirAttribute attr);
 
 /// Creates a TTL SliceAttr with the given start, stop, and step values.
 MLIR_CAPI_EXPORTED MlirAttribute ttlangTTLSliceAttrGet(MlirContext ctx,
-                                                         int64_t start,
-                                                         int64_t stop,
-                                                         int64_t step);
+                                                       int64_t start,
+                                                       int64_t stop,
+                                                       int64_t step);
 
 /// Gets the start value from a TTL SliceAttr.
 MLIR_CAPI_EXPORTED int64_t ttlangTTLSliceAttrGetStart(MlirAttribute attr);

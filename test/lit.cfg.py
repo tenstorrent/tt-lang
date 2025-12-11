@@ -9,7 +9,6 @@ import platform
 import lit.formats
 import lit.util
 from lit.llvm import llvm_config
-from lit.llvm.subst import ToolSubst
 
 # Configuration file for the 'lit' test runner.
 
@@ -24,13 +23,16 @@ if lit_shell_env:
 config.test_format = lit.formats.ShTest(execute_external=not use_lit_shell)
 
 # suffixes: A list of file extensions to treat as test files.
+# Keep .py for lit, pytest tests are excluded via excludes below.
 config.suffixes = [".mlir", ".py"]
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
-config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
+config.test_exec_root = os.path.join(
+    getattr(config, "ttlang_obj_root", os.environ.get("TTLANG_OBJ_ROOT", "")), "test"
+)
 
 config.excludes = [
     "Inputs",
@@ -38,10 +40,22 @@ config.excludes = [
     "sim",
 ]
 
-llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
+# Exclude pytest-style tests (test_*.py) from lit collection.
+import os
+
+for _root, _dirs, _files in os.walk(config.test_source_root):
+    for _f in _files:
+        if _f.startswith("test_") and _f.endswith(".py"):
+            config.excludes.append(_f)
+
+if llvm_config is not None:
+    llvm_config.with_system_environment(
+        ["HOME", "INCLUDE", "LIB", "PYTHONPATH", "TMP", "TEMP"]
+    )
 
 # Use default substitutions from LLVM (includes FileCheck, not, etc.)
-llvm_config.use_default_substitutions()
+if llvm_config is not None:
+    llvm_config.use_default_substitutions()
 
 # Tweak the PATH to include the tools dir.
 tool_dirs = [
@@ -55,7 +69,8 @@ for dirs in tool_dirs:
 # Add ttlang-opt tool
 tools = ["ttlang-opt"]
 
-llvm_config.add_tool_substitutions(tools, tool_dirs)
+if llvm_config is not None:
+    llvm_config.add_tool_substitutions(tools, tool_dirs)
 
 # Python test configuration
 config.substitutions.append(
