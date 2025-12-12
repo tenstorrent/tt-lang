@@ -29,6 +29,8 @@ from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
+import ttlang._mlir_libs._ttlang  # Register tt-lang passes
+
 from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
 
@@ -580,8 +582,13 @@ def pykernel_gen(
     return _decorator
 
 
+# Alias for backward compatibility
+kernel = pykernel_gen
+
+
 __all__ = [
     "pykernel_gen",
+    "kernel",
     "Program",
     "compute",
     "datamovement",
