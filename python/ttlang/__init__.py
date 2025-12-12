@@ -20,6 +20,19 @@ from ttlang.d2m_api import (
     MemTx,
 )
 
+# Export operators
+from ttlang.operators import (
+    bcast,
+    exp,
+    maximum,
+    recip,
+    reduce_max,
+    reduce_sum,
+    rsqrt,
+    sqrt,
+    transpose,
+)
+
 __all__ = [
     "pykernel_gen",
     "Program",
@@ -31,4 +44,14 @@ __all__ = [
     "TensorBlock",
     "Semaphore",
     "MemTx",
+    # Operators
+    "bcast",
+    "exp",
+    "maximum",
+    "recip",
+    "reduce_max",
+    "reduce_sum",
+    "rsqrt",
+    "sqrt",
+    "transpose",
 ]

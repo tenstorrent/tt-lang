@@ -6,14 +6,14 @@
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 
-# Verify: TensorAccessor() creates d2m.stream_layout ops with storage and view layouts.
+# Verify: dma() generates d2m.dma and MemTx.wait() generates d2m.dma_wait.
 
 import torch
 from ttlang.d2m_api import *
 
 
-@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
-def test_stream(lhs, rhs, out):
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+def test_dma_ops(lhs, rhs, out):
     lhs_accessor = TensorAccessor(lhs)
 
     @compute()
@@ -32,8 +32,9 @@ def test_stream(lhs, rhs, out):
     @datamovement()
     def dm0(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         shard = lhs_cb.reserve()
-        # Verify: TensorAccessor is accessed via indexing
+        # Verify: dma() generates d2m.dma and returns MemTx
         tx = dma(lhs_accessor[0, 0], shard)
+        # Verify: MemTx.wait() generates d2m.dma_wait
         tx.wait()
 
     @datamovement()
@@ -43,27 +44,15 @@ def test_stream(lhs, rhs, out):
     return Program(comp, dm0, dm1)(lhs, rhs, out)
 
 
-# CHECK-DAG: #[[LAYOUT:.+]] = #ttcore.metal_layout<{{.*}}, l1>
+# CHECK-LABEL: func.func @test_dma_ops
 
-# CHECK-LABEL: func.func @test_stream
+# Verify: DMA operations in datamovement region
+# CHECK: ^datamovement{{[0-9]+}}
+# CHECK: %[[SHARD:.+]] = d2m.reserve
+# CHECK: %[[TX:.+]] = d2m.dma %{{.+}}, %[[SHARD]]
+# CHECK: d2m.dma_wait %[[TX]]
 
-# Verify: First argument is 2D scalar tensor marked with accessor attribute
-# CHECK-SAME: (%[[ARG0:.+]]: tensor<{{[0-9]+}}x{{[0-9]+}}xf32> {d2m.stream = true}
-
-# Verify: to_layout converts host tensor to device tensor
-# CHECK: %[[DEVICE_TENSOR:.+]] = d2m.to_layout %[[ARG0]]
-
-# Verify: Storage created for accessor
-# CHECK: %[[STORAGE:.+]] = d2m.empty() : tensor<1x1x1x1x!ttcore.tile<{{[0-9]+}}x{{[0-9]+}}, {{.*}}>, #[[LAYOUT]]>
-
-# Verify: stream_layout wraps the device tensor (implementation detail)
-# CHECK: %[[STREAM:.+]] = "d2m.stream_layout"(%[[DEVICE_TENSOR]], %[[STORAGE]])
-
-# Verify: TensorAccessor used as input to d2m.generic (explicit datamovement form)
-# CHECK: d2m.generic {block_factors = [], grid = #ttcore.grid<1x1>, indexing_maps = [], iterator_types = []
-# CHECK-NEXT: ins(%[[STREAM]]
-
-# CHECK-LOWERED-LABEL: func.func @test_stream
+# CHECK-LOWERED-LABEL: func.func @test_dma_ops
 
 # Verify: Lowered to ttmetal with kernel functions
 # CHECK-LOWERED: ttmetal.enqueue_program
@@ -73,4 +62,4 @@ def test_stream(lhs, rhs, out):
 lhs = torch.randn(32, 32)
 rhs = torch.randn(32, 32)
 out = torch.zeros(32, 32)
-test_stream(lhs, rhs, out)
+test_dma_ops(lhs, rhs, out)

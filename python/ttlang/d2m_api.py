@@ -29,6 +29,8 @@ from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore
 from ttmlir.passes import ttmetal_to_flatbuffer_bin
 
+import ttlang._mlir_libs._ttlang  # Register tt-lang passes
+
 from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
 
@@ -388,7 +390,7 @@ def _compile_and_run_kernel(
             "ttcore-one-shot-bufferize",
             "func.func(d2m-simple-allocate)",              # Our simplified allocator
             "d2m-linalg-to-affine{use-tile-matmul=1}",     # Convert all linalg including matmul
-            "d2m-insert-dst-register-access",              # DST register allocation (graph coloring)
+            "func.func(d2m-insert-dst-register-gc)",       # Boyana's graph coloring DST allocator
             "lower-affine",
             "d2m-generic-linearize-memref",
             "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
@@ -580,8 +582,13 @@ def pykernel_gen(
     return _decorator
 
 
+# Alias for backward compatibility
+kernel = pykernel_gen
+
+
 __all__ = [
     "pykernel_gen",
+    "kernel",
     "Program",
     "compute",
     "datamovement",
