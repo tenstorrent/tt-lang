@@ -47,7 +47,7 @@ def TTL_CreateCBOp : TTL_Op<"create_cb", [Pure]> {
   let hasVerifier = 0;
 }
 
-def TTL_CopyOp : TTL_Op<"copy", [Pure]> {
+def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Asynchronous copy between tensor and circular buffer";
   let description = [{
     `ttl.copy` initiates an asynchronous transfer and returns a transfer handle
@@ -84,7 +84,7 @@ def TTL_CopyOp : TTL_Op<"copy", [Pure]> {
   let hasVerifier = 1;
 }
 
-def TTL_WaitOp : TTL_Op<"wait", [Pure]> {
+def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Wait on a transfer handle";
   let description = [{
     `ttl.wait` blocks until the asynchronous transfer identified by the input
