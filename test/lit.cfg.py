@@ -26,12 +26,22 @@ config.substitutions.append(
     )
 )
 
-config.environment["PYTHONPATH"] = os.path.pathsep.join(
-    [
-        os.path.join(os.path.dirname(__file__), "..", "python"),
-        os.environ.get("PYTHONPATH", ""),
-    ]
-)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# Get Python packages directory from site config, or fall back to default build location.
+build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)
+if build_python is None:
+    # Fallback to default build location if not set by site config.
+    build_python = os.path.join(project_root, "build", "python_packages")
+
+python_paths = [
+    build_python,
+    os.path.join(project_root, "python"),
+    os.environ.get("PYTHONPATH", ""),
+]
+
+# Prefer built bindings so ttlang._mlir_libs is found.
+config.environment["PYTHONPATH"] = os.path.pathsep.join([p for p in python_paths if p])
 
 if "SYSTEM_DESC_PATH" in os.environ:
     config.environment["SYSTEM_DESC_PATH"] = os.environ["SYSTEM_DESC_PATH"]

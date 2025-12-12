@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# -*- Python -*-
+# Site-specific configuration for lit tests.
+
+import os
+
+# Set the Python packages directory from CMake on the config object.
+config.TTLANG_PYTHON_PACKAGES_DIR = "@TTLANG_PYTHON_PACKAGES_DIR@"
+
+# Load the main configuration file.
+lit_config.load_config(config, os.path.join("@CMAKE_CURRENT_SOURCE_DIR@", "lit.cfg.py"))
