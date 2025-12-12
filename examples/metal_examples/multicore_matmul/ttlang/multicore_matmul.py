@@ -42,9 +42,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     core_grid = ttnn.CoreRangeSet(
         [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)]
     )
-    print(
-        f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}"
-    )
+    print(f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}")
     (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
         ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
     )
