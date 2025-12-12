@@ -103,6 +103,7 @@ def TTL_WaitOp : TTL_Op<"wait", [Pure]> {
   }];
   let arguments = (ins TTL_TransferHandle:$xf);
   let assemblyFormat = "$xf attr-dict";
+  let hasVerifier = 1;
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

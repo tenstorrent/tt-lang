@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
+#include "TTLOpsVerifyUtils.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -85,5 +86,19 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   // the CB element_type and shape/buffer_factor semantics.
   // Issue: #000.
 
+  // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
+  // use ensures we do not silently drop transfers.
+  if (!mlir::tt::ttl::verify::isEventuallyWaitedOn(getXf())) {
+    return emitOpError() << "expects transfer handle to be synchronized with "
+                            "ttl.wait";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
+  if (!mlir::tt::ttl::verify::isValidWaitOperand(getXf())) {
+    return emitOpError() << "expects operand to be the result of ttl.copy";
+  }
   return success();
 }
