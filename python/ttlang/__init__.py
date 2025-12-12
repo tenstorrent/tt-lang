@@ -23,13 +23,13 @@ from ttlang.d2m_api import (
 # Export operators
 from ttlang.operators import (
     exp,
-    sqrt,
-    rsqrt,
-    recip,
     maximum,
-    transpose,
-    reduce_sum,
+    recip,
     reduce_max,
+    reduce_sum,
+    rsqrt,
+    sqrt,
+    transpose,
 )
 
 __all__ = [
@@ -45,11 +45,11 @@ __all__ = [
     "MemTx",
     # Operators
     "exp",
-    "sqrt",
-    "rsqrt",
-    "recip",
     "maximum",
-    "transpose",
-    "reduce_sum",
+    "recip",
     "reduce_max",
+    "reduce_sum",
+    "rsqrt",
+    "sqrt",
+    "transpose",
 ]
