@@ -19,7 +19,11 @@ def test_cb_with_syntax(lhs, rhs, out):
     def compute_thread(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
-        with lhs_cb.wait() as shard, rhs_cb.wait() as shard2, out_cb.reserve() as out_shard:
+        with (
+            lhs_cb.wait() as shard,
+            rhs_cb.wait() as shard2,
+            out_cb.reserve() as out_shard,
+        ):
             result = shard + shard2
             out_shard.store(result)
 
