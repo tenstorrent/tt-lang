@@ -17,9 +17,12 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttlang/Dialect/Utils/LayoutUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+// Optional TTNN dependency: only used when tensor encoding carries TTNN layout.
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -36,7 +39,7 @@ using mlir::RewritePatternSet;
 using mlir::TypeConverter;
 using mlir::UnrealizedConversionCastOp;
 using mlir::ValueRange;
-
+using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
@@ -48,9 +51,13 @@ public:
       return ttk::CBType::get(t.getContext(), t.getTotalElements(),
                               t.getElementType());
     });
-    // Tensor -> TensorAccessor for TTKernel.
+    // Tensor -> TensorAccessor for TTKernel when TTNN layout is present.
     addConversion([](RankedTensorType t) -> Type {
-      return ttk::TensorAccessorType::get(t.getContext());
+      if (t.getEncoding() &&
+          mlir::isa<tt::ttnn::TTNNLayoutAttr>(t.getEncoding())) {
+        return ttk::TensorAccessorType::get(t.getContext());
+      }
+      return t;
     });
     // Transfer handle: keep as-is for now (identity).
     addConversion([](TransferHandleType t) -> Type { return t; });
@@ -142,24 +149,28 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
 
   auto loc = tensor.getLoc();
   auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
-  ArrayRef<int64_t> shape = tensorTy.getShape();
+  utils::ContiguousLayoutInfo layout;
+  if (auto enc = tensorTy.getEncoding()) {
+    if (auto ttnnLayout = mlir::dyn_cast<tt::ttnn::TTNNLayoutAttr>(enc)) {
+      // TODO (ttl): Plumb real TTNN layout-derived strides/page sizes once TTL
+      // encodings are defined; for now, fall back to contiguous but keep the
+      // hook.
+      (void)ttnnLayout;
+    }
+  }
+  layout = utils::computeContiguousLayout(tensorTy);
 
-  // TODO (ttl): Use real layout/tiling/strides from TTL encoding instead of
-  // contiguous row-major.
-  int64_t rowStrideElems = shape.size() >= 2 ? shape.back() : 1;
-  int64_t colStrideElems = 1;
+  // Strides in elements (row-major placeholder).
   auto rowStride =
-      rewriter.create<arith::ConstantIntOp>(loc, rowStrideElems, 32);
+      rewriter.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
   auto colStride =
-      rewriter.create<arith::ConstantIntOp>(loc, colStrideElems, 32);
+      rewriter.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
   auto args =
       rewriter.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
 
-  // TODO (ttl): Derive page size/bank base from actual shard mapping and
-  // address gen; this coarse byte-size placeholder ignores layout.
-  unsigned elemBits = tensorTy.getElementType().getIntOrFloatBitWidth();
-  auto pageSize = rewriter.create<arith::ConstantIntOp>(
-      loc, static_cast<int64_t>(elemBits / 8), 32);
+  // Page size placeholder uses contiguous row-major; bank base is still a stub.
+  auto pageSize =
+      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
   auto bankBase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
 
   auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
@@ -172,11 +183,11 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
+  // TODO (ttl): Plumb real NOC coordinates and bank bases; these are stubs.
   auto nocSrc = makeZeroI32(loc, rewriter);
   auto nocDst = makeZeroI32(loc, rewriter);
-  auto coordR = makeZeroI32(loc, rewriter);
-  auto coordC = makeZeroI32(loc, rewriter);
-  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(loc, coordR, coordC);
+  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
+      loc, makeZeroI32(loc, rewriter), makeZeroI32(loc, rewriter));
   auto accessor = rewriter.create<ttk::TensorAccessorOp>(
       loc, args.getResult(), makeZeroI32(loc, rewriter),
       makeZeroI32(loc, rewriter));
@@ -210,7 +221,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  // TODO (ttl): Real CB handle and noc addresses for the source CB.
+  // TODO (ttl): Real CB handle and NOC addresses for the source CB.
   auto tkCbTy = typeConverter.convertType(op.getSrc().getType());
   auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
                                  rewriter, loc, tkCbTy);
@@ -302,6 +313,71 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   }
 };
 
+struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(FuncOp op,
+                                PatternRewriter &rewriter) const override {
+    auto kindAttr =
+        op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
+    if (!kindAttr) {
+      return failure();
+    }
+    if (kindAttr.getValue() != ttk::ThreadType::Noc) {
+      return failure();
+    }
+
+    if (op.getNumArguments() == 0 ||
+        llvm::any_of(op.getArguments(),
+                     [](BlockArgument arg) { return !arg.use_empty(); })) {
+      return failure();
+    }
+
+    llvm::BitVector argsToErase(op.getNumArguments());
+    for (unsigned idx = 0; idx < op.getNumArguments(); ++idx) {
+      argsToErase.set(idx);
+    }
+    if (succeeded(op.eraseArguments(argsToErase))) {
+      auto newType = FunctionType::get(op.getContext(), TypeRange{},
+                                       op.getFunctionType().getResults());
+      op.setType(newType);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct DmKernelFinalize : OpRewritePattern<DmKernelOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(DmKernelOp op,
+                                PatternRewriter &rewriter) const override {
+    bool changed = false;
+    if (!op->hasAttr("ttl.kernel_thread")) {
+      op->setAttr("ttl.kernel_thread",
+                  ttk::ThreadTypeAttr::get(op.getContext(), ttk::ThreadType::Noc));
+      changed = true;
+    }
+
+    if (op.getNumArguments() > 0 &&
+        llvm::all_of(op.getArguments(),
+                     [](BlockArgument arg) { return arg.use_empty(); })) {
+      llvm::BitVector argsToErase(op.getNumArguments());
+      for (unsigned idx = 0; idx < op.getNumArguments(); ++idx) {
+        argsToErase.set(idx);
+      }
+      if (succeeded(op.eraseArguments(argsToErase))) {
+        auto newType = FunctionType::get(op.getContext(), TypeRange{},
+                                         op.getFunctionType().getResults());
+        op.setType(newType);
+        changed = true;
+      }
+    }
+
+    return changed ? success() : failure();
+  }
+};
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
@@ -323,6 +399,10 @@ struct TTLConvertTTLToTTKernelPass
       return typeConverter.isSignatureLegal(op.getFunctionType()) &&
              typeConverter.isLegal(&op.getBody());
     });
+    target.addDynamicallyLegalOp<DmKernelOp>([&](DmKernelOp op) {
+      return typeConverter.isSignatureLegal(op.getFunctionType()) &&
+             typeConverter.isLegal(&op.getBody());
+    });
     // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
@@ -330,6 +410,10 @@ struct TTLConvertTTLToTTKernelPass
                                                                &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
+    populateFunctionOpInterfaceTypeConversionPattern(
+        DmKernelOp::getOperationName(), patterns, typeConverter);
+    patterns.add<FuncKernelFinalize>(&ctx);
+    patterns.add<DmKernelFinalize>(&ctx);
 
     FrozenRewritePatternSet frozen(std::move(patterns));
     std::string diagMessage;
@@ -338,54 +422,6 @@ struct TTLConvertTTLToTTKernelPass
       mod.emitError() << diagMessage;
       signalPassFailure();
     }
-
-    // Tag kernels with a thread type so downstream TTKernel->EmitC/C++ passes
-    // will process them. Default to NOC for DMA-style kernels.
-    mod.walk([&](func::FuncOp func) {
-      if (func->hasAttr(ttk::ThreadTypeAttr::name)) {
-        return;
-      }
-
-      bool hasTTKernelOps = false;
-      func.walk([&](Operation *nested) {
-        if (nested->getDialect() &&
-            nested->getDialect()->getNamespace() ==
-                ttk::TTKernelDialect::getDialectNamespace()) {
-          hasTTKernelOps = true;
-        }
-      });
-
-      if (!hasTTKernelOps) {
-        return;
-      }
-
-      func->setAttr(ttk::ThreadTypeAttr::name,
-                    ttk::ThreadTypeAttr::get(&ctx, ttk::ThreadType::Noc));
-
-      // Downstream TTKernel->EmitC expects kernels with no function arguments.
-      // While we still produce placeholder kernels without real inputs, drop
-      // unused arguments to keep conversion simple.
-      // TODO (ttl): Lower tensor inputs to concrete TTKernel tensor accessor
-      // arguments and keep them instead of erasing. Issue: #000.
-      if (func.getNumArguments() == 0) {
-        return;
-      }
-
-      if (llvm::any_of(func.getArguments(),
-                       [](BlockArgument arg) { return !arg.use_empty(); })) {
-        return;
-      }
-
-      llvm::BitVector argsToErase(func.getNumArguments());
-      for (unsigned idx = 0; idx < func.getNumArguments(); ++idx) {
-        argsToErase.set(idx);
-      }
-      if (succeeded(func.eraseArguments(argsToErase))) {
-        auto newType = FunctionType::get(&ctx, TypeRange{},
-                                         func.getFunctionType().getResults());
-        func.setType(newType);
-      }
-    });
   }
 };
 

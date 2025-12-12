@@ -12,6 +12,7 @@ include "mlir/IR/EnumAttr.td"
 // TTL enum definitions
 //===----------------------------------------------------------------------===//
 
-// TTL reuses ttcore::MemorySpace from tt-mlir for consistency across dialects.
+// Note: TTL uses TTKernel's ThreadType enum (#ttkernel.thread<noc>) for
+// kernel thread annotations on functions.
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

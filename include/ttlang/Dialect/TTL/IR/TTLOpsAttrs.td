@@ -6,7 +6,6 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
-include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
 
 //===----------------------------------------------------------------------===//
 // TTL attribute definitions

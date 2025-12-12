@@ -7,6 +7,7 @@
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/EnumAttr.td"
 
 //===----------------------------------------------------------------------===//
 // TTL type definitions
@@ -36,4 +37,5 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
 def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
   let summary = "Handle for asynchronous TTL memory transfers";
 }
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

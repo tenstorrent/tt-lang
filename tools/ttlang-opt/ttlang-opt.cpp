@@ -11,6 +11,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/RegisterAll.h"
 
 int main(int argc, char **argv) {
@@ -23,6 +24,7 @@ int main(int argc, char **argv) {
   mlir::tt::registerAllDialects(registry);
   mlir::tt::registerAllExtensions(registry);
   registry.insert<mlir::tt::ttl::TTLDialect>();
+  registry.insert<mlir::tt::ttkernel::TTKernelDialect>();
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "ttlang optimizer driver\n", registry));

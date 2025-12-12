@@ -7,8 +7,12 @@
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/FunctionInterfaces.td"
+include "mlir/IR/SymbolInterfaces.td"
+include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/OpBase.td"
 
 //===----------------------------------------------------------------------===//
@@ -43,6 +47,49 @@ def TTL_WaitOp : TTL_Op<"wait", [Pure]> {
   let summary = "Wait on a transfer handle";
   let arguments = (ins TTL_TransferHandle:$xf);
   let assemblyFormat = "$xf attr-dict";
+}
+
+def TTL_ReturnOp : TTL_Op<"return", [Pure, HasParent<"DmKernelOp">,
+                                     Terminator, ReturnLike]> {
+  let summary = "Return from a TTL kernel";
+  let description = [{
+    Terminates a TTL kernel function. Currently only supports void returns.
+  }];
+  let arguments = (ins);
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_DmKernelOp : TTL_Op<"kernel.dm",
+    [AutomaticAllocationScope, FunctionOpInterface, IsolatedFromAbove,
+     Symbol, CallableOpInterface, OpAsmOpInterface]> {
+  let summary = "Data movement kernel entry";
+  let description = [{
+    Defines a data-movement kernel. Arguments must be TTNN tensors or supported
+    scalar element types. Verifier enforces operand types.
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       TypeAttrOf<FunctionType>:$function_type,
+                       OptionalAttr<DictArrayAttr>:$arg_attrs,
+                       OptionalAttr<DictArrayAttr>:$res_attrs);
+
+  let regions = (region AnyRegion:$body);
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    // FunctionOpInterface methods.
+    ::mlir::Region *getCallableRegion() {
+      return this->isExternal() ? nullptr : &getBody();
+    }
+    ::mlir::ArrayRef<::mlir::Type> getArgumentTypes() {
+      return getFunctionType().getInputs();
+    }
+    ::mlir::ArrayRef<::mlir::Type> getResultTypes() {
+      return getFunctionType().getResults();
+    }
+    unsigned getNumResults() { return getResultTypes().size(); }
+  }];
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD
