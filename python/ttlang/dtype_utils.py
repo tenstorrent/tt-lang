@@ -17,7 +17,7 @@ except ModuleNotFoundError:
     ttnn = None
 
 
-def _is_ttnn_tensor(tensor) -> bool:
+def is_ttnn_tensor(tensor) -> bool:
     """Check if tensor is a ttnn.Tensor."""
     if ttnn is None:
         return False

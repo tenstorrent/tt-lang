@@ -21,7 +21,7 @@ from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
 from ..dtype_utils import (
     tensor_dtype_to_mlir_type,
     tensor_dtype_to_ttcore_datatype,
-    _is_ttnn_tensor,
+    is_ttnn_tensor,
 )
 
 
@@ -180,7 +180,7 @@ def create_generic_func(
         logical_shape = list(arg.shape)
         dtype = tensor_dtype_to_mlir_type(arg.dtype, ctx)
 
-        if _is_ttnn_tensor(arg):
+        if is_ttnn_tensor(arg):
             # TTNN tensors are already on device. Use device tensor type (with
             # MetalLayoutAttr) so LowerToLayout doesn't generate bounce kernels
             # for host<->device transfers that aren't needed.
@@ -217,7 +217,7 @@ def create_generic_func(
                 ctx, logical_shape, dtype, grid, tiled, memory_space
             )
 
-            if _is_ttnn_tensor(user_args[i]):
+            if is_ttnn_tensor(user_args[i]):
                 # Already on device: use the function argument directly
                 device_value = inp
             else:
@@ -262,7 +262,7 @@ def create_generic_func(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
         )
 
-        if _is_ttnn_tensor(output_arg):
+        if is_ttnn_tensor(output_arg):
             # Already on device: use the function argument directly
             output_buffer_result = outputs[0]
         else:
@@ -306,7 +306,7 @@ def create_generic_func(
             if isinstance(last_op, func.ReturnOp):
                 last_op.erase()
 
-        if _is_ttnn_tensor(output_arg):
+        if is_ttnn_tensor(output_arg):
             # Already on device: return the generic result directly
             func.ReturnOp(generic.results)
         else:

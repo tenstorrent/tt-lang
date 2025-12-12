@@ -58,7 +58,7 @@ from .dtype_utils import (
     create_borrowed_tensors,
     torch_dtype_to_ttnn_datatype,
     tile_bytes_from_dtype,
-    _is_ttnn_tensor,
+    is_ttnn_tensor,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
 from ._src.codegen import create_generic_func, copy_symbol_table_globals
@@ -292,7 +292,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     # Validate tensor types: must be all TTNN or all torch, not mixed.
     # Mixed tensors would generate ToLayoutOps for host tensors, creating extra
     # bounce kernels that exceed the expected kernel count for core assignment.
-    ttnn_count = sum(1 for arg in args if _is_ttnn_tensor(arg))
+    ttnn_count = sum(1 for arg in args if is_ttnn_tensor(arg))
     if ttnn_count > 0 and ttnn_count < len(args):
         raise ValueError(
             f"TTNN interop requires all tensors to be the same type. "
@@ -302,7 +302,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
 
     # Validate TTNN tensors - currently support L1 (sharded) and DRAM (interleaved), must be tilized
     for i, arg in enumerate(args):
-        if _is_ttnn_tensor(arg):
+        if is_ttnn_tensor(arg):
             mem_space = _detect_memory_space_from_tensor(arg, "unknown")
             if mem_space not in ("L1", "DRAM"):
                 raise ValueError(
@@ -586,13 +586,13 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
-    has_ttnn_tensors = any(_is_ttnn_tensor(arg) for arg in args)
+    has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
     if has_ttnn_tensors:
-        first_ttnn_tensor = next((arg for arg in args if _is_ttnn_tensor(arg)), None)
+        first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
         if first_ttnn_tensor is not None:
             memory_space = _detect_memory_space_from_tensor(
                 first_ttnn_tensor, memory_space

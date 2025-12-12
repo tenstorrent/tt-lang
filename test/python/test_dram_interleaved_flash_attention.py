@@ -50,69 +50,69 @@ def flash_attention_dram(Q, K, V, scale, ones, out):
         v = V_cb.wait()
         scale_val = scale_cb.wait()
         ones_val = ones_cb.wait()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 1: Q @ K^T (attention scores)
         S = q @ k
-        o.store(S)
+        out_tile.store(S)
         out_cb.push()
         S = out_cb.wait()
         out_cb.pop()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 2: Scale by 1/sqrt(d_head)
         S_scaled = S * scale_val
-        o.store(S_scaled)
+        out_tile.store(S_scaled)
         out_cb.push()
         S_scaled = out_cb.wait()
         out_cb.pop()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 3: exp(S_scaled)
         exp_S = exp(S_scaled)
-        o.store(exp_S)
+        out_tile.store(exp_S)
         out_cb.push()
         exp_S = out_cb.wait()
         out_cb.pop()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 4: reduce_sum for normalization denominator (only fills column 0)
         sum_exp = reduce_sum(exp_S, ones_val, dim=1)
-        o.store(sum_exp)
+        out_tile.store(sum_exp)
         out_cb.push()
         sum_exp = out_cb.wait()
         out_cb.pop()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 4b: bcast to fill all columns
         sum_exp_bcast = bcast(sum_exp, dim=1)
-        o.store(sum_exp_bcast)
+        out_tile.store(sum_exp_bcast)
         out_cb.push()
         sum_exp_bcast = out_cb.wait()
         out_cb.pop()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 5: Reciprocal for division (use broadcasted sum)
         sum_recip = recip(sum_exp_bcast)
-        o.store(sum_recip)
+        out_tile.store(sum_recip)
         out_cb.push()
         sum_recip = out_cb.wait()
         out_cb.pop()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 6: Normalize (softmax): P = exp_S * sum_recip
         exp_S_for_mul = exp(S_scaled)
         P = exp_S_for_mul * sum_recip
-        o.store(P)
+        out_tile.store(P)
         out_cb.push()
         P = out_cb.wait()
         out_cb.pop()
-        o = out_cb.reserve()
+        out_tile = out_cb.reserve()
 
         # Step 7: P @ V (attention-weighted values)
-        O = P @ v
+        result = P @ v
 
-        o.store(O)
+        out_tile.store(result)
         Q_cb.pop()
         K_cb.pop()
         V_cb.pop()
