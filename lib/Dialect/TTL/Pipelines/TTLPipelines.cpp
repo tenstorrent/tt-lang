@@ -19,11 +19,14 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
   if (options.lowerToEmitC) {
+    // EmitC does not tolerate SSA aliasing introduced by CSE; keep expressions
+    // unique to avoid region arg reuse errors in emitc.expression.
     pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
+  } else {
+    pm.addPass(createCSEPass());
   }
 }
 
