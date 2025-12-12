@@ -19,7 +19,7 @@ def get_number_of_cores(core_grid):
     return total_cores
 
 
-@ttl.kernel(grid=(8, 8))
+@ttl.kernel(grid=(13, 10))
 def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -43,20 +43,11 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)]
     )
     print(
-        f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}",
-        flush=True,
+        f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}"
     )
-    try:
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-            ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
-        )
-    except Exception as e:
-        print(
-            f"Error splitting work to cores: {e}, trying again with row wise splitting"
-        )
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-            ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
-        )
+    (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+        ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
+    )
     print(
         f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
     )
