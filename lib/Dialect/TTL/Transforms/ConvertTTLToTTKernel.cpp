@@ -16,6 +16,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
@@ -281,9 +282,10 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     }
 
     // Unsupported pairs for now.
-    return op.emitOpError("unsupported ttl.copy src/dst combination: src=")
-               << op.getSrc().getType() << " dst=" << op.getDst().getType(),
-           failure();
+    return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+      diag << "unsupported ttl.copy src/dst combination: src="
+           << op.getSrc().getType() << " dst=" << op.getDst().getType();
+    });
   }
 };
 
@@ -330,7 +332,10 @@ struct TTLConvertTTLToTTKernelPass
         func::FuncOp::getOperationName(), patterns, typeConverter);
 
     FrozenRewritePatternSet frozen(std::move(patterns));
-    if (failed(applyPartialConversion(mod, target, frozen))) {
+    std::string diagMessage;
+    if (utils::applyPartialConversionWithDiag(mod, target, frozen, getName(),
+                                              diagMessage)) {
+      mod.emitError() << diagMessage;
       signalPassFailure();
     }
 
