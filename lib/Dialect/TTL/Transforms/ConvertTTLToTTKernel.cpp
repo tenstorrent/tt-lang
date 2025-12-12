@@ -87,6 +87,17 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
+static Value buildTensorAccessor(Location loc,
+                                 ConversionPatternRewriter &rewriter,
+                                 Value rowStride, Value colStride,
+                                 Value bankBase, Value pageSize) {
+  auto args =
+      rewriter.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
+  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
+                                                         bankBase, pageSize);
+  return accessor.getResult();
+}
+
 template <typename FuncLike>
 static bool eraseUnusedArguments(FuncLike funcLike) {
   if (funcLike.getNumArguments() == 0) {
@@ -202,17 +213,14 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
       rewriter.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
   auto colStride =
       rewriter.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
-  auto args =
-      rewriter.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
 
   // Page size placeholder uses contiguous row-major; bank base is still a stub.
   auto pageSize =
       rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
   auto bankBase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
 
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
-                                                         bankBase, pageSize);
-  return accessor.getResult();
+  return buildTensorAccessor(loc, rewriter, rowStride, colStride, bankBase,
+                             pageSize);
 }
 
 static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
@@ -225,11 +233,9 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
   // Issue: #000.
   auto nocSrc = makeZeroI32(loc, rewriter);
   auto nocDst = makeZeroI32(loc, rewriter);
-  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
-      loc, makeZeroI32(loc, rewriter), makeZeroI32(loc, rewriter));
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(
-      loc, args.getResult(), makeZeroI32(loc, rewriter),
-      makeZeroI32(loc, rewriter));
+  auto placeholderAccessor = buildTensorAccessor(
+      loc, rewriter, makeZeroI32(loc, rewriter), makeZeroI32(loc, rewriter),
+      makeZeroI32(loc, rewriter), makeZeroI32(loc, rewriter));
 
   rewriter.create<ttk::NocAsyncReadTileOp>(loc, nocSrc, srcAccessor, nocDst);
   // TODO(ttl): Use TRID-specific read barrier keyed by the transfer handle.
@@ -243,7 +249,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
                                  rewriter, loc, tkCbTy);
 
   rewriter.create<ttk::NocAsyncWriteTileOp>(loc, makeZeroI32(loc, rewriter),
-                                            accessor.getResult(),
+                                            placeholderAccessor,
                                             makeZeroI32(loc, rewriter));
   // TODO(ttl): Use TRID-specific write barrier keyed by the transfer handle.
   // Issue: #000.

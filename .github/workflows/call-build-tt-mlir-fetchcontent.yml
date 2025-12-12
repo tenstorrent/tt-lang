@@ -101,7 +101,7 @@ jobs:
               run: |
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-bindings
-                
+
             - name: Move ttrt runtime to tt-mlir-install
               run: |
                   set -x

@@ -175,9 +175,7 @@ void createTTIRToTTMetalMiddleendPipeline(
 void createTTIRToTTMetalBackendPipeline(
     OpPassManager &pm, const TTIRToTTMetalPipelineOptions &options) {
   d2m::ConvertD2MToTTKernelOptions D2MToTTKernelOptions;
-  {
-    D2MToTTKernelOptions.ttnnMode = options.ttnnMode;
-  }
+  { D2MToTTKernelOptions.ttnnMode = options.ttnnMode; }
   pm.addPass(::mlir::tt::createConvertD2MToTTKernelPass(D2MToTTKernelOptions));
   pm.addPass(createCanonicalizerPassWithOptions(options));
   pm.addPass(ttkernel::createTTKernelControlDstSection());
@@ -187,9 +185,7 @@ void createTTIRToTTMetalBackendPipeline(
     pm.addPass(::mlir::tt::createConvertD2MToTTNNPass());
   } else {
     d2m::ConvertD2MToTTMetalOptions d2mToTTMetalOptions;
-    {
-      d2mToTTMetalOptions.mathFidelity = options.mathFidelity;
-    }
+    { d2mToTTMetalOptions.mathFidelity = options.mathFidelity; }
     pm.addPass(::mlir::tt::createConvertD2MToTTMetalPass(d2mToTTMetalOptions));
   }
   // Insert DeviceZone scopes around selected ttkernel ops before EmitC
@@ -273,9 +269,7 @@ void createD2MToTTMetalPipeline(OpPassManager &pm,
   pm.addPass(d2m::createD2MGenericRegionsToFuncs());
 
   d2m::ConvertD2MToTTKernelOptions D2MToTTKernelOptions;
-  {
-    D2MToTTKernelOptions.ttnnMode = options.ttnnMode;
-  }
+  { D2MToTTKernelOptions.ttnnMode = options.ttnnMode; }
   pm.addPass(::mlir::tt::createConvertD2MToTTKernelPass(D2MToTTKernelOptions));
 
   // Apply TTKernel control transformations and additional optimizations.
@@ -286,9 +280,7 @@ void createD2MToTTMetalPipeline(OpPassManager &pm,
   pm.addPass(mlir::arith::createIntRangeOptimizationsPass());
 
   d2m::ConvertD2MToTTMetalOptions d2mToTTMetalOptions;
-  {
-    d2mToTTMetalOptions.mathFidelity = options.mathFidelity;
-  }
+  { d2mToTTMetalOptions.mathFidelity = options.mathFidelity; }
   pm.addPass(::mlir::tt::createConvertD2MToTTMetalPass(d2mToTTMetalOptions));
 
   pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
