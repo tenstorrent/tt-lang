@@ -642,57 +642,6 @@ def reduce_max(a: TensorBlock, b: TensorBlock, dim: int = 1) -> TensorBlock:
     return _create_reduction_linalg(a, b, dim, d2m.tile_reduce_max)
 
 
-@syntax("add_into")
-def add_into(lhs: TensorBlock, rhs: TensorBlock, out: TensorBlock) -> TensorBlock:
-    """
-    Element-wise addition with explicit output parameter.
-
-    Args:
-        lhs: Left operand
-        rhs: Right operand
-        out: Output tensor (from cb.reserve()), result written here
-
-    Returns:
-        Result tensor (same as out)
-    """
-    if not isinstance(lhs.type, RankedTensorType):
-        raise TypeError(f"Expected RankedTensorType, got {type(lhs.type).__name__}")
-
-    ctx = lhs.type.context
-    rank = len(lhs.type.shape)
-    identity_map = AffineMap.get_identity(rank, ctx)
-
-    out_type = RankedTensorType.get(
-        list(lhs.type.shape), lhs.type.element_type, lhs.type.encoding
-    )
-
-    affine_maps_attr = ArrayAttr.get([AffineMapAttr.get(identity_map)] * 3)
-    iter_types_attr = ArrayAttr.get(
-        [Attribute.parse(f"#linalg.iterator_type<parallel>", ctx) for _ in range(rank)]
-    )
-
-    generic_op = linalg.GenericOp(
-        result_tensors=[out_type],
-        inputs=[lhs, rhs],
-        outputs=[out],
-        indexing_maps=affine_maps_attr,
-        iterator_types=iter_types_attr,
-    )
-
-    block_arg_types = [
-        lhs.type.element_type,
-        rhs.type.element_type,
-        out.type.element_type,
-    ]
-    block = generic_op.regions[0].blocks.append(*block_arg_types)
-
-    with InsertionPoint(block):
-        tile_result = d2m.tile_add(lhs.type.element_type, *block.arguments[:2])
-        linalg.YieldOp([tile_result])
-
-    return generic_op.result
-
-
 @syntax("transpose")
 def transpose(input_tensor: TensorBlock) -> TensorBlock:
     """Transpose the input tensor (swap last two dimensions)."""

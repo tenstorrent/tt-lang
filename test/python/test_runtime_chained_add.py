@@ -16,7 +16,6 @@
 
 import torch
 from ttlang.d2m_api import *
-from ttlang.operators import add_into
 
 
 @kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
@@ -86,7 +85,7 @@ def test_chained_add(a, b, c, out):
 # CHECK-LOWERED: func.func @test_chained_add
 # CHECK-LOWERED: emitc.call_opaque "add_binary_tile"
 
-# Test: (10 + 20) + 100 = 130 using add_into for second add
+# Test: (10 + 20) + 100 = 130
 a = torch.full((32, 32), 10.0)
 b = torch.full((32, 32), 20.0)
 c = torch.full((32, 32), 100.0)
