@@ -51,7 +51,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Asynchronous copy between tensor and circular buffer";
   let description = [{
     `ttl.copy` initiates an asynchronous transfer and returns a transfer handle
-    (`!ttl.xf`) that can be synchronized with `ttl.wait`.
+    (`!ttl.transfer_handle`) that can be synchronized with `ttl.wait`.
 
     This operation is non-blocking. The destination is not safe to use until a
     corresponding `ttl.wait` has completed.
@@ -69,7 +69,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
       %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
+      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
       ttl.wait %xf
       func.return
     }
@@ -88,7 +88,7 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Wait on a transfer handle";
   let description = [{
     `ttl.wait` blocks until the asynchronous transfer identified by the input
-    transfer handle (`!ttl.xf`) is complete and the destination is safe to use.
+    transfer handle (`!ttl.transfer_handle`) is complete and the destination is safe to use.
 
     In the current MVP lowering, this is implemented using a TTKernel global NOC
     barrier as a placeholder until per-transfer (TRID-based) synchronization is
@@ -97,18 +97,18 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     Example:
 
     ```mlir
-    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
-    ttl.wait %xf : !ttl.xf
+    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
     ```
 
     Direction-typed transfer handles carry the transfer direction:
 
     ```mlir
-    %xf_read = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf<read>
-    ttl.wait %xf_read : !ttl.xf<read>
+    %xf_read = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf_read : !ttl.transfer_handle<read>
 
-    %xf_write = ttl.copy %cb, %t : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.xf<write>
-    ttl.wait %xf_write : !ttl.xf<write>
+    %xf_write = ttl.copy %cb, %t : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<write>
+    ttl.wait %xf_write : !ttl.transfer_handle<write>
     ```
   }];
   let arguments = (ins TTL_TransferHandle:$xf);

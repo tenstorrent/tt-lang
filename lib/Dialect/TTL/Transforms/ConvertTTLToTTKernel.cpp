@@ -254,6 +254,8 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
   // Encode direction in the handle type (async-token-like design).
   auto handleTy = typeConverter.convertType(
       TransferHandleType::get(rewriter.getContext(), TransferKind::read));
+  // TODO(ttl): Replace the placeholder unrealized cast with a real transfer
+  // handle value (TRID or equivalent). Issue: #87.
   auto handle = rewriter.create<UnrealizedConversionCastOp>(
       loc, handleTy, ValueRange{makeZeroI32(loc, rewriter)});
   rewriter.replaceOp(op, handle.getResult(0));
@@ -280,6 +282,8 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
 
   auto handleTy = typeConverter.convertType(
       TransferHandleType::get(rewriter.getContext(), TransferKind::write));
+  // TODO(ttl): Replace the placeholder unrealized cast with a real transfer
+  // handle value (TRID or equivalent). Issue: #87.
   auto handle = rewriter.create<UnrealizedConversionCastOp>(
       loc, handleTy, ValueRange{makeZeroI32(loc, rewriter)});
   rewriter.replaceOp(op, handle.getResult(0));
@@ -353,8 +357,7 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
-    // handle (read vs write barrier based on transfer direction).
-    // Issue: #87.
+    // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
     // MVP behavior: determine direction from the transfer handle type and emit
     // the corresponding TTKernel global barrier. If the handle is untyped,

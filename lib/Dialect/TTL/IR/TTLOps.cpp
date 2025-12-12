@@ -88,17 +88,18 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
   // use ensures we do not silently drop transfers.
-  if (!mlir::tt::ttl::verify::isEventuallyWaitedOn(getXf())) {
-    return emitOpError() << "expects transfer handle to be synchronized with "
-                            "ttl.wait";
+  if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
+                                                         getXf()))) {
+    return failure();
   }
 
   return success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
-  if (!mlir::tt::ttl::verify::isValidWaitOperand(getXf())) {
-    return emitOpError() << "expects operand to be the result of ttl.copy";
+  if (failed(
+          mlir::tt::ttl::verify::isValidWaitOperand(getOperation(), getXf()))) {
+    return failure();
   }
   return success();
 }

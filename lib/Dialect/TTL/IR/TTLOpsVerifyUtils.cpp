@@ -10,12 +10,26 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include <optional>
 
 namespace mlir::tt::ttl::verify {
 namespace {
+
+static bool isTypedTransferHandleType(mlir::Type t) {
+  auto xf = mlir::dyn_cast<mlir::tt::ttl::TransferHandleType>(t);
+  return xf && xf.getKind().has_value();
+}
+
+static bool isTypedTransferHandleTensorType(mlir::Type t) {
+  auto tensorTy = mlir::dyn_cast<mlir::TensorType>(t);
+  if (!tensorTy || !tensorTy.hasRank() || tensorTy.getRank() != 1) {
+    return false;
+  }
+  return isTypedTransferHandleType(tensorTy.getElementType());
+}
 
 static std::optional<int64_t> getConstantIndexValue(mlir::Value v) {
   if (!v) {
@@ -77,7 +91,11 @@ static bool isDirectWaitInLoopBody(mlir::tensor::ExtractOp extractOp,
 static std::optional<bool>
 proveTensorContainerWritesAreWaited(mlir::Value handle,
                                     mlir::tensor::InsertOp insertOp) {
-  // Only handle the simple 1D `tensor<?x!ttl.xf>` case.
+  // Only handle the simple 1D typed-handle tensor case.
+  // Note: MVP rule forbids using untyped `!ttl.xf` inside containers.
+  if (!isTypedTransferHandleTensorType(insertOp.getResult().getType())) {
+    return std::nullopt;
+  }
   if (insertOp.getIndices().size() != 1) {
     return std::nullopt;
   }
@@ -174,6 +192,10 @@ tryEnqueueForwardedHandle(mlir::Value v, mlir::OpOperand &use,
   // tensor.insert: propagate from scalar -> result tensor.
   if (auto insertOp = llvm::dyn_cast<mlir::tensor::InsertOp>(consumerOp)) {
     if (use.get() == insertOp.getScalar()) {
+      // MVP: require typed transfer handles when storing in containers.
+      if (!isTypedTransferHandleTensorType(insertOp.getResult().getType())) {
+        return false;
+      }
       if (auto covered = proveTensorContainerWritesAreWaited(v, insertOp)) {
         if (!*covered) {
           // We matched a two-loop pattern but the wait loop does not cover all
@@ -189,6 +211,11 @@ tryEnqueueForwardedHandle(mlir::Value v, mlir::OpOperand &use,
   // tensor.extract: propagate from tensor -> scalar result.
   if (auto extractOp = llvm::dyn_cast<mlir::tensor::ExtractOp>(consumerOp)) {
     if (use.get() == extractOp.getTensor()) {
+      // MVP: require typed transfer handles when loading from containers.
+      if (!isTypedTransferHandleTensorType(extractOp.getTensor().getType()) ||
+          !isTypedTransferHandleType(extractOp.getResult().getType())) {
+        return false;
+      }
       queue.push_back(extractOp.getResult());
     }
     return false;
@@ -236,7 +263,8 @@ tryEnqueueForwardedHandle(mlir::Value v, mlir::OpOperand &use,
 }
 
 static bool isDerivedFromCopy(mlir::Value v,
-                              llvm::SmallPtrSetImpl<mlir::Value> &seen) {
+                              llvm::SmallPtrSetImpl<mlir::Value> &seen,
+                              bool &sawUntypedContainer) {
   if (!seen.insert(v).second) {
     return false;
   }
@@ -248,13 +276,23 @@ static bool isDerivedFromCopy(mlir::Value v,
   // tensor.extract: the extracted handle is only valid if the source tensor is
   // derived from a copy.
   if (auto extractOp = v.getDefiningOp<mlir::tensor::ExtractOp>()) {
-    return isDerivedFromCopy(extractOp.getTensor(), seen);
+    if (!isTypedTransferHandleTensorType(extractOp.getTensor().getType()) ||
+        !isTypedTransferHandleType(extractOp.getResult().getType())) {
+      sawUntypedContainer = true;
+      return false;
+    }
+    return isDerivedFromCopy(extractOp.getTensor(), seen, sawUntypedContainer);
   }
 
   // tensor.insert: the tensor is derived from a copy if the inserted scalar is
   // derived from a copy.
   if (auto insertOp = v.getDefiningOp<mlir::tensor::InsertOp>()) {
-    return isDerivedFromCopy(insertOp.getScalar(), seen);
+    if (!isTypedTransferHandleTensorType(insertOp.getResult().getType()) ||
+        !isTypedTransferHandleType(insertOp.getScalar().getType())) {
+      sawUntypedContainer = true;
+      return false;
+    }
+    return isDerivedFromCopy(insertOp.getScalar(), seen, sawUntypedContainer);
   }
 
   // Loop result -> yielded value.
@@ -269,7 +307,8 @@ static bool isDerivedFromCopy(mlir::Value v,
           if (results[idx] != res) {
             continue;
           }
-          return isDerivedFromCopy(yielded[idx].get(), seen);
+          return isDerivedFromCopy(yielded[idx].get(), seen,
+                                   sawUntypedContainer);
         }
       }
     }
@@ -285,7 +324,7 @@ static bool isDerivedFromCopy(mlir::Value v,
         if (iterArgs[idx] != barg) {
           continue;
         }
-        return isDerivedFromCopy(inits[idx].get(), seen);
+        return isDerivedFromCopy(inits[idx].get(), seen, sawUntypedContainer);
       }
     }
   }
@@ -295,7 +334,14 @@ static bool isDerivedFromCopy(mlir::Value v,
 
 } // namespace
 
-bool isEventuallyWaitedOn(mlir::Value handle) {
+static mlir::LogicalResult emitTypedContainerError(mlir::Operation *op) {
+  return op->emitOpError()
+         << "expects transfer handles stored in tensor containers to have a "
+            "direction-typed element type (!ttl.xf<read> or !ttl.xf<write>).";
+}
+
+mlir::LogicalResult isEventuallyWaitedOn(mlir::Operation *op,
+                                         mlir::Value handle) {
   llvm::SmallPtrSet<mlir::Value, 16> visited;
   llvm::SmallVector<mlir::Value, 16> worklist;
   worklist.push_back(handle);
@@ -307,18 +353,56 @@ bool isEventuallyWaitedOn(mlir::Value handle) {
     }
 
     for (mlir::OpOperand &use : v.getUses()) {
+      // Enforce typed containers when we see container edges.
+      if (auto insertOp =
+              llvm::dyn_cast<mlir::tensor::InsertOp>(use.getOwner());
+          insertOp && use.get() == insertOp.getScalar()) {
+        if (!isTypedTransferHandleTensorType(insertOp.getResult().getType())) {
+          return emitTypedContainerError(op);
+        }
+      }
+      if (auto extractOp =
+              llvm::dyn_cast<mlir::tensor::ExtractOp>(use.getOwner());
+          extractOp && use.get() == extractOp.getTensor()) {
+        if (!isTypedTransferHandleTensorType(extractOp.getTensor().getType()) ||
+            !isTypedTransferHandleType(extractOp.getResult().getType())) {
+          return emitTypedContainerError(op);
+        }
+      }
+
       if (tryEnqueueForwardedHandle(v, use, worklist)) {
-        return true;
+        return mlir::success();
       }
     }
   }
 
-  return false;
+  return op->emitOpError()
+         << "expects transfer handle to be synchronized with ttl.wait.";
 }
 
-bool isValidWaitOperand(mlir::Value handle) {
+mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
+                                       mlir::Value handle) {
   llvm::SmallPtrSet<mlir::Value, 16> visited;
-  return isDerivedFromCopy(handle, visited);
+  bool sawUntypedContainer = false;
+  if (isDerivedFromCopy(handle, visited, sawUntypedContainer)) {
+    return mlir::success();
+  }
+  if (sawUntypedContainer) {
+    return emitTypedContainerError(op);
+  }
+
+  // If this handle flows through tensor containers, require typed containers so
+  // direction is preserved and wait lowering can select a specific barrier.
+  for (mlir::OpOperand &use : handle.getUses()) {
+    if (auto insertOp = llvm::dyn_cast<mlir::tensor::InsertOp>(use.getOwner());
+        insertOp && use.get() == insertOp.getScalar()) {
+      if (!isTypedTransferHandleTensorType(insertOp.getResult().getType())) {
+        return emitTypedContainerError(op);
+      }
+    }
+  }
+
+  return op->emitOpError() << "expects operand to be the result of ttl.copy.";
 }
 
 } // namespace mlir::tt::ttl::verify

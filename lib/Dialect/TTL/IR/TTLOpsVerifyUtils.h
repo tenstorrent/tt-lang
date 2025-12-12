@@ -9,8 +9,8 @@
 
 namespace mlir::tt::ttl::verify {
 
-/// Return true if `handle` is eventually synchronized with a `ttl.wait` in the
-/// IR use graph.
+/// Return success if `handle` is eventually synchronized with a `ttl.wait` in
+/// the IR use graph.
 ///
 /// This check is used to enforce the TTL DMA MVP rule that every `ttl.copy`
 /// transfer handle must be synchronized before it is dropped.
@@ -26,15 +26,16 @@ namespace mlir::tt::ttl::verify {
 /// batching handles and waiting in a different location).
 ///
 /// Note: Relies on `Value::getUses()`, which includes uses across blocks.
-bool isEventuallyWaitedOn(mlir::Value handle);
+mlir::LogicalResult isEventuallyWaitedOn(mlir::Operation *op,
+                                         mlir::Value handle);
 
-/// Return true if `handle` is a valid operand for `ttl.wait`.
+/// Return success if `handle` is a valid operand for `ttl.wait`.
 ///
 /// In the current MVP, `ttl.wait` must synchronize a transfer handle
 /// originating from `ttl.copy`. This helper also allows handles forwarded
 /// through the same mechanisms as isEventuallyWaitedOn (loop-carried state and
 /// tensor containers).
-bool isValidWaitOperand(mlir::Value handle);
+mlir::LogicalResult isValidWaitOperand(mlir::Operation *op, mlir::Value handle);
 
 } // namespace mlir::tt::ttl::verify
 

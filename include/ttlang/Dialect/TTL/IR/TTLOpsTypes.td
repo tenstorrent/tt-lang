@@ -34,7 +34,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   }];
 }
 
-def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
+def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let summary = "Handle for asynchronous TTL memory transfers";
   let parameters = (ins
     OptionalParameter<"std::optional<mlir::tt::ttl::TransferKind>">:$kind
