@@ -40,12 +40,23 @@ if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir")
   list(APPEND TTMLIR_HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir")
 endif()
 
-# For scenarios 1 and 2, ensure we use Python from the toolchain venv
-if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3" AND NOT DEFINED _TTMLIR_BUILD_DIR)
-  # Set as regular variables (not cache) to take precedence over find_package
+# Ensure we use Python from the toolchain venv.
+#
+# Note: MLIR's Python bindings configuration runs both `find_package(Python3 ...)`
+# and `find_package(Python ...)` (nanobind expects Python_ variables). If they
+# resolve to different interpreters, the computed extension suffix (SOABI) can
+# mismatch and produce an un-importable module name (e.g. `_ttlang.cpython-314-*.so`
+# for a Python 3.11 interpreter).
+if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
+  # Set as regular variables (not cache) to take precedence over find_package.
   set(Python3_FIND_VIRTUALENV ONLY)
   set(Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
   set(Python3_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
+
+  set(Python_FIND_VIRTUALENV ONLY)
+  set(Python_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
+  set(Python_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
+
   message(STATUS "Using Python from toolchain: ${Python3_EXECUTABLE}")
 endif()
 
