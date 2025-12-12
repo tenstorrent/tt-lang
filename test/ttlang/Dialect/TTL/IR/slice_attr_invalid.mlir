@@ -57,6 +57,14 @@ func.func @test_slice_stop_less_than_start() attributes {s = #ttl.slice<start = 
 
 // -----
 
+// Test stop < start with step = 0 (invalid).
+// expected-error @below {{slice step cannot be zero}}
+func.func @test_slice_stop_less_than_start_zero_step() attributes {s = #ttl.slice<start = 8, stop = 2, step = 0>} {
+  return
+}
+
+// -----
+
 // Test stop > start with negative step (invalid)
 // expected-error @below {{slice stop (8) must be <= start (2) when step is negative}}
 func.func @test_slice_stop_greater_than_start_negative_step() attributes {s = #ttl.slice<start = 2, stop = 8, step = -1>} {
