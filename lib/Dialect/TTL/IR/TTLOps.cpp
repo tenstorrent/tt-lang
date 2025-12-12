@@ -63,7 +63,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   // TODO(ttl): Add support for pipes and blocks as ttl.copy operands once those
   // IR types/ops land.
-  // Issue: #000.
+  // Issue: #88.
 
   Type tensorTy = srcIsCb ? dstTy : srcTy;
   auto rankedTensorTy = mlir::dyn_cast<RankedTensorType>(tensorTy);
@@ -84,7 +84,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   // TODO(ttl): Verify that the tensor tile/block shape and element type match
   // the CB element_type and shape/buffer_factor semantics.
-  // Issue: #000.
+  // Issue: #89.
 
   // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
   // use ensures we do not silently drop transfers.

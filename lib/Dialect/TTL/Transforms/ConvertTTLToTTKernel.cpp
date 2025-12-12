@@ -180,7 +180,7 @@ static Value emitPlaceholderCB(ValueRange inputs,
                                ConversionPatternRewriter &rewriter,
                                Location loc, Type targetType) {
   // TODO(ttl): Emit a real TTKernel CB handle instead of an unrealized cast.
-  // Issue: #77.
+  // Issue: #78.
   auto cast =
       rewriter.create<UnrealizedConversionCastOp>(loc, targetType, inputs);
   return cast.getResult(0);
@@ -202,7 +202,7 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
   if (auto enc = tensorTy.getEncoding()) {
     if (auto ttnnLayout = mlir::dyn_cast<tt::ttnn::TTNNLayoutAttr>(enc)) {
       // TODO(ttl): Derive strides/page size/bank base from TTNNLayoutAttr.
-      // Issue: #77.
+      // Issue: #81.
       (void)ttnnLayout;
     }
   }
@@ -230,7 +230,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
 
   // TODO(ttl): Plumb real NOC coordinates and bank base addresses from tensor
   // accessors and kernel launch metadata.
-  // Issue: #77.
+  // Issue: #84.
   auto nocSrc = makeZeroI32(loc, rewriter);
   auto nocDst = makeZeroI32(loc, rewriter);
   auto placeholderAccessor = buildTensorAccessor(
@@ -239,11 +239,11 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
 
   rewriter.create<ttk::NocAsyncReadTileOp>(loc, nocSrc, srcAccessor, nocDst);
   // TODO(ttl): Use TRID-specific read barrier keyed by the transfer handle.
-  // Issue: #77.
+  // Issue: #85.
   rewriter.create<ttk::NocAsyncReadBarrierOp>(loc);
 
   // TODO(ttl): Materialize a real CB value and plumb it into the write path.
-  // Issue: #000.
+  // Issue: #79.
   auto tkCbTy = typeConverter.convertType(op.getDst().getType());
   auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
                                  rewriter, loc, tkCbTy);
@@ -252,7 +252,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
                                             placeholderAccessor,
                                             makeZeroI32(loc, rewriter));
   // TODO(ttl): Use TRID-specific write barrier keyed by the transfer handle.
-  // Issue: #77.
+  // Issue: #86.
   rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
 
   auto handleTy =
@@ -270,7 +270,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
   auto loc = op.getLoc();
 
   // TODO(ttl): Lower CB operands to real CB handles and NOC addresses.
-  // Issue: #77.
+  // Issue: #80.
   auto tkCbTy = typeConverter.convertType(op.getSrc().getType());
   auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
                                  rewriter, loc, tkCbTy);
@@ -279,7 +279,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
   rewriter.create<ttk::NocAsyncWriteTileOp>(
       loc, makeZeroI32(loc, rewriter), dstAccessor, makeZeroI32(loc, rewriter));
   // TODO(ttl): Use TRID-specific write barrier keyed by the transfer handle.
-  // Issue: #77.
+  // Issue: #86.
   rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
 
   auto handleTy =
@@ -358,7 +358,7 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
                   ConversionPatternRewriter &rewriter) const override {
     // TODO(ttl): Lower ttl.wait to a TRID-specific barrier keyed by the
     // transfer handle.
-    // Issue: #77.
+    // Issue: #87.
     rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
     rewriter.eraseOp(op);
     return success();

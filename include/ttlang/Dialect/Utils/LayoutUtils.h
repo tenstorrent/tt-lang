@@ -22,7 +22,7 @@ inline ContiguousLayoutInfo computeContiguousLayout(RankedTensorType tensorTy) {
   ArrayRef<int64_t> shape = tensorTy.getShape();
   // TODO(ttl): Replace this contiguous fallback with stride/page derivation
   // from the tensor's layout encoding (e.g., TTNNLayoutAttr).
-  // Issue: #000.
+  // Issue: #82.
   int64_t rowStrideElems = shape.size() >= 2 ? shape.back() : 1;
   int64_t colStrideElems = 1;
 
@@ -30,7 +30,7 @@ inline ContiguousLayoutInfo computeContiguousLayout(RankedTensorType tensorTy) {
   int64_t elemByteWidth = elemBits / 8;
 
   // TODO(ttl): Derive page size from actual tiling/sharding when available.
-  // Issue: #000.
+  // Issue: #83.
   int64_t pageSizeBytes = elemByteWidth * rowStrideElems;
 
   return {rowStrideElems, colStrideElems, elemByteWidth, pageSizeBytes};

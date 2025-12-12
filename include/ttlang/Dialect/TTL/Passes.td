@@ -11,6 +11,7 @@ def TTLConvertTTLToTTKernel
     barriers are available. Covers create_cb, copy, wait MVP path.
 
     TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
+    Issue: #77 (umbrella issue with subtasks #78-#89).
   }];
 
   let dependentDialects = [
