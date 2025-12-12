@@ -367,7 +367,7 @@ The acquire operations (`wait()`, `reserve()`) block until resources are availab
 Loops use Python `for` with `range()`:
 
 ```python
-for i in range(2):  # Must be literal - cannot capture variables
+for i in range(2):  # Global constants not supported (see issue #92)
     a = acc_cb.wait()
     # ...
 ```
