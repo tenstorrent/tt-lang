@@ -89,10 +89,10 @@ jobs:
 
             - name: Run ttlang Lit MLIR tests
               run: |
-                source build/env/activate
-                cmake --build build --target check-ttlang-mlir
+                  source build/env/activate
+                  cmake --build build --target check-ttlang-mlir
 
             - name: Run ttlang Python bindings tests
               run: |
-                source build/env/activate
-                cmake --build build --target check-ttlang-python-bindings
+                  source build/env/activate
+                  cmake --build build --target check-ttlang-python-bindings

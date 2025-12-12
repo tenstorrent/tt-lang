@@ -38,3 +38,27 @@ func.func @test_slice_missing_field() attributes {s = #ttl.slice<start = 0, stop
 func.func @test_slice_missing_step() attributes {s = #ttl.slice<start = 0, stop = 8>} {
   return
 }
+
+// -----
+
+// Test step = 0 (invalid)
+// expected-error @below {{slice step cannot be zero}}
+func.func @test_slice_zero_step() attributes {s = #ttl.slice<start = 0, stop = 8, step = 0>} {
+  return
+}
+
+// -----
+
+// Test stop < start with positive step (invalid)
+// expected-error @below {{slice stop (2) must be >= start (8) when step is positive}}
+func.func @test_slice_stop_less_than_start() attributes {s = #ttl.slice<start = 8, stop = 2, step = 1>} {
+  return
+}
+
+// -----
+
+// Test stop > start with negative step (invalid)
+// expected-error @below {{slice stop (8) must be <= start (2) when step is negative}}
+func.func @test_slice_stop_greater_than_start_negative_step() attributes {s = #ttl.slice<start = 2, stop = 8, step = -1>} {
+  return
+}

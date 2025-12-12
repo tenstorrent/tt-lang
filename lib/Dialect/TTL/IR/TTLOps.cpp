@@ -25,4 +25,23 @@ void TTLDialect::registerAttributes() {
       >();
 }
 
+llvm::LogicalResult
+SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                  int64_t start, int64_t stop, int64_t step) {
+  if (step == 0) {
+    return emitError() << "slice step cannot be zero";
+  }
+  if (step > 0 && stop < start) {
+    return emitError() << "slice stop (" << stop
+                       << ") must be >= start (" << start
+                       << ") when step is positive";
+  }
+  if (step < 0 && stop > start) {
+    return emitError() << "slice stop (" << stop
+                       << ") must be <= start (" << start
+                       << ") when step is negative";
+  }
+  return llvm::success();
+}
+
 } // namespace mlir::tt::ttl

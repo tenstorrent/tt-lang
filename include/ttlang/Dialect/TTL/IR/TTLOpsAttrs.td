@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2024 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,6 +20,7 @@ def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
     "int64_t":$step
   );
   let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
   let description = [{
     Encodes a Python slice(start, stop, step) for pipe multicast ranges.
     Half-open interval: [start, stop).
