@@ -4,15 +4,12 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/DialectImplementation.h"
-#include "mlir/Interfaces/FunctionImplementation.h"
+#include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"
-#include "llvm/ADT/TypeSwitch.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"    // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h"               // IWYU pragma: keep
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -31,47 +28,45 @@ void TTLDialect::registerAttributes() {
 
 } // namespace mlir::tt::ttl
 
-mlir::LogicalResult mlir::tt::ttl::DmKernelOp::verify() {
-  auto fnType = getFunctionType();
-  for (Type argTy : fnType.getInputs()) {
-    if (auto t = mlir::dyn_cast<RankedTensorType>(argTy)) {
-      auto enc = t.getEncoding();
-      if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
-        return emitOpError()
-               << "expects tensor arguments to carry TTNNLayout encoding";
-      }
-      continue;
-    }
-    if (mlir::isa<IntegerType>(argTy) || mlir::isa<FloatType>(argTy)) {
-      continue;
-    }
-    return emitOpError() << "unsupported argument type " << argTy;
+mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
+  auto srcTy = getSrc().getType();
+  auto dstTy = getDst().getType();
+
+  const bool srcIsCb = mlir::isa<CircularBufferType>(srcTy);
+  const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
+
+  // MVP (no pipes): copy is between a TTNN tensor slice and a circular buffer
+  // block. Exactly one side must be a CB.
+  if (srcIsCb == dstIsCb) {
+    return emitOpError()
+           << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
+           << " dst=" << dstTy;
   }
-  for (Type resTy : fnType.getResults()) {
-    if (mlir::isa<IntegerType>(resTy) || mlir::isa<FloatType>(resTy) ||
-        mlir::isa<RankedTensorType>(resTy)) {
-      continue;
-    }
-    return emitOpError() << "unsupported result type " << resTy;
+
+  // TODO(ttl): Add support for pipes and blocks as ttl.copy operands once those
+  // IR types/ops land.
+  // Issue: #000.
+
+  Type tensorTy = srcIsCb ? dstTy : srcTy;
+  auto rankedTensorTy = mlir::dyn_cast<RankedTensorType>(tensorTy);
+  if (!rankedTensorTy) {
+    return emitOpError()
+           << "expects the non-CB operand to be a ranked tensor; got "
+           << tensorTy;
   }
+
+  // TT-Lang programs operate on TTNN tensors. Require a TTNN layout encoding so
+  // lowering can derive tile/addressing information.
+  auto enc = rankedTensorTy.getEncoding();
+  if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
+    return emitOpError()
+           << "expects tensor operand to carry TTNNLayout encoding; got "
+           << rankedTensorTy;
+  }
+
+  // TODO(ttl): Verify that the tensor tile/block shape and element type match
+  // the CB element_type and shape/buffer_factor semantics.
+  // Issue: #000.
+
   return success();
-}
-
-mlir::ParseResult mlir::tt::ttl::DmKernelOp::parse(OpAsmParser &parser,
-                                                   OperationState &result) {
-  auto buildFuncType =
-      [](Builder &builder, ArrayRef<Type> argTypes, ArrayRef<Type> results,
-         function_interface_impl::VariadicFlag,
-         std::string &) { return builder.getFunctionType(argTypes, results); };
-
-  return function_interface_impl::parseFunctionOp(
-      parser, result, /*allowVariadic=*/false,
-      getFunctionTypeAttrName(result.name), buildFuncType,
-      getArgAttrsAttrName(result.name), getResAttrsAttrName(result.name));
-}
-
-void mlir::tt::ttl::DmKernelOp::print(OpAsmPrinter &p) {
-  function_interface_impl::printFunctionOp(
-      p, *this, /*isVariadic=*/false, getFunctionTypeAttrName(),
-      getArgAttrsAttrName(), getResAttrsAttrName());
 }

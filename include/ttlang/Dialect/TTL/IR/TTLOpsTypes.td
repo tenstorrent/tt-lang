@@ -7,7 +7,6 @@
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "mlir/IR/AttrTypeBase.td"
-include "mlir/IR/EnumAttr.td"
 
 //===----------------------------------------------------------------------===//
 // TTL type definitions

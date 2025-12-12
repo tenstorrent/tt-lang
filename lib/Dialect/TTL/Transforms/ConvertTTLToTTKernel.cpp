@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -12,7 +12,6 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -21,8 +20,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-// Optional TTNN dependency: only used when tensor encoding carries TTNN layout.
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -73,6 +71,45 @@ public:
     addTargetMaterialization(castMaterialization);
   }
 };
+
+//===----------------------------------------------------------------------===//
+// Helper utilities.
+//===----------------------------------------------------------------------===//
+
+static std::optional<ttk::ThreadType> getKernelThreadType(Operation *op) {
+  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
+    return a.getValue();
+  }
+  return std::nullopt;
+}
+
+static bool isNocKernel(Operation *op) {
+  return getKernelThreadType(op) == ttk::ThreadType::Noc;
+}
+
+template <typename FuncLike>
+static bool eraseUnusedArguments(FuncLike funcLike) {
+  if (funcLike.getNumArguments() == 0) {
+    return false;
+  }
+  if (llvm::any_of(funcLike.getArguments(),
+                   [](BlockArgument arg) { return !arg.use_empty(); })) {
+    return false;
+  }
+
+  llvm::BitVector argsToErase(funcLike.getNumArguments());
+  for (unsigned idx = 0; idx < funcLike.getNumArguments(); ++idx) {
+    argsToErase.set(idx);
+  }
+  if (failed(funcLike.eraseArguments(argsToErase))) {
+    return false;
+  }
+
+  auto newType = FunctionType::get(funcLike.getContext(), TypeRange{},
+                                   funcLike.getFunctionType().getResults());
+  funcLike.setType(newType);
+  return true;
+}
 
 struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -131,7 +168,8 @@ static CopyDestKind classifyDst(Value v) {
 static Value emitPlaceholderCB(ValueRange inputs,
                                ConversionPatternRewriter &rewriter,
                                Location loc, Type targetType) {
-  // TODO (ttl): Emit real CB handle; placeholder keeps the pipeline alive.
+  // TODO(ttl): Emit a real TTKernel CB handle instead of an unrealized cast.
+  // Issue: #000.
   auto cast =
       rewriter.create<UnrealizedConversionCastOp>(loc, targetType, inputs);
   return cast.getResult(0);
@@ -152,9 +190,8 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
   utils::ContiguousLayoutInfo layout;
   if (auto enc = tensorTy.getEncoding()) {
     if (auto ttnnLayout = mlir::dyn_cast<tt::ttnn::TTNNLayoutAttr>(enc)) {
-      // TODO (ttl): Plumb real TTNN layout-derived strides/page sizes once TTL
-      // encodings are defined; for now, fall back to contiguous but keep the
-      // hook.
+      // TODO(ttl): Derive strides/page size/bank base from TTNNLayoutAttr.
+      // Issue: #000.
       (void)ttnnLayout;
     }
   }
@@ -183,7 +220,9 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  // TODO (ttl): Plumb real NOC coordinates and bank bases; these are stubs.
+  // TODO(ttl): Plumb real NOC coordinates and bank base addresses from tensor
+  // accessors and kernel launch metadata.
+  // Issue: #000.
   auto nocSrc = makeZeroI32(loc, rewriter);
   auto nocDst = makeZeroI32(loc, rewriter);
   auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
@@ -193,10 +232,12 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
       makeZeroI32(loc, rewriter));
 
   rewriter.create<ttk::NocAsyncReadTileOp>(loc, nocSrc, srcAccessor, nocDst);
-  // TODO (ttl): Use TRID-specific read barrier when available.
+  // TODO(ttl): Use TRID-specific read barrier keyed by the transfer handle.
+  // Issue: #000.
   rewriter.create<ttk::NocAsyncReadBarrierOp>(loc);
 
-  // TODO (ttl): Real CB handle; this uses a placeholder cast.
+  // TODO(ttl): Materialize a real CB value and plumb it into the write path.
+  // Issue: #000.
   auto tkCbTy = typeConverter.convertType(op.getDst().getType());
   auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
                                  rewriter, loc, tkCbTy);
@@ -204,7 +245,8 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
   rewriter.create<ttk::NocAsyncWriteTileOp>(loc, makeZeroI32(loc, rewriter),
                                             accessor.getResult(),
                                             makeZeroI32(loc, rewriter));
-  // TODO (ttl): Use TRID-specific write barrier when available.
+  // TODO(ttl): Use TRID-specific write barrier keyed by the transfer handle.
+  // Issue: #000.
   rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
 
   auto handleTy =
@@ -221,7 +263,8 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  // TODO (ttl): Real CB handle and NOC addresses for the source CB.
+  // TODO(ttl): Lower CB operands to real CB handles and NOC addresses.
+  // Issue: #000.
   auto tkCbTy = typeConverter.convertType(op.getSrc().getType());
   auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
                                  rewriter, loc, tkCbTy);
@@ -229,7 +272,8 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
 
   rewriter.create<ttk::NocAsyncWriteTileOp>(
       loc, makeZeroI32(loc, rewriter), dstAccessor, makeZeroI32(loc, rewriter));
-  // TODO (ttl): Use TRID-specific write barrier when available.
+  // TODO(ttl): Use TRID-specific write barrier keyed by the transfer handle.
+  // Issue: #000.
   rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
 
   auto handleTy =
@@ -306,7 +350,9 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor /*adaptor*/,
                   ConversionPatternRewriter &rewriter) const override {
-    // TODO (ttl): Use TRID-specific barrier keyed by the transfer handle.
+    // TODO(ttl): Lower ttl.wait to a TRID-specific barrier keyed by the
+    // transfer handle.
+    // Issue: #000.
     rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
     rewriter.eraseOp(op);
     return success();
@@ -317,64 +363,11 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(FuncOp op,
-                                PatternRewriter &rewriter) const override {
-    auto kindAttr =
-        op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
-    if (!kindAttr) {
+                                PatternRewriter & /*rewriter*/) const override {
+    if (!isNocKernel(op.getOperation())) {
       return failure();
     }
-    if (kindAttr.getValue() != ttk::ThreadType::Noc) {
-      return failure();
-    }
-
-    if (op.getNumArguments() == 0 ||
-        llvm::any_of(op.getArguments(),
-                     [](BlockArgument arg) { return !arg.use_empty(); })) {
-      return failure();
-    }
-
-    llvm::BitVector argsToErase(op.getNumArguments());
-    for (unsigned idx = 0; idx < op.getNumArguments(); ++idx) {
-      argsToErase.set(idx);
-    }
-    if (succeeded(op.eraseArguments(argsToErase))) {
-      auto newType = FunctionType::get(op.getContext(), TypeRange{},
-                                       op.getFunctionType().getResults());
-      op.setType(newType);
-      return success();
-    }
-    return failure();
-  }
-};
-
-struct DmKernelFinalize : OpRewritePattern<DmKernelOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(DmKernelOp op,
-                                PatternRewriter &rewriter) const override {
-    bool changed = false;
-    if (!op->hasAttr("ttl.kernel_thread")) {
-      op->setAttr("ttl.kernel_thread",
-                  ttk::ThreadTypeAttr::get(op.getContext(), ttk::ThreadType::Noc));
-      changed = true;
-    }
-
-    if (op.getNumArguments() > 0 &&
-        llvm::all_of(op.getArguments(),
-                     [](BlockArgument arg) { return arg.use_empty(); })) {
-      llvm::BitVector argsToErase(op.getNumArguments());
-      for (unsigned idx = 0; idx < op.getNumArguments(); ++idx) {
-        argsToErase.set(idx);
-      }
-      if (succeeded(op.eraseArguments(argsToErase))) {
-        auto newType = FunctionType::get(op.getContext(), TypeRange{},
-                                         op.getFunctionType().getResults());
-        op.setType(newType);
-        changed = true;
-      }
-    }
-
-    return changed ? success() : failure();
+    return eraseUnusedArguments(op) ? success() : failure();
   }
 };
 
@@ -399,10 +392,6 @@ struct TTLConvertTTLToTTKernelPass
       return typeConverter.isSignatureLegal(op.getFunctionType()) &&
              typeConverter.isLegal(&op.getBody());
     });
-    target.addDynamicallyLegalOp<DmKernelOp>([&](DmKernelOp op) {
-      return typeConverter.isSignatureLegal(op.getFunctionType()) &&
-             typeConverter.isLegal(&op.getBody());
-    });
     // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
@@ -410,10 +399,7 @@ struct TTLConvertTTLToTTKernelPass
                                                                &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
-    populateFunctionOpInterfaceTypeConversionPattern(
-        DmKernelOp::getOperationName(), patterns, typeConverter);
     patterns.add<FuncKernelFinalize>(&ctx);
-    patterns.add<DmKernelFinalize>(&ctx);
 
     FrozenRewritePatternSet frozen(std::move(patterns));
     std::string diagMessage;
