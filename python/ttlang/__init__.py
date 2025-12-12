@@ -22,6 +22,7 @@ from ttlang.d2m_api import (
 
 # Export operators
 from ttlang.operators import (
+    bcast,
     exp,
     maximum,
     recip,
@@ -44,6 +45,7 @@ __all__ = [
     "Semaphore",
     "MemTx",
     # Operators
+    "bcast",
     "exp",
     "maximum",
     "recip",

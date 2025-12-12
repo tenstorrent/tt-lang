@@ -13,7 +13,7 @@
 
 import torch
 from ttlang.d2m_api import *
-from ttlang.operators import exp, reduce_sum, recip, bcast
+from ttlang import exp, reduce_sum, recip, bcast
 import math
 
 
