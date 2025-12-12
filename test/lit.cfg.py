@@ -109,8 +109,14 @@ python_paths = [
 # Prefer built bindings so ttlang._mlir_libs is found.
 config.environment["PYTHONPATH"] = os.path.pathsep.join([p for p in python_paths if p])
 
-# Enable FileCheck variable scoping (MLIR default)
-config.environment["FILECHECK_OPTS"] = "-enable-var-scope --allow-unused-prefixes=false"
+if "SYSTEM_DESC_PATH" in os.environ:
+    config.environment["SYSTEM_DESC_PATH"] = os.environ["SYSTEM_DESC_PATH"]
+
+# Metal runtime requires both of these
+if "HOME" in os.environ:
+    config.environment["HOME"] = os.environ["HOME"]
+if "TT_METAL_RUNTIME_ROOT" in os.environ:
+    config.environment["TT_METAL_RUNTIME_ROOT"] = os.environ["TT_METAL_RUNTIME_ROOT"]
 
 # Add system platform feature for UNSUPPORTED directives
 if platform.system() == "Darwin":
