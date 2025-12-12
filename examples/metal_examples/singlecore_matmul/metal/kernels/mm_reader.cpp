@@ -32,7 +32,6 @@ void kernel_main() {
   // circular buffers. Dimension names are called M, N and K. `t` in `mt` means
   // tile.
   for (uint32_t mt = 0; mt < Mt; mt++) {
-    uint32_t itileB = 0;
     for (uint32_t nt = 0; nt < Nt; nt++) {
       for (uint32_t kt = 0; kt < Kt; kt++) {
         {                                       // Read A's tile at (mt, kt)
