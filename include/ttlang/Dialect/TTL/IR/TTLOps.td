@@ -103,21 +103,21 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     Example:
 
     ```mlir
-    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ...
+    ttl.wait %xf : !ttl.transfer_handle<read>
     ```
 
-    Direction-typed transfer handles carry the transfer direction:
-
-    ```mlir
-    %xf_read = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
-    ttl.wait %xf_read : !ttl.transfer_handle<read>
-
-    %xf_write = ttl.copy %cb, %t : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<write>
-    ttl.wait %xf_write : !ttl.transfer_handle<write>
-    ```
+    Note: Transfer direction is modeled in the transfer handle type
+    (`!ttl.transfer_handle<read>` or `!ttl.transfer_handle<write>`). The
+    verifier requires direction-typed handles so lowering can always emit
+    exactly one barrier (read vs. write).
   }];
-  let arguments = (ins TTL_TransferHandle:$xf);
+  // NOTE: Use AnyType here so assembly prints/parses the full type spelling
+  // (`!ttl.transfer_handle<read/write>`) rather than the stripped custom form
+  // (`<read>/<write>`) and does not require a custom printer. The verifier still
+  // enforces the operand is a direction-typed transfer handle.
+  let arguments = (ins AnyType:$xf);
   let assemblyFormat = "$xf attr-dict `:` type($xf)";
   let hasVerifier = 1;
 }

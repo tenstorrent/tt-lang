@@ -8,8 +8,8 @@
 // CHECK-LABEL: func.func @dma_single(
 // CHECK-SAME: %[[T0:.*]]: tensor<32x32xf32, #ttnn_layout>
 // CHECK: %[[CB:.*]] = ttl.create_cb() {{.*}} : <[1, 1], f32, 2>
-// CHECK: %[[XF:.*]] = ttl.copy %[[T0]], %[[CB]] : (tensor<32x32xf32, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-// CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle
+// CHECK: %[[XF:.*]] = ttl.copy %[[T0]], %[[CB]] : (tensor<32x32xf32, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+// CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<read>
 
 // LOWERED-LABEL: func.func @dma_single(
 // LOWERED-SAME: %[[ARG0:.*]]: tensor<32x32xf32, {{.*}}>
@@ -23,12 +23,11 @@
 // LOWERED: %[[READ_CORE:.*]] = arith.constant 0 : i32
 // LOWERED: ttkernel.noc_async_read_tile(%[[READ_TILE]], %[[SRC_ACC]], %[[READ_CORE]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
-// LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
 module {
   func.func @dma_single(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+    %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
 }
@@ -41,8 +40,8 @@ module {
 // CHECK-LABEL: func.func @cb_to_tensor(
 // CHECK-SAME: %[[T0:.*]]: tensor<32x32xf32, #ttnn_layout>
 // CHECK: %[[CB:.*]] = ttl.create_cb() {{.*}} : <[1, 1], f32, 2>
-// CHECK: %[[XF:.*]] = ttl.copy %[[CB]], %[[T0]] : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #ttnn_layout>) -> !ttl.transfer_handle
-// CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle
+// CHECK: %[[XF:.*]] = ttl.copy %[[CB]], %[[T0]] : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #ttnn_layout>) -> !ttl.transfer_handle<write>
+// CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<write>
 
 // LOWERED-LABEL: func.func @cb_to_tensor(
 // LOWERED-SAME: %[[ARG0:.*]]: tensor<32x32xf32, {{.*}}>
@@ -53,13 +52,12 @@ module {
 // LOWERED: %[[DST_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
 // LOWERED: %[[DST_ACC:.*]] = ttkernel.TensorAccessor(%[[DST_ARGS]], %[[C0_BASE]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // LOWERED: ttkernel.noc_async_write_tile({{.*}}, %[[DST_ACC]], {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
 // LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
 module {
   func.func @cb_to_tensor(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<write>
+    ttl.wait %xf : !ttl.transfer_handle<write>
     func.return
   }
 }
@@ -76,10 +74,10 @@ module {
 // CHECK-SAME: %[[T1:[^)]+]]: tensor<32x32xf32, #ttnn_layout>
 // CHECK: %[[CB0:.*]] = ttl.create_cb() {{.*}} : <[1, 1], f32, 2>
 // CHECK: %[[CB1:.*]] = ttl.create_cb() {{.*}} : <[1, 1], f32, 2>
-// CHECK: %[[XF0:.*]] = ttl.copy %[[T0]], %[[CB0]] : (tensor<32x32xf32, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-// CHECK: %[[XF1:.*]] = ttl.copy %[[T1]], %[[CB1]] : (tensor<32x32xf32, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-// CHECK: ttl.wait %[[XF0]] : !ttl.transfer_handle
-// CHECK: ttl.wait %[[XF1]] : !ttl.transfer_handle
+// CHECK: %[[XF0:.*]] = ttl.copy %[[T0]], %[[CB0]] : (tensor<32x32xf32, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+// CHECK: %[[XF1:.*]] = ttl.copy %[[T1]], %[[CB1]] : (tensor<32x32xf32, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+// CHECK: ttl.wait %[[XF0]] : !ttl.transfer_handle<read>
+// CHECK: ttl.wait %[[XF1]] : !ttl.transfer_handle<read>
 //
 // LOWERED-LABEL: func.func @dma_batched
 // LOWERED: %[[SRC0_ARGS:.*]] = ttkernel.TensorAccessorArgs
@@ -89,17 +87,15 @@ module {
 // LOWERED: %[[SRC1_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC1_ARGS]]
 // LOWERED: ttkernel.noc_async_read_tile({{.*}}, %[[SRC1_ACC]], {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
-// LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
 // LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
-// LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
 module {
   func.func @dma_batched(%t0: tensor<32x32xf32, #layout>, %t1: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb0 = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %cb1 = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf0 = ttl.copy %t0, %cb0 : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-    %xf1 = ttl.copy %t1, %cb1 : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-    ttl.wait %xf0 : !ttl.transfer_handle
-    ttl.wait %xf1 : !ttl.transfer_handle
+    %xf0 = ttl.copy %t0, %cb0 : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf1 = ttl.copy %t1, %cb1 : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf0 : !ttl.transfer_handle<read>
+    ttl.wait %xf1 : !ttl.transfer_handle<read>
     func.return
   }
 }
@@ -121,14 +117,12 @@ module {
 // LOWERED: %[[SRC_ARGS:.*]] = ttkernel.TensorAccessorArgs
 // LOWERED: %[[SRC_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC_ARGS]]
 // LOWERED: ttkernel.noc_async_read_tile({{.*}}, %[[SRC_ACC]], {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// LOWERED: %[[LOOP_XF:.*]] = scf.for {{.*}} iter_args(%[[PREV:.*]] = %{{.*}}) -> (!ttl.transfer_handle) {
+// LOWERED: %[[LOOP_XF:.*]] = scf.for {{.*}} iter_args(%[[PREV:.*]] = %{{.*}}) -> (!ttl.transfer_handle<read>) {
 // LOWERED: ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
-// LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
-// LOWERED: scf.yield {{.*}} : !ttl.transfer_handle
+// LOWERED: scf.yield {{.*}} : !ttl.transfer_handle<read>
 // LOWERED: }
 // LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
-// LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
 module {
   func.func @dma_pipelined_loop(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -136,13 +130,13 @@ module {
     %c3 = arith.constant 3 : index
     %c1 = arith.constant 1 : index
 
-    %xf_init = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-    %last = scf.for %i = %c0 to %c3 step %c1 iter_args(%prev = %xf_init) -> (!ttl.transfer_handle) {
-      %xf_next = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-      ttl.wait %prev : !ttl.transfer_handle
-      scf.yield %xf_next : !ttl.transfer_handle
+    %xf_init = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %last = scf.for %i = %c0 to %c3 step %c1 iter_args(%prev = %xf_init) -> (!ttl.transfer_handle<read>) {
+      %xf_next = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      ttl.wait %prev : !ttl.transfer_handle<read>
+      scf.yield %xf_next : !ttl.transfer_handle<read>
     }
-    ttl.wait %last : !ttl.transfer_handle
+    ttl.wait %last : !ttl.transfer_handle<read>
     func.return
   }
 }
@@ -208,15 +202,13 @@ module {
 //
 // LOWERED-LABEL: func.func @dma_double_wait
 // LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
-// LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
 // LOWERED: ttkernel.noc_async_read_barrier() : () -> ()
-// LOWERED: ttkernel.noc_async_write_barrier() : () -> ()
 module {
   func.func @dma_double_wait(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
-    ttl.wait %xf : !ttl.transfer_handle
+    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
 }

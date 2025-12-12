@@ -192,11 +192,11 @@ static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
 }
 
 static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
-  auto xfTy = llvm::dyn_cast<TransferHandleType>(t);
-  if (!xfTy) {
+  auto transferHandle = llvm::dyn_cast<TransferHandleType>(t);
+  if (!transferHandle) {
     return std::nullopt;
   }
-  return xfTy.getKind();
+  return transferHandle.getKind();
 }
 
 static FailureOr<Value>
@@ -359,18 +359,24 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
     // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
-    // MVP behavior: determine direction from the transfer handle type and emit
-    // the corresponding TTKernel global barrier. If the handle is untyped,
-    // conservatively emit both barriers.
-    if (auto kind = getTransferKindFromHandleType(adaptor.getXf().getType())) {
-      if (*kind == TransferKind::read) {
-        rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
-      } else {
-        rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
-      }
-    } else {
+    // MVP behavior: require a direction-typed handle and emit the
+    // corresponding global barrier. Untyped handles are rejected by the
+    // verifier, but we also fail the rewrite defensively.
+    auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
+    if (!kind) {
+      return rewriter.notifyMatchFailure(
+          op, "requires direction-typed !ttl.transfer_handle<read|write>");
+    }
+    if (*kind == TransferKind::read) {
       rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+    } else if (*kind == TransferKind::write) {
       rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
+    } else {
+      // Future-proofing: TransferKind is currently {read, write}, but fail
+      // explicitly if it ever expands without updating the lowering.
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << "unsupported TransferKind for ttl.wait lowering";
+      });
     }
     rewriter.eraseOp(op);
     return success();
