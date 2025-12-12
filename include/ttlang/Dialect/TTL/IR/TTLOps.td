@@ -61,6 +61,9 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     carrying a TTNN layout encoding (for example `#ttnn.ttnn_layout<...>`), so
     lowering can derive tile and addressing information.
 
+    TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
+    ttkernel noc ops land in tt-mlir. Issue: #87.
+
     Example:
 
     ```mlir
@@ -93,6 +96,9 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     In the current MVP lowering, this is implemented using a TTKernel global NOC
     barrier as a placeholder until per-transfer (TRID-based) synchronization is
     used.
+
+    TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
+    barriers land in ttkernel (tt-mlir). Issue: #87.
 
     Example:
 
