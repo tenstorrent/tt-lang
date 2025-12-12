@@ -2,6 +2,11 @@ name: On Push
 
 on:
   workflow_dispatch:
+    inputs:
+      run_macos:
+        description: "Run the macOS build (disabled by default)."
+        type: boolean
+        default: false
   push:
     branches: ["main"]
 
@@ -21,6 +26,9 @@ jobs:
   build:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
+    with:
+      # macOS is disabled by default for pushes. Enable via workflow_dispatch.
+      run_macos: ${{ github.event_name == 'workflow_dispatch' && inputs.run_macos }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
