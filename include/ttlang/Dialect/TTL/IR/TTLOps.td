@@ -16,6 +16,25 @@ include "mlir/IR/OpBase.td"
 
 def TTL_CreateCBOp : TTL_Op<"create_cb", [Pure]> {
   let summary = "Create a circular buffer value";
+  let description = [{
+    Creates a TTL circular buffer (`!ttl.cb`) representing an L1-resident buffer
+    used for block-level communication between TT-Lang threads.
+
+    Circular buffers are created in the kernel scope and used inside data-movement
+    and compute threads via higher-level operations (for example `ttl.copy` in the
+    DMA MVP).
+
+    - `shape` describes the block shape in "shape units" (tiles for tiled tensors,
+      scalars for row-major tensors).
+    - `element_type` is the element type stored in the buffer.
+    - `buffer_factor` is the number of blocks (for example 2 for double buffering).
+
+    Example:
+
+    ```mlir
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    ```
+  }];
   let arguments = (ins
     I64ArrayAttr:$shape,
     TypeAttr:$element_type,
@@ -30,6 +49,32 @@ def TTL_CreateCBOp : TTL_Op<"create_cb", [Pure]> {
 
 def TTL_CopyOp : TTL_Op<"copy", [Pure]> {
   let summary = "Asynchronous copy between tensor and circular buffer";
+  let description = [{
+    `ttl.copy` initiates an asynchronous transfer and returns a transfer handle
+    (`!ttl.xf`) that can be synchronized with `ttl.wait`.
+
+    This operation is non-blocking. The destination is not safe to use until a
+    corresponding `ttl.wait` has completed.
+
+    In the current MVP (no pipes/blocks yet), exactly one operand must be a
+    circular buffer (`!ttl.cb`). The other operand must be a ranked tensor
+    carrying a TTNN layout encoding (for example `#ttnn.ttnn_layout<...>`), so
+    lowering can derive tile and addressing information.
+
+    Example:
+
+    ```mlir
+    #dram = #ttnn.buffer_type<dram>
+    #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+    func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+      %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
+      ttl.wait %xf
+      func.return
+    }
+    ```
+  }];
   let arguments = (ins
     AnyType:$src,
     AnyType:$dst
@@ -41,6 +86,21 @@ def TTL_CopyOp : TTL_Op<"copy", [Pure]> {
 
 def TTL_WaitOp : TTL_Op<"wait", [Pure]> {
   let summary = "Wait on a transfer handle";
+  let description = [{
+    `ttl.wait` blocks until the asynchronous transfer identified by the input
+    transfer handle (`!ttl.xf`) is complete and the destination is safe to use.
+
+    In the current MVP lowering, this is implemented using a TTKernel global NOC
+    barrier as a placeholder until per-transfer (TRID-based) synchronization is
+    used.
+
+    Example:
+
+    ```mlir
+    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
+    ttl.wait %xf
+    ```
+  }];
   let arguments = (ins TTL_TransferHandle:$xf);
   let assemblyFormat = "$xf attr-dict";
 }
