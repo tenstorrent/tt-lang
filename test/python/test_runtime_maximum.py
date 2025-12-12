@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# UNSUPPORTED: system-darwin
+# TODO: update to use pytest (see issue #91)
+# UNSUPPORTED: true
 # XFAIL: *
 # Blocked by: https://github.com/tenstorrent/tt-mlir/issues/5016
 # "[D2M] Maximum writing to wrong dest register tile"

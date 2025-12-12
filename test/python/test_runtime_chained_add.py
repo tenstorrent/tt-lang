@@ -2,6 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+
+# TODO: update to use pytest (see issue #91)
+# UNSUPPORTED: true
+
 # Tests liveness-based DST allocation with chained operations
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir

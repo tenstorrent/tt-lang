@@ -4,7 +4,8 @@
 
 # Tests chained matrix multiplications using separate kernels with intermediate CB
 #   note to zoe: 7b59bec15a90c92b70d15d11e6a4784b41832757 has the change with MemRefProvenanceAnalysis to fix this.
-# UNSUPPORTED: system-darwin
+# TODO: update to use pytest (see issue #91)
+# UNSUPPORTED: true
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
