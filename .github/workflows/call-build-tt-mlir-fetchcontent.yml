@@ -92,6 +92,16 @@ jobs:
                   source build/env/activate
                   python test/python/smoketest.py
 
+            - name: Run ttlang Lit MLIR tests
+              run: |
+                source build/env/activate
+                cmake --build build --target check-ttlang-mlir
+
+            - name: Run ttlang Python bindings tests
+              run: |
+                source build/env/activate
+                cmake --build build --target check-ttlang-python-bindings
+
             - name: Move ttrt runtime to tt-mlir-install
               run: |
                   set -x

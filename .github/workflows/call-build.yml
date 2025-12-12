@@ -144,6 +144,16 @@ jobs:
           source build/env/activate
           python test/python/smoketest.py
 
+      - name: Run ttlang Lit MLIR tests
+        run: |
+          source build/env/activate
+          cmake --build build --target check-ttlang-mlir
+
+      - name: Run ttlang Python bindings tests
+        run: |
+          source build/env/activate
+          cmake --build build --target check-ttlang-python-bindings
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
