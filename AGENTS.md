@@ -84,5 +84,7 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - Create GitHub issues for TODOs with format:
   `TODO (alias): description. Issue: #123`
 - Generate commit messages and PR summaries in plain ASCII format using github markdown. When appropriate, include plain ASCII diagrams.
+- Create GitHub issues for TODOs with format:
+  `TODO (alias): description. Issue: #123`
 - Follow LLVM coding standards: https://llvm.org/docs/CodingStandards.html
 - Follow best practices: https://llvm.org/docs/ProgrammersManual.html

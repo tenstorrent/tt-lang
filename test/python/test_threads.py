@@ -12,7 +12,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_thread_types(lhs, rhs, out):
     @datamovement()
     def dm_thread(

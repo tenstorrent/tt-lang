@@ -5,6 +5,7 @@
 """Circular buffer operations for inter-thread communication."""
 
 from ttmlir.dialects import d2m
+from ttmlir.ir import *
 
 from ._src.d2m_ast import syntax
 
@@ -47,6 +48,11 @@ class CircularBuffer:
             result = compute(shard)
             cb.pop()  # Signal consumption complete
         """
+        if not hasattr(d2m, "pop"):
+            raise AttributeError(
+                "d2m.pop is not available. Please ensure your tt-mlir build "
+                "includes the d2m.pop operation in the Python bindings."
+            )
         d2m.pop(ast_self)
 
     def reserve(ast_self: "CircularBuffer") -> "TensorBlock":
@@ -78,4 +84,9 @@ class CircularBuffer:
             dma(stream[idx], shard).wait()
             cb.push()  # Signal data ready
         """
+        if not hasattr(d2m, "push"):
+            raise AttributeError(
+                "d2m.push is not available. Please ensure your tt-mlir build "
+                "includes the d2m.push operation in the Python bindings."
+            )
         d2m.push(ast_self)
