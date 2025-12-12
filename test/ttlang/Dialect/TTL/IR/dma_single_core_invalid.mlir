@@ -130,3 +130,29 @@ module {
     func.return
   }
 }
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Pipelined loop with a loop-carried handle but no wait in the loop body is
+// invalid: it drops intermediate transfers without synchronization.
+module {
+  func.func @pipelined_loop_missing_wait_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+
+    // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
+    %xf_init = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
+    %last = scf.for %i = %c0 to %c2 step %c1 iter_args(%prev = %xf_init) -> (!ttl.xf) {
+      %xf_next = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
+      // Intentionally missing: ttl.wait %prev
+      scf.yield %xf_next : !ttl.xf
+    }
+    ttl.wait %last
+    func.return
+  }
+}

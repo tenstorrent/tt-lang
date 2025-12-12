@@ -152,3 +152,53 @@ module {
     func.return
   }
 }
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Corner case: waiting twice on the same transfer handle is allowed.
+// CHECK-LABEL: func.func @dma_double_wait
+// CHECK: ttl.copy
+// CHECK: ttl.wait
+// CHECK: ttl.wait
+module {
+  func.func @dma_double_wait(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
+    ttl.wait %xf
+    ttl.wait %xf
+    func.return
+  }
+}
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Corner case: one-element handle batching via tensor.insert, then waiting
+// outside of a loop.
+// CHECK-LABEL: func.func @dma_single_element_container
+// CHECK: tensor.insert
+// CHECK: tensor.extract
+// CHECK: ttl.wait
+module {
+  func.func @dma_single_element_container(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %handles0 = tensor.empty(%c1) : tensor<?x!ttl.xf>
+
+    %handles = scf.for %i = %c0 to %c1 step %c1 iter_args(%h = %handles0) -> tensor<?x!ttl.xf> {
+      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
+      %h2 = tensor.insert %xf into %h[%i] : tensor<?x!ttl.xf>
+      scf.yield %h2 : tensor<?x!ttl.xf>
+    }
+
+    %xf0 = tensor.extract %handles[%c0] : tensor<?x!ttl.xf>
+    ttl.wait %xf0
+    func.return
+  }
+}
