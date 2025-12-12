@@ -173,7 +173,9 @@ def _unary_elementwise(input_tensor: TensorBlock, tile_op: Callable) -> TensorBl
     )
 
 
-def _binary_elementwise(lhs: TensorBlock, rhs: TensorBlock, tile_op: Callable) -> TensorBlock:
+def _binary_elementwise(
+    lhs: TensorBlock, rhs: TensorBlock, tile_op: Callable
+) -> TensorBlock:
     """
     Create a binary elementwise operation with identity indexing.
 
