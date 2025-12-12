@@ -1,0 +1,137 @@
+name: Hardware Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: 'Hardware type to run on'
+        required: false
+        type: string
+        default: 'n150'
+      build-os:
+        description: 'Which build artifacts to use (ubuntu or macos)'
+        required: false
+        type: string
+        default: 'ubuntu'
+      artifact-prefix:
+        description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
+        required: false
+        type: string
+        default: 'ttlang'
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'Hardware type to run on'
+        required: false
+        type: string
+        default: 'n150'
+      build-os:
+        description: 'Which build artifacts to use (ubuntu or macos)'
+        required: false
+        type: string
+        default: 'ubuntu'
+      artifact-prefix:
+        description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
+        required: false
+        type: string
+        default: 'ttlang'
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
+
+permissions:
+  checks: write
+  contents: read
+
+jobs:
+  test-n150:
+    name: "Hardware Tests (${{ inputs.runs-on }})"
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout }}
+
+    container:
+      image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      RUNS_ON: ${{ inputs.runs-on }}
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Download build artifacts archive
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ format('{0}-ttmlir-install-{1}', inputs.artifact-prefix, inputs.build-os) }}
+          path: .
+
+      - name: Extract build artifacts
+        run: |
+          set -x
+          ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
+          tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
+          rm -f "${ARTIFACT_FILE}"
+          echo "Checking tt-mlir-install structure..."
+          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
+          ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
+
+      - name: Set up environment variables
+        run: |
+          TT_MLIR_DIR="$(pwd)/tt-mlir-install"
+          echo "TT_MLIR_DIR=${TT_MLIR_DIR}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=${TT_MLIR_DIR}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
+          echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
+
+      - name: Run smoketest
+        run: |
+          python3 test/python/smoketest.py
+
+      - name: Generate system descriptor
+        run: |
+          set -x
+          source /opt/ttmlir-toolchain/venv/bin/activate || echo "Failed to activate environment"
+          python3 ./.github/scripts/trtt_wrapper.py query --save-artifacts --disable-eth-dispatch || echo "Failed to save artifacts"
+
+      - name: Run lit tests
+        env:
+          TTLANG_VERBOSE_PASSES: 0
+        run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }} || true
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hardware-test-reports-${{ inputs.runs-on }}
+          path: test_reports
+          retention-days: 7
+
+      - name: Upload system descriptor artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hardware-system-desc-${{ inputs.runs-on }}
+          path: ttrt-artifacts
+          retention-days: 7

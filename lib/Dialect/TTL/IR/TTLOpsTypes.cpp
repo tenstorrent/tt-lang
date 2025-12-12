@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2024 Tenstorrent AI ULC
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,6 +18,17 @@ void TTLDialect::registerTypes() {
 #define GET_TYPEDEF_LIST
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
       >();
+}
+
+mlir::Type TTLDialect::parseType(mlir::DialectAsmParser &parser) const {
+  // No types defined yet; update when TTL types are introduced.
+  parser.emitError(parser.getNameLoc(), "TTL dialect has no types yet");
+  return {};
+}
+
+void TTLDialect::printType(mlir::Type type,
+                           mlir::DialectAsmPrinter &printer) const {
+  // No types defined yet; update when TTL types are introduced.
 }
 
 } // namespace mlir::tt::ttl

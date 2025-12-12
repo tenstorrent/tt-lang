@@ -15,7 +15,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
+@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1), (1, 1)])
 def test_chained_add(a, b, c, out):
     a_accessor = TensorAccessor(a)
     b_accessor = TensorAccessor(b)

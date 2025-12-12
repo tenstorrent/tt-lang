@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Bindings/Python/TTLangModule.h"
-#include "mlir/Bindings/Python/NanobindAdaptors.h"
 #include "mlir/CAPI/IR.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Transforms/Passes.h"
@@ -15,7 +14,7 @@ using namespace mlir::python::nanobind_adaptors;
 NB_MODULE(_ttlang, m) {
   m.doc() = "tt-lang Python bindings for TTL dialect";
 
-  // Register tt-lang passes and TTL dialect when the module is loaded.
+  // Local ttlang pass registration
   mlir::tt::d2m::registerD2MPasses();
 
   // Register TTL dialect with any Context that loads this module

@@ -15,7 +15,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
+@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
 def test_write_constant(inp, out):
     inp_accessor = TensorAccessor(inp)
 

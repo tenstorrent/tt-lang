@@ -11,16 +11,11 @@ set(TTLANG_TEST_DEPENDS
   ttlang-opt
 )
 
-# Python binding lit tests import from ${CMAKE_BINARY_DIR}/python_packages.
-# Ensure the bindings and python package tree are built before running lit.
-if(TARGET TTLangPythonModules)
-  list(APPEND TTLANG_TEST_DEPENDS TTLangPythonModules)
-endif()
-
 # All tests
 add_lit_testsuite(check-ttlang "Running all ttlang tests"
     ${CMAKE_CURRENT_BINARY_DIR}
     --verbose
+    --xunit-xml-output report.xml
     DEPENDS ${TTLANG_TEST_DEPENDS}
 )
 set_target_properties(check-ttlang PROPERTIES FOLDER "Tests")

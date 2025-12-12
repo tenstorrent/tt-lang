@@ -21,12 +21,10 @@ jobs:
     secrets: inherit
 
   build:
-    if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
 
   test-sim:
-    if: github.event.pull_request.draft == false
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 

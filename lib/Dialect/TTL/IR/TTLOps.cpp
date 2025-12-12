@@ -32,14 +32,12 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     return emitError() << "slice step cannot be zero";
   }
   if (step > 0 && stop < start) {
-    return emitError() << "slice stop (" << stop
-                       << ") must be >= start (" << start
-                       << ") when step is positive";
+    return emitError() << "slice stop (" << stop << ") must be >= start ("
+                       << start << ") when step is positive";
   }
   if (step < 0 && stop > start) {
-    return emitError() << "slice stop (" << stop
-                       << ") must be <= start (" << start
-                       << ") when step is negative";
+    return emitError() << "slice stop (" << stop << ") must be <= start ("
+                       << start << ") when step is negative";
   }
   return llvm::success();
 }

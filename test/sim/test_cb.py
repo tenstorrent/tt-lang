@@ -9,7 +9,8 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 """
 
 import pytest
-from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SHAPE, dma
+import torch
+from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SHAPE, copy
 from python.sim import torch_utils as tu
 from python.sim.errors import CBContractError
 
@@ -17,7 +18,7 @@ from python.sim.errors import CBContractError
 def test_circular_buffer_basic():
     """Test basic CircularBuffer operations."""
     # Create a circular buffer for single tiles with buffer factor 2
-    cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
 
     # Verify basic properties
     assert cb.shape == (1, 1)
@@ -50,7 +51,7 @@ def test_circular_buffer_basic():
 def test_circular_buffer_multi_tile():
     """Test CircularBuffer with multiple tiles per operation."""
     # Create a circular buffer for 2x1 tiles (2 tiles per operation)
-    cb = CircularBuffer(shape=(2, 1), buffer_factor=3)
+    cb = CircularBuffer[torch.Tensor](shape=(2, 1), buffer_factor=3)
 
     # Verify properties
     assert cb.shape == (2, 1)
@@ -80,31 +81,31 @@ def test_circular_buffer_multi_tile():
     print("Multi-tile CircularBuffer test passed!")
 
 
-def test_dma_operations():
-    """Test DMA operations between TensorAccessor and CircularBuffer."""
+def test_copy_operations():
+    """Test copy operations between TensorAccessor and CircularBuffer."""
     # Create test tensors
     tensor_a = tu.randn(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
 
     accessor_a = TensorAccessor(tensor_a, index_type=IndexType.TILE)
 
     # Create circular buffer
-    cb_a = CircularBuffer(shape=(1, 1), buffer_factor=2)
+    cb_a = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
 
-    # Test DMA from tensor to circular buffer
+    # Test copy from tensor to circular buffer
     cb_view = cb_a.reserve()
     tensor_slice = accessor_a[slice(0, 1), slice(0, 1)]  # Single tile
 
-    # DMA operation
-    tx = dma(tensor_slice, cb_view)
+    # Copy operation
+    tx = copy(tensor_slice, cb_view)
     tx.wait()
     cb_a.push()
 
-    # Test DMA from circular buffer to tensor
+    # Test copy from circular buffer to tensor
     cb_read_view = cb_a.wait()
     output_tensor = tu.zeros(*TILE_SHAPE)  # Single tile output
 
-    # Copy through DMA
-    tx2 = dma(cb_read_view, output_tensor)
+    # Copy operation
+    tx2 = copy(cb_read_view, output_tensor)
     tx2.wait()
     cb_a.pop()
 
@@ -112,24 +113,24 @@ def test_dma_operations():
     assert output_tensor.shape == TILE_SHAPE
     # The output tensor should now contain the data from the circular buffer
 
-    print("DMA operations test passed!")
+    print("Copy operations test passed!")
 
 
 def test_error_handling():
     """Test error conditions."""
     # Test invalid shape
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(0, 1))  # Invalid shape
+        CircularBuffer[torch.Tensor](shape=(0, 1))  # Invalid shape
 
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(1, 2, 3))  # type: ignore # Wrong shape dimensions
+        CircularBuffer[torch.Tensor](shape=(1, 2, 3))  # type: ignore # Wrong shape dimensions
 
     # Test invalid buffer factor
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(1, 1), buffer_factor=0)
+        CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=0)
 
     # Test operations without proper setup
-    cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
 
     # Can't push without reserve - CBAPI will catch this
     with pytest.raises(CBContractError):
@@ -139,9 +140,9 @@ def test_error_handling():
     with pytest.raises(CBContractError):
         cb.pop()
 
-    # Test unsupported DMA operations with wrong types
-    with pytest.raises(ValueError, match="No DMA handler registered"):
-        tx = dma("invalid_source", "invalid_dest")  # type: ignore
+    # Test unsupported copy operations with wrong types
+    with pytest.raises(ValueError, match="No copy handler registered"):
+        copy("invalid_source", "invalid_dest")  # type: ignore
 
     print("Error handling test passed!")
 
@@ -162,10 +163,10 @@ def test_example_usage_pattern():
     c_accessor = TensorAccessor(c_in, index_type=IndexType.TILE)
 
     # Create circular buffers like in the example
-    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
-    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
-    c_in_cb = CircularBuffer(shape=(1, 1), buffer_factor=2)
-    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2)
+    a_in_cb = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
+    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
+    c_in_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
 
     # Verify the circular buffers were created correctly
     assert a_in_cb.shape == (granularity, 1)
@@ -177,14 +178,14 @@ def test_example_usage_pattern():
     # Simulate data movement operations
     c_block = c_in_cb.reserve()
     c_slice = c_accessor[slice(0, 1), slice(0, 1)]
-    tx = dma(c_slice, c_block)
+    tx = copy(c_slice, c_block)
     tx.wait()
     c_in_cb.push()
 
     # Simulate some compute pattern
     a_block = a_in_cb.reserve()
     a_slice = a_accessor[slice(0, granularity), slice(0, 1)]
-    tx = dma(a_slice, a_block)
+    tx = copy(a_slice, a_block)
     tx.wait()
     a_in_cb.push()
 
@@ -203,10 +204,154 @@ def test_example_usage_pattern():
     print("Example usage pattern test passed!")
 
 
+def test_make_circular_buffer_like_basic():
+    """Test make_circular_buffer_like with basic usage."""
+    from python.sim import ttl
+
+    # Create a tensor
+    x = tu.zeros(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
+
+    # Create a circular buffer like x
+    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
+
+    # Verify it's a CircularBuffer with correct properties
+    assert isinstance(x_cb, CircularBuffer)
+    assert x_cb.shape == (1, 1)
+    assert x_cb.capacity_tiles == 2
+    assert x_cb.buffer_factor == 2
+
+    # Test that it works with the tensor type
+    write_view = x_cb.reserve()
+    write_view[0] = tu.ones(*TILE_SHAPE)
+    x_cb.push()
+
+    read_view = x_cb.wait()
+    assert read_view[0] is not None
+    x_cb.pop()
+
+    print("make_circular_buffer_like basic test passed!")
+
+
+def test_make_circular_buffer_like_infers_type():
+    """Test that make_circular_buffer_like correctly infers the element type."""
+    from python.sim import ttl
+
+    # Create a tensor
+    tensor = tu.randn(TILE_SHAPE[0], TILE_SHAPE[1])
+
+    # Create a circular buffer like the tensor
+    cb = ttl.make_circular_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
+
+    # Verify properties
+    assert cb.shape == (2, 2)
+    assert cb.capacity_tiles == 12  # 2*2*3
+    assert cb.buffer_factor == 3
+
+    # Verify it works with tensor operations
+    block = cb.reserve()
+    # Write data to all tiles in the block
+    for i in range(len(block)):
+        block[i] = tu.ones(*TILE_SHAPE)
+    assert len(block) == 4  # 2*2 tiles
+    cb.push()
+
+    read_block = cb.wait()
+    assert len(read_block) == 4  # 2*2 tiles
+    cb.pop()
+
+    print("make_circular_buffer_like type inference test passed!")
+
+
+def test_make_circular_buffer_like_multiple_tensors():
+    """Test make_circular_buffer_like with multiple different tensors."""
+    from python.sim import ttl
+
+    # Create different tensors
+    a = tu.randn(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
+    b = tu.zeros(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
+    c = tu.ones(TILE_SHAPE[0], TILE_SHAPE[1])
+
+    # Create circular buffers for each
+    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(b, shape=(2, 1), buffer_factor=2)
+    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 2), buffer_factor=3)
+
+    # Verify all have correct properties
+    assert a_cb.shape == (1, 1)
+    assert a_cb.capacity_tiles == 2
+
+    assert b_cb.shape == (2, 1)
+    assert b_cb.capacity_tiles == 4  # 2*1*2
+
+    assert c_cb.shape == (1, 2)
+    assert c_cb.capacity_tiles == 6  # 1*2*3
+
+    # Verify they all work independently
+    for cb in [a_cb, b_cb, c_cb]:
+        block = cb.reserve()
+        assert len(block) > 0
+        # Write data to all tiles
+        for i in range(len(block)):
+            block[i] = tu.ones(*TILE_SHAPE)
+        cb.push()
+        read_block = cb.wait()
+        assert read_block is not None
+        cb.pop()
+
+    print("make_circular_buffer_like multiple tensors test passed!")
+
+
+def test_make_circular_buffer_like_with_example_pattern():
+    """Test make_circular_buffer_like with realistic example pattern."""
+    from python.sim import ttl
+
+    # Simulate example usage
+    a_in = tu.randn(128, 128)
+    b_in = tu.randn(128, 128)
+    out = tu.zeros(128, 128)
+
+    granularity = 4
+    buffer_factor = 2
+
+    # Create circular buffers using make_circular_buffer_like
+    a_cb = ttl.make_circular_buffer_like(
+        a_in, shape=(granularity, 1), buffer_factor=buffer_factor
+    )
+    b_cb = ttl.make_circular_buffer_like(
+        b_in, shape=(granularity, 1), buffer_factor=buffer_factor
+    )
+    out_cb = ttl.make_circular_buffer_like(
+        out, shape=(granularity, 1), buffer_factor=buffer_factor
+    )
+
+    # Verify all buffers have correct configuration
+    for cb in [a_cb, b_cb, out_cb]:
+        assert cb.shape == (granularity, 1)
+        assert cb.capacity_tiles == granularity * buffer_factor
+
+    # Test basic workflow
+    a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
+    a_block = a_cb.reserve()
+    a_slice = a_accessor[slice(0, granularity), slice(0, 1)]
+    tx = copy(a_slice, a_block)
+    tx.wait()
+    a_cb.push()
+
+    read_block = a_cb.wait()
+    assert len(read_block) == granularity
+    a_cb.pop()
+
+    print("make_circular_buffer_like example pattern test passed!")
+
+
 if __name__ == "__main__":
     test_circular_buffer_basic()
     test_circular_buffer_multi_tile()
-    test_dma_operations()
+    test_copy_operations()
     test_error_handling()
     test_example_usage_pattern()
+    test_make_circular_buffer_like_basic()
+    test_make_circular_buffer_like_infers_type()
+    test_make_circular_buffer_like_multiple_tensors()
+    test_make_circular_buffer_like_with_example_pattern()
     print("All CircularBuffer tests passed!")

@@ -12,7 +12,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_matmul(lhs, rhs, out):
     @compute()
     def mm_compute(
