@@ -14,6 +14,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttlang/Dialect/Utils/LayoutUtils.h"
@@ -190,6 +191,14 @@ static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
 }
 
+static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
+  auto xfTy = llvm::dyn_cast<TransferHandleType>(t);
+  if (!xfTy) {
+    return std::nullopt;
+  }
+  return xfTy.getKind();
+}
+
 static FailureOr<Value>
 materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
   if (!llvm::isa<RankedTensorType>(tensor.getType())) {
@@ -233,33 +242,20 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
   // Issue: #84.
   auto nocSrc = makeZeroI32(loc, rewriter);
   auto nocDst = makeZeroI32(loc, rewriter);
-  auto placeholderAccessor = buildTensorAccessor(
-      loc, rewriter, makeZeroI32(loc, rewriter), makeZeroI32(loc, rewriter),
-      makeZeroI32(loc, rewriter), makeZeroI32(loc, rewriter));
 
+  // Per TT-Lang spec, ttl.copy is non-blocking: it initiates the async DMA
+  // transfer and returns a handle that is synchronized by ttl.wait.
+  //
+  // TODO(ttl): Compute the destination NOC address from the CB operand and the
+  // requested tile coordinates (when we model CB handles and CB addressing).
+  // Issue: #80.
   rewriter.create<ttk::NocAsyncReadTileOp>(loc, nocSrc, srcAccessor, nocDst);
-  // TODO(ttl): Use TRID-specific read barrier keyed by the transfer handle.
-  // Issue: #85.
-  rewriter.create<ttk::NocAsyncReadBarrierOp>(loc);
 
-  // TODO(ttl): Materialize a real CB value and plumb it into the write path.
-  // Issue: #79.
-  auto tkCbTy = typeConverter.convertType(op.getDst().getType());
-  auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
-                                 rewriter, loc, tkCbTy);
-
-  rewriter.create<ttk::NocAsyncWriteTileOp>(loc, makeZeroI32(loc, rewriter),
-                                            placeholderAccessor,
-                                            makeZeroI32(loc, rewriter));
-  // TODO(ttl): Use TRID-specific write barrier keyed by the transfer handle.
-  // Issue: #86.
-  rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
-
-  auto handleTy =
-      typeConverter.convertType(TransferHandleType::get(rewriter.getContext()));
+  // Encode direction in the handle type (async-token-like design).
+  auto handleTy = typeConverter.convertType(
+      TransferHandleType::get(rewriter.getContext(), TransferKind::read));
   auto handle = rewriter.create<UnrealizedConversionCastOp>(
       loc, handleTy, ValueRange{makeZeroI32(loc, rewriter)});
-  (void)cbVal;
   rewriter.replaceOp(op, handle.getResult(0));
   return success();
 }
@@ -276,14 +272,14 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
                                  rewriter, loc, tkCbTy);
   (void)cbVal;
 
+  // Per TT-Lang spec, ttl.copy is non-blocking: it initiates the async DMA
+  // transfer and returns a handle that is synchronized by ttl.wait. This is
+  // lowered to a TTKernel NOC async write.
   rewriter.create<ttk::NocAsyncWriteTileOp>(
       loc, makeZeroI32(loc, rewriter), dstAccessor, makeZeroI32(loc, rewriter));
-  // TODO(ttl): Use TRID-specific write barrier keyed by the transfer handle.
-  // Issue: #86.
-  rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
 
-  auto handleTy =
-      typeConverter.convertType(TransferHandleType::get(rewriter.getContext()));
+  auto handleTy = typeConverter.convertType(
+      TransferHandleType::get(rewriter.getContext(), TransferKind::write));
   auto handle = rewriter.create<UnrealizedConversionCastOp>(
       loc, handleTy, ValueRange{makeZeroI32(loc, rewriter)});
   rewriter.replaceOp(op, handle.getResult(0));
@@ -354,12 +350,25 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(WaitOp op, OpAdaptor /*adaptor*/,
+  matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // TODO(ttl): Lower ttl.wait to a TRID-specific barrier keyed by the
-    // transfer handle.
+    // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
+    // handle (read vs write barrier based on transfer direction).
     // Issue: #87.
-    rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+    //
+    // MVP behavior: determine direction from the transfer handle type and emit
+    // the corresponding TTKernel global barrier. If the handle is untyped,
+    // conservatively emit both barriers.
+    if (auto kind = getTransferKindFromHandleType(adaptor.getXf().getType())) {
+      if (*kind == TransferKind::read) {
+        rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+      } else {
+        rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
+      }
+    } else {
+      rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+      rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
+    }
     rewriter.eraseOp(op);
     return success();
   }

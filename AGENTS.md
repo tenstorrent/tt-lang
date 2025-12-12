@@ -34,6 +34,7 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 ## MLIR implementation
 - Follow the conventions in llvm-project for directory organization and naming
   conventions.
+- **Dialect design**: Don’t recover semantic info by chasing SSA, encode it in the operations/types/etc.
 - **MLIR passes (modern pattern)**: Define passes in `Passes.td`; let TableGen
   emit factories/registration. In the `.cpp`, include `Passes.h.inc` with
   `GEN_PASS_DEF_...`, derive from the generated `...Base`, implement
@@ -46,6 +47,7 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   (e.g., `TTLConvert...`). In `dependentDialects`, list only dialects for ops
   the pass creates; do not include the starting dialect.
 - **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
+- Use enums instead of integer literals for encoding items in a category.
 
 ### Pattern Rewriter Error Handling
 - **NEVER call `emitOpError()` inside a pattern rewriter** - causes pass to

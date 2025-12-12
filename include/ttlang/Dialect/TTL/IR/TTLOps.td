@@ -98,11 +98,21 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     ```mlir
     %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
-    ttl.wait %xf
+    ttl.wait %xf : !ttl.xf
+    ```
+
+    Direction-typed transfer handles carry the transfer direction:
+
+    ```mlir
+    %xf_read = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf<read>
+    ttl.wait %xf_read : !ttl.xf<read>
+
+    %xf_write = ttl.copy %cb, %t : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.xf<write>
+    ttl.wait %xf_write : !ttl.xf<write>
     ```
   }];
   let arguments = (ins TTL_TransferHandle:$xf);
-  let assemblyFormat = "$xf attr-dict";
+  let assemblyFormat = "$xf attr-dict `:` type($xf)";
   let hasVerifier = 1;
 }
 

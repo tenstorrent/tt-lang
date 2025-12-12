@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
+include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
 include "mlir/IR/AttrTypeBase.td"
 
 //===----------------------------------------------------------------------===//
@@ -35,6 +36,10 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
 
 def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
   let summary = "Handle for asynchronous TTL memory transfers";
+  let parameters = (ins
+    OptionalParameter<"std::optional<mlir::tt::ttl::TransferKind>">:$kind
+  );
+  let assemblyFormat = "(`<` $kind^ `>`)?";
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

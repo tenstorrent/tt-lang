@@ -10,7 +10,7 @@ module {
   func.func @tensor_to_tensor_invalid(%arg0: tensor<32x32xf32, #layout>, %arg1: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-error @below {{expects exactly one operand to be !ttl.cb}}
     %xf = ttl.copy %arg0, %arg1 : (tensor<32x32xf32, #layout>, tensor<32x32xf32, #layout>) -> !ttl.xf
-    ttl.wait %xf
+    ttl.wait %xf : !ttl.xf
     func.return
   }
 }
@@ -24,7 +24,7 @@ module {
     %cb1 = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects exactly one operand to be !ttl.cb}}
     %xf = ttl.copy %cb0, %cb1 : (!ttl.cb<[1, 1], f32, 2>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
-    ttl.wait %xf
+    ttl.wait %xf : !ttl.xf
     func.return
   }
 }
@@ -37,7 +37,7 @@ module {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects tensor operand to carry TTNNLayout encoding}}
     %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
-    ttl.wait %xf
+    ttl.wait %xf : !ttl.xf
     func.return
   }
 }
@@ -51,7 +51,7 @@ module {
     %c0 = arith.constant 0 : i32
     // expected-error @below {{expects the non-CB operand to be a ranked tensor}}
     %xf = ttl.copy %c0, %cb : (i32, !ttl.cb<[1, 1], f32, 2>) -> !ttl.xf
-    ttl.wait %xf
+    ttl.wait %xf : !ttl.xf
     func.return
   }
 }
@@ -77,7 +77,7 @@ module {
 module {
   func.func @wait_without_copy_invalid(%xf: !ttl.xf) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-error @below {{expects operand to be the result of ttl.copy}}
-    ttl.wait %xf
+    ttl.wait %xf : !ttl.xf
     func.return
   }
 }
@@ -94,7 +94,7 @@ module {
     %handles = tensor.insert %xf into %handles0[%c0] : tensor<?x!ttl.xf>
     %loaded = tensor.extract %handles[%c0] : tensor<?x!ttl.xf>
     // expected-error @below {{expects operand to be the result of ttl.copy}}
-    ttl.wait %loaded
+    ttl.wait %loaded : !ttl.xf
     func.return
   }
 }
@@ -125,7 +125,7 @@ module {
     // Wait loop covers only [0, 3) while copy loop covers [0, 4).
     scf.for %i = %c0 to %c3 step %c1 {
       %xf = tensor.extract %handles[%i] : tensor<?x!ttl.xf>
-      ttl.wait %xf
+      ttl.wait %xf : !ttl.xf
     }
     func.return
   }
@@ -152,7 +152,7 @@ module {
       // Intentionally missing: ttl.wait %prev
       scf.yield %xf_next : !ttl.xf
     }
-    ttl.wait %last
+    ttl.wait %last : !ttl.xf
     func.return
   }
 }
