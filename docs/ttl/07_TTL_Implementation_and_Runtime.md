@@ -97,10 +97,11 @@ class TensorBlock:
     def __matmul__(ast_self, rhs):
         return ttl.block_matmul(ast_self, rhs)
 
-    def store(ast_self, value):
-        # Python API: block.store(value)
+    def store(ast_self, value, acc=False):
+        # Python API: block.store(value) or block.store(value, acc=True)
         # Maps to ttl.block_store operation
-        return ttl.block_store(ast_self, value)
+        # acc=True enables accumulation into destination (for matmul patterns)
+        return ttl.block_store(ast_self, value, acc=acc)
 ```
 
 **Math Functions:**

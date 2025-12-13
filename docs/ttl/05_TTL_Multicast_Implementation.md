@@ -140,8 +140,8 @@ The pipe abstraction captures multicast topology:
 ```python
 # TT-Lang DSL:
 net = ttl.PipeNet([ttl.Pipe(
-    src_core=(0, 0),
-    dst_core_range=(slice(1, 4), 0)  # Cores (1,0), (2,0), (3,0)
+    src=(0, 0),
+    dst_range=(slice(1, 4), 0)  # Cores (1,0), (2,0), (3,0)
 )])
 
 def pipe_src(pipe):
@@ -171,17 +171,19 @@ my_sem = ttl.Semaphore(initial_value=0)
 remote_sem = my_sem.get_remote((0, 0))
 mcast_sem = my_sem.get_remote_multicast()
 
-my_sem.wait_eq(num_cores)
-my_sem.set(0)
-remote_sem.inc(1)
-mcast_sem.set(1)
+my_sem.wait_eq(num_cores)  # Wait for equality
+my_sem.wait_min(threshold) # Wait for value >= threshold
+my_sem.set(0)              # Set local semaphore value
+remote_sem.inc(1)          # Increment remote semaphore (unicast only)
+mcast_sem.set(1)           # Set remote semaphore (unicast or multicast)
 ```
 
 Captured information:
-- Local vs remote semaphore distinction
+- Local vs remote semaphore distinction (via get_remote/get_remote_multicast)
 - Unicast vs multicast remote operations
-- Wait conditions (equal, >=)
-- Increment and set operations
+- Wait conditions: `wait_eq(n)` for equality, `wait_min(n)` for >= threshold
+- Increment (`inc`) and set (`set`) operations
+- Note: Multicast semaphores support `set` but not `inc` (hardware limitation)
 
 
 ## TTKernel Operation Coverage
@@ -277,7 +279,7 @@ Coordinate spaces:
 
 Logical coordinates (TTL):
 - `ttl.core(dims=2)` returns logical grid coordinates (e.g., (0,0), (1,0), ...)
-- `ttl.Pipe(src_core=(0,0), dst_core_range=(slice(1,4), 0))` uses logical
+- `ttl.Pipe(src=(0,0), dst_range=(slice(1,4), 0))` uses logical
   coordinates
 - Architecture-independent representation
 
@@ -316,21 +318,21 @@ Hardware operation selection:
   `ttkernel.noc_async_write_multicast_loopback_src`,
   `ttkernel.noc_semaphore_set_multicast_loopback_src`
 
-The `TTLLowerDataMovement` pass performs this detection by checking if src_core
-falls within dst_core_range bounds. Users specify the destination range
+The `TTLLowerDataMovement` pass performs this detection by checking if src
+falls within dst_range bounds. Users specify the destination range
 naturally, and the compiler infers the correct hardware operation.
 
 Examples:
 
 Multicast column (sender excluded):
 ```python
-ttl.Pipe(src_core=(x, 0), dst_core_range=(slice(x, x+1), slice(1, grid_y)))
+ttl.Pipe(src=(x, 0), dst_range=(slice(x, x+1), slice(1, grid_y)))
 ```
 Sender at (x,0) not in range [1, grid_y) → non-loopback operation
 
 Symmetric barrier (sender included):
 ```python
-ttl.Pipe(src_core=(0, 0), dst_core_range=(slice(0, 4), 0))
+ttl.Pipe(src=(0, 0), dst_range=(slice(0, 4), 0))
 ```
 Sender at (0,0) in range [0, 4) → loopback operation automatically selected
 
@@ -394,7 +396,7 @@ Files created:
 Tasks:
 - Extend `TTLInferPipeSemaphores` to handle multicast patterns
 - Insert semaphore operations in if_src and if_dst region bodies
-- Compute num_dests from dst_core_range slices
+- Compute num_dests from dst_range slices
 - Handle loopback case (sender signals self before multicast)
 - Add lit tests for multicast and loopback patterns
 
@@ -413,7 +415,7 @@ Tasks:
 - Update `TTLLowerDataMovement` pass to handle device coordinate generation
 - Insert `ttkernel.my_x` / `ttkernel.my_y` for current core coordinates
 - Compute multicast range bounds using affine arithmetic
-- Detect loopback by checking if src_core falls within dst_core_range
+- Detect loopback by checking if src falls within dst_range
 - Select loopback vs non-loopback TTKernel operations based on detection
 - Implement `MemoryEffectsOpInterface` for semaphore operations with
   `SemaphoreResource`

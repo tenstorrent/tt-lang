@@ -204,7 +204,17 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
 ```tablegen
 def TTL_Semaphore : TTL_Type<"Semaphore", "semaphore"> {
   let summary = "Synchronization primitive for inter-core coordination";
-  let parameters = (ins DefaultValuedParameter<"bool", "false">:$isRemote);
+  let description = [{
+    Semaphore type for inter-core synchronization. Per TT-Lang spec, semaphores
+    are created via `ttl.Semaphore(initial_value=N)` constructor.
+
+    Remote semaphore references are obtained via:
+    - `sem.get_remote(core)` for unicast operations
+    - `sem.get_remote_multicast(core_range)` for multicast operations
+
+    The type itself is opaque; remote vs local distinction is tracked through
+    SSA def-use chains (values from get_remote/get_remote_multicast ops).
+  }];
 }
 ```
 
@@ -228,37 +238,37 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
     the TTL dialect MVP restricts to 2D to simplify coordinate translation and multicast
     range construction during lowering.
 
-    Unicast: src_core=[x,y], dst_core=[x',y']
-    Multicast: src_core=[x,y], dst_core_range=[slice(x0,x1,step), slice(y0,y1,step)]
+    Unicast: src=[x,y], dst=[x',y']
+    Multicast: src=[x,y], dst_range=[slice(x0,x1,step), slice(y0,y1,step)]
 
-    Each slice in dst_core_range is a tuple (start, stop, step) per TT-Lang spec.
+    Each slice in dst_range is a tuple (start, stop, step) per TT-Lang spec.
     The range is half-open: [start, stop). Step defaults to 1 if not specified.
 
-    Arity requirement: The dst_core_range tuple must have the same arity as the
+    Arity requirement: The dst_range tuple must have the same arity as the
     grid rank to prevent ambiguity. For a 2D grid (grid_x, grid_y), both dimensions
     must be specified explicitly. Use slice(x, x+1) for a single core in that dimension.
 
     Example (2D grid):
-      Valid: dst_core_range=(slice(x, x+1), slice(1, grid_y))  // Explicit in both dims
-      Invalid: dst_core_range=(x, slice(1, grid_y))  // Ambiguous: int x slice interpretation
+      Valid: dst_range=(slice(x, x+1), slice(1, grid_y))  // Explicit in both dims
+      Invalid: dst_range=(x, slice(1, grid_y))  // Ambiguous: int x slice interpretation
 
     Loopback inference:
-    The compiler automatically detects when src_core is within dst_core_range and
+    The compiler automatically detects when src is within dst_range and
     selects the appropriate loopback multicast operation during lowering in
     TTLLowerDataMovement pass.
 
     Lowering:
-    - If src_core NOT in dst_core_range → ttkernel.noc_async_write_multicast, ttkernel.noc_semaphore_set_multicast
-    - If src_core IN dst_core_range → ttkernel.noc_async_write_multicast_loopback_src, ttkernel.noc_semaphore_set_multicast_loopback_src
+    - If src NOT in dst_range → ttkernel.noc_async_write_multicast, ttkernel.noc_semaphore_set_multicast
+    - If src IN dst_range → ttkernel.noc_async_write_multicast_loopback_src, ttkernel.noc_semaphore_set_multicast_loopback_src
 
     Examples from TT-Lang:
       Multicast column (sender excluded):
-        ttl.Pipe(src_core=(x, 0), dst_core_range=(slice(x, x+1), slice(1, grid_y)))
+        ttl.Pipe(src=(x, 0), dst_range=(slice(x, x+1), slice(1, grid_y)))
         Pipe from (x,0) to cores (x, 1), (x, 2), ..., (x, grid_y-1)
         Sender at (x,0) not in range [1, grid_y) → non-loopback operation
 
       Symmetric barrier (sender included):
-        ttl.Pipe(src_core=(0, 0), dst_core_range=(slice(0, 4), 0))
+        ttl.Pipe(src=(0, 0), dst_range=(slice(0, 4), 0))
         All cores in range [0,4) receive signal, including sender at (0,0)
         Sender at (0,0) in range [0, 4) → loopback operation automatically selected
   }];
@@ -289,9 +299,9 @@ def TTL_PipeNet : TTL_Type<"PipeNet", "pipenet"> {
     PipeNet operations are expanded and removed:
     - ttl.create_pipenet %pipe1, %pipe2, ... → stores pipe list in operation operands
     - ttl.if_pipe_src %net → compiler extracts pipes from create_pipenet, inlines region
-      body for each pipe where current core matches src_core, generates ttkernel NOC operations
-    - ttl.if_pipe_dst %net → compiler extracts pipes, inlines body for cores matching dst_core
-      or dst_core_range, generates ttkernel NOC operations
+      body for each pipe where current core matches src, generates ttkernel NOC operations
+    - ttl.if_pipe_dst %net → compiler extracts pipes, inlines body for cores matching dst
+      or dst_range, generates ttkernel NOC operations
     - After TTLLowerDataMovement pass: PipeNet SSA values and operations are removed, replaced
       with ttkernel.noc_async_write and semaphore operations
 
@@ -357,7 +367,7 @@ def TTL_SliceAttr : AttrDef<TTL_Dialect, "Slice"> {
     SliceAttr converts to affine loops and TTKernel multicast NOC operations.
 
     Case 1: Contiguous rectangular range (step=1 for all dimensions)
-      dst_core_range = [slice(x0,x1,1), slice(y0,y1,1)]
+      dst_range = [slice(x0,x1,1), slice(y0,y1,1)]
 
       Lowers directly to TTKernel rectangular multicast:
         %noc_addr = ttkernel.get_noc_multicast_addr(
@@ -367,7 +377,7 @@ def TTL_SliceAttr : AttrDef<TTL_Dialect, "Slice"> {
         ttkernel.noc_async_write_multicast(%src_addr, %noc_addr, %size)
 
     Case 2: Strided range (step != 1 in any dimension)
-      dst_core_range = [slice(0,8,2), slice(0,4,1)]  // Every other core in x
+      dst_range = [slice(0,8,2), slice(0,4,1)]  // Every other core in x
 
       Lowers to affine loop with unicast per core:
         affine.for %x = 0 to 8 step 2 {  // Affine loop encodes step directly

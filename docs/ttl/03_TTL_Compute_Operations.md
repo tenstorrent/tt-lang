@@ -203,25 +203,28 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
 def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
   let summary = "Create inter-core pipe for unicast or multicast";
   let arguments = (ins
-    I64ArrayAttr:$src_core,                       // Source core [x, y, ...]
-    OptionalAttr<I64ArrayAttr>:$dst_core,         // Unicast destination [x, y, ...]
-    OptionalAttr<ArrayAttr>:$dst_core_range       // Multicast range [SliceAttr, SliceAttr, ...]
+    I64ArrayAttr:$src,                            // Source core [x, y, ...]
+    OptionalAttr<I64ArrayAttr>:$dst,              // Unicast destination [x, y, ...]
+    OptionalAttr<ArrayAttr>:$dst_range            // Multicast range [SliceAttr, SliceAttr, ...]
   );
   let results = (outs TTL_Pipe:$pipe);
   let description = [{
-    Python API `ttl.Pipe(src_core=..., dst_core=...)` or
-    `ttl.Pipe(src_core=..., dst_core_range=...)` maps to this operation.
+    Python API `ttl.Pipe(src=..., dst=...)` maps to this operation.
+
+    Per TT-Lang spec, the `dst` argument determines unicast vs multicast:
+    - Unicast: dst is a single core coordinate tuple (e.g., `(0, y)`)
+    - Multicast: dst contains slice objects (e.g., `(x, slice(1, grid_y))`)
 
     Unicast example:
-      Python: ttl.Pipe(src_core=(1,0), dst_core=(0,0))
-      TTL IR: ttl.create_pipe src_core=[1,0], dst_core=[0,0]
+      Python: ttl.Pipe(src=(1,0), dst=(0,0))
+      TTL IR: ttl.create_pipe src=[1,0], dst=[0,0]
 
     Multicast example (preserves slice semantics):
-      Python: ttl.Pipe(src_core=(x,0), dst_core_range=(slice(x,x+1), slice(1,grid_y)))
-      TTL IR: ttl.create_pipe src_core=[x,0],
-                              dst_core_range=[#ttl.slice<x,x+1,1>, #ttl.slice<1,grid_y,1>]
+      Python: ttl.Pipe(src=(x,0), dst=(x, slice(1, grid_y)))
+      TTL IR: ttl.create_pipe src=[x,0],
+                              dst_range=[#ttl.slice<x,x+1,1>, #ttl.slice<1,grid_y,1>]
 
-    The dst_core_range encodes Python slice objects per dimension with (start, stop, step).
+    The dst_range encodes Python slice objects per dimension with (start, stop, step).
     Half-open intervals: [start, stop). Step enables patterns like "every other core".
   }];
 }
@@ -229,10 +232,21 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
 def TTL_CreateSemaphoreOp : TTL_Op<"create_semaphore"> {
   let summary = "Create semaphore with initial value";
   let arguments = (ins
-    I32Attr:$initial_value,
-    OptionalAttr<BoolAttr>:$is_remote
+    I32Attr:$initial_value
   );
   let results = (outs TTL_Semaphore:$semaphore);
+  let description = [{
+    Python API `ttl.Semaphore(initial_value=N)` maps to this operation.
+
+    Creates a local semaphore with the specified initial value. To obtain
+    remote semaphore references for inter-core operations, use:
+    - `ttl.get_remote_semaphore` for unicast remote operations
+    - `ttl.get_remote_multicast_semaphore` for multicast remote operations
+
+    Example:
+      Python: my_sem = ttl.Semaphore(initial_value=0)
+      TTL IR: %sem = ttl.create_semaphore initial_value=0
+  }];
 }
 
 def TTL_GetRemoteSemaphoreOp : TTL_Op<"get_remote_semaphore"> {
@@ -715,10 +729,25 @@ This pattern enables:
 ```tablegen
 def TTL_BlockStoreOp : TTL_Op<"block_store"> {
   let summary = "Store computation result to circular buffer block";
-  let arguments = (ins TTL_Block:$dst, TTL_Block:$src);
+  let arguments = (ins
+    TTL_Block:$dst,
+    TTL_Block:$src,
+    OptionalAttr<BoolAttr>:$acc  // Accumulate into destination (default: false)
+  );
   let description = [{
-    Python API `block.store(value)` maps to this operation.
-    Blocking operation that materializes computation result and stores in block.
+    Python API `block.store(value)` or `block.store(value, acc=True)` maps to
+    this operation. Blocking operation that materializes computation result and
+    stores in block.
+
+    Accumulation mode (acc=True):
+    - When acc=True, the source value is added to the existing destination value
+    - Enables patterns like: y_blk.store(c_blk, acc=True) followed by
+      y_blk.store(a_blk @ b_blk) to accumulate matmul results
+    - Useful for tiled matrix multiplication where partial products accumulate
+
+    Example from TT-Lang spec:
+      y_blk.store(c_blk, acc=True)    # Initialize with bias, enable accumulation
+      y_blk.store(a_blk @ b_blk)      # Accumulate matmul result
 
     Block expression semantics:
     - Block expressions (e.g., `a_blk ** 2`, `a_blk + b_blk`) are evaluated lazily
@@ -728,7 +757,9 @@ def TTL_BlockStoreOp : TTL_Op<"block_store"> {
 
     Lowers to TTKernel operations:
     - affine.for loop over block tiles:
-      - ttkernel.pack_tile(dst_idx, cb, tile_idx)
+      - Without acc: ttkernel.pack_tile(dst_idx, cb, tile_idx)
+      - With acc=True: ttkernel.pack_tile(dst_idx, cb, tile_idx) with accumulation
+        mode enabled via prior init call
 
     Common usage: Part of store/wait/pop pattern for intermediate value reuse
     (see pattern explanation above).

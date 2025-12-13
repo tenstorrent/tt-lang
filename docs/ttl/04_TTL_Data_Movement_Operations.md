@@ -82,25 +82,28 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
 def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
   let summary = "Create inter-core pipe for unicast or multicast";
   let arguments = (ins
-    I64ArrayAttr:$src_core,                       // Source core [x, y, ...]
-    OptionalAttr<I64ArrayAttr>:$dst_core,         // Unicast destination [x, y, ...]
-    OptionalAttr<ArrayAttr>:$dst_core_range       // Multicast range [SliceAttr, SliceAttr, ...]
+    I64ArrayAttr:$src,                            // Source core [x, y, ...]
+    OptionalAttr<I64ArrayAttr>:$dst,              // Unicast destination [x, y, ...]
+    OptionalAttr<ArrayAttr>:$dst_range            // Multicast range [SliceAttr, SliceAttr, ...]
   );
   let results = (outs TTL_Pipe:$pipe);
   let description = [{
-    Python API `ttl.Pipe(src_core=..., dst_core=...)` or
-    `ttl.Pipe(src_core=..., dst_core_range=...)` maps to this operation.
+    Python API `ttl.Pipe(src=..., dst=...)` maps to this operation.
+
+    Per TT-Lang spec, the `dst` argument determines unicast vs multicast:
+    - Unicast: dst is a single core coordinate tuple (e.g., `(0, y)`)
+    - Multicast: dst contains slice objects (e.g., `(x, slice(1, grid_y))`)
 
     Unicast example:
-      Python: ttl.Pipe(src_core=(1,0), dst_core=(0,0))
-      TTL IR: ttl.create_pipe src_core=[1,0], dst_core=[0,0]
+      Python: ttl.Pipe(src=(1,0), dst=(0,0))
+      TTL IR: ttl.create_pipe src=[1,0], dst=[0,0]
 
     Multicast example (preserves slice semantics):
-      Python: ttl.Pipe(src_core=(x,0), dst_core_range=(slice(x,x+1), slice(1,grid_y)))
-      TTL IR: ttl.create_pipe src_core=[x,0],
-                              dst_core_range=[#ttl.slice<x,x+1,1>, #ttl.slice<1,grid_y,1>]
+      Python: ttl.Pipe(src=(x,0), dst=(x, slice(1, grid_y)))
+      TTL IR: ttl.create_pipe src=[x,0],
+                              dst_range=[#ttl.slice<x,x+1,1>, #ttl.slice<1,grid_y,1>]
 
-    The dst_core_range encodes Python slice objects per dimension with (start, stop, step).
+    The dst_range encodes Python slice objects per dimension with (start, stop, step).
     Half-open intervals: [start, stop). Step enables patterns like "every other core".
   }];
 }
@@ -119,15 +122,15 @@ def TTL_CreatePipeNetOp : TTL_Op<"create_pipenet"> {
     - Lowering: TTLLowerDataMovement extracts pipes, generates ttkernel NOC ops per pipe
 
     Example:
-      Python:
+      Python (using TT-Lang spec naming src/dst):
         net = ttl.PipeNet([
-          ttl.Pipe(src_core=(0,0), dst_core_range=(slice(1,4), 0)),
-          ttl.Pipe(src_core=(1,0), dst_core=(0,0))
+          ttl.Pipe(src=(0,0), dst=(slice(1,4), 0)),  # Multicast via slice in dst
+          ttl.Pipe(src=(1,0), dst=(0,0))              # Unicast
         ])
 
       TTL IR:
-        %pipe1 = ttl.create_pipe src_core=[0,0], dst_core_range=[#ttl.slice<1,4,1>, 0]
-        %pipe2 = ttl.create_pipe src_core=[1,0], dst_core=[0,0]
+        %pipe1 = ttl.create_pipe src=[0,0], dst_range=[#ttl.slice<1,4,1>, 0]
+        %pipe2 = ttl.create_pipe src=[1,0], dst=[0,0]
         %net = ttl.create_pipenet %pipe1, %pipe2
 
     The PipeNet is used with ttl.if_pipe_src and ttl.if_pipe_dst operations.
@@ -272,7 +275,7 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
     Python API `net.if_src(pipe_src_callback)` maps to this operation, where `net`
     is a PipeNet object returned by `ttl.PipeNet([...])`.
 
-    Semantics: For each pipe in the network where current core matches src_core,
+    Semantics: For each pipe in the network where current core matches src,
     logically invoke the region body with that pipe as block argument. Invocations
     for different pipes may execute in parallel (independent pipe transfers).
 
@@ -291,9 +294,9 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
 
       TTL IR:
         // Example 1: Explicit pipe list
-        %pipe1 = ttl.create_pipe src_core=[0,0], dst_core=[1,0]
-        %pipe2 = ttl.create_pipe src_core=[0,0], dst_core=[2,0]
-        %pipe3 = ttl.create_pipe src_core=[0,0], dst_core=[3,0]
+        %pipe1 = ttl.create_pipe src=[0,0], dst=[1,0]
+        %pipe2 = ttl.create_pipe src=[0,0], dst=[2,0]
+        %pipe3 = ttl.create_pipe src=[0,0], dst=[3,0]
         %net = ttl.create_pipenet %pipe1, %pipe2, %pipe3
 
         // Example 2: Pipes from Python list comprehension (conceptual representation)
@@ -301,8 +304,8 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
         // unroll list comprehensions at compile time and emit all pipes as separate SSA
         // values passed to create_pipenet as variadic arguments, as shown in Example 1.
         %grid_x = ttl.grid_size dims=1
-        %pipe_0 = ttl.create_pipe src_core=[0,0], dst_core=[1,0]
-        %pipe_1 = ttl.create_pipe src_core=[0,0], dst_core=[2,0]
+        %pipe_0 = ttl.create_pipe src=[0,0], dst=[1,0]
+        %pipe_1 = ttl.create_pipe src=[0,0], dst=[2,0]
         // ... (one per grid_x value, unrolled at compile time)
         %net = ttl.create_pipenet %pipe_0, %pipe_1, ...
 
@@ -319,7 +322,7 @@ def TTL_IfPipeSrcOp : TTL_Op<"if_pipe_src"> {
         - If region has dependencies: serial execution (scf.for)
 
       Example (parallel - independent pipe writes):
-        // Core (0,0): matches pipe1 and pipe3 src_core
+        // Core (0,0): matches pipe1 and pipe3 src
         scf.forall (%pipe_idx) in (0, 2) {  // Parallel over pipe1, pipe3
           %pipe = select %pipe_idx : pipe1 or pipe3
           ttkernel.noc_async_write... using %pipe coordinates
@@ -338,7 +341,7 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
     is a PipeNet object returned by `ttl.PipeNet([...])`.
 
     Semantics: For each pipe in the network where current core matches the pipe's
-    dst_core (unicast) or is within dst_core_range (multicast), logically invoke
+    dst (unicast) or is within dst_range (multicast), logically invoke
     the region body with that pipe as block argument. Invocations for different
     pipes may execute in parallel.
 
@@ -348,7 +351,7 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
     Example:
       Python (TT-Lang spec):
         net = ttl.PipeNet([
-          ttl.Pipe(src_core=(x, 0), dst_core_range=(x, slice(1, grid_y)))
+          ttl.Pipe(src=(x, 0), dst_range=(x, slice(1, grid_y)))
           for x in range(grid_x)
         ])
         def pipe_dst(pipe):
@@ -364,8 +367,8 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
 
         // Simplified representation - actual lowering may inline the loop and
         // create all pipes as separate SSA values:
-        %pipe_0 = ttl.create_pipe src_core=[0,0], dst_core_range=[0, #ttl.slice<1,grid_y,1>]
-        %pipe_1 = ttl.create_pipe src_core=[1,0], dst_core_range=[1, #ttl.slice<1,grid_y,1>]
+        %pipe_0 = ttl.create_pipe src=[0,0], dst_range=[0, #ttl.slice<1,grid_y,1>]
+        %pipe_1 = ttl.create_pipe src=[1,0], dst_range=[1, #ttl.slice<1,grid_y,1>]
         // ... (one per grid_x value)
         %net = ttl.create_pipenet %pipe_0, %pipe_1, ...
 
@@ -377,7 +380,7 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
 
     Lowering to TTKernel:
       The pass queries the PipeNet for pipes matching current core (checking
-      dst_core or dst_core_range). Execution model determined by dependency analysis.
+      dst or dst_range). Execution model determined by dependency analysis.
 
     The region block argument receives each matching pipe, enabling pipe-specific operations.
   }];
@@ -468,34 +471,43 @@ detailed multicast patterns and C++ code generation examples.
 ### 4.6 Synchronization Operations
 
 ```tablegen
-def TTL_SemaphoreWaitOp : TTL_Op<"semaphore_wait"> {
-  let summary = "Wait for semaphore value condition";
+def TTL_SemaphoreWaitEqOp : TTL_Op<"semaphore_wait_eq"> {
+  let summary = "Wait for semaphore to equal specified value";
   let arguments = (ins
     TTL_Semaphore:$semaphore,
-    I32Attr:$value,
-    OptionalAttr<I32Attr>:$reset_value,  // Optional: set to this value after wait completes
-    OptionalAttr<StrAttr>:$comparison    // "equal" (default) or "min" (>=)
+    I32Attr:$value
   );
   let description = [{
-    Blocking operation that waits until semaphore meets the specified condition.
-    Comparison modes: "equal" (wait for exact value) or "min" (wait for value >= target).
+    Python API `sem.wait_eq(n)` maps to this operation.
 
-    Optional reset_value enables atomic wait-and-reset pattern for producer/consumer
-    coordination: wait for condition, then immediately reset semaphore to specified value.
+    Blocking operation that waits until semaphore equals the specified value.
 
-    Example producer/consumer barrier pattern:
-      // Consumer waits for N items, then resets to 0
-      ttl.semaphore_wait %sem, 5 {reset_value = 0, comparison = "equal"}
+    Example:
+      Python: my_sem.wait_eq(num_cores)
+      TTL IR: ttl.semaphore_wait_eq %sem, num_cores
 
-    Maps to TTKernel operations:
-      Without reset:
-        ttkernel.noc_semaphore_wait(sem_addr, value)  // or wait_min
+    Maps to TTKernel operation:
+      ttkernel.noc_semaphore_wait(sem_addr, value)
+  }];
+}
 
-      With reset (sequence):
-        ttkernel.noc_semaphore_wait(sem_addr, value)
-        ttkernel.noc_semaphore_set(local_core, sem_addr, reset_value)
+def TTL_SemaphoreWaitMinOp : TTL_Op<"semaphore_wait_min"> {
+  let summary = "Wait for semaphore to be at least specified value";
+  let arguments = (ins
+    TTL_Semaphore:$semaphore,
+    I32Attr:$value
+  );
+  let description = [{
+    Python API `sem.wait_min(n)` maps to this operation.
 
-    Note: Reset is a software pattern (wait + local set), not atomic hardware operation.
+    Blocking operation that waits until semaphore is >= the specified value.
+
+    Example:
+      Python: my_sem.wait_min(threshold)
+      TTL IR: ttl.semaphore_wait_min %sem, threshold
+
+    Maps to TTKernel operation:
+      ttkernel.noc_semaphore_wait_min(sem_addr, value)
   }];
 }
 
@@ -503,25 +515,33 @@ def TTL_SemaphoreSetOp : TTL_Op<"semaphore_set"> {
   let summary = "Set semaphore value (local or remote)";
   let arguments = (ins
     TTL_Semaphore:$semaphore,
-    I32Attr:$value,
-    OptionalAttr<I64ArrayAttr>:$core,      // For remote unicast
-    OptionalAttr<ArrayAttr>:$mcast_range   // For remote multicast [[x0,y0],[x1,y1]]
+    I32Attr:$value
   );
   let description = [{
-    Python API `semaphore.set(value)` and `remote_semaphore.set(value)` map
-    to this operation. For remote operations, use `ttl.get_remote_semaphore` or
-    `ttl.get_remote_multicast_semaphore` to create annotated semaphore references
-    first. The core/mcast_range attributes come from the remote semaphore reference.
+    Python API `sem.set(val)` maps to this operation.
 
-    Maps to TTKernel operations:
-      Local:
-        ttkernel.noc_semaphore_set(local_core, sem_addr, value)
+    Sets the semaphore to the specified value. The semaphore operand determines
+    whether this is a local or remote operation:
+    - Local semaphore (from ttl.create_semaphore): sets local semaphore
+    - Remote semaphore (from ttl.get_remote_semaphore): sets remote core's semaphore
+    - Multicast semaphore (from ttl.get_remote_multicast_semaphore): multicasts set
 
-      Remote unicast:
-        ttkernel.noc_semaphore_set(target_core, sem_addr, value)
+    Examples:
+      Python: my_sem.set(0)  # Local set
+      TTL IR: ttl.semaphore_set %sem, 0
 
-      Remote multicast:
-        ttkernel.noc_semaphore_set_multicast(noc_multicast_addr, value)
+      Python: remote_sem.set(1)  # Remote unicast set
+      TTL IR: %remote = ttl.get_remote_semaphore %sem, core=[0,0]
+              ttl.semaphore_set %remote, 1
+
+      Python: mcast_sem.set(1)  # Remote multicast set
+      TTL IR: %mcast = ttl.get_remote_multicast_semaphore %sem
+              ttl.semaphore_set %mcast, 1
+
+    Maps to TTKernel operations based on semaphore type:
+      Local: ttkernel.noc_semaphore_set(local_core, sem_addr, value)
+      Remote unicast: ttkernel.noc_semaphore_set(target_core, sem_addr, value)
+      Remote multicast: ttkernel.noc_semaphore_set_multicast(noc_multicast_addr, value)
 
     Note: Multicast semaphores support set but not increment (hardware limitation).
   }];
@@ -531,15 +551,25 @@ def TTL_SemaphoreIncOp : TTL_Op<"semaphore_inc"> {
   let summary = "Increment semaphore value (remote unicast only)";
   let arguments = (ins
     TTL_Semaphore:$semaphore,
-    I32Attr:$value,
-    I64ArrayAttr:$core                     // Target core
+    I32Attr:$value
   );
   let description = [{
-    Python API `unicast_remote_semaphore.inc(value)` maps to this operation.
-    Only supported for unicast remote semaphores (not multicast).
+    Python API `remote_sem.inc(n)` maps to this operation.
+
+    Atomically increments a remote semaphore by the specified value.
+    Only supported for unicast remote semaphores (obtained via
+    ttl.get_remote_semaphore), not multicast semaphores.
+
+    Example:
+      Python: remote_sem = my_sem.get_remote((0, 0))
+              remote_sem.inc(1)
+      TTL IR: %remote = ttl.get_remote_semaphore %sem, core=[0,0]
+              ttl.semaphore_inc %remote, 1
 
     Maps to TTKernel operation:
-    - ttkernel.noc_semaphore_inc(target_core, sem_addr, increment_value)
+      ttkernel.noc_semaphore_inc(target_core, sem_addr, increment_value)
+
+    Note: Multicast semaphores support set but not increment (hardware limitation).
   }];
 }
 ```
@@ -574,9 +604,10 @@ TTL_WaitOp          // Memory fence (all pending DMAs)
 TTL_DMABarrierOp    // Memory fence (global DMA barrier)
 
 // Synchronization Operations
-TTL_SemaphoreWaitOp // Reads: semaphore value
-TTL_SemaphoreSetOp  // Writes: semaphore value
-TTL_SemaphoreIncOp  // Reads+Writes: semaphore value (atomic)
+TTL_SemaphoreWaitEqOp  // Reads: semaphore value (wait for equality)
+TTL_SemaphoreWaitMinOp // Reads: semaphore value (wait for minimum)
+TTL_SemaphoreSetOp     // Writes: semaphore value
+TTL_SemaphoreIncOp     // Reads+Writes: semaphore value (atomic)
 
 // Compute Operations (with side effects)
 TTL_ComputeRegionOp // Contains operations with memory effects

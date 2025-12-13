@@ -203,7 +203,7 @@ coordinate translation based on device architecture.
 Coordinate spaces:
 
 Logical Grid Coordinates:
-- Used by TTL operations: `ttl.core()`, `ttl.Pipe(src_core=...)`
+- Used by TTL operations: `ttl.core()`, `ttl.Pipe(src=...)`
 - User-facing abstraction: contiguous 0-indexed coordinates
 - Example: 2x2 grid has cores (0,0), (0,1), (1,0), (1,1)
 - Architecture-independent representation
@@ -236,7 +236,7 @@ runtime:
 
 Example lowering:
 ```
-TTL (logical): ttl.Pipe(src_core=(0,0), dst_core_range=(slice(1,4), 0))
+TTL (logical): ttl.Pipe(src=(0,0), dst_range=(slice(1,4), 0))
 
 TTKernel (device-specific):
   %noc = arith.constant 0 : i32
@@ -647,7 +647,8 @@ leverage upstream transforms immediately.
 | `ttl.wait` | `ttkernel.noc_async_read_barrier` or `write_barrier` | Low | **HIGH** |
 | `ttl.dma_barrier` | `ttkernel.noc_async_read_barrier`, `write_barrier` | Low | **HIGH** |
 | **Synchronization** ||||
-| `ttl.semaphore_wait` | `ttkernel.noc_semaphore_wait` | Medium | MEDIUM |
+| `ttl.semaphore_wait_eq` | `ttkernel.noc_semaphore_wait` | Medium | MEDIUM |
+| `ttl.semaphore_wait_min` | `ttkernel.noc_semaphore_wait_min` | Medium | MEDIUM |
 | `ttl.semaphore_set` | `ttkernel.noc_semaphore_set` (or multicast variant) | Medium | MEDIUM |
 | `ttl.semaphore_inc` | `ttkernel.noc_semaphore_inc` | Medium | MEDIUM |
 | **Tile Management** ||||
@@ -756,7 +757,7 @@ noc_async_read_page(page_id, input, cb_l1_addr, offset);
 **Multicast Pipe:**
 ```mlir
 // TTL
-%pipe = ttl.create_pipe src_core=[0,0] dst_core_range=[[0,0],[1,3]]
+%pipe = ttl.create_pipe src=[0,0] dst_range=[[0,0],[1,3]]
 %xf = ttl.copy %block, %pipe
 ttl.wait %xf
 
