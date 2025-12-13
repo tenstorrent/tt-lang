@@ -6,17 +6,19 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from typing import Annotated, TypeVar, Tuple, Optional, NamedTuple
+from typing import Annotated, TypeVar, Tuple, Optional, NamedTuple, Union
 from pydantic import Field
 from enum import Enum, auto
 from dataclasses import dataclass
 import torch
 
-CBElemType = TypeVar("CBElemType", int, torch.Tensor)
+CBElemTypeVar = TypeVar("CBElemTypeVar", int, torch.Tensor)
 # Type alias for circular buffer slots
-CBSlotType = Optional[CBElemType]
+CBSlot = Optional[CBElemTypeVar]
 
 
+# TODO: Expand IndexType as needed, see relevant issue:
+#       https://github.com/tenstorrent/tt-lang/issues/69
 class IndexType(Enum):
     """
     Enumeration of indexing types for TensorAccessors.
@@ -27,37 +29,27 @@ class IndexType(Enum):
     TILE = auto()
 
 
-class MulticastType(Enum):
-    """
-    Enumeration of multicast types.
-
-    PUSH: Data is pushed from source to destinations.
-    PULL: Data is pulled by destinations from source.
-    """
-
-    PUSH = auto()
-    PULL = auto()
-
-
 PositiveInt = Annotated[int, Field(gt=0)]
 NaturalInt = Annotated[int, Field(ge=0)]
 Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
-CoreIndex = Index
+CoreIndex = Union[Index, Tuple[Index, Index, *tuple[Index, ...]]]
 
 
-class MulticastAddress(NamedTuple):
+class Pipe(NamedTuple):
     """
-    Represents a multicast address for NoC communication.
+    Represents a pipe for NoC communication.
 
     Attributes:
-        mcast_type: Type of multicast (PUSH or PULL)
-        core_indices: Tuple of core indices participating in the multicast
+        src_core: Core index of the source/sender
+        dst_core_range: Either a single CoreIndex for unicast, or a Tuple[CoreIndex, CoreIndex]
+                       for multicast where the two indices define a rectangular range.
+                       Example: ((0, 0), (1, 1)) defines cores (0,0), (0,1), (1,0), (1,1)
     """
 
-    mcast_type: MulticastType
-    core_indices: Tuple[CoreIndex, ...]
+    src_core: CoreIndex
+    dst_core_range: Union[CoreIndex, Tuple[CoreIndex, CoreIndex]]
 
 
 Shape = Tuple[Size, ...]

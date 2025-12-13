@@ -5,6 +5,9 @@ inputs:
   tt-mlir-path:
     description: Path to tt-mlir checkout
     required: true
+  toolchain-hash:
+    description: Hash of toolchain files for cache key
+    required: true
 
 runs:
   using: composite
@@ -31,9 +34,9 @@ runs:
       uses: actions/cache@v4
       with:
         path: /opt/ttmlir-toolchain
-        key: macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}-${{ github.ref_name }}
+        key: macos-ttmlir-toolchain-${{ inputs.toolchain-hash }}-${{ github.ref_name }}
         restore-keys: |
-          macos-ttmlir-toolchain-${{ hashFiles(format('{0}/env/CMakeLists.txt', inputs.tt-mlir-path)) }}
+          macos-ttmlir-toolchain-${{ inputs.toolchain-hash }}
 
     - name: Check if toolchain was restored
       id: check-toolchain
@@ -52,5 +55,10 @@ runs:
       shell: bash
       run: |
         cd ${{ inputs.tt-mlir-path }}
-        cmake -B env/build env
+        cmake -GNinja -DCMAKE_BUILD_TYPE=Release -B env/build env
         cmake --build env/build
+
+    - name: Cleanup toolchain to reduce cache size
+      if: steps.check-toolchain.outputs.restored != 'true'
+      shell: bash
+      run: .github/scripts/cleanup-macos-toolchain.sh

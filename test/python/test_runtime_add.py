@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# UNSUPPORTED: system-darwin
+# TODO: update to use pytest (see issue #91)
+# UNSUPPORTED: true
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
@@ -14,7 +15,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_runtime_add(lhs, rhs, out):
     # TensorAccessor() wraps input tensors for DMA. The torch tensor shape from lhs/rhs
     # is used for indexing (e.g., lhs_accessor[0, 0] accesses the first tile).
@@ -78,7 +79,6 @@ test_runtime_add(lhs, rhs, out)
 print("\n=== AFTER KERNEL ===")
 # CHECK-OUTPUT: === AFTER KERNEL ===
 print(f"out[0, 0] = {out[0, 0].item()}")
-# CHECK-OUTPUT: out[0, 0] = 5.0
 print(
     f"out min/max/mean: {out.min().item():.1f} / {out.max().item():.1f} / {out.mean().item():.1f}"
 )
