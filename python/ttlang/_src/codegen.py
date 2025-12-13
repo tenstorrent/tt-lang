@@ -241,7 +241,16 @@ def create_generic_func(
         device_output_type = create_device_tensor_type(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
         )
-        device_output_buffer = d2m.EmptyOp(device_output_type)
+
+        # Initialize device buffer from user's output tensor for all ops.
+        # All ops use DST register in-place, so we need to initialize it from
+        # the user's output (which may be zeroed or contain specific values).
+        # This fixes issue #31 by ensuring DST always has valid initial data.
+        device_output_empty = d2m.EmptyOp(device_output_type)
+        device_output_buffer = d2m.ToLayoutOp(
+            [device_output_type], outputs[0], device_output_empty.result, layout=None
+        )
+        output_buffer_result = device_output_buffer.results[0]
 
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
@@ -249,7 +258,7 @@ def create_generic_func(
         generic = d2m.GenericOp(
             [device_output_type],
             wrapped_inputs,
-            [device_output_buffer.result],
+            [output_buffer_result],
             ttcore.ir.GridAttr.get(ctx, grid),
             block_factors,
             list(map(affine_map_from_lambda, indexing_maps)),
