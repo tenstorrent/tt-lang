@@ -231,7 +231,7 @@ def TTL_CopyOp : TTL_Op<"copy"> {
     - Pipe operands: lower to ttkernel.noc_async_write_multicast or unicast
     - TensorAccessor layout determines which NOC API: shard, page, or tile
 
-    Returns transfer handle (SSA value of type !ttl.xf) for ordering.
+    Returns transfer handle (SSA value of type !ttl.transfer_handle) for ordering.
     Python API `ttl.copy()` returns a transfer handle object with a `wait()`
     method, which maps to `ttl.wait %xf` operation.
 

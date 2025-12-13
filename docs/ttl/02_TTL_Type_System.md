@@ -77,7 +77,7 @@ def TTL_Tensor : TensorOf<[F32, F16, BF16]> {
 
 // TTL Types (TTLTypes.td)
 
-def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
+def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "circular_buffer"> {
   let summary = "Circular buffer for producer-consumer communication (L1 memory only)";
   let parameters = (ins
     "ArrayRef<int64_t>":$shape,          // Elements per block
@@ -173,7 +173,7 @@ def TTL_Block : TTL_Type<"Block", "block"> {
   }];
 }
 
-def TTL_TransferHandle : TTL_Type<"TransferHandle", "xf"> {
+def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let summary = "Handle for asynchronous transfer with transaction ID tracking";
   let description = [{
     Transfer handle for DMA operations that maps to a TTKernel transaction ID (TRID).
@@ -626,12 +626,12 @@ ttl.kernel @sharded_elementwise_add(
     %shard_id = ttl.core(dims=1) : index
 
     %a_blk = ttl.cb_reserve %a_cb : !ttl.block<...>
-    %xf_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.xf
+    %xf_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.transfer_handle
     ttl.wait %xf_a
     ttl.cb_push %a_blk
 
     %b_blk = ttl.cb_reserve %b_cb : !ttl.block<...>
-    %xf_b = ttl.copy %b_accessor[%shard_id], %b_blk : !ttl.xf
+    %xf_b = ttl.copy %b_accessor[%shard_id], %b_blk : !ttl.transfer_handle
     ttl.wait %xf_b
     ttl.cb_push %b_blk
   }
@@ -653,7 +653,7 @@ ttl.kernel @sharded_elementwise_add(
     %shard_id = ttl.core(dims=1) : index
 
     %o_blk = ttl.cb_wait %out_cb : !ttl.block<...>
-    %xf_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.xf
+    %xf_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.transfer_handle
     ttl.wait %xf_out
     ttl.cb_pop %o_blk
   }
