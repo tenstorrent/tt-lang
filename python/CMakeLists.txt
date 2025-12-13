@@ -94,6 +94,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
     _src/codegen.py
     _src/d2m_ast.py
     _src/tensor_accessor.py
+    _src/tensor_registry.py
 )
 
 # ###############################################################################
