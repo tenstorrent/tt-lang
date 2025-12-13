@@ -209,10 +209,9 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
   auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
   utils::ContiguousLayoutInfo layout;
   if (auto enc = tensorTy.getEncoding()) {
-    if (auto ttnnLayout = mlir::dyn_cast<tt::ttnn::TTNNLayoutAttr>(enc)) {
+    if (mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
       // TODO(ttl): Derive strides/page size/bank base from TTNNLayoutAttr.
       // Issue: #81.
-      (void)ttnnLayout;
     }
   }
   layout = utils::computeContiguousLayout(tensorTy);

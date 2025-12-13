@@ -185,8 +185,7 @@ tryEnqueueForwardedHandle(mlir::Value v, mlir::OpOperand &use,
                           llvm::SmallVectorImpl<mlir::Value> &queue) {
   Operation *consumerOp = use.getOwner();
 
-  if (auto waitOp = llvm::dyn_cast<mlir::tt::ttl::WaitOp>(consumerOp)) {
-    (void)waitOp;
+  if (llvm::isa<mlir::tt::ttl::WaitOp>(consumerOp)) {
     return true;
   }
 
@@ -255,8 +254,7 @@ tryEnqueueForwardedHandle(mlir::Value v, mlir::OpOperand &use,
 }
 
 static bool isDerivedFromCopy(mlir::Value v,
-                              llvm::SmallPtrSetImpl<mlir::Value> &seen,
-                              bool &sawUntypedContainer) {
+                              llvm::SmallPtrSetImpl<mlir::Value> &seen) {
   if (!seen.insert(v).second) {
     return false;
   }
@@ -268,13 +266,13 @@ static bool isDerivedFromCopy(mlir::Value v,
   // tensor.extract: the extracted handle is only valid if the source tensor is
   // derived from a copy.
   if (auto extractOp = v.getDefiningOp<mlir::tensor::ExtractOp>()) {
-    return isDerivedFromCopy(extractOp.getTensor(), seen, sawUntypedContainer);
+    return isDerivedFromCopy(extractOp.getTensor(), seen);
   }
 
   // tensor.insert: the tensor is derived from a copy if the inserted scalar is
   // derived from a copy.
   if (auto insertOp = v.getDefiningOp<mlir::tensor::InsertOp>()) {
-    return isDerivedFromCopy(insertOp.getScalar(), seen, sawUntypedContainer);
+    return isDerivedFromCopy(insertOp.getScalar(), seen);
   }
 
   // Loop result -> yielded value.
@@ -289,8 +287,7 @@ static bool isDerivedFromCopy(mlir::Value v,
           if (results[idx] != res) {
             continue;
           }
-          return isDerivedFromCopy(yielded[idx].get(), seen,
-                                   sawUntypedContainer);
+          return isDerivedFromCopy(yielded[idx].get(), seen);
         }
       }
     }
@@ -306,7 +303,7 @@ static bool isDerivedFromCopy(mlir::Value v,
         if (iterArgs[idx] != barg) {
           continue;
         }
-        return isDerivedFromCopy(inits[idx].get(), seen, sawUntypedContainer);
+        return isDerivedFromCopy(inits[idx].get(), seen);
       }
     }
   }
@@ -315,13 +312,6 @@ static bool isDerivedFromCopy(mlir::Value v,
 }
 
 } // namespace
-
-static mlir::LogicalResult emitTypedContainerError(mlir::Operation *op) {
-  return op->emitOpError()
-         << "expects transfer handles stored in tensor containers to have a "
-            "direction-typed element type (!ttl.transfer_handle<read> or "
-            "!ttl.transfer_handle<write>).";
-}
 
 mlir::LogicalResult isEventuallyWaitedOn(mlir::Operation *op,
                                          mlir::Value handle) {
@@ -365,12 +355,8 @@ mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
   }
 
   llvm::SmallPtrSet<mlir::Value, 16> visited;
-  bool sawUntypedContainer = false;
-  if (isDerivedFromCopy(handle, visited, sawUntypedContainer)) {
+  if (isDerivedFromCopy(handle, visited)) {
     return mlir::success();
-  }
-  if (sawUntypedContainer) {
-    return emitTypedContainerError(op);
   }
 
   return op->emitOpError() << "expects operand to be the result of ttl.copy.";
