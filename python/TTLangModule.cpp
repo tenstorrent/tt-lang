@@ -4,8 +4,8 @@
 
 #include "ttlang/Bindings/Python/TTLangModule.h"
 #include "mlir/CAPI/IR.h"
+#include "ttlang/Dialect/D2M/Passes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Transforms/Passes.h"
 
 namespace nb = nanobind;
 using namespace mlir;

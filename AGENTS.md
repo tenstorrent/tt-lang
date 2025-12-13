@@ -31,7 +31,25 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
   not and)
 
-## Pattern Rewriter Error Handling
+## MLIR implementation
+- Follow the conventions in llvm-project for directory organization and naming
+  conventions.
+- **Dialect design**: Don’t recover semantic info by chasing SSA, encode it in the operations/types/etc.
+- **MLIR passes (modern pattern)**: Define passes in `Passes.td`; let TableGen
+  emit factories/registration. In the `.cpp`, include `Passes.h.inc` with
+  `GEN_PASS_DEF_...`, derive from the generated `...Base`, implement
+  `runOnOperation()`, and rely on the generated `create*Pass()` (no manual
+  constructors).
+- **Transforms layout**: Dialect-specific pass definitions in `include/ttlang/<Dialect>/Passes.td`,
+  headers in `include/ttlang/Dialect/<Dialect>/{IR,Transforms,TransformOps,Utils}` and
+  implementations in `lib/Dialect/<Dialect>/{IR,Transforms,TransformOps,Utils}`.
+- **Pass naming and deps**: Prefix pass names with the dialect acronym
+  (e.g., `TTLConvert...`). In `dependentDialects`, list only dialects for ops
+  the pass creates; do not include the starting dialect.
+- **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
+- Use enums instead of integer literals for encoding items in a category.
+
+### Pattern Rewriter Error Handling
 - **NEVER call `emitOpError()` inside a pattern rewriter** - causes pass to
   succeed while emitting diagnostics
 - Inside patterns: Use `rewriter.notifyMatchFailure()` for pattern match
@@ -43,6 +61,12 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   occur (e.g., pytest failing with
   `mlir::python::PyMlirContext::ErrorCapture::~ErrorCapture(): Assertion `errors.empty()
   && "unhandled captured errors"' failed.`)
+
+### Lit tests
+- Always add a brief comment in front of tests to specify the purpose of the test. Add a concise summary on top of the test file about what is being tested.
+- Use `--split-input-file` for multiple lit tests in the same file.
+- Use "// PREFIX-NEXT:" (for FileCheck prefix PREFIX) whenever possible instead of just "// PREFIX:"
+- Always include negative/invalid tests, which should be in a file named *_invalid.<suffix>. For invalid tests, use `--verify-diagnostics` and `expected-error @below` as well as `--split-input-file` if file contains multiple tests.
 
 ## Additional Notes
 - **Agent Design Principle**: Implement only the minimum necessary
@@ -59,7 +83,7 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   - [ ] New/Existing tests provide coverage for changes
   ```
 - Use `pre-commit run --all-files` before commits
-- Create GitHub issues for TODOs with format:
-  `TODO (alias): description. Issue: #123`
+- Prefer `git mv` to deleting and adding files that are in git. Stop and ask user to do if you can't do it.
+- Generate commit messages and PR summaries in plain ASCII format using github markdown. When appropriate, include plain ASCII diagrams.
 - Follow LLVM coding standards: https://llvm.org/docs/CodingStandards.html
 - Follow best practices: https://llvm.org/docs/ProgrammersManual.html

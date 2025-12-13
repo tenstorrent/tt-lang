@@ -1,5 +1,5 @@
-#ifndef TTLANG_TRANSFORMS_PASSES_TD
-#define TTLANG_TRANSFORMS_PASSES_TD
+#ifndef TTLANG_DIALECT_D2M_PASSES_TD
+#define TTLANG_DIALECT_D2M_PASSES_TD
 
 include "mlir/Pass/PassBase.td"
 
@@ -22,4 +22,4 @@ def D2MSimpleAllocate : Pass<"d2m-simple-allocate", "::mlir::func::FuncOp"> {
   ];
 }
 
-#endif // TTLANG_TRANSFORMS_PASSES_TD
+#endif // TTLANG_DIALECT_D2M_PASSES_TD

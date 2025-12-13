@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ttlang/Transforms/Passes.h"
+#include "ttlang/Dialect/D2M/Passes.h"
 
 #include "ttmlir/Dialect/D2M/Analysis/Allocation/Planner.h"
 #include "ttmlir/Dialect/D2M/IR/D2MOps.h"
@@ -10,6 +10,7 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 
 #include "mlir/Analysis/Liveness.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -19,7 +20,7 @@
 namespace mlir::tt::d2m {
 
 #define GEN_PASS_DEF_D2MSIMPLEALLOCATE
-#include "ttlang/Transforms/Passes.h.inc"
+#include "ttlang/Dialect/D2M/Passes.h.inc"
 
 namespace {
 

@@ -7,6 +7,10 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
+
+#include <numeric>
+#include <optional>
 
 #define GET_TYPEDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h.inc"

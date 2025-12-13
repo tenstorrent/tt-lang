@@ -2,25 +2,30 @@ name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      run_macos:
+        description: "Run the macOS build."
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      run_macos:
+        description: "Run the macOS build."
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            timeout: 240
-            use-container: true
-          - os: macos-26
-            timeout: 360
-            use-container: false
+        include: ${{ fromJSON(inputs.run_macos && '[{"os":"ubuntu-latest","timeout":240,"use_container":true},{"os":"macos-26","timeout":360,"use_container":false}]' || '[{"os":"ubuntu-latest","timeout":240,"use_container":true}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
 
-    container: ${{ matrix.use-container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
+    container: ${{ matrix.use_container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
 
     defaults:
       run:
@@ -34,7 +39,7 @@ jobs:
 
     steps:
       - name: Maximize space
-        if: inputs.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
 
       - name: Checkout tt-lang

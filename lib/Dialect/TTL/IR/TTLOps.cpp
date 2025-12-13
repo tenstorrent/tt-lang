@@ -4,11 +4,13 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/DialectImplementation.h"
+#include "TTLOpsVerifyUtils.h"
+#include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
+#include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
-#include "llvm/ADT/TypeSwitch.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"    // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h"               // IWYU pragma: keep
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -43,3 +45,61 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 }
 
 } // namespace mlir::tt::ttl
+
+mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
+  auto srcTy = getSrc().getType();
+  auto dstTy = getDst().getType();
+
+  const bool srcIsCb = mlir::isa<CircularBufferType>(srcTy);
+  const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
+
+  // MVP (no pipes): copy is between a TTNN tensor slice and a circular buffer
+  // block. Exactly one side must be a CB.
+  if (srcIsCb == dstIsCb) {
+    return emitOpError()
+           << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
+           << " dst=" << dstTy;
+  }
+
+  // TODO(ttl): Add support for pipes and blocks as ttl.copy operands once those
+  // IR types/ops land.
+  // Issue: #88.
+
+  Type tensorTy = srcIsCb ? dstTy : srcTy;
+  auto rankedTensorTy = mlir::dyn_cast<RankedTensorType>(tensorTy);
+  if (!rankedTensorTy) {
+    return emitOpError()
+           << "expects the non-CB operand to be a ranked tensor; got "
+           << tensorTy;
+  }
+
+  // TT-Lang programs operate on TTNN tensors. Require a TTNN layout encoding so
+  // lowering can derive tile/addressing information.
+  auto enc = rankedTensorTy.getEncoding();
+  if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
+    return emitOpError()
+           << "expects tensor operand to carry TTNNLayout encoding; got "
+           << rankedTensorTy;
+  }
+
+  // TODO(ttl): Verify that the tensor tile/block shape and element type match
+  // the CB element_type and shape/buffer_factor semantics.
+  // Issue: #89.
+
+  // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
+  // use ensures we do not silently drop transfers.
+  if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
+                                                         getXf()))) {
+    return failure();
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
+  if (failed(
+          mlir::tt::ttl::verify::isValidWaitOperand(getOperation(), getXf()))) {
+    return failure();
+  }
+  return success();
+}

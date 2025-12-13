@@ -12,6 +12,17 @@ include "mlir/IR/EnumAttr.td"
 // TTL enum definitions
 //===----------------------------------------------------------------------===//
 
-// TTL reuses ttcore::MemorySpace from tt-mlir for consistency across dialects.
+// Note: TTL uses TTKernel's ThreadType enum (#ttkernel.thread<noc>) for
+// kernel thread annotations on functions.
+
+def TTL_TransferKind : I32EnumAttr<
+    "TransferKind", "TTL transfer kind",
+    [
+      I32EnumAttrCase<"read", 0>,
+      I32EnumAttrCase<"write", 1>,
+    ]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

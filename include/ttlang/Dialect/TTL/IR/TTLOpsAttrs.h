@@ -5,7 +5,7 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_H
 #define TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_H
 
-#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Attributes.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrDefs.h.inc"

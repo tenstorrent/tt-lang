@@ -1,11 +1,12 @@
-add_mlir_dialect_library(TTLangTransforms
+add_mlir_dialect_library(TTLangD2MTransforms
   SimpleAllocate.cpp
 
   DEPENDS
-  TTLangTransformsIncGen
+  TTLangD2MTransformsIncGen
 
   LINK_LIBS PUBLIC
   MLIRAnalysis
+  MLIRArithDialect
   MLIRFuncDialect
   MLIRMemRefDialect
   MLIRPass
