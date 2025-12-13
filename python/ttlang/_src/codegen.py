@@ -18,7 +18,11 @@ from ..layouts import (
     MetalLayoutConfig,
 )
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
-from ..dtype_utils import torch_dtype_to_mlir_type, torch_dtype_to_ttcore_datatype
+from ..dtype_utils import (
+    tensor_dtype_to_mlir_type,
+    tensor_dtype_to_ttcore_datatype,
+    is_ttnn_tensor,
+)
 
 
 def create_device_tensor_type(
@@ -174,8 +178,18 @@ def create_generic_func(
     ordered_tensor_args = []
     for arg in user_args:
         logical_shape = list(arg.shape)
-        dtype = torch_dtype_to_mlir_type(arg.dtype, ctx)
-        tensor_type = RankedTensorType.get(logical_shape, dtype)
+        dtype = tensor_dtype_to_mlir_type(arg.dtype, ctx)
+
+        if is_ttnn_tensor(arg):
+            # TTNN tensors are already on device. Use device tensor type (with
+            # MetalLayoutAttr) so LowerToLayout doesn't generate bounce kernels
+            # for host<->device transfers that aren't needed.
+            tensor_type = create_device_tensor_type(
+                ctx, logical_shape, dtype, grid, tiled, memory_space
+            )
+        else:
+            tensor_type = RankedTensorType.get(logical_shape, dtype)
+
         ordered_tensor_args.append(tensor_type)
 
     arg_types = ordered_tensor_args
@@ -194,25 +208,30 @@ def create_generic_func(
             stream_attr = attr_dict["d2m.stream"]
             is_stream.append(BoolAttr(stream_attr).value)
 
-        # Convert host tensors to device tensors using to_layout
         device_inputs = []
         for i, inp in enumerate(inputs):
             logical_shape = list(user_args[i].shape)
-            dtype = torch_dtype_to_mlir_type(user_args[i].dtype, ctx)
+            dtype = tensor_dtype_to_mlir_type(user_args[i].dtype, ctx)
 
             device_tensor_type = create_device_tensor_type(
                 ctx, logical_shape, dtype, grid, tiled, memory_space
             )
 
-            device_buffer = d2m.EmptyOp(device_tensor_type)
-            to_device = d2m.ToLayoutOp(
-                [device_tensor_type], inp, device_buffer.result, layout=None
-            )
+            if is_ttnn_tensor(user_args[i]):
+                # Already on device: use the function argument directly
+                device_value = inp
+            else:
+                # Host tensor: insert ToLayoutOp to move to device
+                device_buffer = d2m.EmptyOp(device_tensor_type)
+                to_device = d2m.ToLayoutOp(
+                    [device_tensor_type], inp, device_buffer.result, layout=None
+                )
+                device_value = to_device.results[0]
 
             if is_stream[i]:
                 device_with_stream = create_stream_layout_for_input(
                     ctx,
-                    to_device.results[0],
+                    device_value,
                     StreamLayoutConfig(
                         logical_shape=logical_shape,
                         grid=grid,
@@ -222,7 +241,7 @@ def create_generic_func(
                 )
                 device_inputs.append(device_with_stream)
             else:
-                device_inputs.append(to_device.results[0])
+                device_inputs.append(device_value)
 
         wrapped_inputs = device_inputs
 
@@ -235,22 +254,30 @@ def create_generic_func(
 
         # Create device output buffer
         output_idx = len(user_args) - num_outs
-        output_logical_shape = list(user_args[output_idx].shape)
-        output_dtype = torch_dtype_to_mlir_type(user_args[output_idx].dtype, ctx)
+        output_arg = user_args[output_idx]
+        output_logical_shape = list(output_arg.shape)
+        output_dtype = tensor_dtype_to_mlir_type(output_arg.dtype, ctx)
 
         device_output_type = create_device_tensor_type(
             ctx, output_logical_shape, output_dtype, grid, tiled, memory_space
         )
 
-        # Initialize device buffer from user's output tensor for all ops.
-        # All ops use DST register in-place, so we need to initialize it from
-        # the user's output (which may be zeroed or contain specific values).
-        # This fixes issue #31 by ensuring DST always has valid initial data.
-        device_output_empty = d2m.EmptyOp(device_output_type)
-        device_output_buffer = d2m.ToLayoutOp(
-            [device_output_type], outputs[0], device_output_empty.result, layout=None
-        )
-        output_buffer_result = device_output_buffer.results[0]
+        if is_ttnn_tensor(output_arg):
+            # Already on device: use the function argument directly
+            output_buffer_result = outputs[0]
+        else:
+            # Initialize device buffer from user's output tensor for all ops.
+            # All ops use DST register in-place, so we need to initialize it from
+            # the user's output (which may be zeroed or contain specific values).
+            # This fixes issue #31 by ensuring DST always has valid initial data.
+            device_output_empty = d2m.EmptyOp(device_output_type)
+            device_output_buffer = d2m.ToLayoutOp(
+                [device_output_type],
+                outputs[0],
+                device_output_empty.result,
+                layout=None,
+            )
+            output_buffer_result = device_output_buffer.results[0]
 
         # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
         # Low-level DSL provides explicit grid/block_factors and manual thread logic.
@@ -279,12 +306,15 @@ def create_generic_func(
             if isinstance(last_op, func.ReturnOp):
                 last_op.erase()
 
-        # Insert to_layout: device → host (write to existing output argument)
-        to_host = d2m.ToLayoutOp(
-            [ret_type], generic.results[0], outputs[0], layout=None
-        )
-
-        func.ReturnOp(to_host.results)
+        if is_ttnn_tensor(output_arg):
+            # Already on device: return the generic result directly
+            func.ReturnOp(generic.results)
+        else:
+            # Host tensor: insert ToLayoutOp to copy result back to host
+            to_host = d2m.ToLayoutOp(
+                [ret_type], generic.results[0], outputs[0], layout=None
+            )
+            func.ReturnOp(to_host.results)
 
 
 def copy_symbol_table_globals(
