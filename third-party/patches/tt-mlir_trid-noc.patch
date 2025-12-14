@@ -1,0 +1,447 @@
+From af4a91886e742e74749ec1b1ba2baf52f2c331e0 Mon Sep 17 00:00:00 2001
+From: Boyana Norris <bnorris@tenstorrent.com>
+Date: Sat, 13 Dec 2025 20:59:16 -0800
+Subject: [PATCH] Add TRID NOC ops with verifiers, EmitC lowering, and tests
+
+---
+ .../ttmlir/Dialect/TTKernel/IR/TTKernelOps.td | 141 +++++++++++++++++-
+ .../TTKernelToEmitC/TTKernelToEmitC.cpp       |   9 ++
+ lib/Dialect/TTKernel/IR/TTKernelOps.cpp       |  82 +++++++++-
+ .../Conversion/TTKernelToEmitC/trid_noc.mlir  |  61 ++++++++
+ .../TTKernelToEmitC/trid_noc_negative.mlir    |  46 ++++++
+ 5 files changed, 336 insertions(+), 3 deletions(-)
+ create mode 100644 test/ttmlir/Conversion/TTKernelToEmitC/trid_noc.mlir
+ create mode 100644 test/ttmlir/Conversion/TTKernelToEmitC/trid_noc_negative.mlir
+
+diff --git a/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td b/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td
+index f81633de7..8fd0ac487 100644
+--- a/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td
++++ b/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td
+@@ -1,4 +1,4 @@
+-// SPDX-FileCopyrightText: (c) 2024 Tenstorrent AI ULC
++// SPDX-FileCopyrightText: (c) 2024-2025 Tenstorrent AI ULC
+ //
+ // SPDX-License-Identifier: Apache-2.0
+
+@@ -2326,6 +2326,47 @@ def TTKernel_NocAsyncReadOnePacketWithStateOp : TTKernel_Op<"noc_async_read_one_
+     }];
+ }
+
++def TTKernel_NocAsyncReadSetTridOp : TTKernel_Op<"noc_async_read_set_trid"> {
++    let summary = "NocAsyncReadSetTrid";
++    let description = [{
++      Sets the transaction id for subsequent NOC reads. TRID is 0-15, NOC is 0 or 1.
++
++      Example:
++      ```
++      // Set TRID 1 on NOC 0 before issuing reads.
++      noc_async_read_set_trid(1, 0);
++      ```
++    }];
++
++    let hasVerifier = 1;
++    let arguments = (ins I32:$trid, Optional<I8>:$noc);
++
++    let assemblyFormat = [{
++      `(` $trid (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
++    }];
++}
++
++def TTKernel_NocAsyncReadOnePacketWithStateWithTridOp : TTKernel_Op<"noc_async_read_one_packet_with_state_with_trid"> {
++    let summary = "NocAsyncReadOnePacketWithStateWithTrid";
++    let description = [{
++      Issues a one-packet NOC read with a specific transaction id. TRID is 0-15, NOC is 0 or 1.
++
++      Example:
++      ```
++      noc_async_read_set_trid(2, 0);
++      noc_async_read_one_packet_with_state_with_trid(src_base, src, dst_l1, 2, 0);
++      noc_async_read_barrier_with_trid(2, 0);
++      ```
++    }];
++
++    let hasVerifier = 1;
++    let arguments = (ins I32:$srcBaseAddr, I32:$srcAddr, AnyTypeOf<[I32, TTKernel_L1Addr]>:$dstLocalL1Addr, I32:$trid, Optional<I8>:$noc);
++
++    let assemblyFormat = [{
++      `(` $srcBaseAddr `,` $srcAddr `,` $dstLocalL1Addr `,` $trid (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
++    }];
++}
++
+ def TTKernel_NocAsyncReadBarrierOp : TTKernel_Op<"noc_async_read_barrier", [TTKernel_DeviceZoneOpTrait]> {
+     let summary = "NocAsyncReadBarrier";
+     let description = [{
+@@ -2337,6 +2378,25 @@ def TTKernel_NocAsyncReadBarrierOp : TTKernel_Op<"noc_async_read_barrier", [TTKe
+     }];
+ }
+
++def TTKernel_NocAsyncReadBarrierWithTridOp : TTKernel_Op<"noc_async_read_barrier_with_trid", [TTKernel_DeviceZoneOpTrait]> {
++    let summary = "NocAsyncReadBarrierWithTrid";
++    let description = [{
++      Waits for outstanding read transactions matching a transaction id. TRID is 0-15, NOC is 0 or 1.
++
++      Example:
++      ```
++      noc_async_read_barrier_with_trid(2, 0);
++      ```
++    }];
++
++    let hasVerifier = 1;
++    let arguments = (ins I32:$trid, Optional<I8>:$noc);
++
++    let assemblyFormat = [{
++      `(` $trid (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
++    }];
++}
++
+ def TTKernel_NocAsyncWriteOp : TTKernel_Op<"noc_async_write"> {
+     let summary = "NocAsyncWrite";
+     let description = [{
+@@ -2365,6 +2425,46 @@ def TTKernel_NocAsyncWriteTileOp : TTKernel_Op<"noc_async_write_tile"> {
+     }];
+ }
+
++def TTKernel_NocAsyncWriteSetTridOp : TTKernel_Op<"noc_async_write_set_trid"> {
++    let summary = "NocAsyncWriteSetTrid";
++    let description = [{
++      Sets the transaction id for subsequent NOC writes. TRID is 0-15, NOC is 0 or 1.
++
++      Example:
++      ```
++      noc_async_write_set_trid(3, 0);
++      ```
++    }];
++
++    let hasVerifier = 1;
++    let arguments = (ins I32:$trid, Optional<I8>:$noc);
++
++    let assemblyFormat = [{
++      `(` $trid (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
++    }];
++}
++
++def TTKernel_NocAsyncWriteOnePacketWithTridOp : TTKernel_Op<"noc_async_write_one_packet_with_trid"> {
++    let summary = "NocAsyncWriteOnePacketWithTrid";
++    let description = [{
++      Issues a one-packet NOC write with a specific transaction id. TRID is 0-15, NOC is 0 or 1.
++
++      Example:
++      ```
++      noc_async_write_set_trid(3, 0);
++      noc_async_write_one_packet_with_trid(l1_src, dst_noc, size, 3, 0);
++      noc_async_write_barrier_with_trid(3, 0);
++      ```
++    }];
++
++    let hasVerifier = 1;
++    let arguments = (ins I32:$srcLocalL1Addr, TTKernel_NocAddr:$dstNocAddr, I32:$size, I32:$trid, Optional<I8>:$noc);
++
++    let assemblyFormat = [{
++      `(` $srcLocalL1Addr `,` $dstNocAddr `,` $size `,` $trid (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
++    }];
++}
++
+ def TTKernel_NocAsyncWriteBarrierOp : TTKernel_Op<"noc_async_write_barrier", [TTKernel_DeviceZoneOpTrait]> {
+     let summary = "NocAsyncWriteBarrier";
+     let description = [{
+@@ -2376,6 +2476,45 @@ def TTKernel_NocAsyncWriteBarrierOp : TTKernel_Op<"noc_async_write_barrier", [TT
+     }];
+ }
+
++def TTKernel_NocAsyncWriteBarrierWithTridOp : TTKernel_Op<"noc_async_write_barrier_with_trid", [TTKernel_DeviceZoneOpTrait]> {
++    let summary = "NocAsyncWriteBarrierWithTrid";
++    let description = [{
++      Waits for outstanding write transactions matching a transaction id. TRID is 0-15, NOC is 0 or 1.
++
++      Example:
++      ```
++      noc_async_write_barrier_with_trid(3, 0);
++      ```
++    }];
++
++    let hasVerifier = 1;
++    let arguments = (ins I32:$trid, Optional<I8>:$noc);
++
++    let assemblyFormat = [{
++      `(` $trid (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
++    }];
++}
++
++def TTKernel_ResetNocTridBarrierCounterOp : TTKernel_Op<"reset_noc_trid_barrier_counter"> {
++    let summary = "ResetNocTridBarrierCounter";
++    let description = [{
++      Resets the barrier counters for a set of transaction ids on a given NOC. Mask bits correspond to TRIDs 0-15; NOC is 0 or 1.
++
++      Example:
++      ```
++      // Clear counters for TRIDs 0-3 on NOC 0.
++      reset_noc_trid_barrier_counter(0xF, 0);
++      ```
++    }];
++
++    let hasVerifier = 1;
++    let arguments = (ins I32:$idMask, Optional<I8>:$noc);
++
++    let assemblyFormat = [{
++      `(` $idMask (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
++    }];
++}
++
+ def TTKernel_GetSemaphoreOp : TTKernel_Op<"get_semaphore"> {
+     let summary = "GetSemaphoreOp";
+     let description = [{
+diff --git a/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp b/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp
+index c20b34d79..c4de7634b 100644
+--- a/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp
++++ b/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp
+@@ -905,10 +905,19 @@ public:
+             ttkernel::NocAsyncReadOnePacketSetStateOp>,
+         TTKernelToEmitCOpaqueRewriter<
+             ttkernel::NocAsyncReadOnePacketWithStateOp>,
++        TTKernelToEmitCOpaqueRewriter<
++            ttkernel::NocAsyncReadOnePacketWithStateWithTridOp>,
++        TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncReadSetTridOp>,
+         TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncReadBarrierOp>,
++        TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncReadBarrierWithTridOp>,
+         TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncWriteOp>,
+         TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncWriteTileOp>,
++        TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncWriteSetTridOp>,
++        TTKernelToEmitCOpaqueRewriter<
++            ttkernel::NocAsyncWriteOnePacketWithTridOp>,
+         TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncWriteBarrierOp>,
++        TTKernelToEmitCOpaqueRewriter<ttkernel::NocAsyncWriteBarrierWithTridOp>,
++        TTKernelToEmitCOpaqueRewriter<ttkernel::ResetNocTridBarrierCounterOp>,
+         TTKernelToEmitCOpaqueRewriter<ttkernel::GetNocMulticastAddrOp>,
+         TTKernelToEmitCOpaqueRewriter<
+             ttkernel::ExperimentalGetNocMulticastAddrOp>,
+diff --git a/lib/Dialect/TTKernel/IR/TTKernelOps.cpp b/lib/Dialect/TTKernel/IR/TTKernelOps.cpp
+index 4292df476..f6a85a5a0 100644
+--- a/lib/Dialect/TTKernel/IR/TTKernelOps.cpp
++++ b/lib/Dialect/TTKernel/IR/TTKernelOps.cpp
+@@ -1,12 +1,15 @@
+-// SPDX-FileCopyrightText: (c) 2024 Tenstorrent AI ULC
++// SPDX-FileCopyrightText: (c) 2024-2025 Tenstorrent AI ULC
+ //
+ // SPDX-License-Identifier: Apache-2.0
+
+ #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+
++#include "mlir/Dialect/Arith/IR/Arith.h"
+ #include "mlir/Dialect/Func/IR/FuncOps.h"
+ #include "mlir/Dialect/SCF/IR/SCF.h"
+ #include "mlir/IR/BuiltinOps.h"
++#include "mlir/IR/Matchers.h"
++#include "mlir/IR/PatternMatch.h"
+ #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
+ #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
+ #include "ttmlir/Dialect/TTMetal/IR/TTMetalOps.h"
+@@ -16,6 +19,37 @@
+
+ namespace mlir::tt::ttkernel {
+
++static LogicalResult verifyTridValue(Value trid, Operation *op) {
++  auto value = getConstantIntValue(trid);
++  if (!value) {
++    return success();
++  }
++
++  if (*value < 0 || *value > 15) {
++    return op->emitOpError("trid must be in [0, 15].");
++  }
++  return success();
++}
++
++static LogicalResult verifyOptionalNocValue(Value noc, Operation *op) {
++  if (!noc) {
++    if (op->getNumOperands() <= 1) {
++      return success();
++    }
++    noc = op->getOperand(1);
++  }
++
++  auto value = getConstantIntValue(noc);
++  if (!value) {
++    return success();
++  }
++
++  if (*value < 0 || *value > 1) {
++    return op->emitOpError("noc must be 0 or 1.");
++  }
++  return success();
++}
++
+ static bool insideEnqueueProgramOpRegion(mlir::Operation *op) {
+   mlir::Operation *parentOp = op->getParentOp();
+
+@@ -205,4 +239,50 @@ static std::string verifyTilizeUntilizeCBs(CBType tilizedCB, CBType scalarCB) {
+   return success();
+ }
+
++::mlir::LogicalResult NocAsyncReadSetTridOp::verify() {
++  if (failed(verifyTridValue(getTrid(), getOperation()))) {
++    return failure();
++  }
++  return verifyOptionalNocValue(getNoc(), getOperation());
++}
++
++::mlir::LogicalResult NocAsyncReadOnePacketWithStateWithTridOp::verify() {
++  if (failed(verifyTridValue(getTrid(), getOperation()))) {
++    return failure();
++  }
++  return verifyOptionalNocValue(getNoc(), getOperation());
++}
++
++::mlir::LogicalResult NocAsyncReadBarrierWithTridOp::verify() {
++  if (failed(verifyTridValue(getTrid(), getOperation()))) {
++    return failure();
++  }
++  return verifyOptionalNocValue(getNoc(), getOperation());
++}
++
++::mlir::LogicalResult NocAsyncWriteSetTridOp::verify() {
++  if (failed(verifyTridValue(getTrid(), getOperation()))) {
++    return failure();
++  }
++  return verifyOptionalNocValue(getNoc(), getOperation());
++}
++
++::mlir::LogicalResult NocAsyncWriteOnePacketWithTridOp::verify() {
++  if (failed(verifyTridValue(getTrid(), getOperation()))) {
++    return failure();
++  }
++  return verifyOptionalNocValue(getNoc(), getOperation());
++}
++
++::mlir::LogicalResult NocAsyncWriteBarrierWithTridOp::verify() {
++  if (failed(verifyTridValue(getTrid(), getOperation()))) {
++    return failure();
++  }
++  return verifyOptionalNocValue(getNoc(), getOperation());
++}
++
++::mlir::LogicalResult ResetNocTridBarrierCounterOp::verify() {
++  return verifyOptionalNocValue(getNoc(), getOperation());
++}
++
+ } // namespace mlir::tt::ttkernel
+diff --git a/test/ttmlir/Conversion/TTKernelToEmitC/trid_noc.mlir b/test/ttmlir/Conversion/TTKernelToEmitC/trid_noc.mlir
+new file mode 100644
+index 000000000..1dc3d2178
+--- /dev/null
++++ b/test/ttmlir/Conversion/TTKernelToEmitC/trid_noc.mlir
+@@ -0,0 +1,61 @@
++// RUN: ttmlir-opt --convert-ttkernel-to-emitc %s | FileCheck %s
++
++// -----
++
++// CHECK-LABEL: func @trid_read_path
++// CHECK: %[[TRID:.*]] = "emitc.constant"() <{value = 3 : i32}> : () -> i32
++// CHECK-NEXT: %[[NOC_IDX:.*]] = "emitc.constant"() <{value = 0 : i8}> : () -> i8
++// CHECK-NEXT: %[[X:.*]] = "emitc.constant"() <{value = 0 : index}> : () -> !emitc.size_t
++// CHECK-NEXT: %[[Y:.*]] = "emitc.constant"() <{value = 1 : index}> : () -> !emitc.size_t
++// CHECK-NEXT: %[[DST_L1:.*]] = "emitc.constant"() <{value = 256 : i32}> : () -> i32
++// CHECK-NEXT: %[[SRC_BASE:.*]] = "emitc.constant"() <{value = 1024 : i32}> : () -> i32
++// CHECK-NEXT: %[[SRC_ADDR:.*]] = "emitc.constant"() <{value = 64 : i32}> : () -> i32
++// CHECK-NEXT: %[[NOC_ADDR:.*]] = emitc.call_opaque "get_noc_addr"(%[[X]], %[[Y]], %[[DST_L1]]) : (!emitc.size_t, !emitc.size_t, i32) -> i64
++// CHECK-NEXT: emitc.call_opaque "noc_async_read_set_trid"(%[[TRID]], %[[NOC_IDX]]) : (i32, i8) -> ()
++// CHECK-NEXT: emitc.call_opaque "noc_async_read_one_packet_with_state_with_trid"(%[[SRC_BASE]], %[[SRC_ADDR]], %[[DST_L1]], %[[TRID]], %[[NOC_IDX]]) : (i32, i32, i32, i32, i8) -> ()
++// CHECK-NEXT: emitc.call_opaque "noc_async_read_barrier_with_trid"(%[[TRID]], %[[NOC_IDX]]) : (i32, i8) -> ()
++func.func @trid_read_path() -> () attributes {ttkernel.thread = #ttkernel.thread<compute>} {
++  %trid = arith.constant 3 : i32
++  %noc_idx = arith.constant 0 : i8
++  %x = arith.constant 0 : index
++  %y = arith.constant 1 : index
++  %dst_l1 = arith.constant 256 : i32
++  %src_base = arith.constant 1024 : i32
++  %src_addr = arith.constant 64 : i32
++  %noc_addr = "ttkernel.get_noc_addr"(%x, %y, %dst_l1) : (index, index, i32) -> !ttkernel.noc_addr
++  "ttkernel.noc_async_read_set_trid"(%trid, %noc_idx) : (i32, i8) -> ()
++  "ttkernel.noc_async_read_one_packet_with_state_with_trid"(%src_base, %src_addr, %dst_l1, %trid, %noc_idx) : (i32, i32, i32, i32, i8) -> ()
++  "ttkernel.noc_async_read_barrier_with_trid"(%trid, %noc_idx) : (i32, i8) -> ()
++  return
++}
++
++// -----
++
++// CHECK-LABEL: func @trid_write_path
++// CHECK: %[[TRID:.*]] = "emitc.constant"() <{value = 3 : i32}> : () -> i32
++// CHECK-NEXT: %[[MASK:.*]] = "emitc.constant"() <{value = -1 : i32}> : () -> i32
++// CHECK-NEXT: %[[NOC_IDX:.*]] = "emitc.constant"() <{value = 0 : i8}> : () -> i8
++// CHECK-NEXT: %[[X:.*]] = "emitc.constant"() <{value = 0 : index}> : () -> !emitc.size_t
++// CHECK-NEXT: %[[Y:.*]] = "emitc.constant"() <{value = 1 : index}> : () -> !emitc.size_t
++// CHECK-NEXT: %[[DST:.*]] = "emitc.constant"() <{value = 512 : i32}> : () -> i32
++// CHECK-NEXT: %[[SIZE:.*]] = "emitc.constant"() <{value = 128 : i32}> : () -> i32
++// CHECK-NEXT: %[[NOC_ADDR:.*]] = emitc.call_opaque "get_noc_addr"(%[[X]], %[[Y]], %[[DST]]) : (!emitc.size_t, !emitc.size_t, i32) -> i64
++// CHECK-NEXT: emitc.call_opaque "noc_async_write_set_trid"(%[[TRID]]) : (i32) -> ()
++// CHECK-NEXT: emitc.call_opaque "noc_async_write_one_packet_with_trid"(%[[DST]], %[[NOC_ADDR]], %[[SIZE]], %[[TRID]], %[[NOC_IDX]]) : (i32, i64, i32, i32, i8) -> ()
++// CHECK-NEXT: emitc.call_opaque "noc_async_write_barrier_with_trid"(%[[TRID]]) : (i32) -> ()
++// CHECK-NEXT: emitc.call_opaque "reset_noc_trid_barrier_counter"(%[[MASK]], %[[NOC_IDX]]) : (i32, i8) -> ()
++func.func @trid_write_path() -> () attributes {ttkernel.thread = #ttkernel.thread<compute>} {
++  %trid = arith.constant 3 : i32
++  %mask = arith.constant -1 : i32
++  %noc_idx = arith.constant 0 : i8
++  %x = arith.constant 0 : index
++  %y = arith.constant 1 : index
++  %dst = arith.constant 512 : i32
++  %size = arith.constant 128 : i32
++  %noc_addr = "ttkernel.get_noc_addr"(%x, %y, %dst) : (index, index, i32) -> !ttkernel.noc_addr
++  "ttkernel.noc_async_write_set_trid"(%trid) : (i32) -> ()
++  "ttkernel.noc_async_write_one_packet_with_trid"(%dst, %noc_addr, %size, %trid, %noc_idx) : (i32, !ttkernel.noc_addr, i32, i32, i8) -> ()
++  "ttkernel.noc_async_write_barrier_with_trid"(%trid) : (i32) -> ()
++  "ttkernel.reset_noc_trid_barrier_counter"(%mask, %noc_idx) : (i32, i8) -> ()
++  return
++}
+diff --git a/test/ttmlir/Conversion/TTKernelToEmitC/trid_noc_negative.mlir b/test/ttmlir/Conversion/TTKernelToEmitC/trid_noc_negative.mlir
+new file mode 100644
+index 000000000..942a33f7d
+--- /dev/null
++++ b/test/ttmlir/Conversion/TTKernelToEmitC/trid_noc_negative.mlir
+@@ -0,0 +1,46 @@
++// RUN: ttmlir-opt --verify-diagnostics %s
++
++module {
++  func.func @bad_trid_read_set() {
++    %bad_trid = arith.constant 16 : i32
++    // expected-error @+1 {{trid must be in [0, 15].}}
++    "ttkernel.noc_async_read_set_trid"(%bad_trid) : (i32) -> ()
++    return
++  }
++
++  func.func @bad_noc_write_set() {
++    %trid_ok = arith.constant 1 : i32
++    %bad_noc = arith.constant 2 : i8
++    // expected-error @+1 {{noc must be 0 or 1.}}
++    "ttkernel.noc_async_write_set_trid"(%trid_ok, %bad_noc) : (i32, i8) -> ()
++    return
++  }
++
++  func.func @bad_noc_write_one_packet() {
++    %trid_ok = arith.constant 1 : i32
++    %bad_noc = arith.constant 2 : i8
++    %x = arith.constant 0 : index
++    %y = arith.constant 0 : index
++    %dst = arith.constant 0 : i32
++    %size = arith.constant 64 : i32
++    %noc_addr = "ttkernel.get_noc_addr"(%x, %y, %dst) : (index, index, i32) -> !ttkernel.noc_addr
++    // expected-error @+1 {{noc must be 0 or 1.}}
++    "ttkernel.noc_async_write_one_packet_with_trid"(%dst, %noc_addr, %size, %trid_ok, %bad_noc) : (i32, !ttkernel.noc_addr, i32, i32, i8) -> ()
++    return
++  }
++
++  func.func @bad_trid_read_barrier() {
++    %bad_trid = arith.constant 16 : i32
++    // expected-error @+1 {{trid must be in [0, 15].}}
++    "ttkernel.noc_async_read_barrier_with_trid"(%bad_trid) : (i32) -> ()
++    return
++  }
++
++  func.func @bad_noc_reset() {
++    %mask = arith.constant -1 : i32
++    %bad_noc = arith.constant 2 : i8
++    // expected-error @+1 {{noc must be 0 or 1.}}
++    "ttkernel.reset_noc_trid_barrier_counter"(%mask, %bad_noc) : (i32, i8) -> ()
++    return
++  }
++}
+--
+2.50.1 (Apple Git-155)

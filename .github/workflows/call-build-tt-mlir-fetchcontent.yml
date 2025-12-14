@@ -57,12 +57,16 @@ jobs:
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
+            - name: Compute hash of tt-mlir patches
+              id: patches-hash
+              run: bash .github/scripts/compute-patches-hash.sh
+
             - name: Cache tt-mlir installation only
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-patches-${{ steps.patches-hash.outputs.hash }}-v2
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2

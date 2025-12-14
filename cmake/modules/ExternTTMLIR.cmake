@@ -78,9 +78,9 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
 
     get_filename_component(TTMLIR_PATH "${TTMLIR_CMAKE_DIR}/../../.." ABSOLUTE)
 
-    if(TARGET TTMLIR::TTMLIRCompilerStatic)
-      set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
-      message(STATUS "Using TTMLIR library: TTMLIR::TTMLIRCompilerStatic")
+    if(TARGET TTMLIRCompilerStatic)
+      set(TTMLIR_LINK_LIBS TTMLIRCompilerStatic)
+      message(STATUS "Using TTMLIR library: TTMLIRCompilerStatic")
     else()
       # TTMLIRCompilerStatic is not properly exported in TTMLIRInstall.cmake.
       # Try to find the static library file directly.
@@ -94,7 +94,7 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
         message(STATUS "TTMLIRCompilerStatic target not exported, using library file directly: ${TTMLIR_COMPILER_STATIC_LIB}")
         set(TTMLIR_LINK_LIBS "${TTMLIR_COMPILER_STATIC_LIB}")
       else()
-        message(FATAL_ERROR "Required TTMLIR::TTMLIRCompilerStatic target not found in installed tt-mlir at: ${TTMLIR_CMAKE_DIR}, and library file not found in ${TTMLIR_PATH}/lib")
+        message(FATAL_ERROR "Required TTMLIRCompilerStatic target not found in installed tt-mlir at: ${TTMLIR_CMAKE_DIR}, and library file not found in ${TTMLIR_PATH}/lib")
       endif()
     endif()
   endif()
@@ -216,6 +216,19 @@ else()
       BINARY_DIR "${_TTMLIR_BUILD_DIR}"
   )
 
+  # Apply tt-mlir patches
+  message(STATUS "Applying tt-mlir patches...")
+  execute_process(
+      COMMAND "${CMAKE_SOURCE_DIR}/.github/scripts/apply-patches.sh"
+              "${_TTMLIR_SOURCE_DIR}"
+              "${CMAKE_SOURCE_DIR}/third-party/patches"
+              "tt-mlir*.patch"
+      RESULT_VARIABLE _PATCH_RESULT
+  )
+  if(NOT _PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to apply tt-mlir patches")
+  endif()
+
   set(_TTMLIR_CMAKE_ARGS
       -G Ninja
       -B ${_TTMLIR_BUILD_DIR}
@@ -286,7 +299,7 @@ else()
   set(TTMLIR_PATH "${_TTMLIR_INSTALL_PREFIX}")
 
   # For scenario 3, use the installed tt-mlir compiler static library
-  set(TTMLIR_LINK_LIBS TTMLIR::TTMLIRCompilerStatic)
+  set(TTMLIR_LINK_LIBS TTMLIRCompilerStatic)
 
   # Set up MLIR and LLVM environment.
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")

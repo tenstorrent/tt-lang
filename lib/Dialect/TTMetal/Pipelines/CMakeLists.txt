@@ -1,10 +1,9 @@
 set(TTLANG_TTMETAL_PIPELINES_LIBS
-  TTMLIRConversionPasses
-  TTMLIRD2MTransforms
-  TTMLIRTTCoreTransforms
-  TTMLIRTTIRPipelines
-  TTMLIRTTIRTransforms
-  TTMLIRTTKernelTransforms
+  MLIRD2MTransforms
+  MLIRTTTransforms
+  MLIRTTIRPipelines
+  MLIRTTIRTransforms
+  MLIRTTKernelTransforms
   MLIRAffineToStandard
   MLIRAffineTransforms
   MLIRArithTransforms
