@@ -15,6 +15,7 @@ from eltwise_pipe import eltwise_pipe
 
 # Import validation utilities and CircularBuffer for resetting
 from python.sim import assert_pcc
+from python.sim.program import ExecutionMode
 
 
 class TestExamples:
@@ -27,12 +28,18 @@ class TestExamples:
         dim = 256
         a_in = torch.randn(dim, dim)
         b_in = torch.randn(dim, dim)
-        out = torch.zeros(dim, dim)
+        out_threaded = torch.zeros(dim, dim)
+        out_cooperative = torch.zeros(dim, dim)
 
-        eltwise_add(a_in, b_in, out)
+        # Test threaded mode
+        eltwise_add(a_in, b_in, out_threaded, mode=ExecutionMode.THREADED)
+
+        # Test cooperative mode
+        eltwise_add(a_in, b_in, out_cooperative, mode=ExecutionMode.COOPERATIVE)
 
         golden = a_in + b_in
-        assert_pcc(golden, out)
+        assert_pcc(golden, out_threaded)
+        assert_pcc(golden, out_cooperative)
 
     def test_eltwise_pipe_example(self):
         """Test that the eltwise_pipe example runs without assertions being hit."""
@@ -41,9 +48,15 @@ class TestExamples:
         a_in = torch.randn(dim, dim)
         b_in = torch.randn(dim, dim)
         c_in = torch.randn(1, 1)
-        out = torch.zeros(dim, dim)
+        out_threaded = torch.zeros(dim, dim)
+        out_cooperative = torch.zeros(dim, dim)
 
-        eltwise_pipe(a_in, b_in, c_in, out)
-        print(out)
+        # Test threaded mode
+        eltwise_pipe(a_in, b_in, c_in, out_threaded, mode=ExecutionMode.THREADED)
+
+        # Test cooperative mode
+        eltwise_pipe(a_in, b_in, c_in, out_cooperative, mode=ExecutionMode.COOPERATIVE)
+
         golden = a_in * b_in + c_in
-        assert_pcc(golden, out)
+        assert_pcc(golden, out_threaded)
+        assert_pcc(golden, out_cooperative)

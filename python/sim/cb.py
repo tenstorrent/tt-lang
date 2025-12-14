@@ -98,6 +98,16 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         self._api.cb_wait_front(self._cb_id, self._tiles_per_operation)
         return self._api.get_read_ptr(self._cb_id)  # type: ignore
 
+    def can_wait(self) -> bool:
+        """
+        Check if wait() can proceed without blocking.
+
+        Returns:
+            True if sufficient data is available for wait(), False otherwise
+        """
+        stats = self._api.cb_stats(self._cb_id)
+        return stats.visible >= self._tiles_per_operation
+
     def reserve(self) -> Block[CBElemTypeVar]:
         """
         Reserve space for writing and return a write view.
@@ -115,6 +125,16 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         """
         self._api.cb_reserve_back(self._cb_id, self._tiles_per_operation)
         return self._api.get_write_ptr(self._cb_id)  # type: ignore
+
+    def can_reserve(self) -> bool:
+        """
+        Check if reserve() can proceed without blocking.
+
+        Returns:
+            True if sufficient space is available for reserve(), False otherwise
+        """
+        stats = self._api.cb_stats(self._cb_id)
+        return stats.free >= self._tiles_per_operation
 
     def push(self) -> None:
         """
