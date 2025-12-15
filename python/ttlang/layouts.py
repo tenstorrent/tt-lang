@@ -8,7 +8,7 @@ from typing import List, Optional, Any
 from dataclasses import dataclass
 
 from ttmlir.ir import *
-from ttmlir.dialects import ttcore, d2m
+from ttmlir.dialects import ttcore, ttnn, d2m
 
 from .constants import DEFAULT_TILE_SHAPE, DEFAULT_TENSOR_MEMORY_LAYOUT
 
@@ -136,6 +136,44 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
     )
 
     return layout
+
+
+def create_ttnn_layout(
+    ctx,
+    logical_shape: List[int],
+    element_type,
+    grid: List[int],
+    memory_space: str = "L1",
+):
+    """
+    Create a TTNNLayoutAttr for use with ttl.copy operations.
+
+    ttl.copy requires TTNN layout encoding to derive tile and address info.
+
+    Args:
+        ctx: MLIR context
+        logical_shape: Logical tensor shape
+        element_type: MLIR element type (e.g., TileType)
+        grid: Grid dimensions [grid_y, grid_x]
+        memory_space: "L1" or "DRAM"
+
+    Returns:
+        ttnn.ir.TTNNLayoutAttr
+    """
+    # BufferType: DRAM=0, L1=1
+    buffer_type = 1 if memory_space == "L1" else 0
+    # TensorMemoryLayout: Interleaved=0, HeightSharded=2
+    mem_layout = 2 if memory_space == "L1" else 0
+
+    grid_attr = ttcore.ir.GridAttr.get(ctx, grid)
+    return ttnn.ir.TTNNLayoutAttr.get(
+        ctx,
+        list(logical_shape),
+        element_type,
+        buffer_type,
+        grid_attr,
+        mem_layout,
+    )
 
 
 def create_stream_layout_for_input(

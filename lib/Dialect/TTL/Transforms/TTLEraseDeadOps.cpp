@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
@@ -29,6 +30,18 @@ static bool eraseDeadOpsIteration(ModuleOp mod) {
 
     // Erase dead unrealized_conversion_cast ops.
     if (llvm::isa<UnrealizedConversionCastOp>(op) && op->use_empty()) {
+      toErase.push_back(op);
+      return;
+    }
+
+    // Erase dead tensor.extract ops (used as CB->tile placeholder).
+    if (llvm::isa<tensor::ExtractOp>(op) && op->use_empty()) {
+      toErase.push_back(op);
+      return;
+    }
+
+    // Erase dead tensor.from_elements ops (used as tile result placeholder).
+    if (llvm::isa<tensor::FromElementsOp>(op) && op->use_empty()) {
       toErase.push_back(op);
       return;
     }

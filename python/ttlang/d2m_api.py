@@ -47,7 +47,7 @@ from ._src.tensor_registry import register_tensor_name
 
 from ._src.d2m_ast import D2MGenericCompiler
 
-from .operators import TensorBlock, MemTx, dma
+from .operators import TensorBlock, MemTx, dma, TransferHandle, copy
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
@@ -351,6 +351,12 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     # Write all kernels to /tmp for debugging
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
+        # HACK: Inject init_sfpu for compute kernels until MLIR lowering is fixed
+        if thread_type == "compute":
+            cpp_source = cpp_source.replace(
+                "tile_regs_acquire();",
+                "init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));\n  tile_regs_acquire();"
+            )
         _write_kernel_to_tmp(name, cpp_source)
 
     kernel_paths = []
@@ -360,6 +366,12 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
 
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
+        # HACK: Inject init_sfpu for compute kernels until MLIR lowering is fixed
+        if thread_type == "compute":
+            cpp_source = cpp_source.replace(
+                "tile_regs_acquire();",
+                "init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));\n  tile_regs_acquire();"
+            )
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
 
@@ -678,48 +690,34 @@ def _compile_and_run_kernel(
         config = CompilerConfig(ttnn_interop, compile_only)
 
         # fmt: off
-        # Common pipeline passes up through EmitC conversion
-        common_pipeline_passes = [
-            "d2m-generic-replace-globals",
-            "d2m-lower-to-layout",                         # Lower to_layout to data movement
-            "d2m-elementwise-fusion",                      # Fuse d2m.generic operations
-            "canonicalize",                                # Cleanup and simplify
-            "ttcore-one-shot-bufferize",
-            "func.func(d2m-simple-allocate)",              # Our simplified allocator
-            "d2m-linalg-to-affine{use-tile-matmul=1}",     # Convert all linalg including matmul
-            "func.func(d2m-insert-dst-register-gc)",       # Boyana's graph coloring DST allocator
-            "lower-affine",
-            "d2m-generic-linearize-memref",
-            "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
-            "d2m-generic-lower-dmas",                      # Lower DMAs to hardware
-            "canonicalize",                                # Simplify before region extraction
-            "loop-invariant-code-motion",                  # Hoist invariants
-            "sccp",                                        # Sparse conditional constant propagation
-            "cse",                                         # Eliminate common subexpressions
-            "d2m-generic-regions-to-funcs",                # Extract regions to functions
-            f"convert-d2m-to-ttkernel{{ttnn-mode={config.ttnn_mode}}}",
-            "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
+        # TTL pipeline: tensors already on device, no to-layout needed
+        ttl_pipeline_passes = [
+            "ttl-kernel-regions-to-funcs",                 # Extract ttl.kernel regions to func.func
+            "canonicalize",
+            "lower-affine",                                # Lower affine ops (upstream pass)
+            "convert-ttl-to-ttkernel",                     # Convert TTL ops to TTKernel
+            "ttl-erase-dead-ops",                          # Erase dead ops from conversion
             "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
         ]
 
-        # Cleanup passes applied to both paths
+        # Cleanup passes
         cleanup_passes = [
-            "canonicalize",                                # Cleanup after conversion
-            "loop-invariant-code-motion",                  # Hoist again after backend lowering
-            "sccp",                                        # Propagate constants
-            "cse",                                         # Final deduplication
-            "symbol-dce"                                   # Remove unused functions
+            "canonicalize",
+            "loop-invariant-code-motion",
+            "sccp",
+            "cse",
+            "symbol-dce",
         ]
 
         if config.is_ttnn:
-            # TTNN interop path: stop at EmitC, apply cleanup, translate to C++
-            pipeline_passes = common_pipeline_passes + cleanup_passes
+            # TTNN interop path: TTL pipeline only
+            pipeline_passes = ttl_pipeline_passes + cleanup_passes
         else:
-            # Metal path: continue to TTMetal, apply cleanup, then flatbuffer
-            metal_pipeline_passes = [
-                "convert-d2m-to-ttmetal",                  # Convert to_layout to ttmetal enqueue ops
-            ]
-            pipeline_passes = common_pipeline_passes + metal_pipeline_passes + cleanup_passes
+            # Metal path not supported with TTL dialect
+            raise ValueError(
+                "Metal runtime path is not supported with TTL dialect. "
+                "Use ttnn_interop=True for TTNN interop path."
+            )
 
         pipeline = ",".join(pipeline_passes)
 
@@ -758,32 +756,11 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
 
-        if config.is_ttnn:
-            # TTNN interop path: compile to CompiledTTNNKernel
-            compiled_kernel = _compile_ttnn_kernel(module, args, grid, num_outs)
-            if compiled_kernel is not None and config.should_execute():
-                compiled_kernel(*args)
-            return compiled_kernel
-
-        # Metal path: convert to flatbuffer and optionally execute
-        flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
-
-        # Save flatbuffer to file for ttrt execution
-        flatbuffer_path = os.environ.get("TTLANG_FLATBUFFER_PATH")
-        if flatbuffer_path and binary is not None:
-            binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
-            binary_obj.store(flatbuffer_path)
-            print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
-
-        if config.should_execute():
-            try:
-                _execute_on_metal_runtime(flatbuffer_binary, args)
-            except Exception as e:
-                print(f"Warning: Metal runtime execution failed: {e}")
-                print("(This is expected on macOS or if hardware is not available)")
-                import traceback
-
-                traceback.print_exc()
+        # TTNN interop path: compile to CompiledTTNNKernel
+        compiled_kernel = _compile_ttnn_kernel(module, args, grid, num_outs)
+        if compiled_kernel is not None and config.should_execute():
+            compiled_kernel(*args)
+        return compiled_kernel
 
 
 def pykernel_gen(
@@ -794,13 +771,13 @@ def pykernel_gen(
     num_outs: int = 1,
     memory_space: str = "L1",
     tiled: bool = True,
-    ttnn_interop: bool = False,
+    ttnn_interop: bool = True,
 ) -> Callable:
     """
-    Decorator for generating D2M kernels from Python functions.
+    Decorator for generating TTL kernels from Python functions.
 
-    This decorator compiles Python functions into D2M dialect operations,
-    handling thread compilation, stream creation, and pipeline execution.
+    This decorator compiles Python functions into TTL dialect operations,
+    handling thread compilation, CB creation, and pipeline execution.
 
     Args:
         grid: Grid dimensions as tuple (e.g., (2, 2)) or callable
@@ -829,6 +806,11 @@ def pykernel_gen(
         )
     if not isinstance(tiled, bool):
         raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
+    if not ttnn_interop:
+        raise ValueError(
+            "Metal runtime path is not supported with TTL dialect. "
+            "Use ttnn_interop=True (the default) for TTNN interop path."
+        )
     if iterator_types is not None and indexing_maps is None:
         raise ValueError("indexing_maps must be set when iterator_types is set")
 

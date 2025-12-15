@@ -459,6 +459,31 @@ static Value findDestCB(Value v) {
     return cbReserve.getCb();
   }
 
+  // tensor.extract from a tensor that came from CB reserve.
+  if (auto extractOp = v.getDefiningOp<tensor::ExtractOp>()) {
+    Value tensorSource = extractOp.getTensor();
+
+    // Source is directly a CB (after lowering).
+    if (llvm::isa<ttk::CBType>(tensorSource.getType())) {
+      return tensorSource;
+    }
+
+    // Tensor from unrealized_conversion_cast (post-CBReserveLowering).
+    if (auto cast = tensorSource.getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (cast.getInputs().size() == 1) {
+        auto input = cast.getInputs()[0];
+        if (llvm::isa<ttk::CBType>(input.getType())) {
+          return input;
+        }
+      }
+    }
+
+    // Pre-conversion: tensor from ttl.cb_reserve.
+    if (auto cbReserve = tensorSource.getDefiningOp<CBReserveOp>()) {
+      return cbReserve.getCb();
+    }
+  }
+
   return nullptr;
 }
 
@@ -694,26 +719,25 @@ struct TTLConvertTTLToTTKernelPass
 
     ConversionTarget target(ctx);
     target.addIllegalDialect<tt::ttl::TTLDialect>();
+    // KernelOp stays legal - regions extracted by ttl-kernel-regions-to-funcs
+    target.addLegalOp<KernelOp>();
     target.addLegalDialect<BuiltinDialect>();
     target.addLegalDialect<ttk::TTKernelDialect>();
     target.addLegalDialect<arith::ArithDialect>();
     target.addLegalDialect<func::FuncDialect>();
     target.addLegalDialect<tensor::TensorDialect>();
-    // Allow unrealized_conversion_cast for type bridging during conversion.
+    // unrealized_conversion_cast is used for temporary type bridging.
+    // Dead casts are cleaned up by ttl-erase-dead-ops pass.
     target.addLegalOp<UnrealizedConversionCastOp>();
-    target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
-      return typeConverter.isLegal(&op.getBodyRegion());
-    });
+    // Note: We don't check ModuleOp type legality because intermediate
+    // unrealized_conversion_casts may exist that will be cleaned up later.
+    // func.func with TTKernel thread attribute is legal only when it has no
+    // arguments (CB args converted to get_compile_time_arg_val).
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
-      // Kernel functions must have CB args converted (tensor args stay).
       if (op->hasAttr(ttk::ThreadTypeAttr::name)) {
-        for (auto argType : op.getArgumentTypes()) {
-          if (llvm::isa<CircularBufferType>(argType)) {
-            return false;
-          }
-        }
+        return op.getNumArguments() == 0;
       }
-      return typeConverter.isLegal(&op.getBody());
+      return typeConverter.isSignatureLegal(op.getFunctionType());
     });
 
     RewritePatternSet patterns(&ctx);

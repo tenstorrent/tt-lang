@@ -21,7 +21,7 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], ttnn_interop=True)
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)
@@ -43,21 +43,23 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
     @datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Read both inputs
-        lhs_shard = lhs_cb.reserve()
-        tx_lhs = dma(lhs_accessor[0, 0], lhs_shard)
-        tx_lhs.wait()
+        # Read both inputs using TTL copy
+        lhs_cb.reserve()
+        xf_lhs = copy(lhs_accessor, lhs_cb)
+        xf_lhs.wait()
+        lhs_cb.push()
 
-        rhs_shard = rhs_cb.reserve()
-        tx_rhs = dma(rhs_accessor[0, 0], rhs_shard)
-        tx_rhs.wait()
+        rhs_cb.reserve()
+        xf_rhs = copy(rhs_accessor, rhs_cb)
+        xf_rhs.wait()
+        rhs_cb.push()
 
     @datamovement()
     def dm_out(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Write output
-        out_shard = out_cb.wait()
-        tx = dma(out_shard, out_accessor[0, 0])
-        tx.wait()
+        # Write output using TTL copy
+        out_cb.wait()
+        xf = copy(out_cb, out_accessor)
+        xf.wait()
         out_cb.pop()
 
     return Program(add_compute, dm_read, dm_out)(lhs, rhs, out)

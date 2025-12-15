@@ -2,14 +2,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""DSL operators for tensor operations, DMA, and memory transactions."""
+"""DSL operators for tensor operations, DMA, and memory transactions.
+
+MVP LIMITATIONS (Single-Tile Only):
+- Currently only supports single 32x32 tile operations
+- No linalg.generic iteration (future work for multi-tile blocks)
+- DST registers managed inline during TTKernel lowering
+- No capacity-constrained tiling (assumes ops fit in DST)
+
+Future work will add:
+- Block-level ops (ttl.block_add, etc.) with linalg.generic for iteration
+- Transform dialect passes for capacity-based sub-block tiling
+- DST register allocation pass for global optimization
+- Fusion support via ttl.compute_region
+"""
 
 from __future__ import annotations
 
-from typing import List, Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Tuple, Union
 
 from ttmlir.ir import *
-from ttmlir.dialects import d2m, arith, linalg
+from ttmlir.dialects import d2m, arith, tensor
+
+from ttlang.dialects import ttl
 
 from ._src.d2m_ast import syntax
 from pykernel._src.utils import _asindex
@@ -17,6 +32,26 @@ from pykernel._src.utils import _asindex
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
+
+
+def _extract_single_tile(tensor_val):
+    """
+    Extract a single tile from a tensor<1x1x!ttcore.tile<...>> tensor.
+
+    MVP helper for single-tile operations. For multi-tile blocks, future
+    work will use linalg.generic iteration instead.
+    """
+    c0 = arith.ConstantOp(IndexType.get(), IntegerAttr.get(IndexType.get(), 0))
+    return tensor.ExtractOp(tensor_val, [c0, c0])
+
+
+def _wrap_tile_in_tensor(tile_val, tensor_type):
+    """
+    Wrap a single tile back into a tensor<1x1x!ttcore.tile<...>>.
+
+    MVP helper for single-tile operations.
+    """
+    return tensor.FromElementsOp(tensor_type, [tile_val])
 
 
 def _create_linalg_generic(
@@ -221,15 +256,20 @@ class TensorBlock:
 
     def __add__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """
-        Element-wise addition generating linalg.generic with d2m.tile_add.
+        Element-wise addition using ttl.tile_add.
 
-        Args:
-            rhs: Right operand tensor. Must have the same shape as self.
-
-        Returns:
-            Result tensor with the same shape as inputs.
+        MVP: Single-tile operation only. Both operands must be tensor<1x1x!tile>.
+        For multi-tile blocks, future work will add linalg.generic iteration.
         """
-        return _binary_elementwise(ast_self, rhs, d2m.tile_add)
+        lhs_tile = _extract_single_tile(ast_self)
+        rhs_tile = _extract_single_tile(rhs)
+
+        # Get tile type from the tensor element type
+        tile_type = RankedTensorType(ast_self.type).element_type
+        result_tile = ttl.tile_add(tile_type, lhs_tile, rhs_tile)
+
+        # Wrap back in tensor for consistent interface
+        return _wrap_tile_in_tensor(result_tile, ast_self.type)
 
     def __sub__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """Element-wise subtraction."""
@@ -311,9 +351,22 @@ class TensorBlock:
             ),
         )
 
-    def store(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Store operation for writing tensor data."""
-        return d2m.store(ast_self, rhs)
+    def store(ast_self: "TensorBlock", value: "TensorBlock") -> None:
+        """
+        Store tile result from DST registers to a CB-reserved tensor.
+
+        MVP: Single-tile store only. Called as cb_tensor.store(result_tensor).
+
+        The receiver (ast_self) is the destination tensor from cb_reserve.
+        The argument (value) is the result tensor containing the tile to store.
+
+        Lowers to TTKernel pack_tile + tile_regs_release.
+        """
+        # ast_self is the CB-reserved destination (tensor<1x1x!tile>)
+        # value is the compute result (tensor<1x1x!tile>)
+        tile_val = _extract_single_tile(value)
+        # TTL store: ttl.store $value, $dest where value is tile, dest is tensor
+        ttl.store(tile_val, ast_self)
 
 
 @syntax("!d2m.mem_tx")
@@ -363,6 +416,76 @@ def dma(
         _asindex(core),
         _asindex(mcast),
     )
+
+
+@syntax("!ttl.transfer_handle")
+class TransferHandle:
+    """
+    Handle for TTL asynchronous copy operations.
+
+    TransferHandle objects are returned by copy() and must be waited on
+    via wait() to ensure transfer completion. This provides explicit
+    synchronization control for DMA operations.
+    """
+
+    def wait(ast_self: "TransferHandle") -> None:
+        """Block until the copy operation completes."""
+        ttl.wait(ast_self)
+
+
+@syntax("copy")
+def copy(src, dst) -> TransferHandle:
+    """
+    Initiate an asynchronous TTL copy operation.
+
+    One of src/dst must be a CB (!ttl.cb), the other must be a tensor
+    with TTNN layout encoding for lowering to derive tile/address info.
+
+    Example:
+        # Read from tensor to CB
+        shard = cb.reserve()
+        xf = copy(tensor_accessor[0, 0], shard)
+        xf.wait()
+        cb.push()
+
+        # Write from CB to tensor
+        shard = cb.wait()
+        xf = copy(shard, tensor_accessor[0, 0])
+        xf.wait()
+        cb.pop()
+    """
+    # Handle tuple unpacking from TensorAccessor indexing
+    if isinstance(src, tuple):
+        src, _ = src
+    if isinstance(dst, tuple):
+        dst, _ = dst
+
+    # Determine direction based on operand types
+    src_type_str = str(src.type)
+    dst_type_str = str(dst.type)
+
+    src_is_cb = "!ttl.cb<" in src_type_str
+    dst_is_cb = "!ttl.cb<" in dst_type_str
+
+    if src_is_cb and dst_is_cb:
+        raise ValueError(
+            f"copy: both src and dst are CBs, which is invalid. "
+            f"src={src_type_str}, dst={dst_type_str}"
+        )
+    if not src_is_cb and not dst_is_cb:
+        raise ValueError(
+            f"copy: neither src nor dst is a CB. Exactly one must be a CB. "
+            f"src={src_type_str}, dst={dst_type_str}"
+        )
+
+    if dst_is_cb:
+        # tensor -> CB = read
+        xf_type = Type.parse("!ttl.transfer_handle<read>")
+    else:
+        # CB -> tensor = write
+        xf_type = Type.parse("!ttl.transfer_handle<write>")
+
+    return ttl.copy(xf_type, src, dst)
 
 
 # Unary element-wise operations

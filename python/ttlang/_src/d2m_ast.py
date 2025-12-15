@@ -10,13 +10,91 @@ from dataclasses import dataclass
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func, arith
 
+from ttlang.dialects import ttl
+
 from pykernel._src.kernel_types import *
 from pykernel._src.kernel_ast import TTCompilerBase
 from .tensor_accessor import TensorAccessor
 
-from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
+from ..layouts import create_metal_layout, create_ttnn_layout, compute_device_shape, MetalLayoutConfig
 from ..dtype_utils import tensor_dtype_to_mlir_type, tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
+
+
+def _create_ttl_cb_type(ctx, shape, element_type, buffer_factor=2):
+    """Create a TTL CB type via MLIR type parsing.
+
+    Args:
+        ctx: MLIR context
+        shape: CB shape as list of ints (e.g., [1, 1])
+        element_type: MLIR element type (e.g., TileType)
+        buffer_factor: Number of buffer slots (default 2 for double buffering)
+
+    Returns:
+        Parsed MLIR type for !ttl.cb<...>
+    """
+    # Ensure TTL dialect is registered
+    ttl.ensure_dialects_registered(ctx)
+
+    shape_str = ", ".join(str(s) for s in shape)
+    elem_str = str(element_type)
+    type_str = f"!ttl.cb<[{shape_str}], {elem_str}, {buffer_factor}>"
+    return Type.parse(type_str, ctx)
+
+
+def _create_ttl_thread_attr(ctx, kernel_type):
+    """Create a TTL thread attribute via MLIR attribute parsing.
+
+    Args:
+        ctx: MLIR context
+        kernel_type: Thread type string ("compute" or "datamovement")
+
+    Returns:
+        Parsed MLIR attribute for #ttl.thread<...>
+    """
+    # Ensure TTL dialect is registered
+    ttl.ensure_dialects_registered(ctx)
+
+    # Map kernel type to TTL thread type
+    if kernel_type in ("compute",):
+        thread_type = "compute"
+    elif kernel_type in ("datamovement", "noc"):
+        thread_type = "datamovement"
+    else:
+        raise ValueError(f"Unknown kernel_type: {kernel_type}")
+
+    attr_str = f"#ttl.thread<{thread_type}>"
+    return Attribute.parse(attr_str, ctx)
+
+
+def _parse_cb_underlying_type(cb_type):
+    """Parse CB type to extract the underlying tensor type.
+
+    CB type format: !ttl.cb<[shape], element_type, buffer_factor>
+    Returns: tensor<shapexelement_type>
+    """
+    type_str = str(cb_type)
+
+    # Extract shape between [ and ]
+    shape_start = type_str.find("[") + 1
+    shape_end = type_str.find("]")
+    if shape_start <= 0 or shape_end < 0:
+        raise ValueError(f"Invalid CB type format: {type_str}")
+    shape_str = type_str[shape_start:shape_end]
+    shape = [int(x.strip()) for x in shape_str.split(",")]
+
+    # Element type is between "], " and the last comma (before buffer_factor)
+    elem_start = shape_end + 3  # Skip "], "
+    elem_end = type_str.rfind(",")
+    if elem_end < elem_start:
+        raise ValueError(f"Invalid CB type format: {type_str}")
+    elem_str = type_str[elem_start:elem_end].strip()
+
+    # Build tensor type string
+    shape_dims = "x".join(str(s) for s in shape)
+    tensor_type_str = f"tensor<{shape_dims}x{elem_str}>"
+
+    return Type.parse(tensor_type_str, cb_type.context)
 
 
 @dataclass(frozen=True)
@@ -122,8 +200,8 @@ class D2MGenericCompiler(TTCompilerBase):
                     element_type = dtype
 
                 # CBs use local memory (no MetalLayoutAttr) - they represent per-core views
-                cb_tensor_type = RankedTensorType.get(shard_shape, element_type, None)
-                func_operand_types.append(d2m.ir.CBType.get(self.ctx, cb_tensor_type))
+                cb_type = _create_ttl_cb_type(self.ctx, shard_shape, element_type)
+                func_operand_types.append(cb_type)
             elif arg.annotation.id == "Semaphore":
                 func_operand_types.append(d2m.ir.SemaphoreType.get(self.ctx))
             else:
@@ -133,9 +211,9 @@ class D2MGenericCompiler(TTCompilerBase):
 
         self.func_entry = func.FuncOp(name=node.name, type=(func_operand_types, []))
 
-        self.func_entry.attributes[d2m.ir.ThreadAttr.name] = d2m.ir.ThreadAttr.get(
-            self.ctx, self.kernel_type
-        )
+        # Set TTL thread attribute using parsed attribute
+        thread_attr = _create_ttl_thread_attr(self.ctx, self.kernel_type)
+        self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
 
         self.symbol_tables.append({})
 
@@ -160,22 +238,6 @@ class D2MGenericCompiler(TTCompilerBase):
                     )
                 elif isinstance(val, TensorAccessor):
                     with InsertionPoint.at_block_begin(self.module.body):
-                        layout = create_metal_layout(
-                            self.ctx,
-                            MetalLayoutConfig(
-                                logical_shape=val.shape,
-                                grid=self.context.grid,
-                                tiled=self.context.tiled,
-                                memory_space=self.context.memory_space,
-                            ),
-                        )
-                        tile_shape = (
-                            DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
-                        )
-                        device_shape = compute_device_shape(
-                            layout, self.context.grid, val.shape, tile_shape
-                        )
-
                         # Get dtype from TensorAccessor
                         stream_dtype = tensor_dtype_to_mlir_type(val.dtype, self.ctx)
                         stream_ttcore_dtype = tensor_dtype_to_ttcore_datatype(val.dtype)
@@ -189,12 +251,37 @@ class D2MGenericCompiler(TTCompilerBase):
                             if self.context.tiled
                             else stream_dtype
                         )
-                        tensor = RankedTensorType.get(
+
+                        # Create TTNN layout for ttl.copy compatibility
+                        layout = create_ttnn_layout(
+                            self.ctx,
+                            list(val.shape),
+                            element_type,
+                            self.context.grid,
+                            self.context.memory_space,
+                        )
+
+                        # Compute device shape for tensor type
+                        # Device shape: [grid_y, grid_x, tiles_per_core_y, tiles_per_core_x]
+                        tile_shape = (
+                            DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
+                        )
+                        tiles_per_dim = [
+                            (s + tile_shape[i % 2] - 1) // tile_shape[i % 2]
+                            for i, s in enumerate(val.shape)
+                        ]
+                        tiles_per_core = [
+                            (t + self.context.grid[i % 2] - 1) // self.context.grid[i % 2]
+                            for i, t in enumerate(tiles_per_dim)
+                        ]
+                        device_shape = list(self.context.grid) + tiles_per_core
+
+                        tensor_type = RankedTensorType.get(
                             device_shape, element_type, layout
                         )
-                        globalTensor = ttcore.GlobalOp(val.name, tensor)
+                        globalTensor = ttcore.GlobalOp(val.name, tensor_type)
                         self.module_symbol_table.insert(globalTensor.operation)
-                    self.symbol_tables[-1][name] = ttcore.get_global(tensor, val.name)
+                    self.symbol_tables[-1][name] = ttcore.get_global(tensor_type, val.name)
                     self.streams.add(val.name)
                 else:
                     raise TypeError(f"Invalid capture type for var {name}: {type(val)}")
@@ -220,15 +307,10 @@ class D2MGenericCompiler(TTCompilerBase):
 
         Acquire ops (wait/reserve) are generated left-to-right.
         Release ops (pop/push) are generated in reverse order at scope end.
-
-        Example:
-            with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
-                ...
-                # releases in reverse order: push(out), pop(rhs), pop(lhs)
         """
         with self.loc:
             # Process each with-item: acquire resources and track for release
-            releases = []  # [(release_op, cb_val), ...] in acquisition order
+            releases = []  # [(is_push, cb_val), ...] in acquisition order
 
             for item in node.items:
                 context_expr = item.context_expr
@@ -262,13 +344,19 @@ class D2MGenericCompiler(TTCompilerBase):
                     raise NameError(f"'{cb_node.id}' not found in scope")
                 cb_val = cb_table[cb_node.id]
 
-                cb_underlying = d2m.ir.CBType.cast(cb_val.type).get_underlying()
+                # Parse CB type to get underlying tensor type
+                cb_underlying = _parse_cb_underlying_type(cb_val.type)
+                num_pages = arith.ConstantOp(
+                    IntegerType.get_signless(32),
+                    IntegerAttr.get(IntegerType.get_signless(32), 1)
+                )
+
                 if method_name == "reserve":
-                    acquire_result = d2m.reserve(cb_underlying, cb_val)
-                    releases.append((d2m.push, cb_val))
+                    acquire_result = ttl.cb_reserve(cb_underlying, cb_val, num_pages)
+                    releases.append((True, cb_val))  # True = push
                 else:  # wait
-                    acquire_result = d2m.wait(cb_underlying, cb_val)
-                    releases.append((d2m.pop, cb_val))
+                    acquire_result = ttl.cb_wait(cb_underlying, cb_val, num_pages)
+                    releases.append((False, cb_val))  # False = pop
 
                 if optional_vars is not None:
                     if not isinstance(optional_vars, ast.Name):
@@ -281,8 +369,15 @@ class D2MGenericCompiler(TTCompilerBase):
                 self.visit(stmt)
 
             # Release in reverse order
-            for release_op, cb_val in reversed(releases):
-                release_op(cb_val)
+            for is_push, cb_val in reversed(releases):
+                num_pages = arith.ConstantOp(
+                    IntegerType.get_signless(32),
+                    IntegerAttr.get(IntegerType.get_signless(32), 1)
+                )
+                if is_push:
+                    ttl.cb_push(cb_val, num_pages)
+                else:
+                    ttl.cb_pop(cb_val, num_pages)
 
 
 def syntax(syntax_name):

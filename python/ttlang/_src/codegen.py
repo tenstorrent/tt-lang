@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Code generation utilities for creating D2M generic functions and MLIR operations."""
+"""Code generation utilities for creating TTL kernel functions and MLIR operations."""
 
 import inspect
 from typing import List, Callable, Any, Dict
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, d2m, func
+
+from ttlang.dialects import ttl
 
 from ..layouts import (
     create_metal_layout,
@@ -247,7 +249,7 @@ def create_generic_func(
 
         threads = ArrayAttr.get(
             [
-                ct.func_entry.attributes[d2m.ir.ThreadAttr.name]
+                ct.func_entry.attributes["ttl.kernel_thread"]
                 for ct in compiled_threads
             ]
         )
@@ -279,40 +281,29 @@ def create_generic_func(
             )
             output_buffer_result = device_output_buffer.results[0]
 
-        # Note: indexing_maps and iterator_types may be empty for explicit block_factors mode.
-        # Low-level DSL provides explicit grid/block_factors and manual thread logic.
-        # High-level DSL will need to infer these from operation semantics.
-        generic = d2m.GenericOp(
+        # Create ttl.kernel with regions for each thread
+        kernel_op = ttl.KernelOp(
             [device_output_type],
             wrapped_inputs,
             [output_buffer_result],
-            ttcore.ir.GridAttr.get(ctx, grid),
-            block_factors,
-            list(map(affine_map_from_lambda, indexing_maps)),
-            ArrayAttr.get(
-                list(
-                    ttcore.ir.IteratorTypeAttr.get(
-                        ctx, ttcore.IteratorType[i.title()].value
-                    )
-                    for i in iterator_types
-                )
-            ),
             threads,
+            ttcore.ir.GridAttr.get(ctx, grid),
             len(compiled_threads),
         )
-        for compiled_thread, generic_region in zip(compiled_threads, generic.regions):
-            compiled_thread.func_entry.entry_block.append_to(generic_region)
-            last_op = generic_region.blocks[0].operations[-1]
+
+        for compiled_thread, kernel_region in zip(compiled_threads, kernel_op.regions):
+            compiled_thread.func_entry.entry_block.append_to(kernel_region)
+            last_op = kernel_region.blocks[0].operations[-1]
             if isinstance(last_op, func.ReturnOp):
                 last_op.erase()
 
         if is_ttnn_tensor(output_arg):
-            # Already on device: return the generic result directly
-            func.ReturnOp(generic.results)
+            # Already on device: return the kernel result directly
+            func.ReturnOp(kernel_op.results)
         else:
             # Host tensor: insert ToLayoutOp to copy result back to host
             to_host = d2m.ToLayoutOp(
-                [ret_type], generic.results[0], outputs[0], layout=None
+                [ret_type], kernel_op.results[0], outputs[0], layout=None
             )
             func.ReturnOp(to_host.results)
 
