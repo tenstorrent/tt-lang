@@ -272,13 +272,12 @@ module {
 // TTKERNEL-DAG: %[[C0I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
-// TTKERNEL-DAG: %[[TILES_Y_BOUND:.*]] = arith.constant 2 : index
-// TTKERNEL-DAG: %[[TILES_X_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
 // TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C64]], %[[C1I32]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
 // TTKERNEL-NEXT: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[C0I32]], %[[C256]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_Y_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_X_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] : index
+// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
 // TTKERNEL-NEXT:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
 // TTKERNEL-NEXT:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
 // TTKERNEL-NEXT:     ttkernel.noc_async_write_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[C0I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
@@ -310,13 +309,12 @@ module {
 // TTKERNEL-DAG: %[[C0I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
-// TTKERNEL-DAG: %[[TILES_Y_BOUND:.*]] = arith.constant 2 : index
-// TTKERNEL-DAG: %[[TILES_X_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
 // TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C64]], %[[C1I32]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
 // TTKERNEL-NEXT: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[C0I32]], %[[C256]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_Y_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_X_BOUND]] step %[[TILE_STEP]]
-// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] : index
+// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
 // TTKERNEL-NEXT:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
 // TTKERNEL-NEXT:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
 // TTKERNEL-NEXT:     ttkernel.noc_async_read_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[C0I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
