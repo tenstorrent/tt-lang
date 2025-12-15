@@ -12,9 +12,7 @@
 
 namespace mlir::tt::ttl {
 
-/// Default tile dimensions used for TTL tensors when explicit tile metadata has
-/// not been plumbed through. Update when TTNN layout exports tile shape.
-
+/// Default tile dimensions used for TTL tensors.
 inline constexpr int kDefaultTileHeight = 32;
 inline constexpr int kDefaultTileWidth = 32;
 

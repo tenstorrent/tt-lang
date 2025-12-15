@@ -212,6 +212,16 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
   }
 
   auto loc = tensor.getLoc();
+  OpBuilder::InsertionGuard guard(rewriter);
+  if (auto barg = llvm::dyn_cast<BlockArgument>(tensor)) {
+    // Hoist accessor construction to the entry block when the source is a
+    // function argument so the accessor does not end up between generated
+    // tile loops for multiple copies.
+    Block *block = barg.getParentBlock();
+    if (block && block->isEntryBlock()) {
+      rewriter.setInsertionPointToStart(block);
+    }
+  }
   auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
   utils::ContiguousLayoutInfo layout;
   if (auto enc = tensorTy.getEncoding()) {
