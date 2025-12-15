@@ -4,6 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -551,7 +553,14 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
     }
 
-    // Apply FuncKernelFinalize as a greedy rewrite after conversion
+    // Apply post-conversion cleanup patterns (e.g., barrier deduplication).
+    RewritePatternSet cleanupPatterns(&ctx);
+    ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns);
+    if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns)))) {
+      signalPassFailure();
+    }
+
+    // Apply FuncKernelFinalize as a greedy rewrite after cleanup.
     RewritePatternSet finalizePatterns(&ctx);
     finalizePatterns.add<FuncKernelFinalize>(&ctx);
     if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
