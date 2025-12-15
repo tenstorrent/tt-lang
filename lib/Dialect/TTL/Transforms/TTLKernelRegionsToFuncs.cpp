@@ -36,8 +36,7 @@ static ttkernel::ThreadType mapThreadType(ThreadType ttlThread) {
 static std::string generateFuncName(KernelOp kernelOp, unsigned regionIndex,
                                     ThreadType threadType) {
   std::string baseName;
-  if (auto funcParent =
-          kernelOp->getParentOfType<mlir::func::FuncOp>()) {
+  if (auto funcParent = kernelOp->getParentOfType<mlir::func::FuncOp>()) {
     baseName = funcParent.getName().str();
   } else {
     baseName = "kernel";
@@ -58,22 +57,22 @@ static func::FuncOp extractRegionToFunc(OpBuilder &builder, KernelOp kernelOp,
 
   auto funcName = generateFuncName(kernelOp, regionIndex, threadType);
   auto funcType = builder.getFunctionType(block.getArgumentTypes(), {});
-  auto funcOp = builder.create<func::FuncOp>(kernelOp.getLoc(), funcName,
-                                             funcType);
+  auto funcOp =
+      builder.create<func::FuncOp>(kernelOp.getLoc(), funcName, funcType);
   funcOp.setPrivate();
 
   // Add ttkernel.thread attribute.
   auto tkThreadType = mapThreadType(threadType);
-  funcOp->setAttr("ttkernel.thread",
-                  ttkernel::ThreadTypeAttr::get(builder.getContext(),
-                                                 tkThreadType));
+  funcOp->setAttr("ttkernel.thread", ttkernel::ThreadTypeAttr::get(
+                                         builder.getContext(), tkThreadType));
 
   // Move region body into function.
   funcOp.getBody().takeBody(region);
 
   // Add return if block has no terminator.
   Block &funcBlock = funcOp.getBody().front();
-  if (funcBlock.empty() || !funcBlock.back().hasTrait<OpTrait::IsTerminator>()) {
+  if (funcBlock.empty() ||
+      !funcBlock.back().hasTrait<OpTrait::IsTerminator>()) {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToEnd(&funcBlock);
     builder.create<func::ReturnOp>(kernelOp.getLoc());
@@ -94,8 +93,7 @@ struct TTLKernelRegionsToFuncsPass
     for (KernelOp kernelOp : kernelOps) {
       // Insert functions at module level, before the function containing the
       // kernel op.
-      if (auto parentFunc =
-              kernelOp->getParentOfType<func::FuncOp>()) {
+      if (auto parentFunc = kernelOp->getParentOfType<func::FuncOp>()) {
         builder.setInsertionPoint(parentFunc);
       } else {
         builder.setInsertionPointToStart(mod.getBody());
@@ -111,8 +109,8 @@ struct TTLKernelRegionsToFuncsPass
             extractRegionToFunc(builder, kernelOp, i, threadType);
 
         // Build new ThreadAttr with symbol reference.
-        auto symbolRef = FlatSymbolRefAttr::get(builder.getContext(),
-                                                 funcOp.getName());
+        auto symbolRef =
+            FlatSymbolRefAttr::get(builder.getContext(), funcOp.getName());
         newThreadAttrs.push_back(
             ThreadAttr::get(builder.getContext(), threadType, symbolRef));
       }

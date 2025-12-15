@@ -204,7 +204,8 @@ mlir::LogicalResult mlir::tt::ttl::KernelOp::verify() {
   for (unsigned i = 0; i < numRegions; ++i) {
     Region &region = getThreadRegions()[i];
     if (region.empty()) {
-      return emitOpError() << "thread region " << i << " must have an entry block";
+      return emitOpError() << "thread region " << i
+                           << " must have an entry block";
     }
     if (!region.hasOneBlock()) {
       return emitOpError() << "thread region " << i
@@ -221,18 +222,18 @@ mlir::LogicalResult mlir::tt::ttl::KernelOp::verify() {
     TypeRange argTypes = block.getArgumentTypes();
 
     if (argTypes.size() != firstArgTypes.size()) {
-      return emitOpError()
-             << "thread region " << i << " has " << argTypes.size()
-             << " block arguments, expected " << firstArgTypes.size()
-             << " (must match first region)";
+      return emitOpError() << "thread region " << i << " has "
+                           << argTypes.size() << " block arguments, expected "
+                           << firstArgTypes.size()
+                           << " (must match first region)";
     }
 
     for (unsigned j = 0; j < argTypes.size(); ++j) {
       if (argTypes[j] != firstArgTypes[j]) {
         return emitOpError()
-               << "thread region " << i << " block argument " << j << " has type "
-               << argTypes[j] << ", expected " << firstArgTypes[j]
-               << " (must match first region)";
+               << "thread region " << i << " block argument " << j
+               << " has type " << argTypes[j] << ", expected "
+               << firstArgTypes[j] << " (must match first region)";
       }
     }
   }
