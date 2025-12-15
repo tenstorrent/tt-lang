@@ -222,6 +222,73 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Compute operations
+//===----------------------------------------------------------------------===//
+
+def TTL_TileAddOp : TTL_Op<"tile_add", [Pure]> {
+  let summary = "Element-wise addition of two tiles";
+  let description = [{
+    Performs element-wise addition of two individual tiles. This operates on
+    single tiles (!ttcore.tile<32x32, dtype>), not tensors of tiles.
+
+    The operands must come from CB wait/reserve operations (traced through
+    tensor.extract or unrealized_conversion_cast).
+
+    Lowers to TTKernel DST register sequence:
+    - tile_regs_acquire
+    - copy_tile for each operand
+    - add_binary_tile
+    - tile_regs_commit/wait
+
+    The result is held in DST registers and must be written to a CB via
+    ttl.store before tile_regs_release.
+
+    Example:
+    ```mlir
+    %lhs_tile = tensor.extract %lhs_view[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %rhs_tile = tensor.extract %rhs_view[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %result = ttl.tile_add %lhs_tile, %rhs_tile : !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins
+    TTCore_Tile:$lhs,
+    TTCore_Tile:$rhs
+  );
+  let results = (outs TTCore_Tile:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Store a tile to circular buffer space";
+  let description = [{
+    Stores a tile value (from DST registers) to space reserved in a circular
+    buffer via ttl.cb_reserve.
+
+    The destination must be a tensor view from cb_reserve. The value is
+    typically from a compute operation like ttl.tile_add.
+
+    Lowers to TTKernel:
+    - pack_tile (DST -> CB)
+    - tile_regs_release
+
+    Example:
+    ```mlir
+    %space = ttl.cb_reserve %out_cb, %c1 : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %result = ttl.tile_add %lhs, %rhs : !ttcore.tile<32x32, bf16>
+    ttl.store %result, %space : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %out_cb, %c1 : ...
+    ```
+  }];
+  let arguments = (ins
+    TTCore_Tile:$value,
+    AnyRankedTensor:$dest
+  );
+  let assemblyFormat = "$value `,` $dest attr-dict `:` type($value) `,` type($dest)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // Kernel container operation
 //===----------------------------------------------------------------------===//
 

@@ -8,9 +8,10 @@
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"    // IWYU pragma: keep
-#include "llvm/ADT/TypeSwitch.h"               // IWYU pragma: keep
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"      // IWYU pragma: keep
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h" // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"         // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h"                    // IWYU pragma: keep
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -162,6 +163,47 @@ mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   // cb_pop has no result to verify; the CB type is already enforced by
   // tablegen constraints.
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileAddOp::verify() {
+  auto lhsTy = getLhs().getType();
+  auto rhsTy = getRhs().getType();
+
+  // Operand types must match exactly (same shape and datatype).
+  if (lhsTy != rhsTy) {
+    return emitOpError() << "operand types must match; got lhs=" << lhsTy
+                         << " rhs=" << rhsTy;
+  }
+
+  // Result type must match operand type.
+  if (getResult().getType() != lhsTy) {
+    return emitOpError() << "result type must match operand type; got result="
+                         << getResult().getType() << " operand=" << lhsTy;
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
+  auto valueTy = getValue().getType();
+  auto destTy = mlir::cast<RankedTensorType>(getDest().getType());
+  auto destElemTy = destTy.getElementType();
+
+  // Destination tensor element type must be a tile type.
+  if (!mlir::isa<tt::ttcore::TileType>(destElemTy)) {
+    return emitOpError()
+           << "destination tensor element type must be a tile type; got "
+           << destElemTy;
+  }
+
+  // Value tile type must match destination element type.
+  if (valueTy != destElemTy) {
+    return emitOpError() << "value type must match destination element type; "
+                         << "got value=" << valueTy << " dest element="
+                         << destElemTy;
+  }
+
   return success();
 }
 

@@ -379,6 +379,90 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Compute operation helper utilities
+//===----------------------------------------------------------------------===//
+
+/// Find the source CB for a tile value used in compute operations.
+/// Traces through tensor.extract and unrealized_conversion_cast to find
+/// the CB that produced the tile.
+static Value findSourceCB(Value v) {
+  // Already a TTKernel CB.
+  if (llvm::isa<ttk::CBType>(v.getType())) {
+    return v;
+  }
+
+  // Trace through unrealized_conversion_cast.
+  if (auto cast = v.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      auto input = cast.getInputs()[0];
+      if (llvm::isa<ttk::CBType>(input.getType())) {
+        return input;
+      }
+      // Recurse for chained casts.
+      return findSourceCB(input);
+    }
+  }
+
+  // tensor.extract from a tensor that came from CB wait/reserve.
+  if (auto extractOp = v.getDefiningOp<tensor::ExtractOp>()) {
+    Value tensorSource = extractOp.getTensor();
+
+    // Source is directly a CB (after lowering).
+    if (llvm::isa<ttk::CBType>(tensorSource.getType())) {
+      return tensorSource;
+    }
+
+    // Tensor from unrealized_conversion_cast (post-CB lowering).
+    if (auto cast = tensorSource.getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (cast.getInputs().size() == 1) {
+        auto input = cast.getInputs()[0];
+        if (llvm::isa<ttk::CBType>(input.getType())) {
+          return input;
+        }
+      }
+    }
+
+    // Pre-conversion: tensor from ttl.cb_wait.
+    if (auto cbWait = tensorSource.getDefiningOp<CBWaitOp>()) {
+      return cbWait.getCb();
+    }
+
+    // Pre-conversion: tensor from ttl.cb_reserve.
+    if (auto cbReserve = tensorSource.getDefiningOp<CBReserveOp>()) {
+      return cbReserve.getCb();
+    }
+  }
+
+  return nullptr;
+}
+
+/// Find the destination CB from a store operation's dest operand.
+/// Handles both pre-conversion (ttl.cb_reserve) and post-conversion cases.
+static Value findDestCB(Value v) {
+  // Already a TTKernel CB.
+  if (llvm::isa<ttk::CBType>(v.getType())) {
+    return v;
+  }
+
+  // Trace through unrealized_conversion_cast (post-CBReserveLowering).
+  if (auto cast = v.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      auto input = cast.getInputs()[0];
+      if (llvm::isa<ttk::CBType>(input.getType())) {
+        return input;
+      }
+    }
+  }
+
+  // Pre-conversion: dest from ttl.cb_reserve result.
+  if (auto cbReserve = v.getDefiningOp<CBReserveOp>()) {
+    return cbReserve.getCb();
+  }
+
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
 // Wait operation lowering
 //===----------------------------------------------------------------------===//
 
@@ -419,6 +503,103 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     } else {
       return rewriter.notifyMatchFailure(op, "unsupported transfer direction");
     }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Compute operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+struct TileAddLowering : OpConversionPattern<TileAddOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileAddOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // Find source CBs for lhs and rhs operands.
+    Value lhsCBRaw = findSourceCB(adaptor.getLhs());
+    Value rhsCBRaw = findSourceCB(adaptor.getRhs());
+
+    if (!lhsCBRaw || !rhsCBRaw) {
+      return rewriter.notifyMatchFailure(
+          op, "tile_add operands must trace back to CB wait/reserve");
+    }
+
+    // Convert CB types to TTKernel CB.
+    Value lhsCB = convertCBToKernelType(lhsCBRaw, rewriter);
+    Value rhsCB = convertCBToKernelType(rhsCBRaw, rewriter);
+
+    if (!lhsCB || !rhsCB) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
+    }
+
+    // DST register indices for the add operation.
+    // Load lhs to DST[1], rhs to DST[0], result in DST[0].
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+    // 1. Acquire DST registers.
+    rewriter.create<ttk::TileRegsAcquireOp>(loc);
+
+    // 2. Copy lhs tile from CB to DST[1].
+    rewriter.create<ttk::CopyTileInitOp>(loc, lhsCB);
+    rewriter.create<ttk::CopyTileOp>(loc, lhsCB, zero, one);
+
+    // 3. Copy rhs tile from CB to DST[0].
+    rewriter.create<ttk::CopyTileInitOp>(loc, rhsCB);
+    rewriter.create<ttk::CopyTileOp>(loc, rhsCB, zero, zero);
+
+    // 4. Add tiles: DST[0] = DST[1] + DST[0].
+    rewriter.create<ttk::AddBinaryTilesInitOp>(loc);
+    rewriter.create<ttk::AddBinaryTilesOp>(loc, one, zero, zero);
+
+    // 5. Commit DST and wait for pack thread.
+    rewriter.create<ttk::TileRegsCommitOp>(loc);
+    rewriter.create<ttk::TileRegsWaitOp>(loc);
+
+    // Result is tracked via a placeholder. The actual value is in DST[0]
+    // and will be packed by StoreLowering.
+    auto resultTy = op.getResult().getType();
+    auto placeholder = rewriter.create<UnrealizedConversionCastOp>(
+        loc, resultTy, ValueRange{zero.getResult()});
+    rewriter.replaceOp(op, placeholder.getResult(0));
+    return success();
+  }
+};
+
+struct StoreLowering : OpConversionPattern<StoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // Find destination CB from the tensor view.
+    Value destCBRaw = findDestCB(adaptor.getDest());
+    if (!destCBRaw) {
+      return rewriter.notifyMatchFailure(
+          op, "store destination must come from CB reserve");
+    }
+
+    // Convert CB type to TTKernel CB.
+    Value destCB = convertCBToKernelType(destCBRaw, rewriter);
+    if (!destCB) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB type");
+    }
+
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+    // Pack tile from DST[0] to output CB at index 0.
+    rewriter.create<ttk::PackTileOp>(loc, zero, destCB, zero);
+
+    // Release DST registers.
+    rewriter.create<ttk::TileRegsReleaseOp>(loc);
+
     rewriter.eraseOp(op);
     return success();
   }
@@ -517,6 +698,9 @@ struct TTLConvertTTLToTTKernelPass
     target.addLegalDialect<ttk::TTKernelDialect>();
     target.addLegalDialect<arith::ArithDialect>();
     target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<tensor::TensorDialect>();
+    // Allow unrealized_conversion_cast for type bridging during conversion.
+    target.addLegalOp<UnrealizedConversionCastOp>();
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());
     });
@@ -538,6 +722,8 @@ struct TTLConvertTTLToTTKernelPass
         .add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
              CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
                                                             &ctx);
+    // Compute ops.
+    patterns.add<TileAddLowering, StoreLowering>(typeConverter, &ctx);
 
     FrozenRewritePatternSet frozen(std::move(patterns));
     std::string diagMessage;
