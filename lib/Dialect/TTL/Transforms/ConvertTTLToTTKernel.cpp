@@ -12,6 +12,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
@@ -387,11 +388,57 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(FuncOp op,
-                                PatternRewriter & /*rewriter*/) const override {
+                                PatternRewriter &rewriter) const override {
     if (!isNocKernel(op.getOperation())) {
       return failure();
     }
-    return eraseUnusedArguments(op) ? success() : failure();
+
+    // Change ttl.kernel_thread attribute to ttkernel.thread
+    if (auto threadAttr = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
+      op->removeAttr("ttl.kernel_thread");
+      op->setAttr("ttkernel.thread", threadAttr);
+    }
+
+    // If function has arguments, we need to transform them
+    if (op.getNumArguments() > 0) {
+      // Build arg_spec attribute for compile-time arguments
+      // Tensor arguments become buffer_address compile-time args
+      llvm::SmallVector<ttk::ArgAttr> ctArgSpecs;
+      unsigned operandIndex = 0;
+      for (auto arg : op.getArguments()) {
+        if (llvm::isa<RankedTensorType>(arg.getType())) {
+          auto argAttr = ttk::ArgAttr::get(
+              op.getContext(),
+              ttk::ArgType::BufferAddress,
+              operandIndex++);
+          ctArgSpecs.push_back(argAttr);
+        }
+      }
+
+      // Set arg_spec attribute if we have any arguments
+      if (!ctArgSpecs.empty()) {
+        auto argSpecAttr = ttk::ArgSpecAttr::get(
+            op.getContext(),
+            /*rtArgs=*/ArrayRef<ttk::ArgAttr>{},
+            /*ctArgs=*/ctArgSpecs);
+        op->setAttr("ttkernel.arg_spec", argSpecAttr);
+      }
+
+      // Erase all arguments - mark all for removal
+      BitVector allArgs(op.getNumArguments(), true);
+      if (failed(op.eraseArguments(allArgs))) {
+        return failure();
+      }
+
+      // Update function type to have no inputs
+      auto newType = FunctionType::get(
+          op.getContext(),
+          TypeRange{}, // No inputs
+          op.getFunctionType().getResults());
+      op.setType(newType);
+    }
+
+    return success();
   }
 };
 
@@ -423,13 +470,19 @@ struct TTLConvertTTLToTTKernelPass
                                                                &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
-    patterns.add<FuncKernelFinalize>(&ctx);
 
     FrozenRewritePatternSet frozen(std::move(patterns));
     std::string diagMessage;
     if (utils::applyPartialConversionWithDiag(mod, target, frozen, getName(),
                                               diagMessage)) {
       mod.emitError() << diagMessage;
+      signalPassFailure();
+    }
+
+    // Apply FuncKernelFinalize as a greedy rewrite after conversion
+    RewritePatternSet finalizePatterns(&ctx);
+    finalizePatterns.add<FuncKernelFinalize>(&ctx);
+    if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
       signalPassFailure();
     }
   }

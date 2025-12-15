@@ -74,14 +74,23 @@ if llvm_config is not None:
 # Tweak the PATH to include the tools dir.
 tool_dirs = [
     os.path.join(config.ttlang_obj_root, "bin"),
-    config.llvm_tools_dir,
-    config.lit_tools_dir,
 ]
-for dirs in tool_dirs:
-    llvm_config.with_environment("PATH", dirs, append_path=True)
+# Add tt-mlir tools directory if available
+if hasattr(config, "ttmlir_path") and config.ttmlir_path:
+    ttmlir_bin = os.path.join(config.ttmlir_path, "bin")
+    if os.path.exists(ttmlir_bin):
+        tool_dirs.append(ttmlir_bin)
+if hasattr(config, "llvm_tools_dir"):
+    tool_dirs.append(config.llvm_tools_dir)
+if hasattr(config, "lit_tools_dir"):
+    tool_dirs.append(config.lit_tools_dir)
 
-# Add ttlang-opt tool
-tools = ["ttlang-opt"]
+if llvm_config is not None:
+    for dirs in tool_dirs:
+        llvm_config.with_environment("PATH", dirs, append_path=True)
+
+# Add ttlang-opt, ttmlir-opt, and ttmlir-translate tools
+tools = ["ttlang-opt", "ttmlir-opt", "ttmlir-translate"]
 
 if llvm_config is not None:
     llvm_config.add_tool_substitutions(tools, tool_dirs)
