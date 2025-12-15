@@ -25,10 +25,15 @@
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 64;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
+// CHECK:   TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[ZERO]], [[ADDR]]);
+// CHECK-NEXT:   TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[ZERO]], [[ADDR]]);
 
 // First copy: 64x64 (2x2 tiles) → CB [2,2]
 // Generated tile loops iterate over tensor grid (2x2)
-// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] =
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[TILE_STEP]]) {
 // CHECK-NEXT:      for (size_t [[TILE1_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[TILE_STEP]]) {
 // CHECK-NEXT:        size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
@@ -42,7 +47,6 @@
 
 // Second copy: 64x64 (2x2 tiles) → CB [4,1] - SAME tensor layout, DIFFERENT CB shape
 // Generated tile loops still iterate over tensor grid (2x2), not CB shape (4x1)
-// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] =
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[TILE_STEP]]) {
 // CHECK-NEXT:      for (size_t [[TILE2_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[TILE_STEP]]) {
 // CHECK-NEXT:        size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];

@@ -41,8 +41,13 @@
 // CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 4;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 64;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
+// CHECK:   TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[ZERO]], [[ADDR]]);
+// CHECK-NEXT:   TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[ZERO]], [[ADDR]]);
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[TILE_LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[TILE_STEP]]) {
-// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] =
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_2]]; [[TILE1_Y]] += [[TILE_STEP]]) {
 // CHECK-NEXT:      for (size_t [[TILE1_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_X]] < [[TILES_2]]; [[TILE1_X]] += [[TILE_STEP]]) {
 // CHECK-NEXT:        size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_2]];
@@ -53,7 +58,6 @@
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    noc_async_read_barrier();
-// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] =
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_3]]; [[TILE2_Y]] += [[TILE_STEP]]) {
 // CHECK-NEXT:      for (size_t [[TILE2_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_X]] < [[TILES_2]]; [[TILE2_X]] += [[TILE_STEP]]) {
 // CHECK-NEXT:        size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_2]];

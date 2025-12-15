@@ -17,14 +17,14 @@
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
-// CHECK-NEXT:   size_t [[TILE_STEP:v[0-9]+]] = 1;
-// CHECK-NEXT:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
-// CHECK-NEXT:   size_t [[TILE_LB:v[0-9]+]] = 0;
-// CHECK-NEXT:   int32_t [[ADDR:v[0-9]+]] = 256;
-// CHECK-NEXT:   int32_t [[V1:v[0-9]+]] = 1;
-// CHECK-NEXT:   int32_t [[SIZE:v[0-9]+]] = 64;
-// CHECK-NEXT:   int32_t [[ZERO:v[0-9]+]] = 0;
-// CHECK-NEXT:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK-DAG:   size_t [[TILE_STEP:v[0-9]+]] = 1;
+// CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
+// CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
+// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 64;
+// CHECK-DAG:   int32_t [[V1:v[0-9]+]] = 1;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
+// CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[ZERO]], [[ADDR]]);
 // CHECK-NEXT:   for (size_t [[TILE_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[TILE_STEP]]) {
 // CHECK:     for (size_t [[TILE_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[TILE_STEP]]) {

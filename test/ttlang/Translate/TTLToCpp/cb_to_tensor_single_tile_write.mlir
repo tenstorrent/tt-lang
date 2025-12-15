@@ -14,12 +14,12 @@
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
-// CHECK-NEXT:   int32_t [[ADDR:v[0-9]+]] = 128;
-// CHECK-NEXT:   int32_t [[V1:v[0-9]+]] = 1;
-// CHECK-NEXT:   int32_t [[SIZE:v[0-9]+]] = 32;
-// CHECK-NEXT:   int32_t [[ZERO:v[0-9]+]] = 0;
-// CHECK-NEXT:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<32, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[ZERO]], [[ADDR]]);
+// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 32;
+// CHECK-DAG:   int32_t [[V1:v[0-9]+]] = 1;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
+// CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<32, 1>();
+// CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[ZERO]], [[ADDR]]);
 // CHECK-NEXT:   noc_async_write_tile([[ZERO]], [[ACCESSOR]], [[ZERO]]);
 // CHECK-NEXT:   noc_async_write_barrier();
 // CHECK-NEXT:   return;

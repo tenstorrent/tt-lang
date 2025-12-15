@@ -259,10 +259,10 @@ getTileGridShape(const RankedTensorType &tensorTy) {
 // Emit a tile loop (or single tile body) with proper offset computation.
 // The emitBody callback receives (builder, location, tileOffset) where
 // tileOffset is an i32 linear tile index computed from loop indices.
-static void emitTileLoop(ConversionPatternRewriter &rewriter, Location loc,
-                         int64_t tilesY, int64_t tilesX,
-                         llvm::function_ref<void(OpBuilder &, Location, Value)>
-                             emitBody) {
+static void
+emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
+             int64_t tilesX,
+             llvm::function_ref<void(OpBuilder &, Location, Value)> emitBody) {
   if (tilesY > 1 || tilesX > 1) {
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto yBound = rewriter.create<arith::ConstantIndexOp>(loc, tilesY);
@@ -311,9 +311,9 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
 
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 // TODO(ttl): Add lowering for CB protocol ops (reserve/push/wait/pop) once
-                 // those ops are exposed in the TTL dialect and wired through to TTKernel.
-                 // Issue: #78.
+                 // TODO(ttl): Add lowering for CB protocol ops
+                 // (reserve/push/wait/pop) once those ops are exposed in the
+                 // TTL dialect and wired through to TTKernel. Issue: #78.
                  b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
                                                    srcAccessor, nocDst);
                });
@@ -351,9 +351,9 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
 
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 // TODO(ttl): Add lowering for CB protocol ops (reserve/push/wait/pop) once
-                 // those ops are exposed in the TTL dialect and wired through to TTKernel.
-                 // Issue: #78.
+                 // TODO(ttl): Add lowering for CB protocol ops
+                 // (reserve/push/wait/pop) once those ops are exposed in the
+                 // TTL dialect and wired through to TTKernel. Issue: #78.
                  b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
                                                     dstAccessor, nocDst);
                });

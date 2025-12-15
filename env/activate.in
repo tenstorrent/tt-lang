@@ -32,7 +32,7 @@ else
 fi
 
 # Add tt-lang build directories and toolchain to PATH and PYTHONPATH.
-export PATH="@CMAKE_BINARY_DIR@/bin:${TTMLIR_TOOLCHAIN_DIR}/bin:$PATH"
+export PATH="@CMAKE_BINARY_DIR@/bin:@TTMLIR_PATH@/bin:${TTMLIR_TOOLCHAIN_DIR}/bin:$PATH"
 
 export PYTHONPATH="\
 @CMAKE_BINARY_DIR@/python_packages:\

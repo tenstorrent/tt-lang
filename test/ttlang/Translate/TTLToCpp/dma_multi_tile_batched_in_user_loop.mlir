@@ -24,7 +24,7 @@
 // Future optimization: Custom loop fusion pass could merge loops with identical bounds
 // to batch both DMAs in the same tile loop body. MLIR's built-in --affine-loop-fusion
 // only works for affine dialect loops, and --scf-parallel-loop-fusion only works for
-// scf.parallel loops. A custom scf.for fusion pass would be needed.
+// scf.parallel loops. We must implement custom fusion for this.
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
@@ -39,13 +39,18 @@
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 64;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
+// CHECK:   TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[ZERO]], [[ADDR]]);
+// CHECK-NEXT:   TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[ZERO]], [[ADDR]]);
 
 // User loop from input MLIR (0..3)
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
 
 // First copy: 64x64 (2x2 tiles) → CB1
 // Tile loops: for tile_y in 0..2, for tile_x in 0..2
-// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] =
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[STEP]]) {
 // CHECK-NEXT:      for (size_t [[TILE1_X:[a-z][0-9]+]] = [[LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[STEP]]) {
 // CHECK-NEXT:        size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
@@ -58,7 +63,6 @@
 
 // Second copy: 64x64 (2x2 tiles) → CB2
 // Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
-// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] =
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[STEP]]) {
 // CHECK-NEXT:      for (size_t [[TILE2_X:[a-z][0-9]+]] = [[LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[STEP]]) {
 // CHECK-NEXT:        size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];

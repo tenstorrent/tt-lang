@@ -14,21 +14,21 @@
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
-// CHECK-NEXT:   int32_t [[ADDR:v[0-9]+]] = 128;
-// CHECK-NEXT:   int32_t [[V1:v[0-9]+]] = 1;
-// CHECK-NEXT:   int32_t [[SIZE:v[0-9]+]] = 32;
-// CHECK-NEXT:   size_t [[STEP:v[0-9]+]] = 1;
-// CHECK-NEXT:   size_t [[UB:v[0-9]+]] = 4;
-// CHECK-NEXT:   size_t [[LB:v[0-9]+]] = 0;
-// CHECK-NEXT:   int32_t [[ZERO:v[0-9]+]] = 0;
-// CHECK-NEXT:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
-// CHECK-NEXT:     TensorAccessorArgs [[ARGS0:v[0-9]+]] = TensorAccessorArgs<32, 1>();
-// CHECK-NEXT:     TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[ZERO]]);
+// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
+// CHECK-DAG:   size_t [[UB:v[0-9]+]] = 4;
+// CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
+// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 32;
+// CHECK-DAG:   int32_t [[V1:v[0-9]+]] = 1;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
+// CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK:   TensorAccessorArgs [[ARGS_WRITE:v[0-9]+]] = TensorAccessorArgs<32, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[ZERO]], [[ADDR]]);
+// CHECK-NEXT:   TensorAccessorArgs [[ARGS_READ:v[0-9]+]] = TensorAccessorArgs<32, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[ZERO]], [[ADDR]]);
+// CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
+// CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[ZERO]]);
 // CHECK-NEXT:     noc_async_read_barrier();
-// CHECK-NEXT:     TensorAccessorArgs [[ARGS1:v[0-9]+]] = TensorAccessorArgs<32, 1>();
-// CHECK-NEXT:     TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:     noc_async_write_tile([[ZERO]], [[ACCESSOR1]], [[ZERO]]);
+// CHECK-NEXT:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[ZERO]]);
 // CHECK-NEXT:     noc_async_write_barrier();
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return;

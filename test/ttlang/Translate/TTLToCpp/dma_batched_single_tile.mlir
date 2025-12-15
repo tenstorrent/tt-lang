@@ -14,16 +14,16 @@
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
-// CHECK-NEXT:   int32_t [[ADDR:v[0-9]+]] = 128;
-// CHECK-NEXT:   int32_t [[V1:v[0-9]+]] = 1;
-// CHECK-NEXT:   int32_t [[SIZE:v[0-9]+]] = 32;
-// CHECK-NEXT:   int32_t [[ZERO:v[0-9]+]] = 0;
-// CHECK-NEXT:   TensorAccessorArgs [[ARGS0:v[0-9]+]] = TensorAccessorArgs<32, 1>();
+// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 32;
+// CHECK-DAG:   int32_t [[V1:v[0-9]+]] = 1;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
+// CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK:   TensorAccessorArgs [[ARGS0:v[0-9]+]] = TensorAccessorArgs<32, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[ZERO]]);
 // CHECK-NEXT:   TensorAccessorArgs [[ARGS1:v[0-9]+]] = TensorAccessorArgs<32, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[ZERO]], [[ADDR]]);
 // CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[ZERO]]);
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[ZERO]]);
 // CHECK-NEXT:   noc_async_read_barrier();
 // CHECK-NEXT:   noc_async_read_barrier();
 // CHECK-NEXT:   return;
