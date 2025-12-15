@@ -6,6 +6,8 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -235,24 +237,76 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
                              pageSize);
 }
 
+static std::pair<int64_t, int64_t>
+getTileGridShape(const RankedTensorType &tensorTy) {
+  auto dims = tensorTy.getShape();
+  auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
+  int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
+  int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
+  return {tilesY, tilesX};
+}
+
+// Emit a tile loop (or single tile body) with proper offset computation.
+// The emitBody callback receives (builder, location, tileOffset) where
+// tileOffset is an i32 linear tile index computed from loop indices.
+static void emitTileLoop(ConversionPatternRewriter &rewriter, Location loc,
+                         int64_t tilesY, int64_t tilesX,
+                         llvm::function_ref<void(OpBuilder &, Location, Value)>
+                             emitBody) {
+  if (tilesY > 1 || tilesX > 1) {
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto yBound = rewriter.create<arith::ConstantIndexOp>(loc, tilesY);
+    auto xBound = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
+    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto tilesXVal = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
+
+    scf::buildLoopNest(
+        rewriter, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
+        ValueRange{one, one},
+        [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
+          // Compute linear tile offset: offset = iy * tilesX + ix
+          Value iy = ivs[0];
+          Value ix = ivs[1];
+          Value offsetY = b.create<arith::MulIOp>(bodyLoc, iy, tilesXVal);
+          Value offset = b.create<arith::AddIOp>(bodyLoc, offsetY, ix);
+
+          // Convert offset to i32 for TTKernel NOC operations
+          Value offset32 =
+              b.create<arith::IndexCastOp>(bodyLoc, b.getI32Type(), offset);
+
+          emitBody(b, bodyLoc, offset32);
+        });
+  } else {
+    // Single tile: offset is always 0
+    Value zero32 = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+    emitBody(rewriter, loc, zero32);
+  }
+}
+
 static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
                                      ConversionPatternRewriter &rewriter,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
+  int64_t tilesY = 1, tilesX = 1;
+  if (auto tensorTy = llvm::dyn_cast<RankedTensorType>(op.getSrc().getType())) {
+    if (tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
+      std::tie(tilesY, tilesX) = getTileGridShape(tensorTy);
+    }
+  }
+
   // TODO(ttl): Plumb real NOC coordinates and bank base addresses from tensor
-  // accessors and kernel launch metadata.
-  // Issue: #84.
-  auto nocSrc = makeZeroI32(loc, rewriter);
+  // accessors and kernel launch metadata. Issue: #84.
   auto nocDst = makeZeroI32(loc, rewriter);
 
-  // Per TT-Lang spec, ttl.copy is non-blocking: it initiates the async DMA
-  // transfer and returns a handle that is synchronized by ttl.wait.
-  //
-  // TODO(ttl): Compute the destination NOC address from the CB operand and the
-  // requested tile coordinates (when we model CB handles and CB addressing).
-  // Issue: #80.
-  rewriter.create<ttk::NocAsyncReadTileOp>(loc, nocSrc, srcAccessor, nocDst);
+  emitTileLoop(rewriter, loc, tilesY, tilesX,
+               [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                 // TODO(ttl): Add lowering for CB protocol ops (reserve/push/wait/pop) once
+                 // those ops are exposed in the TTL dialect and wired through to TTKernel.
+                 // Issue: #78.
+                 b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
+                                                   srcAccessor, nocDst);
+               });
 
   // Encode direction in the handle type (async-token-like design).
   (void)typeConverter.convertType(
@@ -269,6 +323,13 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
+  int64_t tilesY = 1, tilesX = 1;
+  if (auto tensorTy = llvm::dyn_cast<RankedTensorType>(op.getDst().getType())) {
+    if (tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
+      std::tie(tilesY, tilesX) = getTileGridShape(tensorTy);
+    }
+  }
+
   // TODO(ttl): Lower CB operands to real CB handles and NOC addresses.
   // Issue: #80.
   auto tkCbTy = typeConverter.convertType(op.getSrc().getType());
@@ -276,11 +337,16 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
                                  rewriter, loc, tkCbTy);
   (void)cbVal;
 
-  // Per TT-Lang spec, ttl.copy is non-blocking: it initiates the async DMA
-  // transfer and returns a handle that is synchronized by ttl.wait. This is
-  // lowered to a TTKernel NOC async write.
-  rewriter.create<ttk::NocAsyncWriteTileOp>(
-      loc, makeZeroI32(loc, rewriter), dstAccessor, makeZeroI32(loc, rewriter));
+  auto nocDst = makeZeroI32(loc, rewriter);
+
+  emitTileLoop(rewriter, loc, tilesY, tilesX,
+               [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                 // TODO(ttl): Add lowering for CB protocol ops (reserve/push/wait/pop) once
+                 // those ops are exposed in the TTL dialect and wired through to TTKernel.
+                 // Issue: #78.
+                 b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
+                                                    dstAccessor, nocDst);
+               });
 
   (void)typeConverter.convertType(
       TransferHandleType::get(rewriter.getContext(), TransferKind::write));
@@ -423,17 +489,14 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
         op->setAttr("ttkernel.arg_spec", argSpecAttr);
       }
 
-      // Erase all arguments - mark all for removal
-      BitVector allArgs(op.getNumArguments(), true);
-      if (failed(op.eraseArguments(allArgs))) {
-        return failure();
+      // Only erase arguments that are now unused after conversion. If any are
+      // still used (e.g., until full accessor materialization is wired), keep
+      // them to avoid invalid IR.
+      if (eraseUnusedArguments(op)) {
+        auto newType = FunctionType::get(op.getContext(), TypeRange{},
+                                         op.getFunctionType().getResults());
+        op.setType(newType);
       }
-
-      // Update function type to have no inputs
-      auto newType =
-          FunctionType::get(op.getContext(), TypeRange{}, // No inputs
-                            op.getFunctionType().getResults());
-      op.setType(newType);
     }
 
     return success();
@@ -453,6 +516,7 @@ struct TTLConvertTTLToTTKernelPass
     target.addLegalDialect<BuiltinDialect>();
     target.addLegalDialect<ttk::TTKernelDialect>();
     target.addLegalDialect<arith::ArithDialect>();
+    target.addLegalDialect<scf::SCFDialect>();
     target.addLegalDialect<func::FuncDialect>();
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());

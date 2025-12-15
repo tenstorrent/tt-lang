@@ -3,8 +3,8 @@
 // RUN: ttmlir-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
-// Test: Single DMA read operation (tensor → CB)
-// Validates TTL→TTKernel→EmitC→C++ pipeline for basic DMA read
+// Test: Single-tile DMA read operation (tensor → CB)
+// Validates TTL→TTKernel→EmitC→C++ pipeline for basic single-tile DMA read
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>

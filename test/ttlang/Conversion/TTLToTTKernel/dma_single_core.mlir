@@ -3,8 +3,9 @@
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// TTKERNEL-LABEL: func.func @dma_single
+// TTKERNEL-LABEL: func.func @dma_single_tile_single_copy
 // TTKERNEL-DAG: %[[C128:.*]] = arith.constant 128 : i32
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : i32
 // TTKERNEL-DAG: %[[C32:.*]] = arith.constant 32 : i32
@@ -15,7 +16,7 @@
 // TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
-  func.func @dma_single(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @dma_single_tile_single_copy(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
@@ -127,7 +128,7 @@ module {
 // a second loop. This mirrors TT-Metal kernels that batch NOC async ops and then
 // block on a barrier after issuing the batch.
 //
-// TTKERNEL-LABEL: func.func @dma_two_phase_loops
+// TTKERNEL-LABEL: func.func @dma_single_tile_two_phase_loops
 // TTKERNEL: %[[HANDLES0:.*]] = tensor.empty() : tensor<4x!ttl.transfer_handle<read>>
 // TTKERNEL: %[[CAST:.*]] = tensor.cast %[[HANDLES0]] : tensor<4x!ttl.transfer_handle<read>> to tensor<?x!ttl.transfer_handle<read>>
 // TTKERNEL: %[[HANDLES:.*]] = scf.for {{.*}} iter_args(%[[H:.*]] = %[[CAST]]) -> (tensor<?x!ttl.transfer_handle<read>>) {
@@ -143,7 +144,7 @@ module {
 // TTKERNEL: }
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
-  func.func @dma_two_phase_loops(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @dma_single_tile_two_phase_loops(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -171,12 +172,12 @@ module {
 
 // Corner case: waiting twice on the same transfer handle is allowed.
 //
-// TTKERNEL-LABEL: func.func @dma_double_wait
+// TTKERNEL-LABEL: func.func @dma_single_tile_double_wait
 // TTKERNEL:      ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NEXT: ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
-  func.func @dma_double_wait(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @dma_single_tile_double_wait(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
@@ -193,13 +194,13 @@ module {
 // Corner case: one-element handle batching via tensor.insert, then waiting
 // outside of a loop.
 //
-// TTKERNEL-LABEL: func.func @dma_single_element_container
+// TTKERNEL-LABEL: func.func @dma_single_tile_single_element_container
 // TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 // TTKERNEL: return
 module {
-  func.func @dma_single_element_container(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @dma_single_tile_single_element_container(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -213,6 +214,157 @@ module {
 
     %xf0 = tensor.extract %handles[%c0] : tensor<?x!ttl.transfer_handle<read>>
     ttl.wait %xf0 : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Multi-tile read should emit nested scf.for over tile grid with correct offset computation.
+// Tensor: 64x64xf32 (2x2 tiles), CB: [1,1] (single tile)
+// Generated tile loops: for tile_y in 0..2, for tile_x in 0..2
+// Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
+// TTKERNEL-LABEL: func.func @dma_multi_tile_read
+// TTKERNEL-DAG: %[[C256:.*]] = arith.constant 256 : i32
+// TTKERNEL-DAG: %[[C1I32:.*]] = arith.constant 1 : i32
+// TTKERNEL-DAG: %[[C64:.*]] = arith.constant 64 : i32
+// TTKERNEL-DAG: %[[C0I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
+// TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C64]], %[[C1I32]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL-NEXT: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[C0I32]], %[[C256]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
+// TTKERNEL-NEXT:     ttkernel.noc_async_read_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[C0I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_write_barrier
+module {
+  func.func @dma_multi_tile_read(%arg0: tensor<64x64xf32, #layout_tile>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %xf = ttl.copy %arg0, %cb : (tensor<64x64xf32, #layout_tile>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Multi-tile write should emit nested scf.for over tile grid with correct offset computation.
+// Tensor: 64x64xf32 (2x2 tiles), CB: [1,1] (single tile)
+// Generated tile loops: for tile_y in 0..2, for tile_x in 0..2
+// Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
+// TTKERNEL-LABEL: func.func @dma_multi_tile_write
+// TTKERNEL-DAG: %[[C256:.*]] = arith.constant 256 : i32
+// TTKERNEL-DAG: %[[C1I32:.*]] = arith.constant 1 : i32
+// TTKERNEL-DAG: %[[C64:.*]] = arith.constant 64 : i32
+// TTKERNEL-DAG: %[[C0I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
+// TTKERNEL-DAG: %[[TILES_Y_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL-DAG: %[[TILES_X_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C64]], %[[C1I32]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL-NEXT: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[C0I32]], %[[C256]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_Y_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_X_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
+// TTKERNEL-NEXT:     ttkernel.noc_async_write_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[C0I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_read_barrier
+module {
+  func.func @dma_multi_tile_write(%arg0: tensor<64x64xf32, #layout_tile>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<64x64xf32, #layout_tile>) -> !ttl.transfer_handle<write>
+    ttl.wait %xf : !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Multi-tile read with larger CB shape still loops over tile grid with correct offset computation.
+// Tensor: 64x64xf32 (2x2 tiles), CB: [2,1] (2x1 tiles)
+// CB shape does NOT affect tile loop bounds - loops still iterate over tensor tile grid (2x2).
+// Generated tile loops: for tile_y in 0..2, for tile_x in 0..2
+// Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
+// TTKERNEL-LABEL: func.func @dma_multi_tile_read_cb_shape
+// TTKERNEL-DAG: %[[C256:.*]] = arith.constant 256 : i32
+// TTKERNEL-DAG: %[[C1I32:.*]] = arith.constant 1 : i32
+// TTKERNEL-DAG: %[[C64:.*]] = arith.constant 64 : i32
+// TTKERNEL-DAG: %[[C0I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
+// TTKERNEL-DAG: %[[TILES_Y_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL-DAG: %[[TILES_X_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C64]], %[[C1I32]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL-NEXT: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[C0I32]], %[[C256]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_Y_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_X_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
+// TTKERNEL-NEXT:     ttkernel.noc_async_read_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[C0I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_write_barrier
+module {
+  func.func @dma_multi_tile_read_cb_shape(%arg0: tensor<64x64xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [2, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[2, 1], f32, 2>
+    %xf = ttl.copy %arg0, %cb : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Rectangular multi-tile write to exercise non-square tile grids (96x64 = 3x2 tiles) with correct offset computation.
+// Tensor: 96x64xf32 (3x2 tiles - 3 rows, 2 columns), CB: [1,1] (single tile)
+// Generated tile loops: for tile_y in 0..3, for tile_x in 0..2
+// Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
+// Examples: (0,0)→0, (0,1)→1, (1,0)→2, (1,1)→3, (2,0)→4, (2,1)→5
+// TTKERNEL-LABEL: func.func @dma_multi_tile_write_rect
+// TTKERNEL-DAG: %[[C256:.*]] = arith.constant 256 : i32
+// TTKERNEL-DAG: %[[C1I32:.*]] = arith.constant 1 : i32
+// TTKERNEL-DAG: %[[C64:.*]] = arith.constant 64 : i32
+// TTKERNEL-DAG: %[[C0I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
+// TTKERNEL-DAG: %[[TILES_Y_BOUND:.*]] = arith.constant 3 : index
+// TTKERNEL-DAG: %[[TILES_X_BOUND:.*]] = arith.constant 2 : index
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C64]], %[[C1I32]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL-NEXT: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[C0I32]], %[[C256]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL-NEXT: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_Y_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_X_BOUND]] step %[[TILE_STEP]]
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_X:.*]] = arith.addi %[[TILE_OFFSET_Y]], %[[TILE_X]] : index
+// TTKERNEL-NEXT:     %[[TILE_OFFSET_I32:.*]] = arith.index_cast %[[TILE_OFFSET_X]] : index to i32
+// TTKERNEL-NEXT:     ttkernel.noc_async_write_tile(%[[TILE_OFFSET_I32]], %[[ACC]], %[[C0I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_read_barrier
+module {
+  func.func @dma_multi_tile_write_rect(%arg0: tensor<96x64xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<96x64xf32, #layout>) -> !ttl.transfer_handle<write>
+    ttl.wait %xf : !ttl.transfer_handle<write>
     func.return
   }
 }
