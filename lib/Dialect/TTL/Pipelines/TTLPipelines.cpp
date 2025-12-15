@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
+#include "ttlang/Dialect/TTKernel/Passes.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
@@ -20,7 +21,8 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToTTKernel());
   if (options.fuseTileLoops) {
-    pm.addNestedPass<func::FuncOp>(createTTLFuseSiblingTileLoops());
+    pm.addNestedPass<func::FuncOp>(
+        ttkernel::createTTKernelFuseSiblingTileLoops());
   }
   pm.addPass(createCanonicalizerPass());
   if (options.lowerToEmitC) {

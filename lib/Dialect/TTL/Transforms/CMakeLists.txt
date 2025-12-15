@@ -1,6 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
-  FuseSiblingTileLoops.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen
@@ -10,7 +9,6 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRFuncDialect
   MLIRPass
   MLIRSCFDialect
-  MLIRSCFUtils
   MLIRTTKernelDialect
   MLIRTTLDialect
 )
