@@ -29,19 +29,31 @@ def TTLKernelRegionsToFuncs
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
+  let summary = "Lower TTL ops to TTKernel";
   let description = [{
-    Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers create_cb, copy, wait MVP path.
-
-    TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
-    Issue: #77 (umbrella issue with subtasks #78-#89).
+    Converts TTL ops to TTKernel ops:
+    - CB args converted to get_compile_time_arg_val
+    - CB sync ops (reserve/push/wait/pop) to TTKernel equivalents
+    - Copy ops to NOC async read/write using runtime args for L1 addresses
+    - Wait ops to NOC barriers based on transfer direction
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
+}
+
+def TTLEraseDeadOps
+    : Pass<"ttl-erase-dead-ops", "::mlir::ModuleOp"> {
+  let summary = "Erase dead ops after TTL conversion";
+  let description = [{
+    Cleans up dead operations after TTL to TTKernel conversion:
+    - Dead ttcore.get_global ops (no longer needed after conversion)
+    - Dead unrealized_conversion_cast ops from type conversions
+
+    Iterates until fixpoint to handle cascading dead ops.
+  }];
 }
 
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

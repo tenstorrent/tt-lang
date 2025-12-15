@@ -6,22 +6,25 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttlang/Dialect/Utils/LayoutUtils.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -41,30 +44,84 @@ using mlir::ValueRange;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
+// Sentinel values for transfer direction (CopyLowering -> WaitLowering).
+constexpr int32_t kTransferReadSentinel = 0;
+constexpr int32_t kTransferWriteSentinel = 1;
+
+// Runtime arg counter for tensor copies (reset per function).
+static thread_local int64_t gRuntimeArgIndex = 0;
+static void resetRuntimeArgCounter() { gRuntimeArgIndex = 0; }
+static int64_t getNextRuntimeArgIndex() { return gRuntimeArgIndex++; }
+
+//===----------------------------------------------------------------------===//
+// CB Type Utilities
+//===----------------------------------------------------------------------===//
+
+static bool isCircularBufferType(Type t) {
+  return llvm::isa<CircularBufferType>(t) || llvm::isa<ttk::CBType>(t);
+}
+
+static ttk::CBType convertCBTypeToKernel(CircularBufferType cb) {
+  return ttk::CBType::get(cb.getContext(), cb.getTotalElements(),
+                          cb.getElementType());
+}
+
+/// Convert CB value to TTKernel CB type, tracing through casts if needed.
+static Value convertCBToKernelType(Value cb,
+                                   ConversionPatternRewriter &rewriter) {
+  auto srcType = cb.getType();
+
+  if (llvm::isa<ttk::CBType>(srcType)) {
+    return cb;
+  }
+
+  if (auto ttlCB = llvm::dyn_cast<CircularBufferType>(srcType)) {
+    auto targetType = convertCBTypeToKernel(ttlCB);
+    // Avoid redundant cast chains.
+    if (auto cast = cb.getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (cast.getInputs().size() == 1 &&
+          cast.getInputs()[0].getType() == targetType) {
+        return cast.getInputs()[0];
+      }
+    }
+    return rewriter.create<UnrealizedConversionCastOp>(cb.getLoc(), targetType,
+                                                       cb)
+        .getResult(0);
+  }
+
+  // Trace through unrealized_conversion_cast to find TTKernel CB.
+  if (auto cast = cb.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      return convertCBToKernelType(cast.getInputs()[0], rewriter);
+    }
+  }
+
+  return nullptr;
+}
+
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
-    // Specific conversions first; identity fallback last.
-    // CB: lower to TTKernel CB type with flattened element count.
-    addConversion([](CircularBufferType t) -> Type {
-      return ttk::CBType::get(t.getContext(), t.getTotalElements(),
-                              t.getElementType());
-    });
-    // Tensor -> TensorAccessor for TTKernel when TTNN layout is present.
-    addConversion([](RankedTensorType t) -> Type {
-      if (t.getEncoding() &&
-          mlir::isa<tt::ttnn::TTNNLayoutAttr>(t.getEncoding())) {
-        return ttk::TensorAccessorType::get(t.getContext());
-      }
-      return t;
-    });
-    // Transfer handle: keep as-is for now (identity).
-    addConversion([](TransferHandleType t) -> Type { return t; });
-    // Identity fallback must be last.
+    // Identity conversion last (addConversion prepends).
     addConversion([](Type t) { return t; });
 
+    // TransferHandle -> i32 (direction encoded as sentinel).
+    addConversion([](TransferHandleType t) -> Type {
+      return IntegerType::get(t.getContext(), 32);
+    });
+
+    // Tensors stay as-is (L1 address from runtime args).
+    addConversion([](RankedTensorType t) -> Type { return t; });
+
+    // CB types handled explicitly by patterns (no auto-conversion).
     auto castMaterialization = [](OpBuilder &builder, Type resultType,
                                   ValueRange inputs, Location loc) -> Value {
+      if (isCircularBufferType(resultType)) {
+        return nullptr;
+      }
+      if (inputs.size() == 1 && isCircularBufferType(inputs[0].getType())) {
+        return nullptr;
+      }
       return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
           .getResult(0);
     };
@@ -73,55 +130,6 @@ public:
   }
 };
 
-//===----------------------------------------------------------------------===//
-// Helper utilities.
-//===----------------------------------------------------------------------===//
-
-static std::optional<ttk::ThreadType> getKernelThreadType(Operation *op) {
-  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
-    return a.getValue();
-  }
-  return std::nullopt;
-}
-
-static bool isNocKernel(Operation *op) {
-  return getKernelThreadType(op) == ttk::ThreadType::Noc;
-}
-
-static Value buildTensorAccessor(Location loc,
-                                 ConversionPatternRewriter &rewriter,
-                                 Value rowStride, Value colStride,
-                                 Value bankBase, Value pageSize) {
-  auto args =
-      rewriter.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
-                                                         bankBase, pageSize);
-  return accessor.getResult();
-}
-
-template <typename FuncLike>
-static bool eraseUnusedArguments(FuncLike funcLike) {
-  if (funcLike.getNumArguments() == 0) {
-    return false;
-  }
-  if (llvm::any_of(funcLike.getArguments(),
-                   [](BlockArgument arg) { return !arg.use_empty(); })) {
-    return false;
-  }
-
-  llvm::BitVector argsToErase(funcLike.getNumArguments());
-  for (unsigned idx = 0; idx < funcLike.getNumArguments(); ++idx) {
-    argsToErase.set(idx);
-  }
-  if (failed(funcLike.eraseArguments(argsToErase))) {
-    return false;
-  }
-
-  auto newType = FunctionType::get(funcLike.getContext(), TypeRange{},
-                                   funcLike.getFunctionType().getResults());
-  funcLike.setType(newType);
-  return true;
-}
 
 struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -153,28 +161,6 @@ struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
 // CB synchronization operation lowering patterns
 //===----------------------------------------------------------------------===//
 
-// Convert a TTL CB value to a TTKernel CB value.
-static FailureOr<Value>
-convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
-  // If already a TTKernel CB, return as-is.
-  if (mlir::isa<ttk::CBType>(cb.getType())) {
-    return cb;
-  }
-
-  // Must be a TTL CircularBufferType to convert.
-  auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
-  if (!ttlCbTy) {
-    return failure();
-  }
-
-  // Create the corresponding TTKernel CB type.
-  Type tkCbTy =
-      ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
-                       ttlCbTy.getElementType());
-  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, tkCbTy, cb);
-  return cast.getResult(0);
-}
-
 struct CBReserveLowering : OpConversionPattern<CBReserveOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -182,17 +168,16 @@ struct CBReserveLowering : OpConversionPattern<CBReserveOp> {
   matchAndRewrite(CBReserveOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
-    if (failed(convertedCb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    auto cb = convertCBToKernelType(adaptor.getCb(), rewriter);
+    if (!cb) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB type");
     }
 
-    rewriter.create<ttk::CBReserveBackOp>(loc, *convertedCb,
-                                          adaptor.getNumPages());
+    rewriter.create<ttk::CBReserveBackOp>(loc, cb, adaptor.getNumPages());
 
-    // Produce tensor view via unrealized cast from the TTKernel CB.
+    // Return tensor view via cast from CB for downstream ops.
     auto viewCast = rewriter.create<UnrealizedConversionCastOp>(
-        loc, op.getResult().getType(), *convertedCb);
+        loc, op.getResult().getType(), cb);
     rewriter.replaceOp(op, viewCast.getResult(0));
     return success();
   }
@@ -204,14 +189,12 @@ struct CBPushLowering : OpConversionPattern<CBPushOp> {
   LogicalResult
   matchAndRewrite(CBPushOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
-    if (failed(convertedCb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    auto cb = convertCBToKernelType(adaptor.getCb(), rewriter);
+    if (!cb) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB type");
     }
 
-    rewriter.create<ttk::CBPushBackOp>(loc, *convertedCb,
-                                       adaptor.getNumPages());
+    rewriter.create<ttk::CBPushBackOp>(op.getLoc(), cb, adaptor.getNumPages());
     rewriter.eraseOp(op);
     return success();
   }
@@ -224,17 +207,16 @@ struct CBWaitLowering : OpConversionPattern<CBWaitOp> {
   matchAndRewrite(CBWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
-    if (failed(convertedCb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    auto cb = convertCBToKernelType(adaptor.getCb(), rewriter);
+    if (!cb) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB type");
     }
 
-    rewriter.create<ttk::CBWaitFrontOp>(loc, *convertedCb,
-                                        adaptor.getNumPages());
+    rewriter.create<ttk::CBWaitFrontOp>(loc, cb, adaptor.getNumPages());
 
-    // Produce tensor view via unrealized cast from the TTKernel CB.
+    // Return tensor view via cast from CB for downstream ops.
     auto viewCast = rewriter.create<UnrealizedConversionCastOp>(
-        loc, op.getResult().getType(), *convertedCb);
+        loc, op.getResult().getType(), cb);
     rewriter.replaceOp(op, viewCast.getResult(0));
     return success();
   }
@@ -246,59 +228,47 @@ struct CBPopLowering : OpConversionPattern<CBPopOp> {
   LogicalResult
   matchAndRewrite(CBPopOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
-    if (failed(convertedCb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    auto cb = convertCBToKernelType(adaptor.getCb(), rewriter);
+    if (!cb) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB type");
     }
 
-    rewriter.create<ttk::CBPopFrontOp>(loc, *convertedCb,
-                                       adaptor.getNumPages());
+    rewriter.create<ttk::CBPopFrontOp>(op.getLoc(), cb, adaptor.getNumPages());
     rewriter.eraseOp(op);
     return success();
   }
 };
 
-enum class CopySourceKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
-enum class CopyDestKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
+//===----------------------------------------------------------------------===//
+// Copy operation lowering
+//===----------------------------------------------------------------------===//
 
-static bool isTensorAccessorLike(Type t) {
+enum class CopySourceKind { TensorAccessor, CircularBuffer, Unknown };
+enum class CopyDestKind { TensorAccessor, CircularBuffer, Unknown };
+
+static bool isTensorLike(Type t) {
   return llvm::isa<ttk::TensorAccessorType>(t) ||
          llvm::isa<RankedTensorType>(t);
 }
 
 static CopySourceKind classifySrc(Value v) {
-  if (llvm::isa<CircularBufferType>(v.getType())) {
+  if (isCircularBufferType(v.getType())) {
     return CopySourceKind::CircularBuffer;
   }
-  if (isTensorAccessorLike(v.getType())) {
+  if (isTensorLike(v.getType())) {
     return CopySourceKind::TensorAccessor;
   }
   return CopySourceKind::Unknown;
 }
 
 static CopyDestKind classifyDst(Value v) {
-  if (llvm::isa<CircularBufferType>(v.getType())) {
+  if (isCircularBufferType(v.getType())) {
     return CopyDestKind::CircularBuffer;
   }
-  if (isTensorAccessorLike(v.getType())) {
+  if (isTensorLike(v.getType())) {
     return CopyDestKind::TensorAccessor;
   }
   return CopyDestKind::Unknown;
-}
-
-static Value emitPlaceholderCB(ValueRange inputs,
-                               ConversionPatternRewriter &rewriter,
-                               Location loc, Type targetType) {
-  // TODO(ttl): Emit a real TTKernel CB handle instead of an unrealized cast.
-  // Issue: #78.
-  auto cast =
-      rewriter.create<UnrealizedConversionCastOp>(loc, targetType, inputs);
-  return cast.getResult(0);
-}
-
-static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
-  return rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
 }
 
 static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
@@ -309,93 +279,67 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
-static FailureOr<Value>
-materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
-  if (!llvm::isa<RankedTensorType>(tensor.getType())) {
-    return failure();
-  }
-
-  auto loc = tensor.getLoc();
-  auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
-  utils::ContiguousLayoutInfo layout;
-  if (auto enc = tensorTy.getEncoding()) {
-    if (mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
-      // TODO(ttl): Derive strides/page size/bank base from TTNNLayoutAttr.
-      // Issue: #81.
-    }
-  }
-  layout = utils::computeContiguousLayout(tensorTy);
-
-  // Strides in elements (row-major placeholder).
-  auto rowStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
-  auto colStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
-
-  // Page size placeholder uses contiguous row-major; bank base is still a stub.
-  auto pageSize =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
-  auto bankBase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
-
-  return buildTensorAccessor(loc, rewriter, rowStride, colStride, bankBase,
-                             pageSize);
-}
-
-static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TypeConverter &typeConverter) {
+/// Lower tensor->CB copy using runtime args for L1 address.
+static LogicalResult lowerTensorToCB(CopyOp op, Value cb,
+                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
 
-  // TODO(ttl): Plumb real NOC coordinates and bank base addresses from tensor
-  // accessors and kernel launch metadata.
-  // Issue: #84.
-  auto nocSrc = makeZeroI32(loc, rewriter);
-  auto nocDst = makeZeroI32(loc, rewriter);
+  // Get L1 address from runtime args (populated by host at kernel launch).
+  int64_t rtArgIdx = getNextRuntimeArgIndex();
+  auto rtArgIndexVal = rewriter.create<arith::ConstantIndexOp>(loc, rtArgIdx);
+  auto l1Addr = rewriter.create<ttk::GetCommonArgValOp>(
+      loc, rewriter.getI32Type(), rtArgIndexVal);
 
-  // Per TT-Lang spec, ttl.copy is non-blocking: it initiates the async DMA
-  // transfer and returns a handle that is synchronized by ttl.wait.
-  //
-  // TODO(ttl): Compute the destination NOC address from the CB operand and the
-  // requested tile coordinates (when we model CB handles and CB addressing).
-  // Issue: #80.
-  rewriter.create<ttk::NocAsyncReadTileOp>(loc, nocSrc, srcAccessor, nocDst);
+  // Get CB write pointer for destination.
+  auto cbWritePtr = rewriter.create<ttk::GetWritePtrOp>(loc, cb);
 
-  // Encode direction in the handle type (async-token-like design).
-  auto handleTy = typeConverter.convertType(
-      TransferHandleType::get(rewriter.getContext(), TransferKind::read));
-  // TODO(ttl): Replace the placeholder unrealized cast with a real transfer
-  // handle value (TRID or equivalent). Issue: #87.
-  auto handle = rewriter.create<UnrealizedConversionCastOp>(
-      loc, handleTy, ValueRange{makeZeroI32(loc, rewriter)});
-  rewriter.replaceOp(op, handle.getResult(0));
+  // NOC coordinates: hardcoded for MVP (physical core 0,0 = NOC 18,18).
+  auto nocX = rewriter.create<arith::ConstantIndexOp>(loc, 18);
+  auto nocY = rewriter.create<arith::ConstantIndexOp>(loc, 18);
+  auto nocAddr =
+      rewriter.create<ttk::GetNocAddrOp>(loc, nocX, nocY, l1Addr.getResult());
+
+  // Tile size: 32x32 bf16 = 2048 bytes (MVP hardcoded).
+  auto tileSize = rewriter.create<arith::ConstantIntOp>(loc, 2048, 32);
+
+  rewriter.create<ttk::NocAsyncReadOp>(loc, nocAddr, cbWritePtr, tileSize);
+
+  // Return sentinel indicating read direction.
+  auto sentinel =
+      rewriter.create<arith::ConstantIntOp>(loc, kTransferReadSentinel, 32);
+  rewriter.replaceOp(op, sentinel.getResult());
   return success();
 }
 
-static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TypeConverter &typeConverter) {
+/// Lower CB->tensor copy using runtime args for L1 address.
+static LogicalResult lowerCBToTensor(CopyOp op, Value cb,
+                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
 
-  // TODO(ttl): Lower CB operands to real CB handles and NOC addresses.
-  // Issue: #80.
-  auto tkCbTy = typeConverter.convertType(op.getSrc().getType());
-  auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
-                                 rewriter, loc, tkCbTy);
-  (void)cbVal;
+  // Get L1 address from runtime args.
+  int64_t rtArgIdx = getNextRuntimeArgIndex();
+  auto rtArgIndexVal = rewriter.create<arith::ConstantIndexOp>(loc, rtArgIdx);
+  auto l1Addr = rewriter.create<ttk::GetCommonArgValOp>(
+      loc, rewriter.getI32Type(), rtArgIndexVal);
 
-  // Per TT-Lang spec, ttl.copy is non-blocking: it initiates the async DMA
-  // transfer and returns a handle that is synchronized by ttl.wait. This is
-  // lowered to a TTKernel NOC async write.
-  rewriter.create<ttk::NocAsyncWriteTileOp>(
-      loc, makeZeroI32(loc, rewriter), dstAccessor, makeZeroI32(loc, rewriter));
+  // Get CB read pointer for source.
+  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, cb);
 
-  auto handleTy = typeConverter.convertType(
-      TransferHandleType::get(rewriter.getContext(), TransferKind::write));
-  // TODO(ttl): Replace the placeholder unrealized cast with a real transfer
-  // handle value (TRID or equivalent). Issue: #87.
-  auto handle = rewriter.create<UnrealizedConversionCastOp>(
-      loc, handleTy, ValueRange{makeZeroI32(loc, rewriter)});
-  rewriter.replaceOp(op, handle.getResult(0));
+  // NOC coordinates: hardcoded for MVP.
+  auto nocX = rewriter.create<arith::ConstantIndexOp>(loc, 18);
+  auto nocY = rewriter.create<arith::ConstantIndexOp>(loc, 18);
+  auto nocAddr =
+      rewriter.create<ttk::GetNocAddrOp>(loc, nocX, nocY, l1Addr.getResult());
+
+  // Tile size: 32x32 bf16 = 2048 bytes (MVP hardcoded).
+  auto tileSize = rewriter.create<arith::ConstantIntOp>(loc, 2048, 32);
+
+  rewriter.create<ttk::NocAsyncWriteOp>(loc, cbReadPtr, nocAddr, tileSize);
+
+  // Return sentinel indicating write direction.
+  auto sentinel =
+      rewriter.create<arith::ConstantIntOp>(loc, kTransferWriteSentinel, 32);
+  rewriter.replaceOp(op, sentinel.getResult());
   return success();
 }
 
@@ -405,59 +349,39 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto *typeConverter = this->getTypeConverter();
-    if (!typeConverter) {
-      return rewriter.notifyMatchFailure(op, "no type converter");
-    }
+    auto srcKind = classifySrc(adaptor.getSrc());
+    auto dstKind = classifyDst(adaptor.getDst());
 
-    auto convertOperand = [&](Value v) -> FailureOr<Value> {
-      if (auto acc = materializeTensorAccessor(v, rewriter); succeeded(acc)) {
-        return *acc;
-      }
-
-      Type targetTy = typeConverter->convertType(v.getType());
-      if (!targetTy) {
-        return failure();
-      }
-      if (targetTy == v.getType()) {
-        return v;
-      }
-      auto cast =
-          rewriter.create<UnrealizedConversionCastOp>(op.getLoc(), targetTy, v);
-      return cast.getResult(0);
-    };
-
-    FailureOr<Value> convertedSrc = convertOperand(adaptor.getSrc());
-    if (failed(convertedSrc)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert src type");
-    }
-    FailureOr<Value> convertedDst = convertOperand(adaptor.getDst());
-    if (failed(convertedDst)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert dst type");
-    }
-
-    auto srcKind = classifySrc(*convertedSrc);
-    auto dstKind = classifyDst(*convertedDst);
-
-    // Tensor accessor -> CB
+    // Tensor -> CB: read from tensor to CB.
     if (srcKind == CopySourceKind::TensorAccessor &&
         dstKind == CopyDestKind::CircularBuffer) {
-      return lowerTensorToCB(op, *convertedSrc, rewriter, *typeConverter);
+      auto cb = convertCBToKernelType(adaptor.getDst(), rewriter);
+      if (!cb) {
+        return rewriter.notifyMatchFailure(op, "failed to convert dst CB");
+      }
+      return lowerTensorToCB(op, cb, rewriter);
     }
 
-    // CB -> Tensor accessor
+    // CB -> Tensor: write from CB to tensor.
     if (srcKind == CopySourceKind::CircularBuffer &&
         dstKind == CopyDestKind::TensorAccessor) {
-      return lowerCBToTensor(op, *convertedDst, rewriter, *typeConverter);
+      auto cb = convertCBToKernelType(adaptor.getSrc(), rewriter);
+      if (!cb) {
+        return rewriter.notifyMatchFailure(op, "failed to convert src CB");
+      }
+      return lowerCBToTensor(op, cb, rewriter);
     }
 
-    // Unsupported pairs for now.
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-      diag << "unsupported ttl.copy src/dst combination: src="
-           << op.getSrc().getType() << " dst=" << op.getDst().getType();
+      diag << "unsupported copy combination: src=" << op.getSrc().getType()
+           << " dst=" << op.getDst().getType();
     });
   }
 };
+
+//===----------------------------------------------------------------------===//
+// Wait operation lowering
+//===----------------------------------------------------------------------===//
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -465,42 +389,118 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
-    // handle (read vs write barrier based on transfer direction). Issue: #87.
-    //
-    // MVP behavior: require a direction-typed handle and emit the
-    // corresponding global barrier. Untyped handles are rejected by the
-    // verifier, but we also fail the rewrite defensively.
-    auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
+    auto xf = adaptor.getXf();
+
+    // Check for sentinel constant from CopyLowering.
+    if (auto constOp = xf.getDefiningOp<arith::ConstantIntOp>()) {
+      int64_t value = constOp.value();
+      if (value == kTransferReadSentinel) {
+        rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+      } else if (value == kTransferWriteSentinel) {
+        rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
+      } else {
+        return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+          diag << "unknown transfer sentinel: " << value;
+        });
+      }
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Fallback: check original type for direction.
+    auto kind = getTransferKindFromHandleType(op.getXf().getType());
     if (!kind) {
       return rewriter.notifyMatchFailure(
-          op, "requires direction-typed !ttl.transfer_handle<read|write>");
+          op, "requires direction-typed handle or sentinel constant");
     }
     if (*kind == TransferKind::read) {
       rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
     } else if (*kind == TransferKind::write) {
       rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
     } else {
-      // Future-proofing: TransferKind is currently {read, write}, but fail
-      // explicitly if it ever expands without updating the lowering.
-      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "unsupported TransferKind for ttl.wait lowering";
-      });
+      return rewriter.notifyMatchFailure(op, "unsupported transfer direction");
     }
     rewriter.eraseOp(op);
     return success();
   }
 };
 
-struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
-  using OpRewritePattern::OpRewritePattern;
+//===----------------------------------------------------------------------===//
+// Function CB args conversion
+//===----------------------------------------------------------------------===//
 
-  LogicalResult matchAndRewrite(FuncOp op,
-                                PatternRewriter & /*rewriter*/) const override {
-    if (!isNocKernel(op.getOperation())) {
+/// Convert CB function arguments to get_compile_time_arg_val calls.
+/// Tensor args are left in place (CopyLowering uses runtime args for L1 addr).
+struct FuncCBArgsToGetArgVal : OpConversionPattern<FuncOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(FuncOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Only process functions with TTKernel thread attribute.
+    if (!op->hasAttr(ttk::ThreadTypeAttr::name)) {
       return failure();
     }
-    return eraseUnusedArguments(op) ? success() : failure();
+
+    // Check if there are any CB arguments to convert.
+    bool hasCBArgs = false;
+    for (auto argType : op.getArgumentTypes()) {
+      if (llvm::isa<CircularBufferType>(argType)) {
+        hasCBArgs = true;
+        break;
+      }
+    }
+    if (!hasCBArgs) {
+      return failure();
+    }
+
+    // Reset runtime arg counter for this function.
+    resetRuntimeArgCounter();
+
+    Block *block = &op.getCallableRegion()->front();
+    unsigned numArgs = block->getNumArguments();
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(block);
+
+    // Track CB index (only CBs get compile-time arg indices).
+    unsigned cbIndex = 0;
+    SmallVector<Type> newArgTypes;
+    llvm::BitVector argsToRemove(numArgs);
+
+    for (unsigned i = 0; i < numArgs; ++i) {
+      auto arg = block->getArgument(i);
+      auto argType = arg.getType();
+
+      if (auto ttlCBType = llvm::dyn_cast<CircularBufferType>(argType)) {
+        // CB arg: replace with get_compile_time_arg_val.
+        auto kernelCBType = convertCBTypeToKernel(ttlCBType);
+        auto kernelCB = rewriter.create<ttk::GetCompileArgValOp>(
+            op.getLoc(), kernelCBType, rewriter.getI32IntegerAttr(cbIndex++));
+
+        // Cast back to !ttl.cb for downstream TTL ops.
+        auto ttlCB = rewriter.create<UnrealizedConversionCastOp>(
+            op.getLoc(), ttlCBType, kernelCB.getResult());
+        arg.replaceAllUsesWith(ttlCB.getResult(0));
+        argsToRemove.set(i);
+      } else {
+        // Keep non-CB args (tensor args stay, CopyLowering handles them).
+        newArgTypes.push_back(argType);
+      }
+    }
+
+    // Erase CB arguments (reverse order to maintain indices).
+    for (int i = numArgs - 1; i >= 0; --i) {
+      if (argsToRemove.test(i)) {
+        block->eraseArgument(i);
+      }
+    }
+
+    // Update function type to reflect removed CB args.
+    rewriter.modifyOpInPlace(op, [&]() {
+      op.setType(rewriter.getFunctionType(newArgTypes, TypeRange()));
+    });
+    return success();
   }
 };
 
@@ -522,19 +522,22 @@ struct TTLConvertTTLToTTKernelPass
       return typeConverter.isLegal(&op.getBodyRegion());
     });
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
-      return typeConverter.isSignatureLegal(op.getFunctionType()) &&
-             typeConverter.isLegal(&op.getBody());
+      // Kernel functions must have CB args converted (tensor args stay).
+      if (op->hasAttr(ttk::ThreadTypeAttr::name)) {
+        for (auto argType : op.getArgumentTypes()) {
+          if (llvm::isa<CircularBufferType>(argType)) {
+            return false;
+          }
+        }
+      }
+      return typeConverter.isLegal(&op.getBody());
     });
-    // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
-    patterns
-        .add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-             CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
-                                                            &ctx);
-    populateFunctionOpInterfaceTypeConversionPattern(
-        func::FuncOp::getOperationName(), patterns, typeConverter);
-    patterns.add<FuncKernelFinalize>(&ctx);
+    patterns.add<FuncCBArgsToGetArgVal>(typeConverter, &ctx);
+    patterns.add<CreateCBLowering, CopyLowering, WaitLowering,
+                 CBReserveLowering, CBPushLowering, CBWaitLowering,
+                 CBPopLowering>(typeConverter, &ctx);
 
     FrozenRewritePatternSet frozen(std::move(patterns));
     std::string diagMessage;
