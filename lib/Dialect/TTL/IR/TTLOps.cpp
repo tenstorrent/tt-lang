@@ -103,3 +103,64 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
   }
   return success();
 }
+
+namespace {
+
+// Verify CB ops with tensor results (cb_reserve, cb_wait).
+// Checks that result tensor shape and element type match the CB configuration.
+mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
+                                         mlir::tt::ttl::CircularBufferType cbTy,
+                                         mlir::RankedTensorType resultTy) {
+  auto cbShape = cbTy.getShape();
+  auto resultShape = resultTy.getShape();
+
+  if (cbShape.size() != resultShape.size()) {
+    return op->emitOpError() << "result tensor rank (" << resultShape.size()
+                             << ") must match CB shape rank (" << cbShape.size()
+                             << ")";
+  }
+
+  for (size_t i = 0; i < cbShape.size(); ++i) {
+    if (cbShape[i] != resultShape[i]) {
+      return op->emitOpError()
+             << "result tensor shape dimension " << i << " (" << resultShape[i]
+             << ") must match CB shape dimension (" << cbShape[i] << ")";
+    }
+  }
+
+  auto cbElemTy = cbTy.getElementType();
+  auto resultElemTy = resultTy.getElementType();
+  if (cbElemTy != resultElemTy) {
+    return op->emitOpError() << "result tensor element type (" << resultElemTy
+                             << ") must match CB element type (" << cbElemTy
+                             << ")";
+  }
+
+  return mlir::success();
+}
+
+} // namespace
+
+mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
+  auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+  auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+  return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
+}
+
+mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
+  // cb_push has no result to verify; the CB type is already enforced by
+  // tablegen constraints.
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
+  auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+  auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+  return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
+}
+
+mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
+  // cb_pop has no result to verify; the CB type is already enforced by
+  // tablegen constraints.
+  return success();
+}

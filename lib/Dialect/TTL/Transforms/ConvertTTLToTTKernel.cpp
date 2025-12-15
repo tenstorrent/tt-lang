@@ -149,6 +149,115 @@ struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// CB synchronization operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+// Convert a TTL CB value to a TTKernel CB value.
+static FailureOr<Value> convertCBOperand(Value cb,
+                                         ConversionPatternRewriter &rewriter,
+                                         Location loc) {
+  // If already a TTKernel CB, return as-is.
+  if (mlir::isa<ttk::CBType>(cb.getType())) {
+    return cb;
+  }
+
+  // Must be a TTL CircularBufferType to convert.
+  auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
+  if (!ttlCbTy) {
+    return failure();
+  }
+
+  // Create the corresponding TTKernel CB type.
+  Type tkCbTy = ttk::CBType::get(ttlCbTy.getContext(),
+                                 ttlCbTy.getTotalElements(),
+                                 ttlCbTy.getElementType());
+  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, tkCbTy, cb);
+  return cast.getResult(0);
+}
+
+struct CBReserveLowering : OpConversionPattern<CBReserveOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CBReserveOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    if (failed(convertedCb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    rewriter.create<ttk::CBReserveBackOp>(loc, *convertedCb,
+                                          adaptor.getNumPages());
+
+    // Produce tensor view via unrealized cast from the TTKernel CB.
+    auto viewCast = rewriter.create<UnrealizedConversionCastOp>(
+        loc, op.getResult().getType(), *convertedCb);
+    rewriter.replaceOp(op, viewCast.getResult(0));
+    return success();
+  }
+};
+
+struct CBPushLowering : OpConversionPattern<CBPushOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CBPushOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    if (failed(convertedCb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    rewriter.create<ttk::CBPushBackOp>(loc, *convertedCb, adaptor.getNumPages());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CBWaitLowering : OpConversionPattern<CBWaitOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CBWaitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    if (failed(convertedCb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    rewriter.create<ttk::CBWaitFrontOp>(loc, *convertedCb,
+                                        adaptor.getNumPages());
+
+    // Produce tensor view via unrealized cast from the TTKernel CB.
+    auto viewCast = rewriter.create<UnrealizedConversionCastOp>(
+        loc, op.getResult().getType(), *convertedCb);
+    rewriter.replaceOp(op, viewCast.getResult(0));
+    return success();
+  }
+};
+
+struct CBPopLowering : OpConversionPattern<CBPopOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CBPopOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    if (failed(convertedCb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    rewriter.create<ttk::CBPopFrontOp>(loc, *convertedCb, adaptor.getNumPages());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 enum class CopySourceKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 enum class CopyDestKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 
@@ -418,8 +527,9 @@ struct TTLConvertTTLToTTKernelPass
     // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
-    patterns.add<CreateCBLowering, CopyLowering, WaitLowering>(typeConverter,
-                                                               &ctx);
+    patterns.add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+                 CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
+                                                                &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
     patterns.add<FuncKernelFinalize>(&ctx);
