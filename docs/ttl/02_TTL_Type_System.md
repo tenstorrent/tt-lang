@@ -140,38 +140,6 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "circular_buffer"> {
   }];
 }
 
-def TTL_Block : TTL_Type<"Block", "block"> {
-  let summary = "Logical unit of data exchanged via circular buffers (L1 memory only)";
-  let parameters = (ins
-    "TensorType":$tensorType,
-    TTL_CircularBuffer:$circularBuffer  // Reference to originating CB type (not value)
-  );
-  let description = [{
-    Represents a block of data (tiles or scalars) consumed/produced by compute operations.
-    Tied to the originating circular buffer for proper pop/push semantics.
-
-    Design note: The block type references the CircularBuffer type (not a CB SSA value)
-    to capture the structural relationship and enable type-level shape/layout queries.
-    The specific CB instance is tracked through SSA def-use chains (blocks are produced
-    by ttl.cb_wait/ttl.cb_reserve operations on specific CB values). This design enables:
-    - Type-level validation of block shapes against CB shapes
-    - Simplified operation signatures (ttl.cb_pop takes only the block, CB derived from type)
-    - Static shape propagation through block operations
-
-    Memory model per TT-Lang spec: Blocks always reside in L1 memory, inheriting the
-    L1-only constraint from their originating circular buffer. Block memory is pre-allocated
-    when the circular buffer is created. The block inherits the CB's shape-unit granularity
-    (tiles for tiled layout, scalars for row-major layout). No dynamic allocation occurs
-    during block acquisition.
-
-    The block's shape matches the CB's shape parameter. This linkage enables ttl.cb_pop
-    and ttl.cb_push to operate on the block alone, determining which CB to use from the
-    block's circularBuffer parameter.
-
-    Per TT-Lang spec, blocks are acquired via cb.wait() or cb.reserve() and carry
-    implicit association with their source CB for subsequent pop/push operations.
-  }];
-}
 
 def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let summary = "Handle for asynchronous transfer with transaction ID tracking";
@@ -578,7 +546,7 @@ def sharded_elementwise_add(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         b_blk = b_cb.wait()
         o_blk = out_cb.reserve()
 
-        result = a_blk + b_blk  # ttl.block_add
+        result = a + b  # ttl.add
         o_blk.store(result)
 
         a_cb.pop()
@@ -623,39 +591,38 @@ ttl.kernel @sharded_elementwise_add(
   %out_accessor = ttl.tensor_accessor %out
 
   ttl.datamovement_thread {
-    %shard_id = ttl.core(dims=1) : index
+    %shard_id = ttl.core(dim=1) : index
 
-    %a_blk = ttl.cb_reserve %a_cb : !ttl.block<...>
-    %xf_a = ttl.copy %a_accessor[%shard_id], %a_blk : !ttl.transfer_handle
+    %a = ttl.cb_reserve %a_cb : tensor<...>
+    %xf_a = ttl.copy %a_accessor[%shard_id], %a : !ttl.transfer_handle
     ttl.wait %xf_a
-    ttl.cb_push %a_blk
+    ttl.cb_push %a
 
-    %b_blk = ttl.cb_reserve %b_cb : !ttl.block<...>
-    %xf_b = ttl.copy %b_accessor[%shard_id], %b_blk : !ttl.transfer_handle
+    %b = ttl.cb_reserve %b_cb : tensor<...>
+    %xf_b = ttl.copy %b_accessor[%shard_id], %b : !ttl.transfer_handle
     ttl.wait %xf_b
-    ttl.cb_push %b_blk
+    ttl.cb_push %b
   }
 
   ttl.compute_thread {
-    %a_blk = ttl.cb_wait %a_cb : !ttl.block<...>
-    %b_blk = ttl.cb_wait %b_cb : !ttl.block<...>
-    %o_blk = ttl.cb_reserve %out_cb : !ttl.block<...>
+    %a = ttl.cb_wait %a_cb : tensor<...>
+    %b = ttl.cb_wait %b_cb : tensor<...>
+    %out = ttl.cb_reserve %out_cb : tensor<...>
 
-    %result = ttl.block_add %a_blk, %b_blk
-    ttl.block_store %o_blk, %result
+    %result = ttl.add %a, %b
 
-    ttl.cb_pop %a_blk
-    ttl.cb_pop %b_blk
-    ttl.cb_push %o_blk
+    ttl.cb_pop %a
+    ttl.cb_pop %b
+    ttl.cb_push %out
   }
 
   ttl.datamovement_thread {
     %shard_id = ttl.core(dims=1) : index
 
-    %o_blk = ttl.cb_wait %out_cb : !ttl.block<...>
-    %xf_out = ttl.copy %o_blk, %out_accessor[%shard_id] : !ttl.transfer_handle
+    %out = ttl.cb_wait %out_cb : tensor<...>
+    %xf_out = ttl.copy %out, %out_accessor[%shard_id] : !ttl.transfer_handle
     ttl.wait %xf_out
-    ttl.cb_pop %o_blk
+    ttl.cb_pop %out
   }
 }
 ```

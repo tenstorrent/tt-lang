@@ -611,7 +611,6 @@ TTL_SemaphoreIncOp     // Reads+Writes: semaphore value (atomic)
 
 // Compute Operations (with side effects)
 TTL_ComputeRegionOp // Contains operations with memory effects
-TTL_BlockStoreOp    // Writes: block memory
 
 // DST Register Management
 TTL_RequireDSTOp    // Reads+Writes: DST register file

@@ -15,6 +15,7 @@ For detailed specifications, see the linked documents below.
 ### This Document
 1. [Motivation & Goals](#1-motivation--goals)
 2. [Architecture Overview](#2-architecture-overview)
+3. [Python Language Constructs to TTL Dialect Mapping](#3-python-language-constructs-to-ttl-dialect-mapping)
 
 ### Detailed Specifications
 3. **[Type System](02_TTL_Type_System.md)** - Core types, attributes, and TensorAccessor support
@@ -118,6 +119,70 @@ Continue reading the detailed specifications:
 4. **[Multicast Implementation](05_TTL_Multicast_Implementation.md)** - Multicast patterns and semaphore inference
 5. **[Compilation Pipeline](06_TTL_Compilation_Pipeline.md)** - See how the compiler transforms TTL IR
 6. **[Implementation and Runtime](07_TTL_Implementation_and_Runtime.md)** - Integration details and roadmap
+
+## 3. Python Language Constructs to TTL Dialect Mapping
+
+The following table maps Python language constructs and `ttl` module APIs (as defined in [TT-Lang.md](../TT-Lang.md)) to corresponding TTL dialect operations:
+
+| Python Language Construct | TTL Dialect Operation | Notes |
+|---|---|---|
+| **Program & Kernel Context** | | |
+| `@ttl.kernel()` decorator | `ttl.kernel` (metadata) | Marks Python function as TTL kernel |
+| `@ttl.compute()` decorator | `ttl.compute_thread` | Creates compute thread region |
+| `@ttl.datamovement()` decorator | `ttl.datamovement_thread` | Creates data movement thread region |
+| `ttl.Program(compute, dm0, dm1, ...)` | `ttl.module` | Constructs program from thread functions |
+| **Grid and Core Queries** | | |
+| `ttl.grid_size(dims)` | `ttl.grid_size` | Returns grid size in specified dimensions |
+| `ttl.core(dims)` | `ttl.core_id` | Returns logical core coordinates |
+| **Circular Buffer Operations** | | |
+| `ttl.make_circular_buffer_like(tensor, shape, factor)` | `ttl.circular_buffer` | Creates circular buffer with type/shape info |
+| `cb.wait()` | `ttl.cb_wait` | Consumer acquire; blocks until data available |
+| `cb.reserve()` | `ttl.cb_reserve` | Producer acquire; blocks until space available |
+| `cb.pop()` | `ttl.cb_pop` | Consumer release; signals block is free |
+| `cb.push()` | `ttl.cb_push` | Producer release; signals block is filled |
+| **Arithmetic Operators** | | |
+| `a + b` (tensors) | `ttl.add` | Element-wise addition |
+| `a - b` (tensors) | `ttl.sub` | Element-wise subtraction |
+| `a * b` (tensors) | `ttl.mul` | Element-wise multiplication |
+| `a / b` (tensors) | `ttl.div` | Element-wise division |
+| `a ** b` (tensors) | `ttl.pow` | Element-wise power |
+| `a @ b` (tensors) | `ttl.matmul` | Matrix multiplication |
+| **Math Functions** | | |
+| `ttl.math.sqrt(x)` | `ttl.sqrt` | Element-wise square root |
+| `ttl.math.exp(x)` | `ttl.exp` | Element-wise exponential |
+| `ttl.math.log(x)` | `ttl.log` | Element-wise natural logarithm |
+| `ttl.math.rsqrt(x)` | `ttl.rsqrt` | Element-wise reciprocal square root |
+| `ttl.math.relu(x)` | `ttl.relu` | Rectified linear unit activation |
+| `ttl.math.gelu(x)` | `ttl.gelu` | GELU activation function |
+| `ttl.math.sigmoid(x)` | `ttl.sigmoid` | Sigmoid activation function |
+| `ttl.math.tanh(x)` | `ttl.tanh` | Hyperbolic tangent activation |
+| `ttl.math.sin(x)` | `ttl.sin` | Element-wise sine |
+| `ttl.math.cos(x)` | `ttl.cos` | Element-wise cosine |
+| `ttl.math.tan(x)` | `ttl.tan` | Element-wise tangent |
+| **Reduction Operations** | | |
+| `ttl.reduce_sum(x, dims)` | `ttl.reduce_sum` | Sum reduction over specified dimensions |
+| `ttl.reduce_max(x, dims)` | `ttl.reduce_max` | Max reduction over specified dimensions |
+| **Broadcast Operations** | | |
+| `ttl.bcast(x, shape)` | `ttl.bcast` | Broadcast tensor to new shape |
+| **Data Movement** | | |
+| `ttl.copy(src, dst, **kwargs)` | `ttl.copy` | Transfer data between memory/pipes with optional transform |
+| `xf.wait()` | `ttl.wait` | Synchronize on transfer handle (implicit via scoping) |
+| **Pipe Operations** | | |
+| `ttl.Pipe(src, dst)` | (metadata) | Pipe definition; source and destination specification |
+| `ttl.CoreRange` (tuple with slices) | (metadata) | Core range for multicast destination |
+| `ttl.PipeNet([pipe1, pipe2, ...])` | (metadata) | Groups pipes into network for collective operations |
+| `pnet.if_src(callback)` | `ttl.if_pipe_src` | Conditional execution for pipe source cores |
+| `pnet.if_dst(callback)` | `ttl.if_pipe_dst` | Conditional execution for pipe destination cores |
+| `pipe_identity.src` | (implicit) | Property access within `if_dst` condition |
+| `pipe_identity.dst` | (implicit) | Property access within `if_src` condition |
+
+**Mapping Notes:**
+
+- All tensor operations (arithmetic, math, reduction, broadcast) implicitly operate at the tensor abstraction level and are decomposed into tile-based operations during lowering to TTKernel.
+- Circular buffer operations manage acquisition and release of data blocks from communication primitives.
+- Data movement and pipe operations provide inter-core communication and synchronized data transfers.
+- The TTL dialect preserves the high-level structure and intent of Python programs while enabling aggressive optimization during lowering.
+- See section 7.2 in [Implementation and Runtime](07_TTL_Implementation_and_Runtime.md#72-operator-mapping) for detailed Python integration code examples.
 
 ## References
 

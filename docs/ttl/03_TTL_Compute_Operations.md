@@ -302,11 +302,11 @@ def TTL_TensorAccessorOp : TTL_Op<"tensor_accessor"> {
 def TTL_CBWaitOp : TTL_Op<"cb_wait"> {
   let summary = "Consumer acquire: wait for data in circular buffer";
   let arguments = (ins TTL_CircularBuffer:$cb);
-  let results = (outs TTL_Block:$block);
+  let results = (outs TTL_Tensor:$tensor);
   let description = [{
-    Blocking operation that waits until a block of data is available in the circular buffer.
-    Returns a block whose shape matches the CB's block shape. Per TT-Lang spec, users never
-    specify element counts - the block shape is determined by the CB itself.
+    Blocking operation that waits until a tensor of data is available in the circular buffer.
+    Returns a tensor whose shape matches the CB's shape. Per TT-Lang spec, users never
+    specify element counts - the tensor shape is determined by the CB itself.
 
     Python API: `blk = cb.wait()` or `with cb.wait() as blk:`
 
@@ -317,28 +317,28 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait"> {
 }
 
 def TTL_CBPopOp : TTL_Op<"cb_pop"> {
-  let summary = "Consumer release: signal block consumed";
-  let arguments = (ins TTL_Block:$block);
+  let summary = "Consumer release: signal tensor consumed";
+  let arguments = (ins TTL_Tensor:$tensor);
   let description = [{
-    Non-blocking operation that signals the block has been consumed and can be
-    reused by the producer. Takes the block returned by cb.wait().
+    Non-blocking operation that signals the tensor has been consumed and can be
+    reused by the producer. Takes the tensor returned by cb.wait().
 
-    Python API: `cb.pop()` (implicit: pops the block acquired by most recent wait)
+    Python API: `cb.pop()` (implicit: pops the tensor acquired by most recent wait)
 
     Maps to TTKernel operation:
     - ttkernel.cb_pop_front(cb, num_elements)
-      where num_elements is derived from the block's shape
+      where num_elements is derived from the tensor's shape
   }];
 }
 
 def TTL_CBReserveOp : TTL_Op<"cb_reserve"> {
   let summary = "Producer acquire: reserve space in circular buffer";
   let arguments = (ins TTL_CircularBuffer:$cb);
-  let results = (outs TTL_Block:$block);
+  let results = (outs TTL_Tensor:$tensor);
   let description = [{
     Blocking operation that waits until space is available in the circular buffer.
-    Returns a block whose shape matches the CB's block shape. Per TT-Lang spec, users never
-    specify element counts - the block shape is determined by the CB itself.
+    Returns a tensor whose shape matches the CB's shape. Per TT-Lang spec, users never
+    specify element counts - the tensor shape is determined by the CB itself.
 
     Python API: `blk = cb.reserve()` or `with cb.reserve() as blk:`
 
@@ -352,18 +352,18 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve"> {
 }
 
 def TTL_CBPushOp : TTL_Op<"cb_push"> {
-  let summary = "Producer release: signal block ready";
-  let arguments = (ins TTL_Block:$block);
+  let summary = "Producer release: signal tensor ready";
+  let arguments = (ins TTL_Tensor:$tensor);
   let description = [{
-    Non-blocking operation that signals the block is ready for consumers.
-    Takes the block returned by cb.reserve(). Automatically generated at the
+    Non-blocking operation that signals the tensor is ready for consumers.
+    Takes the tensor returned by cb.reserve(). Automatically generated at the
     end of a `with cb.reserve()` scope.
 
-    Python API: `cb.push()` (implicit: pushes the block acquired by most recent reserve)
+    Python API: `cb.push()` (implicit: pushes the tensor acquired by most recent reserve)
 
     Maps to TTKernel operation:
     - ttkernel.cb_push_back(cb, num_elements)
-      where num_elements is derived from the block's shape
+      where num_elements is derived from the tensor's shape
   }];
 }
 
@@ -458,12 +458,12 @@ pattern fuses matmul, element-wise operations, and reductions:
 
 result = ttl.compute_region ins(x_blk, w_blk, bias_blk, ones_blk) outs(o_blk) {
   ^bb0(%x, %w, %b, %ones):
-    %matmul_result = ttl.block_matmul %x, %w         // X @ W
-    %with_bias = ttl.block_add %matmul_result, %b    // + bias
-    %activated = ttl.block_relu %with_bias           // ReLU activation
-    %mean = ttl.block_reduce_sum %activated, %ones   // Sum for mean
-    %mean_bcast = ttl.block_bcast %mean              // Broadcast mean
-    %centered = ttl.block_sub %activated, %mean_bcast // Center values
+    %matmul_result = ttl.matmul %x, %w         // X @ W
+    %with_bias = ttl.add %matmul_result, %b    // + bias
+    %activated = ttl.relu %with_bias           // ReLU activation
+    %mean = ttl.reduce_sum %activated, %ones   // Sum for mean
+    %mean_bcast = ttl.bcast %mean              // Broadcast mean
+    %centered = ttl.sub %activated, %mean_bcast // Center values
     ttl.yield %centered
 } {keep_in_dst = true}
 ```
@@ -492,14 +492,14 @@ def TTL_ComputeRegionOp : TTL_Op<"compute_region", [
     Example: Simple attention kernel fusion
       %result = ttl.compute_region ins(%q, %k, %v, %scale : ...) outs(%out : ...) {
         ^bb0(%q_blk, %k_blk, %v_blk, %scale_blk):
-          %s = ttl.block_matmul %q_blk, %k_blk
-          %s_scaled = ttl.block_mul %s, %scale_blk
-          %exp_s = ttl.block_exp %s_scaled
-          %sum = ttl.block_reduce_sum %exp_s, %ones
-          %sum_bcast = ttl.block_bcast %sum
-          %recip = ttl.block_recip %sum_bcast
-          %p = ttl.block_mul %exp_s, %recip
-          %o = ttl.block_matmul %p, %v_blk
+          %s = ttl.matmul %q_blk, %k_blk
+          %s_scaled = ttl.mul %s, %scale_blk
+          %exp_s = ttl.exp %s_scaled
+          %sum = ttl.reduce_sum %exp_s, %ones
+          %sum_bcast = ttl.bcast %sum
+          %recip = ttl.recip %sum_bcast
+          %p = ttl.mul %exp_s, %recip
+          %o = ttl.matmul %p, %v_blk
           ttl.yield %o
       } {keep_in_dst = true}
 
@@ -533,8 +533,8 @@ def TTL_YieldOp : TTL_Op<"yield", [Pure, ReturnLike, Terminator]> {
     Example:
       ttl.compute_region ins(%a, %b) outs(%out) {
       ^bb0(%a_blk, %b_blk):
-        %result = ttl.block_add %a_blk, %b_blk
-        ttl.yield %result : !ttl.block<...>
+        %result = ttl.add %a_blk, %b_blk
+        ttl.yield %result : tensor<...>
       }
 
     The operation is a terminator and must be the last operation in a block.
@@ -549,52 +549,64 @@ Element-wise operations on blocks. Each operation lowers to an affine loop over
 tiles with corresponding TTKernel tile operations.
 
 ```tablegen
-// Base class for binary block operations
-class TTL_BinaryBlockOp<string mnemonic, list<Trait> traits = []>
+// Base class for binary operations
+class TTL_BinaryOp<string mnemonic, list<Trait> traits = []>
   : TTL_Op<mnemonic, traits> {
-  let arguments = (ins TTL_Block:$lhs, TTL_Block:$rhs);
-  let results = (outs TTL_Block:$result);
+  let arguments = (ins TTL_Tensor:$lhs, TTL_Tensor:$rhs);
+  let results = (outs TTL_Tensor:$result);
 }
 
-// Base class for unary block operations
-class TTL_UnaryBlockOp<string mnemonic, list<Trait> traits = []>
+// Base class for unary operations
+class TTL_UnaryOp<string mnemonic, list<Trait> traits = []>
   : TTL_Op<mnemonic, traits> {
-  let arguments = (ins TTL_Block:$input);
-  let results = (outs TTL_Block:$result);
+  let arguments = (ins TTL_Tensor:$input);
+  let results = (outs TTL_Tensor:$result);
 }
 
-def TTL_BlockAddOp : TTL_BinaryBlockOp<"block_add"> {
-  let summary = "Element-wise addition on blocks";
+def TTL_AddOp : TTL_BinaryOp<"add"> {
+  let summary = "Element-wise addition on tensors";
   let description = [{
-    Element-wise addition of two blocks.
+    Element-wise addition of two tensors.
 
     Maps to TTKernel operations:
     - ttkernel.add_tiles_init(in0_cb, in1_cb)
-    - affine.for loop over block tiles:
+    - affine.for loop over tensor tiles:
       - ttkernel.add_tiles(in0_cb, in1_cb, in0_idx, in1_idx, dst_idx)
   }];
 }
 
-def TTL_BlockMulOp : TTL_BinaryBlockOp<"block_mul"> {
-  let summary = "Element-wise multiplication on blocks";
+def TTL_SubOp : TTL_BinaryOp<"sub"> {
+  let summary = "Element-wise subtraction on tensors";
   let description = [{
-    Element-wise multiplication of two blocks.
+    Element-wise subtraction of two tensors.
+
+    Maps to TTKernel operations:
+    - ttkernel.sub_tiles_init(in0_cb, in1_cb)
+    - affine.for loop over tensor tiles:
+      - ttkernel.sub_tiles(in0_cb, in1_cb, in0_idx, in1_idx, dst_idx)
+  }];
+}
+
+def TTL_MulOp : TTL_BinaryOp<"mul"> {
+  let summary = "Element-wise multiplication on tensors";
+  let description = [{
+    Element-wise multiplication of two tensors.
 
     Maps to TTKernel operations:
     - ttkernel.mul_tiles_init(in0_cb, in1_cb)
-    - affine.for loop over block tiles:
+    - affine.for loop over tensor tiles:
       - ttkernel.mul_tiles(in0_cb, in1_cb, in0_idx, in1_idx, dst_idx)
   }];
 }
 
-def TTL_BlockMatmulOp : TTL_BinaryBlockOp<"block_matmul"> {
-  let summary = "Matrix multiplication on blocks";
+def TTL_MatmulOp : TTL_BinaryOp<"matmul"> {
+  let summary = "Matrix multiplication on tensors";
   let description = [{
-    Matrix multiplication of two blocks.
+    Matrix multiplication of two tensors.
 
     Maps to TTKernel operations:
     - ttkernel.mm_init(in0_cb, in1_cb, out_cb, transpose) (once per kernel)
-    - affine.for loop over block tiles (outer product iteration for block matmul):
+    - affine.for loop over tensor tiles (outer product iteration):
       - ttkernel.mm_init_short(in0_cb, in1_cb, transpose) (if other init called between)
       - ttkernel.matmul_tiles(in0_cb, in1_cb, in0_idx, in1_idx, dst_idx, transpose)
 
@@ -602,8 +614,6 @@ def TTL_BlockMatmulOp : TTL_BinaryBlockOp<"block_matmul"> {
     within ttl.compute_region. See section 4.4.1 for dense layer fusion example.
   }];
 }
-
-// Additional arithmetic ops: sub, div, exp, recip, relu, sigmoid, etc.
 ```
 
 #### 4.4.3 Reduction and Broadcast Operations
@@ -612,14 +622,14 @@ Operations for reducing tensor dimensions and broadcasting values. Critical for
 attention mechanisms and normalization patterns.
 
 ```tablegen
-def TTL_BlockReduceSumOp : TTL_Op<"block_reduce_sum"> {
+def TTL_ReduceSumOp : TTL_Op<"reduce_sum"> {
   let summary = "Reduce sum along specified axis";
   let arguments = (ins
-    TTL_Block:$input,
-    TTL_Block:$scaling,  // Scaling block (typically ones) for reduction
+    TTL_Tensor:$input,
+    TTL_Tensor:$scaling,  // Scaling tensor (typically ones) for reduction
     I64Attr:$axis        // Axis to reduce along
   );
-  let results = (outs TTL_Block:$result);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
     Reduces input tensor along specified axis using sum operation.
     Used in normalization patterns such as attention mechanisms.
@@ -637,19 +647,19 @@ def TTL_BlockReduceSumOp : TTL_Op<"block_reduce_sum"> {
   }];
 }
 
-def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
+def TTL_ReduceMaxOp : TTL_Op<"reduce_max"> {
   let summary = "Reduce max along specified axis";
   let arguments = (ins
-    TTL_Block:$input,
+    TTL_Tensor:$input,
     I64Attr:$axis  // Axis to reduce along
   );
-  let results = (outs TTL_Block:$result);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
-    Reduces input block along specified axis using max operation.
+    Reduces input tensor along specified axis using max operation.
     Used for numerical stability in normalization patterns.
 
-    Operates on blocks acquired from circular buffers via cb.wait() or cb.reserve().
-    The input block's circular buffer provenance enables proper CB lineage tracking
+    Operates on tensors acquired from circular buffers via cb.wait() or cb.reserve().
+    The input tensor's circular buffer provenance enables proper CB lineage tracking
     for wait/pop validation and DST allocation.
 
     Maps to TTKernel operations:
@@ -662,20 +672,20 @@ def TTL_BlockReduceMaxOp : TTL_Op<"block_reduce_max"> {
   }];
 }
 
-def TTL_BlockBcastOp : TTL_Op<"block_bcast"> {
+def TTL_BcastOp : TTL_Op<"bcast"> {
   let summary = "Broadcast along specified axis";
   let arguments = (ins
-    TTL_Block:$input,
+    TTL_Tensor:$input,
     I64Attr:$axis  // Broadcast axis
   );
-  let results = (outs TTL_Block:$result);
+  let results = (outs TTL_Tensor:$result);
   let description = [{
-    Broadcasts input block along the specified axis by replicating values.
+    Broadcasts input tensor along the specified axis by replicating values.
     Useful for normalization patterns (such as attention mechanisms) where
     reduction fills one dimension and broadcast replicates across the other.
 
-    Operates on blocks acquired from circular buffers via cb.wait() or cb.reserve().
-    The input block's circular buffer provenance enables proper CB lineage tracking
+    Operates on tensors acquired from circular buffers via cb.wait() or cb.reserve().
+    The input tensor's circular buffer provenance enables proper CB lineage tracking
     for wait/pop validation and DST allocation.
 
     Example: bcast(reduced_val, dim=1) replicates values along dimension 1.
@@ -720,52 +730,13 @@ This pattern enables:
 3. Efficient CB reuse without exceeding L1 capacity
 
 **Semantics:**
-- `ttl.block_store` + `ttl.cb_push` signals result is available for subsequent
-  operations
+- Operations materialize results directly when used in subsequent operations
+- `ttl.cb_push` signals result is available for subsequent operations
 - `ttl.cb_wait` + `ttl.cb_pop` acknowledges consumption and releases the slot
 - Operation verifiers ensure proper sequencing: each reserve has matching push,
   each wait has matching pop
 
 ```tablegen
-def TTL_BlockStoreOp : TTL_Op<"block_store"> {
-  let summary = "Store computation result to circular buffer block";
-  let arguments = (ins
-    TTL_Block:$dst,
-    TTL_Block:$src,
-    OptionalAttr<BoolAttr>:$acc  // Accumulate into destination (default: false)
-  );
-  let description = [{
-    Python API `block.store(value)` or `block.store(value, acc=True)` maps to
-    this operation. Blocking operation that materializes computation result and
-    stores in block.
-
-    Accumulation mode (acc=True):
-    - When acc=True, the source value is added to the existing destination value
-    - Enables patterns like: y_blk.store(c_blk, acc=True) followed by
-      y_blk.store(a_blk @ b_blk) to accumulate matmul results
-    - Useful for tiled matrix multiplication where partial products accumulate
-
-    Example from TT-Lang spec:
-      y_blk.store(c_blk, acc=True)    # Initialize with bias, enable accumulation
-      y_blk.store(a_blk @ b_blk)      # Accumulate matmul result
-
-    Block expression semantics:
-    - Block expressions (e.g., `a_blk ** 2`, `a_blk + b_blk`) are evaluated lazily
-    - Python operators (`**`, `+`, `-`, `*`, etc.) map to corresponding TTL block operations
-    - `ttl.math.*` functions map to TTL math operations
-    - `store()` materializes the result and blocks execution until complete
-
-    Lowers to TTKernel operations:
-    - affine.for loop over block tiles:
-      - Without acc: ttkernel.pack_tile(dst_idx, cb, tile_idx)
-      - With acc=True: ttkernel.pack_tile(dst_idx, cb, tile_idx) with accumulation
-        mode enabled via prior init call
-
-    Common usage: Part of store/wait/pop pattern for intermediate value reuse
-    (see pattern explanation above).
-  }];
-}
-
 def TTL_RequireDSTOp : TTL_Op<"require_dst", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Marker that SSA value must reside in DST register file";
   let arguments = (ins AnyType:$value);
@@ -781,18 +752,18 @@ def TTL_RequireDSTOp : TTL_Op<"require_dst", [DeclareOpInterfaceMethods<MemoryEf
 #### 4.4.5 `DST` Register Management
 
 `DST` register operations are IR-level constructs for managing register
-allocation at the block abstraction level.
+allocation at the tensor abstraction level.
 
 **MVP Limitation**: Spilling (`ttl.spill_tile_to_l1` and `ttl.restore_tile_from_l1`)
 is a post-MVP feature. The initial compiler implementation will error out if DST
 register pressure exceeds available capacity. Users must structure kernels to fit
 within DST constraints during the MVP phase.
 
-Block-to-tile lowering context: TTL operations work on *blocks* (groups of
-tiles, e.g., a 2x1 block = 2 tiles). Hardware operations in TTKernel work on
+Tensor-to-tile lowering context: TTL operations work on tensors (groups of
+tiles, e.g., a 2x1 tensor = 2 tiles). Hardware operations in TTKernel work on
 *individual tiles* (32x32 elements). During the `TTLLowerCompute` pass:
 
-- A single `ttl.block_add` operating on a 2x1 block becomes an `affine.for` loop
+- A single `ttl.add` operating on a 2x1 tensor becomes an `affine.for` loop
   with 2 iterations
 - Each iteration performs `ttkernel.add_tiles` on one tile
 - `DST` register allocation happens *after* this expansion, when we know exactly
@@ -830,7 +801,7 @@ def TTL_AcquireDSTOp : TTL_Op<"acquire_dst"> {
     Example transformation through the pipeline:
       TTL IR (block level):
         %dst0 = ttl.acquire_dst
-        %result = ttl.block_add %a, %b {dst_reg = %dst0}  // 2x1 block
+        %result = ttl.add %a, %b {dst_reg = %dst0}  // 2x1 tensor
         ttl.release_dst %dst0
 
       After TTLLowerCompute (tile level, DST ops still present):
@@ -1023,31 +994,31 @@ def TTL_GridSliceOp : TTL_Op<"grid_slice", [Pure]> {
 | TTL Operation | TTKernel Operations | Implementation Complexity | MVP Priority |
 |---------------|---------------------|---------------------------|--------------|
 | **FPU Binary Operations** ||||
-| `ttl.block_add` | `ttkernel.add_tiles_init`, `ttkernel.add_tiles` | Medium | **HIGH** |
-| `ttl.block_sub` | `ttkernel.sub_tiles_init`, `ttkernel.sub_tiles` | Medium | **HIGH** |
-| `ttl.block_mul` | `ttkernel.mul_tiles_init`, `ttkernel.mul_tiles` | Medium | **HIGH** |
+| `ttl.add` | `ttkernel.add_tiles_init`, `ttkernel.add_tiles` | Medium | **HIGH** |
+| `ttl.sub` | `ttkernel.sub_tiles_init`, `ttkernel.sub_tiles` | Medium | **HIGH** |
+| `ttl.mul` | `ttkernel.mul_tiles_init`, `ttkernel.mul_tiles` | Medium | **HIGH** |
 | **FPU Matrix Operations** ||||
-| `ttl.block_matmul` | `ttkernel.mm_init`, `ttkernel.matmul_tiles` | Medium | **HIGH** |
+| `ttl.matmul` | `ttkernel.mm_init`, `ttkernel.matmul_tiles` | Medium | **HIGH** |
 | **SFPU Unary Operations (Phase 2)** ||||
-| `ttl.block_exp` | `ttkernel.init_sfpu`, `ttkernel.exp_tile` | Medium | MEDIUM |
-| `ttl.block_log` | `ttkernel.init_sfpu`, `ttkernel.log_tile` | Medium | MEDIUM |
-| `ttl.block_sqrt` | `ttkernel.init_sfpu`, `ttkernel.sqrt_tile` | Medium | MEDIUM |
-| `ttl.block_rsqrt` | `ttkernel.init_sfpu`, `ttkernel.rsqrt_tile` | Medium | MEDIUM |
-| `ttl.block_relu` | `ttkernel.init_sfpu`, `ttkernel.relu_tile` | Medium | MEDIUM |
-| `ttl.block_gelu` | `ttkernel.init_sfpu`, `ttkernel.gelu_tile` | Medium | MEDIUM |
-| `ttl.block_sigmoid` | `ttkernel.init_sfpu`, `ttkernel.sigmoid_tile` | Medium | MEDIUM |
-| `ttl.block_tanh` | `ttkernel.init_sfpu`, `ttkernel.tanh_tile` | Medium | MEDIUM |
+| `ttl.exp` | `ttkernel.init_sfpu`, `ttkernel.exp_tile` | Medium | MEDIUM |
+| `ttl.log` | `ttkernel.init_sfpu`, `ttkernel.log_tile` | Medium | MEDIUM |
+| `ttl.sqrt` | `ttkernel.init_sfpu`, `ttkernel.sqrt_tile` | Medium | MEDIUM |
+| `ttl.rsqrt` | `ttkernel.init_sfpu`, `ttkernel.rsqrt_tile` | Medium | MEDIUM |
+| `ttl.relu` | `ttkernel.init_sfpu`, `ttkernel.relu_tile` | Medium | MEDIUM |
+| `ttl.gelu` | `ttkernel.init_sfpu`, `ttkernel.gelu_tile` | Medium | MEDIUM |
+| `ttl.sigmoid` | `ttkernel.init_sfpu`, `ttkernel.sigmoid_tile` | Medium | MEDIUM |
+| `ttl.tanh` | `ttkernel.init_sfpu`, `ttkernel.tanh_tile` | Medium | MEDIUM |
 | **SFPU Trigonometric (Phase 3+)** ||||
-| `ttl.block_sin` | `ttkernel.init_sfpu`, `ttkernel.sin_tile` | Medium | LOW |
-| `ttl.block_cos` | `ttkernel.init_sfpu`, `ttkernel.cos_tile` | Medium | LOW |
-| `ttl.block_tan` | `ttkernel.init_sfpu`, `ttkernel.tan_tile` | Medium | LOW |
+| `ttl.sin` | `ttkernel.init_sfpu`, `ttkernel.sin_tile` | Medium | LOW |
+| `ttl.cos` | `ttkernel.init_sfpu`, `ttkernel.cos_tile` | Medium | LOW |
+| `ttl.tan` | `ttkernel.init_sfpu`, `ttkernel.tan_tile` | Medium | LOW |
 
 **Operation Count Summary:**
 
 - **MVP (Week 2-3)**: ~5 operations
   - 3 FPU binary: add, sub, mul
   - 1 FPU matrix: matmul
-  - 1 special: block_store
+  - 1 special: reduce_sum or bcast
 
 - **Phase 2**: +8 operations
   - Common SFPU: exp, log, sqrt, rsqrt, relu, gelu, sigmoid, tanh
@@ -1076,58 +1047,58 @@ def TTL_GridSliceOp : TTL_Op<"grid_slice", [Pure]> {
 
 # 5.6 Structured Ops for DST Register Capacity-Based Tiling
 
-Lower `TTL_BlockComputeOp` and block arithmetic operations to `linalg.generic`
+Lower `TTL_ComputeOp` and tensor arithmetic operations to `linalg.generic`
 structured operations rather than direct affine loops. This enables
 capacity-constrained tiling for DST registers using the transform dialect.
 
 #### 5.6.1 The DST Register Capacity Problem
 
-Block compute operations process blocks of tiles (e.g., 8×8 tiles). Each tile
+Tensor compute operations process tensors of tiles (e.g., 8×8 tiles). Each tile
 operation accumulates intermediate results in DST registers. Hardware provides
 limited DST capacity (typically 4-16 registers depending on data type).
 
-Consider an element-wise chain operating on an 8×8 block:
+Consider an element-wise chain operating on an 8×8 tensor:
 
 ```python
-# Three element-wise operations on 8×8 tile block
-%result = ttl.block_add %a, %b      # 64 tiles
-%result2 = ttl.block_mul %result, %c # 64 tiles
-%result3 = ttl.block_exp %result2    # 64 tiles
+# Three element-wise operations on 8×8 tile tensor
+%result = ttl.add %a, %b      # 64 tiles
+%result2 = ttl.mul %result, %c # 64 tiles
+%result3 = ttl.exp %result2    # 64 tiles
 ```
 
 Processing all 64 tiles at once would require 64 DST registers, far exceeding
 capacity.
 
-Solution: Tile the block into sub-blocks that fit within DST capacity,
-processing tiles within each sub-block through the entire operation chain before
-moving to the next sub-block.
+Solution: Tile the tensor into sub-tensors that fit within DST capacity,
+processing tiles within each sub-tensor through the entire operation chain before
+moving to the next sub-tensor.
 
-#### 5.6.2 Loop Nest Structure: Block → Sub-block → Tile → Operation Chain
+#### 5.6.2 Loop Nest Structure: Tensor → Sub-tensor → Tile → Operation Chain
 
-General loop structure for capacity-constrained fused block operations:
+General loop structure for capacity-constrained fused tensor operations:
 
 ```
-Outer sub-block loop (generated by transform tiling):
-  For each sub-block fitting in DST capacity:
+Outer sub-tensor loop (generated by transform tiling):
+  For each sub-tensor fitting in DST capacity:
     For each operation in fusion chain:
       Init operation N
       Inner tile loop:
         Apply operation N to tile[i] → DST[i % capacity]
       Uninit operation N
 
-    Pack sub-block from DST to L1
+    Pack sub-tensor from DST to L1
 ```
 
 Parameters:
-- Block size: e.g., 8×8 tiles (64 total)
-- Sub-block size: Determined by DST capacity (e.g., 8×1 = 8 tiles for 8
+- Tensor size: e.g., 8×8 tiles (64 total)
+- Sub-tensor size: Determined by DST capacity (e.g., 8×1 = 8 tiles for 8
   registers)
 - Tile size: 32×32 elements (hardware granularity)
-- Operations: Fused chain executing sequentially on each sub-block
+- Operations: Fused chain executing sequentially on each sub-tensor
 
 Three-level hierarchy:
-1. Block: User-visible abstraction (e.g., 8×8 tiles)
-2. Sub-block: Compiler-inserted tiling for capacity (e.g., 8×1 tiles)
+1. Tensor: User-visible abstraction (e.g., 8×8 tiles)
+2. Sub-tensor: Compiler-inserted tiling for capacity (e.g., 8×1 tiles)
 3. Tile: Hardware unit of execution (32×32 elements)
 
 Within each sub-block, operations execute sequentially with init/process/uninit
@@ -1172,9 +1143,9 @@ Phase 1: Block operations to linalg.generic
 // Input: TTL fused compute region (3 operations on 8×8 block)
 %result = ttl.compute_region ins(%a, %b, %c) outs(%out) {
 ^bb0(%a_blk, %b_blk, %c_blk):
-  %add = ttl.block_add %a_blk, %b_blk      // Op 1
-  %mul = ttl.block_mul %add, %c_blk        // Op 2
-  %exp = ttl.block_exp %mul                 // Op 3
+  %add = ttl.add %a_blk, %b_blk      // Op 1
+  %mul = ttl.mul %add, %c_blk        // Op 2
+  %exp = ttl.exp %mul                 // Op 3
   ttl.yield %exp
 }
 

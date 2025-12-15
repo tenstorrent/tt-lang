@@ -79,29 +79,23 @@ Update `python/ttlang/operators.py`:
 @syntax("!tensor")
 class TensorBlock:
     def __add__(ast_self, rhs):
-        # Generate ttl.block_add instead of linalg.generic
-        return ttl.block_add(ast_self, rhs)
+        # Generate ttl.add instead of linalg.generic
+        return ttl.add(ast_self, rhs)
 
     def __sub__(ast_self, rhs):
-        return ttl.block_sub(ast_self, rhs)
+        return ttl.sub(ast_self, rhs)
 
     def __mul__(ast_self, rhs):
-        return ttl.block_mul(ast_self, rhs)
+        return ttl.mul(ast_self, rhs)
 
     def __truediv__(ast_self, rhs):
-        return ttl.block_div(ast_self, rhs)
+        return ttl.div(ast_self, rhs)
 
     def __pow__(ast_self, rhs):
-        return ttl.block_pow(ast_self, rhs)
+        return ttl.pow(ast_self, rhs)
 
     def __matmul__(ast_self, rhs):
-        return ttl.block_matmul(ast_self, rhs)
-
-    def store(ast_self, value, acc=False):
-        # Python API: block.store(value) or block.store(value, acc=True)
-        # Maps to ttl.block_store operation
-        # acc=True enables accumulation into destination (for matmul patterns)
-        return ttl.block_store(ast_self, value, acc=acc)
+        return ttl.matmul(ast_self, rhs)
 ```
 
 **Math Functions:**
@@ -304,11 +298,11 @@ during IR construction, not by a separate pass.
 
 3. `TTLLowerCompute` - Block ops → TTKernel tile ops
    - **MVP operations** (must be implemented):
-     - `ttl.block_add` → `add_tiles_init` + `add_tiles`
-     - `ttl.block_mul` → `mul_tiles_init` + `mul_tiles`
-     - `ttl.block_matmul` → `mm_init` + `matmul_tiles`
-     - `ttl.block_reduce_sum` → `reduce_init` + `reduce_tile` + `reduce_uninit`
-     - `ttl.block_bcast` → `unary_bcast_init` + `unary_bcast`
+     - `ttl.add` → `add_tiles_init` + `add_tiles`
+     - `ttl.mul` → `mul_tiles_init` + `mul_tiles`
+     - `ttl.matmul` → `mm_init` + `matmul_tiles`
+     - `ttl.reduce_sum` → `reduce_init` + `reduce_tile` + `reduce_uninit`
+     - `ttl.bcast` → `unary_bcast_init` + `unary_bcast`
    - Generate affine loops over tiles
    - Handle compute_region fusion
 
@@ -1015,7 +1009,7 @@ module {
     %sched_kernel = transform.ttl.schedule_pipeline %kernel {strategy = "aggressive"}
 
     // 4. Allocate DST registers
-    %compute_ops = transform.structured.match ops{["ttl.block_add", "ttl.block_matmul"]}
+    %compute_ops = transform.structured.match ops{["ttl.add", "ttl.matmul"]}
                    in %sched_kernel
     %with_dst = transform.ttl.allocate_dst_registers %compute_ops
 
@@ -1147,7 +1141,7 @@ composable Transform dialect model for scheduling.
 
 ### Why linalg.generic for Block Compute Operations (Not Direct Affine)?
 
-Block compute operations (ttl.block_add, ttl.block_mul, ttl.compute_region) are
+Block compute operations (ttl.add, ttl.mul, ttl.compute_region) are
 lowered to linalg.generic structured operations rather than direct affine loops.
 This decision is driven by DST register capacity constraints.
 

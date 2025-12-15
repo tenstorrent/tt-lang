@@ -71,7 +71,7 @@ func.func @dm_thread_0 (memref args)
   └─ TTLAssignDSTRegisters - Allocate 16 DST registers for compute threads
   ↓
 [Phase 6: Lowering to TTKernel]
-  ├─ TTLLowerCompute - ttl.block_add → linalg.generic → (transform tiling) → scf.for + ttkernel.add_tiles
+  ├─ TTLLowerCompute - ttl.add → linalg.generic → (transform tiling) → scf.for + ttkernel.add_tiles
   ├─ TTLLowerDataMovement - ttl.copy → ttkernel.tensor_accessor + ttkernel.noc_async_shard/page/tile
   └─ TTLLowerSynchronization - ttl.cb_* → ttkernel.cb_*
   ↓
@@ -102,7 +102,7 @@ TTL uses three complementary MLIR components for control flow and optimization:
    dynamic control flow use SCF operations. SCF also provides the outer iteration
    constructs when transform-based tiling generates sub-block loops.
 
-3. **Linalg structured ops** for compute operations: Block compute operations lower to
+3. **Linalg structured ops** for compute operations: Tensor compute operations lower to
    `linalg.generic` to access transform dialect tiling primitives. The transform dialect's
    `multitile_sizes` operation computes sub-block dimensions that respect DST register
    capacity constraints, enabling automatic register-constrained tiling without custom
@@ -170,7 +170,7 @@ for DST capacity-based tiling via linalg and transform dialect.
   - Future: Spill strategy for complex kernels that exceed DST capacity.
 
 **`TTLLowerCompute`**
-- **Input**: `ttl.block_add`, `ttl.block_mul`, `ttl.block_matmul` and other
+- **Input**: `ttl.add`, `ttl.mul`, `ttl.matmul` and other
   block operations
 - **Transform**: Lower to `linalg.generic` structured operations
   - Block operations become linalg.generic with TTL tile operations in the body
@@ -608,7 +608,7 @@ leverage upstream transforms immediately.
 | TTL Type | TTKernel Type | Conversion Notes |
 |----------|---------------|------------------|
 | `!ttl.circular_buffer<[2,1], !ttcore.tile<32x32,f32>, 2, L1>` | `!ttkernel.cb<4, !ttcore.tile<32x32,f32>>` | Total elements = 2×1×2 = 4 tiles (layout inferred: element_type is tile → tiled layout); For row-major CBs, element_type is scalar (f32, bf16, etc.); memory space drives L1 address assignment; buffer_factor used to compute total but not preserved in TTKernel CB type |
-| `!ttl.block<tensor<2x1x!ttcore.tile>>` | Elided | Blocks decomposed into tile operations during lowering |
+| `tensor<2x1x!ttcore.tile>` | `memref<...>` | Tensors decomposed into tile operations during lowering; tensor layout information drives loop generation over tiles |
 | `!ttl.transfer_handle` | N/A (elided) | Lowers to global barriers |
 | `!ttl.semaphore` | `!ttkernel.semaphore` | Direct mapping |
 | `!ttl.pipe` | Attributes on ops | Pipe decomposed into core coords + multicast flags |
@@ -626,16 +626,16 @@ leverage upstream transforms immediately.
 | `ttl.get_tile` | `ttkernel.copy_tile_init`, `ttkernel.copy_tile` | Medium | **HIGH** |
 | `ttl.pack_tile` | `ttkernel.pack_tile` | Low | **HIGH** |
 | **Compute (FPU)** ||||
-| `ttl.block_add` | `ttkernel.add_tiles_init`, `ttkernel.add_tiles` | Medium | **HIGH** |
-| `ttl.block_sub` | `ttkernel.sub_tiles_init`, `ttkernel.sub_tiles` | Medium | **HIGH** |
-| `ttl.block_mul` | `ttkernel.mul_tiles_init`, `ttkernel.mul_tiles` | Medium | **HIGH** |
-| `ttl.block_matmul` | `ttkernel.mm_init`, `ttkernel.matmul_tiles` | Medium | **HIGH** |
+| `ttl.add` | `ttkernel.add_tiles_init`, `ttkernel.add_tiles` | Medium | **HIGH** |
+| `ttl.sub` | `ttkernel.sub_tiles_init`, `ttkernel.sub_tiles` | Medium | **HIGH** |
+| `ttl.mul` | `ttkernel.mul_tiles_init`, `ttkernel.mul_tiles` | Medium | **HIGH** |
+| `ttl.matmul` | `ttkernel.mm_init`, `ttkernel.matmul_tiles` | Medium | **HIGH** |
 | **Compute (SFPU - Phase 2)** ||||
-| `ttl.block_exp` | `ttkernel.init_sfpu`, `ttkernel.exp_tile` | Medium | MEDIUM |
-| `ttl.block_log` | `ttkernel.init_sfpu`, `ttkernel.log_tile` | Medium | MEDIUM |
-| `ttl.block_sqrt` | `ttkernel.init_sfpu`, `ttkernel.sqrt_tile` | Medium | MEDIUM |
-| `ttl.block_relu` | `ttkernel.init_sfpu`, `ttkernel.relu_tile` | Medium | MEDIUM |
-| `ttl.block_gelu` | `ttkernel.init_sfpu`, `ttkernel.gelu_tile` | Medium | MEDIUM |
+| `ttl.exp` | `ttkernel.init_sfpu`, `ttkernel.exp_tile` | Medium | MEDIUM |
+| `ttl.log` | `ttkernel.init_sfpu`, `ttkernel.log_tile` | Medium | MEDIUM |
+| `ttl.sqrt` | `ttkernel.init_sfpu`, `ttkernel.sqrt_tile` | Medium | MEDIUM |
+| `ttl.relu` | `ttkernel.init_sfpu`, `ttkernel.relu_tile` | Medium | MEDIUM |
+| `ttl.gelu` | `ttkernel.init_sfpu`, `ttkernel.gelu_tile` | Medium | MEDIUM |
 | **Data Movement** ||||
 | `ttl.copy` (Tensor→CB sharded) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_read_shard` | High | **HIGH** |
 | `ttl.copy` (Tensor→CB interleaved) | `ttkernel.tensor_accessor`, `ttkernel.noc_async_read_page` | High | **HIGH** |
@@ -669,7 +669,7 @@ leverage upstream transforms immediately.
 **Circular Buffer Operations:**
 ```mlir
 // TTL (Python/user-facing)
-%blk = ttl.cb_wait %cb : !ttl.block<...>
+%blk = ttl.cb_wait %cb : tensor<...>
 
 // TTKernel (lowered - count derived from CB type)
 ttkernel.cb_wait_front %cb, 2  // 2 computed from CB.shape
@@ -689,10 +689,10 @@ ttkernel.copy_tile_init %cb
 
 **Block Compute:**
 ```mlir
-// TTL (user-facing block-level abstraction)
-%a_blk = ttl.cb_wait %a_cb : !ttl.block<...>
-%b_blk = ttl.cb_wait %b_cb : !ttl.block<...>
-%result = ttl.block_add %a_blk, %b_blk
+// TTL (user-facing tensor-level abstraction)
+%a_blk = ttl.cb_wait %a_cb : tensor<...>
+%b_blk = ttl.cb_wait %b_cb : tensor<...>
+%result = ttl.add %a_blk, %b_blk
 
 // TTKernel (explicit per-tile - lowered from block ops)
 ttkernel.cb_wait_front %a_cb, 2  // 2 from CB shape
