@@ -8,6 +8,7 @@
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -18,6 +19,9 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToTTKernel());
+  if (options.fuseTileLoops) {
+    pm.addNestedPass<func::FuncOp>(createTTLFuseSiblingTileLoops());
+  }
   pm.addPass(createCanonicalizerPass());
   if (options.lowerToEmitC) {
     // EmitC does not tolerate SSA aliasing introduced by CSE; keep expressions
