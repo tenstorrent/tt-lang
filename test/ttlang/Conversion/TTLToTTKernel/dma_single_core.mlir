@@ -4,18 +4,16 @@
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// TTKERNEL-LABEL: func.func @dma_single(
-// TTKERNEL-SAME: %[[ARG0:.*]]: tensor<32x32xf32, {{.*}}>
+// TTKERNEL-LABEL: func.func @dma_single
 // TTKERNEL-DAG: %[[C128:.*]] = arith.constant 128 : i32
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : i32
 // TTKERNEL-DAG: %[[C32:.*]] = arith.constant 32 : i32
 // TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : i32
-// TTKERNEL-NEXT: %[[SRC_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL-NEXT: %[[SRC_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL-NEXT: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: %[[SRC_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL: %[[SRC_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
-// TTKERNEL-NEXT: return
 module {
   func.func @dma_single(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -30,18 +28,16 @@ module {
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// TTKERNEL-LABEL: func.func @cb_to_tensor(
-// TTKERNEL-SAME: %[[ARG0:.*]]: tensor<32x32xf32, {{.*}}>
+// TTKERNEL-LABEL: func.func @cb_to_tensor
 // TTKERNEL-DAG: %[[C128:.*]] = arith.constant 128 : i32
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : i32
 // TTKERNEL-DAG: %[[C32:.*]] = arith.constant 32 : i32
 // TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : i32
-// TTKERNEL-NEXT: %[[DST_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL-NEXT: %[[DST_ACC:.*]] = ttkernel.TensorAccessor(%[[DST_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT: ttkernel.noc_async_write_tile(%[[C0]], %[[DST_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL-NEXT: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL: %[[DST_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL: %[[DST_ACC:.*]] = ttkernel.TensorAccessor(%[[DST_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: ttkernel.noc_async_write_tile(%[[C0]], %[[DST_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_read_barrier
-// TTKERNEL-NEXT: return
 module {
   func.func @cb_to_tensor(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -64,16 +60,15 @@ module {
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : i32
 // TTKERNEL-DAG: %[[C32:.*]] = arith.constant 32 : i32
 // TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : i32
-// TTKERNEL-NEXT: %[[SRC0_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL-NEXT: %[[SRC0_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC0_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC0_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL-NEXT: %[[SRC1_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL-NEXT: %[[SRC1_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC1_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC1_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL-NEXT: ttkernel.noc_async_read_barrier() : () -> ()
-// TTKERNEL-NEXT: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: %[[SRC0_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL: %[[SRC0_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC0_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC0_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: %[[SRC1_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C32]], %[[C1]]) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL: %[[SRC1_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC1_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC1_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
-// TTKERNEL-NEXT: return
 module {
   func.func @dma_batched(%t0: tensor<32x32xf32, #layout>, %t1: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb0 = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -96,16 +91,15 @@ module {
 // from the copy in time while staying in SSA form.
 
 // TTKERNEL-LABEL: func.func @dma_pipelined_loop
-// TTKERNEL:      ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL:      scf.for {{.*}} {
-// TTKERNEL-NEXT:   %[[LOOP_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}, {{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL-NEXT:   %[[LOOP_ACC:.*]] = ttkernel.TensorAccessor(%[[LOOP_ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT:   ttkernel.noc_async_read_tile({{.*}}, %[[LOOP_ACC]], {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL-NEXT:   ttkernel.noc_async_read_barrier() : () -> ()
-// TTKERNEL-NEXT: }
-// TTKERNEL-NEXT: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, {{.*}}, {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: scf.for {{.*}} {
+// TTKERNEL:   %[[LOOP_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}, {{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL:   %[[LOOP_ACC:.*]] = ttkernel.TensorAccessor(%[[LOOP_ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[LOOP_ACC]], {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: }
+// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
-// TTKERNEL-NEXT: return
 module {
   func.func @dma_pipelined_loop(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -134,20 +128,20 @@ module {
 // block on a barrier after issuing the batch.
 //
 // TTKERNEL-LABEL: func.func @dma_two_phase_loops
-// TTKERNEL:      %[[HANDLES0:.*]] = tensor.empty() : tensor<4x!ttl.transfer_handle<read>>
-// TTKERNEL-NEXT: %[[HANDLES:.*]] = scf.for {{.*}} iter_args(%[[H:.*]] = %[[HANDLES0]]) -> (tensor<4x!ttl.transfer_handle<read>>) {
-// TTKERNEL-NEXT:   %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}, {{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL-NEXT:   %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL-NEXT:   ttkernel.noc_async_read_tile({{.*}}, %[[ACC]], {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL-NEXT:   %[[XF:.*]] = builtin.unrealized_conversion_cast {{.*}} : i32 to !ttl.transfer_handle<read>
-// TTKERNEL-NEXT:   %[[INS:.*]] = tensor.insert %[[XF]] into %[[H]]{{\[}}{{.*}}{{\]}} : tensor<4x!ttl.transfer_handle<read>>
-// TTKERNEL-NEXT:   scf.yield %[[INS]] : tensor<4x!ttl.transfer_handle<read>>
-// TTKERNEL-NEXT: }
-// TTKERNEL-NEXT: scf.for {{.*}} {
-// TTKERNEL-NEXT:   ttkernel.noc_async_read_barrier() : () -> ()
-// TTKERNEL-NEXT: }
+// TTKERNEL: %[[HANDLES0:.*]] = tensor.empty() : tensor<4x!ttl.transfer_handle<read>>
+// TTKERNEL: %[[CAST:.*]] = tensor.cast %[[HANDLES0]] : tensor<4x!ttl.transfer_handle<read>> to tensor<?x!ttl.transfer_handle<read>>
+// TTKERNEL: %[[HANDLES:.*]] = scf.for {{.*}} iter_args(%[[H:.*]] = %[[CAST]]) -> (tensor<?x!ttl.transfer_handle<read>>) {
+// TTKERNEL:   %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}, {{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
+// TTKERNEL:   %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[ACC]], {{.*}}) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL:   %[[XF:.*]] = builtin.unrealized_conversion_cast {{.*}} : i32 to !ttl.transfer_handle<read>
+// TTKERNEL:   %[[INS:.*]] = tensor.insert %[[XF]] into %[[H]]{{\[}}{{.*}}{{\]}} : tensor<?x!ttl.transfer_handle<read>>
+// TTKERNEL:   scf.yield %[[INS]] : tensor<?x!ttl.transfer_handle<read>>
+// TTKERNEL: }
+// TTKERNEL: scf.for {{.*}} {
+// TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL: }
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
-// TTKERNEL: return
 module {
   func.func @dma_two_phase_loops(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>

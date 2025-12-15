@@ -394,7 +394,8 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
     }
 
     // Change ttl.kernel_thread attribute to ttkernel.thread
-    if (auto threadAttr = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
+    if (auto threadAttr =
+            op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
       op->removeAttr("ttl.kernel_thread");
       op->setAttr("ttkernel.thread", threadAttr);
     }
@@ -408,19 +409,17 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       for (auto arg : op.getArguments()) {
         if (llvm::isa<RankedTensorType>(arg.getType())) {
           auto argAttr = ttk::ArgAttr::get(
-              op.getContext(),
-              ttk::ArgType::BufferAddress,
-              operandIndex++);
+              op.getContext(), ttk::ArgType::BufferAddress, operandIndex++);
           ctArgSpecs.push_back(argAttr);
         }
       }
 
       // Set arg_spec attribute if we have any arguments
       if (!ctArgSpecs.empty()) {
-        auto argSpecAttr = ttk::ArgSpecAttr::get(
-            op.getContext(),
-            /*rtArgs=*/ArrayRef<ttk::ArgAttr>{},
-            /*ctArgs=*/ctArgSpecs);
+        auto argSpecAttr =
+            ttk::ArgSpecAttr::get(op.getContext(),
+                                  /*rtArgs=*/ArrayRef<ttk::ArgAttr>{},
+                                  /*ctArgs=*/ctArgSpecs);
         op->setAttr("ttkernel.arg_spec", argSpecAttr);
       }
 
@@ -431,10 +430,9 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       }
 
       // Update function type to have no inputs
-      auto newType = FunctionType::get(
-          op.getContext(),
-          TypeRange{}, // No inputs
-          op.getFunctionType().getResults());
+      auto newType =
+          FunctionType::get(op.getContext(), TypeRange{}, // No inputs
+                            op.getFunctionType().getResults());
       op.setType(newType);
     }
 

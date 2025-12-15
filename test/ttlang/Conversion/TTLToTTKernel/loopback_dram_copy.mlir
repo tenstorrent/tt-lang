@@ -7,7 +7,6 @@
            memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // TTKERNEL-LABEL: func.func @loopback_dram_copy
-// TTKERNEL-SAME: (%[[SRC:.*]]: tensor<32x32xf32, #ttnn_layout>, %[[DST:.*]]: tensor<32x32xf32, #ttnn_layout>)
 // TTKERNEL-DAG: %[[C128:.*]] = arith.constant 128 : i32
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : i32
 // TTKERNEL-DAG: %[[C32:.*]] = arith.constant 32 : i32
