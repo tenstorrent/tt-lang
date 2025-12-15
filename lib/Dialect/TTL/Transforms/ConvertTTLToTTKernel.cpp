@@ -259,6 +259,8 @@ getTileGridShape(const RankedTensorType &tensorTy) {
 // Emit a tile loop (or single tile body) with proper offset computation.
 // The emitBody callback receives (builder, location, tileOffset) where
 // tileOffset is an i32 linear tile index computed from loop indices.
+// Generated loops are marked with kTileLoopMarker attribute for downstream
+// passes to identify.
 static void
 emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
              int64_t tilesX,
@@ -270,7 +272,7 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     auto tilesXVal = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
 
-    scf::buildLoopNest(
+    scf::LoopNest loopNest = scf::buildLoopNest(
         rewriter, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
         ValueRange{one, one},
         [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
@@ -286,6 +288,12 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
 
           emitBody(b, bodyLoc, offset32);
         });
+
+    // Mark all generated loops with the tile loop marker attribute.
+    auto marker = rewriter.getUnitAttr();
+    for (scf::ForOp loop : loopNest.loops) {
+      loop->setAttr(kTileLoopMarker, marker);
+    }
   } else {
     // Single tile: offset is always 0
     Value zero32 = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
