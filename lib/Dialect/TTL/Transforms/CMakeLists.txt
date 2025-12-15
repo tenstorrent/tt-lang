@@ -1,5 +1,6 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
+  TTLKernelRegionsToFuncs.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen

@@ -7,6 +7,8 @@
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
+include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.td"
+include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/OpBase.td"
 
@@ -217,6 +219,72 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
   );
   let assemblyFormat = "$cb `,` $num_pages attr-dict `:` type($cb)";
   let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Kernel container operation
+//===----------------------------------------------------------------------===//
+
+def TTL_KernelOp : TTL_Op<"kernel", [
+    AttrSizedOperandSegments,
+    NoTerminator,
+    IsolatedFromAbove
+  ]> {
+  let summary = "Container for TTL kernel threads operating on a device grid";
+  let description = [{
+    `ttl.kernel` is a container operation that holds regions for each kernel
+    thread (compute and data movement). Each region operates on the same set
+    of circular buffers derived from the kernel's inputs and outputs.
+
+    The `threads` attribute specifies the thread type for each region. After
+    the `ttl-kernel-regions-to-funcs` pass, each region is extracted to a
+    separate `func.func` with appropriate `#ttkernel.thread` attributes.
+
+    Each region receives the same CB arguments corresponding to the kernel's
+    inputs and outputs. The CB arguments provide the interface for inter-thread
+    communication.
+
+    Example:
+    ```mlir
+    %result = ttl.kernel {grid = #ttcore.grid<1x1>, threads = [#ttl.thread<datamovement>, #ttl.thread<compute>]}
+        ins(%lhs, %rhs : tensor<...>, tensor<...>)
+        outs(%out : tensor<...>) {
+    ^bb0(%lhs_cb: !ttl.cb<...>, %rhs_cb: !ttl.cb<...>, %out_cb: !ttl.cb<...>):
+      // Data movement thread: read inputs
+    }, {
+    ^bb0(%lhs_cb: !ttl.cb<...>, %rhs_cb: !ttl.cb<...>, %out_cb: !ttl.cb<...>):
+      // Compute thread: process data
+    } : tensor<...>
+    ```
+  }];
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$inputs,
+    Variadic<AnyRankedTensor>:$outputs,
+    TTL_ThreadArrayAttr:$threads,
+    TTCore_GridAttr:$grid
+  );
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region VariadicRegion<AnyRegion>:$thread_regions);
+
+  let assemblyFormat = [{
+    attr-dict
+    `ins` `(` $inputs (`:` type($inputs)^)? `)`
+    `outs` `(` $outputs `:` type($outputs) `)`
+    $thread_regions (`:` type($results)^)?
+  }];
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    /// Get the thread type for a region by index.
+    ThreadType getRegionThreadType(unsigned regionIndex) {
+      auto arr = getThreadsAttr().getValue();
+      return mlir::cast<ThreadAttr>(arr[regionIndex]).getThreadType();
+    }
+
+    /// Get the number of thread regions.
+    unsigned getNumThreadRegions() { return getThreadRegions().size(); }
+  }];
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

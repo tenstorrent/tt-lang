@@ -164,3 +164,85 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   // tablegen constraints.
   return success();
 }
+
+mlir::LogicalResult mlir::tt::ttl::KernelOp::verify() {
+  size_t numThreadAttrs = getThreads().size();
+  size_t numRegions = getThreadRegions().size();
+
+  if (numThreadAttrs != numRegions) {
+    return emitOpError() << "threads attribute count (" << numThreadAttrs
+                         << ") must match number of regions (" << numRegions
+                         << ")";
+  }
+
+  if (numRegions == 0) {
+    return emitOpError() << "requires at least one thread region";
+  }
+
+  // Check if regions have been extracted (all thread attrs have symbol refs).
+  bool allExtracted = true;
+  for (Attribute attr : getThreads()) {
+    auto threadAttr = mlir::cast<ThreadAttr>(attr);
+    if (!threadAttr.getSymbolRef()) {
+      allExtracted = false;
+      break;
+    }
+  }
+
+  // After extraction, regions are empty - skip region verification.
+  if (allExtracted) {
+    // Verify number of results matches number of outputs.
+    if (getResults().size() != getOutputs().size()) {
+      return emitOpError() << "number of results (" << getResults().size()
+                           << ") must match number of outputs ("
+                           << getOutputs().size() << ")";
+    }
+    return success();
+  }
+
+  // Verify each region has a single entry block.
+  for (unsigned i = 0; i < numRegions; ++i) {
+    Region &region = getThreadRegions()[i];
+    if (region.empty()) {
+      return emitOpError() << "thread region " << i << " must have an entry block";
+    }
+    if (!region.hasOneBlock()) {
+      return emitOpError() << "thread region " << i
+                           << " must have exactly one block";
+    }
+  }
+
+  // Verify all regions have identical block argument types.
+  Block &firstBlock = getThreadRegions().front().front();
+  TypeRange firstArgTypes = firstBlock.getArgumentTypes();
+
+  for (unsigned i = 1; i < numRegions; ++i) {
+    Block &block = getThreadRegions()[i].front();
+    TypeRange argTypes = block.getArgumentTypes();
+
+    if (argTypes.size() != firstArgTypes.size()) {
+      return emitOpError()
+             << "thread region " << i << " has " << argTypes.size()
+             << " block arguments, expected " << firstArgTypes.size()
+             << " (must match first region)";
+    }
+
+    for (unsigned j = 0; j < argTypes.size(); ++j) {
+      if (argTypes[j] != firstArgTypes[j]) {
+        return emitOpError()
+               << "thread region " << i << " block argument " << j << " has type "
+               << argTypes[j] << ", expected " << firstArgTypes[j]
+               << " (must match first region)";
+      }
+    }
+  }
+
+  // Verify number of results matches number of outputs.
+  if (getResults().size() != getOutputs().size()) {
+    return emitOpError() << "number of results (" << getResults().size()
+                         << ") must match number of outputs ("
+                         << getOutputs().size() << ")";
+  }
+
+  return success();
+}

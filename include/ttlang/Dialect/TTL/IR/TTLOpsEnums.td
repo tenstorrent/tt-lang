@@ -12,8 +12,19 @@ include "mlir/IR/EnumAttr.td"
 // TTL enum definitions
 //===----------------------------------------------------------------------===//
 
-// Note: TTL uses TTKernel's ThreadType enum (#ttkernel.thread<noc>) for
-// kernel thread annotations on functions.
+// Thread type for ttl.kernel regions. Maps to TTKernel's ThreadType during
+// lowering (compute -> Compute, datamovement -> Noc).
+def TTL_ThreadType : I32EnumAttr<
+    "ThreadType", "TTL kernel thread type",
+    [
+      I32EnumAttrCase<"compute", 0>,
+      I32EnumAttrCase<"datamovement", 1>,
+    ]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_ThreadTypeAttr : EnumAttr<TTL_Dialect, TTL_ThreadType, "thread_type">;
 
 def TTL_TransferKind : I32EnumAttr<
     "TransferKind", "TTL transfer kind",
