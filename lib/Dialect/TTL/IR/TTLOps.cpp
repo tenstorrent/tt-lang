@@ -115,9 +115,9 @@ mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
   auto resultShape = resultTy.getShape();
 
   if (cbShape.size() != resultShape.size()) {
-    return op->emitOpError() << "result tensor rank (" << resultShape.size()
-                             << ") must match CB shape rank (" << cbShape.size()
-                             << ")";
+    return op->emitOpError()
+           << "result tensor rank (" << resultShape.size()
+           << ") must match CB shape rank (" << cbShape.size() << ")";
   }
 
   for (size_t i = 0; i < cbShape.size(); ++i) {
@@ -131,9 +131,9 @@ mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
   auto cbElemTy = cbTy.getElementType();
   auto resultElemTy = resultTy.getElementType();
   if (cbElemTy != resultElemTy) {
-    return op->emitOpError() << "result tensor element type (" << resultElemTy
-                             << ") must match CB element type (" << cbElemTy
-                             << ")";
+    return op->emitOpError()
+           << "result tensor element type (" << resultElemTy
+           << ") must match CB element type (" << cbElemTy << ")";
   }
 
   return mlir::success();

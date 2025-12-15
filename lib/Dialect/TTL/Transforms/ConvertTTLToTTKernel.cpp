@@ -154,9 +154,8 @@ struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
 //===----------------------------------------------------------------------===//
 
 // Convert a TTL CB value to a TTKernel CB value.
-static FailureOr<Value> convertCBOperand(Value cb,
-                                         ConversionPatternRewriter &rewriter,
-                                         Location loc) {
+static FailureOr<Value>
+convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   // If already a TTKernel CB, return as-is.
   if (mlir::isa<ttk::CBType>(cb.getType())) {
     return cb;
@@ -169,9 +168,9 @@ static FailureOr<Value> convertCBOperand(Value cb,
   }
 
   // Create the corresponding TTKernel CB type.
-  Type tkCbTy = ttk::CBType::get(ttlCbTy.getContext(),
-                                 ttlCbTy.getTotalElements(),
-                                 ttlCbTy.getElementType());
+  Type tkCbTy =
+      ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
+                       ttlCbTy.getElementType());
   auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, tkCbTy, cb);
   return cast.getResult(0);
 }
@@ -211,7 +210,8 @@ struct CBPushLowering : OpConversionPattern<CBPushOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    rewriter.create<ttk::CBPushBackOp>(loc, *convertedCb, adaptor.getNumPages());
+    rewriter.create<ttk::CBPushBackOp>(loc, *convertedCb,
+                                       adaptor.getNumPages());
     rewriter.eraseOp(op);
     return success();
   }
@@ -252,7 +252,8 @@ struct CBPopLowering : OpConversionPattern<CBPopOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    rewriter.create<ttk::CBPopFrontOp>(loc, *convertedCb, adaptor.getNumPages());
+    rewriter.create<ttk::CBPopFrontOp>(loc, *convertedCb,
+                                       adaptor.getNumPages());
     rewriter.eraseOp(op);
     return success();
   }
@@ -527,9 +528,10 @@ struct TTLConvertTTLToTTKernelPass
     // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
-    patterns.add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-                 CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
-                                                                &ctx);
+    patterns
+        .add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+             CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
+                                                            &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
     patterns.add<FuncKernelFinalize>(&ctx);
