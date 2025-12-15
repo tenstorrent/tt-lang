@@ -8,10 +8,10 @@
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"      // IWYU pragma: keep
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"       // IWYU pragma: keep
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h" // IWYU pragma: keep
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"         // IWYU pragma: keep
-#include "llvm/ADT/TypeSwitch.h"                    // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"          // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h"                     // IWYU pragma: keep
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -200,8 +200,8 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
   // Value tile type must match destination element type.
   if (valueTy != destElemTy) {
     return emitOpError() << "value type must match destination element type; "
-                         << "got value=" << valueTy << " dest element="
-                         << destElemTy;
+                         << "got value=" << valueTy
+                         << " dest element=" << destElemTy;
   }
 
   return success();
