@@ -42,8 +42,7 @@ static bool eraseDeadOpsIteration(ModuleOp mod) {
   return changed;
 }
 
-struct TTLEraseDeadOpsPass
-    : impl::TTLEraseDeadOpsBase<TTLEraseDeadOpsPass> {
+struct TTLEraseDeadOpsPass : impl::TTLEraseDeadOpsBase<TTLEraseDeadOpsPass> {
   void runOnOperation() override {
     ModuleOp mod = getOperation();
 

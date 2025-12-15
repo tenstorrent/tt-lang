@@ -13,18 +13,18 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttlang/Dialect/Utils/LayoutUtils.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -84,8 +84,8 @@ static Value convertCBToKernelType(Value cb,
         return cast.getInputs()[0];
       }
     }
-    return rewriter.create<UnrealizedConversionCastOp>(cb.getLoc(), targetType,
-                                                       cb)
+    return rewriter
+        .create<UnrealizedConversionCastOp>(cb.getLoc(), targetType, cb)
         .getResult(0);
   }
 
@@ -129,7 +129,6 @@ public:
     addTargetMaterialization(castMaterialization);
   }
 };
-
 
 struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -535,9 +534,10 @@ struct TTLConvertTTLToTTKernelPass
 
     RewritePatternSet patterns(&ctx);
     patterns.add<FuncCBArgsToGetArgVal>(typeConverter, &ctx);
-    patterns.add<CreateCBLowering, CopyLowering, WaitLowering,
-                 CBReserveLowering, CBPushLowering, CBWaitLowering,
-                 CBPopLowering>(typeConverter, &ctx);
+    patterns
+        .add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+             CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
+                                                            &ctx);
 
     FrozenRewritePatternSet frozen(std::move(patterns));
     std::string diagMessage;
