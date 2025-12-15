@@ -254,16 +254,11 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
   rewriter.create<ttk::NocAsyncReadTileOp>(loc, nocSrc, srcAccessor, nocDst);
 
   // Encode direction in the handle type (async-token-like design).
-  auto handleTy = typeConverter.convertType(
+  (void)typeConverter.convertType(
       TransferHandleType::get(rewriter.getContext(), TransferKind::read));
   // TODO(ttl): When TRID-aware TTKernel ops are available, pass a real TRID
   // instead of the zero placeholder here. Issue: #87.
   auto handle = makeZeroI32(loc, rewriter);
-  if (auto intTy = llvm::dyn_cast_if_present<IntegerType>(handleTy)) {
-    if (intTy != handle.getType()) {
-      handle = rewriter.create<arith::TruncIOp>(loc, intTy, handle);
-    }
-  }
   rewriter.replaceOp(op, handle);
   return success();
 }
@@ -286,16 +281,11 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
   rewriter.create<ttk::NocAsyncWriteTileOp>(
       loc, makeZeroI32(loc, rewriter), dstAccessor, makeZeroI32(loc, rewriter));
 
-  auto handleTy = typeConverter.convertType(
+  (void)typeConverter.convertType(
       TransferHandleType::get(rewriter.getContext(), TransferKind::write));
   // TODO(ttl): When TRID-aware TTKernel ops are available, pass a real TRID
   // instead of the zero placeholder here. Issue: #87.
   auto handle = makeZeroI32(loc, rewriter);
-  if (auto intTy = llvm::dyn_cast_if_present<IntegerType>(handleTy)) {
-    if (intTy != handle.getType()) {
-      handle = rewriter.create<arith::TruncIOp>(loc, intTy, handle);
-    }
-  }
   rewriter.replaceOp(op, handle);
   return success();
 }
