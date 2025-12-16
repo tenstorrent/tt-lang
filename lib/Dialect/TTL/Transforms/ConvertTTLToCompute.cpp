@@ -192,7 +192,8 @@ static LogicalResult assignDSTRegisters(func::FuncOp func, int64_t capacity) {
       return;
     }
 
-    // Check if this compute op would exceed DST capacity (for tiling decisions).
+    // Check if this compute op would exceed DST capacity (for tiling
+    // decisions).
     int64_t tiles = resultType.getNumElements();
     if (tiles > capacity) {
       // TODO: Emit diagnostic about needing to tile for DST capacity.

@@ -1,6 +1,6 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst-registers),canonicalize)' | FileCheck %s
 
-// Test: DST assignment assigns dst_idx attributes to tile ops. This is 
+// Test: DST assignment assigns dst_idx attributes to tile ops. This is
 // mostly a placeholder, there will be extensive tests after the DST pass is added.
 
 func.func @ok(%a: tensor<2x2xf32>, %b: tensor<2x2xf32>) -> tensor<2x2xf32> {

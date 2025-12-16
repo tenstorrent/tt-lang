@@ -24,6 +24,9 @@ namespace mlir::tt::ttl {
 /// Populate patterns for lowering TTL elementwise tensor ops to ttl.compute.
 void populateTTLToComputePatterns(RewritePatternSet &patterns);
 
+/// Populate patterns for lowering ttl.compute and ttl.tile_* ops to TTKernel.
+void populateTTLComputeToTTKernelPatterns(RewritePatternSet &patterns);
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_PASSES_H

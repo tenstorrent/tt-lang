@@ -19,8 +19,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef TTL_TILE_BINARY_TO_TTKERNEL
-#define TTL_TILE_BINARY_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)
+#ifndef TTL_TILE_BINARY_SFPU_TO_TTKERNEL
+#define TTL_TILE_BINARY_SFPU_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)
 #endif
 
 #ifndef TTL_TILE_UNARY_TO_TTKERNEL
@@ -28,16 +28,20 @@
 #endif
 
 //===----------------------------------------------------------------------===//
-// Binary Tile Operations -> TTKernel FPU/SFPU Ops
+// Binary Tile Operations -> TTKernel SFPU Ops
 //===----------------------------------------------------------------------===//
 
-// FPU binary ops (for ALU operations on full tiles)
-TTL_TILE_BINARY_TO_TTKERNEL(AddTileOp, AddTilesOp, AddTilesInitOp)
-TTL_TILE_BINARY_TO_TTKERNEL(SubTileOp, SubTilesOp, SubTilesInitOp)
-TTL_TILE_BINARY_TO_TTKERNEL(MulTileOp, MulTilesOp, MulTilesInitOp)
+// TODO: FPU ops (add_tiles, sub_tiles, mul_tiles) have different signature:
+// they take CB operands instead of DST indices. Need separate lowering pattern.
+// For MVP, use SFPU binary ops which operate on DST registers directly.
 
-// SFPU binary op (for special function operations)
-TTL_TILE_BINARY_TO_TTKERNEL(MaxTileOp, MaxTilesOp, MaxTilesInitOp)
+// SFPU binary ops with 3-arg form: DST[odst] = DST[src0] op DST[src1]
+TTL_TILE_BINARY_SFPU_TO_TTKERNEL(AddTileOp, AddBinaryTilesOp, AddBinaryTilesInitOp)
+TTL_TILE_BINARY_SFPU_TO_TTKERNEL(SubTileOp, SubBinaryTilesOp, SubBinaryTilesInitOp)
+TTL_TILE_BINARY_SFPU_TO_TTKERNEL(MulTileOp, MulBinaryTilesOp, MulBinaryTilesInitOp)
+
+// TODO: MaxTileOp has 2-arg in-place form: DST[dst0] = max(DST[dst0], DST[dst1])
+// Need separate pattern or conditional logic.
 
 //===----------------------------------------------------------------------===//
 // Unary Tile Operations -> TTKernel SFPU Ops
@@ -53,5 +57,5 @@ TTL_TILE_UNARY_TO_TTKERNEL(AbsTileOp, AbsTileOp, AbsTileInitOp)
 TTL_TILE_UNARY_TO_TTKERNEL(NegTileOp, NegativeTileOp, NegativeTileInitOp)
 TTL_TILE_UNARY_TO_TTKERNEL(ReluTileOp, ReluTileOp, ReluTileInitOp)
 
-#undef TTL_TILE_BINARY_TO_TTKERNEL
+#undef TTL_TILE_BINARY_SFPU_TO_TTKERNEL
 #undef TTL_TILE_UNARY_TO_TTKERNEL
