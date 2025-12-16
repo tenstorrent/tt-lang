@@ -113,13 +113,15 @@ class CopyTransaction:
         """
         Check if wait() can proceed without blocking.
 
-        In this simulation, copies complete immediately, so this always returns True.
+        Returns False before the first wait() call (copy not yet executed).
+        Returns True after wait() completes the instant transfer.
+
         In a real implementation, this would check if the async transfer has completed.
 
         Returns:
-            True if the copy is complete or can complete immediately
+            True if the copy transaction has completed
         """
-        return True
+        return self._completed
 
     @property
     def is_completed(self) -> bool:
