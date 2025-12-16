@@ -182,6 +182,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     This operation implements `TilingInterface` to support DST register capacity
     tiling via the transform dialect.
 
+    In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
+    `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
+    loop body are then converted to TTKernel ops after bufferization.
+
     Example:
     ```mlir
     %result = ttl.compute

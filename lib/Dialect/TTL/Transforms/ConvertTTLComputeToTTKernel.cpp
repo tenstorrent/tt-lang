@@ -3,16 +3,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //===----------------------------------------------------------------------===//
-// TTL Compute to TTKernel Lowering
+// TTL Tile Ops to TTKernel Lowering
 //===----------------------------------------------------------------------===//
 //
-// This file implements lowering of ttl.compute and ttl.tile_* operations to
-// TTKernel ops using DialectConversion framework (best practice for nested
-// regions). The approach:
+// This file contains patterns for lowering TTL tile operations (ttl.tile_add,
+// ttl.tile_exp, etc.) to TTKernel SFPU/FPU operations.
 //
-// 1. Use applyPartialConversion with ConversionTarget
-// 2. Process tile ops first (inside compute body), converting them in-place
-// 3. Then process ComputeOp, inlining the converted body between DST lifecycle
+// Current scope (this PR):
+// - Tile op patterns only (ttl.tile_* → ttkernel.*_tile)
+// - These patterns work on tensor types during development/testing
+//
+// Future work (TODO(#124)):
+// - Full pipeline integration where this pass runs AFTER bufferization
+// - DST lifecycle wrapper (acquire/commit/wait/release) around loop iterations
+// - copy_tile (CB → DST) before compute, pack_tile (DST → CB) after
+// - ttl.compute is lowered to scf.for loops BEFORE bufferization by
+//   ttl-lower-to-loops pass; this pass only converts the ttl.tile_* ops
 //
 // Following LLVM/MLIR best practices:
 // - Generic template patterns for tile op categories (like ArithToLLVM)
@@ -22,7 +28,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -34,37 +39,6 @@ namespace mlir::tt::ttl {
 namespace ttk = mlir::tt::ttkernel;
 
 namespace {
-
-//===----------------------------------------------------------------------===//
-// Helper Functions
-//===----------------------------------------------------------------------===//
-
-/// Get DST index for a value (block argument or op result).
-/// Returns the dst_idx attribute from the defining op, or looks up from the
-/// compute op's dst_idx_map for block arguments.
-static int64_t getDstIdxForValue(Value v) {
-  // For op results, get dst_idx from the defining op's attribute
-  if (Operation *defOp = v.getDefiningOp()) {
-    if (auto dstIdxAttr = defOp->getAttrOfType<IntegerAttr>("dst_idx")) {
-      return dstIdxAttr.getInt();
-    }
-    // Fallback: assume index 0 if not assigned yet
-    return 0;
-  }
-
-  // For block arguments, look up in parent compute op's dst_idx_map
-  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
-    Operation *parentOp = blockArg.getOwner()->getParentOp();
-    if (auto dstIdxMap =
-            parentOp->getAttrOfType<DenseI64ArrayAttr>("dst_idx_map")) {
-      return dstIdxMap[blockArg.getArgNumber()];
-    }
-    // Fallback: use block argument number as DST index
-    return blockArg.getArgNumber();
-  }
-
-  return 0;
-}
 
 //===----------------------------------------------------------------------===//
 // Generic Tile Op Lowering Templates (using ConversionPattern)
@@ -82,12 +56,10 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
     Location loc = op.getLoc();
 
     // Get dst_idx from attribute (assigned by ttl-assign-dst-registers pass)
+    // Default to 0 if not assigned yet (for testing/development)
     int64_t dstIdx = 0;
     if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
       dstIdx = dstIdxAttr.getInt();
-    } else {
-      // Unary ops operate in-place, so use input's DST index
-      dstIdx = getDstIdxForValue(op.getInput());
     }
 
     Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
@@ -105,6 +77,10 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
 /// Binary SFPU ops: DST[odst] = DST[src0] op DST[src1]
+///
+/// DST index assignment: The ttl-assign-dst-registers pass assigns dst_idx
+/// attributes to operands. For now, we use simple defaults: src0=0, src1=1,
+/// odst=0 (in-place on src0).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -114,12 +90,13 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Get DST indices for operands and result
-    int64_t src0Idx = getDstIdxForValue(op.getLhs());
-    int64_t src1Idx = getDstIdxForValue(op.getRhs());
+    // TODO(#124): Get DST indices from dst_idx attributes on operand-defining
+    // ops, assigned by ttl-assign-dst-registers pass. For now use defaults.
+    int64_t src0Idx = 0;
+    int64_t src1Idx = 1;
+    int64_t odstIdx = 0; // Result in-place on src0
 
-    // Result DST index from attribute, or default to src0 (in-place)
-    int64_t odstIdx = src0Idx;
+    // Override with dst_idx attribute if present (for result)
     if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
       odstIdx = dstIdxAttr.getInt();
     }
@@ -150,8 +127,10 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     Location loc = op.getLoc();
 
     // MaxTilesOp is in-place: DST[dst0] = max(DST[dst0], DST[dst1])
-    int64_t dst0Idx = getDstIdxForValue(op.getLhs());
-    int64_t dst1Idx = getDstIdxForValue(op.getRhs());
+    // TODO(#124): Get DST indices from dst_idx attributes. For now use
+    // defaults.
+    int64_t dst0Idx = 0;
+    int64_t dst1Idx = 1;
 
     Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
@@ -205,126 +184,6 @@ using MulTileLowering =
 using MaxTileLowering =
     TTLTileMaxToTTKernel<MaxTileOp, ttk::MaxTilesInitOp, ttk::MaxTilesOp>;
 
-//===----------------------------------------------------------------------===//
-// ComputeOp Lowering
-//===----------------------------------------------------------------------===//
-
-/// Lower ttl.compute to TTKernel DST register lifecycle operations.
-/// The body operations (tile ops) should already be converted to TTKernel
-/// by the tile op patterns before this pattern runs.
-struct LowerComputeOp : OpConversionPattern<ComputeOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(ComputeOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Block &bodyBlock = op.getBody().front();
-
-    // Check that body has a terminator
-    if (!bodyBlock.mightHaveTerminator()) {
-      return rewriter.notifyMatchFailure(op, "body block has no terminator");
-    }
-
-    auto yieldOp = dyn_cast<YieldOp>(bodyBlock.getTerminator());
-    if (!yieldOp) {
-      return rewriter.notifyMatchFailure(op, "terminator is not YieldOp");
-    }
-
-    // 1. Acquire DST registers
-    rewriter.create<ttk::TileRegsAcquireOp>(loc);
-
-    // 2. Load input tiles from CBs to DST registers
-    // Only emit copy_tile ops for CB-typed inputs; skip for tensor inputs.
-    // TODO(#122): When tensors are converted to CBs earlier in pipeline, remove
-    // check.
-    for (auto [idx, input] : llvm::enumerate(adaptor.getInputs())) {
-      // Skip non-CB inputs (tensors) - copy_tile requires CB type
-      if (!llvm::isa<ttk::CBType>(input.getType())) {
-        continue;
-      }
-
-      int64_t dstIdx = idx;
-      if (auto dstIdxMap =
-              op->getAttrOfType<DenseI64ArrayAttr>("dst_idx_map")) {
-        if (idx < static_cast<size_t>(dstIdxMap.size())) {
-          dstIdx = dstIdxMap[idx];
-        }
-      }
-
-      Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
-      Value cbIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-
-      rewriter.create<ttk::CopyTileInitOp>(loc, input);
-      rewriter.create<ttk::CopyTileOp>(loc, input, cbIdx, dstIdxVal);
-    }
-
-    // 3. Inline the body operations (which should now be TTKernel ops)
-    // Create mapping from block args to adapted inputs
-    IRMapping mapping;
-    for (auto [blockArg, input] : llvm::zip(
-             bodyBlock.getArguments().take_front(adaptor.getInputs().size()),
-             adaptor.getInputs())) {
-      mapping.map(blockArg, input);
-    }
-    // Map output block args
-    for (auto [blockArg, output] : llvm::zip(
-             bodyBlock.getArguments().drop_front(adaptor.getInputs().size()),
-             adaptor.getOutputs())) {
-      mapping.map(blockArg, output);
-    }
-
-    // Clone body ops (excluding terminator) with mapping
-    for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      rewriter.clone(bodyOp, mapping);
-    }
-
-    // 4. Commit and wait for compute
-    rewriter.create<ttk::TileRegsCommitOp>(loc);
-    rewriter.create<ttk::TileRegsWaitOp>(loc);
-
-    // 5. Pack results from DST to output CBs
-    // Only emit pack_tile ops for CB-typed outputs; skip for tensor outputs.
-    for (auto [idx, yieldVal] : llvm::enumerate(yieldOp.getOperands())) {
-      Value output = adaptor.getOutputs()[idx];
-      // Skip non-CB outputs (tensors) - pack_tile requires CB type
-      if (!llvm::isa<ttk::CBType>(output.getType())) {
-        continue;
-      }
-
-      Value remappedResult = mapping.lookupOrDefault(yieldVal);
-      int64_t dstIdx = getDstIdxForValue(remappedResult);
-      Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
-      Value cbIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-
-      rewriter.create<ttk::PackTileOp>(loc, dstIdxVal, output, cbIdx,
-                                       rewriter.getBoolAttr(true));
-    }
-
-    // 6. Release DST registers
-    rewriter.create<ttk::TileRegsReleaseOp>(loc);
-
-    // 7. Replace compute op results with output values
-    rewriter.replaceOp(op, adaptor.getOutputs());
-    return success();
-  }
-};
-
-/// Lower YieldOp - should only be encountered after ComputeOp lowering has
-/// already processed it (orphaned yields in invalid IR).
-struct LowerYieldOp : OpConversionPattern<YieldOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(YieldOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    // YieldOp should have been handled during ComputeOp lowering.
-    // If we encounter one here, it's orphaned and should be erased.
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -334,23 +193,17 @@ struct LowerYieldOp : OpConversionPattern<YieldOp> {
 void populateTTLComputeToTTKernelPatterns(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
-  // Tile op lowerings first (higher benefit ensures they run before ComputeOp)
-  // This ensures the body operations are converted before ComputeOp inlines
-  // them
+  // Tile op lowerings (ttl.tile_* → ttkernel.*_tile)
   patterns.add<
       // Unary ops
       ExpTileLowering, LogTileLowering, SqrtTileLowering, RsqrtTileLowering,
       TanhTileLowering, SigmoidTileLowering, AbsTileLowering, NegTileLowering,
       ReluTileLowering,
       // Binary ops
-      AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering>(
-      ctx, /*benefit=*/20);
+      AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering>(ctx);
 
-  // ComputeOp lowering (processes after tile ops are converted)
-  patterns.add<LowerComputeOp>(ctx, /*benefit=*/10);
-
-  // YieldOp cleanup (lowest priority)
-  patterns.add<LowerYieldOp>(ctx, /*benefit=*/1);
+  // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
+  // (acquire/commit/wait/release + copy_tile/pack_tile)
 }
 
 } // namespace mlir::tt::ttl
