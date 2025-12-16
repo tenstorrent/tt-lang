@@ -157,6 +157,92 @@ struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// CB synchronization operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+// Trace through unrealized casts to get the original TTL CB type.
+static CircularBufferType getTTLCBType(Value cb) {
+  if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+    return ttlCbTy;
+  }
+  if (auto castOp = cb.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (castOp.getInputs().size() == 1) {
+      if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(
+              castOp.getInputs()[0].getType())) {
+        return ttlCbTy;
+      }
+    }
+  }
+  return nullptr;
+}
+
+static FailureOr<Value>
+convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
+  if (mlir::isa<ttk::CBType>(cb.getType())) {
+    return cb;
+  }
+  auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
+  if (!ttlCbTy) {
+    return failure();
+  }
+  Type tkCbTy =
+      ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
+                       ttlCbTy.getElementType());
+  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, tkCbTy, cb);
+  return cast.getResult(0);
+}
+
+// num_pages = product of CB shape dimensions (elements per block).
+static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
+                             Location loc) {
+  auto ttlCbTy = getTTLCBType(cb);
+  int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
+  return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);
+}
+
+template <typename SourceOp, typename TargetOp, bool HasResult>
+struct CBOpLowering : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value originalCb = op.getCb();
+    auto ttlCbTy = getTTLCBType(originalCb);
+    if (!ttlCbTy) {
+      return rewriter.notifyMatchFailure(op, "failed to get TTL CB type");
+    }
+
+    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    if (failed(convertedCb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    Value numPages = computeNumPages(originalCb, rewriter, loc);
+    rewriter.create<TargetOp>(loc, *convertedCb, numPages);
+
+    if constexpr (HasResult) {
+      auto viewCast = rewriter.create<UnrealizedConversionCastOp>(
+          loc, op.getResult().getType(), *convertedCb);
+      rewriter.replaceOp(op, viewCast.getResult(0));
+    } else {
+      rewriter.eraseOp(op);
+    }
+    return success();
+  }
+};
+
+using CBReserveLowering =
+    CBOpLowering<CBReserveOp, ttk::CBReserveBackOp, /*HasResult=*/true>;
+using CBPushLowering =
+    CBOpLowering<CBPushOp, ttk::CBPushBackOp, /*HasResult=*/false>;
+using CBWaitLowering =
+    CBOpLowering<CBWaitOp, ttk::CBWaitFrontOp, /*HasResult=*/true>;
+using CBPopLowering =
+    CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
+
 enum class CopySourceKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 enum class CopyDestKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 
@@ -537,8 +623,10 @@ struct TTLConvertTTLToTTKernelPass
     // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
-    patterns.add<CreateCBLowering, CopyLowering, WaitLowering>(typeConverter,
-                                                               &ctx);
+    patterns
+        .add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+             CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
+                                                            &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
 
