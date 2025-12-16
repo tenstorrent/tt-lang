@@ -219,15 +219,6 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
     // Return the number of outputs.
     unsigned getNumOutputs() { return getOutputs().size(); }
-
-    // Return the iteration space rank.
-    unsigned getNumLoops();
-
-    // Return the block arguments corresponding to inputs.
-    Block::BlockArgListType getInputBlockArguments();
-
-    // Return the block arguments corresponding to outputs.
-    Block::BlockArgListType getOutputBlockArguments();
   }];
 }
 
