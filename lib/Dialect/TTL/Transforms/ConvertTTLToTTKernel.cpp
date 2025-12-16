@@ -64,11 +64,9 @@ public:
       }
       return t;
     });
-    // Transfer handle: map to an i32 (TRID placeholder until TTKernel TRID ops
-    // are wired through).
-    addConversion([](TransferHandleType t) -> Type {
-      return IntegerType::get(t.getContext(), 32);
-    });
+    // Preserve transfer handle types so ttl.wait can inspect transfer
+    // direction. TRID-aware lowering will be added later.
+    addConversion([](TransferHandleType t) -> Type { return t; });
     // Identity fallback must be last.
     addConversion([](Type t) { return t; });
 
@@ -569,15 +567,16 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
     }
 
-    // Lower ttl.compute and tile ops to TTKernel ops using DialectConversion.
-    // This properly handles nested regions (tile ops inside compute body).
+    // Lower tile ops to TTKernel ops using DialectConversion. ttl.compute is
+    // kept legal here because full compute lowering happens after loops and
+    // bufferization in a later stage.
     ConversionTarget computeTarget(ctx);
     // TTKernel ops are legal (target dialect)
     computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
     // Arith ops are legal (used for index constants)
     computeTarget.addLegalDialect<arith::ArithDialect>();
-    // Mark compute-related TTL ops as illegal (must be converted)
-    computeTarget.addIllegalOp<ComputeOp, YieldOp>();
+    // Keep compute ops legal (tile-only lowering here).
+    computeTarget.addLegalOp<ComputeOp, YieldOp>();
     computeTarget.addIllegalOp<
         // Binary tile ops
         AddTileOp, SubTileOp, MulTileOp, MaxTileOp,

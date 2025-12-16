@@ -40,6 +40,20 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+/// Get dst_idx for a value (op result or block argument). Defaults to 0.
+/// TODO(#120): Remove after implementing proper DST assignment pass.
+static int64_t getDstIdxForValue(Value v) {
+  if (Operation *defOp = v.getDefiningOp()) {
+    if (auto dstIdxAttr = defOp->getAttrOfType<IntegerAttr>("dst_idx")) {
+      return dstIdxAttr.getInt();
+    }
+  }
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+    return blockArg.getArgNumber();
+  }
+  return 0;
+}
+
 //===----------------------------------------------------------------------===//
 // Generic Tile Op Lowering Templates (using ConversionPattern)
 //===----------------------------------------------------------------------===//
@@ -90,13 +104,9 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // TODO(#124): Get DST indices from dst_idx attributes on operand-defining
-    // ops, assigned by ttl-assign-dst-registers pass. For now use defaults.
-    int64_t src0Idx = 0;
-    int64_t src1Idx = 1;
-    int64_t odstIdx = 0; // Result in-place on src0
-
-    // Override with dst_idx attribute if present (for result)
+    int64_t src0Idx = getDstIdxForValue(adaptor.getLhs());
+    int64_t src1Idx = getDstIdxForValue(adaptor.getRhs());
+    int64_t odstIdx = src0Idx;
     if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
       odstIdx = dstIdxAttr.getInt();
     }
@@ -126,11 +136,8 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // MaxTilesOp is in-place: DST[dst0] = max(DST[dst0], DST[dst1])
-    // TODO(#124): Get DST indices from dst_idx attributes. For now use
-    // defaults.
-    int64_t dst0Idx = 0;
-    int64_t dst1Idx = 1;
+    int64_t dst0Idx = getDstIdxForValue(adaptor.getLhs());
+    int64_t dst1Idx = getDstIdxForValue(adaptor.getRhs());
 
     Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
