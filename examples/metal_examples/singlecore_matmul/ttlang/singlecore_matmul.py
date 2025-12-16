@@ -2,12 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # up to tt-lang spec, not intended to compile or run currently
+import sys
+from pathlib import Path
 import ttnn
 import pytest
 import torch
 
 from ttl import Program, make_circular_buffer_like, copy
-from metal_examples.utils import assert_with_ulp
+
+# Add the python directory to path and import directly from correctness module
+sys.path.insert(
+    0,
+    str(
+        Path(__file__).parent.parent.parent.parent.parent
+        / "python"
+        / "ttlang"
+        / "utils"
+    ),
+)
+from correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))

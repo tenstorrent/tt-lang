@@ -2,19 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # up to tt-lang spec, not intended to compile or run currently
+import sys
+from pathlib import Path
 import ttnn
 import pytest
 import torch
 
 from ttl import Program, make_circular_buffer_like, copy
-from metal_examples.utils import assert_with_ulp
+
+# Add the python directory to path and import directly from correctness module
+sys.path.insert(
+    0,
+    str(
+        Path(__file__).parent.parent.parent.parent.parent
+        / "python"
+        / "ttlang"
+        / "utils"
+    ),
+)
+from correctness import assert_with_ulp
+from block_allocation import split_work_to_cores
 
 
-def get_number_of_cores(core_grid):
+def get_number_of_cores(grid_range):
     total_cores = 0
-    for core_range in core_grid.ranges():
-        x_range = core_range.end.x - core_range.start.x + 1
-        y_range = core_range.end.y - core_range.start.y + 1
+    for start, end in grid_range:
+        x_range = end[0] - start[0] + 1
+        y_range = end[1] - start[1] + 1
         total_cores += x_range * y_range
     return total_cores
 
@@ -37,14 +51,11 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out, shape=(1, 1), buffer_factor=buffering_factor
     )
 
-    x_size, y_size = ttl.grid_size(dims=2)
-    upper_bound_core = ttnn.CoreCoord(x_size - 1, y_size - 1)
-    core_grid = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)]
-    )
     print(f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}")
     (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-        ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
+        split_work_to_cores(
+            ttl.grid_size(dims=2), num_output_tiles_total, row_wise=True
+        )
     )
     print(
         f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
