@@ -21,10 +21,8 @@
 //     noc_async_read_barrier()
 //     noc_async_read_barrier()
 //
-// Future optimization: Custom loop fusion pass could merge loops with identical bounds
-// to batch both DMAs in the same tile loop body. MLIR's built-in --affine-loop-fusion
-// only works for affine dialect loops, and --scf-parallel-loop-fusion only works for
-// scf.parallel loops. We must implement custom fusion for this.
+// Note: The -ttkernel-fuse-sibling-tile-loops pass fuses adjacent loops with identical bounds
+// such as the above and has its own separate tests.
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>

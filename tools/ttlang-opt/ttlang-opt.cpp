@@ -9,6 +9,7 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#include "ttlang/Dialect/TTKernel/Passes.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
@@ -17,6 +18,7 @@
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
   mlir::tt::registerAllPasses();
+  mlir::tt::ttkernel::registerTTKernelPasses();
   mlir::tt::ttl::registerTTLPasses();
   mlir::tt::ttl::registerTTLPipelines();
 

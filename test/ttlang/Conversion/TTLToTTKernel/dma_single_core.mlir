@@ -1,4 +1,5 @@
 // RUN: ttlang-opt --convert-ttl-to-ttkernel --canonicalize -cse --split-input-file %s | FileCheck %s --check-prefix=TTKERNEL
+// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-fuse-sibling-tile-loops --canonicalize -cse --split-input-file %s | FileCheck %s --check-prefix=FUSED
 // Summary: MVP DMA lowering tests for tensor<->CB copies (no pipes).
 
 #dram = #ttnn.buffer_type<dram>
@@ -361,6 +362,77 @@ module {
     %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<96x64xf32, #layout>) -> !ttl.transfer_handle<write>
     ttl.wait %xf : !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Batched multi-tile reads with identical tile grids (2x2).
+// Without fusion: generates two separate nested tile loops, each with its own offset computation.
+// With fusion: merges into a single nested tile loop with both DMAs sharing the offset computation.
+//
+// TTKERNEL-LABEL: func.func @dma_batched_multi_tile_read
+// TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : index
+// TTKERNEL-DAG: %[[C2:.*]] = arith.constant 2 : index
+// TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL: %[[ACC1:.*]] = ttkernel.TensorAccessor({{.*}}, %[[C0_I32]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: %[[ACC2:.*]] = ttkernel.TensorAccessor({{.*}}, %[[C0_I32]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// First tile loop nest for first copy
+// TTKERNEL: scf.for %[[TY1:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// TTKERNEL-NEXT:   scf.for %[[TX1:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// TTKERNEL-NEXT:     %[[OFF1_Y:.*]] = arith.muli %[[TY1]], %[[C2]] : index
+// TTKERNEL-NEXT:     %[[OFF1:.*]] = arith.addi %[[OFF1_Y]], %[[TX1]] : index
+// TTKERNEL-NEXT:     %[[OFF1_I32:.*]] = arith.index_cast %[[OFF1]] : index to i32
+// TTKERNEL-NEXT:     ttkernel.noc_async_read_tile(%[[OFF1_I32]], %[[ACC2]], %[[C0_I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL-NEXT:   } {ttkernel.tile_loop}
+// TTKERNEL-NEXT: } {ttkernel.tile_loop}
+// Second tile loop nest for second copy (separate from first)
+// TTKERNEL: scf.for %[[TY2:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// TTKERNEL-NEXT:   scf.for %[[TX2:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// TTKERNEL-NEXT:     %[[OFF2_Y:.*]] = arith.muli %[[TY2]], %[[C2]] : index
+// TTKERNEL-NEXT:     %[[OFF2:.*]] = arith.addi %[[OFF2_Y]], %[[TX2]] : index
+// TTKERNEL-NEXT:     %[[OFF2_I32:.*]] = arith.index_cast %[[OFF2]] : index to i32
+// TTKERNEL-NEXT:     ttkernel.noc_async_read_tile(%[[OFF2_I32]], %[[ACC1]], %[[C0_I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL-NEXT:   } {ttkernel.tile_loop}
+// TTKERNEL-NEXT: } {ttkernel.tile_loop}
+// TTKERNEL: ttkernel.noc_async_read_barrier
+//
+// FUSED-LABEL: func.func @dma_batched_multi_tile_read
+// FUSED-DAG: %[[C1:.*]] = arith.constant 1 : index
+// FUSED-DAG: %[[C2:.*]] = arith.constant 2 : index
+// FUSED-DAG: %[[C0:.*]] = arith.constant 0 : index
+// FUSED-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// FUSED: %[[ACC1:.*]] = ttkernel.TensorAccessor({{.*}}, %[[C0_I32]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// FUSED: %[[ACC2:.*]] = ttkernel.TensorAccessor({{.*}}, %[[C0_I32]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// Single fused tile loop nest with both DMAs sharing offset computation
+// FUSED: scf.for %[[TY:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// FUSED-NEXT:   scf.for %[[TX:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// FUSED-NEXT:     %[[OFF_Y:.*]] = arith.muli %[[TY]], %[[C2]] : index
+// FUSED-NEXT:     %[[OFF:.*]] = arith.addi %[[OFF_Y]], %[[TX]] : index
+// FUSED-NEXT:     %[[OFF_I32:.*]] = arith.index_cast %[[OFF]] : index to i32
+// Both DMAs use the same offset in the fused loop body
+// FUSED-NEXT:     ttkernel.noc_async_read_tile(%[[OFF_I32]], %[[ACC2]], %[[C0_I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// FUSED-NEXT:     ttkernel.noc_async_read_tile(%[[OFF_I32]], %[[ACC1]], %[[C0_I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// FUSED-NEXT:   }
+// FUSED-NEXT: }
+// FUSED: ttkernel.noc_async_read_barrier
+module {
+  func.func @dma_batched_multi_tile_read(%arg0: tensor<64x64xf32, #layout>, %arg1: tensor<64x64xf32, #layout>)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb0 = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %cb1 = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+
+    // Batched multi-tile copies: both 64x64 tensors (2x2 tiles each)
+    %xf0 = ttl.copy %arg0, %cb0 : (tensor<64x64xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf1 = ttl.copy %arg1, %cb1 : (tensor<64x64xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+
+    ttl.wait %xf0 : !ttl.transfer_handle<read>
+    ttl.wait %xf1 : !ttl.transfer_handle<read>
     func.return
   }
 }
