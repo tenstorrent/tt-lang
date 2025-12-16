@@ -177,6 +177,26 @@ struct LowerRelu : OpRewritePattern<ReluOp> {
   }
 };
 
+/// Sigmoid requires custom lowering: 1 / (1 + exp(-x)).
+struct LowerSigmoid : OpRewritePattern<SigmoidOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SigmoidOp op,
+                                PatternRewriter &rewriter) const override {
+    return buildUnaryGenericCustom(
+        op.getOperation(), rewriter, op.getInput(),
+        [](OpBuilder &b, Location loc, Value v) {
+          auto one = b.create<arith::ConstantOp>(
+              loc, v.getType(),
+              b.getFloatAttr(cast<FloatType>(v.getType()), 1.0));
+          auto negV = b.create<arith::NegFOp>(loc, v);
+          auto expNegV = b.create<math::ExpOp>(loc, negV);
+          auto onePlusExp = b.create<arith::AddFOp>(loc, one, expNegV);
+          return b.create<arith::DivFOp>(loc, one, onePlusExp);
+        });
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // DST Register Assignment
 //===----------------------------------------------------------------------===//

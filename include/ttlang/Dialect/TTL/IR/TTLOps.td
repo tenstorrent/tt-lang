@@ -8,6 +8,10 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/TilingInterface.td"
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/OpBase.td"
 include "mlir/Dialect/Linalg/IR/LinalgBase.td"
 
@@ -152,10 +156,20 @@ class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
       "$input attr-dict `:` type($input) `->` type($result)";
 }
 
+//===----------------------------------------------------------------------===//
+// Binary Elementwise Operations
+//===----------------------------------------------------------------------===//
+
 def TTL_AddOp : TTL_ElementWiseBinary<"add"> {
   let description = [{
     Elementwise addition on tensors. Lowered via a shared elementwise pathway
     to linalg.generic, tiled for DST capacity, then to TTKernel tile kernels.
+  }];
+}
+
+def TTL_SubOp : TTL_ElementWiseBinary<"sub"> {
+  let description = [{
+    Elementwise subtraction on tensors using the shared elementwise pathway.
   }];
 }
 
@@ -165,6 +179,16 @@ def TTL_MulOp : TTL_ElementWiseBinary<"mul"> {
   }];
 }
 
+def TTL_MaxOp : TTL_ElementWiseBinary<"max"> {
+  let description = [{
+    Elementwise maximum of two tensors using the shared elementwise pathway.
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Unary Elementwise Operations (SFPU Path)
+//===----------------------------------------------------------------------===//
+
 def TTL_ExpOp : TTL_ElementWiseUnary<"exp"> {
   let description = [{
     Elementwise exponential using the SFPU path in TTKernel. Lowered through
@@ -172,11 +196,213 @@ def TTL_ExpOp : TTL_ElementWiseUnary<"exp"> {
   }];
 }
 
+def TTL_LogOp : TTL_ElementWiseUnary<"log"> {
+  let description = [{
+    Elementwise natural logarithm using the SFPU path in TTKernel.
+  }];
+}
+
+def TTL_SqrtOp : TTL_ElementWiseUnary<"sqrt"> {
+  let description = [{
+    Elementwise square root using the SFPU path in TTKernel.
+  }];
+}
+
+def TTL_RsqrtOp : TTL_ElementWiseUnary<"rsqrt"> {
+  let description = [{
+    Elementwise reciprocal square root (1/sqrt(x)) using the SFPU path.
+  }];
+}
+
+def TTL_TanhOp : TTL_ElementWiseUnary<"tanh"> {
+  let description = [{
+    Elementwise hyperbolic tangent using the SFPU path in TTKernel.
+  }];
+}
+
+def TTL_SigmoidOp : TTL_ElementWiseUnary<"sigmoid"> {
+  let description = [{
+    Elementwise sigmoid (1/(1+exp(-x))) using the SFPU path in TTKernel.
+  }];
+}
+
+def TTL_NegOp : TTL_ElementWiseUnary<"neg"> {
+  let description = [{
+    Elementwise negation using the shared elementwise pathway.
+  }];
+}
+
+def TTL_AbsOp : TTL_ElementWiseUnary<"abs"> {
+  let description = [{
+    Elementwise absolute value using the shared elementwise pathway.
+  }];
+}
+
 def TTL_ReluOp : TTL_ElementWiseUnary<"relu"> {
   let description = [{
-    Elementwise ReLU using the SFPU path in TTKernel. Lowered through the
-    shared elementwise pipeline.
+    Elementwise ReLU (max(x, 0)) using the SFPU path in TTKernel. Lowered
+    through the shared elementwise pipeline.
   }];
+}
+
+//===----------------------------------------------------------------------===//
+// Structured Compute Operation (ttl.compute)
+//===----------------------------------------------------------------------===//
+
+def TTL_ComputeOp : TTL_Op<"compute", [
+    AttrSizedOperandSegments,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    DeclareOpInterfaceMethods<TilingInterface,
+      ["getLoopIteratorTypes", "getIterationDomain", "getTiledImplementation",
+       "getResultTilePosition"]>,
+    DeclareOpInterfaceMethods<DestinationStyleOpInterface>
+  ]> {
+  let summary = "Structured tile-level compute operation";
+  let description = [{
+    `ttl.compute` is a structured operation similar to `linalg.generic` but with
+    tile-typed block arguments. It iterates over a grid of tiles and applies
+    the body computation to each tile position.
+
+    The operation takes tensors of tiles as inputs and outputs. The block
+    arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
+    the input/output tensors at each iteration point.
+
+    This operation implements `TilingInterface` to support DST register capacity
+    tiling via the transform dialect.
+
+    Example:
+    ```mlir
+    %result = ttl.compute
+        ins(%a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>,
+                     tensor<4x4x!ttcore.tile<32x32, f32>>)
+        outs(%init : tensor<4x4x!ttcore.tile<32x32, f32>>) {
+      ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+           %b_tile: !ttcore.tile<32x32, f32>,
+           %out_tile: !ttcore.tile<32x32, f32>):
+        %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+        ttl.yield %sum : !ttcore.tile<32x32, f32>
+    } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+    ```
+  }];
+
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$inputs,
+    Variadic<AnyRankedTensor>:$outputs,
+    AffineMapArrayAttr:$indexing_maps,
+    ArrayAttr:$iterator_types
+  );
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    // Return the number of inputs.
+    unsigned getNumInputs() { return getInputs().size(); }
+
+    // Return the number of outputs.
+    unsigned getNumOutputs() { return getOutputs().size(); }
+
+    // Return the iteration space rank.
+    unsigned getNumLoops();
+
+    // Return the block arguments corresponding to inputs.
+    Block::BlockArgListType getInputBlockArguments();
+
+    // Return the block arguments corresponding to outputs.
+    Block::BlockArgListType getOutputBlockArguments();
+  }];
+}
+
+def TTL_YieldOp : TTL_Op<"yield", [Pure, ReturnLike, Terminator,
+    ParentOneOf<["ComputeOp"]>]> {
+  let summary = "Yield values from ttl.compute region";
+  let description = [{
+    `ttl.yield` terminates the body of `ttl.compute` and yields the computed
+    tile values to be written to the output tensors.
+  }];
+  let arguments = (ins Variadic<AnyType>:$values);
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// Tile-Level Operations (for use inside ttl.compute body)
+//===----------------------------------------------------------------------===//
+
+// Base class for tile operations
+class TTL_TileOp<string mnemonic, list<Trait> traits = []>
+    : TTL_Op<mnemonic, !listconcat(traits, [Pure])>;
+
+class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+  let summary = "Binary tile operation";
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+  let summary = "Unary tile operation";
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input attr-dict `:` type($result)";
+}
+
+// Binary tile operations
+def TTL_TileAddOp : TTL_TileBinaryOp<"tile_add"> {
+  let description = [{ Tile-level addition. Maps to ttkernel.add_tiles. }];
+}
+
+def TTL_TileSubOp : TTL_TileBinaryOp<"tile_sub"> {
+  let description = [{ Tile-level subtraction. Maps to ttkernel.sub_tiles. }];
+}
+
+def TTL_TileMulOp : TTL_TileBinaryOp<"tile_mul"> {
+  let description = [{ Tile-level multiplication. Maps to ttkernel.mul_tiles. }];
+}
+
+def TTL_TileMaxOp : TTL_TileBinaryOp<"tile_max"> {
+  let description = [{ Tile-level maximum. }];
+}
+
+// Unary tile operations (SFPU path)
+def TTL_TileExpOp : TTL_TileUnaryOp<"tile_exp"> {
+  let description = [{ Tile-level exponential. Maps to ttkernel.exp_tile. }];
+}
+
+def TTL_TileLogOp : TTL_TileUnaryOp<"tile_log"> {
+  let description = [{ Tile-level natural logarithm. Maps to ttkernel.log_tile. }];
+}
+
+def TTL_TileSqrtOp : TTL_TileUnaryOp<"tile_sqrt"> {
+  let description = [{ Tile-level square root. Maps to ttkernel.sqrt_tile. }];
+}
+
+def TTL_TileRsqrtOp : TTL_TileUnaryOp<"tile_rsqrt"> {
+  let description = [{ Tile-level reciprocal square root. }];
+}
+
+def TTL_TileTanhOp : TTL_TileUnaryOp<"tile_tanh"> {
+  let description = [{ Tile-level hyperbolic tangent. Maps to ttkernel.tanh_tile. }];
+}
+
+def TTL_TileSigmoidOp : TTL_TileUnaryOp<"tile_sigmoid"> {
+  let description = [{ Tile-level sigmoid. }];
+}
+
+def TTL_TileNegOp : TTL_TileUnaryOp<"tile_neg"> {
+  let description = [{ Tile-level negation. }];
+}
+
+def TTL_TileAbsOp : TTL_TileUnaryOp<"tile_abs"> {
+  let description = [{ Tile-level absolute value. }];
+}
+
+def TTL_TileReluOp : TTL_TileUnaryOp<"tile_relu"> {
+  let description = [{ Tile-level ReLU. Maps to ttkernel.relu_tile. }];
 }
 
 // DST register markers (analysis only; removed by lowering passes).
