@@ -367,7 +367,7 @@ defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile",
 //     ttl.yield %act : f32
 //   }
 //
-// TODO: Implement DSTAllocationStrategy interface with pluggable algorithms
-// (linear-scan, graph-coloring, greedy).
+// TODO(#120): Implement DSTAllocationStrategy interface with pluggable
+// algorithms (linear-scan, graph-coloring, greedy).
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

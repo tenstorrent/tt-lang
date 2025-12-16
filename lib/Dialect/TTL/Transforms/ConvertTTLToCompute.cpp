@@ -182,8 +182,8 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
 
 /// Assign DST register indices to tile ops in the compute body.
 /// Uses a simple sequential allocation strategy as a placeholder.
-/// TODO: Implement DSTAllocationStrategy interface with pluggable algorithms
-/// (linear-scan, graph-coloring, greedy).
+/// TODO(#120): Implement DSTAllocationStrategy interface with pluggable
+/// algorithms (linear-scan, graph-coloring, greedy).
 static LogicalResult assignDSTRegisters(func::FuncOp func, int64_t capacity) {
   bool error = false;
   func.walk([&](ComputeOp op) {
@@ -196,14 +196,15 @@ static LogicalResult assignDSTRegisters(func::FuncOp func, int64_t capacity) {
     // decisions).
     int64_t tiles = resultType.getNumElements();
     if (tiles > capacity) {
-      // TODO: Emit diagnostic about needing to tile for DST capacity.
+      // TODO(#120): Emit diagnostic about needing to tile for DST capacity.
       error = true;
     }
 
     // Simple sequential DST index assignment for tile ops in the body.
     // For now, all tile op results go to DST index 0 (in-place computation).
     // Binary ops load both inputs to DST indices 0 and 1.
-    // TODO: Use liveness analysis and graph coloring for optimal allocation.
+    // TODO(#120): Use liveness analysis and graph coloring for optimal
+    // allocation.
     op.getBody().walk([&](Operation *bodyOp) {
       if (bodyOp->getNumResults() > 0 && !bodyOp->hasAttr("dst_idx")) {
         StringRef opName = bodyOp->getName().getStringRef();

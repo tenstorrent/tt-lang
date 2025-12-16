@@ -236,7 +236,7 @@ struct LowerComputeOp : OpConversionPattern<ComputeOp> {
 
     // 2. Load input tiles from CBs to DST registers
     // Only emit copy_tile ops for CB-typed inputs; skip for tensor inputs.
-    // TODO: When tensors are converted to CBs earlier in pipeline, remove
+    // TODO(#122): When tensors are converted to CBs earlier in pipeline, remove
     // check.
     for (auto [idx, input] : llvm::enumerate(adaptor.getInputs())) {
       // Skip non-CB inputs (tensors) - copy_tile requires CB type
