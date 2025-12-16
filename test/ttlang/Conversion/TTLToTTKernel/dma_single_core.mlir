@@ -67,8 +67,9 @@ module {
 // TTKERNEL-DAG: %[[SRC1_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC1_ARGS]], %[[C0]], %[[C128]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC1_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL: ttkernel.noc_async_read_tile(%[[C0]], %[[SRC0_ACC]], %[[C0]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// Consecutive barriers are deduplicated to a single barrier.
 // TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
-// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
   func.func @dma_batched(%t0: tensor<32x32xf32, #layout>, %t1: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -166,11 +167,12 @@ module {
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// Corner case: waiting twice on the same transfer handle is allowed.
+// Corner case: waiting twice on the same transfer handle is allowed, but
+// consecutive barriers are deduplicated to a single barrier.
 //
 // TTKERNEL-LABEL: func.func @dma_single_tile_double_wait
 // TTKERNEL:      ttkernel.noc_async_read_barrier() : () -> ()
-// TTKERNEL-NEXT: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
   func.func @dma_single_tile_double_wait(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

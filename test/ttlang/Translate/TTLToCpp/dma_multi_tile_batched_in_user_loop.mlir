@@ -73,8 +73,7 @@
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 
-// Two separate barriers (one for each copy)
-// CHECK-NEXT:    noc_async_read_barrier();
+// Consecutive barriers deduplicated to single barrier.
 // CHECK-NEXT:    noc_async_read_barrier();
 // CHECK-NEXT:  }
 // CHECK-NEXT:  return;

@@ -4,6 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -250,10 +252,21 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
 static std::pair<int64_t, int64_t>
 getTileGridShape(const RankedTensorType &tensorTy) {
   auto dims = tensorTy.getShape();
+  assert(dims.size() == 2 && "only rank-2 tensors supported currently");
   auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
   int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
   int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
   return {tilesY, tilesX};
+}
+
+/// Extract tile grid shape from a Value if it's a static rank-2 tensor.
+/// Returns {1, 1} for non-tensor types or dynamic shapes.
+static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
+  auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
+  if (tensorTy && tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
+    return getTileGridShape(tensorTy);
+  }
+  return {1, 1};
 }
 
 // Emit a tile loop (or single tile body) with proper offset computation.
@@ -306,12 +319,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  int64_t tilesY = 1, tilesX = 1;
-  if (auto tensorTy = llvm::dyn_cast<RankedTensorType>(op.getSrc().getType())) {
-    if (tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
-      std::tie(tilesY, tilesX) = getTileGridShape(tensorTy);
-    }
-  }
+  auto [tilesY, tilesX] = getTileGridShapeFromValue(op.getSrc());
 
   // TODO(ttl): Plumb real NOC coordinates and bank base addresses from tensor
   // accessors and kernel launch metadata. Issue: #84.
@@ -341,12 +349,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  int64_t tilesY = 1, tilesX = 1;
-  if (auto tensorTy = llvm::dyn_cast<RankedTensorType>(op.getDst().getType())) {
-    if (tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
-      std::tie(tilesY, tilesX) = getTileGridShape(tensorTy);
-    }
-  }
+  auto [tilesY, tilesX] = getTileGridShapeFromValue(op.getDst());
 
   // TODO(ttl): Lower CB operands to real CB handles and NOC addresses.
   // Issue: #80.
@@ -510,11 +513,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       // Only erase arguments that are now unused after conversion. If any are
       // still used (e.g., until full accessor materialization is wired), keep
       // them to avoid invalid IR.
-      if (eraseUnusedArguments(op)) {
-        auto newType = FunctionType::get(op.getContext(), TypeRange{},
-                                         op.getFunctionType().getResults());
-        op.setType(newType);
-      }
+      eraseUnusedArguments(op);
     }
 
     return success();
@@ -559,7 +558,14 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
     }
 
-    // Apply FuncKernelFinalize as a greedy rewrite after conversion
+    // Apply post-conversion cleanup patterns (e.g., barrier deduplication).
+    RewritePatternSet cleanupPatterns(&ctx);
+    ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns);
+    if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns)))) {
+      signalPassFailure();
+    }
+
+    // Apply FuncKernelFinalize as a greedy rewrite after cleanup.
     RewritePatternSet finalizePatterns(&ctx);
     finalizePatterns.add<FuncKernelFinalize>(&ctx);
     if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
