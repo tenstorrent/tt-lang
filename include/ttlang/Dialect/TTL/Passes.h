@@ -5,13 +5,26 @@
 #ifndef TTLANG_DIALECT_TTL_PASSES_H
 #define TTLANG_DIALECT_TTL_PASSES_H
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Pass/Pass.h"
+
+namespace mlir {
+class RewritePatternSet;
+} // namespace mlir
 
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "ttlang/Dialect/TTL/Passes.h.inc"
+
+/// Populate patterns for lowering TTL elementwise ops to linalg.generic.
+void populateTTLToLinalgPatterns(RewritePatternSet &patterns);
 
 } // namespace mlir::tt::ttl
 

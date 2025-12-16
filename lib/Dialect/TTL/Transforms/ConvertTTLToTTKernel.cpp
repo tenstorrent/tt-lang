@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -522,11 +523,11 @@ struct TTLConvertTTLToTTKernelPass
 
     ConversionTarget target(ctx);
     target.addIllegalDialect<tt::ttl::TTLDialect>();
-    target.addLegalDialect<BuiltinDialect>();
-    target.addLegalDialect<ttk::TTKernelDialect>();
-    target.addLegalDialect<arith::ArithDialect>();
-    target.addLegalDialect<scf::SCFDialect>();
-    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<arith::ArithDialect, BuiltinDialect,
+                           linalg::LinalgDialect, math::MathDialect,
+                           scf::SCFDialect, func::FuncDialect,
+                           tensor::TensorDialect, ttkernel::TTKernelDialect>();
+
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());
     });

@@ -9,6 +9,7 @@ include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/OpBase.td"
+include "mlir/Dialect/Linalg/IR/LinalgBase.td"
 
 //===----------------------------------------------------------------------===//
 // TTL operation definitions
@@ -120,6 +121,92 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins AnyType:$xf);
   let assemblyFormat = "$xf attr-dict `:` type($xf)";
   let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Elementwise compute operations (shared ElementWise base)
+//===----------------------------------------------------------------------===//
+
+class TTL_ElementWiseBase<string mnemonic, list<Trait> traits>
+    : TTL_Op<mnemonic, traits> {
+  let results = (outs AnyType:$result);
+}
+
+class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
+    : TTL_ElementWiseBase<
+          mnemonic,
+          !listconcat(traits, [Pure])> {
+  let summary = "Binary elementwise operation";
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let assemblyFormat =
+      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
+
+class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
+    : TTL_ElementWiseBase<
+          mnemonic,
+          !listconcat(traits, [Pure])> {
+  let summary = "Unary elementwise operation";
+  let arguments = (ins AnyType:$input);
+  let assemblyFormat =
+      "$input attr-dict `:` type($input) `->` type($result)";
+}
+
+def TTL_AddOp : TTL_ElementWiseBinary<"add"> {
+  let description = [{
+    Elementwise addition on tensors. Lowered via a shared elementwise pathway
+    to linalg.generic, tiled for DST capacity, then to TTKernel tile kernels.
+  }];
+}
+
+def TTL_MulOp : TTL_ElementWiseBinary<"mul"> {
+  let description = [{
+    Elementwise multiplication on tensors using the shared elementwise pathway.
+  }];
+}
+
+def TTL_ExpOp : TTL_ElementWiseUnary<"exp"> {
+  let description = [{
+    Elementwise exponential using the SFPU path in TTKernel. Lowered through
+    the shared elementwise pipeline.
+  }];
+}
+
+def TTL_ReluOp : TTL_ElementWiseUnary<"relu"> {
+  let description = [{
+    Elementwise ReLU using the SFPU path in TTKernel. Lowered through the
+    shared elementwise pipeline.
+  }];
+}
+
+// DST register markers (analysis only; removed by lowering passes).
+def TTL_AcquireDSTOp : TTL_Op<"acquire_dst", [Pure]> {
+  let results = (outs Index:$dst_reg);
+  let summary = "Acquire a DST register (analysis marker)";
+  let description = [{
+    Analysis marker indicating a DST register acquisition. Removed after
+    register assignment.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_ReleaseDSTOp : TTL_Op<"release_dst", [Pure]> {
+  let arguments = (ins Index:$dst_reg);
+  let summary = "Release a DST register (analysis marker)";
+  let description = [{
+    Analysis marker indicating a DST register release. Removed after register
+    assignment.
+  }];
+  let assemblyFormat = "$dst_reg attr-dict";
+}
+
+def TTL_RequireDSTOp : TTL_Op<"require_dst", [Pure]> {
+  let arguments = (ins AnyType:$value);
+  let summary = "Assert value should reside in DST";
+  let description = [{
+    Hint used by register assignment to keep a value in DST registers.
+  }];
+  let assemblyFormat = "$value attr-dict `:` type($value)";
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

@@ -17,6 +17,8 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addPass(createTTLConvertTTLToLinalg());
+  pm.addPass(createTTLAssignDSTRegisters());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());
   if (options.lowerToEmitC) {

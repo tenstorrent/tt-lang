@@ -1,0 +1,57 @@
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//===----------------------------------------------------------------------===//
+// TTL Elementwise Operation Definitions
+//===----------------------------------------------------------------------===//
+//
+// This file defines the mapping between TTL elementwise operations and their
+// corresponding arith/math dialect operations. It uses the X-macro pattern
+// to generate boilerplate code for pattern definitions and registration.
+//
+// Usage:
+//   #define TTL_BINARY_OP(TTL_OP, ARITH_OP)  // your code here
+//   #define TTL_UNARY_OP(TTL_OP, MATH_OP)    // your code here
+//   #define TTL_UNARY_CUSTOM_OP(TTL_OP)      // your code here
+//   #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef TTL_BINARY_OP
+#define TTL_BINARY_OP(TTL_OP, ARITH_OP)
+#endif
+
+#ifndef TTL_UNARY_OP
+#define TTL_UNARY_OP(TTL_OP, MATH_OP)
+#endif
+
+#ifndef TTL_UNARY_CUSTOM_OP
+#define TTL_UNARY_CUSTOM_OP(TTL_OP)
+#endif
+
+//===----------------------------------------------------------------------===//
+// Binary Elementwise Operations
+// These map directly to arith dialect floating-point operations.
+//===----------------------------------------------------------------------===//
+
+TTL_BINARY_OP(Add, arith::AddFOp)
+TTL_BINARY_OP(Mul, arith::MulFOp)
+
+//===----------------------------------------------------------------------===//
+// Unary Elementwise Operations (Simple)
+// These map directly to math dialect operations.
+//===----------------------------------------------------------------------===//
+
+TTL_UNARY_OP(Exp, math::ExpOp)
+
+//===----------------------------------------------------------------------===//
+// Unary Elementwise Operations (Custom)
+// These require custom lowering logic (e.g., multi-op sequences).
+//===----------------------------------------------------------------------===//
+
+TTL_UNARY_CUSTOM_OP(Relu)
+
+#undef TTL_BINARY_OP
+#undef TTL_UNARY_OP
+#undef TTL_UNARY_CUSTOM_OP
