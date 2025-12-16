@@ -471,7 +471,7 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     // MVP behavior: require a direction-typed handle and emit the
     // corresponding global barrier. Untyped handles are rejected by the
     // verifier, but we also fail the rewrite defensively.
-    auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
+    auto kind = getTransferKindFromHandleType(op.getXf().getType());
     if (!kind) {
       return rewriter.notifyMatchFailure(
           op, "requires direction-typed !ttl.transfer_handle<read|write>");

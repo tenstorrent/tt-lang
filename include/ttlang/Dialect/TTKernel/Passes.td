@@ -10,6 +10,9 @@ def TTKernelFuseSiblingTileLoops
     Identifies adjacent scf.for loops with identical bounds and fuses them.
     Operates recursively on nested loops (e.g., 2D tile grids).
 
+    Only loops marked with the ttkernel.tile_loop attribute are considered
+    for fusion; user-authored loops without this marker are ignored.
+
     Loops are considered fusable if they have:
     - Same lower bound (constant value or same SSA value)
     - Same upper bound (constant value or same SSA value)

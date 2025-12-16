@@ -41,17 +41,9 @@
 // Fused tile loops: single nested loop with both DMAs
 // CHECK:     for (size_t [[TILE_Y:[a-z][0-9]+]] = [[LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[STEP]]) {
 // CHECK-NEXT:      for (size_t [[TILE_X:[a-z][0-9]+]] = [[LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[STEP]]) {
-
-// First DMA in fused loop body
 // CHECK:             noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
-
-// Second DMA in same loop body (fused)
-// CHECK:             noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
-
-// Third DMA in same loop body (fused)
-// CHECK:             noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
-
-// End of fused inner loops
+// CHECK-NEXT:        noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
+// CHECK-NEXT:        noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
 // CHECK:           }
 // CHECK-NEXT:    }
 

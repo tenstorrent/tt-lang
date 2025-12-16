@@ -2,19 +2,22 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ttlang/Dialect/TTKernel/Passes.h"
+#include "ttlang/Dialect/TTKernel/Passes.h" // IWYU pragma: keep
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace mlir::tt::ttkernel {
 #define GEN_PASS_DEF_TTKERNELFUSESIBLINGTILELOOPS
 #include "ttlang/Dialect/TTKernel/Passes.h.inc"
 
 namespace {
+
+static constexpr llvm::StringLiteral kTileLoopMarker = "ttkernel.tile_loop";
 
 /// Check if two values are equivalent (same SSA value or same constant).
 static bool areValuesEquivalent(Value v1, Value v2) {
@@ -64,6 +67,7 @@ static scf::ForOp fuseLoopPair(scf::ForOp target, scf::ForOp source,
                                IRRewriter &rewriter) {
   scf::ForOp fused = fuseIndependentSiblingForLoops(target, source, rewriter);
   if (fused) {
+    fused->setAttr(kTileLoopMarker, rewriter.getUnitAttr());
     fuseInnerLoops(fused, rewriter);
   }
   return fused;
@@ -74,6 +78,9 @@ static void fuseInnerLoops(scf::ForOp outer, IRRewriter &rewriter) {
   SmallVector<scf::ForOp> innerLoops;
   for (Operation &op : *outer.getBody()) {
     if (auto inner = dyn_cast<scf::ForOp>(&op)) {
+      if (!inner->hasAttr(kTileLoopMarker)) {
+        continue;
+      }
       innerLoops.push_back(inner);
     }
   }
@@ -113,6 +120,9 @@ struct TTKernelFuseSiblingTileLoopsPass
         SmallVector<scf::ForOp> loops;
         for (Operation &op : *block) {
           if (auto forOp = dyn_cast<scf::ForOp>(&op)) {
+            if (!forOp->hasAttr(kTileLoopMarker)) {
+              continue;
+            }
             loops.push_back(forOp);
           }
         }
@@ -126,6 +136,13 @@ struct TTKernelFuseSiblingTileLoopsPass
             }
           }
         }
+      }
+    });
+
+    // Strip the tile-loop marker after fusion (proper cleanup)
+    func.walk([](scf::ForOp loop) {
+      if (loop->hasAttr(kTileLoopMarker)) {
+        loop->removeAttr(kTileLoopMarker);
       }
     });
   }

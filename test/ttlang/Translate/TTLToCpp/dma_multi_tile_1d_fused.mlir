@@ -33,14 +33,8 @@
 // Fused tile loop: single loop for 1x2 grid with both DMAs in body
 // (y-loop removed by canonicalization since it only iterates once)
 // CHECK:   for (size_t [[TILE_X:[a-z][0-9]+]] = [[LB]]; [[TILE_X]] < [[TILES_X]]; [[TILE_X]] += [[STEP]]) {
-
-// First DMA in fused loop body
 // CHECK:       noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
-
-// Second DMA in same loop body (fused)
-// CHECK:       noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
-
-// End of fused loop
+// CHECK-NEXT:  noc_async_read_tile({{.*}}, {{.*}}, [[ZERO]]);
 // CHECK:     }
 
 // Consecutive barriers deduplicated to single barrier.

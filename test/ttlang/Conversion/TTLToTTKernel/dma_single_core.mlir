@@ -436,3 +436,58 @@ module {
     func.return
   }
 }
+
+// -----
+
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+
+// Ensures read/write wait lowerings pick the correct barrier after type
+// conversion. Expect exactly one read barrier followed by one write barrier,
+// no cross-type barriers.
+//
+// TTKERNEL-LABEL: func.func @wait_barriers_mixed
+// TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL-NOT: ttkernel.noc_async_read_barrier() : () -> ()
+module {
+  func.func @wait_barriers_mixed(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+
+    %xf_read = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf_write = ttl.copy %cb, %t : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<write>
+
+    ttl.wait %xf_read : !ttl.transfer_handle<read>
+    ttl.wait %xf_write : !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
+#dram_user = #ttnn.buffer_type<dram>
+#layout_user = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram_user>, <interleaved>>
+
+// User-authored loops (no tile loop marker) must not be fused even when the
+// fuse pass runs.
+//
+// FUSED-LABEL: func.func @user_loops_unmarked
+// FUSED: scf.for
+// FUSED: scf.for
+module {
+  func.func private @sink_user()
+
+  func.func @user_loops_unmarked() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %c2 step %c1 {
+      func.call @sink_user() : () -> ()
+    }
+    scf.for %j = %c0 to %c2 step %c1 {
+      func.call @sink_user() : () -> ()
+    }
+    func.return
+  }
+}
