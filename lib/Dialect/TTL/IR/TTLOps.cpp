@@ -320,12 +320,29 @@ mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
 }
 
 mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
-  // Verify that the number of indexing maps matches inputs + outputs.
-  size_t numOperands = getInputs().size() + getOutputs().size();
+  // Verify body has exactly one block.
+  if (getBody().getBlocks().size() != 1) {
+    return emitOpError("body must have exactly one block");
+  }
+
+  Block &bodyBlock = getBody().front();
+  size_t numInputs = getInputs().size();
+  size_t numOutputs = getOutputs().size();
+  size_t numOperands = numInputs + numOutputs;
+
+  // Verify block argument count matches inputs + outputs.
+  if (bodyBlock.getNumArguments() != numOperands) {
+    return emitOpError("body block must have ")
+           << numOperands << " arguments (matching inputs + outputs), but got "
+           << bodyBlock.getNumArguments();
+  }
+
+  // Verify the number of indexing maps matches inputs + outputs.
   if (getIndexingMaps().size() != numOperands) {
     return emitOpError("expected ") << numOperands << " indexing maps but got "
                                     << getIndexingMaps().size();
   }
+
   // Verify iterator_types contains only "parallel" or "reduction".
   for (mlir::Attribute attr : getIteratorTypes()) {
     auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr);
@@ -335,6 +352,15 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
           "iterator_types must contain only 'parallel' or 'reduction'");
     }
   }
+
+  // Verify terminator is YieldOp.
+  if (!bodyBlock.mightHaveTerminator()) {
+    return emitOpError("body block must have a terminator");
+  }
+  if (!mlir::isa<YieldOp>(bodyBlock.getTerminator())) {
+    return emitOpError("body block must be terminated with ttl.yield");
+  }
+
   return mlir::success();
 }
 
