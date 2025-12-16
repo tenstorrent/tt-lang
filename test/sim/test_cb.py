@@ -10,15 +10,28 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 
 import pytest
 import torch
-from python.sim import CircularBuffer, TensorAccessor, IndexType, TILE_SHAPE, copy
+from python.sim import (
+    CircularBuffer,
+    CBAPI,
+    TensorAccessor,
+    IndexType,
+    TILE_SHAPE,
+    copy,
+)
 from python.sim import torch_utils as tu
 from python.sim.errors import CBContractError
 
 
-def test_circular_buffer_basic():
+@pytest.fixture
+def api():
+    """Provide a fresh CBAPI instance for each test."""
+    return CBAPI()
+
+
+def test_circular_buffer_basic(api: CBAPI) -> None:
     """Test basic CircularBuffer operations."""
     # Create a circular buffer for single tiles with buffer factor 2
-    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
 
     # Verify basic properties
     assert cb.shape == (1, 1)
@@ -48,10 +61,10 @@ def test_circular_buffer_basic():
     print("Basic CircularBuffer test passed!")
 
 
-def test_circular_buffer_multi_tile():
+def test_circular_buffer_multi_tile(api: CBAPI) -> None:
     """Test CircularBuffer with multiple tiles per operation."""
     # Create a circular buffer for 2x1 tiles (2 tiles per operation)
-    cb = CircularBuffer[torch.Tensor](shape=(2, 1), buffer_factor=3)
+    cb = CircularBuffer[torch.Tensor](shape=(2, 1), buffer_factor=3, api=api)
 
     # Verify properties
     assert cb.shape == (2, 1)
@@ -81,7 +94,7 @@ def test_circular_buffer_multi_tile():
     print("Multi-tile CircularBuffer test passed!")
 
 
-def test_copy_operations():
+def test_copy_operations(api: CBAPI) -> None:
     """Test copy operations between TensorAccessor and CircularBuffer."""
     # Create test tensors
     tensor_a = tu.randn(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
@@ -89,7 +102,7 @@ def test_copy_operations():
     accessor_a = TensorAccessor(tensor_a, index_type=IndexType.TILE)
 
     # Create circular buffer
-    cb_a = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+    cb_a = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
 
     # Test copy from tensor to circular buffer
     cb_view = cb_a.reserve()
@@ -116,21 +129,21 @@ def test_copy_operations():
     print("Copy operations test passed!")
 
 
-def test_error_handling():
+def test_error_handling(api: CBAPI) -> None:
     """Test error conditions."""
     # Test invalid shape
     with pytest.raises(ValueError):
-        CircularBuffer[torch.Tensor](shape=(0, 1))  # Invalid shape
+        CircularBuffer[torch.Tensor](shape=(0, 1), api=api)  # Invalid shape
 
     with pytest.raises(ValueError):
-        CircularBuffer[torch.Tensor](shape=(1, 2, 3))  # type: ignore # Wrong shape dimensions
+        CircularBuffer[torch.Tensor](shape=(1, 2, 3), api=api)  # type: ignore # Wrong shape dimensions
 
     # Test invalid buffer factor
     with pytest.raises(ValueError):
-        CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=0)
+        CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=0, api=api)
 
     # Test operations without proper setup
-    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
 
     # Can't push without reserve - CBAPI will catch this
     with pytest.raises(CBContractError):
@@ -147,7 +160,7 @@ def test_error_handling():
     print("Error handling test passed!")
 
 
-def test_example_usage_pattern():
+def test_example_usage_pattern(api: CBAPI) -> None:
     """Test usage pattern similar to the provided example."""
     # Create tensors like in the example
     rows, cols = 128, 128
@@ -163,10 +176,12 @@ def test_example_usage_pattern():
     c_accessor = TensorAccessor(c_in, index_type=IndexType.TILE)
 
     # Create circular buffers like in the example
-    a_in_cb = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
-    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
-    c_in_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
-    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2)
+    a_in_cb = CircularBuffer[torch.Tensor](
+        shape=(granularity, 1), buffer_factor=2, api=api
+    )
+    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2, api=api)
+    c_in_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2, api=api)
 
     # Verify the circular buffers were created correctly
     assert a_in_cb.shape == (granularity, 1)
@@ -204,7 +219,7 @@ def test_example_usage_pattern():
     print("Example usage pattern test passed!")
 
 
-def test_make_circular_buffer_like_basic():
+def test_make_circular_buffer_like_basic(api: CBAPI) -> None:
     """Test make_circular_buffer_like with basic usage."""
     from python.sim import ttl
 
@@ -220,19 +235,18 @@ def test_make_circular_buffer_like_basic():
     assert x_cb.capacity_tiles == 2
     assert x_cb.buffer_factor == 2
 
-    # Test that it works with the tensor type
-    write_view = x_cb.reserve()
-    write_view[0] = tu.ones(*TILE_SHAPE)
-    x_cb.push()
+    # Verify it's not initialized (no API)
+    assert x_cb._api is None  # type: ignore[reportPrivateUsage]
+    assert x_cb._cb_id is None  # type: ignore[reportPrivateUsage]
 
-    read_view = x_cb.wait()
-    assert read_view[0] is not None
-    x_cb.pop()
+    # Verify that using it without initialization raises an error
+    with pytest.raises(RuntimeError, match="not properly initialized"):
+        x_cb.reserve()
 
     print("make_circular_buffer_like basic test passed!")
 
 
-def test_make_circular_buffer_like_infers_type():
+def test_make_circular_buffer_like_infers_type(api: CBAPI) -> None:
     """Test that make_circular_buffer_like correctly infers the element type."""
     from python.sim import ttl
 
@@ -247,22 +261,17 @@ def test_make_circular_buffer_like_infers_type():
     assert cb.capacity_tiles == 12  # 2*2*3
     assert cb.buffer_factor == 3
 
-    # Verify it works with tensor operations
-    block = cb.reserve()
-    # Write data to all tiles in the block
-    for i in range(len(block)):
-        block[i] = tu.ones(*TILE_SHAPE)
-    assert len(block) == 4  # 2*2 tiles
-    cb.push()
+    # Verify it's not initialized
+    assert cb._api is None  # type: ignore[reportPrivateUsage]
 
-    read_block = cb.wait()
-    assert len(read_block) == 4  # 2*2 tiles
-    cb.pop()
+    # Verify error when used without initialization
+    with pytest.raises(RuntimeError, match="not properly initialized"):
+        cb.reserve()
 
     print("make_circular_buffer_like type inference test passed!")
 
 
-def test_make_circular_buffer_like_multiple_tensors():
+def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
     """Test make_circular_buffer_like with multiple different tensors."""
     from python.sim import ttl
 
@@ -286,22 +295,16 @@ def test_make_circular_buffer_like_multiple_tensors():
     assert c_cb.shape == (1, 2)
     assert c_cb.capacity_tiles == 6  # 1*2*3
 
-    # Verify they all work independently
+    # Verify they're all uninitialized
     for cb in [a_cb, b_cb, c_cb]:
-        block = cb.reserve()
-        assert len(block) > 0
-        # Write data to all tiles
-        for i in range(len(block)):
-            block[i] = tu.ones(*TILE_SHAPE)
-        cb.push()
-        read_block = cb.wait()
-        assert read_block is not None
-        cb.pop()
+        assert cb._api is None  # type: ignore[reportPrivateUsage]
+        with pytest.raises(RuntimeError, match="not properly initialized"):
+            cb.reserve()
 
     print("make_circular_buffer_like multiple tensors test passed!")
 
 
-def test_make_circular_buffer_like_with_example_pattern():
+def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
     """Test make_circular_buffer_like with realistic example pattern."""
     from python.sim import ttl
 
@@ -328,30 +331,25 @@ def test_make_circular_buffer_like_with_example_pattern():
     for cb in [a_cb, b_cb, out_cb]:
         assert cb.shape == (granularity, 1)
         assert cb.capacity_tiles == granularity * buffer_factor
+        # Verify they're uninitialized
+        assert cb._api is None  # type: ignore[reportPrivateUsage]
 
-    # Test basic workflow
-    a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
-    a_block = a_cb.reserve()
-    a_slice = a_accessor[slice(0, granularity), slice(0, 1)]
-    tx = copy(a_slice, a_block)
-    tx.wait()
-    a_cb.push()
-
-    read_block = a_cb.wait()
-    assert len(read_block) == granularity
-    a_cb.pop()
+    # Verify that operations fail without initialization
+    with pytest.raises(RuntimeError, match="not properly initialized"):
+        a_cb.reserve()
 
     print("make_circular_buffer_like example pattern test passed!")
 
 
 if __name__ == "__main__":
-    test_circular_buffer_basic()
-    test_circular_buffer_multi_tile()
-    test_copy_operations()
-    test_error_handling()
-    test_example_usage_pattern()
-    test_make_circular_buffer_like_basic()
-    test_make_circular_buffer_like_infers_type()
-    test_make_circular_buffer_like_multiple_tensors()
-    test_make_circular_buffer_like_with_example_pattern()
+    test_api = CBAPI()
+    test_circular_buffer_basic(test_api)
+    test_circular_buffer_multi_tile(test_api)
+    test_copy_operations(test_api)
+    test_error_handling(test_api)
+    test_example_usage_pattern(test_api)
+    test_make_circular_buffer_like_basic(test_api)
+    test_make_circular_buffer_like_infers_type(test_api)
+    test_make_circular_buffer_like_multiple_tensors(test_api)
+    test_make_circular_buffer_like_with_example_pattern(test_api)
     print("All CircularBuffer tests passed!")

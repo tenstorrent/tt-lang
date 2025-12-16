@@ -332,13 +332,17 @@ def test_heterogeneous_cbs_in_same_api():
 
 
 def test_default_api_heterogeneous():
-    """Test that the default API can handle heterogeneous circular buffers."""
-    # Create circular buffers using default API (different element types)
-    int_cb = CircularBuffer[int](shape=(1, 1), buffer_factor=2)
-    tensor_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+    """Test that an explicit API can handle heterogeneous circular buffers."""
+    # Create an explicit API instance
+    api = CBAPI()
 
-    # Both should use the same default API instance
+    # Create circular buffers using explicit API (different element types)
+    int_cb = CircularBuffer[int](shape=(1, 1), buffer_factor=2, api=api)
+    tensor_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+
+    # Both should use the same API instance
     assert int_cb._api is tensor_cb._api  # type: ignore
+    assert int_cb._api is api  # type: ignore
 
     # Test that both work correctly
     int_write = int_cb.reserve()
