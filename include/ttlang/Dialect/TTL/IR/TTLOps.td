@@ -129,93 +129,95 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
 def TTL_CBReserveOp : TTL_Op<"cb_reserve", [MemoryEffects<[MemWrite]>]> {
   let summary = "Reserve pages in a circular buffer for writing";
   let description = [{
-    `ttl.cb_reserve` blocks until `num_pages` pages are available in the
-    circular buffer for writing. Returns a tensor view of the reserved pages.
+    `ttl.cb_reserve` blocks until pages are available in the circular buffer
+    for writing. Returns a tensor view of the reserved pages.
 
     This operation is used by producer threads (typically data movement kernels
     reading from DRAM) to acquire space in the CB before writing data.
 
     The result tensor has shape matching the CB's block shape and element type.
-    The num_pages operand must be a positive i32 value.
+    The number of pages is derived from the CB's shape (elements per block).
 
     Example:
     ```mlir
-    %view = ttl.cb_reserve %cb, %c1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I32:$num_pages
+    TTL_CircularBuffer:$cb
   );
   let results = (outs AnyRankedTensor:$result);
-  let assemblyFormat = "$cb `,` $num_pages attr-dict `:` type($cb) `->` type($result)";
+  let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
   let hasVerifier = 1;
 }
 
 def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
   let summary = "Signal that pages have been written to the circular buffer";
   let description = [{
-    `ttl.cb_push` signals that `num_pages` pages have been written to the
-    circular buffer and are ready for consumer threads to read.
+    `ttl.cb_push` signals that pages have been written to the circular buffer
+    and are ready for consumer threads to read.
 
     This operation must be called after writing data to pages acquired via
     `ttl.cb_reserve`. It increments the CB's producer pointer.
 
+    The number of pages is derived from the CB's shape (elements per block).
+
     Example:
     ```mlir
-    ttl.cb_push %cb, %c1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I32:$num_pages
+    TTL_CircularBuffer:$cb
   );
-  let assemblyFormat = "$cb `,` $num_pages attr-dict `:` type($cb)";
+  let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait", [MemoryEffects<[MemRead]>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
-    `ttl.cb_wait` blocks until `num_pages` pages are available in the circular
-    buffer for reading. Returns a tensor view of the available pages.
+    `ttl.cb_wait` blocks until pages are available in the circular buffer for
+    reading. Returns a tensor view of the available pages.
 
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
 
+    The number of pages is derived from the CB's shape (elements per block).
+
     Example:
     ```mlir
-    %view = ttl.cb_wait %cb, %c1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %view = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I32:$num_pages
+    TTL_CircularBuffer:$cb
   );
   let results = (outs AnyRankedTensor:$result);
-  let assemblyFormat = "$cb `,` $num_pages attr-dict `:` type($cb) `->` type($result)";
+  let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
   let hasVerifier = 1;
 }
 
 def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
   let summary = "Release pages from the circular buffer after reading";
   let description = [{
-    `ttl.cb_pop` signals that `num_pages` pages have been consumed from the
-    circular buffer and the space can be reused by producers.
+    `ttl.cb_pop` signals that pages have been consumed from the circular buffer
+    and the space can be reused by producers.
 
     This operation must be called after reading data acquired via `ttl.cb_wait`.
     It increments the CB's consumer pointer.
 
+    The number of pages is derived from the CB's shape (elements per block).
+
     Example:
     ```mlir
-    ttl.cb_pop %cb, %c1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    I32:$num_pages
+    TTL_CircularBuffer:$cb
   );
-  let assemblyFormat = "$cb `,` $num_pages attr-dict `:` type($cb)";
+  let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;
 }
 
