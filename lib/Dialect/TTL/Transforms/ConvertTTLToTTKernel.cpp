@@ -27,6 +27,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -84,6 +85,24 @@ public:
 //===----------------------------------------------------------------------===//
 // Helper utilities.
 //===----------------------------------------------------------------------===//
+
+/// Assert that the tensor layout is supported for tile loop emission.
+/// Currently only interleaved (non-sharded) layouts are supported.
+/// Issue #118: Implement sharded layout support for emitTileLoop.
+static void assertSupportedLayoutForTileLoop(RankedTensorType tensorTy,
+                                             Location loc) {
+  if (auto enc = tensorTy.getEncoding()) {
+    if (auto layout = mlir::dyn_cast<tt::ttnn::TTNNLayoutAttr>(enc)) {
+      if (layout.getMemLayout()) {
+        assert(!tt::ttnn::isShardedMemoryLayout(
+                   layout.getMemLayout().getValue()) &&
+               "Sharded tensor layouts (HeightSharded, WidthSharded, "
+               "BlockSharded) are not yet supported in emitTileLoop. "
+               "See issue #118.");
+      }
+    }
+  }
+}
 
 static std::optional<ttk::ThreadType> getKernelThreadType(Operation *op) {
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
@@ -250,9 +269,11 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
 }
 
 static std::pair<int64_t, int64_t>
-getTileGridShape(const RankedTensorType &tensorTy) {
+getTileGridShape(const RankedTensorType &tensorTy, Location loc) {
   auto dims = tensorTy.getShape();
   assert(dims.size() == 2 && "only rank-2 tensors supported currently");
+  assertSupportedLayoutForTileLoop(tensorTy, loc);
+
   auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
   int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
   int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
@@ -264,7 +285,7 @@ getTileGridShape(const RankedTensorType &tensorTy) {
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
   if (tensorTy && tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
-    return getTileGridShape(tensorTy);
+    return getTileGridShape(tensorTy, v.getLoc());
   }
   return {1, 1};
 }
