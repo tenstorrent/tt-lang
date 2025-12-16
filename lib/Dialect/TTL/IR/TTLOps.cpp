@@ -64,9 +64,8 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << " dst=" << dstTy;
   }
 
-  // TODO(ttl): Add support for pipes and blocks as ttl.copy operands once those
+  // TODO(#88): Add support for pipes and blocks as ttl.copy operands once those
   // IR types/ops land.
-  // Issue: #88.
 
   Type tensorTy = srcIsCb ? dstTy : srcTy;
   auto rankedTensorTy = mlir::dyn_cast<RankedTensorType>(tensorTy);
@@ -85,9 +84,8 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << rankedTensorTy;
   }
 
-  // TODO(ttl): Verify that the tensor tile/block shape and element type match
+  // TODO(#89): Verify that the tensor tile/block shape and element type match
   // the CB element_type and shape/buffer_factor semantics.
-  // Issue: #89.
 
   // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
   // use ensures we do not silently drop transfers.
@@ -192,7 +190,6 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
   mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> outputOperands;
   mlir::SmallVector<mlir::Type> outputTypes;
 
-  // Parse ins(...)
   if (parser.parseKeyword("ins") || parser.parseLParen()) {
     return mlir::failure();
   }
@@ -203,7 +200,6 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     }
   }
 
-  // Parse outs(...)
   if (parser.parseKeyword("outs") || parser.parseLParen()) {
     return mlir::failure();
   }
@@ -214,7 +210,6 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     }
   }
 
-  // Resolve operands
   if (parser.resolveOperands(inputOperands, inputTypes, parser.getNameLoc(),
                              result.operands) ||
       parser.resolveOperands(outputOperands, outputTypes, parser.getNameLoc(),
@@ -222,37 +217,31 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     return mlir::failure();
   }
 
-  // Set operand segment sizes
   result.addAttribute("operandSegmentSizes",
                       parser.getBuilder().getDenseI32ArrayAttr(
                           {static_cast<int32_t>(inputOperands.size()),
                            static_cast<int32_t>(outputOperands.size())}));
 
-  // Parse attributes
   if (parser.parseOptionalAttrDict(result.attributes)) {
     return mlir::failure();
   }
 
-  // Parse region
   mlir::Region *body = result.addRegion();
   if (parser.parseRegion(*body, /*arguments=*/{}, /*argTypes=*/{})) {
     return mlir::failure();
   }
 
-  // Parse result types
   mlir::SmallVector<mlir::Type> resultTypes;
   if (parser.parseArrow()) {
     return mlir::failure();
   }
   if (parser.parseOptionalLParen()) {
-    // Single result type
     mlir::Type singleType;
     if (parser.parseType(singleType)) {
       return mlir::failure();
     }
     resultTypes.push_back(singleType);
   } else {
-    // Multiple result types in parens
     if (parser.parseTypeList(resultTypes) || parser.parseRParen()) {
       return mlir::failure();
     }
@@ -270,23 +259,23 @@ void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
   llvm::interleaveComma(getInputs().getTypes(), p);
   p << ")";
 
-  // Print outputs (outs operands)
+  // Print outputs (outs operands).
   p << " outs(";
   p.printOperands(getOutputs());
   p << " : ";
   llvm::interleaveComma(getOutputs().getTypes(), p);
   p << ")";
 
-  // Print attributes (excluding operandSegmentSizes which is internal)
+  // Print attributes (excluding operandSegmentSizes which is internal).
   SmallVector<mlir::StringRef> elidedAttrs = {"operandSegmentSizes"};
   p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
 
-  // Print the region
+  // Print the region.
   p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/true,
                 /*printBlockTerminators=*/true);
 
-  // Print result types
+  // Print result types.
   p << " -> ";
   if (getResults().size() == 1) {
     p.printType(getResults().front().getType());

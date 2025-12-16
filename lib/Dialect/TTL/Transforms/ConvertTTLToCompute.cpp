@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 #define GEN_PASS_DEF_TTLCONVERTTTLTOCOMPUTE
 #define GEN_PASS_DEF_TTLASSIGNDSTREGISTERS
@@ -71,15 +72,17 @@ static LogicalResult buildBinaryCompute(Operation *op,
       loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{init},
       rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
-  // Build the body region with block arguments
+  // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  Type elemType = type.getElementType();
-  body->addArgument(elemType, loc); // lhs tile/element
-  body->addArgument(elemType, loc); // rhs tile/element
-  body->addArgument(elemType, loc); // output tile/element
+  Type scalarType = type.getElementType();
+  // Create tile type: !ttcore.tile<32x32, dtype>
+  Type tileType = ttcore::TileType::get(scalarType);
+  body->addArgument(tileType, loc); // lhs tile
+  body->addArgument(tileType, loc); // rhs tile
+  body->addArgument(tileType, loc); // output tile
 
   rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, elemType, body->getArgument(0),
+  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
   rewriter.create<YieldOp>(loc, ValueRange{result});
 
@@ -120,14 +123,16 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
       loc, TypeRange{type}, ValueRange{input}, ValueRange{init},
       rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
-  // Build the body region with block arguments
+  // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  Type elemType = type.getElementType();
-  body->addArgument(elemType, loc); // input tile/element
-  body->addArgument(elemType, loc); // output tile/element
+  Type scalarType = type.getElementType();
+  // Create tile type: !ttcore.tile<32x32, dtype>
+  Type tileType = ttcore::TileType::get(scalarType);
+  body->addArgument(tileType, loc); // input tile
+  body->addArgument(tileType, loc); // output tile
 
   rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, elemType, body->getArgument(0));
+  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
   rewriter.create<YieldOp>(loc, ValueRange{result});
 
   rewriter.replaceOp(op, computeOp.getResult(0));

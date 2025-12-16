@@ -341,37 +341,4 @@ defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile",
 defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile",
     "Elementwise ReLU (SFPU). Lowered to ttl.compute with ttl.tile_relu.">;
 
-
-//===----------------------------------------------------------------------===//
-// DST Register Model
-//===----------------------------------------------------------------------===//
-// The DST register file has 8 registers and requires batch acquire/release.
-// The hardware execution model is:
-//   tile_regs_acquire() → compute → tile_regs_commit() →
-//   tile_regs_wait() → pack → tile_regs_release()
-//
-// At the TTL level, this is modeled implicitly: ttl.compute represents one
-// DST cycle. When lowered to TTKernel, the full sequence is generated:
-//   1. tile_regs_acquire()
-//   2. copy_tile from input CBs to DST registers
-//   3. Math operations (add_binary_tile, exp_tile, etc.)
-//   4. tile_regs_commit() + tile_regs_wait()
-//   5. pack_tile from DST to output CB
-//   6. tile_regs_release()
-//
-// DST register assignment uses the `dst_idx` attribute on tile ops:
-// - `dst_idx` (I32Attr): DST register index (0-7) for the tile op result.
-//   Set by the ttl-assign-dst-registers pass.
-//
-// Example ttl.compute with DST-assigned tile ops:
-//   ttl.compute ins(%a, %b : ...) outs(%out : ...) {
-//   ^bb0(%a_tile, %b_tile, %out_tile):
-//     %sum = ttl.tile_add %a_tile, %b_tile {dst_idx = 0} : f32
-//     %act = ttl.tile_exp %sum {dst_idx = 0} : f32  // reuses same register
-//     ttl.yield %act : f32
-//   }
-//
-// TODO(#120): Implement DSTAllocationStrategy interface with pluggable
-// algorithms (linear-scan, graph-coloring, greedy).
-
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD
