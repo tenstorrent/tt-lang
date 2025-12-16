@@ -228,7 +228,9 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
   if (parser.parseKeyword("ins") || parser.parseLParen()) {
     return mlir::failure();
   }
-  if (parser.parseOptionalRParen()) {
+  // If we did not see a ')', parse the operand list and types, then consume
+  // the closing ')'.
+  if (failed(parser.parseOptionalRParen())) {
     if (parser.parseOperandList(inputOperands) || parser.parseColon() ||
         parser.parseTypeList(inputTypes) || parser.parseRParen()) {
       return mlir::failure();
@@ -238,7 +240,7 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
   if (parser.parseKeyword("outs") || parser.parseLParen()) {
     return mlir::failure();
   }
-  if (parser.parseOptionalRParen()) {
+  if (failed(parser.parseOptionalRParen())) {
     if (parser.parseOperandList(outputOperands) || parser.parseColon() ||
         parser.parseTypeList(outputTypes) || parser.parseRParen()) {
       return mlir::failure();
