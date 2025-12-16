@@ -139,7 +139,8 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     Location loc = op.getLoc();
 
     // MaxTilesOp is in-place: DST[dst0] = max(DST[dst0], DST[dst1])
-    // TODO(#124): Get DST indices from dst_idx attributes. For now use defaults.
+    // TODO(#124): Get DST indices from dst_idx attributes. For now use
+    // defaults.
     int64_t dst0Idx = 0;
     int64_t dst1Idx = 1;
 
