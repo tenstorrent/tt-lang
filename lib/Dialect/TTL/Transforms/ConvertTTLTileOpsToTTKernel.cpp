@@ -190,7 +190,7 @@ using MaxTileLowering =
 // Pattern Population
 //===----------------------------------------------------------------------===//
 
-void populateTTLComputeToTTKernelPatterns(RewritePatternSet &patterns) {
+void populateTTLTileOpsToTTKernelPatterns(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
   // Tile op lowerings (ttl.tile_* → ttkernel.*_tile)

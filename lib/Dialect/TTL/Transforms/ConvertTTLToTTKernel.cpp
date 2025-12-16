@@ -529,7 +529,7 @@ struct TTLConvertTTLToTTKernelPass
 
     // Mark compute-related ops as legal during partial conversion since they're
     // handled by the separate greedy rewrite phase
-    // (populateTTLComputeToTTKernelPatterns).
+    // (populateTTLTileOpsToTTKernelPatterns).
     target.addLegalOp<ComputeOp, YieldOp>();
     // Tile ops (handled by greedy phase):
     target.addLegalOp<
@@ -589,7 +589,7 @@ struct TTLConvertTTLToTTKernelPass
         [](Operation *) { return true; });
 
     RewritePatternSet computePatterns(&ctx);
-    populateTTLComputeToTTKernelPatterns(computePatterns);
+    populateTTLTileOpsToTTKernelPatterns(computePatterns);
     if (failed(applyPartialConversion(mod, computeTarget,
                                       std::move(computePatterns)))) {
       signalPassFailure();

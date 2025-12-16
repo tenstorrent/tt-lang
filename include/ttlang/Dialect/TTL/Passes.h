@@ -24,8 +24,8 @@ namespace mlir::tt::ttl {
 /// Populate patterns for lowering TTL elementwise tensor ops to ttl.compute.
 void populateTTLToComputePatterns(RewritePatternSet &patterns);
 
-/// Populate patterns for lowering ttl.compute and ttl.tile_* ops to TTKernel.
-void populateTTLComputeToTTKernelPatterns(RewritePatternSet &patterns);
+/// Populate patterns for lowering ttl.tile_* ops to TTKernel.
+void populateTTLTileOpsToTTKernelPatterns(RewritePatternSet &patterns);
 
 } // namespace mlir::tt::ttl
 
