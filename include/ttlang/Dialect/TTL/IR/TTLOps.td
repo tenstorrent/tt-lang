@@ -222,7 +222,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
   }];
 }
 
-def TTL_YieldOp : TTL_Op<"yield", [Pure, ReturnLike, Terminator,
+def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp"]>]> {
   let summary = "Yield values from ttl.compute region";
   let description = [{
@@ -263,10 +263,10 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 //===----------------------------------------------------------------------===//
 
 // Multiclass for defining paired tensor + tile binary ops
-multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp, string desc> {
+multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp> {
   // Tensor-level op (operates on full tensors)
   def Op : TTL_ElementWiseBinary<mnemonic> {
-    let description = desc;
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
   // Tile-level op (operates inside ttl.compute body)
   def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic> {
@@ -275,17 +275,10 @@ multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp, string de
 }
 
 // Define all binary elementwise ops using the multiclass
-defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles",
-    "Elementwise addition on tensors. Lowered to ttl.compute with ttl.tile_add.">;
-
-defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles",
-    "Elementwise subtraction on tensors. Lowered to ttl.compute with ttl.tile_sub.">;
-
-defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles",
-    "Elementwise multiplication on tensors. Lowered to ttl.compute with ttl.tile_mul.">;
-
-defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
-    "Elementwise maximum on tensors. Lowered to ttl.compute with ttl.tile_max.">;
+defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
+defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
+defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
+defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles">;
 
 
 //===----------------------------------------------------------------------===//
@@ -293,10 +286,10 @@ defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
 //===----------------------------------------------------------------------===//
 
 // Multiclass for defining paired tensor + tile unary ops
-multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp, string desc> {
+multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
   // Tensor-level op (operates on full tensors)
   def Op : TTL_ElementWiseUnary<mnemonic> {
-    let description = desc;
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
   // Tile-level op (operates inside ttl.compute body)
   def TileOp : TTL_TileUnaryOp<"tile_"#mnemonic> {
@@ -305,32 +298,15 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp, string des
 }
 
 // Define all unary elementwise ops using the multiclass
-defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile",
-    "Elementwise exponential (SFPU). Lowered to ttl.compute with ttl.tile_exp.">;
-
-defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile",
-    "Elementwise natural logarithm (SFPU). Lowered to ttl.compute with ttl.tile_log.">;
-
-defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile",
-    "Elementwise square root (SFPU). Lowered to ttl.compute with ttl.tile_sqrt.">;
-
-defm TTL_Rsqrt : TTL_UnaryElementwisePair<"rsqrt", "rsqrt_tile",
-    "Elementwise reciprocal square root (SFPU). Lowered to ttl.compute with ttl.tile_rsqrt.">;
-
-defm TTL_Tanh : TTL_UnaryElementwisePair<"tanh", "tanh_tile",
-    "Elementwise hyperbolic tangent (SFPU). Lowered to ttl.compute with ttl.tile_tanh.">;
-
-defm TTL_Sigmoid : TTL_UnaryElementwisePair<"sigmoid", "sigmoid_tile",
-    "Elementwise sigmoid (SFPU). Lowered to ttl.compute with ttl.tile_sigmoid.">;
-
-defm TTL_Neg : TTL_UnaryElementwisePair<"neg", "neg_tile",
-    "Elementwise negation. Lowered to ttl.compute with ttl.tile_neg.">;
-
-defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile",
-    "Elementwise absolute value. Lowered to ttl.compute with ttl.tile_abs.">;
-
-defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile",
-    "Elementwise ReLU (SFPU). Lowered to ttl.compute with ttl.tile_relu.">;
+defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
+defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
+defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
+defm TTL_Rsqrt : TTL_UnaryElementwisePair<"rsqrt", "rsqrt_tile">;
+defm TTL_Tanh : TTL_UnaryElementwisePair<"tanh", "tanh_tile">;
+defm TTL_Sigmoid : TTL_UnaryElementwisePair<"sigmoid", "sigmoid_tile">;
+defm TTL_Neg : TTL_UnaryElementwisePair<"neg", "neg_tile">;
+defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile">;
+defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
 
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//

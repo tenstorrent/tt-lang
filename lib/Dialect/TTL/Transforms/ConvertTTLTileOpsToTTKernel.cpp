@@ -127,6 +127,8 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
 
 /// Special pattern for MaxTileOp which uses 2-arg in-place form:
 /// DST[dst0] = max(DST[dst0], DST[dst1])
+/// TODO: Remove this special pattern once TTKernel adds a 3-arg max_binary_tile
+/// op that matches the add/sub/mul signature: max(src0, src1, odst).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -136,8 +138,10 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    int64_t dst0Idx = getDstIdxForValue(adaptor.getLhs());
-    int64_t dst1Idx = getDstIdxForValue(adaptor.getRhs());
+    // MaxTilesOp is in-place: DST[dst0] = max(DST[dst0], DST[dst1])
+    // TODO(#124): Get DST indices from dst_idx attributes. For now use defaults.
+    int64_t dst0Idx = 0;
+    int64_t dst1Idx = 1;
 
     Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
