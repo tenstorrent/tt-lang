@@ -1,14 +1,12 @@
 // RUN: ttlang-opt --verify-diagnostics --split-input-file %s
-// Summary: Invalid CB operation cases rejected by verifiers.
 
 // -----
 
 // cb_reserve result shape must match CB shape.
 module {
   func.func @cb_reserve_shape_mismatch(%cb: !ttl.cb<[1, 1], f32, 2>) -> tensor<2x2xf32> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor shape dimension 0 (2) must match CB shape dimension (1)}}
-    %view = ttl.cb_reserve %cb, %c1 : <[1, 1], f32, 2> -> tensor<2x2xf32>
+    %view = ttl.cb_reserve %cb : <[1, 1], f32, 2> -> tensor<2x2xf32>
     func.return %view : tensor<2x2xf32>
   }
 }
@@ -18,9 +16,8 @@ module {
 // cb_reserve result element type must match CB element type.
 module {
   func.func @cb_reserve_element_mismatch(%cb: !ttl.cb<[1, 1], f32, 2>) -> tensor<1x1xf16> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor element type ('f16') must match CB element type ('f32')}}
-    %view = ttl.cb_reserve %cb, %c1 : <[1, 1], f32, 2> -> tensor<1x1xf16>
+    %view = ttl.cb_reserve %cb : <[1, 1], f32, 2> -> tensor<1x1xf16>
     func.return %view : tensor<1x1xf16>
   }
 }
@@ -30,9 +27,8 @@ module {
 // cb_reserve result rank must match CB shape rank.
 module {
   func.func @cb_reserve_rank_mismatch(%cb: !ttl.cb<[1, 1], f32, 2>) -> tensor<1xf32> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor rank (1) must match CB shape rank (2)}}
-    %view = ttl.cb_reserve %cb, %c1 : <[1, 1], f32, 2> -> tensor<1xf32>
+    %view = ttl.cb_reserve %cb : <[1, 1], f32, 2> -> tensor<1xf32>
     func.return %view : tensor<1xf32>
   }
 }
@@ -42,9 +38,8 @@ module {
 // cb_wait result shape must match CB shape.
 module {
   func.func @cb_wait_shape_mismatch(%cb: !ttl.cb<[1, 1], f32, 2>) -> tensor<2x2xf32> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor shape dimension 0 (2) must match CB shape dimension (1)}}
-    %view = ttl.cb_wait %cb, %c1 : <[1, 1], f32, 2> -> tensor<2x2xf32>
+    %view = ttl.cb_wait %cb : <[1, 1], f32, 2> -> tensor<2x2xf32>
     func.return %view : tensor<2x2xf32>
   }
 }
@@ -54,9 +49,8 @@ module {
 // cb_wait result element type must match CB element type.
 module {
   func.func @cb_wait_element_mismatch(%cb: !ttl.cb<[1, 1], f32, 2>) -> tensor<1x1xbf16> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor element type ('bf16') must match CB element type ('f32')}}
-    %view = ttl.cb_wait %cb, %c1 : <[1, 1], f32, 2> -> tensor<1x1xbf16>
+    %view = ttl.cb_wait %cb : <[1, 1], f32, 2> -> tensor<1x1xbf16>
     func.return %view : tensor<1x1xbf16>
   }
 }
@@ -66,9 +60,8 @@ module {
 // cb_wait result rank must match CB shape rank.
 module {
   func.func @cb_wait_rank_mismatch(%cb: !ttl.cb<[1, 1], f32, 2>) -> tensor<1x1x1xf32> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor rank (3) must match CB shape rank (2)}}
-    %view = ttl.cb_wait %cb, %c1 : <[1, 1], f32, 2> -> tensor<1x1x1xf32>
+    %view = ttl.cb_wait %cb : <[1, 1], f32, 2> -> tensor<1x1x1xf32>
     func.return %view : tensor<1x1x1xf32>
   }
 }
@@ -78,9 +71,8 @@ module {
 // cb_reserve with tile element type, wrong result element type.
 module {
   func.func @cb_reserve_tile_element_mismatch(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor element type ('!ttcore.tile<32x32, f32>') must match CB element type ('!ttcore.tile<32x32, bf16>')}}
-    %view = ttl.cb_reserve %cb, %c1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
     func.return %view : tensor<1x1x!ttcore.tile<32x32, f32>>
   }
 }
@@ -90,9 +82,8 @@ module {
 // cb_reserve second dimension mismatch.
 module {
   func.func @cb_reserve_shape_dim1_mismatch(%cb: !ttl.cb<[2, 3], f32, 2>) -> tensor<2x4xf32> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c1 = arith.constant 1 : i32
     // expected-error @below {{result tensor shape dimension 1 (4) must match CB shape dimension (3)}}
-    %view = ttl.cb_reserve %cb, %c1 : <[2, 3], f32, 2> -> tensor<2x4xf32>
+    %view = ttl.cb_reserve %cb : <[2, 3], f32, 2> -> tensor<2x4xf32>
     func.return %view : tensor<2x4xf32>
   }
 }
