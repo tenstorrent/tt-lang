@@ -236,7 +236,8 @@ struct LowerComputeOp : OpConversionPattern<ComputeOp> {
 
     // 2. Load input tiles from CBs to DST registers
     // Only emit copy_tile ops for CB-typed inputs; skip for tensor inputs.
-    // TODO: When tensors are converted to CBs earlier in pipeline, remove check.
+    // TODO: When tensors are converted to CBs earlier in pipeline, remove
+    // check.
     for (auto [idx, input] : llvm::enumerate(adaptor.getInputs())) {
       // Skip non-CB inputs (tensors) - copy_tile requires CB type
       if (!llvm::isa<ttk::CBType>(input.getType())) {
@@ -261,15 +262,15 @@ struct LowerComputeOp : OpConversionPattern<ComputeOp> {
     // 3. Inline the body operations (which should now be TTKernel ops)
     // Create mapping from block args to adapted inputs
     IRMapping mapping;
-    for (auto [blockArg, input] :
-         llvm::zip(bodyBlock.getArguments().take_front(adaptor.getInputs().size()),
-                   adaptor.getInputs())) {
+    for (auto [blockArg, input] : llvm::zip(
+             bodyBlock.getArguments().take_front(adaptor.getInputs().size()),
+             adaptor.getInputs())) {
       mapping.map(blockArg, input);
     }
     // Map output block args
-    for (auto [blockArg, output] :
-         llvm::zip(bodyBlock.getArguments().drop_front(adaptor.getInputs().size()),
-                   adaptor.getOutputs())) {
+    for (auto [blockArg, output] : llvm::zip(
+             bodyBlock.getArguments().drop_front(adaptor.getInputs().size()),
+             adaptor.getOutputs())) {
       mapping.map(blockArg, output);
     }
 
@@ -334,7 +335,8 @@ void populateTTLComputeToTTKernelPatterns(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
   // Tile op lowerings first (higher benefit ensures they run before ComputeOp)
-  // This ensures the body operations are converted before ComputeOp inlines them
+  // This ensures the body operations are converted before ComputeOp inlines
+  // them
   patterns.add<
       // Unary ops
       ExpTileLowering, LogTileLowering, SqrtTileLowering, RsqrtTileLowering,

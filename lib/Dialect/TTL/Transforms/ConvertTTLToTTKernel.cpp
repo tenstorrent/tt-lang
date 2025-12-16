@@ -464,115 +464,6 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   }
 };
 
-//===----------------------------------------------------------------------===//
-// Tile Op Lowering Patterns (ttl.tile_* -> ttkernel.*)
-//===----------------------------------------------------------------------===//
-
-// Template for lowering binary tile ops to TTKernel SFPU ops.
-// SFPU binary ops: DST[odst] = DST[src0] op DST[src1]
-template <typename TTLTileOp, typename TTKernelOp, typename TTKernelInitOp>
-struct LowerTileBinaryOp : OpRewritePattern<TTLTileOp> {
-  using OpRewritePattern<TTLTileOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(TTLTileOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    // TODO: Get DST indices from:
-    // - src0/src1: Track which DST registers the operands are in
-    // - odst: Use dst_idx attribute from the op
-    // For MVP, hardcode: src0=0, src1=1, odst=0 (in-place on src0).
-    Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-
-    // Emit init operation to configure compute unit.
-    rewriter.create<TTKernelInitOp>(loc);
-
-    // Emit the SFPU binary operation (operates in-place, no results).
-    rewriter.create<TTKernelOp>(loc, src0, src1, odst);
-
-    // TTKernel ops have no results; the TTL tile op result is now implicit.
-    // Erase the TTL op since its result is tracked via DST register.
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-// Template for lowering unary tile ops to TTKernel SFPU ops.
-// Unary SFPU ops: DST[dst_idx] = op(DST[dst_idx])
-template <typename TTLTileOp, typename TTKernelOp, typename TTKernelInitOp>
-struct LowerTileUnaryOp : OpRewritePattern<TTLTileOp> {
-  using OpRewritePattern<TTLTileOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(TTLTileOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    // TODO: Get dst_idx from attribute and use for both src and dst.
-    // For now, hardcode to 0.
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-
-    // Emit init operation.
-    rewriter.create<TTKernelInitOp>(loc);
-
-    // Emit the SFPU unary operation (in-place, no results).
-    rewriter.create<TTKernelOp>(loc, dstIdx);
-
-    // Erase the TTL op since its result is now implicit in DST register.
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-// Generate pattern type aliases from TTLToTTKernelOps.def
-#define TTL_TILE_BINARY_SFPU_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)   \
-  using Lower##TTL_OP =                                                        \
-      LowerTileBinaryOp<TTL_OP, ttk::TTKERNEL_OP, ttk::TTKERNEL_INIT>;
-#define TTL_TILE_UNARY_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)         \
-  using Lower##TTL_OP =                                                        \
-      LowerTileUnaryOp<TTL_OP, ttk::TTKERNEL_OP, ttk::TTKERNEL_INIT>;
-#include "ttlang/Dialect/TTL/TTLToTTKernelOps.def"
-
-//===----------------------------------------------------------------------===//
-// ComputeOp Lowering Pattern
-//===----------------------------------------------------------------------===//
-
-struct LowerComputeOp : OpRewritePattern<ComputeOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(ComputeOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    // TODO: Implement full lowering with:
-    // 1. tile_regs_acquire()
-    // 2. copy_tile from input CBs to DST (using dst_idx_map if present)
-    // 3. Inline tile ops from body and lower them
-    // 4. tile_regs_commit() + tile_regs_wait()
-    // 5. pack_tile from DST to output CB
-    // 6. tile_regs_release()
-
-    rewriter.setInsertionPoint(op);
-    rewriter.create<ttk::TileRegsAcquireOp>(loc);
-
-    // TODO: Copy input tiles from CBs to DST registers.
-    // TODO: Inline and lower tile ops from the body region.
-
-    rewriter.setInsertionPointAfter(op);
-    rewriter.create<ttk::TileRegsCommitOp>(loc);
-    rewriter.create<ttk::TileRegsWaitOp>(loc);
-
-    // TODO: Pack result tiles from DST to output CBs.
-
-    rewriter.create<ttk::TileRegsReleaseOp>(loc);
-
-    // Don't erase the compute op yet since we haven't fully lowered the body.
-    // TODO: Erase after implementing body inlining and lowering.
-    return success();
-  }
-};
-
 struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -637,7 +528,8 @@ struct TTLConvertTTLToTTKernelPass
                            ttkernel::TTKernelDialect>();
 
     // Mark compute-related ops as legal during partial conversion since they're
-    // handled by the separate greedy rewrite phase (populateTTLComputeToTTKernelPatterns).
+    // handled by the separate greedy rewrite phase
+    // (populateTTLComputeToTTKernelPatterns).
     target.addLegalOp<ComputeOp, YieldOp>();
     // Tile ops (handled by greedy phase):
     target.addLegalOp<
@@ -693,12 +585,13 @@ struct TTLConvertTTLToTTKernelPass
         ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
         SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp>();
     // Other dialects are legal (func, tensor, etc.)
-    computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+    computeTarget.markUnknownOpDynamicallyLegal(
+        [](Operation *) { return true; });
 
     RewritePatternSet computePatterns(&ctx);
     populateTTLComputeToTTKernelPatterns(computePatterns);
     if (failed(applyPartialConversion(mod, computeTarget,
-                                       std::move(computePatterns)))) {
+                                      std::move(computePatterns)))) {
       signalPassFailure();
       return;
     }
