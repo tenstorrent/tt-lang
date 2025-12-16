@@ -9,11 +9,9 @@
 #define GEN_PASS_DEF_TTLASSIGNDSTREGISTERS
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir::tt::ttl {
@@ -36,7 +34,7 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 }
 
 //===----------------------------------------------------------------------===//
-// Lowering to ttl.compute with tile ops (primary path)
+// Lowering to ttl.compute with tile ops
 //===----------------------------------------------------------------------===//
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
@@ -136,56 +134,8 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   return success();
 }
 
-/// Build a ttl.compute op with custom unary logic in the body.
-template <typename BodyBuilder>
-static LogicalResult
-buildUnaryComputeCustom(Operation *op, PatternRewriter &rewriter, Value input,
-                        BodyBuilder &&bodyBuilder) {
-  auto type = getTensorType(op->getResult(0));
-  if (!type) {
-    return failure();
-  }
-
-  Location loc = op->getLoc();
-  MLIRContext *ctx = rewriter.getContext();
-
-  // Build identity indexing maps
-  SmallVector<Attribute> maps;
-  AffineMap identityMap =
-      AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  for (int i = 0; i < 2; ++i) {
-    maps.push_back(AffineMapAttr::get(identityMap));
-  }
-
-  // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes;
-  for (int64_t i = 0; i < type.getRank(); ++i) {
-    iterTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
-
-  Value init = buildInitTensor(rewriter, loc, type, input);
-
-  // Create ttl.compute op
-  auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{input}, ValueRange{init},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
-
-  // Build the body region
-  Block *body = rewriter.createBlock(&computeOp.getBody());
-  Type elemType = type.getElementType();
-  body->addArgument(elemType, loc);
-  body->addArgument(elemType, loc);
-
-  rewriter.setInsertionPointToStart(body);
-  Value result = bodyBuilder(rewriter, loc, body->getArgument(0));
-  rewriter.create<YieldOp>(loc, ValueRange{result});
-
-  rewriter.replaceOp(op, computeOp.getResult(0));
-  return success();
-}
-
 //===----------------------------------------------------------------------===//
-// Templated Elementwise Lowering Patterns (primary: ttl.compute with tile ops)
+// Templated Elementwise Lowering Patterns
 //===----------------------------------------------------------------------===//
 
 /// Pattern for binary elementwise ops: TTL tensor op -> ttl.compute with tile
@@ -224,91 +174,49 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
 // Generate type aliases for unary operations using tile ops
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP)                                     \
   using Lower##TTL_OP = LowerUnaryToCompute<TTL_OP##Op, TILE_OP>;
-// Custom ops are defined manually below
-#define TTL_UNARY_CUSTOM_TILE_OP(TTL_OP)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
-//===----------------------------------------------------------------------===//
-// Custom Lowering Patterns (operations requiring special handling)
-//===----------------------------------------------------------------------===//
-
-/// ReLU: lower to ttl.compute with ttl.tile_relu in the body.
-struct LowerRelu : OpRewritePattern<ReluOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(ReluOp op,
-                                PatternRewriter &rewriter) const override {
-    return buildUnaryCompute<TileReluOp>(op.getOperation(), rewriter,
-                                         op.getInput());
-  }
-};
-
-/// Sigmoid: lower to ttl.compute with ttl.tile_sigmoid in the body.
-struct LowerSigmoid : OpRewritePattern<SigmoidOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(SigmoidOp op,
-                                PatternRewriter &rewriter) const override {
-    return buildUnaryCompute<TileSigmoidOp>(op.getOperation(), rewriter,
-                                            op.getInput());
-  }
-};
 
 //===----------------------------------------------------------------------===//
 // DST Register Assignment
 //===----------------------------------------------------------------------===//
 
-/// Annotate ttl.compute ops with DST register requirements.
-/// Returns failure if any operation exceeds the capacity.
-static LogicalResult annotateDST(func::FuncOp func, int64_t capacity) {
+/// Assign DST register indices to tile ops in the compute body.
+/// Uses a simple sequential allocation strategy as a placeholder.
+/// TODO: Implement DSTAllocationStrategy interface with pluggable algorithms
+/// (linear-scan, graph-coloring, greedy).
+static LogicalResult assignDSTRegisters(func::FuncOp func, int64_t capacity) {
   bool error = false;
   func.walk([&](ComputeOp op) {
     auto resultType = dyn_cast<RankedTensorType>(op.getResultTypes().front());
     if (!resultType) {
       return;
     }
+
+    // Check if this compute op would exceed DST capacity (for tiling decisions).
     int64_t tiles = resultType.getNumElements();
-    op->setAttr(
-        "ttl.dst_required",
-        IntegerAttr::get(IntegerType::get(func.getContext(), 32), tiles));
     if (tiles > capacity) {
+      // TODO: Emit diagnostic about needing to tile for DST capacity.
       error = true;
     }
+
+    // Simple sequential DST index assignment for tile ops in the body.
+    // For now, all tile op results go to DST index 0 (in-place computation).
+    // Binary ops load both inputs to DST indices 0 and 1.
+    // TODO: Use liveness analysis and graph coloring for optimal allocation.
+    op.getBody().walk([&](Operation *bodyOp) {
+      if (bodyOp->getNumResults() > 0 && !bodyOp->hasAttr("dst_idx")) {
+        StringRef opName = bodyOp->getName().getStringRef();
+        if (opName.contains("tile_")) {
+          // Assign DST index 0 to tile op results by default.
+          // In-place operations reuse the same register.
+          bodyOp->setAttr(
+              "dst_idx",
+              IntegerAttr::get(IntegerType::get(func.getContext(), 32), 0));
+        }
+      }
+    });
   });
   return failure(error);
-}
-
-/// Remove DST marker ops using the provided rewriter.
-static void eraseDSTMarkerOps(func::FuncOp func, IRRewriter &rewriter) {
-  // Collect ops first to avoid iterator invalidation during erasure.
-  SmallVector<AcquireDSTOp> acquireOps;
-  SmallVector<ReleaseDSTOp> releaseOps;
-  SmallVector<RequireDSTOp> requireOps;
-
-  func.walk([&](Operation *op) {
-    if (auto acquire = dyn_cast<AcquireDSTOp>(op)) {
-      acquireOps.push_back(acquire);
-    } else if (auto release = dyn_cast<ReleaseDSTOp>(op)) {
-      releaseOps.push_back(release);
-    } else if (auto require = dyn_cast<RequireDSTOp>(op)) {
-      requireOps.push_back(require);
-    }
-  });
-
-  // Replace AcquireDSTOp with constant 0 and erase.
-  for (AcquireDSTOp op : acquireOps) {
-    rewriter.setInsertionPoint(op);
-    auto zero = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-    rewriter.replaceOp(op, zero);
-  }
-
-  // Erase ReleaseDSTOp and RequireDSTOp.
-  for (ReleaseDSTOp op : releaseOps) {
-    rewriter.eraseOp(op);
-  }
-  for (RequireDSTOp op : requireOps) {
-    rewriter.eraseOp(op);
-  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -331,13 +239,9 @@ struct TTLAssignDSTRegistersPass
     : public ::impl::TTLAssignDSTRegistersBase<TTLAssignDSTRegistersPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
-    IRRewriter rewriter(func.getContext());
 
-    // Remove DST marker ops.
-    eraseDSTMarkerOps(func, rewriter);
-
-    // Annotate ttl.compute ops with DST requirements.
-    if (failed(annotateDST(func, /*capacity=*/64))) {
+    // Assign DST registers and annotate ttl.compute ops.
+    if (failed(assignDSTRegisters(func, /*capacity=*/64))) {
       return signalPassFailure();
     }
   }
@@ -356,7 +260,6 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   // These are generated from TTLElementwiseOps.def using tile-based mappings.
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP) patterns.add<Lower##TTL_OP>(ctx);
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP) patterns.add<Lower##TTL_OP>(ctx);
-#define TTL_UNARY_CUSTOM_TILE_OP(TTL_OP) patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 }
 
