@@ -523,10 +523,9 @@ struct TTLConvertTTLToTTKernelPass
 
     ConversionTarget target(ctx);
     target.addIllegalDialect<tt::ttl::TTLDialect>();
-    target.addLegalDialect<arith::ArithDialect, BuiltinDialect,
-                           linalg::LinalgDialect, math::MathDialect,
-                           scf::SCFDialect, func::FuncDialect,
-                           tensor::TensorDialect, ttkernel::TTKernelDialect>();
+    target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
+                           func::FuncDialect, tensor::TensorDialect,
+                           ttkernel::TTKernelDialect>();
 
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());

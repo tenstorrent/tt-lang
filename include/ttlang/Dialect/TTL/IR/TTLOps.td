@@ -13,7 +13,6 @@ include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/OpBase.td"
-include "mlir/Dialect/Linalg/IR/LinalgBase.td"
 
 //===----------------------------------------------------------------------===//
 // TTL operation definitions

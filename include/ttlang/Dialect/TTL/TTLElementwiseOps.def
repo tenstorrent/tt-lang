@@ -6,16 +6,68 @@
 // TTL Elementwise Operation Definitions
 //===----------------------------------------------------------------------===//
 //
-// This file defines the mapping between TTL elementwise operations and their
-// corresponding arith/math dialect operations. It uses the X-macro pattern
-// to generate boilerplate code for pattern definitions and registration.
+// This file defines mappings for TTL elementwise operations:
+// 1. TTL tensor ops -> ttl.compute with tile ops (primary lowering path)
+// 2. TTL tensor ops -> linalg.generic with arith/math (legacy path)
 //
-// Usage:
+// It uses the X-macro pattern to generate boilerplate code for pattern
+// definitions and registration.
+//
+// For lowering to ttl.compute (tile-based):
+//   #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP)  // your code here
+//   #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP)   // your code here
+//   #define TTL_UNARY_CUSTOM_TILE_OP(TTL_OP)     // your code here
+//   #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+//
+// For lowering to linalg.generic (scalar-based, legacy):
 //   #define TTL_BINARY_OP(TTL_OP, ARITH_OP)  // your code here
 //   #define TTL_UNARY_OP(TTL_OP, MATH_OP)    // your code here
 //   #define TTL_UNARY_CUSTOM_OP(TTL_OP)      // your code here
 //   #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 //
+//===----------------------------------------------------------------------===//
+
+//===----------------------------------------------------------------------===//
+// Tile-based mappings (TTL tensor ops -> ttl.compute with tile ops)
+//===----------------------------------------------------------------------===//
+
+#ifndef TTL_BINARY_TILE_OP
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP)
+#endif
+
+#ifndef TTL_UNARY_TILE_OP
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP)
+#endif
+
+#ifndef TTL_UNARY_CUSTOM_TILE_OP
+#define TTL_UNARY_CUSTOM_TILE_OP(TTL_OP)
+#endif
+
+// Binary operations: TTL tensor op -> TTL tile op
+TTL_BINARY_TILE_OP(Add, TileAddOp)
+TTL_BINARY_TILE_OP(Sub, TileSubOp)
+TTL_BINARY_TILE_OP(Mul, TileMulOp)
+TTL_BINARY_TILE_OP(Max, TileMaxOp)
+
+// Unary operations: TTL tensor op -> TTL tile op
+TTL_UNARY_TILE_OP(Exp, TileExpOp)
+TTL_UNARY_TILE_OP(Log, TileLogOp)
+TTL_UNARY_TILE_OP(Sqrt, TileSqrtOp)
+TTL_UNARY_TILE_OP(Rsqrt, TileRsqrtOp)
+TTL_UNARY_TILE_OP(Tanh, TileTanhOp)
+TTL_UNARY_TILE_OP(Abs, TileAbsOp)
+TTL_UNARY_TILE_OP(Neg, TileNegOp)
+
+// Custom unary operations (multi-op sequences)
+TTL_UNARY_CUSTOM_TILE_OP(Relu)
+TTL_UNARY_CUSTOM_TILE_OP(Sigmoid)
+
+#undef TTL_BINARY_TILE_OP
+#undef TTL_UNARY_TILE_OP
+#undef TTL_UNARY_CUSTOM_TILE_OP
+
+//===----------------------------------------------------------------------===//
+// Scalar-based mappings (TTL tensor ops -> linalg.generic, legacy)
 //===----------------------------------------------------------------------===//
 
 #ifndef TTL_BINARY_OP
@@ -30,21 +82,13 @@
 #define TTL_UNARY_CUSTOM_OP(TTL_OP)
 #endif
 
-//===----------------------------------------------------------------------===//
-// Binary Elementwise Operations
-// These map directly to arith dialect floating-point operations.
-//===----------------------------------------------------------------------===//
-
+// Binary Elementwise Operations (arith dialect)
 TTL_BINARY_OP(Add, arith::AddFOp)
 TTL_BINARY_OP(Sub, arith::SubFOp)
 TTL_BINARY_OP(Mul, arith::MulFOp)
 TTL_BINARY_OP(Max, arith::MaximumFOp)
 
-//===----------------------------------------------------------------------===//
-// Unary Elementwise Operations (Simple)
-// These map directly to math dialect operations.
-//===----------------------------------------------------------------------===//
-
+// Unary Elementwise Operations (math dialect)
 TTL_UNARY_OP(Exp, math::ExpOp)
 TTL_UNARY_OP(Log, math::LogOp)
 TTL_UNARY_OP(Sqrt, math::SqrtOp)
@@ -52,18 +96,10 @@ TTL_UNARY_OP(Rsqrt, math::RsqrtOp)
 TTL_UNARY_OP(Tanh, math::TanhOp)
 TTL_UNARY_OP(Abs, math::AbsFOp)
 
-//===----------------------------------------------------------------------===//
-// Unary Elementwise Operations (Arith dialect)
-// These map to arith dialect operations.
-//===----------------------------------------------------------------------===//
-
+// Unary Elementwise Operations (arith dialect)
 TTL_UNARY_OP(Neg, arith::NegFOp)
 
-//===----------------------------------------------------------------------===//
-// Unary Elementwise Operations (Custom)
-// These require custom lowering logic (e.g., multi-op sequences).
-//===----------------------------------------------------------------------===//
-
+// Unary Elementwise Operations (Custom lowering)
 TTL_UNARY_CUSTOM_OP(Relu)
 TTL_UNARY_CUSTOM_OP(Sigmoid)
 
