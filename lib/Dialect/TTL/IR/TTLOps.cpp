@@ -105,6 +105,41 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
   return success();
 }
 
+void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
+  // Print inputs (ins operands)
+  p << " ins(";
+  p.printOperands(getInputs());
+  p << " : ";
+  llvm::interleaveComma(getInputs().getTypes(), p);
+  p << ")";
+
+  // Print outputs (outs operands).
+  p << " outs(";
+  p.printOperands(getOutputs());
+  p << " : ";
+  llvm::interleaveComma(getOutputs().getTypes(), p);
+  p << ")";
+
+  // Print attributes (excluding operandSegmentSizes which is internal).
+  SmallVector<mlir::StringRef> elidedAttrs = {"operandSegmentSizes"};
+  p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
+
+  // Print the region.
+  p << ' ';
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/true,
+                /*printBlockTerminators=*/true);
+
+  // Print result types.
+  p << " -> ";
+  if (getResults().size() == 1) {
+    p.printType(getResults().front().getType());
+  } else {
+    p << "(";
+    llvm::interleaveComma(getResultTypes(), p);
+    p << ")";
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // ComputeOp - TilingInterface implementations
 //===----------------------------------------------------------------------===//
@@ -247,43 +282,41 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     }
   }
   result.addTypes(resultTypes);
-
   return mlir::success();
 }
 
-void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
-  // Print inputs (ins operands)
-  p << " ins(";
-  p.printOperands(getInputs());
-  p << " : ";
-  llvm::interleaveComma(getInputs().getTypes(), p);
-  p << ")";
+// Verify CB ops with tensor results (cb_reserve, cb_wait).
+// Checks that result tensor shape and element type match the CB
+// configuration.
+mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
+                                         mlir::tt::ttl::CircularBufferType cbTy,
+                                         mlir::RankedTensorType resultTy) {
+  auto cbShape = cbTy.getShape();
+  auto resultShape = resultTy.getShape();
 
-  // Print outputs (outs operands).
-  p << " outs(";
-  p.printOperands(getOutputs());
-  p << " : ";
-  llvm::interleaveComma(getOutputs().getTypes(), p);
-  p << ")";
-
-  // Print attributes (excluding operandSegmentSizes which is internal).
-  SmallVector<mlir::StringRef> elidedAttrs = {"operandSegmentSizes"};
-  p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
-
-  // Print the region.
-  p << ' ';
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/true,
-                /*printBlockTerminators=*/true);
-
-  // Print result types.
-  p << " -> ";
-  if (getResults().size() == 1) {
-    p.printType(getResults().front().getType());
-  } else {
-    p << "(";
-    llvm::interleaveComma(getResultTypes(), p);
-    p << ")";
+  if (cbShape.size() != resultShape.size()) {
+    return op->emitOpError()
+           << "result tensor rank (" << resultShape.size()
+           << ") must match CB shape rank (" << cbShape.size() << ")";
   }
+
+  for (size_t i = 0; i < cbShape.size(); ++i) {
+    if (cbShape[i] != resultShape[i]) {
+      return op->emitOpError()
+             << "result tensor shape dimension " << i << " (" << resultShape[i]
+             << ") must match CB shape dimension (" << cbShape[i] << ")";
+    }
+  }
+
+  auto cbElemTy = cbTy.getElementType();
+  auto resultElemTy = resultTy.getElementType();
+  if (cbElemTy != resultElemTy) {
+    return op->emitOpError()
+           << "result tensor element type (" << resultElemTy
+           << ") must match CB element type (" << cbElemTy << ")";
+  }
+
+  return mlir::success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
@@ -303,4 +336,28 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
   return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
+  auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+  auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+  return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
+}
+
+mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
+  // cb_push has no result to verify; the CB type is already enforced by
+  // tablegen constraints.
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
+  auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+  auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+  return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
+}
+
+mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
+  // cb_pop has no result to verify; the CB type is already enforced by
+  // tablegen constraints.
+  return success();
 }
