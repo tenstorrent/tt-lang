@@ -1,0 +1,57 @@
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//===----------------------------------------------------------------------===//
+// TTL Tile Op to TTKernel Op Mappings
+//===----------------------------------------------------------------------===//
+//
+// This file defines mappings for lowering TTL tile operations to TTKernel ops.
+//
+// Usage (for Phase 7 implementation):
+//   #define TTL_TILE_BINARY_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)
+//   #define TTL_TILE_UNARY_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)
+//   #include "ttlang/Dialect/TTL/TTLToTTKernelOps.def"
+//
+// Each TTL tile op lowers to:
+//   1. ttkernel.INIT() - Configure compute unit (e.g., exp_tile_init)
+//   2. ttkernel.OP(%dst_idx, ...) - Execute operation on DST register
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef TTL_TILE_BINARY_TO_TTKERNEL
+#define TTL_TILE_BINARY_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)
+#endif
+
+#ifndef TTL_TILE_UNARY_TO_TTKERNEL
+#define TTL_TILE_UNARY_TO_TTKERNEL(TTL_OP, TTKERNEL_OP, TTKERNEL_INIT)
+#endif
+
+//===----------------------------------------------------------------------===//
+// Binary Tile Operations -> TTKernel FPU/SFPU Ops
+//===----------------------------------------------------------------------===//
+
+// FPU binary ops (for ALU operations on full tiles)
+TTL_TILE_BINARY_TO_TTKERNEL(AddTileOp, AddTilesOp, AddTilesInitOp)
+TTL_TILE_BINARY_TO_TTKERNEL(SubTileOp, SubTilesOp, SubTilesInitOp)
+TTL_TILE_BINARY_TO_TTKERNEL(MulTileOp, MulTilesOp, MulTilesInitOp)
+
+// SFPU binary op (for special function operations)
+TTL_TILE_BINARY_TO_TTKERNEL(MaxTileOp, MaxTilesOp, MaxTilesInitOp)
+
+//===----------------------------------------------------------------------===//
+// Unary Tile Operations -> TTKernel SFPU Ops
+//===----------------------------------------------------------------------===//
+
+TTL_TILE_UNARY_TO_TTKERNEL(ExpTileOp, ExpTileOp, ExpTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(LogTileOp, LogTileOp, LogTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(SqrtTileOp, SqrtTileOp, SqrtTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(RsqrtTileOp, RsqrtTileOp, RsqrtTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(TanhTileOp, TanhTileOp, TanhTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(SigmoidTileOp, SigmoidTileOp, SigmoidTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(AbsTileOp, AbsTileOp, AbsTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(NegTileOp, NegativeTileOp, NegativeTileInitOp)
+TTL_TILE_UNARY_TO_TTKERNEL(ReluTileOp, ReluTileOp, ReluTileInitOp)
+
+#undef TTL_TILE_BINARY_TO_TTKERNEL
+#undef TTL_TILE_UNARY_TO_TTKERNEL
