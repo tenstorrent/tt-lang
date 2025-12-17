@@ -190,7 +190,7 @@ func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor
 // CHECK: arith.select
 func.func @compute_batched_tail(%a: tensor<3x2x!ttcore.tile<32x32, f32>>) -> tensor<3x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<3x2x!ttcore.tile<32x32, f32>>
-  %0 = ttl.compute ins(%a : tensor<3x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<3x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_tail, #map_tail], iterator_types = ["parallel", "parallel"], tile_batch_size = array<i64: 2, 1>} {
+  %0 = ttl.compute ins(%a : tensor<3x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<3x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_tail, #map_tail], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 1]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
     %relu = ttl.tile_relu %arg0 : !ttcore.tile<32x32, f32>
     ttl.yield %relu : !ttcore.tile<32x32, f32>

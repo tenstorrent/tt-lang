@@ -73,7 +73,7 @@ func.func @compute_wrong_terminator(%a: tensor<2x2x!ttcore.tile<32x32, f32>>) ->
 // expected-error @+3 {{'ttl.compute' op tile_batch_size size (1) must match number of iterator dimensions (2)}}
 func.func @compute_invalid_batch_rank(%a: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  %0 = ttl.compute ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_invalid, #map_invalid], iterator_types = ["parallel", "parallel"], tile_batch_size = array<i64: 2>} {
+  %0 = ttl.compute ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_invalid, #map_invalid], iterator_types = ["parallel", "parallel"], tile_batch_size = [2]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
     ttl.yield %arg0 : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -87,7 +87,7 @@ func.func @compute_invalid_batch_rank(%a: tensor<2x2x!ttcore.tile<32x32, f32>>) 
 // expected-error @+3 {{'ttl.compute' op tile_batch_size values must be > 0}}
 func.func @compute_invalid_batch_value(%a: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  %0 = ttl.compute ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_invalid, #map_invalid], iterator_types = ["parallel", "parallel"], tile_batch_size = array<i64: 2, 0>} {
+  %0 = ttl.compute ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_invalid, #map_invalid], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 0]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
     ttl.yield %arg0 : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

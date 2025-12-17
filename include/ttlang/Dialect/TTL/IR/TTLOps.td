@@ -224,7 +224,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     Variadic<AnyRankedTensor>:$outputs,
     AffineMapArrayAttr:$indexing_maps,
     ArrayAttr:$iterator_types,
-    OptionalAttr<DenseI64ArrayAttr>:$tile_batch_size
+    OptionalAttr<ArrayAttr>:$tile_batch_size
   );
   let results = (outs Variadic<AnyRankedTensor>:$results);
   let regions = (region SizedRegion<1>:$body);

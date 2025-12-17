@@ -39,7 +39,7 @@ func.func @compute_batched_2x1(%a: tensor<4x4x!ttcore.tile<32x32, f32>>, %b: ten
 
   %0 = ttl.compute ins(%a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>>)
       outs(%init : tensor<4x4x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"], tile_batch_size = array<i64: 2, 1>} {
+      {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 1]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
@@ -74,7 +74,7 @@ func.func @compute_batched_2x2(%a: tensor<8x8x!ttcore.tile<32x32, f32>>) -> tens
 
   %0 = ttl.compute ins(%a : tensor<8x8x!ttcore.tile<32x32, f32>>)
       outs(%init : tensor<8x8x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"], tile_batch_size = array<i64: 2, 2>} {
+      {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 2]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
     %exp = ttl.tile_exp %arg0 : !ttcore.tile<32x32, f32>
     ttl.yield %exp : !ttcore.tile<32x32, f32>

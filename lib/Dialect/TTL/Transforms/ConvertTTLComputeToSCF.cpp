@@ -125,7 +125,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // Get tile batch size per dimension.
     SmallVector<int64_t> batchSize;
     if (auto attr = op.getTileBatchSize()) {
-      batchSize.assign(attr->begin(), attr->end());
+      for (Attribute a : *attr) {
+        batchSize.push_back(cast<IntegerAttr>(a).getInt());
+      }
     } else {
       // Default: 1 tile per iteration for each dimension
       auto outTy = cast<RankedTensorType>(op.getOutputs().front().getType());

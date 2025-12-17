@@ -459,7 +459,14 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
   // Verify tile_batch_size shape and positivity if present.
   if (auto batchAttr = getTileBatchSize()) {
-    ArrayRef<int64_t> values = *batchAttr;
+    SmallVector<int64_t> values;
+    for (Attribute a : *batchAttr) {
+      auto intAttr = mlir::dyn_cast<IntegerAttr>(a);
+      if (!intAttr) {
+        return emitOpError("tile_batch_size must be an array of integers");
+      }
+      values.push_back(intAttr.getInt());
+    }
     if (values.empty()) {
       return emitOpError("tile_batch_size must not be empty");
     }
