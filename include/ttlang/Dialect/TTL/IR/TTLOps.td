@@ -18,37 +18,37 @@ include "mlir/IR/OpBase.td"
 // TTL operation definitions
 //===----------------------------------------------------------------------===//
 
-def TTL_CreateCBOp : TTL_Op<"create_cb", [Pure]> {
-  let summary = "Create a circular buffer value";
+def TTL_BindCBOp : TTL_Op<"bind_cb",
+    [MemoryEffects<[MemAlloc]>,
+     MemoryEffectsOpInterface]> {
+  let summary = "Bind to a hardware circular buffer slot";
   let description = [{
-    Creates a TTL circular buffer (`!ttl.cb`) representing an L1-resident buffer
-    used for block-level communication between TT-Lang threads.
-
-    Circular buffers are created in the kernel scope and used inside data-movement
-    and compute threads via higher-level operations (for example `ttl.copy` in the
-    DMA MVP).
+    Declares that this program will use a hardware circular buffer slot and
+    produces an SSA handle (`!ttl.cb`) representing that binding. This op does
+    **not** allocate a buffer; the runtime/host is responsible for provisioning
+    the CB. Binding occurs at kernel scope and the same SSA value should be
+    threaded into data movement and compute threads.
 
     - `shape` describes the block shape in "shape units" (tiles for tiled tensors,
       scalars for row-major tensors).
     - `element_type` is the element type stored in the buffer.
     - `buffer_factor` is the number of blocks (for example 2 for double buffering).
-
+    - `buffer_index` is optional; if absent a later pass assigns a per-core index.
     Example:
 
     ```mlir
-    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     ```
   }];
   let arguments = (ins
     I64ArrayAttr:$shape,
     TypeAttr:$element_type,
     I64Attr:$buffer_factor,
-    OptionalAttr<I32Attr>:$buffer_index,
-    OptionalAttr<I64Attr>:$page_size
+    OptionalAttr<I32Attr>:$buffer_index
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`(` `)` attr-dict `:` type($result)";
-  let hasVerifier = 0;
+  let hasVerifier = 1;
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
@@ -75,7 +75,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-      %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+      %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
       %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
       ttl.wait %xf
       func.return

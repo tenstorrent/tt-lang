@@ -8,7 +8,7 @@ def TTLConvertTTLToTTKernel
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
   let description = [{
     Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers create_cb, copy, wait MVP path.
+    barriers are available. Covers bind_cb, copy, wait MVP path.
 
     TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
     Issue: #77 (umbrella issue with subtasks #78-#89).
@@ -17,6 +17,20 @@ def TTLConvertTTLToTTKernel
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTLAssignCBIndices
+    : Pass<"ttl-assign-cb-indices", "::mlir::func::FuncOp"> {
+  let summary = "Assign circular buffer indices and check uniqueness";
+  let description = [{
+    Assigns missing circular buffer indices on ttl.bind_cb ops, preserving
+    user-specified indices and diagnosing index conflicts. Enforces a fixed
+    per-core slot budget (0..31).
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect"
   ];
 }
 

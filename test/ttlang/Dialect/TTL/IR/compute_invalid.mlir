@@ -92,16 +92,16 @@ func.func @compute_cb_count_mismatch(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // -----
 
-// Test: CB rank mismatch with tensor
-func.func @compute_cb_rank_mismatch(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
-                                   %cb0: !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+// Test: CB too large (total elements exceeds max)
+func.func @compute_cb_too_large(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                %cb0: !ttl.cb<[33], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // expected-error @+1 {{input_cb[0] shape rank must match input tensor rank for compatibility}}
+  // expected-error @+1 {{input_cb[0] total elements (33) must be <= 32}}
   %0 = ttl.compute
       ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      in_cbs(%cb0 : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>)
+      in_cbs(%cb0 : !ttl.cb<[33], !ttcore.tile<32x32, f32>, 2>)
       outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      out_cbs(%cb0 : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>)
+      out_cbs(%cb0 : !ttl.cb<[33], !ttcore.tile<32x32, f32>, 2>)
       {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0)>,
                         affine_map<(d0, d1) -> (d0, d1)>,
@@ -130,6 +130,30 @@ func.func @compute_cb_elem_mismatch(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                         affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>,
+       %arg1: !ttcore.tile<32x32, f32>):
+    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: CB elements must divide tensor elements
+func.func @compute_cb_divisible(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                %cb0: !ttl.cb<[3], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // expected-error @+1 {{input_cb[0] total elements (3) must divide input tensor elements (4)}}
+  %0 = ttl.compute
+      ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      in_cbs(%cb0 : !ttl.cb<[3], !ttcore.tile<32x32, f32>, 2>)
+      outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      out_cbs(%cb0 : !ttl.cb<[3], !ttcore.tile<32x32, f32>, 2>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>,
        %arg1: !ttcore.tile<32x32, f32>):

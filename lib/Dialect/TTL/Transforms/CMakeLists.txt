@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AssignCBIndices.cpp
   ConvertTTLToTTKernel.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLTileOpsToTTKernel.cpp

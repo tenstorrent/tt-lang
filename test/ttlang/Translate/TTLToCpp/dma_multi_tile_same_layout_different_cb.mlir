@@ -63,8 +63,8 @@
 module {
   func.func @same_layout_different_cb(%arg0: tensor<64x64xf32, #layout>, %arg1: tensor<64x64xf32, #layout>)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb1 = ttl.create_cb() {shape = [2, 2], element_type = f32, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
-    %cb2 = ttl.create_cb() {shape = [4, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[4, 1], f32, 2>
+    %cb1 = ttl.bind_cb() {shape = [2, 2], element_type = f32, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
+    %cb2 = ttl.bind_cb() {shape = [4, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[4, 1], f32, 2>
 
     // First copy: 64x64 → CB [2,2]
     %xf1 = ttl.copy %arg0, %cb1 : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>

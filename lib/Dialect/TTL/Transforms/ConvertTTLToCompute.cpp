@@ -19,12 +19,13 @@
 namespace mlir::tt::ttl {
 namespace {
 
-static RankedTensorType getTensorType(Value v) {
+[[maybe_unused]] static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
-static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
-                             Value exemplar) {
+[[maybe_unused]] static Value buildInitTensor(OpBuilder &b, Location loc,
+                                              RankedTensorType type,
+                                              Value exemplar) {
   SmallVector<Value> dynDims;
   for (auto dim : llvm::enumerate(type.getShape())) {
     if (dim.value() == ShapedType::kDynamic) {
@@ -37,8 +38,8 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 
 /// Create a circular buffer for a tensor operand.
 /// Buffer factor defaults to 2 (double buffering).
-static Value createCBForTensor(OpBuilder &b, Location loc,
-                               RankedTensorType tensorType) {
+[[maybe_unused]] static Value bindCBForTensor(OpBuilder &b, Location loc,
+                                              RankedTensorType tensorType) {
   // Extract tile shape from tensor
   SmallVector<int64_t> shape(tensorType.getShape().begin(),
                              tensorType.getShape().end());
@@ -51,10 +52,8 @@ static Value createCBForTensor(OpBuilder &b, Location loc,
   auto cbType = CircularBufferType::get(tensorType.getContext(), shape,
                                         elemType, bufferFactor);
 
-  return b.create<CreateCBOp>(loc, cbType, shapeAttr, elemAttr,
-                              bufferFactorAttr,
-                              /*buffer_index=*/mlir::IntegerAttr(),
-                              /*page_size=*/mlir::IntegerAttr());
+  return b.create<BindCBOp>(loc, cbType, shapeAttr, elemAttr, bufferFactorAttr,
+                            /*buffer_index=*/mlir::IntegerAttr());
 }
 
 //===----------------------------------------------------------------------===//
@@ -99,19 +98,19 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
   // Create CBs for inputs and outputs (reuse CB when operands alias).
   llvm::DenseMap<Value, Value> cbCache;
-  auto getOrCreateCb = [&](Value tensor) -> Value {
+  auto getOrBindCb = [&](Value tensor) -> Value {
     auto it = cbCache.find(tensor);
     if (it != cbCache.end()) {
       return it->second;
     }
-    Value cb = createCBForTensor(rewriter, loc, getTensorType(tensor));
+    Value cb = bindCBForTensor(rewriter, loc, getTensorType(tensor));
     cbCache.insert({tensor, cb});
     return cb;
   };
 
-  Value lhsCb = getOrCreateCb(lhs);
-  Value rhsCb = getOrCreateCb(rhs);
-  Value outCb = createCBForTensor(rewriter, loc, type);
+  Value lhsCb = getOrBindCb(lhs);
+  Value rhsCb = getOrBindCb(rhs);
+  Value outCb = bindCBForTensor(rewriter, loc, type);
 
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
@@ -174,18 +173,18 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   // Create CBs (reuse when operand aliases).
   llvm::DenseMap<Value, Value> cbCache;
-  auto getOrCreateCb = [&](Value tensor) -> Value {
+  auto getOrBindCb = [&](Value tensor) -> Value {
     auto it = cbCache.find(tensor);
     if (it != cbCache.end()) {
       return it->second;
     }
-    Value cb = createCBForTensor(rewriter, loc, getTensorType(tensor));
+    Value cb = bindCBForTensor(rewriter, loc, getTensorType(tensor));
     cbCache.insert({tensor, cb});
     return cb;
   };
 
-  Value inputCb = getOrCreateCb(input);
-  Value outCb = createCBForTensor(rewriter, loc, type);
+  Value inputCb = getOrBindCb(input);
+  Value outCb = bindCBForTensor(rewriter, loc, type);
 
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
