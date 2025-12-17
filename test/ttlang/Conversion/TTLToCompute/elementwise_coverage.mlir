@@ -5,13 +5,17 @@
 // CHECK-LABEL: func.func @binary_add
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[ARG1:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 func.func @binary_add(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
-  // CHECK: %[[INIT:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK: %[[RESULT:.+]] = ttl.compute
-  // CHECK-SAME: ins(%[[ARG0]], %[[ARG1]] : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
-  // CHECK-SAME: outs(%[[INIT]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: %[[INIT:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[CB0:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[CB2:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK-NEXT: %[[ARG1_CB:.+]] = ttl.attach_cb %[[ARG1]], %[[CB1]]
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB2]]
+  // CHECK-NEXT: %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]], %[[ARG1_CB]] : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN0:.+]]: !ttcore.tile<32x32, f32>, %[[IN1:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT: %[[ADD:.+]] = ttl.tile_add %[[IN0]], %[[IN1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[ADD:.+]] = ttl.tile_add %[[IN0]], %[[IN1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
   %0 = ttl.add %arg0, %arg1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -25,13 +29,15 @@ func.func @binary_add(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tensor
 // CHECK-LABEL: func.func @unary_exp
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<4x4x!ttcore.tile<32x32, f32>>)
 func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
-  // CHECK: %[[RESULT:.+]] = ttl.compute
-  // CHECK-SAME: ins(%[[ARG0]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
-  // CHECK-SAME: outs(%[[INIT]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[CB0:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK-NEXT: %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT: %[[EXP:.+]] = ttl.tile_exp %[[IN]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[EXP:.+]] = ttl.tile_exp %[[IN]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
   %0 = ttl.exp %arg0 : tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -45,25 +51,33 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
 // CHECK-LABEL: func.func @chained_ops
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[ARG1:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 func.func @chained_ops(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
-  // CHECK: %[[INIT0:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK: %[[ADD:.+]] = ttl.compute
-  // CHECK-SAME: ins(%[[ARG0]], %[[ARG1]] : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
-  // CHECK-SAME: outs(%[[INIT0]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: %[[INIT0:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[CB0:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[CB2:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK-NEXT: %[[ARG1_CB:.+]] = ttl.attach_cb %[[ARG1]], %[[CB1]]
+  // CHECK-NEXT: %[[INIT0_CB:.+]] = ttl.attach_cb %[[INIT0]], %[[CB2]]
+  // CHECK-NEXT: %[[ADD:.+]] = ttl.compute ins(%[[ARG0_CB]], %[[ARG1_CB]] : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%[[INIT0_CB]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN0:.+]]: !ttcore.tile<32x32, f32>, %[[IN1:.+]]: !ttcore.tile<32x32, f32>, %[[OUT0:.+]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT: %[[TILE_ADD:.+]] = ttl.tile_add %[[IN0]], %[[IN1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: ttl.yield %[[TILE_ADD]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[TILE_ADD:.+]] = ttl.tile_add %[[IN0]], %[[IN1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.yield %[[TILE_ADD]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %0 = ttl.add %arg0, %arg1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // CHECK: %[[INIT1:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK: %[[RESULT:.+]] = ttl.compute
-  // CHECK-SAME: ins(%[[ADD]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
-  // CHECK-SAME: outs(%[[INIT1]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: %[[INIT1:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[CB3:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[CB4:.+]] = ttl.bind_cb
+  // CHECK-NEXT: %[[ADD_CB:.+]] = ttl.attach_cb %[[ADD]], %[[CB3]]
+  // CHECK-NEXT: %[[INIT1_CB:.+]] = ttl.attach_cb %[[INIT1]], %[[CB4]]
+  // CHECK-NEXT: %[[RESULT:.+]] = ttl.compute ins(%[[ADD_CB]] : tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%[[INIT1_CB]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN2:.+]]: !ttcore.tile<32x32, f32>, %[[OUT1:.+]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT: %[[TILE_RELU:.+]] = ttl.tile_relu %[[IN2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: ttl.yield %[[TILE_RELU]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[TILE_RELU:.+]] = ttl.tile_relu %[[IN2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.yield %[[TILE_RELU]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %1 = ttl.relu %0 : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // CHECK: return %[[RESULT]]
+  // CHECK-NEXT: return %[[RESULT]]
   func.return %1 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
 
@@ -145,20 +159,22 @@ func.func @all_unary_ops(%x: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2
 // CHECK-SAME: (%[[A:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[B:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[C:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 func.func @dst_assignment_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.tile<32x32, f32>>, %c: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   // First compute: binary add
+  // CHECK: %[[A_CB:.+]] = ttl.attach_cb %[[A]]
+  // CHECK: %[[B_CB:.+]] = ttl.attach_cb %[[B]]
   // CHECK: %[[COMP0:.+]] = ttl.compute
-  // CHECK-SAME: ins(%[[A]], %[[B]]
   // CHECK: ttl.tile_add{{.*}}{dst_idx = 0 : i32}
   %0 = ttl.add %a, %b : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // Second compute: unary exp
+  // CHECK: %[[COMP0_CB:.+]] = ttl.attach_cb %[[COMP0]]
   // CHECK: %[[COMP1:.+]] = ttl.compute
-  // CHECK-SAME: ins(%[[COMP0]]
   // CHECK: ttl.tile_exp{{.*}}{dst_idx = 0 : i32}
   %1 = ttl.exp %0 : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // Third compute: binary mul
+  // CHECK: %[[COMP1_CB:.+]] = ttl.attach_cb %[[COMP1]]
+  // CHECK: %[[C_CB:.+]] = ttl.attach_cb %[[C]]
   // CHECK: %[[COMP2:.+]] = ttl.compute
-  // CHECK-SAME: ins(%[[COMP1]], %[[C]]
   // CHECK: ttl.tile_mul{{.*}}{dst_idx = 0 : i32}
   %2 = ttl.mul %1, %c : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

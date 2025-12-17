@@ -20,19 +20,6 @@ def TTLConvertTTLToTTKernel
   ];
 }
 
-def TTLAssignCBIndices
-    : Pass<"ttl-assign-cb-indices", "::mlir::func::FuncOp"> {
-  let summary = "Assign circular buffer indices and check uniqueness";
-  let description = [{
-    Assigns missing circular buffer indices on ttl.bind_cb ops, preserving
-    user-specified indices and diagnosing index conflicts. Enforces a fixed
-    per-core slot budget (0..31).
-  }];
-
-  let dependentDialects = [
-    "::mlir::func::FuncDialect"
-  ];
-}
 
 def TTLConvertTTLToCompute
     : Pass<"convert-ttl-to-compute", "::mlir::func::FuncOp"> {

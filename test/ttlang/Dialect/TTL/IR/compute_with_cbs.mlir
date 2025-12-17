@@ -1,5 +1,6 @@
 // RUN: ttlang-opt %s -split-input-file
-// Purpose: positive coverage for ttl.compute with CB operands, including CB reuse.
+// Purpose: positive coverage for ttl.compute with tensor-only operands and CB
+// associations via ttl.attach_cb, including CB reuse.
 
 // Simple compute with distinct CBs.
 func.func @compute_with_cbs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -9,17 +10,20 @@ func.func @compute_with_cbs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                             %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_att = ttl.attach_cb %b, %cbb
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %0 = ttl.compute
-      ins(%a, %b : tensor<2x2x!ttcore.tile<32x32, f32>>,
-                     tensor<2x2x!ttcore.tile<32x32, f32>>)
-      in_cbs(%cba, %cbb : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-                         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
-      outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      out_cbs(%cbout : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      ins(%a_att, %b_att : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                           tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                        affine_map<(d0, d1) -> (d0, d1)>,
-                        affine_map<(d0, d1) -> (d0, d1)>,
-                        affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
@@ -40,17 +44,20 @@ func.func @compute_with_cbs_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                   %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att0 = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att1 = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %0 = ttl.compute
-      ins(%a, %a : tensor<2x2x!ttcore.tile<32x32, f32>>,
-                     tensor<2x2x!ttcore.tile<32x32, f32>>)
-      in_cbs(%cba, %cba : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-                         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
-      outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      out_cbs(%cbout : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      ins(%a_att0, %a_att1 : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                             tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                        affine_map<(d0, d1) -> (d0, d1)>,
-                        affine_map<(d0, d1) -> (d0, d1)>,
-                        affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {

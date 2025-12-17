@@ -20,8 +20,8 @@ module {
 // CB-to-CB copy is invalid. CBs are created inside kernels, not passed as arguments.
 module {
   func.func @cb_to_cb_invalid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb0 = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %cb1 = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects exactly one operand to be !ttl.cb}}
     %xf = ttl.copy %cb0, %cb1 : (!ttl.cb<[1, 1], f32, 2>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
@@ -34,7 +34,8 @@ module {
 // Tensor operand must carry TTNNLayout encoding.
 module {
   func.func @tensor_missing_layout_invalid(%arg0: tensor<32x32xf32>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects tensor operand to carry TTNNLayout encoding}}
     %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
@@ -47,10 +48,10 @@ module {
 // Non-CB operand must be a ranked tensor.
 module {
   func.func @non_tensor_operand_invalid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %c0 = arith.constant 0 : i32
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %int_val = arith.constant 0 : i32
     // expected-error @below {{expects the non-CB operand to be a ranked tensor}}
-    %xf = ttl.copy %c0, %cb : (i32, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf = ttl.copy %int_val, %cb : (i32, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
@@ -64,7 +65,8 @@ module {
 // Copy without a corresponding wait is invalid in the MVP.
 module {
   func.func @copy_without_wait_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
     %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     func.return
@@ -108,8 +110,8 @@ module {
 // This exercises the verifier's loop iteration space comparison.
 module {
   func.func @two_phase_loops_missing_wait_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c3 = arith.constant 3 : index
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
@@ -140,7 +142,8 @@ module {
 // lowering can always select a specific barrier.
 module {
   func.func @untyped_transfer_handle_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects transfer handle to be direction-typed (!ttl.transfer_handle<read> or !ttl.transfer_handle<write>)}}
     %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
     func.return
@@ -156,8 +159,8 @@ module {
 // invalid: it drops intermediate transfers without synchronization.
 module {
   func.func @pipelined_loop_missing_wait_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c2 = arith.constant 2 : index
     %c1 = arith.constant 1 : index
 

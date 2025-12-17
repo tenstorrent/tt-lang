@@ -35,6 +35,10 @@ bool hasUserOfType(mlir::Value value) {
   return false;
 }
 
+/// Return the circular buffer attached to `tensor` via `ttl.attach_cb`, or null
+/// if none/ambiguous.
+mlir::Value getAttachedCB(mlir::Value tensor);
+
 } // namespace mlir::tt::ttl::utils
 
 #endif // TTLANG_DIALECT_UTILS_VALUEUSEUTILS_H
