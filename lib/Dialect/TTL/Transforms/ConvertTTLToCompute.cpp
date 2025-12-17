@@ -14,10 +14,9 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/MapVector.h"
 
 namespace mlir::tt::ttl {
-namespace {
-
 static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
@@ -32,6 +31,24 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
   }
   return b.create<tensor::EmptyOp>(loc, type.getShape(), type.getElementType(),
                                    dynDims);
+}
+
+/// Create a circular buffer for a tensor operand.
+/// Buffer factor defaults to 2 (double buffering).
+static Value bindCBForTensor(OpBuilder &b, Location loc,
+                             RankedTensorType tensorType, int32_t index) {
+  // Extract tile shape from tensor
+  SmallVector<int64_t> shape(tensorType.getShape().begin(),
+                             tensorType.getShape().end());
+  Type elemType = tensorType.getElementType();
+  int64_t bufferFactor = 2; // Double buffering
+
+  auto bufferFactorAttr = b.getI64IntegerAttr(bufferFactor);
+  auto cbType = CircularBufferType::get(tensorType.getContext(), shape,
+                                        elemType, bufferFactor);
+
+  return b.create<BindCBOp>(loc, cbType, b.getIndexAttr(index),
+                            bufferFactorAttr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -51,13 +68,17 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
+  int32_t nextCbIndex = 0;
+
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  for (int i = 0; i < 3; ++i) { // lhs, rhs, output
-    maps.push_back(AffineMapAttr::get(identityMap));
-  }
+  // inputs
+  maps.push_back(AffineMapAttr::get(identityMap));
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // outputs
+  maps.push_back(AffineMapAttr::get(identityMap));
 
   // Build iterator types: all parallel
   SmallVector<Attribute> iterTypes;
@@ -67,9 +88,35 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
   Value init = buildInitTensor(rewriter, loc, type, lhs);
 
+  // Create CBs for inputs and outputs (reuse CB when operands alias).
+  llvm::MapVector<Value, Value> cbCache;
+  auto getOrBindCb = [&](Value tensor) -> Value {
+    auto it = cbCache.find(tensor);
+    if (it != cbCache.end()) {
+      return it->second;
+    }
+    Value cb =
+        bindCBForTensor(rewriter, loc, getTensorType(tensor), nextCbIndex++);
+    cbCache.insert({tensor, cb});
+    return cb;
+  };
+
+  Value lhsCb = getOrBindCb(lhs);
+  Value rhsCb = getOrBindCb(rhs);
+  Value outCb = bindCBForTensor(rewriter, loc, type, nextCbIndex++);
+
+  Value lhsAttached =
+      rewriter.create<AttachCBOp>(loc, lhs.getType(), lhs, lhsCb);
+  Value rhsAttached =
+      rewriter.create<AttachCBOp>(loc, rhs.getType(), rhs, rhsCb);
+  Value initAttached =
+      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+  // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{init},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+      loc, TypeRange{type}, ValueRange{lhsAttached, rhsAttached},
+      ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -101,15 +148,18 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
+  int32_t nextCbIndex = 0;
+
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  for (int i = 0; i < 2; ++i) { // input, output
-    maps.push_back(AffineMapAttr::get(identityMap));
-  }
+  // input
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // output
+  maps.push_back(AffineMapAttr::get(identityMap));
 
-  // Build iterator types: all parallel.
+  // Build iterator types: all parallel
   SmallVector<Attribute> iterTypes;
   for (int64_t i = 0; i < type.getRank(); ++i) {
     iterTypes.push_back(rewriter.getStringAttr("parallel"));
@@ -117,14 +167,36 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   Value init = buildInitTensor(rewriter, loc, type, input);
 
+  // Create CBs (reuse when operand aliases).
+  llvm::MapVector<Value, Value> cbCache;
+  auto getOrBindCb = [&](Value tensor) -> Value {
+    auto it = cbCache.find(tensor);
+    if (it != cbCache.end()) {
+      return it->second;
+    }
+    Value cb =
+        bindCBForTensor(rewriter, loc, getTensorType(tensor), nextCbIndex++);
+    cbCache.insert({tensor, cb});
+    return cb;
+  };
+
+  Value inputCb = getOrBindCb(input);
+  Value outCb = bindCBForTensor(rewriter, loc, type, nextCbIndex++);
+
+  Value inputAttached =
+      rewriter.create<AttachCBOp>(loc, input.getType(), input, inputCb);
+  Value initAttached =
+      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+  // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{input}, ValueRange{init},
+      loc, TypeRange{type}, ValueRange{inputAttached}, ValueRange{initAttached},
       rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
-  // Build the body region with tile type block arguments.
+  // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
   Type scalarType = type.getElementType();
-  // Create tile type: !ttcore.tile<32x32, dtype>.
+  // Create tile type: !ttcore.tile<32x32, dtype>
   Type tileType = ttcore::TileType::get(scalarType);
   body->addArgument(tileType, loc); // input tile
   body->addArgument(tileType, loc); // output tile
@@ -137,6 +209,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   return success();
 }
 
+namespace {
 //===----------------------------------------------------------------------===//
 // Templated Elementwise Lowering Patterns
 //===----------------------------------------------------------------------===//
