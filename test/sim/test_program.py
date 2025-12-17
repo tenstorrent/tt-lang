@@ -132,10 +132,15 @@ class TestExecutionModes:
         tt_testing.assert_close(out, expected)
 
     def test_modes_produce_same_result(self) -> None:
-        """Test that THREADED mode works (COOPERATIVE skipped due to getsource issues)."""
+        """Test that both THREADED and COOPERATIVE modes produce the same result."""
 
         @ttl.kernel(grid=(1, 1), granularity=2)
-        def test_kernel(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor):
+        def test_kernel(
+            a: torch.Tensor,
+            b: torch.Tensor,
+            out: torch.Tensor,
+            mode: ExecutionMode = ExecutionMode.THREADED,
+        ):
             # Create accessors and circular buffers
             a_accessor = TensorAccessor(a, index_type=IndexType.TILE)
             b_accessor = TensorAccessor(b, index_type=IndexType.TILE)
@@ -177,19 +182,25 @@ class TestExecutionModes:
                 tx.wait()
                 out_cb.pop()
 
-            return Program(compute, dm0, dm1, execution_mode=ExecutionMode.THREADED)()
+            return Program(compute, dm0, dm1, execution_mode=mode)()
 
         # Create test data
         a = torch.randn(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
         b = torch.randn(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
-        out = torch.zeros_like(a)
 
         # Run with THREADED mode
-        test_kernel(a, b, out)
+        out_threaded = torch.zeros_like(a)
+        test_kernel(a, b, out_threaded, ExecutionMode.THREADED)
 
-        # Verify result makes sense (a + b)
+        # Run with COOPERATIVE mode
+        out_cooperative = torch.zeros_like(a)
+        test_kernel(a, b, out_cooperative, ExecutionMode.COOPERATIVE)
+
+        # Verify both modes produce the same result
         expected = a[0:64, 0:32] + b[0:64, 0:32]
-        tt_testing.assert_close(out[0:64, 0:32], expected)
+        tt_testing.assert_close(out_threaded[0:64, 0:32], expected)
+        tt_testing.assert_close(out_cooperative[0:64, 0:32], expected)
+        tt_testing.assert_close(out_threaded, out_cooperative)
 
 
 class TestMultiCore:
