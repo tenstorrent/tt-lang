@@ -91,6 +91,35 @@ static std::optional<ttk::ThreadType> getKernelThreadType(Operation *op) {
   return std::nullopt;
 }
 
+/// Get the function argument index for a tensor value.
+/// Returns the index if the tensor is a block argument of an entry block,
+/// otherwise returns failure. Used to map tensors to runtime args.
+static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
+  auto blockArg = llvm::dyn_cast<BlockArgument>(tensor);
+  if (!blockArg) {
+    return failure();
+  }
+  Block *block = blockArg.getParentBlock();
+  if (!block || !block->isEntryBlock()) {
+    return failure();
+  }
+  return blockArg.getArgNumber();
+}
+
+/// Get the L1 buffer address from runtime args for a tensor function argument.
+/// Runtime args are indexed by the tensor's function argument position.
+static FailureOr<Value> getBufferAddressFromRuntimeArg(
+    Value tensor, Location loc, ConversionPatternRewriter &rewriter) {
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  if (failed(argIdx)) {
+    return failure();
+  }
+  auto idxConst = rewriter.create<arith::ConstantIndexOp>(loc, *argIdx);
+  return rewriter
+      .create<ttk::GetCommonArgValOp>(loc, rewriter.getI32Type(), idxConst)
+      .getResult();
+}
+
 static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
@@ -287,16 +316,6 @@ static CopyDestKind classifyDst(Value v) {
   return CopyDestKind::Unknown;
 }
 
-static Value emitPlaceholderCB(ValueRange inputs,
-                               ConversionPatternRewriter &rewriter,
-                               Location loc, Type targetType) {
-  // TODO(ttl): Emit a real TTKernel CB handle instead of an unrealized cast.
-  // Issue: #78.
-  auto cast =
-      rewriter.create<UnrealizedConversionCastOp>(loc, targetType, inputs);
-  return cast.getResult(0);
-}
-
 static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
 }
@@ -309,43 +328,25 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
+/// Create a TensorAccessor from a tensor type and bank base address.
+/// The bankBase should come from runtime args via getBufferAddressFromRuntimeArg.
 static FailureOr<Value>
-materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
-  if (!llvm::isa<RankedTensorType>(tensor.getType())) {
+materializeTensorAccessor(Value tensor, Value bankBase,
+                          ConversionPatternRewriter &rewriter) {
+  auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
+  if (!tensorTy) {
     return failure();
   }
 
   auto loc = tensor.getLoc();
-  OpBuilder::InsertionGuard guard(rewriter);
-  if (auto barg = llvm::dyn_cast<BlockArgument>(tensor)) {
-    // Hoist accessor construction to the entry block when the source is a
-    // function argument so the accessor does not end up between generated
-    // tile loops for multiple copies.
-    Block *block = barg.getParentBlock();
-    if (block && block->isEntryBlock()) {
-      rewriter.setInsertionPointToStart(block);
-    }
-  }
-  auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
-  utils::ContiguousLayoutInfo layout;
-  if (auto enc = tensorTy.getEncoding()) {
-    if (mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
-      // TODO(ttl): Derive strides/page size/bank base from TTNNLayoutAttr.
-      // Issue: #81.
-    }
-  }
-  layout = utils::computeContiguousLayout(tensorTy);
+  utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
 
-  // Strides in elements (row-major placeholder).
   auto rowStride =
       rewriter.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
   auto colStride =
       rewriter.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
-
-  // Page size placeholder uses contiguous row-major; bank base is still a stub.
   auto pageSize =
       rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
-  auto bankBase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
 
   return buildTensorAccessor(loc, rewriter, rowStride, colStride, bankBase,
                              pageSize);
@@ -408,69 +409,85 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
   }
 }
 
-static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
+/// Lower tensor->CB copy: read from DRAM/L1 tensor into circular buffer.
+static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
                                      ConversionPatternRewriter &rewriter,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  auto [tilesY, tilesX] = getTileGridShapeFromValue(op.getSrc());
+  // Get tensor L1 address from runtime args.
+  auto bankBase = getBufferAddressFromRuntimeArg(srcTensor, loc, rewriter);
+  if (failed(bankBase)) {
+    return rewriter.notifyMatchFailure(
+        op, "tensor must be a function argument for runtime arg mapping");
+  }
 
-  // TODO(ttl): Plumb real NOC coordinates and bank base addresses from tensor
-  // accessors and kernel launch metadata. Issue: #84.
-  auto nocDst = makeZeroI32(loc, rewriter);
+  // Create tensor accessor with actual buffer address.
+  auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter);
+  if (failed(srcAccessor)) {
+    return rewriter.notifyMatchFailure(op,
+                                       "failed to create tensor accessor");
+  }
+
+  // Convert CB to TTKernel type and get write pointer.
+  auto cbConverted = convertCBOperand(dstCB, rewriter, loc);
+  if (failed(cbConverted)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+  }
+  auto cbWritePtr = rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted);
+
+  auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 // TODO(ttl): Add lowering for CB protocol ops
-                 // (reserve/push/wait/pop) once those ops are exposed in the
-                 // TTL dialect and wired through to TTKernel. Issue: #78.
                  b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
-                                                   srcAccessor, nocDst);
+                                                   *srcAccessor, cbWritePtr);
                });
 
-  // Encode direction in the handle type (async-token-like design).
-  (void)typeConverter.convertType(
-      TransferHandleType::get(rewriter.getContext(), TransferKind::read));
-  // TODO(ttl): When TRID-aware TTKernel ops are available, pass a real TRID
-  // instead of the zero placeholder here. Issue: #87.
   auto handle = makeZeroI32(loc, rewriter);
   rewriter.replaceOp(op, handle);
   return success();
 }
 
-static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
+/// Lower CB->tensor copy: write from circular buffer to DRAM/L1 tensor.
+static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
                                      ConversionPatternRewriter &rewriter,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  auto [tilesY, tilesX] = getTileGridShapeFromValue(op.getDst());
+  // Get tensor L1 address from runtime args.
+  auto bankBase = getBufferAddressFromRuntimeArg(dstTensor, loc, rewriter);
+  if (failed(bankBase)) {
+    return rewriter.notifyMatchFailure(
+        op, "tensor must be a function argument for runtime arg mapping");
+  }
 
-  // TODO(ttl): Lower CB operands to real CB handles and NOC addresses.
-  // Issue: #80.
-  auto tkCbTy = typeConverter.convertType(op.getSrc().getType());
-  auto cbVal = emitPlaceholderCB(ValueRange{makeZeroI32(loc, rewriter)},
-                                 rewriter, loc, tkCbTy);
-  (void)cbVal;
+  // Create tensor accessor with actual buffer address.
+  auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter);
+  if (failed(dstAccessor)) {
+    return rewriter.notifyMatchFailure(op,
+                                       "failed to create tensor accessor");
+  }
 
-  auto nocDst = makeZeroI32(loc, rewriter);
+  // Convert CB to TTKernel type and get read pointer.
+  auto cbConverted = convertCBOperand(srcCB, rewriter, loc);
+  if (failed(cbConverted)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+  }
+  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+
+  auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 // TODO(ttl): Add lowering for CB protocol ops
-                 // (reserve/push/wait/pop) once those ops are exposed in the
-                 // TTL dialect and wired through to TTKernel. Issue: #78.
                  b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
-                                                    dstAccessor, nocDst);
+                                                    *dstAccessor, cbReadPtr);
                });
 
-  (void)typeConverter.convertType(
-      TransferHandleType::get(rewriter.getContext(), TransferKind::write));
-  // TODO(ttl): When TRID-aware TTKernel ops are available, pass a real TRID
-  // instead of the zero placeholder here. Issue: #87.
   auto handle = makeZeroI32(loc, rewriter);
   rewriter.replaceOp(op, handle);
   return success();
@@ -487,51 +504,30 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return rewriter.notifyMatchFailure(op, "no type converter");
     }
 
-    auto convertOperand = [&](Value v) -> FailureOr<Value> {
-      if (auto acc = materializeTensorAccessor(v, rewriter); succeeded(acc)) {
-        return *acc;
-      }
+    // Use original operands for classification since lowering functions
+    // handle type conversion internally.
+    Value src = op.getSrc();
+    Value dst = op.getDst();
+    auto srcKind = classifySrc(src);
+    auto dstKind = classifyDst(dst);
 
-      Type targetTy = typeConverter->convertType(v.getType());
-      if (!targetTy) {
-        return failure();
-      }
-      if (targetTy == v.getType()) {
-        return v;
-      }
-      auto cast =
-          rewriter.create<UnrealizedConversionCastOp>(op.getLoc(), targetTy, v);
-      return cast.getResult(0);
-    };
-
-    FailureOr<Value> convertedSrc = convertOperand(adaptor.getSrc());
-    if (failed(convertedSrc)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert src type");
-    }
-    FailureOr<Value> convertedDst = convertOperand(adaptor.getDst());
-    if (failed(convertedDst)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert dst type");
-    }
-
-    auto srcKind = classifySrc(*convertedSrc);
-    auto dstKind = classifyDst(*convertedDst);
-
-    // Tensor accessor -> CB
+    // Tensor -> CB: read from tensor into circular buffer.
     if (srcKind == CopySourceKind::TensorAccessor &&
         dstKind == CopyDestKind::CircularBuffer) {
-      return lowerTensorToCB(op, *convertedSrc, rewriter, *typeConverter);
+      return lowerTensorToCB(op, src, adaptor.getDst(), rewriter,
+                             *typeConverter);
     }
 
-    // CB -> Tensor accessor
+    // CB -> Tensor: write from circular buffer to tensor.
     if (srcKind == CopySourceKind::CircularBuffer &&
         dstKind == CopyDestKind::TensorAccessor) {
-      return lowerCBToTensor(op, *convertedDst, rewriter, *typeConverter);
+      return lowerCBToTensor(op, adaptor.getSrc(), dst, rewriter,
+                             *typeConverter);
     }
 
-    // Unsupported pairs for now.
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
       diag << "unsupported ttl.copy src/dst combination: src="
-           << op.getSrc().getType() << " dst=" << op.getDst().getType();
+           << src.getType() << " dst=" << dst.getType();
     });
   }
 };
