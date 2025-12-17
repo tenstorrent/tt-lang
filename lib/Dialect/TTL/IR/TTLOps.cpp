@@ -274,6 +274,15 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
   return mlir::success();
 }
 
+/// Return the circular buffer attached to `tensor` via `ttl.attach_cb`, or null
+/// if none/ambiguous.
+mlir::Value getAttachedCB(mlir::Value tensor) {
+  if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
+    return attach.getCb();
+  }
+  return mlir::Value();
+}
+
 //===----------------------------------------------------------------------===//
 // ComputeOp - DestinationStyleOpInterface implementations
 //===----------------------------------------------------------------------===//
@@ -463,7 +472,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // Ensure every tensor operand has an attached CB (via ttl.attach_cb).
   auto requireAttachedCB = [&](Value tensor, size_t idx,
                                StringRef kind) -> LogicalResult {
-    Value cb = utils::getAttachedCB(tensor);
+    Value cb = getAttachedCB(tensor);
     if (!cb) {
       return emitOpError()
              << kind << " " << idx
