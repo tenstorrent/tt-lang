@@ -442,13 +442,15 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     return mlir::failure();
   }
   if (succeeded(parser.parseOptionalLParen())) {
+    if (parser.parseTypeList(resultTypes) || parser.parseRParen()) {
+      return mlir::failure();
+    }
+  } else {
     mlir::Type singleType;
-    if (parser.parseType(singleType) || parser.parseRParen()) {
+    if (parser.parseType(singleType)) {
       return mlir::failure();
     }
     resultTypes.push_back(singleType);
-  } else if (parser.parseTypeList(resultTypes)) {
-    return mlir::failure();
   }
   result.addTypes(resultTypes);
   return mlir::success();
