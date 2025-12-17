@@ -67,10 +67,10 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
   Value init = buildInitTensor(rewriter, loc, type, lhs);
 
-  // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
       loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{init},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes),
+      /*tile_batch_size=*/nullptr);
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -110,7 +110,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     maps.push_back(AffineMapAttr::get(identityMap));
   }
 
-  // Build iterator types: all parallel
+  // Build iterator types: all parallel.
   SmallVector<Attribute> iterTypes;
   for (int64_t i = 0; i < type.getRank(); ++i) {
     iterTypes.push_back(rewriter.getStringAttr("parallel"));
@@ -118,15 +118,15 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   Value init = buildInitTensor(rewriter, loc, type, input);
 
-  // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
       loc, TypeRange{type}, ValueRange{input}, ValueRange{init},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes),
+      /*tile_batch_size=*/nullptr);
 
-  // Build the body region with tile type block arguments
+  // Build the body region with tile type block arguments.
   Block *body = rewriter.createBlock(&computeOp.getBody());
   Type scalarType = type.getElementType();
-  // Create tile type: !ttcore.tile<32x32, dtype>
+  // Create tile type: !ttcore.tile<32x32, dtype>.
   Type tileType = ttcore::TileType::get(scalarType);
   body->addArgument(tileType, loc); // input tile
   body->addArgument(tileType, loc); // output tile

@@ -187,9 +187,102 @@ mlir::FailureOr<mlir::TilingResult>
 mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mlir::OpBuilder &b, mlir::ArrayRef<mlir::OpFoldResult> offsets,
     mlir::ArrayRef<mlir::OpFoldResult> sizes) {
-  // For now, return failure to indicate tiling is not yet fully implemented.
-  // A full implementation would slice the inputs/outputs and clone this op.
-  return mlir::failure();
+  mlir::Location loc = getLoc();
+
+  // For full-tiling (sizes match output tensor shape), we generate:
+  //   scf.for loops over the iteration domain
+  //   tensor.extract to get tiles at each position
+  //   body operations
+  //   tensor.insert to put results back
+  //
+  // This method is called by TilingInterface utilities (e.g., scf::tileUsing*)
+  // which handle the loop generation. We just need to produce a tiled version
+  // of the operation for a single tile position.
+
+  // Get the output tensor to build the result type.
+  if (getOutputs().empty()) {
+    return emitOpError("expected at least one output");
+  }
+
+  // For identity maps with unit tile sizes (sizes all = 1), we extract a single
+  // tile from each input/output and run the body on that single tile.
+  // This is the common case for lowering to per-tile loops.
+
+  // Extract tiles from inputs at the given position.
+  // Use tensor.extract to get the tile element directly (not a slice).
+  // The body expects tile-typed values, not tensor<1x1x...xtile>.
+  SmallVector<Value> tiledInputs;
+  for (Value input : getInputs()) {
+    SmallVector<Value> indexValues;
+    for (auto offset : offsets) {
+      if (auto val = llvm::dyn_cast<Value>(offset)) {
+        indexValues.push_back(val);
+      } else {
+        auto attr = llvm::cast<Attribute>(offset);
+        int64_t intVal = mlir::cast<IntegerAttr>(attr).getInt();
+        indexValues.push_back(b.create<arith::ConstantIndexOp>(loc, intVal));
+      }
+    }
+    Value extracted = b.create<tensor::ExtractOp>(loc, input, indexValues);
+    tiledInputs.push_back(extracted);
+  }
+
+  // Extract tiles from outputs at the given position.
+  SmallVector<Value> tiledOutputs;
+  for (Value output : getOutputs()) {
+    SmallVector<Value> indexValues;
+    for (auto offset : offsets) {
+      if (auto val = llvm::dyn_cast<Value>(offset)) {
+        indexValues.push_back(val);
+      } else {
+        auto attr = llvm::cast<Attribute>(offset);
+        int64_t intVal = mlir::cast<IntegerAttr>(attr).getInt();
+        indexValues.push_back(b.create<arith::ConstantIndexOp>(loc, intVal));
+      }
+    }
+    Value extracted =
+        b.create<tensor::ExtractOp>(loc, output, indexValues);
+    tiledOutputs.push_back(extracted);
+  }
+
+  // Clone the body operations with the extracted tiles as new block arguments.
+  // Map old block args to extracted values.
+  Block &bodyBlock = getBody().front();
+  IRMapping mapping;
+
+  // Map input block args (first numInputs args).
+  for (auto [idx, arg] : llvm::enumerate(getInputs())) {
+    mapping.map(bodyBlock.getArgument(idx), tiledInputs[idx]);
+  }
+  // Map output block args (remaining args).
+  size_t numInputs = getInputs().size();
+  for (auto [idx, arg] : llvm::enumerate(getOutputs())) {
+    mapping.map(bodyBlock.getArgument(numInputs + idx), tiledOutputs[idx]);
+  }
+
+  // Clone body operations (except terminator) into current insertion point.
+  SmallVector<Value> yieldedValues;
+  for (Operation &op : bodyBlock.without_terminator()) {
+    b.clone(op, mapping);
+  }
+
+  // Get the yielded values from the terminator.
+  auto yieldOp = cast<YieldOp>(bodyBlock.getTerminator());
+  for (Value yieldVal : yieldOp.getValues()) {
+    yieldedValues.push_back(mapping.lookupOrDefault(yieldVal));
+  }
+
+  // Return tiling result. The caller (scf::tileUsing*) will handle inserting
+  // results back into the output tensor and generating the loop structure.
+  mlir::TilingResult result;
+  result.tiledValues = yieldedValues;
+
+  // Compute result tile positions (for identity maps, same as iteration tile).
+  for (size_t i = 0; i < getNumResults(); ++i) {
+    result.generatedSlices.push_back(nullptr); // No slice op generated here.
+  }
+
+  return result;
 }
 
 mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(

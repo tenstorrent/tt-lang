@@ -186,8 +186,14 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
     loop body are then converted to TTKernel ops after bufferization.
 
+    The optional `tile_batch_size` attribute specifies how many tiles to process
+    per loop iteration for each dimension. This enables DST register batching
+    where multiple tiles are processed between acquire/release cycles. If not
+    specified, defaults to 1 tile per iteration per dimension.
+
     Example:
     ```mlir
+    // Process 1 tile per iteration (default)
     %result = ttl.compute
         ins(%a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>,
                      tensor<4x4x!ttcore.tile<32x32, f32>>)
@@ -198,6 +204,18 @@ def TTL_ComputeOp : TTL_Op<"compute", [
         %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
         ttl.yield %sum : !ttcore.tile<32x32, f32>
     } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+
+    // Process 4 tiles per iteration in dim0 (DST batching)
+    %result2 = ttl.compute {tile_batch_size = array<i64: 4, 1>}
+        ins(%a, %b : tensor<8x4x!ttcore.tile<32x32, f32>>,
+                     tensor<8x4x!ttcore.tile<32x32, f32>>)
+        outs(%init : tensor<8x4x!ttcore.tile<32x32, f32>>) {
+      ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+           %b_tile: !ttcore.tile<32x32, f32>,
+           %out_tile: !ttcore.tile<32x32, f32>):
+        %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+        ttl.yield %sum : !ttcore.tile<32x32, f32>
+    } -> tensor<8x4x!ttcore.tile<32x32, f32>>
     ```
   }];
 
@@ -205,7 +223,8 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     Variadic<AnyRankedTensor>:$inputs,
     Variadic<AnyRankedTensor>:$outputs,
     AffineMapArrayAttr:$indexing_maps,
-    ArrayAttr:$iterator_types
+    ArrayAttr:$iterator_types,
+    OptionalAttr<DenseI64ArrayAttr>:$tile_batch_size
   );
   let results = (outs Variadic<AnyRankedTensor>:$results);
   let regions = (region SizedRegion<1>:$body);
