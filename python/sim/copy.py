@@ -118,13 +118,9 @@ class CopyTransaction:
         - Block → Pipe: Always returns True (completes immediately)
         - Pipe → Block: Returns True only when pipe has data available
 
-        After wait() completes, always returns True.
-
         Returns:
             True if wait() can proceed without blocking
         """
-        if self._completed:
-            return True
         return self._handler.can_wait(self._src, self._dst)
 
     @property

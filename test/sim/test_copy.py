@@ -489,7 +489,8 @@ class TestCopyTransactionCanWait:
         # Pipe→Block can proceed because pipe has data (from tx_send)
         assert tx_recv.can_wait() is True
         tx_recv.wait()
-        assert tx_recv.can_wait() is True
+        # After consuming the data, pipe is empty again, so can_wait() returns False
+        assert tx_recv.can_wait() is False
 
         # Verify data
         assert tu.allclose(dst_block[0], src_block[0])
