@@ -113,15 +113,19 @@ class CopyTransaction:
         """
         Check if wait() can proceed without blocking.
 
-        Returns False before the first wait() call (copy not yet executed).
-        Returns True after wait() completes the instant transfer.
+        The semantics depend on the copy type:
+        - Tensor ↔ Block: Always returns True (synchronous transfer)
+        - Block → Pipe: Always returns True (completes immediately)
+        - Pipe → Block: Returns True only when pipe has data available
 
-        In a real implementation, this would check if the async transfer has completed.
+        After wait() completes, always returns True.
 
         Returns:
-            True if the copy transaction has completed
+            True if wait() can proceed without blocking
         """
-        return self._completed
+        if self._completed:
+            return True
+        return self._handler.can_wait(self._src, self._dst)
 
     @property
     def is_completed(self) -> bool:
