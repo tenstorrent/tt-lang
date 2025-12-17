@@ -8,6 +8,10 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/TilingInterface.td"
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/IR/OpBase.td"
 
 //===----------------------------------------------------------------------===//
@@ -123,6 +127,187 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Elementwise compute operations (shared ElementWise base)
+//===----------------------------------------------------------------------===//
+
+class TTL_ElementWiseBase<string mnemonic, list<Trait> traits>
+    : TTL_Op<mnemonic, traits> {
+  let results = (outs AnyType:$result);
+}
+
+class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
+    : TTL_ElementWiseBase<
+          mnemonic,
+          !listconcat(traits, [Pure])> {
+  let summary = "Binary elementwise operation";
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let assemblyFormat =
+      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
+
+class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
+    : TTL_ElementWiseBase<
+          mnemonic,
+          !listconcat(traits, [Pure])> {
+  let summary = "Unary elementwise operation";
+  let arguments = (ins AnyType:$input);
+  let assemblyFormat =
+      "$input attr-dict `:` type($input) `->` type($result)";
+}
+
+// Tensor and tile elementwise ops are defined together using multiclass below
+
+//===----------------------------------------------------------------------===//
+// Structured Compute Operation (ttl.compute)
+//===----------------------------------------------------------------------===//
+
+def TTL_ComputeOp : TTL_Op<"compute", [
+    AttrSizedOperandSegments,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    DeclareOpInterfaceMethods<TilingInterface,
+      ["getLoopIteratorTypes", "getIterationDomain", "getTiledImplementation",
+       "getResultTilePosition"]>,
+    DeclareOpInterfaceMethods<DestinationStyleOpInterface>
+  ]> {
+  let summary = "Structured tile-level compute operation";
+  let description = [{
+    `ttl.compute` is a structured operation similar to `linalg.generic` but with
+    tile-typed block arguments. It iterates over a grid of tiles and applies
+    the body computation to each tile position.
+
+    The operation takes tensors of tiles as inputs and outputs. The block
+    arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
+    the input/output tensors at each iteration point.
+
+    This operation implements `TilingInterface` to support DST register capacity
+    tiling via the transform dialect.
+
+    In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
+    `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
+    loop body are then converted to TTKernel ops after bufferization.
+
+    Example:
+    ```mlir
+    %result = ttl.compute
+        ins(%a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>,
+                     tensor<4x4x!ttcore.tile<32x32, f32>>)
+        outs(%init : tensor<4x4x!ttcore.tile<32x32, f32>>) {
+      ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+           %b_tile: !ttcore.tile<32x32, f32>,
+           %out_tile: !ttcore.tile<32x32, f32>):
+        %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+        ttl.yield %sum : !ttcore.tile<32x32, f32>
+    } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+    ```
+  }];
+
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$inputs,
+    Variadic<AnyRankedTensor>:$outputs,
+    AffineMapArrayAttr:$indexing_maps,
+    ArrayAttr:$iterator_types
+  );
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    // Return the number of inputs.
+    unsigned getNumInputs() { return getInputs().size(); }
+
+    // Return the number of outputs.
+    unsigned getNumOutputs() { return getOutputs().size(); }
+  }];
+}
+
+def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
+    ParentOneOf<["ComputeOp"]>]> {
+  let summary = "Yield values from ttl.compute region";
+  let description = [{
+    `ttl.yield` terminates the body of `ttl.compute` and yields the computed
+    tile values to be written to the output tensors.
+  }];
+  let arguments = (ins Variadic<AnyType>:$values);
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// Tile-Level Operations (for use inside ttl.compute body)
+//===----------------------------------------------------------------------===//
+
+// Base class for tile operations
+class TTL_TileOp<string mnemonic, list<Trait> traits = []>
+    : TTL_Op<mnemonic, !listconcat(traits, [Pure])>;
+
+class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+  let summary = "Binary tile operation";
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+  let summary = "Unary tile operation";
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Binary Elementwise Operations (Tensor + Tile Ops)
+//===----------------------------------------------------------------------===//
+
+// Multiclass for defining paired tensor + tile binary ops
+multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp> {
+  // Tensor-level op (operates on full tensors)
+  def Op : TTL_ElementWiseBinary<mnemonic> {
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
+  }
+  // Tile-level op (operates inside ttl.compute body)
+  def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic> {
+    let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
+  }
+}
+
+// Define all binary elementwise ops using the multiclass
+defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
+defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
+defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
+defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles">;
+
+
+//===----------------------------------------------------------------------===//
+// Unary Elementwise Operations (Tensor + Tile Ops)
+//===----------------------------------------------------------------------===//
+
+// Multiclass for defining paired tensor + tile unary ops
+multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
+  // Tensor-level op (operates on full tensors)
+  def Op : TTL_ElementWiseUnary<mnemonic> {
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
+  }
+  // Tile-level op (operates inside ttl.compute body)
+  def TileOp : TTL_TileUnaryOp<"tile_"#mnemonic> {
+    let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
+  }
+}
+
+// Define all unary elementwise ops using the multiclass
+defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
+defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
+defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
+defm TTL_Rsqrt : TTL_UnaryElementwisePair<"rsqrt", "rsqrt_tile">;
+defm TTL_Tanh : TTL_UnaryElementwisePair<"tanh", "tanh_tile">;
+defm TTL_Sigmoid : TTL_UnaryElementwisePair<"sigmoid", "sigmoid_tile">;
+defm TTL_Neg : TTL_UnaryElementwisePair<"neg", "neg_tile">;
+defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile">;
+defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 

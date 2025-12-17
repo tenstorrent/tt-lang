@@ -20,4 +20,35 @@ def TTLConvertTTLToTTKernel
   ];
 }
 
+def TTLConvertTTLToCompute
+    : Pass<"convert-ttl-to-compute", "::mlir::func::FuncOp"> {
+  let summary = "Lower TTL elementwise tensor ops to ttl.compute with tile ops";
+  let description = [{
+    Lowers TTL elementwise tensor operations (e.g., add, mul, exp, relu) to
+    ttl.compute with SSA-style tile operations in the body. This enables:
+    - Fusion of matmul + elementwise operations in the same compute body
+    - DST register tiling via TilingInterface
+    - Standard SSA optimizations (CSE, DCE, canonicalization)
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
+def TTLAssignDSTRegisters
+    : Pass<"ttl-assign-dst-registers", "::mlir::func::FuncOp"> {
+  let summary = "Assign DST registers with a simple linear scan (MVP, no spill)";
+  let description = [{
+    Performs a lightweight linear scan over ttl.compute producers to annotate
+    expected DST usage. Errors if requested capacity exceeds a fixed budget.
+    This is an MVP placeholder for a fuller allocator.
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD
