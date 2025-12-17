@@ -18,37 +18,58 @@ include "mlir/IR/OpBase.td"
 // TTL operation definitions
 //===----------------------------------------------------------------------===//
 
-def TTL_CreateCBOp : TTL_Op<"create_cb", [Pure]> {
-  let summary = "Create a circular buffer value";
+def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
+  let summary = "Bind to a hardware circular buffer slot";
   let description = [{
-    Creates a TTL circular buffer (`!ttl.cb`) representing an L1-resident buffer
-    used for block-level communication between TT-Lang threads.
+    Declares that this program will use a hardware circular buffer slot and
+    produces an SSA handle (`!ttl.cb`) representing that binding. This op does
+    **not** allocate a buffer; the runtime/host is responsible for provisioning
+    the CB. Binding occurs at kernel scope and the same SSA value should be
+    threaded into data movement and compute threads.
 
-    Circular buffers are created in the kernel scope and used inside data-movement
-    and compute threads via higher-level operations (for example `ttl.copy` in the
-    DMA MVP).
-
-    - `shape` describes the block shape in "shape units" (tiles for tiled tensors,
-      scalars for row-major tensors).
-    - `element_type` is the element type stored in the buffer.
+    - `cb_index` is the circular buffer hardware slot index (0-31).
     - `buffer_factor` is the number of blocks (for example 2 for double buffering).
-
     Example:
 
     ```mlir
-    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %cb = ttl.bind_cb {cb_index = 0 : index, buffer_factor = 2}
+          : !ttl.cb<[1, 1], f32, 2>
     ```
   }];
   let arguments = (ins
-    I64ArrayAttr:$shape,
-    TypeAttr:$element_type,
-    I64Attr:$buffer_factor,
-    OptionalAttr<I32Attr>:$buffer_index,
-    OptionalAttr<I64Attr>:$page_size
+    IndexAttr:$cb_index,
+    I64Attr:$buffer_factor
   );
   let results = (outs TTL_CircularBuffer:$result);
-  let assemblyFormat = "`(` `)` attr-dict `:` type($result)";
-  let hasVerifier = 0;
+  let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `buffer_factor` `=` $buffer_factor `}` attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
+  let summary = "Associate a tensor SSA value with a circular buffer";
+  let description = [{
+    Associates a tensor value with a circular buffer handle for later
+    data-movement/compute lowering. This op is an identity on the tensor value
+    but records a mapping (tensor -> CB) that later passes query. Exactly one
+    CB should be attached per tensor SSA value.
+
+    Note: This op is NOT marked Pure to prevent CSE/DCE from eliminating
+    semantically meaningful bindings.
+
+    Example:
+    ```mlir
+    %t_attached = ttl.attach_cb %t, %cb
+        : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], f32, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$tensor,
+    TTL_CircularBuffer:$cb
+  );
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$tensor `,` $cb attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
@@ -75,7 +96,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-      %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+      %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
       %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
       ttl.wait %xf
       func.return
@@ -173,9 +194,9 @@ def TTL_ComputeOp : TTL_Op<"compute", [
   let description = [{
     `ttl.compute` is a structured operation similar to `linalg.generic` but with
     tile-typed block arguments. It iterates over a grid of tiles and applies
-    the body computation to each tile position. Circular buffers are explicit
-    operands: `input_cbs`/`output_cbs` align 1:1 with inputs/outputs (reusing
-    the same CB value when the same tensor accessor is used multiple times).
+    the body computation to each tile position. Circular buffers are associated
+    to tensor operands/results via `ttl.attach_cb` (one CB per tensor SSA
+    value); `ttl.compute` itself only carries tensor operands.
 
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
@@ -205,9 +226,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
   let arguments = (ins
     Variadic<AnyRankedTensor>:$inputs,
-    Variadic<TTL_CircularBuffer>:$input_cbs,
     Variadic<AnyRankedTensor>:$outputs,
-    Variadic<TTL_CircularBuffer>:$output_cbs,
     AffineMapArrayAttr:$indexing_maps,
     ArrayAttr:$iterator_types
   );

@@ -8,7 +8,7 @@ def TTLConvertTTLToTTKernel
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
   let description = [{
     Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers create_cb, copy, wait MVP path.
+    barriers are available. Covers bind_cb, copy, wait MVP path.
 
     TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
     Issue: #77 (umbrella issue with subtasks #78-#89).
@@ -19,6 +19,7 @@ def TTLConvertTTLToTTKernel
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
+
 
 def TTLConvertTTLToCompute
     : Pass<"convert-ttl-to-compute", "::mlir::func::FuncOp"> {

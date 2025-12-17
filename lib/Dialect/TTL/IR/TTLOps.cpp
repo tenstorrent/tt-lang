@@ -5,15 +5,21 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
 #include "TTLOpsVerifyUtils.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"    // IWYU pragma: keep
-#include "llvm/ADT/TypeSwitch.h"               // IWYU pragma: keep
+#include "ttlang/Dialect/Utils/ShapeUtils.h"
+#include "ttlang/Dialect/Utils/ValueUseUtils.h"
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h"            // IWYU pragma: keep
+#include <cstdint>
+#include <optional>
+
+namespace {} // namespace
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -48,6 +54,70 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 }
 
 } // namespace mlir::tt::ttl
+
+mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
+  auto cbTy = mlir::dyn_cast<CircularBufferType>(getResult().getType());
+  if (!cbTy) {
+    return emitOpError() << "result must be !ttl.cb";
+  }
+
+  // Validate cb_index.
+  auto idxAttr = mlir::dyn_cast<IntegerAttr>(getCbIndexAttr());
+  if (!idxAttr || !idxAttr.getType().isIndex()) {
+    return emitOpError() << "cb_index must be an index attribute";
+  }
+  int64_t idx = idxAttr.getInt();
+  if (idx < 0 || idx >= kMaxCircularBuffers) {
+    return emitOpError() << "cb_index must be in [0," << kMaxCircularBuffers - 1
+                         << "]";
+  }
+
+  // Validate buffer factor against type for consistency.
+  int64_t bufferFactor = getBufferFactor();
+  if (bufferFactor <= 0) {
+    return emitOpError() << "buffer_factor must be > 0";
+  }
+  if (bufferFactor != cbTy.getBufferFactor()) {
+    return emitOpError()
+           << "buffer_factor must match result type buffer factor ("
+           << cbTy.getBufferFactor() << ")";
+  }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
+  auto tensorTy = mlir::dyn_cast<RankedTensorType>(getTensor().getType());
+  if (!tensorTy) {
+    return emitOpError() << "expects ranked tensor operand";
+  }
+
+  auto cbTy = mlir::dyn_cast<CircularBufferType>(getCb().getType());
+  if (!cbTy) {
+    return emitOpError() << "expects circular buffer operand";
+  }
+
+  // Element types must match.
+  if (tensorTy.getElementType() != cbTy.getElementType()) {
+    return emitOpError() << "tensor element type (" << tensorTy.getElementType()
+                         << ") must match CB element type ("
+                         << cbTy.getElementType() << ")";
+  }
+
+  // Require the CB block shape rank to match the tensor rank (tile grid).
+  if (static_cast<int64_t>(cbTy.getShape().size()) != tensorTy.getRank()) {
+    return emitOpError() << "cb shape rank (" << cbTy.getShape().size()
+                         << ") must match tensor rank (" << tensorTy.getRank()
+                         << ")";
+  }
+
+  // Result type must equal input tensor type (identity).
+  if (getResult().getType() != getTensor().getType()) {
+    return emitOpError() << "result type must equal tensor operand type";
+  }
+
+  return mlir::success();
+}
 
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
@@ -113,29 +183,11 @@ void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
   llvm::interleaveComma(getInputs().getTypes(), p);
   p << ")";
 
-  // Print input CBs.
-  p << " in_cbs(";
-  p.printOperands(getInputCbs());
-  if (!getInputCbs().empty()) {
-    p << " : ";
-    llvm::interleaveComma(getInputCbs().getTypes(), p);
-  }
-  p << ")";
-
   // Print outputs (outs operands).
   p << " outs(";
   p.printOperands(getOutputs());
   p << " : ";
   llvm::interleaveComma(getOutputs().getTypes(), p);
-  p << ")";
-
-  // Print output CBs.
-  p << " out_cbs(";
-  p.printOperands(getOutputCbs());
-  if (!getOutputCbs().empty()) {
-    p << " : ";
-    llvm::interleaveComma(getOutputCbs().getTypes(), p);
-  }
   p << ")";
 
   // Print attributes (excluding operandSegmentSizes which is internal).
@@ -222,6 +274,15 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
   return mlir::success();
 }
 
+/// Return the circular buffer attached to `tensor` via `ttl.attach_cb`, or null
+/// if none/ambiguous.
+mlir::Value getAttachedCB(mlir::Value tensor) {
+  if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
+    return attach.getCb();
+  }
+  return mlir::Value();
+}
+
 //===----------------------------------------------------------------------===//
 // ComputeOp - DestinationStyleOpInterface implementations
 //===----------------------------------------------------------------------===//
@@ -237,7 +298,7 @@ mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
 mlir::ParseResult
 mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
                                 mlir::OperationState &result) {
-  // Parse: ins(...) in_cbs(...) outs(...) out_cbs(...) attrs region -> results
+  // Parse: ins(...) outs(...) attrs region -> results
   mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> inputOperands;
   mlir::SmallVector<mlir::Type> inputTypes;
   mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> inputCbOperands;
@@ -259,16 +320,6 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     }
   }
 
-  if (parser.parseKeyword("in_cbs") || parser.parseLParen()) {
-    return mlir::failure();
-  }
-  if (failed(parser.parseOptionalRParen())) {
-    if (parser.parseOperandList(inputCbOperands) || parser.parseColon() ||
-        parser.parseTypeList(inputCbTypes) || parser.parseRParen()) {
-      return mlir::failure();
-    }
-  }
-
   if (parser.parseKeyword("outs") || parser.parseLParen()) {
     return mlir::failure();
   }
@@ -279,33 +330,17 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     }
   }
 
-  if (parser.parseKeyword("out_cbs") || parser.parseLParen()) {
-    return mlir::failure();
-  }
-  if (failed(parser.parseOptionalRParen())) {
-    if (parser.parseOperandList(outputCbOperands) || parser.parseColon() ||
-        parser.parseTypeList(outputCbTypes) || parser.parseRParen()) {
-      return mlir::failure();
-    }
-  }
-
   if (parser.resolveOperands(inputOperands, inputTypes, parser.getNameLoc(),
                              result.operands) ||
-      parser.resolveOperands(inputCbOperands, inputCbTypes, parser.getNameLoc(),
-                             result.operands) ||
       parser.resolveOperands(outputOperands, outputTypes, parser.getNameLoc(),
-                             result.operands) ||
-      parser.resolveOperands(outputCbOperands, outputCbTypes,
-                             parser.getNameLoc(), result.operands)) {
+                             result.operands)) {
     return mlir::failure();
   }
 
   result.addAttribute("operandSegmentSizes",
                       parser.getBuilder().getDenseI32ArrayAttr(
                           {static_cast<int32_t>(inputOperands.size()),
-                           static_cast<int32_t>(inputCbOperands.size()),
-                           static_cast<int32_t>(outputOperands.size()),
-                           static_cast<int32_t>(outputCbOperands.size())}));
+                           static_cast<int32_t>(outputOperands.size())}));
 
   if (parser.parseOptionalAttrDict(result.attributes)) {
     return mlir::failure();
@@ -320,16 +355,14 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
   if (parser.parseArrow()) {
     return mlir::failure();
   }
-  if (parser.parseOptionalLParen()) {
+  if (succeeded(parser.parseOptionalLParen())) {
     mlir::Type singleType;
-    if (parser.parseType(singleType)) {
+    if (parser.parseType(singleType) || parser.parseRParen()) {
       return mlir::failure();
     }
     resultTypes.push_back(singleType);
-  } else {
-    if (parser.parseTypeList(resultTypes) || parser.parseRParen()) {
-      return mlir::failure();
-    }
+  } else if (parser.parseTypeList(resultTypes)) {
+    return mlir::failure();
   }
   result.addTypes(resultTypes);
   return mlir::success();
@@ -377,9 +410,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
   Block &bodyBlock = getBody().front();
   size_t numInputs = getInputs().size();
-  size_t numInputCbs = getInputCbs().size();
   size_t numOutputs = getOutputs().size();
-  size_t numOutputCbs = getOutputCbs().size();
   size_t numOperands = numInputs + numOutputs;
 
   // Verify block argument count matches inputs + outputs.
@@ -389,24 +420,16 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
            << bodyBlock.getNumArguments();
   }
 
-  // Verify CB counts align with tensors (allow the same CB SSA value reused).
-  if (numInputCbs != numInputs) {
-    return emitOpError("number of input_cbs (")
-           << numInputCbs << ") must match number of inputs (" << numInputs
-           << ")";
-  }
-  if (numOutputCbs != numOutputs) {
-    return emitOpError("number of output_cbs (")
-           << numOutputCbs << ") must match number of outputs (" << numOutputs
-           << ")";
+  auto mapsAttr = getIndexingMaps();
+  if (!mapsAttr) {
+    return emitOpError("requires indexing_maps attribute");
   }
 
-  // Verify the number of indexing maps matches inputs + input_cbs + outputs +
-  // output_cbs.
-  size_t expectedMaps = numInputs + numInputCbs + numOutputs + numOutputCbs;
-  if (getIndexingMaps().size() != expectedMaps) {
-    return emitOpError("expected ") << expectedMaps << " indexing maps but got "
-                                    << getIndexingMaps().size();
+  // Verify the number of indexing maps matches inputs + outputs.
+  size_t expectedMaps = numInputs + numOutputs;
+  if (mapsAttr.size() != expectedMaps) {
+    return emitOpError("expected ")
+           << expectedMaps << " indexing maps but got " << mapsAttr.size();
   }
 
   // Verify iterator_types contains only "parallel" or "reduction".
@@ -429,7 +452,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
   // Verify indexing maps compatibility.
   auto iteratorCount = getIteratorTypes().size();
-  auto maps = getIndexingMaps();
+  auto maps = mapsAttr;
 
   auto verifyMapCommon = [&](AffineMap map,
                              size_t expectedResults) -> mlir::LogicalResult {
@@ -446,57 +469,47 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return mlir::success();
   };
 
-  // Inputs and their CBs.
+  // Ensure every tensor operand has an attached CB (via ttl.attach_cb).
+  auto requireAttachedCB = [&](Value tensor, size_t idx,
+                               StringRef kind) -> LogicalResult {
+    Value cb = getAttachedCB(tensor);
+    if (!cb) {
+      return emitOpError()
+             << kind << " " << idx
+             << " must have a circular buffer attached via ttl.attach_cb";
+    }
+    return success();
+  };
+
+  // Inputs.
   for (size_t i = 0; i < numInputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getInputs()[i].getType());
+    if (failed(requireAttachedCB(getInputs()[i], i, "input"))) {
+      return failure();
+    }
+    if (i >= maps.size()) {
+      return emitOpError("missing indexing map for input ") << i;
+    }
     auto map = mlir::cast<AffineMapAttr>(maps[i]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return mlir::failure();
     }
-
-    auto cbMap = mlir::cast<AffineMapAttr>(maps[numInputs + i]).getValue();
-    auto cbTy =
-        mlir::cast<CircularBufferType>(getInputCbs()[i].getType()).getShape();
-    if (failed(verifyMapCommon(cbMap, cbTy.size()))) {
-      return mlir::failure();
-    }
-    if (cbTy.size() != static_cast<size_t>(tensorTy.getRank())) {
-      return emitOpError("input_cb[")
-             << i
-             << "] shape rank must match input tensor rank for compatibility";
-    }
-    if (mlir::cast<CircularBufferType>(getInputCbs()[i].getType())
-            .getElementType() != tensorTy.getElementType()) {
-      return emitOpError("input_cb[")
-             << i << "] element type must match input element type";
-    }
   }
 
-  // Outputs and their CBs.
-  size_t outputStart = numInputs + numInputCbs;
+  // Outputs.
+  size_t outputStart = numInputs;
   for (size_t i = 0; i < numOutputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getOutputs()[i].getType());
-    auto map = mlir::cast<AffineMapAttr>(maps[outputStart + i]).getValue();
+    if (failed(requireAttachedCB(getOutputs()[i], i, "output"))) {
+      return failure();
+    }
+    size_t mapIdx = outputStart + i;
+    if (mapIdx >= maps.size()) {
+      return emitOpError("missing indexing map for output ") << i;
+    }
+    auto map = mlir::cast<AffineMapAttr>(maps[mapIdx]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return mlir::failure();
-    }
-
-    auto cbMap = mlir::cast<AffineMapAttr>(maps[outputStart + numOutputs + i])
-                     .getValue();
-    auto cbTy =
-        mlir::cast<CircularBufferType>(getOutputCbs()[i].getType()).getShape();
-    if (failed(verifyMapCommon(cbMap, cbTy.size()))) {
-      return mlir::failure();
-    }
-    if (cbTy.size() != static_cast<size_t>(tensorTy.getRank())) {
-      return emitOpError("output_cb[")
-             << i
-             << "] shape rank must match output tensor rank for compatibility";
-    }
-    if (mlir::cast<CircularBufferType>(getOutputCbs()[i].getType())
-            .getElementType() != tensorTy.getElementType()) {
-      return emitOpError("output_cb[")
-             << i << "] element type must match output element type";
     }
   }
 

@@ -130,11 +130,11 @@ static bool eraseUnusedArguments(FuncLike funcLike) {
   return true;
 }
 
-struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
+struct BindCBLowering : OpConversionPattern<BindCBOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(CreateCBOp op, OpAdaptor /*adaptor*/,
+  matchAndRewrite(BindCBOp op, OpAdaptor /*adaptor*/,
                   ConversionPatternRewriter &rewriter) const override {
     auto *typeConverter = this->getTypeConverter();
     if (!typeConverter) {
@@ -146,8 +146,8 @@ struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB type");
     }
 
-    // For now, fabricate a CB value via unrealized cast; real lowering would
-    // supply a concrete CB handle.
+    // For now, bind to a placeholder CB handle via unrealized cast; real
+    // lowering would thread the provisioned hardware CB handle.
     auto zero = rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 32);
     auto cast = rewriter.create<UnrealizedConversionCastOp>(
         op.getLoc(), converted, ValueRange{zero});
@@ -633,10 +633,9 @@ struct TTLConvertTTLToTTKernelPass
     // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
-    patterns
-        .add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-             CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
-                                                            &ctx);
+    patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+                 CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
+                                                                &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
 

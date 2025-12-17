@@ -7,14 +7,16 @@
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Dialect.h"
+#include <cstdint>
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsDialect.h.inc"
 
 namespace mlir::tt::ttl {
 
 /// Default tile dimensions used for TTL tensors.
-inline constexpr int kDefaultTileHeight = 32;
-inline constexpr int kDefaultTileWidth = 32;
+inline constexpr int32_t kDefaultTileHeight = 32;
+inline constexpr int32_t kDefaultTileWidth = 32;
+inline constexpr int32_t kMaxCircularBuffers = 32;
 
 } // namespace mlir::tt::ttl
 
