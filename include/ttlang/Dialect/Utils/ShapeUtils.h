@@ -11,20 +11,19 @@
 
 namespace mlir::tt::ttl::utils {
 
+/// Return total element count for a static shape array.
+inline int64_t getTotalElements(llvm::ArrayRef<int64_t> shape) {
+  return std::accumulate(shape.begin(), shape.end(), int64_t{1},
+                         std::multiplies<int64_t>());
+}
+
 /// Return total element count for a shaped type if it has a static shape.
 /// Returns std::nullopt for dynamic shapes.
 inline std::optional<int64_t> getTotalElements(mlir::ShapedType shapedTy) {
   if (!shapedTy.hasStaticShape()) {
     return std::nullopt;
   }
-  return std::accumulate(shapedTy.getShape().begin(), shapedTy.getShape().end(),
-                         int64_t{1}, std::multiplies<int64_t>());
-}
-
-/// Return total element count for a static shape array.
-inline int64_t getTotalElements(llvm::ArrayRef<int64_t> shape) {
-  return std::accumulate(shape.begin(), shape.end(), int64_t{1},
-                         std::multiplies<int64_t>());
+  return getTotalElements(shapedTy.getShape());
 }
 
 } // namespace mlir::tt::ttl::utils

@@ -222,3 +222,38 @@ func.func @attach_cb_rank_mismatch(
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return
 }
+
+// -----
+
+// Test: Multiple different CBs attached to same tensor
+func.func @ambiguous_cb_attachment(
+    %t: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cb1: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cb2: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %cbout = ttl.bind_cb {cb_index = 0, buffer_factor = 2}
+           : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // Attach same tensor to two different CBs
+  %t1 = ttl.attach_cb %t, %cb1
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %t2 = ttl.attach_cb %t, %cb2
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // expected-error @below {{input 0 must have a circular buffer attached via ttl.attach_cb}}
+  %0 = ttl.compute
+      ins(%t : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+    ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+      ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return
+}

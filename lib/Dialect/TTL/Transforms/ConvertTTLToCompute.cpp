@@ -17,15 +17,12 @@
 #include "llvm/ADT/MapVector.h"
 
 namespace mlir::tt::ttl {
-namespace {
-
-[[maybe_unused]] static RankedTensorType getTensorType(Value v) {
+static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
-[[maybe_unused]] static Value buildInitTensor(OpBuilder &b, Location loc,
-                                              RankedTensorType type,
-                                              Value exemplar) {
+static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
+                             Value exemplar) {
   SmallVector<Value> dynDims;
   for (auto dim : llvm::enumerate(type.getShape())) {
     if (dim.value() == ShapedType::kDynamic) {
@@ -38,9 +35,8 @@ namespace {
 
 /// Create a circular buffer for a tensor operand.
 /// Buffer factor defaults to 2 (double buffering).
-[[maybe_unused]] static Value bindCBForTensor(OpBuilder &b, Location loc,
-                                              RankedTensorType tensorType,
-                                              int32_t index) {
+static Value bindCBForTensor(OpBuilder &b, Location loc,
+                             RankedTensorType tensorType, int32_t index) {
   // Extract tile shape from tensor
   SmallVector<int64_t> shape(tensorType.getShape().begin(),
                              tensorType.getShape().end());
@@ -213,6 +209,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   return success();
 }
 
+namespace {
 //===----------------------------------------------------------------------===//
 // Templated Elementwise Lowering Patterns
 //===----------------------------------------------------------------------===//
