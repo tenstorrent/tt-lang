@@ -265,6 +265,7 @@ func.func @compute_multiple_results(%a: tensor<2x2x!ttcore.tile<32x32, f32>>) ->
 //   add_result = compute(a + b)
 //   relu_result = compute(relu(add_result))
 // Both compute ops should be lowered to nested scf.for loops.
+// The intermediate result uses a fresh CB (cb_index=4), not reusing an input CB.
 
 #map_seq = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -282,6 +283,8 @@ func.func @compute_two_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
   %cbb = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cbout0 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cbout1 = ttl.bind_cb {cb_index = 3, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  // Fresh CB for intermediate result (not reusing input CBs)
+  %cb_intermediate = ttl.bind_cb {cb_index = 4, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %a_cb = ttl.attach_cb %a, %cba : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cbb : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init0_cb = ttl.attach_cb %init0, %cbout0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -304,8 +307,8 @@ func.func @compute_two_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
     %sum = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  // Second compute: relu on the result of first compute
-  %add_result_cb = ttl.attach_cb %add_result, %cba : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  // Second compute: relu on the result of first compute (using fresh CB, not input CB)
+  %add_result_cb = ttl.attach_cb %add_result, %cb_intermediate : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-DAG: %[[ADD_RESULT_CB:.*]] = ttl.attach_cb %[[ADD_OUTER]]
   // CHECK: %[[RELU_OUTER:.*]] = scf.for %[[I2:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[RELU_OUTER_ARG:.*]] = %[[INIT1_CB]]) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: %[[RELU_INNER:.*]] = scf.for %[[J2:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[RELU_INNER_ARG:.*]] = %[[RELU_OUTER_ARG]]) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
