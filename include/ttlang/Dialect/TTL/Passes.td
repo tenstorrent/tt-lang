@@ -56,7 +56,7 @@ def TTLLowerToLoops
   let summary = "Lower ttl.compute structured ops to scf.for loops";
   let description = [{
     Lowers `ttl.compute` operations to nested `scf.for` loops that iterate over
-    the tile grid. Uses TilingInterface's `getTiledImplementation()` to generate
+    the tile block. Uses TilingInterface's `getTiledImplementation()` to generate
     the loop body with `tensor.extract` for input tiles, the cloned compute body,
     and `tensor.insert` to write results back.
 

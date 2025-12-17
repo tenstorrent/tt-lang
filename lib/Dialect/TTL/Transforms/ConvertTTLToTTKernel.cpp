@@ -344,7 +344,7 @@ getTileGridShape(const RankedTensorType &tensorTy) {
   return {tilesY, tilesX};
 }
 
-/// Extract tile grid shape from a Value if it's a static rank-2 tensor.
+/// Extract tile block shape from a Value if it's a static rank-2 tensor.
 /// Returns {1, 1} for non-tensor types or dynamic shapes.
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());

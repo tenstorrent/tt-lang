@@ -3,11 +3,11 @@
 // RUN: ttmlir-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
-// Test: Multi-tile copies (same tile grid) within a user loop.
-// Multiple copies with SAME tile grid dimensions within a user loop.
+// Test: Multi-tile copies (same tile block) within a user loop.
+// Multiple copies with SAME tile block dimensions within a user loop.
 //
 // User loop: 0..3
-// Both tensors: 64x64xf32 (2x2 tiles) - SAME tile grid
+// Both tensors: 64x64xf32 (2x2 tiles) - SAME tile block
 // Both copies issued before barriers
 //
 // Current behavior (generates separate tile loops):
@@ -92,7 +92,7 @@ module {
     // User loop (0..3)
     scf.for %i = %c0 to %c3 step %c1 {
       // Batch: issue both copies before barrier
-      // Both tensors have same tile grid (2x2) - potential for shared tile loop
+      // Both tensors have same tile block (2x2) - potential for shared tile loop
       %xf1 = ttl.copy %arg0, %cb1 : (tensor<64x64xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       %xf2 = ttl.copy %arg1, %cb2 : (tensor<64x64xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
 
