@@ -10,7 +10,7 @@ func.func @binary_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1: tensor
   // CHECK: %[[RESULT:.*]] = ttl.compute
   // CHECK-SAME: ins(%arg0, %arg1 : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>>)
   // CHECK-SAME: outs(%[[INIT]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
-  // CHECK-SAME: indexing_maps = [#map, #map, #map]
+// CHECK-SAME: indexing_maps = [#map, #map, #map, #map, #map, #map]
   // CHECK-SAME: iterator_types = ["parallel", "parallel"]
   // CHECK: ^bb0(%[[LHS:.*]]: !ttcore.tile<32x32, f32>, %[[RHS:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK: %[[SUM:.*]] = ttl.tile_add %[[LHS]], %[[RHS]] {dst_idx = 0 : i32}

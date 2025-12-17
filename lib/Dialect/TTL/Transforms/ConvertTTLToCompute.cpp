@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/DenseMap.h"
 
 namespace mlir::tt::ttl {
 namespace {
@@ -32,6 +33,28 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
   }
   return b.create<tensor::EmptyOp>(loc, type.getShape(), type.getElementType(),
                                    dynDims);
+}
+
+/// Create a circular buffer for a tensor operand.
+/// Buffer factor defaults to 2 (double buffering).
+static Value createCBForTensor(OpBuilder &b, Location loc,
+                               RankedTensorType tensorType) {
+  // Extract tile shape from tensor
+  SmallVector<int64_t> shape(tensorType.getShape().begin(),
+                             tensorType.getShape().end());
+  Type elemType = tensorType.getElementType();
+  int64_t bufferFactor = 2; // Double buffering
+
+  auto shapeAttr = b.getI64ArrayAttr(shape);
+  auto elemAttr = TypeAttr::get(elemType);
+  auto bufferFactorAttr = b.getI64IntegerAttr(bufferFactor);
+  auto cbType = CircularBufferType::get(tensorType.getContext(), shape,
+                                        elemType, bufferFactor);
+
+  return b.create<CreateCBOp>(loc, cbType, shapeAttr, elemAttr,
+                              bufferFactorAttr,
+                              /*buffer_index=*/mlir::IntegerAttr(),
+                              /*page_size=*/mlir::IntegerAttr());
 }
 
 //===----------------------------------------------------------------------===//
@@ -55,9 +78,16 @@ static LogicalResult buildBinaryCompute(Operation *op,
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  for (int i = 0; i < 3; ++i) { // lhs, rhs, output
-    maps.push_back(AffineMapAttr::get(identityMap));
-  }
+  // inputs
+  maps.push_back(AffineMapAttr::get(identityMap));
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // input CBs
+  maps.push_back(AffineMapAttr::get(identityMap));
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // outputs
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // output CBs
+  maps.push_back(AffineMapAttr::get(identityMap));
 
   // Build iterator types: all parallel
   SmallVector<Attribute> iterTypes;
@@ -67,9 +97,28 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
   Value init = buildInitTensor(rewriter, loc, type, lhs);
 
+  // Create CBs for inputs and outputs (reuse CB when operands alias).
+  llvm::DenseMap<Value, Value> cbCache;
+  auto getOrCreateCb = [&](Value tensor) -> Value {
+    auto it = cbCache.find(tensor);
+    if (it != cbCache.end()) {
+      return it->second;
+    }
+    Value cb = createCBForTensor(rewriter, loc, getTensorType(tensor));
+    cbCache.insert({tensor, cb});
+    return cb;
+  };
+
+  Value lhsCb = getOrCreateCb(lhs);
+  Value rhsCb = getOrCreateCb(rhs);
+  Value outCb = createCBForTensor(rewriter, loc, type);
+
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{init},
+      loc, TypeRange{type}, ValueRange{lhs, rhs}, // inputs
+      ValueRange{lhsCb, rhsCb},                   // input_cbs
+      ValueRange{init},                           // outputs
+      ValueRange{outCb},                          // output_cbs
       rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
@@ -106,9 +155,14 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  for (int i = 0; i < 2; ++i) { // input, output
-    maps.push_back(AffineMapAttr::get(identityMap));
-  }
+  // input
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // input CB
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // output
+  maps.push_back(AffineMapAttr::get(identityMap));
+  // output CB
+  maps.push_back(AffineMapAttr::get(identityMap));
 
   // Build iterator types: all parallel
   SmallVector<Attribute> iterTypes;
@@ -118,10 +172,26 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   Value init = buildInitTensor(rewriter, loc, type, input);
 
+  // Create CBs (reuse when operand aliases).
+  llvm::DenseMap<Value, Value> cbCache;
+  auto getOrCreateCb = [&](Value tensor) -> Value {
+    auto it = cbCache.find(tensor);
+    if (it != cbCache.end()) {
+      return it->second;
+    }
+    Value cb = createCBForTensor(rewriter, loc, getTensorType(tensor));
+    cbCache.insert({tensor, cb});
+    return cb;
+  };
+
+  Value inputCb = getOrCreateCb(input);
+  Value outCb = createCBForTensor(rewriter, loc, type);
+
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{input}, ValueRange{init},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+      loc, TypeRange{type}, ValueRange{input}, ValueRange{inputCb},
+      ValueRange{init}, ValueRange{outCb}, rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());

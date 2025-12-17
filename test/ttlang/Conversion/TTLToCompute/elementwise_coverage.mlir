@@ -6,7 +6,7 @@
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[ARG1:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 func.func @binary_add(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   // CHECK: %[[INIT:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[RESULT:.+]] = ttl.compute
+  // CHECK: %[[RESULT:.+]] = ttl.compute
   // CHECK-SAME: ins(%[[ARG0]], %[[ARG1]] : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-SAME: outs(%[[INIT]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN0:.+]]: !ttcore.tile<32x32, f32>, %[[IN1:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
@@ -26,7 +26,7 @@ func.func @binary_add(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tensor
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<4x4x!ttcore.tile<32x32, f32>>)
 func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
   // CHECK: %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[RESULT:.+]] = ttl.compute
+  // CHECK: %[[RESULT:.+]] = ttl.compute
   // CHECK-SAME: ins(%[[ARG0]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
   // CHECK-SAME: outs(%[[INIT]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
@@ -46,7 +46,7 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
 // CHECK-SAME: (%[[ARG0:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[ARG1:.+]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 func.func @chained_ops(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   // CHECK: %[[INIT0:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[ADD:.+]] = ttl.compute
+  // CHECK: %[[ADD:.+]] = ttl.compute
   // CHECK-SAME: ins(%[[ARG0]], %[[ARG1]] : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-SAME: outs(%[[INIT0]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN0:.+]]: !ttcore.tile<32x32, f32>, %[[IN1:.+]]: !ttcore.tile<32x32, f32>, %[[OUT0:.+]]: !ttcore.tile<32x32, f32>):
@@ -55,7 +55,7 @@ func.func @chained_ops(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tenso
   %0 = ttl.add %arg0, %arg1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: %[[INIT1:.+]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[RESULT:.+]] = ttl.compute
+  // CHECK: %[[RESULT:.+]] = ttl.compute
   // CHECK-SAME: ins(%[[ADD]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-SAME: outs(%[[INIT1]] : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-NEXT: ^bb0(%[[IN2:.+]]: !ttcore.tile<32x32, f32>, %[[OUT1:.+]]: !ttcore.tile<32x32, f32>):

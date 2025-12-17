@@ -173,7 +173,9 @@ def TTL_ComputeOp : TTL_Op<"compute", [
   let description = [{
     `ttl.compute` is a structured operation similar to `linalg.generic` but with
     tile-typed block arguments. It iterates over a grid of tiles and applies
-    the body computation to each tile position.
+    the body computation to each tile position. Circular buffers are explicit
+    operands: `input_cbs`/`output_cbs` align 1:1 with inputs/outputs (reusing
+    the same CB value when the same tensor accessor is used multiple times).
 
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
@@ -203,7 +205,9 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
   let arguments = (ins
     Variadic<AnyRankedTensor>:$inputs,
+    Variadic<TTL_CircularBuffer>:$input_cbs,
     Variadic<AnyRankedTensor>:$outputs,
+    Variadic<TTL_CircularBuffer>:$output_cbs,
     AffineMapArrayAttr:$indexing_maps,
     ArrayAttr:$iterator_types
   );
