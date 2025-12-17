@@ -341,6 +341,113 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
     print("make_circular_buffer_like example pattern test passed!")
 
 
+def test_can_wait_and_can_reserve(api: CBAPI) -> None:
+    """Test can_wait() and can_reserve() methods."""
+    # Create a circular buffer with buffer factor 2 (capacity = 2 tiles)
+    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+
+    # Initially, buffer is empty
+    # can_reserve should return True (we have 2 free tiles)
+    assert cb.can_reserve() is True
+    # can_wait should return False (no data available)
+    assert cb.can_wait() is False
+
+    # Reserve and push one tile
+    block = cb.reserve()
+    block[0] = tu.ones(*TILE_SHAPE)
+    cb.push()
+
+    # Now we have 1 tile visible, 1 tile free
+    assert cb.can_wait() is True  # 1 tile available to read
+    assert cb.can_reserve() is True  # 1 tile free to write
+
+    # Reserve and push another tile (buffer now full)
+    block = cb.reserve()
+    block[0] = tu.ones(*TILE_SHAPE) * 2
+    cb.push()
+
+    # Now we have 2 tiles visible, 0 tiles free
+    assert cb.can_wait() is True  # Still have data to read
+    assert cb.can_reserve() is False  # No free space
+
+    # Pop one tile
+    _ = cb.wait()
+    cb.pop()
+
+    # Now we have 1 tile visible, 1 tile free
+    assert cb.can_wait() is True  # Still have 1 tile to read
+    assert cb.can_reserve() is True  # Have 1 free tile
+
+    # Pop the last tile
+    _ = cb.wait()
+    cb.pop()
+
+    # Back to empty state
+    assert cb.can_wait() is False  # No data available
+    assert cb.can_reserve() is True  # All tiles free
+
+    print("can_wait() and can_reserve() test passed!")
+
+
+def test_can_methods_multi_tile(api: CBAPI) -> None:
+    """Test can_wait() and can_reserve() with multi-tile operations."""
+    # Create a buffer that handles 2 tiles per operation, capacity = 6 tiles
+    cb = CircularBuffer[torch.Tensor](shape=(2, 1), buffer_factor=3, api=api)
+
+    # Initially empty
+    assert cb.can_reserve() is True  # 6 free tiles, need 2
+    assert cb.can_wait() is False  # 0 visible tiles, need 2
+
+    # Reserve and push 2 tiles
+    block = cb.reserve()
+    for i in range(2):
+        block[i] = tu.ones(*TILE_SHAPE) * (i + 1)
+    cb.push()
+
+    # 2 visible, 4 free
+    assert cb.can_wait() is True  # Have 2 tiles
+    assert cb.can_reserve() is True  # Have 4 free
+
+    # Reserve and push 2 more tiles
+    block = cb.reserve()
+    for i in range(2):
+        block[i] = tu.ones(*TILE_SHAPE) * (i + 3)
+    cb.push()
+
+    # 4 visible, 2 free
+    assert cb.can_wait() is True  # Have 4 tiles
+    assert cb.can_reserve() is True  # Have 2 free (exactly what we need)
+
+    # Reserve and push 2 more tiles (buffer full)
+    block = cb.reserve()
+    for i in range(2):
+        block[i] = tu.ones(*TILE_SHAPE) * (i + 5)
+    cb.push()
+
+    # 6 visible, 0 free
+    assert cb.can_wait() is True  # Have 6 tiles
+    assert cb.can_reserve() is False  # Have 0 free (need 2)
+
+    print("can_wait() and can_reserve() multi-tile test passed!")
+
+
+def test_can_methods_uninitialized(api: CBAPI) -> None:
+    """Test that can_wait() and can_reserve() fail on uninitialized CBs."""
+    from python.sim import ttl
+
+    x = tu.zeros(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
+    cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
+
+    # Both methods should raise RuntimeError on uninitialized CB
+    with pytest.raises(RuntimeError, match="not properly initialized"):
+        cb.can_wait()
+
+    with pytest.raises(RuntimeError, match="not properly initialized"):
+        cb.can_reserve()
+
+    print("can_wait() and can_reserve() uninitialized test passed!")
+
+
 if __name__ == "__main__":
     test_api = CBAPI()
     test_circular_buffer_basic(test_api)
@@ -352,4 +459,7 @@ if __name__ == "__main__":
     test_make_circular_buffer_like_infers_type(test_api)
     test_make_circular_buffer_like_multiple_tensors(test_api)
     test_make_circular_buffer_like_with_example_pattern(test_api)
+    test_can_wait_and_can_reserve(test_api)
+    test_can_methods_multi_tile(test_api)
+    test_can_methods_uninitialized(test_api)
     print("All CircularBuffer tests passed!")

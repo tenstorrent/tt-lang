@@ -355,3 +355,126 @@ class TestMulticastCopy:
         tx_recv = copy(pipe, dst_ring)
         with pytest.raises(ValueError, match="Timeout waiting for pipe data"):
             tx_recv.wait()
+
+
+class TestCopyTransactionCanWait:
+    """Test can_wait() functionality for CopyTransaction."""
+
+    def test_can_wait_before_transfer(self) -> None:
+        """Test that can_wait() returns False before wait() is called."""
+        source = tu.ones(32, 32)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+        # Before wait() is called, transfer is not completed
+        assert tx.can_wait() is False
+        assert tx.is_completed is False
+
+    def test_can_wait_after_transfer(self) -> None:
+        """Test that can_wait() returns True after wait() completes."""
+        source = tu.ones(32, 32)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+        tx.wait()
+        # After wait() completes, transfer is done
+        assert tx.can_wait() is True
+        assert tx.is_completed is True
+
+    def test_can_wait_idempotent(self) -> None:
+        """Test that can_wait() can be called multiple times."""
+        source = tu.full((32, 32), 3.14)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+
+        # Before wait
+        assert tx.can_wait() is False
+        assert tx.can_wait() is False  # Multiple calls
+
+        tx.wait()
+
+        # After wait
+        assert tx.can_wait() is True
+        assert tx.can_wait() is True  # Multiple calls
+        assert tx.can_wait() is True
+
+    def test_can_wait_multiple_waits(self) -> None:
+        """Test that wait() can be called multiple times after completion."""
+        source = tu.ones(32, 32)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+        assert tx.can_wait() is False
+
+        # First wait
+        tx.wait()
+        assert tx.can_wait() is True
+
+        # Second wait (should be no-op since already completed)
+        tx.wait()
+        assert tx.can_wait() is True
+
+        # Verify data is still correct
+        assert tu.allclose(block[0], source)
+
+    def test_can_wait_with_multi_tile_transfer(self) -> None:
+        """Test can_wait() with multi-tile transfer."""
+        # Create 2x2 tile tensor
+        source = tu.randn(64, 64)  # 2x2 tiles
+        buf: List[Optional[torch.Tensor]] = [None, None, None, None]
+        block = Block(buf, 4, Span(0, 4))
+
+        tx = copy(source, block)
+        assert tx.can_wait() is False
+        assert not tx.is_completed
+
+        tx.wait()
+        assert tx.can_wait() is True
+        assert tx.is_completed
+
+    def test_can_wait_block_to_tensor(self) -> None:
+        """Test can_wait() with Block to tensor transfer."""
+        # Create source Block
+        buf: List[Optional[torch.Tensor]] = [tu.ones(32, 32), tu.full((32, 32), 2.0)]
+        block = Block(buf, 2, Span(0, 2))
+
+        # Create destination tensor
+        dst = tu.zeros(64, 32)  # 2x1 tiles
+
+        tx = copy(block, dst)
+        assert tx.can_wait() is False
+
+        tx.wait()
+        assert tx.can_wait() is True
+        assert tx.is_completed
+
+    def test_can_wait_with_pipe(self) -> None:
+        """Test can_wait() with pipe transfers."""
+        # Setup pipe
+        pipe = Pipe(10, 20)
+
+        # Source (Block to Pipe)
+        src_buf: List[Optional[torch.Tensor]] = [tu.full((32, 32), 5.0)]
+        src_block = Block(src_buf, 1, Span(0, 1))
+        tx_send = copy(src_block, pipe)
+
+        assert tx_send.can_wait() is False
+        tx_send.wait()
+        assert tx_send.can_wait() is True
+
+        # Destination (Pipe to Block)
+        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_block = Block(dst_buf, 1, Span(0, 1))
+        tx_recv = copy(pipe, dst_block)
+
+        assert tx_recv.can_wait() is False
+        tx_recv.wait()
+        assert tx_recv.can_wait() is True
+
+        # Verify data
+        assert tu.allclose(dst_block[0], src_block[0])
