@@ -90,7 +90,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             with out_cb.reserve() as out_blk:
                 for _ in range(Kt):
                     with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                        out_blk.store(out_blk + a_blk @ b_blk)
+                        out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
     def mm_reader():

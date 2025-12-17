@@ -5,7 +5,6 @@
 """Utilities for comparing tensor outputs in tests."""
 
 import torch
-import math
 
 
 def assert_pcc(golden, actual, threshold=0.99):
@@ -39,7 +38,6 @@ def assert_allclose(
 
     Computes both absolute and relative errors with informative failure messages
     showing error statistics and worst-case locations.
-
 
     Args:
         actual: Actual output tensor
