@@ -18,9 +18,7 @@ include "mlir/IR/OpBase.td"
 // TTL operation definitions
 //===----------------------------------------------------------------------===//
 
-def TTL_BindCBOp : TTL_Op<"bind_cb",
-    [MemoryEffects<[MemAlloc]>,
-     MemoryEffectsOpInterface]> {
+def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
   let summary = "Bind to a hardware circular buffer slot";
   let description = [{
     Declares that this program will use a hardware circular buffer slot and
