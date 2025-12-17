@@ -108,8 +108,9 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
 /// Runtime args are indexed by the tensor's function argument position.
-static FailureOr<Value> getBufferAddressFromRuntimeArg(
-    Value tensor, Location loc, ConversionPatternRewriter &rewriter) {
+static FailureOr<Value>
+getBufferAddressFromRuntimeArg(Value tensor, Location loc,
+                               ConversionPatternRewriter &rewriter) {
   auto argIdx = getTensorFuncArgIndex(tensor);
   if (failed(argIdx)) {
     return failure();
@@ -329,7 +330,8 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 }
 
 /// Create a TensorAccessor from a tensor type and bank base address.
-/// The bankBase should come from runtime args via getBufferAddressFromRuntimeArg.
+/// The bankBase should come from runtime args via
+/// getBufferAddressFromRuntimeArg.
 static FailureOr<Value>
 materializeTensorAccessor(Value tensor, Value bankBase,
                           ConversionPatternRewriter &rewriter) {
@@ -425,8 +427,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   // Create tensor accessor with actual buffer address.
   auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter);
   if (failed(srcAccessor)) {
-    return rewriter.notifyMatchFailure(op,
-                                       "failed to create tensor accessor");
+    return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
   }
 
   // Convert CB to TTKernel type and get write pointer.
@@ -467,8 +468,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   // Create tensor accessor with actual buffer address.
   auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter);
   if (failed(dstAccessor)) {
-    return rewriter.notifyMatchFailure(op,
-                                       "failed to create tensor accessor");
+    return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
   }
 
   // Convert CB to TTKernel type and get read pointer.
@@ -526,8 +526,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     }
 
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-      diag << "unsupported ttl.copy src/dst combination: src="
-           << src.getType() << " dst=" << dst.getType();
+      diag << "unsupported ttl.copy src/dst combination: src=" << src.getType()
+           << " dst=" << dst.getType();
     });
   }
 };
