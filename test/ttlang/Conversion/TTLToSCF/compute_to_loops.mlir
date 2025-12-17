@@ -98,14 +98,14 @@ func.func @compute_relu_1d(%a: tensor<4x!ttcore.tile<32x32, f32>>) -> tensor<4x!
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[ARG1:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 func.func @compute_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK: scf.for
-  // CHECK: scf.for
-  // CHECK: %[[EXT_A:.*]] = tensor.extract
-  // CHECK: %[[EXT_B:.*]] = tensor.extract
+  // CHECK: %[[OUTER:.*]] = scf.for %[[I:.*]] = %[[C0:.*]] to %[[C2:.*]] step %[[C1:.*]] iter_args(%[[ARG_OUTER:.*]] = %[[INIT:.*]]) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: %[[INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ARG_INNER:.*]] = %[[ARG_OUTER]]) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
+  // CHECK: %[[EXT_A:.*]] = tensor.extract %[[ARG0]][%[[I]], %[[J]]]
+  // CHECK: %[[EXT_B:.*]] = tensor.extract %[[ARG1]][%[[I]], %[[J]]]
   // CHECK: %[[ADD:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_B]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: %[[RELU:.*]] = ttl.tile_relu %[[ADD]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: %[[INS:.*]] = tensor.insert %[[RELU]]
-  // CHECK: scf.yield %[[INS]]
+  // CHECK: scf.yield %[[INS]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   %0 = ttl.compute ins(%a, %b : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map3, #map3, #map3], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
@@ -163,11 +163,19 @@ func.func @compute_broadcast_input(%a: tensor<3x!ttcore.tile<32x32, f32>>) -> te
 #map_red_out = affine_map<(d0, d1) -> (d0)>
 
 // CHECK-LABEL: func.func @compute_reduction
-// CHECK: scf.for
-// CHECK: scf.for
-// CHECK: tensor.extract %[[ARG0:.*]][%[[I:.*]], %[[J:.*]]]
-// CHECK: tensor.extract %[[ACC:.*]][%[[I]]]
-// CHECK: ttl.tile_add %{{.*}}, %{{.*}}
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<2x3x!ttcore.tile<32x32, f32>>)
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[C3:.*]] = arith.constant 3 : index
+// CHECK: %[[INIT:.*]] = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
+// CHECK: %[[OUTER:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ARG_OUT:.*]] = %[[INIT]]) -> (tensor<2x!ttcore.tile<32x32, f32>>)
+// CHECK-NEXT: %[[INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]] iter_args(%[[ARG_IN:.*]] = %[[ARG_OUT]]) -> (tensor<2x!ttcore.tile<32x32, f32>>)
+// CHECK: %[[EXT_A:.*]] = tensor.extract %[[ARG0]][%[[I]], %[[J]]]
+// CHECK: %[[EXT_ACC:.*]] = tensor.extract %[[ARG_IN]][%[[I]]]
+// CHECK: %[[ADD:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_ACC]] : !ttcore.tile<32x32, f32>
+// CHECK: %[[INS:.*]] = tensor.insert %[[ADD]] into %[[ARG_IN]][%[[I]]]
+// CHECK: scf.yield %[[INS]] : tensor<2x!ttcore.tile<32x32, f32>>
 func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
   %0 = ttl.compute ins(%a : tensor<2x3x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_red_in, #map_red_out], iterator_types = ["parallel", "reduction"]} {

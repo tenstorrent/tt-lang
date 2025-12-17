@@ -69,8 +69,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
   auto computeOp = rewriter.create<ComputeOp>(
       loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{init},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes),
-      /*tile_batch_size=*/nullptr);
+      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -120,8 +119,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   auto computeOp = rewriter.create<ComputeOp>(
       loc, TypeRange{type}, ValueRange{input}, ValueRange{init},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes),
-      /*tile_batch_size=*/nullptr);
+      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments.
   Block *body = rewriter.createBlock(&computeOp.getBody());

@@ -18,8 +18,6 @@
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
 
-#include <numeric>
-
 #define GET_ATTRDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrDefs.cpp.inc"
 
@@ -457,49 +455,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   }
   if (!mlir::isa<YieldOp>(bodyBlock.getTerminator())) {
     return emitOpError("body block must be terminated with ttl.yield");
-  }
-
-  // Verify tile_batch_size shape and positivity if present.
-  if (auto batchAttr = getTileBatchSize()) {
-    SmallVector<int64_t> values;
-    for (Attribute a : *batchAttr) {
-      auto intAttr = mlir::dyn_cast<IntegerAttr>(a);
-      if (!intAttr) {
-        return emitOpError("tile_batch_size must be an array of integers");
-      }
-      values.push_back(intAttr.getInt());
-    }
-    if (values.empty()) {
-      return emitOpError("tile_batch_size must not be empty");
-    }
-    if (values.size() != getIteratorTypes().size()) {
-      return emitOpError("tile_batch_size size (")
-             << values.size() << ") must match number of iterator dimensions ("
-             << getIteratorTypes().size() << ")";
-    }
-    for (int64_t v : values) {
-      if (v <= 0) {
-        return emitOpError("tile_batch_size values must be > 0");
-      }
-    }
-
-    // Verify total tile count is evenly divisible by batch size.
-    if (!getOutputs().empty()) {
-      auto outTy = mlir::cast<RankedTensorType>(getOutputs().front().getType());
-      if (!outTy.hasStaticShape()) {
-        return success();
-      }
-
-      int64_t totalTiles = outTy.getNumElements();
-      int64_t totalBatch = std::accumulate(values.begin(), values.end(), 1LL,
-                                           std::multiplies<int64_t>());
-
-      if (totalTiles % totalBatch != 0) {
-        return emitOpError("total tile count (")
-               << totalTiles << ") must be evenly divisible by product of "
-               << "tile_batch_size (" << totalBatch << ")";
-      }
-    }
   }
 
   return mlir::success();

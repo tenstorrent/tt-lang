@@ -116,43 +116,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       return failure();
     }
 
-    SmallVector<StringRef> iteratorTypes;
-    iteratorTypes.reserve(op.getIteratorTypes().size());
-    for (Attribute attr : op.getIteratorTypes()) {
-      iteratorTypes.push_back(cast<StringAttr>(attr).getValue());
-    }
-
-    // Get tile batch size per dimension.
-    SmallVector<int64_t> batchSize;
-    if (auto attr = op.getTileBatchSize()) {
-      for (Attribute a : *attr) {
-        batchSize.push_back(cast<IntegerAttr>(a).getInt());
-      }
-    } else {
-      // Default: 1 tile per iteration for each dimension
-      auto outTy = cast<RankedTensorType>(op.getOutputs().front().getType());
-      batchSize.assign(outTy.getRank(), 1);
-    }
-
-    // Reduction dimensions are not batched.
-    SmallVector<int64_t> effectiveBatch;
-    effectiveBatch.reserve(batchSize.size());
-    for (auto [idx, itType] : llvm::enumerate(iteratorTypes)) {
-      effectiveBatch.push_back(itType == "reduction" ? 1 : batchSize[idx]);
-    }
-
-    // Check if all batch sizes are 1 (simple case, no batching).
-    bool isUnitBatch =
-        llvm::all_of(effectiveBatch, [](int64_t n) { return n == 1; });
-
     // Build loop bounds from iteration domain.
     SmallVector<Value> lowerBounds, upperBounds, steps;
     for (auto [idx, range] : llvm::enumerate(iterDomain)) {
       Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
       Value ub = getValueOrCreateConstantIndexOp(rewriter, loc, range.size);
-      // Use batch size as step when batching, otherwise step by 1.
-      int64_t stepVal = isUnitBatch ? 1 : effectiveBatch[idx];
-      Value step = rewriter.create<arith::ConstantIndexOp>(loc, stepVal);
+      Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
       lowerBounds.push_back(lb);
       upperBounds.push_back(ub);
       steps.push_back(step);
@@ -161,81 +130,14 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // Initial values for iter_args are the output tensors.
     SmallVector<Value> initValues(op.getOutputs());
 
-    // Simple case: 1 tile per iteration, use buildLoopNest directly.
-    if (isUnitBatch) {
-      scf::LoopNest loopNest = scf::buildLoopNest(
-          rewriter, loc, lowerBounds, upperBounds, steps, initValues,
-          [&](OpBuilder &b, Location loc, ValueRange ivs,
-              ValueRange iterArgs) -> scf::ValueVector {
-            return generateTileProcessing(b, loc, op, indexingMaps, ivs,
-                                          iterArgs);
-          });
-      rewriter.replaceOp(op, loopNest.results);
-      return success();
-    }
-
-    // Batched case: outer loops step by batch size; the inner loop flattens
-    // the batch block and limits the final chunk so we never step past the
-    // tensor shape.
-    scf::LoopNest outerLoops = scf::buildLoopNest(
+    scf::LoopNest loopNest = scf::buildLoopNest(
         rewriter, loc, lowerBounds, upperBounds, steps, initValues,
-        [&](OpBuilder &b, Location loc, ValueRange outerIvs,
-            ValueRange outerIterArgs) -> scf::ValueVector {
-          // Compute per-dimension clamped batch sizes and total iterations.
-          SmallVector<Value> clampedBatch, strides;
-          Value total =
-              b.create<arith::ConstantIndexOp>(loc, static_cast<int64_t>(1));
-          strides.assign(effectiveBatch.size(), nullptr);
-
-          for (size_t i = 0; i < effectiveBatch.size(); ++i) {
-            Value remaining =
-                b.create<arith::SubIOp>(loc, upperBounds[i], outerIvs[i]);
-            Value batchConst =
-                b.create<arith::ConstantIndexOp>(loc, effectiveBatch[i]);
-            Value useRemaining = b.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::sle, remaining, batchConst);
-            Value clamped = b.create<arith::SelectOp>(loc, useRemaining,
-                                                      remaining, batchConst);
-            clampedBatch.push_back(clamped);
-            total = b.create<arith::MulIOp>(loc, total, clamped);
-          }
-
-          // Precompute strides for linear -> multi-dim mapping.
-          Value one = b.create<arith::ConstantIndexOp>(loc, 1);
-          Value running = one;
-          for (int64_t i = clampedBatch.size() - 1; i >= 0; --i) {
-            strides[i] = running;
-            running = b.create<arith::MulIOp>(loc, running, clampedBatch[i]);
-          }
-
-          Value innerLb = b.create<arith::ConstantIndexOp>(loc, 0);
-          Value innerUb = total;
-          Value innerStep = one;
-
-          scf::ForOp inner = b.create<scf::ForOp>(
-              loc, innerLb, innerUb, innerStep, outerIterArgs,
-              [&](OpBuilder &ib, Location iloc, Value iv,
-                  ValueRange innerIterArgs) {
-                // Map linear iv to per-dim indices.
-                Value linear = iv;
-                SmallVector<Value> tileIvs;
-                tileIvs.reserve(outerIvs.size());
-                for (size_t dim = 0; dim < outerIvs.size(); ++dim) {
-                  Value stride = strides[dim];
-                  Value coord = ib.create<arith::DivSIOp>(iloc, linear, stride);
-                  Value rem = ib.create<arith::RemSIOp>(iloc, linear, stride);
-                  linear = rem;
-                  Value idx =
-                      ib.create<arith::AddIOp>(iloc, outerIvs[dim], coord);
-                  tileIvs.push_back(idx);
-                }
-                auto results = generateTileProcessing(
-                    ib, iloc, op, indexingMaps, tileIvs, innerIterArgs);
-                ib.create<scf::YieldOp>(iloc, results);
-              });
-          return inner.getResults();
+        [&](OpBuilder &b, Location loc, ValueRange ivs,
+            ValueRange iterArgs) -> scf::ValueVector {
+          return generateTileProcessing(b, loc, op, indexingMaps, ivs,
+                                        iterArgs);
         });
-    rewriter.replaceOp(op, outerLoops.results);
+    rewriter.replaceOp(op, loopNest.results);
     return success();
   }
 };
