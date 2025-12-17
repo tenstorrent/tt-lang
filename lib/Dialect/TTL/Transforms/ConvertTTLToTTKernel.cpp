@@ -142,9 +142,11 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
   LogicalResult
   matchAndRewrite(BindCBOp op, OpAdaptor /*adaptor*/,
                   ConversionPatternRewriter &rewriter) const override {
-    auto ttlCbType = mlir::dyn_cast<CircularBufferType>(op.getResult().getType());
+    auto ttlCbType =
+        mlir::dyn_cast<CircularBufferType>(op.getResult().getType());
     if (!ttlCbType) {
-      return rewriter.notifyMatchFailure(op, "result is not CircularBufferType");
+      return rewriter.notifyMatchFailure(op,
+                                         "result is not CircularBufferType");
     }
 
     // Convert to TTKernel CB type.
