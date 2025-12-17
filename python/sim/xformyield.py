@@ -15,65 +15,52 @@ class WaitReserveToYieldTransformer(ast.NodeTransformer):
     """
     Transforms wait() and reserve() calls to add cooperative yielding.
 
-    Inserts an unconditional yield before each wait()/reserve() call,
-    allowing the scheduler to check if the operation can proceed.
+    Inserts a yield before each wait()/reserve() call, passing the object
+    and operation name to the scheduler for deadlock detection.
 
     Examples:
         block = cb.wait()
 
     Becomes:
-        yield
+        yield (cb, 'wait')
         block = cb.wait()
 
-    The scheduler (in program.py) handles all control logic:
-        1. Generator yields before blocking operation
-        2. Scheduler checks if operation can proceed
-        3. If yes, continues the generator
-        4. If no, tries other generators
-        5. If all blocked, raises deadlock error
+    The NodeTransformer base class automatically recurses into all nested
+    control structures (for, while, if, with, try, etc.) without explicit handling.
     """
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        """Visit function definitions and transform their bodies."""
-        # First, recursively visit children
+    def visit_Assign(self, node: ast.Assign) -> ast.AST | list[ast.AST]:
+        """Visit assignment statements and check for wait/reserve calls."""
+        # First, recursively visit child nodes
         self.generic_visit(node)
 
-        # Transform the body statements
-        new_body: list[ast.stmt] = []
-        for stmt in node.body:
-            new_stmts = self._transform_statement(stmt)
-            new_body.extend(new_stmts)
-
-        node.body = new_body
+        # Check if this is an assignment from wait/reserve call
+        if isinstance(node.value, ast.Call) and self._is_wait_or_reserve_call(
+            node.value
+        ):
+            result: list[ast.AST] = list(self._insert_yield_before(node))
+            return result
         return node
 
-    def _transform_statement(self, stmt: ast.stmt) -> list[ast.stmt]:
-        """
-        Transform a statement, replacing wait/reserve calls with deadlock-aware versions.
+    def visit_Expr(self, node: ast.Expr) -> ast.AST | list[ast.AST]:
+        """Visit expression statements and check for wait/reserve calls."""
+        # First, recursively visit child nodes
+        self.generic_visit(node)
 
-        Returns:
-            List of statements (possibly expanded with checks and yields)
-        """
-        match stmt:
-            case ast.Assign(
-                targets=[_], value=ast.Call() as call
-            ) if self._is_wait_or_reserve_call(call):
-                return self._insert_yield_before(stmt)
-            case ast.Expr(value=ast.Call() as call) if self._is_wait_or_reserve_call(
-                call
-            ):
-                return self._insert_yield_before(stmt)
-            case _:
-                # For all other statements, return as-is
-                return [stmt]
+        # Check if this is a standalone wait/reserve call
+        if isinstance(node.value, ast.Call) and self._is_wait_or_reserve_call(
+            node.value
+        ):
+            result: list[ast.AST] = list(self._insert_yield_before(node))
+            return result
+        return node
 
     def _is_wait_or_reserve_call(self, call_node: ast.Call) -> bool:
         """Check if a call node is a wait() or reserve() method call."""
-        match call_node.func:
-            case ast.Attribute(attr="wait" | "reserve"):
-                return True
-            case _:
-                return False
+        return isinstance(call_node.func, ast.Attribute) and call_node.func.attr in (
+            "wait",
+            "reserve",
+        )
 
     def _insert_yield_before(self, stmt: ast.stmt) -> list[ast.stmt]:
         """
@@ -84,25 +71,22 @@ class WaitReserveToYieldTransformer(ast.NodeTransformer):
         2. original statement
         """
         # Extract call node and get operation info
-        obj: ast.expr
-        operation: str
+        call: ast.Call
         match stmt:
-            case ast.Assign(
-                value=ast.Call(func=ast.Attribute(value=obj_node, attr=op_name))
-            ):
-                obj = obj_node
-                operation = op_name
-            case ast.Expr(
-                value=ast.Call(func=ast.Attribute(value=obj_node, attr=op_name))
-            ):
-                obj = obj_node
-                operation = op_name
+            case ast.Assign(value=call_node) if isinstance(call_node, ast.Call):
+                call = call_node
+            case ast.Expr(value=call_node) if isinstance(call_node, ast.Call):
+                call = call_node
             case _:
-                raise ValueError(
-                    f"Expected statement with wait/reserve call, got {type(stmt)}"
-                )
+                raise ValueError(f"Unexpected statement type: {type(stmt)}")
 
-        # Create: yield (cb, 'wait')  or  yield (cb, 'reserve')
+        if not isinstance(call.func, ast.Attribute):
+            raise ValueError(f"Expected attribute access, got {type(call.func)}")
+
+        obj = call.func.value
+        operation = call.func.attr
+
+        # Create: yield (cb, 'wait') or yield (cb, 'reserve')
         yield_value = ast.Tuple(
             elts=[obj, ast.Constant(value=operation)], ctx=ast.Load()
         )
@@ -119,6 +103,9 @@ def transform_wait_reserve_to_yield(source: str) -> str:
     Inserts `yield (cb, 'operation')` before each wait()/reserve() call,
     allowing the scheduler to check if the operation can proceed and handle
     all control logic externally.
+
+    The NodeTransformer automatically recurses into all nested control structures
+    (for, while, if, with, try, etc.) without explicit handling.
 
     Args:
         source: Python source code as string
@@ -139,15 +126,8 @@ def transform_wait_reserve_to_yield(source: str) -> str:
             block = cb.wait()
             return block
     """
-    # Parse source to AST
     tree = ast.parse(source)
-
-    # Apply transformation
     transformer = WaitReserveToYieldTransformer()
     transformed_tree = transformer.visit(tree)
-
-    # Fix missing locations
     ast.fix_missing_locations(transformed_tree)
-
-    # Unparse back to Python
     return ast.unparse(transformed_tree)

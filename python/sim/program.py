@@ -13,6 +13,7 @@ import copy
 import threading
 import traceback
 import inspect
+import textwrap
 from typing import Any, Callable, Dict, List, Tuple, Protocol, Generator
 from types import CellType, FunctionType
 from enum import Enum
@@ -293,17 +294,30 @@ def Program(
                 # Bind template to core context
                 bound_func = tmpl.bind(core_context)
 
-                # Get source code (inspect.getsource handles decorators and indentation)
-                source = inspect.getsource(bound_func)
+                # Get source code - use original function if available to avoid decorator wrapper
+                func = getattr(bound_func, "_func", bound_func)
+                source = textwrap.dedent(inspect.getsource(func))
+
+                # Strip decorators from source (lines starting with @)
+                source_lines = source.split("\n")
+                func_start_idx = 0
+                for i, line in enumerate(source_lines):
+                    if line.strip().startswith("def "):
+                        func_start_idx = i
+                        break
+                source = "\n".join(source_lines[func_start_idx:])
 
                 # Transform: add yields before wait()/reserve() calls
                 transformed_source = transform_wait_reserve_to_yield(source)
 
                 # Prepare namespace with core context and function's globals
-                namespace = {**bound_func.__globals__, **core_context}
+                # Use original function's globals to get imports like 'ttl', 'copy', etc.
+                func_globals = func.__globals__
+                namespace = {**func_globals, **core_context}
 
                 # Return transformed source and context for scheduler to execute
-                func_name = bound_func.__name__
+                # Use the original function's name (compute, dm0, dm1), not the wrapper's name (runner)
+                func_name = func.__name__
                 sources.append(
                     (f"core{core}-{name}", func_name, transformed_source, namespace)
                 )
@@ -333,10 +347,25 @@ def Program(
                 code_obj = compile(transformed_source, f"<{name}_transformed>", "exec")
 
                 # Execute to define the function in the namespace
-                exec(code_obj, namespace)
+                try:
+                    exec(code_obj, namespace)
+                except Exception as e:
+                    # Error during function definition
+                    error_msg = f"{name}: {type(e).__name__}: {e}"
+                    raise RuntimeError(error_msg)
 
                 # Call the function to create the generator
-                gen = namespace[func_name]()
+                try:
+                    gen = namespace[func_name]()
+                except Exception as e:
+                    # Error during generator creation (e.g., exception in function body before first yield)
+                    error_msg = f"{name}: {type(e).__name__}: {e}"
+                    raise RuntimeError(error_msg)
+
+                # Skip if function doesn't yield (just has 'pass' or no body)
+                if gen is None:
+                    continue
+
                 active[name] = gen
 
             # Track blocked generators: {name: (generator, cb_object, operation)}
@@ -355,46 +384,6 @@ def Program(
                 for name in unblocked:
                     del blocked[name]
 
-                # Try to advance each active generator
-                for name in list(active.keys()):
-                    gen = active[name]
-
-                    try:
-                        # Try to advance the generator one step
-                        result: Any = next(gen)
-
-                        # Check if generator yielded blocking operation info (cb, operation)
-                        match result:
-                            case (cb_obj, operation):
-                                # Check if operation can proceed
-                                can_method = getattr(cb_obj, f"can_{operation}", None)
-                                if can_method and not can_method():
-                                    # Operation would block - mark as blocked and skip
-                                    blocked[name] = (gen, cb_obj, operation)
-                                    del active[name]
-                                    continue
-                            case _:
-                                # Not a 2-tuple or None, treat as normal yield
-                                pass
-
-                        # If we get here, either it didn't yield blocking info or it can proceed
-                        # Keep in active for next iteration
-
-                    except StopIteration:
-                        # Generator completed successfully
-                        del active[name]
-
-                    except Exception as e:
-                        # Generator raised an error
-                        tb_str = traceback.format_exc()
-                        print(f"\n❌ {name} failed")
-                        print(f"   error type   : {type(e).__name__}")
-                        print(f"   error message: {e}")
-                        print("   traceback:")
-                        print(tb_str)
-                        print("-" * 50)
-                        raise RuntimeError(f"{name}: {type(e).__name__}: {e}")
-
                 # Check for deadlock: all generators blocked and none can proceed
                 if not active and blocked:
                     blocked_info = [
@@ -404,5 +393,51 @@ def Program(
                         f"Deadlock detected: all generators blocked\n"
                         + "\n".join(blocked_info)
                     )
+
+                # Try to advance each active generator
+                # Run each generator until it blocks or completes
+                for name in list(active.keys()):
+                    gen = active[name]
+
+                    # Keep advancing this generator until it blocks or completes
+                    while True:
+                        try:
+                            # Try to advance the generator one step
+                            result: Any = next(gen)
+
+                            # Check if generator yielded blocking operation info (cb, operation)
+                            match result:
+                                case (cb_obj, operation):
+                                    # Check if operation can proceed
+                                    can_method = getattr(
+                                        cb_obj, f"can_{operation}", None
+                                    )
+                                    if can_method and not can_method():
+                                        # Operation would block - mark as blocked and move to next generator
+                                        blocked[name] = (gen, cb_obj, operation)
+                                        del active[name]
+                                        break  # Exit inner while loop, try next generator
+                                    # else: operation can proceed, continue this generator
+                                case _:
+                                    # Not a 2-tuple or None, treat as normal yield
+                                    pass
+
+                            # If we get here, either it didn't yield blocking info or it can proceed
+                            # Continue running this generator
+
+                        except StopIteration:
+                            # Generator completed successfully
+                            del active[name]
+                            break  # Exit inner while loop, try next generator
+
+                        except Exception as e:
+                            # Generator raised an error
+                            tb_str = traceback.format_exc()
+                            error_msg = f"{name}: {type(e).__name__}: {e}"
+                            print(f"\n❌ {error_msg}")
+                            print("   traceback:")
+                            print(tb_str)
+                            print("-" * 50)
+                            raise RuntimeError(error_msg)
 
     return ProgramImpl(*funcs, execution_mode=execution_mode)

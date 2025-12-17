@@ -179,18 +179,18 @@ def func():
 
 
 def test_wait_with_multiple_targets() -> None:
-    """Test wait() call in assignment with multiple targets (should still work)."""
+    """Test wait() call in assignment with multiple targets (should be transformed)."""
     source = """
 def func():
     block = view = cb.wait()
     return block
 """
-    # This should not be transformed since the pattern matcher expects single target
+    # The new implementation transforms all assignments, including chained ones
     result = transform_wait_reserve_to_yield(source)
 
-    # The transformation only handles single assignment targets
-    # This statement should pass through unchanged (no yield inserted)
-    assert "yield" not in result or result.count("yield") == 0
+    # Should insert yield before the chained assignment
+    assert "yield (cb, 'wait')" in result
+    assert "block = view = cb.wait()" in result
 
     print("multiple assignment targets test passed!")
 
@@ -224,7 +224,7 @@ def func():
 
 
 def test_wait_reserve_in_control_flow() -> None:
-    """Test wait/reserve calls inside control flow statements."""
+    """Test wait/reserve calls inside control flow statements are transformed."""
     source = """
 def func():
     if condition:
@@ -235,14 +235,10 @@ def func():
 """
     result = transform_wait_reserve_to_yield(source)
 
-    # Control flow statements are not recursively transformed
-    # (based on the implementation which only handles top-level statements)
-    # So no yields should be inserted
-    # Actually, looking at the code, generic_visit is called which should handle this
-    # Let me check if yields appear
-    # The _transform_statement only handles direct statements in function body
-    # Not statements inside if/else blocks
-    assert "yield" not in result
+    # The new implementation recursively transforms control flow statements
+    # So yields should be inserted inside if/else blocks
+    assert "yield (cb, 'wait')" in result
+    assert "yield (cb, 'reserve')" in result
 
     print("wait/reserve in control flow test passed!")
 

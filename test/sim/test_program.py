@@ -13,10 +13,9 @@ This test verifies the Program class behavior including:
 
 import pytest
 import torch
+from typing import cast
 from python.sim import (
     ttl,
-    CircularBuffer,
-    CBAPI,
     TensorAccessor,
     IndexType,
     TILE_SHAPE,
@@ -26,7 +25,7 @@ from python.sim.program import (
     Program,
     ExecutionMode,
     rebind_func_with_ctx,
-    _make_cell,
+    _make_cell,  # type: ignore[reportPrivateUsage]
 )
 import torch.testing as tt_testing
 
@@ -82,9 +81,6 @@ class TestExecutionModes:
         expected = torch.ones(TILE_SHAPE) * 6
         tt_testing.assert_close(out, expected)
 
-    @pytest.mark.skip(
-        reason="inspect.getsource() on decorated functions returns wrapper with indentation issues"
-    )
     def test_cooperative_mode_basic(self) -> None:
         """Test basic COOPERATIVE mode execution."""
 
@@ -212,7 +208,7 @@ class TestMultiCore:
 
             @ttl.compute()
             def compute():
-                core_id = ttl.core(dims=1)
+                core_id = cast(int, ttl.core(dims=1))
                 block = a_cb.wait()
                 out_block = out_cb.reserve()
                 # Each core multiplies by (core_id + 1)
@@ -222,7 +218,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm0():
-                core_id = ttl.core(dims=1)
+                core_id = cast(int, ttl.core(dims=1))
                 block = a_cb.reserve()
                 # Each core reads its own tile
                 tx = copy(a_accessor[core_id : core_id + 1, 0:1], block)
@@ -231,7 +227,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm1():
-                core_id = ttl.core(dims=1)
+                core_id = cast(int, ttl.core(dims=1))
                 block = out_cb.wait()
                 # Each core writes its own tile
                 tx = copy(block, out_accessor[core_id : core_id + 1, 0:1])
@@ -266,7 +262,7 @@ class TestMultiCore:
 
             @ttl.compute()
             def compute():
-                core_y, core_x = ttl.core(dims=2)
+                core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
                 out_block = out_cb.reserve()
                 # Each core writes its coordinates
                 out_block[0] = torch.ones(TILE_SHAPE) * (core_y * 10 + core_x)
@@ -278,7 +274,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm1():
-                core_y, core_x = ttl.core(dims=2)
+                core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
                 block = out_cb.wait()
                 tx = copy(block, out_accessor[core_y : core_y + 1, core_x : core_x + 1])
                 tx.wait()
@@ -312,7 +308,7 @@ class TestContextIsolation:
 
             @ttl.compute()
             def compute():
-                core_id = ttl.core(dims=1)
+                core_id = cast(int, ttl.core(dims=1))
                 # Each core reserves/pushes independently
                 block = cb.reserve()
                 block[0] = torch.ones(TILE_SHAPE) * (core_id + 100)
@@ -324,7 +320,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                core_id = ttl.core(dims=1)
+                core_id = cast(int, ttl.core(dims=1))
                 # Each core waits/pops its own CB
                 block = cb.wait()
                 tx = copy(block, out_accessor[core_id : core_id + 1, 0:1])
@@ -353,7 +349,7 @@ class TestContextIsolation:
 
             @ttl.compute()
             def compute():
-                core_id = ttl.core(dims=1)
+                _ = ttl.core(dims=1)
                 block = cb.reserve()
                 # Read from shared tensor
                 tx = copy(shared_accessor[0:1, 0:1], block)
@@ -366,7 +362,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                core_id = ttl.core(dims=1)
+                core_id = cast(int, ttl.core(dims=1))
                 block = cb.wait()
                 tx = copy(block, out_accessor[core_id : core_id + 1, 0:1])
                 tx.wait()
@@ -401,7 +397,7 @@ class TestErrorHandling:
 
             @ttl.datamovement()
             def dm0():
-                block = cb.reserve()
+                _ = cb.reserve()
                 cb.push()
 
             @ttl.datamovement()
@@ -417,15 +413,12 @@ class TestErrorHandling:
         ):
             test_kernel(a)
 
-    @pytest.mark.skip(
-        reason="inspect.getsource() on decorated functions returns wrapper with indentation issues"
-    )
     def test_error_in_dm0_cooperative(self) -> None:
         """Test that errors in dm0 are properly reported in COOPERATIVE mode."""
 
         @ttl.kernel(grid=(1, 1), granularity=1)
         def test_kernel(a: torch.Tensor):
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            _ = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -451,9 +444,6 @@ class TestErrorHandling:
         ):
             test_kernel(a)
 
-    @pytest.mark.skip(
-        reason="inspect.getsource() on decorated functions returns wrapper with indentation issues"
-    )
     def test_deadlock_detection_cooperative(self) -> None:
         """Test that deadlock is detected in COOPERATIVE mode."""
 
@@ -464,13 +454,13 @@ class TestErrorHandling:
             @ttl.compute()
             def compute():
                 # Try to wait when nothing was pushed - deadlock
-                block = cb.wait()
+                _ = cb.wait()
                 cb.pop()
 
             @ttl.datamovement()
             def dm0():
                 # dm0 also tries to wait - deadlock
-                block = cb.wait()
+                _ = cb.wait()
                 cb.pop()
 
             @ttl.datamovement()
@@ -548,9 +538,9 @@ class TestRebindFunc:
     def test_rebind_with_globals(self) -> None:
         """Test that rebind also updates globals."""
 
-        def func():
+        def func() -> int:
             # This will look up 'some_global' in globals
-            return some_global  # type: ignore # noqa: F821
+            return some_global  # type: ignore[reportUnknownVariableType] # noqa: F821
 
         # Rebind with new global
         new_func = rebind_func_with_ctx(func, {"some_global": 42})
@@ -593,28 +583,27 @@ class TestMakeCell:
 class TestCooperativeScheduling:
     """Test cooperative scheduling specific behavior."""
 
-    @pytest.mark.skip(
-        reason="inspect.getsource() on decorated functions returns wrapper with indentation issues"
-    )
     def test_yielding_on_blocking_operations(self) -> None:
         """Test that cooperative mode properly yields on blocking operations."""
 
         @ttl.kernel(grid=(1, 1), granularity=1)
         def test_kernel(a: torch.Tensor, out: torch.Tensor):
+            a_accessor = TensorAccessor(a, index_type=IndexType.TILE)
+            out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 # This wait should yield until dm0 pushes
                 block = cb.wait()
-                out[0, 0] = block[0] * 2
+                out_accessor[0:1, 0:1][:] = block[0] * 2
                 cb.pop()
 
             @ttl.datamovement()
             def dm0():
                 # This should run first in cooperative mode
                 block = cb.reserve()
-                tx = copy(a[0, 0], block)
+                tx = copy(a_accessor[0:1, 0:1], block)
                 tx.wait()
                 cb.push()
 
@@ -634,28 +623,27 @@ class TestCooperativeScheduling:
         expected = torch.ones(TILE_SHAPE) * 14
         tt_testing.assert_close(out, expected)
 
-    @pytest.mark.skip(
-        reason="inspect.getsource() on decorated functions returns wrapper with indentation issues"
-    )
     def test_multiple_iterations_cooperative(self) -> None:
         """Test multiple iterations in cooperative mode."""
 
         @ttl.kernel(grid=(1, 1), granularity=3)
         def test_kernel(a: torch.Tensor, out: torch.Tensor):
+            a_accessor = TensorAccessor(a, index_type=IndexType.TILE)
+            out_accessor = TensorAccessor(out, index_type=IndexType.TILE)
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 for i in range(3):
                     block = cb.wait()
-                    out[i, 0] = block[0] + 10
+                    out_accessor[i : i + 1, 0:1][:] = block[0] + 10
                     cb.pop()
 
             @ttl.datamovement()
             def dm0():
                 for i in range(3):
                     block = cb.reserve()
-                    tx = copy(a[i, 0], block)
+                    tx = copy(a_accessor[i : i + 1, 0:1], block)
                     tx.wait()
                     cb.push()
 

@@ -28,6 +28,7 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
     def decorator(func: FunctionType) -> BindableTemplate:
         class ComputeTemplate:
             __name__ = func.__name__
+            _func = func  # Store original function for inspect.getsource()
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 # rebuild function with per-core closure
@@ -36,6 +37,8 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
                 def runner() -> Any:
                     return bound_func()
 
+                # Store original function on runner for cooperative mode
+                runner._func = func  # type: ignore[reportFunctionMemberAccess]
                 return runner
 
         return ComputeTemplate()
@@ -57,6 +60,7 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
     def decorator(func: FunctionType) -> BindableTemplate:
         class DMTemplate:
             __name__ = func.__name__
+            _func = func  # Store original function for inspect.getsource()
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 bound_func = rebind_func_with_ctx(func, ctx)
@@ -64,6 +68,8 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
                 def runner() -> Any:
                     return bound_func()
 
+                # Store original function on runner for cooperative mode
+                runner._func = func  # type: ignore[reportFunctionMemberAccess]
                 return runner
 
         return DMTemplate()
