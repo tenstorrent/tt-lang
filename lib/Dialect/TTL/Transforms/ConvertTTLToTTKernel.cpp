@@ -402,6 +402,8 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
   // accessors and kernel launch metadata. Issue: #84.
   auto nocDst = makeZeroI32(loc, rewriter);
 
+  // TODO(#138): Emit single block transfer for contiguous layouts instead of
+  // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  // TODO(ttl): Add lowering for CB protocol ops
@@ -437,6 +439,8 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
 
   auto nocDst = makeZeroI32(loc, rewriter);
 
+  // TODO(#138): Emit single block transfer for contiguous layouts instead of
+  // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  // TODO(ttl): Add lowering for CB protocol ops

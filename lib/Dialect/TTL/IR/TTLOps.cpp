@@ -5,6 +5,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
 #include "TTLOpsVerifyUtils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -206,68 +207,8 @@ void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
 }
 
 //===----------------------------------------------------------------------===//
-// ComputeOp - TilingInterface implementations
+// ComputeOp - Helper functions
 //===----------------------------------------------------------------------===//
-
-mlir::SmallVector<mlir::utils::IteratorType>
-mlir::tt::ttl::ComputeOp::getLoopIteratorTypes() {
-  mlir::SmallVector<mlir::utils::IteratorType> result;
-  for (mlir::Attribute attr : getIteratorTypes()) {
-    auto strAttr = mlir::cast<mlir::StringAttr>(attr);
-    if (strAttr.getValue() == "parallel") {
-      result.push_back(mlir::utils::IteratorType::parallel);
-    } else if (strAttr.getValue() == "reduction") {
-      result.push_back(mlir::utils::IteratorType::reduction);
-    }
-  }
-  return result;
-}
-
-mlir::SmallVector<mlir::Range>
-mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
-  mlir::SmallVector<mlir::Range> domain;
-  // Use the first output tensor shape to define the iteration domain.
-  if (getOutputs().empty()) {
-    return domain;
-  }
-  auto outTy =
-      mlir::cast<mlir::RankedTensorType>(getOutputs().front().getType());
-  mlir::Location loc = getLoc();
-  for (int64_t i = 0; i < outTy.getRank(); ++i) {
-    mlir::OpFoldResult offset = b.getIndexAttr(0);
-    mlir::OpFoldResult stride = b.getIndexAttr(1);
-    mlir::OpFoldResult size;
-    if (outTy.isDynamicDim(i)) {
-      size = b.create<mlir::tensor::DimOp>(loc, getOutputs().front(), i)
-                 .getResult();
-    } else {
-      size = b.getIndexAttr(outTy.getDimSize(i));
-    }
-    domain.push_back(mlir::Range{offset, size, stride});
-  }
-  return domain;
-}
-
-mlir::FailureOr<mlir::TilingResult>
-mlir::tt::ttl::ComputeOp::getTiledImplementation(
-    mlir::OpBuilder &b, mlir::ArrayRef<mlir::OpFoldResult> offsets,
-    mlir::ArrayRef<mlir::OpFoldResult> sizes) {
-  // For now, return failure to indicate tiling is not yet fully implemented.
-  // A full implementation would slice the inputs/outputs and clone this op.
-  return mlir::failure();
-}
-
-mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
-    mlir::OpBuilder &b, unsigned resultNumber,
-    mlir::ArrayRef<mlir::OpFoldResult> offsets,
-    mlir::ArrayRef<mlir::OpFoldResult> sizes,
-    mlir::SmallVector<mlir::OpFoldResult> &resultOffsets,
-    mlir::SmallVector<mlir::OpFoldResult> &resultSizes) {
-  // For identity indexing maps, result tile position equals the iteration tile.
-  resultOffsets.assign(offsets.begin(), offsets.end());
-  resultSizes.assign(sizes.begin(), sizes.end());
-  return mlir::success();
-}
 
 /// Return the circular buffer attached to `tensor` via `ttl.attach_cb`, or null
 /// if none/ambiguous.
@@ -293,15 +234,11 @@ mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
 mlir::ParseResult
 mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
                                 mlir::OperationState &result) {
-  // Parse: ins(...) outs(...) attrs region -> results
+  // Parse: ins(operands : types) outs(operands : types) attrs region -> results
   mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> inputOperands;
   mlir::SmallVector<mlir::Type> inputTypes;
-  mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> inputCbOperands;
-  mlir::SmallVector<mlir::Type> inputCbTypes;
   mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> outputOperands;
   mlir::SmallVector<mlir::Type> outputTypes;
-  mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> outputCbOperands;
-  mlir::SmallVector<mlir::Type> outputCbTypes;
 
   if (parser.parseKeyword("ins") || parser.parseLParen()) {
     return mlir::failure();
@@ -351,13 +288,15 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
     return mlir::failure();
   }
   if (succeeded(parser.parseOptionalLParen())) {
+    if (parser.parseTypeList(resultTypes) || parser.parseRParen()) {
+      return mlir::failure();
+    }
+  } else {
     mlir::Type singleType;
-    if (parser.parseType(singleType) || parser.parseRParen()) {
+    if (parser.parseType(singleType)) {
       return mlir::failure();
     }
     resultTypes.push_back(singleType);
-  } else if (parser.parseTypeList(resultTypes)) {
-    return mlir::failure();
   }
   result.addTypes(resultTypes);
   return mlir::success();
@@ -448,6 +387,25 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // Verify indexing maps compatibility.
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
+
+  // Verify that the iteration domain size (from iterator_types) is correctly
+  // reflected. All indexing maps must have iteratorCount input dimensions.
+  // The iteration domain is derived from the maximum tensor rank, which should
+  // match iteratorCount.
+  int64_t maxTensorRank = 0;
+  for (Value input : getInputs()) {
+    auto ty = cast<RankedTensorType>(input.getType());
+    maxTensorRank = std::max(maxTensorRank, ty.getRank());
+  }
+  for (Value output : getOutputs()) {
+    auto ty = cast<RankedTensorType>(output.getType());
+    maxTensorRank = std::max(maxTensorRank, ty.getRank());
+  }
+  if (static_cast<size_t>(maxTensorRank) != iteratorCount) {
+    return emitOpError("iterator_types count (")
+           << iteratorCount << ") must match maximum tensor rank ("
+           << maxTensorRank << ")";
+  }
 
   auto verifyMapCommon = [&](AffineMap map,
                              size_t expectedResults) -> mlir::LogicalResult {

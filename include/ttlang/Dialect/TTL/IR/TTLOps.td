@@ -8,7 +8,6 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
-include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
@@ -185,9 +184,6 @@ class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
 def TTL_ComputeOp : TTL_Op<"compute", [
     AttrSizedOperandSegments,
     SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<TilingInterface,
-      ["getLoopIteratorTypes", "getIterationDomain", "getTiledImplementation",
-       "getResultTilePosition"]>,
     DeclareOpInterfaceMethods<DestinationStyleOpInterface>
   ]> {
   let summary = "Structured tile-level compute operation";
@@ -201,9 +197,6 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
     the input/output tensors at each iteration point.
-
-    This operation implements `TilingInterface` to support DST register capacity
-    tiling via the transform dialect.
 
     In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
     `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
