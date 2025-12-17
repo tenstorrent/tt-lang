@@ -41,6 +41,7 @@ static Value bindCBForTensor(OpBuilder &b, Location loc,
   SmallVector<int64_t> shape(tensorType.getShape().begin(),
                              tensorType.getShape().end());
   Type elemType = tensorType.getElementType();
+  // TODO(#137): Make buffer factor configurable.
   int64_t bufferFactor = 2; // Double buffering
 
   auto bufferFactorAttr = b.getI64IntegerAttr(bufferFactor);

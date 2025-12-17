@@ -5,42 +5,86 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
-#define GEN_PASS_DEF_TTLLOWERTOLOOPS
-#include "ttlang/Dialect/TTL/Passes.h.inc"
-
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
+
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+#define GEN_PASS_DEF_TTLLOWERTOLOOPS
+#include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace mlir::tt::ttl {
 namespace {
 
-/// Apply an indexing map to the induction variables with canonicalization to
-/// drop unused/duplicate operands and fold constants (mirrors linalg lowering).
-static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
-                                           AffineMap map, ValueRange ivs) {
-  SmallVector<Value> operands(ivs.begin(), ivs.end());
-  if (operands.size() < map.getNumDims()) {
-    operands.append(map.getNumDims() - operands.size(),
-                    b.create<arith::ConstantIndexOp>(loc, 0));
-  } else if (operands.size() > map.getNumDims()) {
-    operands.resize(map.getNumDims());
+/// Get the iteration domain for a ComputeOp. The verifier ensures that the
+/// maximum tensor rank equals iterator_types.size(). Use the max-rank tensor's
+/// shape for loop bounds (handles reductions/broadcasts where other tensors
+/// have lower rank).
+static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
+  SmallVector<Range> domain;
+  Location loc = op.getLoc();
+
+  // Find the tensor with maximum rank (matches iterator domain per verifier).
+  Value maxRankTensor;
+  int64_t maxRank = 0;
+  for (Value input : op.getInputs()) {
+    int64_t rank = cast<RankedTensorType>(input.getType()).getRank();
+    if (rank > maxRank) {
+      maxRank = rank;
+      maxRankTensor = input;
+    }
+  }
+  for (Value output : op.getOutputs()) {
+    int64_t rank = cast<RankedTensorType>(output.getType()).getRank();
+    if (rank > maxRank) {
+      maxRank = rank;
+      maxRankTensor = output;
+    }
   }
 
-  AffineMap canonMap = map;
-  affine::canonicalizeMapAndOperands(&canonMap, &operands);
+  if (!maxRankTensor) {
+    return domain;
+  }
+
+  auto refTy = cast<RankedTensorType>(maxRankTensor.getType());
+  for (int64_t i = 0; i < refTy.getRank(); ++i) {
+    OpFoldResult offset = b.getIndexAttr(0);
+    OpFoldResult stride = b.getIndexAttr(1);
+    OpFoldResult size;
+    if (refTy.isDynamicDim(i)) {
+      size = b.create<tensor::DimOp>(loc, maxRankTensor, i).getResult();
+    } else {
+      size = b.getIndexAttr(refTy.getDimSize(i));
+    }
+    domain.push_back(Range{offset, size, stride});
+  }
+  return domain;
+}
+
+/// Apply an indexing map to the induction variables using MLIR's
+/// makeComposedFoldedAffineApply utility for automatic composition and folding.
+static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
+                                           AffineMap map, ValueRange ivs) {
+  SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
+  assert(operands.size() == map.getNumDims() &&
+         "IV count must match map dimensions (verifier ensures this)");
 
   SmallVector<Value> mapped;
-  mapped.reserve(canonMap.getNumResults());
-  for (AffineExpr expr : canonMap.getResults()) {
-    AffineMap single =
-        AffineMap::get(canonMap.getNumDims(), canonMap.getNumSymbols(), expr);
-    mapped.push_back(
-        b.create<affine::AffineApplyOp>(loc, single, operands).getResult());
+  mapped.reserve(map.getNumResults());
+
+  for (AffineExpr expr : map.getResults()) {
+    AffineMap singleResultMap =
+        AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
+    OpFoldResult result = affine::makeComposedFoldedAffineApply(
+        b, loc, singleResultMap, operands);
+    mapped.push_back(getValueOrCreateConstantIndexOp(b, loc, result));
   }
   return mapped;
 }
@@ -111,7 +155,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       indexingMaps.push_back(cast<AffineMapAttr>(attr).getValue());
     }
 
-    SmallVector<Range> iterDomain = op.getIterationDomain(rewriter);
+    SmallVector<Range> iterDomain = getIterationDomain(rewriter, op);
     if (iterDomain.empty()) {
       return failure();
     }
@@ -145,8 +189,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 struct TTLLowerToLoopsPass
     : public ::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<arith::ArithDialect, scf::SCFDialect, tensor::TensorDialect>();
+    registry.insert<affine::AffineDialect, arith::ArithDialect, scf::SCFDialect,
+                    tensor::TensorDialect>();
   }
 
   void runOnOperation() override {

@@ -89,6 +89,7 @@ def TTLLowerToLoops
   }];
 
   let dependentDialects = [
+    "::mlir::affine::AffineDialect",
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tensor::TensorDialect"
