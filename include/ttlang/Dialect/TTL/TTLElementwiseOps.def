@@ -1,0 +1,52 @@
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//===----------------------------------------------------------------------===//
+// TTL Elementwise Operation Definitions
+//===----------------------------------------------------------------------===//
+//
+// This file defines mappings for TTL elementwise operations lowering to
+// ttl.compute with tile ops.
+//
+// It uses the X-macro pattern to generate boilerplate code for pattern
+// definitions and registration.
+//
+// Usage:
+//   #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP)  // your code here
+//   #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP)   // your code here
+//   #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+//
+//===----------------------------------------------------------------------===//
+
+//===----------------------------------------------------------------------===//
+// Elementwise operation mappings (TTL tensor ops -> ttl.compute with tile ops)
+//===----------------------------------------------------------------------===//
+
+#ifndef TTL_BINARY_TILE_OP
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP)
+#endif
+
+#ifndef TTL_UNARY_TILE_OP
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP)
+#endif
+
+// Binary operations: TTL tensor op -> TTL tile op
+TTL_BINARY_TILE_OP(Add, AddTileOp)
+TTL_BINARY_TILE_OP(Sub, SubTileOp)
+TTL_BINARY_TILE_OP(Mul, MulTileOp)
+TTL_BINARY_TILE_OP(Max, MaxTileOp)
+
+// Unary operations: TTL tensor op -> TTL tile op
+TTL_UNARY_TILE_OP(Exp, ExpTileOp)
+TTL_UNARY_TILE_OP(Log, LogTileOp)
+TTL_UNARY_TILE_OP(Sqrt, SqrtTileOp)
+TTL_UNARY_TILE_OP(Rsqrt, RsqrtTileOp)
+TTL_UNARY_TILE_OP(Tanh, TanhTileOp)
+TTL_UNARY_TILE_OP(Abs, AbsTileOp)
+TTL_UNARY_TILE_OP(Neg, NegTileOp)
+TTL_UNARY_TILE_OP(Relu, ReluTileOp)
+TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp)
+
+#undef TTL_BINARY_TILE_OP
+#undef TTL_UNARY_TILE_OP

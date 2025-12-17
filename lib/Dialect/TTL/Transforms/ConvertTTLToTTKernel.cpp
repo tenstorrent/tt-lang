@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -63,11 +64,9 @@ public:
       }
       return t;
     });
-    // Transfer handle: map to an i32 (TRID placeholder until TTKernel TRID ops
-    // are wired through).
-    addConversion([](TransferHandleType t) -> Type {
-      return IntegerType::get(t.getContext(), 32);
-    });
+    // Preserve transfer handle types so ttl.wait can inspect transfer
+    // direction. TRID-aware lowering will be added later.
+    addConversion([](TransferHandleType t) -> Type { return t; });
     // Identity fallback must be last.
     addConversion([](Type t) { return t; });
 
@@ -131,11 +130,11 @@ static bool eraseUnusedArguments(FuncLike funcLike) {
   return true;
 }
 
-struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
+struct BindCBLowering : OpConversionPattern<BindCBOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(CreateCBOp op, OpAdaptor /*adaptor*/,
+  matchAndRewrite(BindCBOp op, OpAdaptor /*adaptor*/,
                   ConversionPatternRewriter &rewriter) const override {
     auto *typeConverter = this->getTypeConverter();
     if (!typeConverter) {
@@ -147,8 +146,8 @@ struct CreateCBLowering : OpConversionPattern<CreateCBOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB type");
     }
 
-    // For now, fabricate a CB value via unrealized cast; real lowering would
-    // supply a concrete CB handle.
+    // For now, bind to a placeholder CB handle via unrealized cast; real
+    // lowering would thread the provisioned hardware CB handle.
     auto zero = rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 32);
     auto cast = rewriter.create<UnrealizedConversionCastOp>(
         op.getLoc(), converted, ValueRange{zero});
@@ -608,11 +607,22 @@ struct TTLConvertTTLToTTKernelPass
 
     ConversionTarget target(ctx);
     target.addIllegalDialect<tt::ttl::TTLDialect>();
-    target.addLegalDialect<BuiltinDialect>();
-    target.addLegalDialect<ttk::TTKernelDialect>();
-    target.addLegalDialect<arith::ArithDialect>();
-    target.addLegalDialect<scf::SCFDialect>();
-    target.addLegalDialect<func::FuncDialect>();
+    target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
+                           func::FuncDialect, tensor::TensorDialect,
+                           ttkernel::TTKernelDialect>();
+
+    // Mark compute-related ops as legal during partial conversion since they're
+    // handled by the separate greedy rewrite phase
+    // (populateTTLTileOpsToTTKernelPatterns).
+    target.addLegalOp<ComputeOp, YieldOp>();
+    // Tile ops (handled by greedy phase):
+    target.addLegalOp<
+        // Binary tile ops
+        AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
+        // Unary tile ops
+        ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
+        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp>();
+
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());
     });
@@ -623,10 +633,9 @@ struct TTLConvertTTLToTTKernelPass
     // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
-    patterns
-        .add<CreateCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-             CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
-                                                            &ctx);
+    patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+                 CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
+                                                                &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
 
@@ -645,7 +654,35 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
     }
 
-    // Apply FuncKernelFinalize as a greedy rewrite after cleanup.
+    // Lower tile ops to TTKernel ops using DialectConversion. ttl.compute is
+    // kept legal here because full compute lowering happens after loops and
+    // bufferization in a later stage.
+    ConversionTarget computeTarget(ctx);
+    // TTKernel ops are legal (target dialect)
+    computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
+    // Arith ops are legal (used for index constants)
+    computeTarget.addLegalDialect<arith::ArithDialect>();
+    // Keep compute ops legal (tile-only lowering here).
+    computeTarget.addLegalOp<ComputeOp, YieldOp>();
+    computeTarget.addIllegalOp<
+        // Binary tile ops
+        AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
+        // Unary tile ops
+        ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
+        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp>();
+    // Other dialects are legal (func, tensor, etc.)
+    computeTarget.markUnknownOpDynamicallyLegal(
+        [](Operation *) { return true; });
+
+    RewritePatternSet computePatterns(&ctx);
+    populateTTLTileOpsToTTKernelPatterns(computePatterns);
+    if (failed(applyPartialConversion(mod, computeTarget,
+                                      std::move(computePatterns)))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Apply FuncKernelFinalize as a greedy rewrite after tile lowering.
     RewritePatternSet finalizePatterns(&ctx);
     finalizePatterns.add<FuncKernelFinalize>(&ctx);
     if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
