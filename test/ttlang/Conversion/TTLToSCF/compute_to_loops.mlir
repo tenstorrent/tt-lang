@@ -114,3 +114,106 @@ func.func @compute_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Test: Input indexing map permutation is applied when extracting tiles.
+
+#map_perm = affine_map<(d0, d1) -> (d1, d0)>
+#map_id2 = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @compute_permuted_input
+// CHECK: tensor.extract %[[ARG0:.*]][%[[J:.*]], %[[I:.*]]]
+// CHECK: tensor.extract %[[ARG1:.*]][%[[I]], %[[J]]]
+func.func @compute_permuted_input(%a: tensor<3x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x3x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x3x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute ins(%a, %b : tensor<3x2x!ttcore.tile<32x32, f32>>, tensor<2x3x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x3x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_perm, #map_id2, #map_id2], iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
+    %add = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
+    ttl.yield %add : !ttcore.tile<32x32, f32>
+  } -> tensor<2x3x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x3x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: Broadcast map drops a dimension for the input tensor.
+
+#map_broadcast = affine_map<(d0, d1) -> (d1)>
+#map_id3 = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @compute_broadcast_input
+// CHECK: tensor.extract %[[ARG0:.*]][%[[J:.*]]]
+// CHECK: tensor.insert
+func.func @compute_broadcast_input(%a: tensor<3x!ttcore.tile<32x32, f32>>) -> tensor<2x3x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x3x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute ins(%a : tensor<3x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x3x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_broadcast, #map_id3], iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %relu = ttl.tile_relu %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield %relu : !ttcore.tile<32x32, f32>
+  } -> tensor<2x3x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x3x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: Reduction iterator accumulates across reduction dimension.
+
+#map_red_in = affine_map<(d0, d1) -> (d0, d1)>
+#map_red_out = affine_map<(d0, d1) -> (d0)>
+
+// CHECK-LABEL: func.func @compute_reduction
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: tensor.extract %[[ARG0:.*]][%[[I:.*]], %[[J:.*]]]
+// CHECK: tensor.extract %[[ACC:.*]][%[[I]]]
+// CHECK: ttl.tile_add %{{.*}}, %{{.*}}
+func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute ins(%a : tensor<2x3x!ttcore.tile<32x32, f32>>) outs(%init : tensor<2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_red_in, #map_red_out], iterator_types = ["parallel", "reduction"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %add = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
+    ttl.yield %add : !ttcore.tile<32x32, f32>
+  } -> tensor<2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: Batched tail honors tile_batch_size without overrunning bounds.
+
+#map_tail = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @compute_batched_tail
+// CHECK: arith.subi
+// CHECK: arith.cmpi sle
+// CHECK: arith.select
+func.func @compute_batched_tail(%a: tensor<3x2x!ttcore.tile<32x32, f32>>) -> tensor<3x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<3x2x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute ins(%a : tensor<3x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<3x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_tail, #map_tail], iterator_types = ["parallel", "parallel"], tile_batch_size = array<i64: 2, 1>} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %relu = ttl.tile_relu %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield %relu : !ttcore.tile<32x32, f32>
+  } -> tensor<3x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<3x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: Multiple results are inserted with their own indexing maps.
+
+#map_id4 = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @compute_multiple_results
+// CHECK: tensor.insert
+// CHECK: tensor.insert
+func.func @compute_multiple_results(%a: tensor<2x2x!ttcore.tile<32x32, f32>>) -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) {
+  %init0 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init1 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %0, %1 = ttl.compute ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init0, %init1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_id4, #map_id4, #map_id4], iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
+    %relu = ttl.tile_relu %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield %relu, %relu : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>
+  } -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
+  func.return %0, %1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+}

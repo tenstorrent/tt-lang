@@ -161,22 +161,24 @@ mlir::tt::ttl::ComputeOp::getLoopIteratorTypes() {
 mlir::SmallVector<mlir::Range>
 mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
   mlir::SmallVector<mlir::Range> domain;
-  // Use the first output tensor shape to define the iteration domain.
-  if (getOutputs().empty()) {
+  // Prefer the first input tensor shape; fall back to the first output.
+  Value ref = getInputs().empty() ? Value() : getInputs().front();
+  if (!ref && getOutputs().empty()) {
     return domain;
   }
-  auto outTy =
-      mlir::cast<mlir::RankedTensorType>(getOutputs().front().getType());
+  if (!ref) {
+    ref = getOutputs().front();
+  }
+  auto refTy = mlir::cast<mlir::RankedTensorType>(ref.getType());
   mlir::Location loc = getLoc();
-  for (int64_t i = 0; i < outTy.getRank(); ++i) {
+  for (int64_t i = 0; i < refTy.getRank(); ++i) {
     mlir::OpFoldResult offset = b.getIndexAttr(0);
     mlir::OpFoldResult stride = b.getIndexAttr(1);
     mlir::OpFoldResult size;
-    if (outTy.isDynamicDim(i)) {
-      size = b.create<mlir::tensor::DimOp>(loc, getOutputs().front(), i)
-                 .getResult();
+    if (refTy.isDynamicDim(i)) {
+      size = b.create<mlir::tensor::DimOp>(loc, ref, i).getResult();
     } else {
-      size = b.getIndexAttr(outTy.getDimSize(i));
+      size = b.getIndexAttr(refTy.getDimSize(i));
     }
     domain.push_back(mlir::Range{offset, size, stride});
   }
@@ -453,6 +455,24 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   }
   if (!mlir::isa<YieldOp>(bodyBlock.getTerminator())) {
     return emitOpError("body block must be terminated with ttl.yield");
+  }
+
+  // Verify tile_batch_size shape and positivity if present.
+  if (auto batchAttr = getTileBatchSize()) {
+    ArrayRef<int64_t> values = *batchAttr;
+    if (values.empty()) {
+      return emitOpError("tile_batch_size must not be empty");
+    }
+    if (values.size() != getIteratorTypes().size()) {
+      return emitOpError("tile_batch_size size (")
+             << values.size() << ") must match number of iterator dimensions ("
+             << getIteratorTypes().size() << ")";
+    }
+    for (int64_t v : values) {
+      if (v <= 0) {
+        return emitOpError("tile_batch_size values must be > 0");
+      }
+    }
   }
 
   return mlir::success();
