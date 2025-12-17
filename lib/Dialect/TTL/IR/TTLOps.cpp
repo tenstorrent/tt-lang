@@ -240,8 +240,7 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
         indexValues.push_back(b.create<arith::ConstantIndexOp>(loc, intVal));
       }
     }
-    Value extracted =
-        b.create<tensor::ExtractOp>(loc, output, indexValues);
+    Value extracted = b.create<tensor::ExtractOp>(loc, output, indexValues);
     tiledOutputs.push_back(extracted);
   }
 
