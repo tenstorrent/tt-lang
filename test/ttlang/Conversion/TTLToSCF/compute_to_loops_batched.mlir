@@ -18,17 +18,17 @@ func.func @compute_batched_2x1(%a: tensor<4x4x!ttcore.tile<32x32, f32>>, %b: ten
   // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C4]] step %[[C2]] iter_args(%[[ARGI:.*]] = %[[INIT]])
   // CHECK: scf.for %[[J:.*]] = %[[C0]] to %[[C4]] step %[[C1]] iter_args(%[[ARGJ:.*]] = %[[ARGI]])
 
-  // Inner loops: iterate over tiles within batch (clamped at tail)
+  // Flattened inner loop over batch block with div/rem for coords
   // CHECK: %[[REM_I:.*]] = arith.subi %[[C4]], %[[I]]
   // CHECK: %[[UB_I:.*]] = arith.select {{.*}} %[[REM_I]], %[[C2]]
   // CHECK: %[[REM_J:.*]] = arith.subi %[[C4]], %[[J]]
   // CHECK: %[[UB_J:.*]] = arith.select {{.*}} %[[REM_J]], %[[C1]]
-  // CHECK: scf.for %[[II:.*]] = %[[C0]] to %[[UB_I]] step %[[C1]] iter_args(%[[ARGII:.*]] = %[[ARGJ]])
-  // CHECK: scf.for %[[JJ:.*]] = %[[C0]] to %[[UB_J]] step %[[C1]] iter_args(%[[ARGJJ:.*]] = %[[ARGII]])
-
-  // Compute actual indices: outer + inner
-  // CHECK: %[[IDX_I:.*]] = arith.addi %[[I]], %[[II]]
-  // CHECK: %[[IDX_J:.*]] = arith.addi %[[J]], %[[JJ]]
+  // CHECK: %[[TOTAL:.*]] = arith.muli %[[UB_I]], %[[UB_J]]
+  // CHECK: scf.for %[[LIN:.*]] = %[[C0]] to %[[TOTAL]] step %[[C1]] iter_args(%[[ARG_LIN:.*]] = %[[ARGJ]])
+  // CHECK: %[[COORD_I:.*]] = arith.divsi %[[LIN]], %[[UB_J]]
+  // CHECK: %[[COORD_J:.*]] = arith.remsi %[[LIN]], %[[UB_J]]
+  // CHECK: %[[IDX_I:.*]] = arith.addi %[[I]], %[[COORD_I]]
+  // CHECK: %[[IDX_J:.*]] = arith.addi %[[J]], %[[COORD_J]]
 
   // Extract, compute, insert using computed indices
   // CHECK: %[[EXT_A:.*]] = tensor.extract %[[ARG0]][%[[IDX_I]], %[[IDX_J]]]
@@ -49,32 +49,33 @@ func.func @compute_batched_2x1(%a: tensor<4x4x!ttcore.tile<32x32, f32>>, %b: ten
 
 // -----
 
-// Test: Batching with 4 tiles per DST cycle (2x2 batch)
+// Test: Batching with 8 tiles per DST cycle (2x4 batch)
 
-// CHECK-LABEL: func.func @compute_batched_2x2
+// CHECK-LABEL: func.func @compute_batched_2x4
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<8x8x!ttcore.tile<32x32, f32>>)
-func.func @compute_batched_2x2(%a: tensor<8x8x!ttcore.tile<32x32, f32>>) -> tensor<8x8x!ttcore.tile<32x32, f32>> {
+func.func @compute_batched_2x4(%a: tensor<8x8x!ttcore.tile<32x32, f32>>) -> tensor<8x8x!ttcore.tile<32x32, f32>> {
   // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
   // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
   // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+  // CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
   // CHECK-DAG: %[[C8:.*]] = arith.constant 8 : index
   %init = tensor.empty() : tensor<8x8x!ttcore.tile<32x32, f32>>
 
-  // Outer loops with step=2 for both dimensions
+  // Outer loops with step=2 in dim0, step=4 in dim1
   // CHECK: scf.for %[[OI:.*]] = %[[C0]] to %[[C8]] step %[[C2]]
-  // CHECK: scf.for %[[OJ:.*]] = %[[C0]] to %[[C8]] step %[[C2]]
+  // CHECK: scf.for %[[OJ:.*]] = %[[C0]] to %[[C8]] step %[[C4]]
 
-  // Tail-clamped inner 2x2 loops
+  // Flattened inner loop with tail clamp
   // CHECK: %[[REM_OI:.*]] = arith.subi %[[C8]], %[[OI]]
   // CHECK: %[[UB_OI:.*]] = arith.select {{.*}} %[[REM_OI]], %[[C2]]
   // CHECK: %[[REM_OJ:.*]] = arith.subi %[[C8]], %[[OJ]]
-  // CHECK: %[[UB_OJ:.*]] = arith.select {{.*}} %[[REM_OJ]], %[[C2]]
-  // CHECK: scf.for %{{.*}} = %[[C0]] to %[[UB_OI]] step %[[C1]]
-  // CHECK: scf.for %{{.*}} = %[[C0]] to %[[UB_OJ]] step %[[C1]]
+  // CHECK: %[[UB_OJ:.*]] = arith.select {{.*}} %[[REM_OJ]], %[[C4]]
+  // CHECK: %[[TOTAL:.*]] = arith.muli %[[UB_OI]], %[[UB_OJ]]
+  // CHECK: scf.for %{{.*}} = %[[C0]] to %[[TOTAL]] step %[[C1]]
 
   %0 = ttl.compute ins(%a : tensor<8x8x!ttcore.tile<32x32, f32>>)
       outs(%init : tensor<8x8x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 2]} {
+      {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 4]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
     %exp = ttl.tile_exp %arg0 : !ttcore.tile<32x32, f32>
     ttl.yield %exp : !ttcore.tile<32x32, f32>

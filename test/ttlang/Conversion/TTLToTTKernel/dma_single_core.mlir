@@ -222,7 +222,7 @@ module {
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 #layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// Multi-tile read should emit nested scf.for over tile block with correct offset computation.
+// Multi-tile read should emit nested scf.for over tile grid with correct offset computation.
 // Tensor: 64x64xf32 (2x2 tiles), CB: [1,1] (single tile)
 // Generated tile loops: for tile_y in 0..2, for tile_x in 0..2
 // Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
@@ -259,7 +259,7 @@ module {
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 #layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// Multi-tile write should emit nested scf.for over tile block with correct offset computation.
+// Multi-tile write should emit nested scf.for over tile grid with correct offset computation.
 // Tensor: 64x64xf32 (2x2 tiles), CB: [1,1] (single tile)
 // Generated tile loops: for tile_y in 0..2, for tile_x in 0..2
 // Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
@@ -295,9 +295,9 @@ module {
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// Multi-tile read with larger CB shape still loops over tile block with correct offset computation.
+// Multi-tile read with larger CB shape still loops over tile grid with correct offset computation.
 // Tensor: 64x64xf32 (2x2 tiles), CB: [2,1] (2x1 tiles)
-// CB shape does NOT affect tile loop bounds - loops still iterate over tensor tile block (2x2).
+// CB shape does NOT affect tile loop bounds - loops still iterate over tensor tile grid (2x2).
 // Generated tile loops: for tile_y in 0..2, for tile_x in 0..2
 // Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
 // TTKERNEL-LABEL: func.func @dma_multi_tile_read_cb_shape
@@ -332,7 +332,7 @@ module {
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
-// Rectangular multi-tile write to exercise non-square tile blocks (96x64 = 3x2 tiles) with correct offset computation.
+// Rectangular multi-tile write to exercise non-square tile grids (96x64 = 3x2 tiles) with correct offset computation.
 // Tensor: 96x64xf32 (3x2 tiles - 3 rows, 2 columns), CB: [1,1] (single tile)
 // Generated tile loops: for tile_y in 0..3, for tile_x in 0..2
 // Tile offset = tile_y * tiles_x + tile_x (row-major ordering)

@@ -6,7 +6,7 @@
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
-# Verify: Nested loops - iterate over a 2x2 tile block (4 iterations total).
+# Verify: Nested loops - iterate over 2x2 tile grid (4 iterations total).
 # Tests nested for loops in compute and datamovement threads.
 
 import torch

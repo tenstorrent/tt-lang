@@ -4,7 +4,7 @@
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // Test: Multiple copies of tensors with the SAME layout but different CB shapes.
-// Validates that the same tensor tile block (2x2) can be copied to different CB configurations.
+// Validates that the same tensor tile grid (2x2) can be copied to different CB configurations.
 //
 // Both tensors: 64x64xf32 (2x2 tiles) - SAME layout
 // Tensor1 → CB1: [2,2] (2x2 tiles, matches tensor grid)

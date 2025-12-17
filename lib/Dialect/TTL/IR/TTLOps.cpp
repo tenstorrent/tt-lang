@@ -18,6 +18,8 @@
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
 
+#include <numeric>
+
 #define GET_ATTRDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrDefs.cpp.inc"
 
@@ -478,6 +480,24 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     for (int64_t v : values) {
       if (v <= 0) {
         return emitOpError("tile_batch_size values must be > 0");
+      }
+    }
+
+    // Verify total tile count is evenly divisible by batch size.
+    if (!getOutputs().empty()) {
+      auto outTy = mlir::cast<RankedTensorType>(getOutputs().front().getType());
+      if (!outTy.hasStaticShape()) {
+        return success();
+      }
+
+      int64_t totalTiles = outTy.getNumElements();
+      int64_t totalBatch = std::accumulate(values.begin(), values.end(), 1LL,
+                                           std::multiplies<int64_t>());
+
+      if (totalTiles % totalBatch != 0) {
+        return emitOpError("total tile count (")
+               << totalTiles << ") must be evenly divisible by product of "
+               << "tile_batch_size (" << totalBatch << ")";
       }
     }
   }

@@ -180,26 +180,6 @@ func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor
 
 // -----
 
-// Test: Batched tail honors tile_batch_size without overrunning bounds.
-
-#map_tail = affine_map<(d0, d1) -> (d0, d1)>
-
-// CHECK-LABEL: func.func @compute_batched_tail
-// CHECK: arith.subi
-// CHECK: arith.cmpi sle
-// CHECK: arith.select
-func.func @compute_batched_tail(%a: tensor<3x2x!ttcore.tile<32x32, f32>>) -> tensor<3x2x!ttcore.tile<32x32, f32>> {
-  %init = tensor.empty() : tensor<3x2x!ttcore.tile<32x32, f32>>
-  %0 = ttl.compute ins(%a : tensor<3x2x!ttcore.tile<32x32, f32>>) outs(%init : tensor<3x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_tail, #map_tail], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 1]} {
-  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
-    %relu = ttl.tile_relu %arg0 : !ttcore.tile<32x32, f32>
-    ttl.yield %relu : !ttcore.tile<32x32, f32>
-  } -> tensor<3x2x!ttcore.tile<32x32, f32>>
-  func.return %0 : tensor<3x2x!ttcore.tile<32x32, f32>>
-}
-
-// -----
-
 // Test: Multiple results are inserted with their own indexing maps.
 
 #map_id4 = affine_map<(d0, d1) -> (d0, d1)>

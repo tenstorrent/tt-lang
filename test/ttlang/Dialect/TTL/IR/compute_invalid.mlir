@@ -93,3 +93,18 @@ func.func @compute_invalid_batch_value(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+#map_div = affine_map<(d0, d1) -> (d0, d1)>
+
+// Test: Total tile count not divisible by product of batch sizes
+// expected-error @+3 {{'ttl.compute' op total tile count (15) must be evenly divisible by product of tile_batch_size (4)}}
+func.func @compute_batch_not_divisible(%a: tensor<3x5x!ttcore.tile<32x32, f32>>) -> tensor<3x5x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<3x5x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute ins(%a : tensor<3x5x!ttcore.tile<32x32, f32>>) outs(%init : tensor<3x5x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_div, #map_div], iterator_types = ["parallel", "parallel"], tile_batch_size = [2, 2]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+  } -> tensor<3x5x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<3x5x!ttcore.tile<32x32, f32>>
+}

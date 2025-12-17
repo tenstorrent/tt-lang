@@ -161,8 +161,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // Initial values for iter_args are the output tensors.
     SmallVector<Value> initValues(op.getOutputs());
 
+    // Simple case: 1 tile per iteration, use buildLoopNest directly.
     if (isUnitBatch) {
-      // Simple case: 1 tile per iteration, use buildLoopNest directly.
       scf::LoopNest loopNest = scf::buildLoopNest(
           rewriter, loc, lowerBounds, upperBounds, steps, initValues,
           [&](OpBuilder &b, Location loc, ValueRange ivs,
@@ -171,48 +171,71 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
                                           iterArgs);
           });
       rewriter.replaceOp(op, loopNest.results);
-    } else {
-      // Batched case: generate outer loops with step=num_tiles, then inner
-      // loops to iterate over tiles within each batch.
-      scf::LoopNest outerLoops = scf::buildLoopNest(
-          rewriter, loc, lowerBounds, upperBounds, steps, initValues,
-          [&](OpBuilder &b, Location loc, ValueRange outerIvs,
-              ValueRange outerIterArgs) -> scf::ValueVector {
-            // Build inner loops to iterate over tiles within the batch.
-            // For each dimension, add an inner loop from 0 to batch_size.
-            SmallVector<Value> innerLbs, innerUbs, innerSteps;
-            for (size_t i = 0; i < batchSize.size(); ++i) {
-              innerLbs.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
-              Value batchConst =
-                  b.create<arith::ConstantIndexOp>(loc, effectiveBatch[i]);
-              Value remaining =
-                  b.create<arith::SubIOp>(loc, upperBounds[i], outerIvs[i]);
-              Value useRemaining = b.create<arith::CmpIOp>(
-                  loc, arith::CmpIPredicate::sle, remaining, batchConst);
-              Value boundedUb = b.create<arith::SelectOp>(
-                  loc, useRemaining, remaining, batchConst);
-              innerUbs.push_back(boundedUb);
-              innerSteps.push_back(b.create<arith::ConstantIndexOp>(loc, 1));
-            }
-
-            scf::LoopNest innerLoops = scf::buildLoopNest(
-                b, loc, innerLbs, innerUbs, innerSteps, outerIterArgs,
-                [&](OpBuilder &ib, Location iloc, ValueRange innerIvs,
-                    ValueRange innerIterArgs) -> scf::ValueVector {
-                  // Compute actual tile indices: outer_iv + inner_iv.
-                  SmallVector<Value> tileIvs;
-                  for (size_t i = 0; i < outerIvs.size(); ++i) {
-                    Value idx = ib.create<arith::AddIOp>(iloc, outerIvs[i],
-                                                         innerIvs[i]);
-                    tileIvs.push_back(idx);
-                  }
-                  return generateTileProcessing(ib, iloc, op, indexingMaps,
-                                                tileIvs, innerIterArgs);
-                });
-            return innerLoops.results;
-          });
-      rewriter.replaceOp(op, outerLoops.results);
+      return success();
     }
+
+    // Batched case: outer loops step by batch size; the inner loop flattens
+    // the batch block and limits the final chunk so we never step past the
+    // tensor shape.
+    scf::LoopNest outerLoops = scf::buildLoopNest(
+        rewriter, loc, lowerBounds, upperBounds, steps, initValues,
+        [&](OpBuilder &b, Location loc, ValueRange outerIvs,
+            ValueRange outerIterArgs) -> scf::ValueVector {
+          // Compute per-dimension clamped batch sizes and total iterations.
+          SmallVector<Value> clampedBatch, strides;
+          Value total =
+              b.create<arith::ConstantIndexOp>(loc, static_cast<int64_t>(1));
+          strides.assign(effectiveBatch.size(), nullptr);
+
+          for (size_t i = 0; i < effectiveBatch.size(); ++i) {
+            Value remaining =
+                b.create<arith::SubIOp>(loc, upperBounds[i], outerIvs[i]);
+            Value batchConst =
+                b.create<arith::ConstantIndexOp>(loc, effectiveBatch[i]);
+            Value useRemaining = b.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::sle, remaining, batchConst);
+            Value clamped = b.create<arith::SelectOp>(loc, useRemaining,
+                                                      remaining, batchConst);
+            clampedBatch.push_back(clamped);
+            total = b.create<arith::MulIOp>(loc, total, clamped);
+          }
+
+          // Precompute strides for linear -> multi-dim mapping.
+          Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+          Value running = one;
+          for (int64_t i = clampedBatch.size() - 1; i >= 0; --i) {
+            strides[i] = running;
+            running = b.create<arith::MulIOp>(loc, running, clampedBatch[i]);
+          }
+
+          Value innerLb = b.create<arith::ConstantIndexOp>(loc, 0);
+          Value innerUb = total;
+          Value innerStep = one;
+
+          scf::ForOp inner = b.create<scf::ForOp>(
+              loc, innerLb, innerUb, innerStep, outerIterArgs,
+              [&](OpBuilder &ib, Location iloc, Value iv,
+                  ValueRange innerIterArgs) {
+                // Map linear iv to per-dim indices.
+                Value linear = iv;
+                SmallVector<Value> tileIvs;
+                tileIvs.reserve(outerIvs.size());
+                for (size_t dim = 0; dim < outerIvs.size(); ++dim) {
+                  Value stride = strides[dim];
+                  Value coord = ib.create<arith::DivSIOp>(iloc, linear, stride);
+                  Value rem = ib.create<arith::RemSIOp>(iloc, linear, stride);
+                  linear = rem;
+                  Value idx =
+                      ib.create<arith::AddIOp>(iloc, outerIvs[dim], coord);
+                  tileIvs.push_back(idx);
+                }
+                auto results = generateTileProcessing(
+                    ib, iloc, op, indexingMaps, tileIvs, innerIterArgs);
+                ib.create<scf::YieldOp>(iloc, results);
+              });
+          return inner.getResults();
+        });
+    rewriter.replaceOp(op, outerLoops.results);
     return success();
   }
 };
