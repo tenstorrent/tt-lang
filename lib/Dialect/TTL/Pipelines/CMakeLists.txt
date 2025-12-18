@@ -7,9 +7,11 @@ add_mlir_dialect_library(TTLangTTLPipelines
   LINK_LIBS PUBLIC
   MLIRPass
   MLIRTransforms
+  MLIRBufferizationTransforms
   MLIRFuncDialect
   MLIRArithDialect
   MLIREmitCTransforms
+  MLIRMemRefTransforms
   TTLangTTLTransforms
   TTMLIRTTKernelToEmitC
 )

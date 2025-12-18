@@ -203,7 +203,7 @@ func.func @compute_missing_output_cb(
 func.func @attach_cb_elem_mismatch(
     %t: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) {
-  // expected-error @below {{tensor element type ('!ttcore.tile<32x32, f32>') must match CB element type ('!ttcore.tile<32x32, bf16>')}}
+  // expected-error @below {{value element type ('!ttcore.tile<32x32, f32>') must match CB element type ('!ttcore.tile<32x32, bf16>')}}
   %att = ttl.attach_cb %t, %cb
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -216,7 +216,7 @@ func.func @attach_cb_elem_mismatch(
 func.func @attach_cb_rank_mismatch(
     %t: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cb: !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) {
-  // expected-error @below {{cb shape rank (1) must match tensor rank (2)}}
+  // expected-error @below {{cb shape rank (1) must match value rank (2)}}
   %att = ttl.attach_cb %t, %cb
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>

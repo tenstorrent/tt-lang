@@ -7,7 +7,9 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -19,6 +21,19 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToCompute());
   pm.addPass(createTTLAssignDSTRegisters());
+  pm.addPass(createTTLLowerToLoops());
+
+  bufferization::OneShotBufferizePassOptions bufOpts;
+  bufOpts.allowUnknownOps = true;
+  bufOpts.bufferizeFunctionBoundaries = false;
+  bufOpts.functionBoundaryTypeConversion =
+      bufferization::LayoutMapOption::IdentityLayoutMap;
+  bufOpts.unknownTypeConversion =
+      bufferization::LayoutMapOption::IdentityLayoutMap;
+  pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
+  pm.addPass(memref::createFoldMemRefAliasOpsPass());
+  pm.addPass(createCanonicalizerPass());
+
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());
   if (options.lowerToEmitC) {

@@ -83,9 +83,9 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
-  auto tensorTy = mlir::dyn_cast<RankedTensorType>(getTensor().getType());
-  if (!tensorTy) {
-    return emitOpError() << "expects ranked tensor operand";
+  auto valueTy = mlir::dyn_cast<ShapedType>(getTensor().getType());
+  if (!valueTy || !valueTy.hasRank()) {
+    return emitOpError() << "expects ranked tensor or memref operand";
   }
 
   auto cbTy = mlir::dyn_cast<CircularBufferType>(getCb().getType());
@@ -94,22 +94,22 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
   }
 
   // Element types must match.
-  if (tensorTy.getElementType() != cbTy.getElementType()) {
-    return emitOpError() << "tensor element type (" << tensorTy.getElementType()
+  if (valueTy.getElementType() != cbTy.getElementType()) {
+    return emitOpError() << "value element type (" << valueTy.getElementType()
                          << ") must match CB element type ("
                          << cbTy.getElementType() << ")";
   }
 
   // Require the CB block shape rank to match the tensor rank (tile grid).
-  if (static_cast<int64_t>(cbTy.getShape().size()) != tensorTy.getRank()) {
+  if (static_cast<int64_t>(cbTy.getShape().size()) != valueTy.getRank()) {
     return emitOpError() << "cb shape rank (" << cbTy.getShape().size()
-                         << ") must match tensor rank (" << tensorTy.getRank()
+                         << ") must match value rank (" << valueTy.getRank()
                          << ")";
   }
 
   // Result type must equal input tensor type (identity).
   if (getResult().getType() != getTensor().getType()) {
-    return emitOpError() << "result type must equal tensor operand type";
+    return emitOpError() << "result type must equal operand type";
   }
 
   return mlir::success();

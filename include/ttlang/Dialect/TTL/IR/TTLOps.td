@@ -47,10 +47,10 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
 def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
   let summary = "Associate a tensor SSA value with a circular buffer";
   let description = [{
-    Associates a tensor value with a circular buffer handle for later
-    data-movement/compute lowering. This op is an identity on the tensor value
-    but records a mapping (tensor -> CB) that later passes query. Exactly one
-    CB should be attached per tensor SSA value.
+    Associates a shaped value (tensor or memref after bufferization) with a
+    circular buffer handle for later data-movement/compute lowering. This op is
+    an identity on the value but records a mapping (value -> CB) that later
+    passes query. Exactly one CB should be attached per SSA value.
 
     Note: This op is NOT marked Pure to prevent CSE/DCE from eliminating
     semantically meaningful bindings.
@@ -63,10 +63,10 @@ def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
     ```
   }];
   let arguments = (ins
-    AnyRankedTensor:$tensor,
+    TensorOrMemref:$tensor,
     TTL_CircularBuffer:$cb
   );
-  let results = (outs AnyRankedTensor:$result);
+  let results = (outs TensorOrMemref:$result);
   let assemblyFormat = "$tensor `,` $cb attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }

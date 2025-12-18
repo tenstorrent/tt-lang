@@ -4,10 +4,10 @@
 
 #include "ttlang-c/Dialects.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/Transforms/BufferizableOpInterfaceImpl.h"
 
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Registration.h"
-#include "mlir/CAPI/Support.h"
 
 using namespace mlir;
 using namespace mlir::tt::ttl;
@@ -22,9 +22,12 @@ void ttlangRegisterAllDialects(MlirContext context) {
   MLIRContext *ctx = unwrap(context);
   DialectRegistry registry;
   registry.insert<TTLDialect>();
+  registerBufferizableOpInterfaceExternalModels(registry);
   ctx->appendDialectRegistry(registry);
 }
 
 void ttlangRegisterTTLDialect(MlirDialectRegistry registry) {
-  unwrap(registry)->insert<TTLDialect>();
+  auto *unwrapped = unwrap(registry);
+  unwrapped->insert<TTLDialect>();
+  registerBufferizableOpInterfaceExternalModels(*unwrapped);
 }

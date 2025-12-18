@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  BufferizableOpInterfaceImpl.cpp
   ConvertTTLToTTKernel.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
@@ -9,9 +10,11 @@ add_mlir_dialect_library(TTLangTTLTransforms
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
+  MLIRBufferizationDialect
   MLIRFuncDialect
   MLIRLinalgDialect
   MLIRMathDialect
+  MLIRMemRefDialect
   MLIRSCFDialect
   MLIRPass
   MLIRTensorDialect

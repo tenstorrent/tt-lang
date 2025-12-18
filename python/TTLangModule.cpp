@@ -6,6 +6,7 @@
 #include "mlir/CAPI/IR.h"
 #include "ttlang/Dialect/D2M/Passes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/Transforms/BufferizableOpInterfaceImpl.h"
 
 namespace nb = nanobind;
 using namespace mlir;
@@ -22,6 +23,10 @@ NB_MODULE(_ttlang, m) {
       "register_ttl_dialect",
       [](MlirContext context) {
         MLIRContext *ctx = unwrap(context);
+        DialectRegistry registry;
+        registry.insert<mlir::tt::ttl::TTLDialect>();
+        tt::ttl::registerBufferizableOpInterfaceExternalModels(registry);
+        ctx->appendDialectRegistry(registry);
         ctx->loadDialect<mlir::tt::ttl::TTLDialect>();
       },
       nb::arg("context"),
@@ -33,6 +38,7 @@ NB_MODULE(_ttlang, m) {
       [](MlirDialectRegistry _registry) {
         mlir::DialectRegistry *registry = unwrap(_registry);
         registry->insert<mlir::tt::ttl::TTLDialect>();
+        tt::ttl::registerBufferizableOpInterfaceExternalModels(*registry);
       },
       nb::arg("dialectRegistry"),
       "Register all tt-lang dialects into the given dialect registry");
