@@ -18,6 +18,12 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
+  Option<bool> allowUnknownBufferizationOps{
+      *this, "allow-unknown-bufferization-ops",
+      llvm::cl::desc("Allow unknown ops during the TTL bufferization stage. "
+                     "Disable only if downstream passes guarantee every TTL op "
+                     "implements BufferizableOpInterface."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

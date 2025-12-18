@@ -135,15 +135,57 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   Type tensorTy = srcIsCb ? dstTy : srcTy;
   auto rankedTensorTy = mlir::dyn_cast<RankedTensorType>(tensorTy);
-  if (!rankedTensorTy) {
+  auto memrefTy = mlir::dyn_cast<BaseMemRefType>(tensorTy);
+  RankedTensorType logicalTensorTy;
+  if (rankedTensorTy) {
+    logicalTensorTy = rankedTensorTy;
+    if (getTensorTypeAttr()) {
+      return emitOpError()
+             << "tensor_type attribute must be absent when the non-CB operand "
+             << "is still a tensor";
+    }
+  } else if (memrefTy) {
+    auto typeAttr = getTensorTypeAttr();
+    if (!typeAttr) {
+      return emitOpError()
+             << "requires tensor_type attribute when the non-CB operand is a "
+             << "memref (after bufferization)";
+    }
+    logicalTensorTy = mlir::dyn_cast<RankedTensorType>(typeAttr.getValue());
+    if (!logicalTensorTy) {
+      return emitOpError()
+             << "tensor_type attribute must be a ranked tensor type";
+    }
+    if (logicalTensorTy.getRank() != memrefTy.getRank()) {
+      return emitOpError() << "tensor_type rank (" << logicalTensorTy.getRank()
+                           << ") must match memref rank (" << memrefTy.getRank()
+                           << ")";
+    }
+    auto memrefShape = memrefTy.getShape();
+    for (auto [idx, tensorDim] : llvm::enumerate(logicalTensorTy.getShape())) {
+      int64_t memrefDim = memrefShape[idx];
+      if (memrefDim == tensorDim || memrefDim == ShapedType::kDynamic) {
+        continue;
+      }
+      return emitOpError() << "memref dimension " << idx << " (" << memrefDim
+                           << ") must match tensor_type dimension ("
+                           << tensorDim << ")";
+    }
+    if (memrefTy.getElementType() != logicalTensorTy.getElementType()) {
+      return emitOpError() << "memref element type ("
+                           << memrefTy.getElementType()
+                           << ") must match tensor_type element type ("
+                           << logicalTensorTy.getElementType() << ")";
+    }
+  } else {
     return emitOpError()
-           << "expects the non-CB operand to be a ranked tensor; got "
+           << "expects the non-CB operand to be a ranked tensor or memref; got "
            << tensorTy;
   }
 
   // TT-Lang programs operate on TTNN tensors. Require a TTNN layout encoding so
   // lowering can derive tile/addressing information.
-  auto enc = rankedTensorTy.getEncoding();
+  auto enc = logicalTensorTy.getEncoding();
   if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
     return emitOpError()
            << "expects tensor operand to carry TTNNLayout encoding; got "
@@ -302,12 +344,14 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
   return mlir::success();
 }
 
-// Verify CB ops with tensor results (cb_reserve, cb_wait).
-// Checks that result tensor shape and element type match the CB
-// configuration.
+// Verify CB ops with tensor/memref results (cb_reserve, cb_wait).
+// Checks that result shape and element type match the CB configuration.
 mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
                                          mlir::tt::ttl::CircularBufferType cbTy,
-                                         mlir::RankedTensorType resultTy) {
+                                         mlir::ShapedType resultTy) {
+  if (!resultTy || !resultTy.hasRank()) {
+    return op->emitOpError("result must be a ranked tensor or memref type");
+  }
   auto cbShape = cbTy.getShape();
   auto resultShape = resultTy.getShape();
 
@@ -471,7 +515,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
 mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
-  auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+  auto resultTy = mlir::cast<ShapedType>(getResult().getType());
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
 
@@ -483,7 +527,7 @@ mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
 
 mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
-  auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+  auto resultTy = mlir::cast<ShapedType>(getResult().getType());
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
 

@@ -20,12 +20,12 @@
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK:   TensorAccessorArgs [[ARGS0:v[0-9]+]] = TensorAccessorArgs<32, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:   TensorAccessorArgs [[ARGS1:v[0-9]+]] = TensorAccessorArgs<32, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[ZERO]]);
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[ZERO]]);
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[ZERO]]);
+// CHECK:   TensorAccessorArgs [[ARGS1:v[0-9]+]] = TensorAccessorArgs<32, 1>();
+// CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[ZERO]], [[ADDR]]);
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[ZERO]]);
 // Consecutive barriers deduplicated to single barrier.
-// CHECK-NEXT:   noc_async_read_barrier();
+// CHECK:   noc_async_read_barrier();
 // CHECK-NEXT:   return;
 // CHECK-NEXT: }
 module {

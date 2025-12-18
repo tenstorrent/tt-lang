@@ -192,6 +192,19 @@ convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   return cast.getResult(0);
 }
 
+static FailureOr<RankedTensorType>
+getLogicalTensorTypeForOperand(Value operand, CopyOp op) {
+  if (auto tensorTy = mlir::dyn_cast<RankedTensorType>(operand.getType())) {
+    return tensorTy;
+  }
+  if (auto attr = op.getTensorTypeAttr()) {
+    if (auto ranked = mlir::dyn_cast<RankedTensorType>(attr.getValue())) {
+      return ranked;
+    }
+  }
+  return failure();
+}
+
 // num_pages = product of CB shape dimensions (elements per block).
 static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
                              Location loc) {
@@ -292,15 +305,16 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
-static FailureOr<Value>
-materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
-  if (!llvm::isa<RankedTensorType>(tensor.getType())) {
+static FailureOr<Value> materializeTensorAccessor(
+    Value tensorLike, RankedTensorType tensorTy,
+    ConversionPatternRewriter &rewriter) {
+  if (!tensorTy) {
     return failure();
   }
 
-  auto loc = tensor.getLoc();
+  auto loc = tensorLike.getLoc();
   OpBuilder::InsertionGuard guard(rewriter);
-  if (auto barg = llvm::dyn_cast<BlockArgument>(tensor)) {
+  if (auto barg = llvm::dyn_cast<BlockArgument>(tensorLike)) {
     // Hoist accessor construction to the entry block when the source is a
     // function argument so the accessor does not end up between generated
     // tile loops for multiple copies.
@@ -309,7 +323,6 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter) {
       rewriter.setInsertionPointToStart(block);
     }
   }
-  auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
   utils::ContiguousLayoutInfo layout;
   if (auto enc = tensorTy.getEncoding()) {
     if (mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
@@ -344,10 +357,10 @@ getTileGridShape(const RankedTensorType &tensorTy) {
   return {tilesY, tilesX};
 }
 
-/// Extract tile grid shape from a Value if it's a static rank-2 tensor.
-/// Returns {1, 1} for non-tensor types or dynamic shapes.
-static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
-  auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
+/// Extract tile grid shape from a tensor type. Returns {1, 1} for missing or
+/// non-rank-2 types.
+static std::pair<int64_t, int64_t>
+getTileGridShapeFromTensorType(RankedTensorType tensorTy) {
   if (tensorTy && tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
     return getTileGridShape(tensorTy);
   }
@@ -392,11 +405,13 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
 }
 
 static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
+                                     RankedTensorType tensorTy,
                                      ConversionPatternRewriter &rewriter,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  auto [tilesY, tilesX] = getTileGridShapeFromValue(op.getSrc());
+  auto [tilesY, tilesX] =
+      getTileGridShapeFromTensorType(tensorTy);
 
   // TODO(ttl): Plumb real NOC coordinates and bank base addresses from tensor
   // accessors and kernel launch metadata. Issue: #84.
@@ -424,11 +439,13 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcAccessor,
 }
 
 static LogicalResult lowerCBToTensor(CopyOp op, Value dstAccessor,
+                                     RankedTensorType tensorTy,
                                      ConversionPatternRewriter &rewriter,
                                      const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
 
-  auto [tilesY, tilesX] = getTileGridShapeFromValue(op.getDst());
+  auto [tilesY, tilesX] =
+      getTileGridShapeFromTensorType(tensorTy);
 
   // TODO(ttl): Lower CB operands to real CB handles and NOC addresses.
   // Issue: #80.
@@ -470,9 +487,36 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return rewriter.notifyMatchFailure(op, "no type converter");
     }
 
-    auto convertOperand = [&](Value v) -> FailureOr<Value> {
-      if (auto acc = materializeTensorAccessor(v, rewriter); succeeded(acc)) {
-        return *acc;
+    bool srcIsCb = mlir::isa<CircularBufferType>(op.getSrc().getType());
+    bool dstIsCb = mlir::isa<CircularBufferType>(op.getDst().getType());
+
+    FailureOr<RankedTensorType> srcTensorTy;
+    if (!srcIsCb) {
+      srcTensorTy = getLogicalTensorTypeForOperand(op.getSrc(), op);
+      if (failed(srcTensorTy)) {
+        return rewriter.notifyMatchFailure(
+            op, "missing tensor metadata for ttl.copy source");
+      }
+    }
+
+    FailureOr<RankedTensorType> dstTensorTy;
+    if (!dstIsCb) {
+      dstTensorTy = getLogicalTensorTypeForOperand(op.getDst(), op);
+      if (failed(dstTensorTy)) {
+        return rewriter.notifyMatchFailure(
+            op, "missing tensor metadata for ttl.copy destination");
+      }
+    }
+
+    auto convertOperand = [&](Value v,
+                              std::optional<RankedTensorType> logicalTy)
+        -> FailureOr<Value> {
+      if (logicalTy) {
+        if (auto acc =
+                materializeTensorAccessor(v, *logicalTy, rewriter);
+            succeeded(acc)) {
+          return *acc;
+        }
       }
 
       Type targetTy = typeConverter->convertType(v.getType());
@@ -487,11 +531,17 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return cast.getResult(0);
     };
 
-    FailureOr<Value> convertedSrc = convertOperand(adaptor.getSrc());
+    FailureOr<Value> convertedSrc =
+        convertOperand(adaptor.getSrc(),
+                       srcIsCb ? std::nullopt
+                               : std::optional<RankedTensorType>(*srcTensorTy));
     if (failed(convertedSrc)) {
       return rewriter.notifyMatchFailure(op, "failed to convert src type");
     }
-    FailureOr<Value> convertedDst = convertOperand(adaptor.getDst());
+    FailureOr<Value> convertedDst =
+        convertOperand(adaptor.getDst(),
+                       dstIsCb ? std::nullopt
+                               : std::optional<RankedTensorType>(*dstTensorTy));
     if (failed(convertedDst)) {
       return rewriter.notifyMatchFailure(op, "failed to convert dst type");
     }
@@ -502,13 +552,15 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     // Tensor accessor -> CB
     if (srcKind == CopySourceKind::TensorAccessor &&
         dstKind == CopyDestKind::CircularBuffer) {
-      return lowerTensorToCB(op, *convertedSrc, rewriter, *typeConverter);
+      return lowerTensorToCB(op, *convertedSrc, *srcTensorTy, rewriter,
+                             *typeConverter);
     }
 
     // CB -> Tensor accessor
     if (srcKind == CopySourceKind::CircularBuffer &&
         dstKind == CopyDestKind::TensorAccessor) {
-      return lowerCBToTensor(op, *convertedDst, rewriter, *typeConverter);
+      return lowerCBToTensor(op, *convertedDst, *dstTensorTy, rewriter,
+                             *typeConverter);
     }
 
     // Unsupported pairs for now.

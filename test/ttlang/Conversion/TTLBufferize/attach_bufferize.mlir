@@ -4,10 +4,9 @@
 module {
 // CHECK-LABEL: func.func @attach
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>)
-// CHECK-NEXT:   %[[BUF:.*]] = bufferization.to_buffer %[[ARG0]] : tensor<4xf32> to memref<4xf32
-// CHECK-NEXT:   %[[CB:.*]] = ttl.bind_cb
-// CHECK-NEXT:   %[[ATTACHED:.*]] = ttl.attach_cb %[[BUF]], %[[CB]]
-// CHECK-SAME: : (memref<4xf32, {{.*}}>, !ttl.cb<[4], f32, 2>)
+// CHECK-NEXT:   %[[BUF:.*]] = bufferization.to_buffer %[[ARG0]] : tensor<4xf32> to memref<4xf32, strided<[?], offset: ?>>
+// CHECK-NEXT:   %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4], f32, 2>
+// CHECK-NEXT:   %[[ATTACHED:.*]] = ttl.attach_cb %[[BUF]], %[[CB]] : (memref<4xf32, strided<[?], offset: ?>>, !ttl.cb<[4], f32, 2>) -> memref<4xf32, strided<[?], offset: ?>>
 // CHECK-NEXT:   return
   func.func @attach(%arg0: tensor<4xf32>) {
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2}

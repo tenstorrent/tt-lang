@@ -24,7 +24,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLLowerToLoops());
 
   bufferization::OneShotBufferizePassOptions bufOpts;
-  bufOpts.allowUnknownOps = true;
+  bufOpts.allowUnknownOps = options.allowUnknownBufferizationOps;
   bufOpts.bufferizeFunctionBoundaries = false;
   bufOpts.functionBoundaryTypeConversion =
       bufferization::LayoutMapOption::IdentityLayoutMap;

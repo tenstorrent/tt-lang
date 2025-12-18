@@ -101,14 +101,25 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
       func.return
     }
     ```
+    The optional `tensor_type` attribute records the original TTNN tensor type
+    for the non-CB operand after bufferization converts that operand to a memref.
   }];
   let arguments = (ins
     AnyType:$src,
-    AnyType:$dst
+    AnyType:$dst,
+    OptionalAttr<TypeAttr>:$tensor_type
   );
   let results = (outs TTL_TransferHandle:$xf);
   let assemblyFormat = "$src `,` $dst attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    bool isSrcCircularBuffer() {
+      return ::mlir::isa<::mlir::tt::ttl::CircularBufferType>(getSrc().getType());
+    }
+    bool isDstCircularBuffer() {
+      return ::mlir::isa<::mlir::tt::ttl::CircularBufferType>(getDst().getType());
+    }
+  }];
 }
 
 def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
@@ -331,23 +342,24 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve", [MemoryEffects<[MemWrite]>]> {
   let summary = "Reserve pages in a circular buffer for writing";
   let description = [{
     `ttl.cb_reserve` blocks until pages are available in the circular buffer
-    for writing. Returns a tensor view of the reserved pages.
+    for writing. Returns a tensor or memref view of the reserved pages.
 
     This operation is used by producer threads (typically data movement kernels
     reading from DRAM) to acquire space in the CB before writing data.
 
-    The result tensor has shape matching the CB's block shape and element type.
+    The result view has shape matching the CB's block shape and element type.
     The number of pages is derived from the CB's shape (elements per block).
 
     Example:
     ```mlir
-    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb
   );
-  let results = (outs AnyRankedTensor:$result);
+  let results = (outs TensorOrMemref:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
   let hasVerifier = 1;
 }
@@ -379,7 +391,7 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait", [MemoryEffects<[MemRead]>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
-    reading. Returns a tensor view of the available pages.
+    reading. Returns a tensor or memref view of the available pages.
 
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
@@ -394,7 +406,7 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait", [MemoryEffects<[MemRead]>]> {
   let arguments = (ins
     TTL_CircularBuffer:$cb
   );
-  let results = (outs AnyRankedTensor:$result);
+  let results = (outs TensorOrMemref:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
   let hasVerifier = 1;
 }

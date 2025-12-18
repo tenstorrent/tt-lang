@@ -21,16 +21,16 @@
 // CHECK-DAG:   int32_t [[V1:v[0-9]+]] = 1;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK: for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
+// CHECK:   TensorAccessorArgs [[ARGS_READ:v[0-9]+]] = TensorAccessorArgs<32, 1>();
+// CHECK:   TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[ZERO]], [[ADDR]]);
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACC_READ]], [[ZERO]]);
+// CHECK:   noc_async_read_barrier();
 // CHECK:   TensorAccessorArgs [[ARGS_WRITE:v[0-9]+]] = TensorAccessorArgs<32, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:   TensorAccessorArgs [[ARGS_READ:v[0-9]+]] = TensorAccessorArgs<32, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[ZERO]], [[ADDR]]);
-// CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
-// CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[ZERO]]);
-// CHECK-NEXT:     noc_async_read_barrier();
-// CHECK-NEXT:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[ZERO]]);
-// CHECK-NEXT:     noc_async_write_barrier();
-// CHECK-NEXT:   }
+// CHECK:   TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[ZERO]], [[ADDR]]);
+// CHECK:   noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[ZERO]]);
+// CHECK:   noc_async_write_barrier();
+// CHECK: }
 // CHECK-NEXT:   return;
 // CHECK-NEXT: }
 module {
