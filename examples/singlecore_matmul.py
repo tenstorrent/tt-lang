@@ -117,10 +117,12 @@ if __name__ == "__main__":
     from sim.testing import assert_pcc
 
     # Use parameters that match the singlecore_matmul requirements
-    dim = 128
-    a_in = torch.randn(dim, dim)
-    b_in = torch.randn(dim, dim)
-    out_cooperative = torch.zeros(dim, dim)
+    dim_m = 128
+    dim_k = 256
+    dim_n = 64
+    a_in = torch.randn(dim_m, dim_k)
+    b_in = torch.randn(dim_k, dim_n)
+    out_cooperative = torch.zeros(dim_m, dim_n)
 
     # Test cooperative mode
     tt_lang_singlecore_matmul(
