@@ -14,6 +14,8 @@
 namespace mlir::tt::ttl {
 namespace {
 
+// Pull these into scope so the external model reads cleanly without repeatedly
+// qualifying bufferization:: everywhere.
 using bufferization::AliasingValueList;
 using bufferization::AnalysisState;
 using bufferization::BufferizableOpInterface;
@@ -21,6 +23,11 @@ using bufferization::BufferizationOptions;
 using bufferization::BufferizationState;
 using bufferization::BufferRelation;
 
+/// ttl.attach_cb is a pure aliasing op: it forwards its tensor/memref operand
+/// to the result while preserving the CB metadata. Bufferization therefore:
+///  - marks the operand as neither reading nor writing memory,
+///  - reports operand/result equivalence,
+///  - replaces the op with a new attach that carries the bufferized SSA value.
 struct AttachCBOpInterface
     : public BufferizableOpInterface::ExternalModel<AttachCBOpInterface,
                                                     AttachCBOp> {

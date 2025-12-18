@@ -13,7 +13,7 @@ include "mlir/IR/AttrTypeBase.td"
 // TTL type definitions
 //===----------------------------------------------------------------------===//
 
-def TensorOrMemref :  
+def TensorOrMemref :
   AnyTypeOf<[AnyMemRef, AnyRankedTensor], "", "::mlir::ShapedType">;
 
 def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
