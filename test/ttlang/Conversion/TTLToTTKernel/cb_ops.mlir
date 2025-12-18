@@ -204,3 +204,41 @@ module {
     func.return
   }
 }
+
+// -----
+
+// Store tile into CB: lowers to pack_tile.
+// CHECK-LABEL: func.func @store_single(
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : i32
+// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+// CHECK: ttkernel.cb_reserve_back(%[[CB]], %[[C1]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
+// CHECK: ttkernel.pack_tile(%[[C0]], %[[CB]], %[[C0]], {{.*}}) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
+module {
+  func.func @store_single(%tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// Store followed by push: typical producer pattern.
+// CHECK-LABEL: func.func @store_and_push(
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : i32
+// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+// CHECK: ttkernel.cb_reserve_back(%[[CB]], %[[C1]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
+// CHECK: ttkernel.pack_tile(%[[C0]], %[[CB]], %[[C0]], {{.*}}) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
+// CHECK: ttkernel.cb_push_back(%[[CB]], %[[C1]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
+module {
+  func.func @store_and_push(%tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}

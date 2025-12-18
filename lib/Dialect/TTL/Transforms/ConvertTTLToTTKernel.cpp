@@ -289,6 +289,47 @@ using CBWaitLowering =
 using CBPopLowering =
     CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
 
+/// Trace through unrealized casts to find a TTKernel CB from a view value.
+/// Returns failure if no CB can be found.
+static FailureOr<Value> getCBFromView(Value view) {
+  // The view comes from CBReserveLowering, which creates an unrealized_cast
+  // from the converted TTKernel CB to the tensor view type.
+  auto castOp = view.getDefiningOp<UnrealizedConversionCastOp>();
+  if (!castOp || castOp.getInputs().size() != 1) {
+    return failure();
+  }
+  Value cb = castOp.getInputs()[0];
+  if (!llvm::isa<ttk::CBType>(cb.getType())) {
+    return failure();
+  }
+  return cb;
+}
+
+struct StoreLowering : OpConversionPattern<StoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // Trace from the view back to the CB.
+    auto cb = getCBFromView(adaptor.getView());
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(
+          op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
+    }
+
+    // Create pack_tile(dst_index=0, cb, out_index=0).
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    rewriter.create<ttk::PackTileOp>(loc, zero, *cb, zero,
+                                     /*out_of_order=*/false);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 enum class CopySourceKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 enum class CopyDestKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 
@@ -651,8 +692,8 @@ struct TTLConvertTTLToTTKernelPass
 
     RewritePatternSet patterns(&ctx);
     patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-                 CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
-                                                                &ctx);
+                 CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
+        typeConverter, &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
 
