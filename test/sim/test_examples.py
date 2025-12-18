@@ -103,5 +103,5 @@ class TestExamples:
         )
 
         golden = torch.matmul(a_in, b_in)
-        assert_pcc(golden, out_threaded, rtol=1e-4, atol=1e-4)
-        assert_pcc(golden, out_cooperative, rtol=1e-4, atol=1e-4)
+        assert_pcc(golden, out_threaded, rtol=1e-5, atol=1e-5)
+        assert_pcc(golden, out_cooperative, rtol=1e-5, atol=1e-5)

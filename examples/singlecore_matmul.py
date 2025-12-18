@@ -31,6 +31,7 @@ def tt_lang_singlecore_matmul(
     Kt_b = b_in.shape[0] // ttl.TILE_SHAPE[0]
     Nt = b_in.shape[1] // ttl.TILE_SHAPE[1]
     assert Kt_a == Kt_b, "K tile counts across A (cols) and B (rows) must match."
+    Kt = Kt_a
 
     # Accessors in tile index space.
     a_accessor = ttl.TensorAccessor(a_in, index_type=ttl.IndexType.TILE)
@@ -56,7 +57,7 @@ def tt_lang_singlecore_matmul(
             for n in range(Nt):
                 # Reserve output tile once and accumulate K contributions.
                 out_block = out_cb.reserve()  # blocking
-                for k in range(Kt_a):
+                for k in range(Kt):
                     a_block = a_cb.wait()  # blocking
                     b_block = b_cb.wait()  # blocking
 
@@ -79,7 +80,7 @@ def tt_lang_singlecore_matmul(
         # Feed input tiles for each (m, n, k) triple.
         for m in range(Mt):
             for n in range(Nt):
-                for k in range(Kt_a):
+                for k in range(Kt):
                     a_blk = a_cb.reserve()
                     b_blk = b_cb.reserve()
                     # Tile indices in tile space.
@@ -109,3 +110,23 @@ def tt_lang_singlecore_matmul(
         )
     else:
         ttl.Program(mm_compute, mm_reader, mm_writer)(a_in, b_in, out)
+
+
+if __name__ == "__main__":
+    from sim.program import ExecutionMode
+    from sim.testing import assert_pcc
+
+    # Use parameters that match the singlecore_matmul requirements
+    dim = 128
+    a_in = torch.randn(dim, dim)
+    b_in = torch.randn(dim, dim)
+    out_cooperative = torch.zeros(dim, dim)
+
+    # Test cooperative mode
+    tt_lang_singlecore_matmul(
+        a_in, b_in, out_cooperative, mode=ExecutionMode.COOPERATIVE
+    )
+
+    golden = torch.matmul(a_in, b_in)
+    assert_pcc(golden, out_cooperative, rtol=1e-4, atol=1e-4)
+    print("Single-core matmul cooperative mode test passed!")
