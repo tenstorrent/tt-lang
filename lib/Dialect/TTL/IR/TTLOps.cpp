@@ -10,10 +10,10 @@
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"    // IWYU pragma: keep
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"       // IWYU pragma: keep
-#include "llvm/ADT/TypeSwitch.h"                  // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h"            // IWYU pragma: keep
 #include <cstdint>
 
 #define GET_OP_CLASSES
