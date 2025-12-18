@@ -13,6 +13,7 @@ import torch
 from eltwise_add import eltwise_add
 from eltwise_pipe import eltwise_pipe
 from eltwise_pipe_core3 import eltwise_pipe_core3
+from singlecore_matmul import tt_lang_singlecore_matmul
 
 # Import validation utilities and CircularBuffer for resetting
 from python.sim import assert_pcc
@@ -83,3 +84,24 @@ class TestExamples:
         golden = a_in * b_in + c_in
         assert_pcc(golden, out_threaded)
         assert_pcc(golden, out_cooperative)
+
+    def test_singlecore_matmul_example(self):
+        """Test that the singlecore_matmul example runs without assertions being hit."""
+        # Use parameters that match the singlecore_matmul requirements
+        dim = 128
+        a_in = torch.randn(dim, dim)
+        b_in = torch.randn(dim, dim)
+        out_threaded = torch.zeros(dim, dim)
+        out_cooperative = torch.zeros(dim, dim)
+
+        # Test threaded mode
+        tt_lang_singlecore_matmul(a_in, b_in, out_threaded, mode=ExecutionMode.THREADED)
+
+        # Test cooperative mode
+        tt_lang_singlecore_matmul(
+            a_in, b_in, out_cooperative, mode=ExecutionMode.COOPERATIVE
+        )
+
+        golden = torch.matmul(a_in, b_in)
+        assert_pcc(golden, out_threaded, rtol=1e-4, atol=1e-4)
+        assert_pcc(golden, out_cooperative, rtol=1e-4, atol=1e-4)

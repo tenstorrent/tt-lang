@@ -159,6 +159,9 @@ class Block(Generic[CBElemTypeVar]):
     ) -> List[CBElemTypeVar]:
         return self._binary_op(other, _op.pow)
 
+    def __matmul__(self, other: "Block[CBElemTypeVar]") -> List[CBElemTypeVar]:
+        return self._binary_op(other, _op.matmul)
+
     # ---- reverse operators ----
 
     def __radd__(self, other: List[CBElemTypeVar]) -> List[CBElemTypeVar]:
