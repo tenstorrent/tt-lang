@@ -212,9 +212,16 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
     Each slice in dst_range is a tuple (start, stop, step) per TT-Lang spec.
     The range is half-open: [start, stop). Step defaults to 1 if not specified.
 
-    Arity requirement: The dst_range tuple must have the same arity as the
-    grid rank to prevent ambiguity. For a 2D grid (grid_x, grid_y), both dimensions
-    must be specified explicitly. Use slice(x, x+1) for a single core in that dimension.
+    Dimensionality: Pipes within the same pipe net must have the same dimensionality,
+    but this dimensionality can be arbitrary and need not match the physical grid rank.
+    For example, a 1D pipe net can be defined within a 2D grid by using `grid_size(dims=1)`
+    and `core(dims=1)`, which flatten the grid into a linear space. This flexibility allows
+    expressing linear communication patterns on multi-dimensional grids. The core range
+    dimensions' aspects match the corresponding aspects returned by `grid_size` for the
+    same number of dimensions (per TT-Lang spec).
+
+    Coordinate arity: When specifying dst_range for a pipe, the tuple arity must match
+    the pipe's dimensionality. Use slice(x, x+1) for a single core in that dimension.
 
     Example (2D grid):
       Valid: dst_range=(slice(x, x+1), slice(1, grid_y))  // Explicit in both dims
@@ -480,14 +487,29 @@ for (uint32_t i = 0; i < n_shards; i++) {
 TTL lowering:
 
 ```mlir
-// TTL IR (%tensor : tensor<..., #ttl.tensor_encoding<DeviceDRAM,
-//                      #ttl.layout<sharded, grid=[2,2]>>>)
+// TTL IR
+// %tensor : tensor<64x64xf32, #ttl.tensor_encoding<DeviceDRAM, #ttl.layout<sharded, grid=[2,2]>>>
+
+// Create accessor from tensor (carries layout metadata)
 %accessor = ttl.tensor_accessor %tensor
-%xf = ttl.copy %accessor[%shard_id], %cb
+    : tensor<64x64xf32, #ttl.tensor_encoding<DeviceDRAM, #ttl.layout<sharded, grid=[2,2]>>>
+    -> !ttl.accessor<tensor<64x64xf32, #ttl.tensor_encoding<DeviceDRAM, #ttl.layout<sharded, grid=[2,2]>>>>
+
+// Get flattened core coordinate (0-3 for 2x2 grid)
+%shard_id = ttl.core {dims = 1} : index
+
+// Copy from accessor at index to CB block
+// Indices are explicit operands to ttl.copy
+%xf = ttl.copy from %accessor at [%shard_id] to %cb
+    : !ttl.accessor<...>, index, !ttl.circular_buffer<...> -> !ttl.transfer_handle
 
 // After TTLLowerDataMovement → TTKernel
-%ttk_accessor = // Convert tensor layout encoding → TTKernel layout attr
+%ttk_accessor = ttkernel.tensor_accessor %tensor_addr {
+    layout = #ttkernel.layout<sharded, grid=[2,2], tiles_per_shard=[1,1]>
+} : !ttkernel.tensor_accessor<tensor<64x64xf32>>
+
 ttkernel.noc_async_read_shard %shard_id, %ttk_accessor, %cb_l1_addr, %noc
+    : index, !ttkernel.tensor_accessor<...>, i32, i8
 ```
 
 **Integration benefits:**
@@ -585,44 +607,53 @@ ttl.kernel @sharded_elementwise_add(
   %out_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32,f32>,
                           buffer_factor=2, memory_space=L1
 
-  // Create TensorAccessors (layout taken from tensor types)
+  // Create TensorAccessors (layout metadata carried from tensor encoding)
   %a_accessor = ttl.tensor_accessor %a
+      : tensor<64x64xf32, #ttl.tensor_encoding<...>> -> !ttl.accessor<...>
   %b_accessor = ttl.tensor_accessor %b
+      : tensor<64x64xf32, #ttl.tensor_encoding<...>> -> !ttl.accessor<...>
   %out_accessor = ttl.tensor_accessor %out
+      : tensor<64x64xf32, #ttl.tensor_encoding<...>> -> !ttl.accessor<...>
 
   ttl.datamovement_thread {
-    %shard_id = ttl.core(dim=1) : index
+    // Flattened core coordinate: 0-3 for 2x2 grid
+    %shard_id = ttl.core {dims = 1} : index
 
-    %a = ttl.cb_reserve %a_cb : tensor<...>
-    %xf_a = ttl.copy %a_accessor[%shard_id], %a : !ttl.transfer_handle
-    ttl.wait %xf_a
-    ttl.cb_push %a
+    %a_blk = ttl.cb_reserve %a_cb : !ttl.circular_buffer<...> -> tensor<1x1x!ttcore.tile<32x32,f32>>
+    %xf_a = ttl.copy from %a_accessor at [%shard_id] to %a_blk
+        : !ttl.accessor<...>, index, tensor<...> -> !ttl.transfer_handle
+    ttl.wait %xf_a : !ttl.transfer_handle
+    ttl.cb_push %a_cb : !ttl.circular_buffer<...>
 
-    %b = ttl.cb_reserve %b_cb : tensor<...>
-    %xf_b = ttl.copy %b_accessor[%shard_id], %b : !ttl.transfer_handle
-    ttl.wait %xf_b
-    ttl.cb_push %b
+    %b_blk = ttl.cb_reserve %b_cb : !ttl.circular_buffer<...> -> tensor<1x1x!ttcore.tile<32x32,f32>>
+    %xf_b = ttl.copy from %b_accessor at [%shard_id] to %b_blk
+        : !ttl.accessor<...>, index, tensor<...> -> !ttl.transfer_handle
+    ttl.wait %xf_b : !ttl.transfer_handle
+    ttl.cb_push %b_cb : !ttl.circular_buffer<...>
   }
 
   ttl.compute_thread {
-    %a = ttl.cb_wait %a_cb : tensor<...>
-    %b = ttl.cb_wait %b_cb : tensor<...>
-    %out = ttl.cb_reserve %out_cb : tensor<...>
+    %a_blk = ttl.cb_wait %a_cb : !ttl.circular_buffer<...> -> tensor<...>
+    %b_blk = ttl.cb_wait %b_cb : !ttl.circular_buffer<...> -> tensor<...>
+    %out_blk = ttl.cb_reserve %out_cb : !ttl.circular_buffer<...> -> tensor<...>
 
-    %result = ttl.add %a, %b
+    %result = ttl.add %a_blk, %b_blk : tensor<...>
+    ttl.store %result, %out_blk : tensor<...>
 
-    ttl.cb_pop %a
-    ttl.cb_pop %b
-    ttl.cb_push %out
+    ttl.cb_pop %a_cb : !ttl.circular_buffer<...>
+    ttl.cb_pop %b_cb : !ttl.circular_buffer<...>
+    ttl.cb_push %out_cb : !ttl.circular_buffer<...>
   }
 
   ttl.datamovement_thread {
-    %shard_id = ttl.core(dims=1) : index
+    %shard_id = ttl.core {dims = 1} : index
 
-    %out = ttl.cb_wait %out_cb : tensor<...>
-    %xf_out = ttl.copy %out, %out_accessor[%shard_id] : !ttl.transfer_handle
-    ttl.wait %xf_out
-    ttl.cb_pop %out
+    %out_blk = ttl.cb_wait %out_cb : !ttl.circular_buffer<...> -> tensor<...>
+    // Write: copy from CB block to accessor at index
+    %xf_out = ttl.copy from %out_blk to %out_accessor at [%shard_id]
+        : tensor<...>, !ttl.accessor<...>, index -> !ttl.transfer_handle
+    ttl.wait %xf_out : !ttl.transfer_handle
+    ttl.cb_pop %out_cb : !ttl.circular_buffer<...>
   }
 }
 ```
@@ -642,12 +673,15 @@ func.func @dm_reader_0(
     #ttkernel.tensor_accessor_args<layout=sharded, grid=[2,2], shard_shape=[1,1]>
   ]
 } {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c2 = arith.constant 2 : index
+  // Grid constants
+  %grid_x = arith.constant 2 : index
 
-  // Compute shard_id
-  %shard_id = affine.apply affine_map<(y, x, gx) -> (y * gx + x)>(%c0, %c0, %c2)
+  // Get core coordinates (injected by TTLExpandThreads from device config)
+  %core_x = ttkernel.get_core_x : index
+  %core_y = ttkernel.get_core_y : index
+
+  // Compute flattened shard_id = core_y * grid_x + core_x
+  %shard_id = affine.apply affine_map<(y, x, gx) -> (y * gx + x)>(%core_y, %core_x, %grid_x)
   %shard_id_i32 = arith.index_cast %shard_id : index to i32
 
   // Create TTKernel TensorAccessor values
