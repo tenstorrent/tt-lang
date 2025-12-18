@@ -145,7 +145,7 @@ def num_cores_to_grid_ranges(
     return all_ranges
 
 
-def new_split_work_to_cores(
+def split_work_to_cores(
     grid_size: Tuple[int, ...], units_to_divide: int, row_wise: bool = True
 ) -> Tuple[
     int,
