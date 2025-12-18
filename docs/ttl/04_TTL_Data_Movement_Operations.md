@@ -5,6 +5,36 @@
 This document specifies data movement operations, resource creation,
 synchronization, and MLIR interface requirements for the TTL dialect.
 
+## Implementation Status
+
+> **Legend**: ✅ Implemented | 🔄 Changed | ✨ Added | ⏳ In progress | 📋 Planned | ❌ Won't implement
+>
+> | Operation | Status | Notes |
+> |-----------|--------|-------|
+> | **Resource Creation** |||
+> | `ttl.bind_cb` | ✅✨ | Added: binds to existing CB slot (replaces `ttl.create_cb`) |
+> | `ttl.attach_cb` | ✅✨ | Added: associates tensor with CB |
+> | `ttl.create_cb` | ✅🔄 | Implemented as `ttl.bind_cb` |
+> | `ttl.create_pipe` | 📋 | Pipe creation |
+> | `ttl.create_pipenet` | 📋 | PipeNet container |
+> | `ttl.create_semaphore` | 📋 | Semaphore creation |
+> | `ttl.get_remote_semaphore` | 📋 | Remote semaphore reference |
+> | `ttl.get_remote_multicast_semaphore` | 📋 | Multicast semaphore reference |
+> | `ttl.tensor_accessor` | 📋 | TensorAccessor creation |
+> | **Data Movement** |||
+> | `ttl.copy` | ✅🔄 | Simpler syntax (no `at [indices]`) |
+> | `ttl.wait` | ✅ | Wait on transfer handle |
+> | `ttl.dma_barrier` | 📋 | Global DMA barrier |
+> | `ttl.index_accessor` | 📋 | Index into accessor |
+> | **Pipe Operations** |||
+> | `ttl.if_pipe_src` | 📋 | Execute region for pipe source |
+> | `ttl.if_pipe_dst` | 📋 | Execute region for pipe destination |
+> | **Synchronization** |||
+> | `ttl.semaphore_wait_eq` | 📋 | Wait for semaphore == value |
+> | `ttl.semaphore_wait_min` | 📋 | Wait for semaphore >= value |
+> | `ttl.semaphore_set` | 📋 | Set semaphore value |
+> | `ttl.semaphore_inc` | 📋 | Increment semaphore |
+
 ## Table of Contents
 
 - [4.2 Resource Creation](#42-resource-creation)
@@ -32,6 +62,7 @@ synchronization, and MLIR interface requirements for the TTL dialect.
 ### 4.2 Resource Creation
 
 ```tablegen
+// ✅🔄 IMPLEMENTED as ttl.bind_cb (see TTLOps.td)
 def TTL_CreateCBOp : TTL_Op<"create_cb"> {
   let summary = "Create circular buffer in L1 memory";
   let arguments = (ins
@@ -79,6 +110,7 @@ def TTL_CreateCBOp : TTL_Op<"create_cb"> {
   }];
 }
 
+// 📋 PLANNED: Not yet implemented
 def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
   let summary = "Create inter-core pipe for unicast or multicast";
   let arguments = (ins
@@ -108,6 +140,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe"> {
   }];
 }
 
+// 📋 PLANNED: Not yet implemented
 def TTL_CreatePipeNetOp : TTL_Op<"create_pipenet"> {
   let summary = "Create pipe network from list of pipes";
   let arguments = (ins Variadic<TTL_Pipe>:$pipes);
@@ -211,6 +244,7 @@ def TTL_IndexAccessorOp : TTL_Op<"index_accessor"> {
   let results = (outs AnyType:$tile_ref);  // Reference to tile for DMA
 }
 
+// ✅🔄 IMPLEMENTED: TTLOps.td (simpler syntax without "at [indices]")
 def TTL_CopyOp : TTL_Op<"copy"> {
   let summary = "Asynchronous copy between tensor tiles, CBs, and pipes";
   let arguments = (ins
@@ -386,6 +420,7 @@ def TTL_IfPipeDstOp : TTL_Op<"if_pipe_dst"> {
   }];
 }
 
+// ✅ IMPLEMENTED: TTLOps.td
 def TTL_WaitOp : TTL_Op<"wait"> {
   let summary = "Wait for DMA transfer to complete";
   let arguments = (ins TTL_TransferHandle:$xf);

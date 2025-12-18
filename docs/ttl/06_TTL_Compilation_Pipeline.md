@@ -5,6 +5,32 @@
 This document specifies the compilation pipeline, including pass architecture,
 lowering strategies, and type conversions.
 
+## Implementation Status
+
+> **Legend**: ✅ Implemented | 🔄 Changed | ✨ Added | ⏳ In progress | 📋 Planned | ❌ Won't implement
+>
+> | Pass | Status | Notes |
+> |------|--------|-------|
+> | **Phase 1: Canonicalization** |||
+> | `TTLCanonicalizePass` | 📋 | Not yet implemented |
+> | `TTLVerifyLayoutsPass` | 📋 | Not yet implemented |
+> | **Phase 2: Analysis** |||
+> | `TTLInferPipeSemaphores` | 📋 | Not yet implemented |
+> | `TTLInsertSynchronization` | 📋 | Not yet implemented |
+> | `TTLInferDSTRequirements` | 📋 | Not yet implemented |
+> | `TTLBufferizePass` | 📋 | Not yet implemented |
+> | **Phase 3: Memory Planning** |||
+> | `TTLAllocateCircularBuffers` | 📋 | Not yet implemented |
+> | **Phase 4: Thread Expansion** |||
+> | `TTLExpandThreads` | 📋 | Not yet implemented |
+> | **Phase 5: Resource Assignment** |||
+> | `TTLAssignDSTRegisters` | ✅✨ | Added: MVP placeholder (linear scan, no spill) |
+> | **Phase 6: Lowering** |||
+> | `TTLLowerCompute` / `convert-ttl-to-compute` | ✅✨ | Added: lowers tensor ops to `ttl.compute` |
+> | `TTLLowerToLoops` / `ttl-lower-to-loops` | ✅✨ | Added: lowers `ttl.compute` to `scf.for` |
+> | `TTLLowerDataMovement` / `convert-ttl-to-ttkernel` | ✅🔄 | Basic CB/copy/wait lowering |
+> | `TTLLowerSynchronization` | 📋 | Part of ttkernel lowering |
+
 ## Table of Contents
 
 - [5. Compilation Pipeline](#5-compilation-pipeline)

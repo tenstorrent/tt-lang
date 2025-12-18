@@ -4,6 +4,50 @@
 
 This document specifies compute operations, circular buffers, fusion, and DST register capacity management for the TTL dialect.
 
+## Implementation Status
+
+> **Legend**: ✅ Implemented | 🔄 Changed | ✨ Added | ⏳ In progress | 📋 Planned | ❌ Won't implement
+>
+> | Operation | Status | Notes |
+> |-----------|--------|-------|
+> | **Structural** |||
+> | `ttl.program` | 📋 | Top-level kernel program |
+> | `ttl.kernel` | 📋 | Multi-thread kernel container |
+> | `ttl.compute_thread` | 📋 | Currently uses `func.func` with `ttl.kernel_thread` attr |
+> | `ttl.datamovement_thread` | 📋 | Currently uses `func.func` with `ttl.kernel_thread` attr |
+> | **Resource Creation** |||
+> | `ttl.bind_cb` | ✅✨ | Added: binds to existing CB slot (replaces `ttl.create_cb`) |
+> | `ttl.attach_cb` | ✅✨ | Added: associates tensor with CB |
+> | `ttl.create_cb` | ✅🔄 | Implemented as `ttl.bind_cb` |
+> | `ttl.create_pipe` | 📋 | Pipe creation |
+> | `ttl.create_semaphore` | 📋 | Semaphore creation |
+> | `ttl.tensor_accessor` | 📋 | TensorAccessor creation |
+> | **CB Operations** |||
+> | `ttl.cb_wait` | ✅ | |
+> | `ttl.cb_pop` | ✅ | |
+> | `ttl.cb_reserve` | ✅ | |
+> | `ttl.cb_push` | ✅ | |
+> | `ttl.get_tile` | 📋 | Internal IR for tile extraction |
+> | `ttl.pack_tile` | 📋 | Internal IR for tile packing |
+> | **Compute (Tensor-level)** |||
+> | `ttl.add`, `ttl.sub`, `ttl.mul`, `ttl.max` | ✅ | Binary elementwise |
+> | `ttl.exp`, `ttl.log`, `ttl.sqrt`, etc. | ✅ | Unary elementwise |
+> | `ttl.matmul` | 📋 | Matrix multiplication |
+> | `ttl.reduce_sum`, `ttl.reduce_max` | 📋 | Reductions |
+> | `ttl.bcast` | 📋 | Broadcast |
+> | **Compute (Tile-level)** |||
+> | `ttl.tile_add`, `ttl.tile_sub`, etc. | ✅✨ | Added: inside `ttl.compute` body |
+> | **Structured Compute** |||
+> | `ttl.compute` | ✅✨ | Added: with `indexing_maps`/`iterator_types` (linalg-like) |
+> | `ttl.yield` | ✅✨ | Added: terminator for `ttl.compute` |
+> | `ttl.compute_region` | ✅🔄 | Implemented as `ttl.compute` |
+> | **DST Management** |||
+> | `ttl.acquire_dst`, `ttl.release_dst` | 📋 | DST register markers |
+> | `ttl.require_dst` | 📋 | DST hint marker |
+> | `ttl.spill_tile_to_l1` | 📋 | Post-MVP spilling |
+> | **Utility** |||
+> | `ttl.core`, `ttl.grid_size` | 📋 | Grid coordinate intrinsics |
+
 ## Table of Contents
 
 - [4.1 Structural Operations](#41-structural-operations)
@@ -32,6 +76,7 @@ This document specifies compute operations, circular buffers, fusion, and DST re
 ### 4.1 Structural Operations
 
 ```tablegen
+// 📋 PLANNED: Not yet implemented
 def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
   let summary = "Top-level kernel program with captured tensors";
   let arguments = (ins
@@ -88,6 +133,7 @@ def TTL_ProgramOp : TTL_Op<"program", [IsolatedFromAbove]> {
   }];
 }
 
+// 📋 PLANNED: Not yet implemented
 def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
   let summary = "Kernel with multiple threads on grid";
   let arguments = (ins
@@ -121,6 +167,7 @@ def TTL_KernelOp : TTL_Op<"kernel", [IsolatedFromAbove]> {
   }];
 }
 
+// 📋 PLANNED: Not yet implemented (currently using func.func with ttl.kernel_thread attr)
 def TTL_ComputeThreadOp : TTL_Op<"compute_thread"> {
   let summary = "Compute thread executing on Tensix core";
   let arguments = (ins
@@ -135,6 +182,7 @@ def TTL_ComputeThreadOp : TTL_Op<"compute_thread"> {
   }];
 }
 
+// 📋 PLANNED: Not yet implemented (currently using func.func with ttl.kernel_thread attr)
 def TTL_DataMovementThreadOp : TTL_Op<"datamovement_thread"> {
   let summary = "Data movement thread for DMA and synchronization";
   let arguments = (ins
@@ -153,6 +201,8 @@ def TTL_DataMovementThreadOp : TTL_Op<"datamovement_thread"> {
 ### 4.2 Resource Creation
 
 ```tablegen
+// 🔄 CHANGED: Implemented as ttl.bind_cb (binds to existing CB slot) instead of create_cb
+// Actual implementation: ttl.bind_cb {cb_index=N, buffer_factor=M} : !ttl.cb<shape, dtype, factor>
 def TTL_CreateCBOp : TTL_Op<"create_cb"> {
   let summary = "Create circular buffer in L1 memory";
   let arguments = (ins
@@ -299,6 +349,7 @@ def TTL_TensorAccessorOp : TTL_Op<"tensor_accessor"> {
 ### 4.3 Circular Buffer Operations
 
 ```tablegen
+// ✅ IMPLEMENTED: TTLOps.td
 def TTL_CBWaitOp : TTL_Op<"cb_wait"> {
   let summary = "Consumer acquire: wait for data in circular buffer";
   let arguments = (ins TTL_CircularBuffer:$cb);
@@ -316,6 +367,7 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait"> {
   }];
 }
 
+// ✅ IMPLEMENTED: TTLOps.td
 def TTL_CBPopOp : TTL_Op<"cb_pop"> {
   let summary = "Consumer release: signal tensor consumed";
   let arguments = (ins TTL_Tensor:$tensor);

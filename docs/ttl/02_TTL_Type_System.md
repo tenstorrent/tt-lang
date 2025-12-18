@@ -5,6 +5,60 @@
 This document specifies the type system for the TTL (TT-Lang) MLIR dialect,
 including core types, attributes, and TensorAccessor support strategy.
 
+## Implementation Status
+
+> **Legend**: ✅ Implemented | 🔄 Changed | ✨ Added | ⏳ In progress | 📋 Planned | ❌ Won't implement
+>
+> | Type/Feature | Status | Notes |
+> |--------------|--------|-------|
+> | **Types** |||
+> | `!ttl.cb` (CircularBuffer) | ✅🔄 | Implemented with mnemonic `cb` instead of `circular_buffer` |
+> | `!ttl.transfer_handle` | ✅ | With optional `<read>`/`<write>` direction |
+> | `!ttl.pipe` | 📋 | Inter-core communication |
+> | `!ttl.pipenet` | 📋 | Pipe container |
+> | `!ttl.semaphore` | 📋 | Synchronization primitive |
+> | `!ttl.accessor` | 📋 | TensorAccessor type |
+> | **Attributes** |||
+> | `#ttl.tensor_encoding` | 📋 | Currently uses `#ttnn.ttnn_layout` from tt-mlir |
+> | `#ttl.layout` | 📋 | Layout attribute |
+> | `#ttl.slice` | 📋 | For pipe dst_range |
+> | **Operations (Resource)** |||
+> | `ttl.bind_cb` | ✅✨ | Added: binds to existing CB slot (replaces `ttl.create_cb`) |
+> | `ttl.attach_cb` | ✅✨ | Added: associates tensor SSA value with CB |
+> | `ttl.create_cb` | ✅🔄 | Implemented as `ttl.bind_cb` |
+> | `ttl.create_pipe` | 📋 | Pipe creation |
+> | `ttl.create_semaphore` | 📋 | Semaphore creation |
+> | `ttl.tensor_accessor` | 📋 | TensorAccessor creation |
+> | **Operations (Data Movement)** |||
+> | `ttl.copy` | ✅🔄 | Simpler syntax (no `at [indices]`) |
+> | `ttl.wait` | ✅ | Wait on transfer handle |
+> | `ttl.dma_barrier` | 📋 | Global DMA barrier |
+> | **Operations (CB)** |||
+> | `ttl.cb_wait` | ✅ | Consumer acquire |
+> | `ttl.cb_pop` | ✅ | Consumer release |
+> | `ttl.cb_reserve` | ✅ | Producer acquire |
+> | `ttl.cb_push` | ✅ | Producer release |
+> | **Operations (Compute)** |||
+> | `ttl.compute` | ✅✨ | Added: structured compute with `indexing_maps`/`iterator_types` |
+> | `ttl.yield` | ✅✨ | Added: terminator for `ttl.compute` |
+> | `ttl.add`, `ttl.sub`, `ttl.mul`, `ttl.max` | ✅ | Binary elementwise (tensor-level) |
+> | `ttl.exp`, `ttl.log`, `ttl.sqrt`, `ttl.rsqrt` | ✅ | Unary elementwise (tensor-level) |
+> | `ttl.tanh`, `ttl.sigmoid`, `ttl.neg`, `ttl.abs`, `ttl.relu` | ✅ | Unary elementwise (tensor-level) |
+> | `ttl.tile_add`, `ttl.tile_sub`, `ttl.tile_mul`, `ttl.tile_max` | ✅✨ | Added: binary elementwise (tile-level) |
+> | `ttl.tile_exp`, `ttl.tile_log`, etc. | ✅✨ | Added: unary elementwise (tile-level) |
+> | `ttl.matmul` | 📋 | Matrix multiplication |
+> | `ttl.reduce_sum`, `ttl.reduce_max` | 📋 | Reductions |
+> | `ttl.bcast` | 📋 | Broadcast |
+> | `ttl.compute_region` | ✅🔄 | Implemented as `ttl.compute` |
+> | **Operations (Structural)** |||
+> | `ttl.program` | 📋 | Top-level kernel program |
+> | `ttl.kernel` | 📋 | Multi-thread kernel container |
+> | `ttl.compute_thread` | 📋 | Currently uses `func.func` with attr |
+> | `ttl.datamovement_thread` | 📋 | Currently uses `func.func` with attr |
+> | **Operations (Utility)** |||
+> | `ttl.core` | 📋 | Get core coordinates |
+> | `ttl.grid_size` | 📋 | Get grid dimensions |
+
 ## Table of Contents
 
 - [3.1 Core Types](#31-core-types)
@@ -77,6 +131,10 @@ def TTL_Tensor : TensorOf<[F32, F16, BF16]> {
 
 // TTL Types (TTLTypes.td)
 
+// 🔄 CHANGED: Implementation uses mnemonic "cb" instead of "circular_buffer"
+// Actual implementation in TTLOpsTypes.td:
+//   def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb">
+//   assemblyFormat = "`<` `[` $shape `]` `,` $elementType `,` $bufferFactor `>`"
 def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "circular_buffer"> {
   let summary = "Circular buffer for producer-consumer communication (L1 memory only)";
   let parameters = (ins
@@ -141,6 +199,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "circular_buffer"> {
 }
 
 
+// ✅ IMPLEMENTED: TTLOpsTypes.td with optional direction parameter
 def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let summary = "Handle for asynchronous transfer with transaction ID tracking";
   let description = [{
@@ -170,6 +229,7 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
 #### Semaphore Type
 
 ```tablegen
+// 📋 PLANNED: Not yet implemented
 def TTL_Semaphore : TTL_Type<"Semaphore", "semaphore"> {
   let summary = "Synchronization primitive for inter-core coordination";
   let description = [{
@@ -189,6 +249,7 @@ def TTL_Semaphore : TTL_Type<"Semaphore", "semaphore"> {
 #### Pipe Type
 
 ```tablegen
+// 📋 PLANNED: Not yet implemented
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Inter-core communication channel (first-class SSA value)";
   let parameters = (ins
@@ -255,6 +316,7 @@ detailed multicast patterns.
 #### PipeNet Type
 
 ```tablegen
+// 📋 PLANNED: Not yet implemented
 def TTL_PipeNet : TTL_Type<"PipeNet", "pipenet"> {
   let summary = "Network of pipes";
   let description = [{
@@ -290,6 +352,7 @@ def TTL_PipeNet : TTL_Type<"PipeNet", "pipenet"> {
   }];
 }
 
+// 📋 PLANNED: Not yet implemented
 def TTL_TensorAccessor : TTL_Type<"TensorAccessor", "accessor"> {
   let summary = "Handle for indexed tensor access";
   let description = [{
