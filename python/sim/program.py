@@ -294,8 +294,8 @@ def Program(
                 # Bind template to core context
                 bound_func = tmpl.bind(core_context)
 
-                # Get source code - use original function if available to avoid decorator wrapper
-                func = getattr(bound_func, "_func", bound_func)
+                # Get source code - unwrap to get original function
+                func = inspect.unwrap(bound_func)
                 source = textwrap.dedent(inspect.getsource(func))
 
                 # Strip decorators from source (lines starting with @)
