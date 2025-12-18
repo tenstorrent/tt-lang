@@ -152,9 +152,135 @@ for DST capacity-based tiling via linalg and transform dialect.
 - **Output**: CBs annotated with address attributes
 
 **`TTLExpandThreads`**
-- **Input**: `ttl.kernel` with regions
-- **Transform**: Extract each thread region into `func.func` with metadata
-- **Output**: Separate functions per thread, preserving grid/memory_space attrs
+- **Input**: `ttl.kernel` with embedded thread regions and kernel-scope CB declarations
+- **Transform**:
+  1. Create `ttl.kernel_driver` that owns global state (CBs, tensor accessors)
+  2. Assign globally unique CB indices in the driver
+  3. Extract each thread region into separate `func.func` with CB handles as arguments
+  4. Generate `ttl.launch_thread` calls to connect driver to thread functions
+- **Output**: `ttl.kernel_driver` + separate `func.func` per thread
+- **Key Invariant**: CB indices are assigned ONLY in the kernel driver, never in thread functions
+
+**`TTLExpandThreads` Detailed Example:**
+
+Input (after Python AST compilation):
+```mlir
+ttl.kernel @elementwise_add(%a: tensor<1024x1024xf32, #layout>,
+                            %b: tensor<1024x1024xf32, #layout>,
+                            %c: tensor<1024x1024xf32, #layout>) {
+  // Kernel-scope resource declarations
+  %a_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32, f32>,
+                        buffer_factor=2 : !ttl.cb<[1,1], !ttcore.tile<32x32, f32>, 2>
+  %b_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32, f32>,
+                        buffer_factor=2 : !ttl.cb<[1,1], !ttcore.tile<32x32, f32>, 2>
+  %c_cb = ttl.create_cb shape=[1,1], element_type=!ttcore.tile<32x32, f32>,
+                        buffer_factor=2 : !ttl.cb<[1,1], !ttcore.tile<32x32, f32>, 2>
+
+  %a_accessor = ttl.tensor_accessor %a : ...
+  %b_accessor = ttl.tensor_accessor %b : ...
+  %c_accessor = ttl.tensor_accessor %c : ...
+  %shard_id = ttl.get_shard_id() : index
+
+  ttl.datamovement_thread {
+    %a_view = ttl.cb_reserve %a_cb : ... -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf_a = ttl.copy %a_accessor[%shard_id], %a_view : ... -> !ttl.transfer_handle<read>
+    ttl.wait %xf_a
+    ttl.cb_push %a_cb
+    // ... similar for %b_cb ...
+    ttl.thread_return
+  }
+
+  ttl.compute_thread {
+    %a_tiles = ttl.cb_wait %a_cb : ... -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %b_tiles = ttl.cb_wait %b_cb : ... -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %c_tiles = ttl.add %a_tiles, %b_tiles : ...
+    ttl.cb_pop %a_cb
+    ttl.cb_pop %b_cb
+    %c_view = ttl.cb_reserve %c_cb : ...
+    ttl.cb_push %c_cb
+    ttl.thread_return
+  }
+
+  ttl.datamovement_thread {
+    %c_view = ttl.cb_wait %c_cb : ...
+    %xf_c = ttl.copy %c_view, %c_accessor[%shard_id] : ... -> !ttl.transfer_handle<write>
+    ttl.wait %xf_c
+    ttl.cb_pop %c_cb
+    ttl.thread_return
+  }
+
+  ttl.kernel_return
+}
+```
+
+Output (after `TTLExpandThreads`):
+```mlir
+// Kernel Driver: owns global state, assigns CB indices
+ttl.kernel_driver @elementwise_add_driver(%a: tensor<...>, %b: tensor<...>, %c: tensor<...>) {
+  // CB index assignment happens HERE - indices are globally unique
+  %a_cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1,1], !ttcore.tile<32x32, f32>, 2>
+  %b_cb = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1,1], !ttcore.tile<32x32, f32>, 2>
+  %c_cb = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1,1], !ttcore.tile<32x32, f32>, 2>
+
+  %a_accessor = ttl.tensor_accessor %a : ...
+  %b_accessor = ttl.tensor_accessor %b : ...
+  %c_accessor = ttl.tensor_accessor %c : ...
+  %shard_id = ttl.get_shard_id() : index
+
+  // Launch threads with CB handles as arguments
+  ttl.launch_thread @dm_reader(%a_cb, %b_cb, %a_accessor, %b_accessor, %shard_id)
+  ttl.launch_thread @compute(%a_cb, %b_cb, %c_cb)
+  ttl.launch_thread @dm_writer(%c_cb, %c_accessor, %shard_id)
+
+  ttl.kernel_driver_return
+}
+
+// Data Movement Thread: Reader
+func.func @dm_reader(%a_cb: !ttl.cb<...>, %b_cb: !ttl.cb<...>,
+                     %a_accessor: !ttl.tensor_accessor<...>,
+                     %b_accessor: !ttl.tensor_accessor<...>,
+                     %shard_id: index)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  // CB handles are arguments - NO ttl.bind_cb here!
+  %a_view = ttl.cb_reserve %a_cb : ...
+  %xf_a = ttl.copy %a_accessor[%shard_id], %a_view : ...
+  ttl.wait %xf_a
+  ttl.cb_push %a_cb
+  // ... similar for %b_cb ...
+  func.return
+}
+
+// Compute Thread
+func.func @compute(%a_cb: !ttl.cb<...>, %b_cb: !ttl.cb<...>, %c_cb: !ttl.cb<...>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<tensix>} {
+  // CB handles are arguments - thread doesn't allocate indices
+  %a_tiles = ttl.cb_wait %a_cb : ...
+  %b_tiles = ttl.cb_wait %b_cb : ...
+  %c_tiles = ttl.add %a_tiles, %b_tiles : ...
+  ttl.cb_pop %a_cb
+  ttl.cb_pop %b_cb
+  %c_view = ttl.cb_reserve %c_cb : ...
+  ttl.cb_push %c_cb
+  func.return
+}
+
+// Data Movement Thread: Writer
+func.func @dm_writer(%c_cb: !ttl.cb<...>, %c_accessor: !ttl.tensor_accessor<...>,
+                     %shard_id: index)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c_view = ttl.cb_wait %c_cb : ...
+  %xf_c = ttl.copy %c_view, %c_accessor[%shard_id] : ...
+  ttl.wait %xf_c
+  ttl.cb_pop %c_cb
+  func.return
+}
+```
+
+**Design Rationale:**
+1. **Kernel Driver as Single Source of Truth**: The `ttl.kernel_driver` is the only place where CB indices are assigned. This ensures indices are globally unique across all threads sharing L1 memory.
+2. **CBs as Function Arguments**: Thread functions receive CB handles as arguments, eliminating the possibility of index collisions from per-operation CB creation.
+3. **Thread Attributes**: Each extracted function has `ttl.kernel_thread` attribute indicating thread type (`#ttkernel.thread<noc>` for data movement, `#ttkernel.thread<tensix>` for compute).
+4. **Explicit Launch Semantics**: `ttl.launch_thread` establishes the driver→thread relationship with explicit argument passing, making data dependencies visible in IR.
 
 **`TTLAssignDSTRegisters`**
 - **Input**: `ttl.kernel` with compute operations and DST hints.
