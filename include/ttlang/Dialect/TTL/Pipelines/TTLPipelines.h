@@ -21,9 +21,9 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> allowUnknownBufferizationOps{
       *this, "allow-unknown-bufferization-ops",
       llvm::cl::desc("Allow unknown ops during the TTL bufferization stage. "
-                     "Disable only if downstream passes guarantee every TTL op "
-                     "implements BufferizableOpInterface."),
-      llvm::cl::init(true)};
+                     "Enable only when experimenting with custom ops that lack "
+                     "BufferizableOpInterface coverage."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

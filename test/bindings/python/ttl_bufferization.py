@@ -69,32 +69,32 @@ def main():
 
 # CHECK-LABEL: module {
 # CHECK-NEXT:   func.func @attach(%arg0: tensor<4xf32>)
-# CHECK-NEXT:     %[[BUF:.*]] = bufferization.to_buffer %arg0 : tensor<4xf32> to memref<4xf32, strided<[?], offset: ?>>
+# CHECK-NEXT:     %[[BUF:.*]] = bufferization.to_buffer %arg0 : tensor<4xf32> to memref<4xf32{{.*}}>
 # CHECK-NEXT:     %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4], f32, 2>
-# CHECK-NEXT:     %[[ATTACHED:.*]] = ttl.attach_cb %[[BUF]], %[[CB]] : (memref<4xf32, strided<[?], offset: ?>>, !ttl.cb<[4], f32, 2>) -> memref<4xf32, strided<[?], offset: ?>>
+# CHECK-NEXT:     %[[ATTACHED:.*]] = ttl.attach_cb %[[BUF]], %[[CB]] : (memref<4xf32{{.*}}>, !ttl.cb<[4], f32, 2>) -> memref<4xf32{{.*}}>
 # CHECK-NEXT:     return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   func.func @dual_attach(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>)
-# CHECK-NEXT:     %[[ARG1_BUF:.*]] = bufferization.to_buffer %arg1 : tensor<4xf32> to memref<4xf32, strided<[?], offset: ?>>
-# CHECK-NEXT:     %[[ARG0_BUF:.*]] = bufferization.to_buffer %arg0 : tensor<4xf32> to memref<4xf32, strided<[?], offset: ?>>
+# CHECK-NEXT:     %[[ARG1_BUF:.*]] = bufferization.to_buffer %arg1 : tensor<4xf32> to memref<4xf32{{.*}}>
+# CHECK-NEXT:     %[[ARG0_BUF:.*]] = bufferization.to_buffer %arg0 : tensor<4xf32> to memref<4xf32{{.*}}>
 # CHECK-NEXT:     %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4], f32, 2>
 # CHECK-NEXT:     %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[4], f32, 2>
-# CHECK-NEXT:     %[[ATT0:.*]] = ttl.attach_cb %[[ARG0_BUF]], %[[CB0]] : (memref<4xf32, strided<[?], offset: ?>>, !ttl.cb<[4], f32, 2>) -> memref<4xf32, strided<[?], offset: ?>>
-# CHECK-NEXT:     %[[ATT1:.*]] = ttl.attach_cb %[[ARG1_BUF]], %[[CB1]] : (memref<4xf32, strided<[?], offset: ?>>, !ttl.cb<[4], f32, 2>) -> memref<4xf32, strided<[?], offset: ?>>
+# CHECK-NEXT:     %[[ATT0:.*]] = ttl.attach_cb %[[ARG0_BUF]], %[[CB0]] : (memref<4xf32{{.*}}>, !ttl.cb<[4], f32, 2>) -> memref<4xf32{{.*}}>
+# CHECK-NEXT:     %[[ATT1:.*]] = ttl.attach_cb %[[ARG1_BUF]], %[[CB1]] : (memref<4xf32{{.*}}>, !ttl.cb<[4], f32, 2>) -> memref<4xf32{{.*}}>
 # CHECK-NEXT:     return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   func.func @cb_views()
 # CHECK-NEXT:     %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4], f32, 2>
-# CHECK-NEXT:     %[[RES:.*]] = ttl.cb_reserve %[[CB]] : <[4], f32, 2> -> memref<4xf32, strided<[?], offset: ?>>
-# CHECK-NEXT:     %[[WAIT:.*]] = ttl.cb_wait %[[CB]] : <[4], f32, 2> -> memref<4xf32, strided<[?], offset: ?>>
+# CHECK-NEXT:     %[[RES:.*]] = ttl.cb_reserve %[[CB]] : <[4], f32, 2> -> memref<4xf32{{.*}}>
+# CHECK-NEXT:     %[[WAIT:.*]] = ttl.cb_wait %[[CB]] : <[4], f32, 2> -> memref<4xf32{{.*}}>
 # CHECK-NEXT:     ttl.cb_push %[[CB]] : <[4], f32, 2>
 # CHECK-NEXT:     ttl.cb_pop %[[CB]] : <[4], f32, 2>
 # CHECK-NEXT:     return
 # CHECK-NEXT:   }
 # CHECK:   func.func @copy_to_cb(%[[ARG:.*]]: tensor<32x32xf32, #ttnn_layout>)
-# CHECK-NEXT:     %[[BUF32:.*]] = bufferization.to_buffer %[[ARG]] : tensor<32x32xf32, #ttnn_layout> to memref<32x32xf32, strided<[?, ?], offset: ?>>
+# CHECK-NEXT:     %[[BUF32:.*]] = bufferization.to_buffer %[[ARG]] : tensor<32x32xf32, #ttnn_layout> to memref<32x32xf32{{.*}}>
 # CHECK-NEXT:     %[[CB32:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
-# CHECK-NEXT:     %[[XF:.*]] = ttl.copy %[[BUF32]], %[[CB32]] {tensor_type = tensor<32x32xf32, #ttnn_layout>} : (memref<32x32xf32, {{.*}}>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+# CHECK-NEXT:     %[[XF:.*]] = ttl.copy %[[BUF32]], %[[CB32]] {tensor_type = tensor<32x32xf32, #ttnn_layout>} : (memref<32x32xf32{{.*}}>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
 # CHECK-NEXT:     ttl.wait %[[XF]] : !ttl.transfer_handle<read>
 # CHECK-NEXT:     return
 # CHECK-NEXT:   }

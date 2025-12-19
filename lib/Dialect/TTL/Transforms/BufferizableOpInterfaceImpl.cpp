@@ -61,6 +61,9 @@ struct AttachCBOpInterface
     return true;
   }
 
+  /// ttl.attach_cb forwards whatever shaped value it sees, so explicitly
+  /// request the buffer type of the tensor operand to avoid inferring an
+  /// unrelated layout when the result is still a tensor at analysis time.
   FailureOr<BufferLikeType>
   getBufferType(Operation *op, Value value, const BufferizationOptions &options,
                 const BufferizationState &state,

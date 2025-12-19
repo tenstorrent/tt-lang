@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --one-shot-bufferize="bufferize-function-boundaries=false allow-unknown-ops=true" | FileCheck %s
+// RUN: ttlang-opt %s --one-shot-bufferize="bufferize-function-boundaries=false allow-unknown-ops=false" | FileCheck %s
 // Verify ttl.attach_cb survives bufferization and swaps tensors for memrefs.
 
 module {

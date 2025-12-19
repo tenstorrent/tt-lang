@@ -14,7 +14,8 @@ include "mlir/IR/AttrTypeBase.td"
 //===----------------------------------------------------------------------===//
 
 def TensorOrMemref :
-  AnyTypeOf<[AnyMemRef, AnyRankedTensor], "", "::mlir::ShapedType">;
+  AnyTypeOf<[AnyMemRef, AnyRankedTensor], "tensor or memref",
+            "::mlir::ShapedType">;
 
 def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let summary = "Circular buffer in L1 for TT-Lang kernels";
