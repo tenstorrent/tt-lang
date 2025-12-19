@@ -6,24 +6,17 @@
 // TTL Tile Ops to TTKernel Lowering
 //===----------------------------------------------------------------------===//
 //
-// This file contains patterns for lowering TTL tile operations (ttl.tile_add,
-// ttl.tile_exp, etc.) to TTKernel SFPU/FPU operations.
-//
-// Current scope (this PR):
-// - Tile op patterns only (ttl.tile_* → ttkernel.*_tile)
-// - These patterns work on tensor types during development/testing
-//
-// Future work (TODO(#124)):
-// - Full pipeline integration where this pass runs AFTER bufferization
+// This file lowers TTL tile operations (ttl.tile_* and ttl.copy_tile) to
+// TTKernel operations using DialectConversion.
+// Future work (TODO #124):
 // - DST lifecycle wrapper (acquire/commit/wait/release) around loop iterations
 // - copy_tile (CB → DST) before compute, pack_tile (DST → CB) after
-// - ttl.compute is lowered to scf.for loops BEFORE bufferization by
-//   ttl-lower-to-loops pass; this pass only converts the ttl.tile_* ops
 //
 // Following LLVM/MLIR best practices:
-// - Generic template patterns for tile op categories (like ArithToLLVM)
-// - Type aliases for specific op-to-op mappings
+// - Generic template patterns for tile op categories
+// - Type aliases for op-to-op mappings
 // - Batch pattern registration via patterns.add<...>
+// - Explicit state passing for copy_tile (CB → DST) to avoid multipleIR walks
 //
 //===----------------------------------------------------------------------===//
 
@@ -306,6 +299,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
       ReluTileLowering,
       // Binary ops
       AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering>(ctx);
+
   // Copy op needs the type converter and CB map.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx, cbState);
 
