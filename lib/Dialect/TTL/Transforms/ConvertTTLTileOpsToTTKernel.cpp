@@ -117,6 +117,27 @@ struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
 // Helpers
 //===----------------------------------------------------------------------===//
 
+/// Extract the DST register index from a tile value. The index is obtained
+/// from either the copy_tile op that placed the tile in DST, or from the
+/// dst_idx attribute on the producing tile operation.
+static std::optional<int64_t> getDstIndexFromValue(Value v) {
+  auto opRes = dyn_cast<OpResult>(v);
+  if (!opRes) {
+    return std::nullopt;
+  }
+  Operation *owner = opRes.getOwner();
+  if (auto copy = dyn_cast<CopyTileOp>(owner)) {
+    if (auto constIdx = dyn_cast_or_null<arith::ConstantIndexOp>(
+            copy.getDstIndex().getDefiningOp())) {
+      return constIdx.value();
+    }
+  }
+  if (auto attr = owner->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+    return attr.getInt();
+  }
+  return std::nullopt;
+}
+
 //===----------------------------------------------------------------------===//
 // Generic Tile Op Lowering Templates (using ConversionPattern)
 //===----------------------------------------------------------------------===//
@@ -153,9 +174,8 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
 /// Binary SFPU ops: DST[odst] = DST[src0] op DST[src1]
 ///
-/// DST index assignment: The ttl-tile-and-assign-dst pass assigns dst_idx
-/// attributes to operands. For now, we use simple defaults: src0=0, src1=1,
-/// odst=0 (in-place on src0).
+/// DST indices are extracted from operand-defining ops (copy_tile or tile ops
+/// with dst_idx attributes). The output index comes from this op's dst_idx.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -165,43 +185,22 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Use op dst_idx for output; operands default to 0/1 for now.
     auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
     if (!dstIdxAttr) {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t odstIdx = dstIdxAttr.getInt();
 
-    auto getOptionalDstIdx = [&](Value v) -> std::optional<int64_t> {
-      if (auto opRes = dyn_cast<OpResult>(v)) {
-        Operation *owner = opRes.getOwner();
-        if (auto copy = dyn_cast<CopyTileOp>(owner)) {
-          if (auto constIdx = dyn_cast_or_null<arith::ConstantIndexOp>(
-                  copy.getDstIndex().getDefiningOp())) {
-            return constIdx.value();
-          }
-        }
-        if (auto attr = owner->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-          return attr.getInt();
-        }
-      }
-      return std::nullopt;
-    };
-
-    std::optional<int64_t> src0IdxOpt = getOptionalDstIdx(adaptor.getLhs());
-    std::optional<int64_t> src1IdxOpt = getOptionalDstIdx(adaptor.getRhs());
-    int64_t src0Idx = src0IdxOpt.value_or(0);
-    int64_t src1Idx = src1IdxOpt.value_or(1);
+    int64_t src0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
+    int64_t src1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
 
     Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
     Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
     Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
 
-    // Emit init + compute ops
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
 
-    // Replace with lhs (result is in DST[odst], which is typically src0)
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
   }
@@ -220,29 +219,11 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    auto getOptionalDstIdx = [&](Value v) -> std::optional<int64_t> {
-      if (auto opRes = dyn_cast<OpResult>(v)) {
-        Operation *owner = opRes.getOwner();
-        if (auto copy = dyn_cast<CopyTileOp>(owner)) {
-          if (auto constIdx = dyn_cast_or_null<arith::ConstantIndexOp>(
-                  copy.getDstIndex().getDefiningOp())) {
-            return constIdx.value();
-          }
-        }
-        if (auto attr = owner->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-          return attr.getInt();
-        }
-      }
-      return std::nullopt;
-    };
+    int64_t dst0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
+    int64_t dst1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
 
-    std::optional<int64_t> dst0IdxOpt = getOptionalDstIdx(adaptor.getLhs());
-    std::optional<int64_t> dst1IdxOpt = getOptionalDstIdx(adaptor.getRhs());
-
-    Value dst0 =
-        rewriter.create<arith::ConstantIndexOp>(loc, dst0IdxOpt.value_or(0));
-    Value dst1 =
-        rewriter.create<arith::ConstantIndexOp>(loc, dst1IdxOpt.value_or(1));
+    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
+    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
 
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, dst0, dst1);
