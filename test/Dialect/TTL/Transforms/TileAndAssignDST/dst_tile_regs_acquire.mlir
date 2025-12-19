@@ -10,14 +10,14 @@
 // CHECK: %[[RES:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:   ttl.tile_regs_acquire
-// CHECK:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] : !ttcore.tile<32x32, f32>
-// CHECK:   ttl.tile_regs_commit
-// CHECK:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   ttl.tile_regs_commit
+// CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK: ttl.tile_regs_wait
-// CHECK: ttl.tile_regs_release
+// CHECK-NEXT: ttl.tile_regs_wait
+// CHECK-NEXT: ttl.tile_regs_release
 // CHECK: return %[[RES]]
 func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                           %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -56,17 +56,17 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // Purpose: ensure wait/release are emitted per compute, and commits sit before yields.
 // CHECK-LABEL: func.func @acquire_two_computes
 // CHECK: %[[R0:.*]] = ttl.compute
-// CHECK: ttl.tile_regs_acquire
-// CHECK: ttl.tile_regs_commit
+// CHECK:   ttl.tile_regs_acquire
+// CHECK:   ttl.tile_regs_commit
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK: ttl.tile_regs_wait
-// CHECK: ttl.tile_regs_release
+// CHECK-NEXT: ttl.tile_regs_wait
+// CHECK-NEXT: ttl.tile_regs_release
 // CHECK: %[[R1:.*]] = ttl.compute
-// CHECK: ttl.tile_regs_acquire
-// CHECK: ttl.tile_regs_commit
+// CHECK:   ttl.tile_regs_acquire
+// CHECK:   ttl.tile_regs_commit
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK: ttl.tile_regs_wait
-// CHECK: ttl.tile_regs_release
+// CHECK-NEXT: ttl.tile_regs_wait
+// CHECK-NEXT: ttl.tile_regs_release
 // CHECK: return %[[R1]]
 func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)

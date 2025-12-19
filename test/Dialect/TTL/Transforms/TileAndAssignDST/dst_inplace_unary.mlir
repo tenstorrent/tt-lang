@@ -16,14 +16,14 @@ func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // CHECK: %[[RESULT:.*]] = ttl.compute
-  // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-  // CHECK:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] : !ttcore.tile<32x32, f32>
-  // CHECK:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]] : !ttcore.tile<32x32, f32>
-  // CHECK:   %[[SIG:.*]] = ttl.tile_sigmoid %[[RELU]] : !ttcore.tile<32x32, f32>
-  // CHECK:   ttl.yield %[[SIG]] : !ttcore.tile<32x32, f32>
-  // CHECK: }
+// CHECK: %[[RESULT:.*]] = ttl.compute
+// CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[SIG:.*]] = ttl.tile_sigmoid %[[RELU]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   ttl.yield %[[SIG]] : !ttcore.tile<32x32, f32>
+// CHECK: }
   // CHECK-NOT: tile_batch_size
   // CHECK-NOT: dst_idx
   %result = ttl.compute
