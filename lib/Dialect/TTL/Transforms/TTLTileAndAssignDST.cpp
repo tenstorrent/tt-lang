@@ -30,10 +30,12 @@
 //    - Values die at last use (within current block)
 //    - Peak usage determines if capacity is exceeded
 //
-// Current limitations:
+// Current limitations/future work:
 // - Hardcoded capacity (doesn't account for f32 vs f16 differences)
 // - Basic last-use analysis (only checks current block)
 // - No spill/reload handling
+// - Enable choosing among several register allocation strategies (linear,
+//   graph-coloring, etc.)
 //
 // Pass pipeline position: After convert-ttl-to-compute, before
 // ttl-insert-tile-regs-sync.
@@ -157,28 +159,41 @@ struct TTLTileAndAssignDSTPass
         return;
       }
 
-      // Insert copy_tile immediately before the first use of each block argument.
-      // Use SmallBitVector for register allocation with reuse.
-      // Bit set = register in use, bit clear = register free.
+      // Insert copy_tile immediately before the first use of each block
+      // argument. Use SmallBitVector for register allocation with reuse. Bit
+      // set = register in use, bit clear = register free.
       llvm::SmallBitVector inUse(capacity);
       DenseMap<BlockArgument, std::uint32_t> dstIndexForArg;
       DenseMap<BlockArgument, Value> copiedTileForArg;
 
       for (Operation &op : *body) {
-        // First pass: allocate registers for new block arguments used by this op
+        // Collect block arguments used by this op before any replacements.
+        // We need this for the freeing pass since operands will be replaced.
+        llvm::SmallVector<BlockArgument, 4> argsUsedByOp;
+        for (OpOperand &operand : op.getOpOperands()) {
+          if (auto arg = dyn_cast<BlockArgument>(operand.get())) {
+            if (isTileValue(arg)) {
+              argsUsedByOp.push_back(arg);
+            }
+          }
+        }
+
+        // First pass: allocate registers for new block arguments used by this
+        // op
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {
             continue;
           }
-          if (auto it = copiedTileForArg.find(arg); it != copiedTileForArg.end()) {
+          if (auto it = copiedTileForArg.find(arg);
+              it != copiedTileForArg.end()) {
             operand.set(it->second);
             continue;
           }
           // Allocate: find first free register
           int freeReg = inUse.find_first_unset();
-          assert(freeReg >= 0 &&
-                 "no free DST register (should have been caught by capacity check)");
+          assert(freeReg >= 0 && "no free DST register (should have been "
+                                 "caught by capacity check)");
           auto assignedDstIndex = static_cast<std::uint32_t>(freeReg);
           inUse.set(assignedDstIndex);
 
@@ -197,12 +212,9 @@ struct TTLTileAndAssignDSTPass
           operand.set(copy.getDstTile());
         }
 
-        // Second pass: free registers for block arguments at their last use
-        for (OpOperand &operand : op.getOpOperands()) {
-          auto arg = dyn_cast<BlockArgument>(operand.get());
-          if (!arg || !isTileValue(arg)) {
-            continue;
-          }
+        // Second pass: free registers for block arguments at their last use.
+        // Use the pre-collected list since operands have been replaced.
+        for (BlockArgument arg : argsUsedByOp) {
           if (isLastUse(op, arg)) {
             auto it = dstIndexForArg.find(arg);
             if (it != dstIndexForArg.end()) {
