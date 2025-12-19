@@ -291,6 +291,17 @@ using CBPopLowering =
 
 /// Trace through unrealized casts to find a TTKernel CB from a view value.
 /// Returns failure if no CB can be found.
+///
+/// IMPORTANT: This assumes the view comes directly from a CBReserveLowering-
+/// created unrealized_cast. If there's any IR transformation between reserve
+/// and store (CSE, canonicalization, block arguments, etc.), this pattern
+/// match will fail.
+///
+/// TODO(#149): The long-term fix is to extend CBReserveOp to implement
+/// ViewLikeOpInterface. Then instead of pattern-matching on
+/// UnrealizedConversionCastOp (which is an implementation detail of the type
+/// converter and thus fragile), we can call viewOp.getViewSource() in a loop
+/// until we reach a non-view type (the actual CB).
 static FailureOr<Value> getCBFromView(Value view) {
   // The view comes from CBReserveLowering, which creates an unrealized_cast
   // from the converted TTKernel CB to the tensor view type.
@@ -321,6 +332,9 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
     }
 
     // Create pack_tile(dst_index=0, cb, out_index=0).
+    // TODO(#120): Replace hardcoded dst_index=0 with the actual DST register
+    // index from the op that produced the tile being stored, once DST
+    // assignment is implemented.
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     rewriter.create<ttk::PackTileOp>(loc, zero, *cb, zero,
                                      /*out_of_order=*/false);
