@@ -13,6 +13,7 @@
 
 namespace mlir {
 class RewritePatternSet;
+class TypeConverter;
 } // namespace mlir
 
 namespace mlir::tt::ttl {
@@ -25,7 +26,8 @@ namespace mlir::tt::ttl {
 void populateTTLToComputePatterns(RewritePatternSet &patterns);
 
 /// Populate patterns for lowering ttl.tile_* ops to TTKernel (tile-only pass).
-void populateTTLTileOpsToTTKernelPatterns(RewritePatternSet &patterns);
+void populateTTLTileOpsToTTKernelPatterns(mlir::TypeConverter *typeConverter,
+                                          RewritePatternSet &patterns);
 
 } // namespace mlir::tt::ttl
 
