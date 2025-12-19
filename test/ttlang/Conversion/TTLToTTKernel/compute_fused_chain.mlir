@@ -16,25 +16,26 @@
 // CHECK:       %[[A_CB:.*]] = ttl.attach_cb %[[AARG]],
 // CHECK:       %[[B_CB:.*]] = ttl.attach_cb %[[BARG]],
 // CHECK:       %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]],
+// CHECK-NEXT:  ttkernel.tile_regs_acquire
 // CHECK:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[INIT_CB]])
-// CHECK:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
-// CHECK:           %[[ATILE:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
-// CHECK:           ttkernel.tile_regs_acquire
-// CHECK:           ttkernel.copy_tile_init(%[[CB0_TTK]])
-// CHECK:           ttkernel.copy_tile(%[[CB0_TTK]], %[[IDX0:.*]], %[[DST0:.*]])
-// CHECK:           ttkernel.copy_tile_init(%[[CB1_TTK]])
-// CHECK:           ttkernel.copy_tile(%[[CB1_TTK]], %[[IDX0]], %[[DST1:.*]])
-// CHECK:           ttkernel.add_binary_tile_init()
-// CHECK:           ttkernel.add_binary_tile(%[[DST0]], %[[DST1]], %[[DST2:.*]])
-// CHECK:           ttkernel.mul_binary_tile_init()
-// CHECK:           ttkernel.mul_binary_tile(%[[DST2]], %[[DST1]], %[[DST0]])
-// CHECK:           ttkernel.exp_tile_init()
-// CHECK:           ttkernel.exp_tile(%[[DST1]])
+// CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
+// CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
+// CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
+// CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[C0]], %[[DST0:.*]])
+// CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
+// CHECK-NEXT:      ttkernel.copy_tile(%[[CB1_TTK]], %[[C0]], %[[DST1:.*]])
+// CHECK-NEXT:      ttkernel.add_binary_tile_init()
+// CHECK-NEXT:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C2]])
+// CHECK-NEXT:      ttkernel.mul_binary_tile_init()
+// CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
+// CHECK-NEXT:      ttkernel.exp_tile_init()
+// CHECK-NEXT:      ttkernel.exp_tile(%[[C1]])
 // CHECK:           ttkernel.tile_regs_commit
-// CHECK:           %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
-// CHECK:         scf.yield %[[INSERT]]
+// CHECK-NEXT:      ttkernel.tile_regs_wait
+// TODO: This tensor.insert should be converted to a ttl.store and lowered to pack_tile
+// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
+// CHECK-NEXT:    scf.yield %[[INSERT]]
 // CHECK:       scf.yield
-// CHECK:       ttkernel.tile_regs_wait
 // CHECK:       ttkernel.tile_regs_release
 // CHECK:       return
 // CHECK-NOT:   ttl.copy_tile %[[INIT_CB]]

@@ -3,10 +3,9 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles,
-// DST registers are reused after last use, and dst_idx annotations appear on
-// math ops.
-// With register reuse: A->DST0, B->DST1, after tile_add A&B are dead,
-// C reuses DST0.
+// DST registers are reused after last use, and dst_idx annotations appear on math ops.
+// With register reuse: A->DST0, B->DST1, after tile_add A&B are dead, C reuses DST0.
+
 // CHECK-LABEL: func.func @add_mul_exp_chain
 // CHECK-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[CARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index

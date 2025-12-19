@@ -3,21 +3,20 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: verify tile_regs_acquire precedes copy_tile ops, tile_regs_commit is
-// inserted before yield, and wait/release follow the compute op. Tile ops
-// consume copied tiles.
+// Purpose: verify tile_regs_acquire wraps compute, commit/wait are inside before
+// yield, and release follows the compute. Tile ops consume copied tiles.
 // CHECK-LABEL: func.func @acquire_insert
+// CHECK: ttl.tile_regs_acquire
 // CHECK: %[[RES:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK-NEXT:   ttl.tile_regs_acquire
 // CHECK-NEXT:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.tile_regs_commit
+// CHECK-NEXT:   ttl.tile_regs_wait
 // CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK-NEXT: ttl.tile_regs_wait
-// CHECK-NEXT: ttl.tile_regs_release
+// CHECK: ttl.tile_regs_release
 // CHECK: return %[[RES]]
 func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                           %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -53,20 +52,20 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // Re-declare map for split input.
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: ensure wait/release are emitted per compute, and commits sit before yields.
+// Purpose: ensure per-compute acquire, commit/wait before yield, and release after.
 // CHECK-LABEL: func.func @acquire_two_computes
+// CHECK: ttl.tile_regs_acquire
 // CHECK: %[[R0:.*]] = ttl.compute
-// CHECK:   ttl.tile_regs_acquire
 // CHECK:   ttl.tile_regs_commit
+// CHECK:   ttl.tile_regs_wait
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK-NEXT: ttl.tile_regs_wait
-// CHECK-NEXT: ttl.tile_regs_release
+// CHECK: ttl.tile_regs_release
+// CHECK: ttl.tile_regs_acquire
 // CHECK: %[[R1:.*]] = ttl.compute
-// CHECK:   ttl.tile_regs_acquire
 // CHECK:   ttl.tile_regs_commit
+// CHECK:   ttl.tile_regs_wait
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK-NEXT: ttl.tile_regs_wait
-// CHECK-NEXT: ttl.tile_regs_release
+// CHECK: ttl.tile_regs_release
 // CHECK: return %[[R1]]
 func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -119,20 +118,18 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: op chain add->mul->exp with reg sync: acquire at entry, commit before yield, wait/release after.
+// Purpose: op chain add->mul->exp with reg sync: acquire before compute, commit/wait inside compute, release after.
 // CHECK-LABEL: func.func @acquire_chain_three_ops
 // CHECK-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[CARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// CHECK: ttl.tile_regs_acquire
 // CHECK: ttl.compute
-// CHECK:   ttl.tile_regs_acquire
-// CHECK-DAG: ttl.copy_tile
-// CHECK-DAG: ttl.copy_tile
 // CHECK:   %[[ADD:.*]] = ttl.tile_add
 // CHECK:   ttl.copy_tile
 // CHECK:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]],
 // CHECK:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
 // CHECK:   ttl.tile_regs_commit
+// CHECK:   ttl.tile_regs_wait
 // CHECK:   ttl.yield
-// CHECK: ttl.tile_regs_wait
 // CHECK: ttl.tile_regs_release
 func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                    %b: tensor<2x2x!ttcore.tile<32x32, f32>>,

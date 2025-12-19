@@ -122,7 +122,7 @@ func.func @all_unary_ops(%x: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2
 
 // -----
 
-// Test: DST assignment on complex chain
+// Test: DST assignment on chain of binary and unary ops
 
 // CHECK-LABEL: func.func @dst_assignment_chain
 func.func @dst_assignment_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.tile<32x32, f32>>, %c: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -135,7 +135,7 @@ func.func @dst_assignment_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: te
   %1 = ttl.exp %0 : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // Third compute: binary mul
-// CHECK: ttl.tile_mul {{.*}} {dst_idx = 2 : i32}
+  // CHECK: ttl.tile_mul {{.*}} {dst_idx = 2 : i32}
   %2 = ttl.mul %1, %c : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: return

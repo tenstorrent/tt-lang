@@ -1,4 +1,4 @@
-// Summary: SFPU unary chain should flow via tokens with dst_idx debug attrs.
+// Summary: SFPU unary chain should flow via tokens with dst_idx attrs.
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

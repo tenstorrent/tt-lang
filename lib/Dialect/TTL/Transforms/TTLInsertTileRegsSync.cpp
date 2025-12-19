@@ -57,31 +57,43 @@ struct TTLInsertTileRegsSyncPass
     static_assert(std::is_class_v<TTLDialect>);
 
     funcOp.walk([&](ComputeOp computeOp) {
-      assert(!computeOp.getRegion().empty() &&
-             "ComputeOp must have a non-empty region");
-      Block *body = &computeOp.getRegion().front();
+      Operation *computeOperation = computeOp.getOperation();
+      Block *parent = computeOperation->getBlock();
+      assert(parent && "ComputeOp must have parent block");
 
-      // Insert tile_regs_acquire at entry if absent.
-      if (body->empty() || !isa<TileRegsAcquireOp>(body->front())) {
-        OpBuilder frontBuilder(body, body->begin());
-        frontBuilder.create<TileRegsAcquireOp>(computeOp.getLoc());
+      // Acquire: before the compute op in parent block.
+      Operation *prev = computeOperation->getPrevNode();
+      if (!isa_and_nonnull<TileRegsAcquireOp>(prev)) {
+        OpBuilder beforeBuilder(parent, Block::iterator(computeOperation));
+        beforeBuilder.create<TileRegsAcquireOp>(computeOp.getLoc());
       }
 
-      // Insert tile_regs_commit immediately before ttl.yield.
-      if (Operation *terminator = body->getTerminator()) {
-        Operation *prev = terminator->getPrevNode();
-        if (!prev || !isa<TileRegsCommitOp>(prev)) {
-          OpBuilder commitBuilder(terminator);
-          commitBuilder.create<TileRegsCommitOp>(computeOp.getLoc());
+      // Commit: inside compute body, immediately before ttl.yield.
+      Block &body = computeOp.getRegion().front();
+      if (Operation *terminator = body.getTerminator()) {
+        Operation *beforeTerminator = terminator->getPrevNode();
+        if (!beforeTerminator || !isa<TileRegsCommitOp>(beforeTerminator)) {
+          OpBuilder inBody(terminator);
+          inBody.create<TileRegsCommitOp>(computeOp.getLoc());
         }
       }
 
-      // Insert wait/release after the compute op in the parent block.
-      Operation *computeOperation = computeOp.getOperation();
-      OpBuilder afterBuilder(computeOperation->getBlock(),
-                             ++Block::iterator(computeOperation));
-      afterBuilder.create<TileRegsWaitOp>(computeOp.getLoc());
-      afterBuilder.create<TileRegsReleaseOp>(computeOp.getLoc());
+      // Wait: place immediately before ttl.yield (after commit), to guard the
+      // impending write back (currently tensor.insert; TODO: lower to store).
+      if (Operation *terminator = body.getTerminator()) {
+        Operation *beforeTerminator = terminator->getPrevNode();
+        if (!beforeTerminator || !isa<TileRegsWaitOp>(beforeTerminator)) {
+          OpBuilder inBody(terminator);
+          inBody.create<TileRegsWaitOp>(computeOp.getLoc());
+        }
+      }
+
+      // Release: after compute in parent block.
+      Operation *next = computeOperation->getNextNode();
+      OpBuilder afterBuilder(parent, ++Block::iterator(computeOperation));
+      if (!isa_and_nonnull<TileRegsReleaseOp>(next)) {
+        afterBuilder.create<TileRegsReleaseOp>(computeOp.getLoc());
+      }
     });
   }
 };

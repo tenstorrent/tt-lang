@@ -1,4 +1,4 @@
-// Summary: ensure simple add fits in DST without batching and with dst_idx debug attr.
+// Summary: ensure simple add fits in DST without batching and with dst_idx attr.
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
