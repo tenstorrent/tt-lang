@@ -12,7 +12,7 @@
 // CHECK-NEXT:   ttl.tile_regs_acquire
 // CHECK-NEXT:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.tile_regs_commit
 // CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>

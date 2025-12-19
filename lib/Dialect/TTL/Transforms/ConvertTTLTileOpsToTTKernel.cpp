@@ -25,6 +25,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -62,20 +63,6 @@ static Value lookupCB(Value src, const CopyTileCBState *state) {
   }
 
   return Value();
-}
-
-/// Get dst_idx for a value (op result or block argument). Defaults to 0.
-/// TODO(#120): Remove after implementing proper DST assignment pass.
-static int64_t getDstIdxForValue(Value v) {
-  if (Operation *defOp = v.getDefiningOp()) {
-    if (auto dstIdxAttr = defOp->getAttrOfType<IntegerAttr>("dst_idx")) {
-      return dstIdxAttr.getInt();
-    }
-  }
-  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
-    return blockArg.getArgNumber();
-  }
-  return 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -141,12 +128,11 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Get dst_idx from attribute if present (defaults to 0 for now).
-    int64_t dstIdx = 0;
-    if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
-      dstIdx = dstIdxAttr.getInt();
+    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
-
+    int64_t dstIdx = dstIdxAttr.getInt();
     Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
 
     // Emit init + compute ops
@@ -175,12 +161,14 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    int64_t src0Idx = getDstIdxForValue(adaptor.getLhs());
-    int64_t src1Idx = getDstIdxForValue(adaptor.getRhs());
-    int64_t odstIdx = src0Idx;
-    if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
-      odstIdx = dstIdxAttr.getInt();
+    // Use op dst_idx for output; operands default to 0/1 for now.
+    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
+    int64_t odstIdx = dstIdxAttr.getInt();
+    int64_t src0Idx = 0;
+    int64_t src1Idx = 1;
 
     Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
     Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
@@ -209,9 +197,6 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // MaxTilesOp is in-place: DST[dst0] = max(DST[dst0], DST[dst1])
-    // TODO(#124): Get DST indices from dst_idx attributes. For now use
-    // defaults.
     int64_t dst0Idx = 0;
     int64_t dst1Idx = 1;
 

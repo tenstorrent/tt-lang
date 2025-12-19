@@ -162,10 +162,10 @@ struct TTLTileAndAssignDSTPass
       }
 
       // Insert copy_tile immediately before the first use of each block
-      // argument. Use SmallBitVector for register allocation with reuse. Bit
-      // set = register in use, bit clear = register free.
+      // argument. Track register usage for capacity validation. Bit set =
+      // register in use, bit clear = register free.
       llvm::SmallBitVector inUse(capacity);
-      DenseMap<BlockArgument, std::uint32_t> dstIndexForArg;
+      DenseMap<Value, std::uint32_t> dstIndexForValue;
       DenseMap<BlockArgument, Value> copiedTileForArg;
 
       for (Operation &op : *body) {
@@ -209,18 +209,43 @@ struct TTLTileAndAssignDSTPass
               loc,
               TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
               ValueRange{arg, srcIndex, dstIndex});
-          dstIndexForArg[arg] = assignedDstIndex;
           copiedTileForArg[arg] = copy.getDstTile();
+          dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
           operand.set(copy.getDstTile());
         }
 
-        // Second pass: free registers for block arguments at their last use.
-        // Use the pre-collected list since operands have been replaced.
-        for (BlockArgument arg : argsUsedByOp) {
-          if (isLastUse(op, arg)) {
-            auto it = dstIndexForArg.find(arg);
-            if (it != dstIndexForArg.end()) {
-              inUse.reset(it->second);
+        // Track results of tile ops as occupying registers until last use.
+        if (isTileOp(&op) && !isa<CopyTileOp>(&op)) {
+          for (Value res : op.getResults()) {
+            if (!isTileValue(res)) {
+              continue;
+            }
+            int freeReg = inUse.find_first_unset();
+            if (freeReg < 0) {
+              op.emitOpError("insufficient DST registers for results");
+              signalPassFailure();
+              return;
+            }
+            dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
+            inUse.set(freeReg);
+            OpBuilder attrBuilder(res.getContext());
+            op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
+                                            static_cast<int32_t>(freeReg)));
+          }
+        }
+
+        // Second pass: free registers for results at their last use (including
+        // copy_tile results).
+        if (isTileOp(&op)) {
+          for (Value res : op.getResults()) {
+            if (!isTileValue(res)) {
+              continue;
+            }
+            if (isLastUse(op, res)) {
+              auto it = dstIndexForValue.find(res);
+              if (it != dstIndexForValue.end()) {
+                inUse.reset(it->second);
+              }
             }
           }
         }

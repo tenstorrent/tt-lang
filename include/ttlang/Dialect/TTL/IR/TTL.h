@@ -7,6 +7,7 @@
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Dialect.h"
+#include "llvm/ADT/StringRef.h"
 #include <cstdint>
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsDialect.h.inc"
@@ -17,6 +18,7 @@ namespace mlir::tt::ttl {
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
 inline constexpr int32_t kMaxCircularBuffers = 32;
+inline constexpr llvm::StringLiteral kDstIdxAttrName = "dst_idx";
 
 } // namespace mlir::tt::ttl
 

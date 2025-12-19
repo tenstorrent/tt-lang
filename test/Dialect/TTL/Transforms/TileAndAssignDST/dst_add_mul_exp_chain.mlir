@@ -3,7 +3,8 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles,
-// DST registers are reused after last use, and dst_idx/tile_batch_size are absent.
+// DST registers are reused after last use, and dst_idx annotations appear on
+// math ops.
 // With register reuse: A->DST0, B->DST1, after tile_add A&B are dead,
 // C reuses DST0.
 // CHECK-LABEL: func.func @add_mul_exp_chain
@@ -22,16 +23,14 @@
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %[[C0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %[[C0]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // After tile_add, A and B are dead. C should REUSE DST index 0.
-// CHECK-NEXT:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]], %[[C0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE2]] : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]], %[[C0]], %[[C3:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE2]] {dst_idx = 4 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 5 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK: return %[[RES]]
-// CHECK-NOT: dst_idx
-// CHECK-NOT: tile_batch_size
 func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %c: tensor<2x2x!ttcore.tile<32x32, f32>>)

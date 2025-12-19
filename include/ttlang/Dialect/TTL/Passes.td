@@ -39,12 +39,11 @@ def TTLConvertTTLToCompute
 
 def TTLTileAndAssignDST
     : Pass<"ttl-tile-and-assign-dst", "::mlir::func::FuncOp"> {
-  let summary = "Analyze DST usage, tile if needed, and assign dst_idx";
+  let summary = "Analyze DST usage, insert copy_tile, assign dst_idx, check capacity";
   let description = [{
-    Analyzes dst register pressure in ttl.compute bodies, performs inner
-    batching when capacity is exceeded, and assigns dst_idx attributes to tile
-    operations. Inserts ttl.copy_tile for block arguments and emits clear
-    diagnostics on overflow.
+    Analyzes DST register pressure in ttl.compute bodies, inserts ttl.copy_tile
+    for block arguments, assigns dst_idx attributes to tile math operations, and
+    emits clear diagnostics on overflow. No loop tiling is performed yet.
   }];
 
   let options = [

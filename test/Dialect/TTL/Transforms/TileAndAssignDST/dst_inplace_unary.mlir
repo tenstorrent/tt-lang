@@ -1,10 +1,10 @@
-// Summary: SFPU unary chain should flow via tokens (no dst_idx).
+// Summary: SFPU unary chain should flow via tokens with dst_idx debug attrs.
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify copy_tile emits token+tile, unary ops consume copied tile,
-// and no dst_idx/tile_batch_size are present.
+// and dst_idx annotations are added to math ops.
 // CHECK-LABEL: func.func @inplace_unary_chain
 func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -19,13 +19,11 @@ func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK: %[[RESULT:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]] : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[SIG:.*]] = ttl.tile_sigmoid %[[RELU]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[SIG:.*]] = ttl.tile_sigmoid %[[RELU]] {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.yield %[[SIG]] : !ttcore.tile<32x32, f32>
 // CHECK: }
-  // CHECK-NOT: tile_batch_size
-  // CHECK-NOT: dst_idx
   %result = ttl.compute
       ins(%a_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
