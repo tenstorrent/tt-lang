@@ -85,4 +85,3 @@ func.func @capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
-
