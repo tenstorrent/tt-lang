@@ -242,3 +242,21 @@ module {
     func.return
   }
 }
+
+// -----
+
+// Store with 2x2 CB shape: num_pages = 4.
+// CHECK-LABEL: func.func @store_2x2_shape(
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : i32
+// CHECK: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>
+// CHECK: ttkernel.cb_reserve_back(%[[CB]], %[[C4]]) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, i32) -> ()
+// CHECK: ttkernel.pack_tile(%[[C0]], %[[CB]], %[[C0]], {{.*}}) : (index, !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index) -> ()
+module {
+  func.func @store_2x2_shape(%tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %view = ttl.cb_reserve %cb : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
