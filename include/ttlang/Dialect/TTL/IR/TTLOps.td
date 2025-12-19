@@ -313,7 +313,7 @@ def TTL_TileType : TypeConstraint<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
     "ttcore.tile type">;
 
-def TTL_CopyTileOp : TTL_TileOp<"copy_tile", [MemoryEffects<[MemWrite]>]> {
+def TTL_CopyTileOp : TTL_Op<"copy_tile", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the

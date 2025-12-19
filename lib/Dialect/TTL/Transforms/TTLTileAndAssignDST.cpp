@@ -3,15 +3,34 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //===----------------------------------------------------------------------===//
-// TTL DST Register Assignment and Tiling Pass
+// TTL DST Register Assignment Pass
 //===----------------------------------------------------------------------===//
 //
-// This pass analyzes DST register requirements for ttl.compute operations,
-// emits diagnostics when capacity is exceeded, and uses ttl.copy_tile tokens
-// to order tile execution without attaching dst_idx attributes.
+// This pass performs DST (destination) register assignment for ttl.compute
+// operations by inserting ttl.copy_tile operations that explicitly move tiles
+// from circular buffers into DST registers.
 //
-// Pass pipeline position: Stage 2 (between convert-ttl-to-compute and
-// ttl-lower-to-loops).
+// Algorithm:
+// 1. For each ttl.compute operation:
+//    - Compute peak DST register usage using liveness analysis
+//    - Verify capacity is not exceeded (default: 8 registers for f16/bf16)
+//    - Insert copy_tile operations for each block argument at first use
+//    - Assign sequential DST indices (0, 1, 2, ...)
+//    - Replace block argument uses with copied tile values
+//
+// 2. Liveness analysis:
+//    - Block arguments start live at entry
+//    - Values become live when added as operands
+//    - Values die at last use (within current block)
+//    - Peak usage determines if capacity is exceeded
+//
+// Current limitations:
+// - Sequential allocation without register reuse after last use
+// - Hardcoded capacity (doesn't account for f32 vs f16 differences)
+// - Basic last-use analysis (only checks current block)
+//
+// Pass pipeline position: After convert-ttl-to-compute, before
+// ttl-insert-tile-regs-sync.
 //
 //===----------------------------------------------------------------------===//
 
@@ -75,13 +94,7 @@ static std::uint32_t estimatePeakDSTUsage(Block *body) {
       continue;
     }
 
-    std::uint32_t currentUsage =
-        static_cast<std::uint32_t>(live.size() + op.getNumOperands());
-    if (op.getNumResults() > 0) {
-      currentUsage += static_cast<std::uint32_t>(op.getNumResults());
-    }
-    peakUsage = std::max<std::uint32_t>(peakUsage, currentUsage);
-
+    // Add operands to live set
     for (Value operand : op.getOperands()) {
       if (isTileValue(operand)) {
         live.insert(operand);
@@ -90,12 +103,14 @@ static std::uint32_t estimatePeakDSTUsage(Block *body) {
     peakUsage = std::max<std::uint32_t>(
         peakUsage, static_cast<std::uint32_t>(live.size()));
 
+    // Remove operands at last use
     for (Value operand : op.getOperands()) {
       if (isTileValue(operand) && isLastUse(op, operand)) {
         live.erase(operand);
       }
     }
 
+    // Add results to live set
     for (Value result : op.getResults()) {
       if (isTileValue(result)) {
         live.insert(result);
@@ -135,54 +150,33 @@ struct TTLTileAndAssignDSTPass
         return;
       }
 
-      // Insert copy_tile immediately before the first use of each
-      // block-argument tile, annotate math ops with dst_idx for debugging.
-      DenseMap<BlockArgument, std::uint32_t> dstForArg;
-      DenseMap<BlockArgument, Value> tileForArg;
-      std::uint32_t nextDst = 0;
+      // Insert copy_tile immediately before the first use of each block argument.
+      DenseMap<BlockArgument, std::uint32_t> dstIndexForArg;
+      DenseMap<BlockArgument, Value> copiedTileForArg;
+      std::uint32_t nextDstIndex = 0;
       for (Operation &op : *body) {
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {
             continue;
           }
-          if (auto it = tileForArg.find(arg); it != tileForArg.end()) {
+          if (auto it = copiedTileForArg.find(arg); it != copiedTileForArg.end()) {
             operand.set(it->second);
             continue;
           }
           OpBuilder builder(&op);
           Location loc = op.getLoc();
-          Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
-          std::uint32_t assigned = nextDst++;
-          Value dstIdx = builder.create<arith::ConstantIndexOp>(loc, assigned);
+          // src_index is 0 (the tile index within the circular buffer)
+          Value srcIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
+          std::uint32_t assignedDstIndex = nextDstIndex++;
+          Value dstIndex = builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
           auto copy = builder.create<CopyTileOp>(
               loc,
               TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
-              ValueRange{arg, c0, dstIdx});
-          dstForArg[arg] = assigned;
-          tileForArg[arg] = copy.getDstTile();
+              ValueRange{arg, srcIndex, dstIndex});
+          dstIndexForArg[arg] = assignedDstIndex;
+          copiedTileForArg[arg] = copy.getDstTile();
           operand.set(copy.getDstTile());
-        }
-
-        if (isTileOp(&op) && !isa<CopyTileOp>(&op) && op.getNumResults() == 1) {
-          for (OpOperand &operand : op.getOpOperands()) {
-            auto arg = dyn_cast<BlockArgument>(operand.get());
-            if (!arg) {
-              continue;
-            }
-            auto it = dstForArg.find(arg);
-            if (it != dstForArg.end()) {
-              OpBuilder builder(&op);
-              op.setAttr("dst_idx", builder.getI32IntegerAttr(it->second));
-              break;
-            }
-            if (tileForArg.count(arg)) {
-              OpBuilder builder(&op);
-              op.setAttr("dst_idx",
-                         builder.getI32IntegerAttr(dstForArg.lookup(arg)));
-              break;
-            }
-          }
         }
       }
     });
