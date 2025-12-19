@@ -24,12 +24,12 @@ func.func @diamond_two_uses(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
   // CHECK: %[[RES:.*]] = ttl.compute
   // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT: %[[DTOKA:.*]], %[[DTILEA:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: %[[DTOKB:.*]], %[[DTILEB:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+  // CHECK-NEXT: %[[DTOKA:.*]], %[[DTILEA:.*]] = ttl.copy_tile %[[A]], %[[C0:.*]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+  // CHECK-NEXT: %[[DTOKB:.*]], %[[DTILEB:.*]] = ttl.copy_tile %[[B]], %[[C0]], %[[C1:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
   // CHECK-NEXT: %[[SUM:.*]] = ttl.tile_add %[[DTILEA]], %[[DTILEB]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: %[[DTOKC:.*]], %[[DTILEC:.*]] = ttl.copy_tile %[[C]], %{{.*}}, %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: %[[DIFF:.*]] = ttl.tile_sub %[[DTILEA]], %[[DTILEC]] {dst_idx = 4 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: %[[FINAL:.*]] = ttl.tile_add %[[SUM]], %[[DIFF]] {dst_idx = 5 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT: %[[DTOKC:.*]], %[[DTILEC:.*]] = ttl.copy_tile %[[C]], %[[C0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+  // CHECK-NEXT: %[[DIFF:.*]] = ttl.tile_sub %[[DTILEA]], %[[DTILEC]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT: %[[FINAL:.*]] = ttl.tile_add %[[SUM]], %[[DIFF]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: ttl.yield %[[FINAL]] : !ttcore.tile<32x32, f32>
   // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK: return %[[RES]]

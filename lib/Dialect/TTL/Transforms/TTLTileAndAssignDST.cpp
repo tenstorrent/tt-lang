@@ -249,6 +249,19 @@ struct TTLTileAndAssignDSTPass
             }
           }
         }
+
+        // Finally, free operand registers whose last use is this op.
+        for (Value operand : op.getOperands()) {
+          if (!isTileValue(operand)) {
+            continue;
+          }
+          if (isLastUse(op, operand)) {
+            auto it = dstIndexForValue.find(operand);
+            if (it != dstIndexForValue.end()) {
+              inUse.reset(it->second);
+            }
+          }
+        }
       }
     });
   }
