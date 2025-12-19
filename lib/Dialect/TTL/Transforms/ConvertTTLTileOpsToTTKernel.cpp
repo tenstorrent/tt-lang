@@ -33,6 +33,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 namespace mlir::tt::ttl {
@@ -41,14 +42,6 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
-/// Lookup the CB attached to a tensor via ttl.attach_cb.
-/// Returns the !ttl.cb from attach_cb (conversion handled by caller).
-static Value lookupAttachedCB(Value tensor) {
-  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
-    return attach.getCb();
-  }
-  return Value();
-}
 /// Get dst_idx for a value (op result or block argument). Defaults to 0.
 /// TODO(#120): Remove after implementing proper DST assignment pass.
 static int64_t getDstIdxForValue(Value v) {
@@ -166,30 +159,34 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
 
 /// Lower ttl.copy_tile to TTKernel copy_tile_init + copy_tile.
 struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
-  using OpConversionPattern<CopyTileOp>::OpConversionPattern;
+  TTLTileCopyToTTKernel(TypeConverter &tc, MLIRContext *ctx,
+                        const CopyTileCBState *state)
+      : OpConversionPattern<CopyTileOp>(tc, ctx), cbState(state) {}
 
   LogicalResult
   matchAndRewrite(CopyTileOp op, CopyTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Find the CB by tracing the src back to an attach_cb.
-    // Pre-lowering: src is a block arg of ttl.compute, trace via compute
-    // inputs. Post-lowering: src is from tensor.extract, trace via the
-    // extracted tensor.
+    // Look up the CB via analysis state: block-arg map, then tensor map
+    // (tensor.extract base or direct tensor).
     Value cb;
-    if (auto blockArg = llvm::dyn_cast<BlockArgument>(op.getSrc())) {
-      if (auto compute = llvm::dyn_cast_or_null<ComputeOp>(
-              blockArg.getOwner()->getParentOp())) {
-        unsigned argNum = blockArg.getArgNumber();
-        if (argNum < compute.getInputs().size()) {
-          cb = lookupAttachedCB(compute.getInputs()[argNum]);
+    if (auto barg = llvm::dyn_cast<BlockArgument>(op.getSrc())) {
+      if (cbState) {
+        auto it = cbState->blockArgToCb.find(barg);
+        if (it != cbState->blockArgToCb.end()) {
+          cb = it->second;
         }
       }
     }
-    if (!cb) {
-      if (auto extract = op.getSrc().getDefiningOp<tensor::ExtractOp>()) {
-        cb = lookupAttachedCB(extract.getTensor());
+    if (!cb && cbState) {
+      Value tensor = op.getSrc();
+      if (auto extract = tensor.getDefiningOp<tensor::ExtractOp>()) {
+        tensor = extract.getTensor();
+      }
+      auto it = cbState->tensorToCb.find(tensor);
+      if (it != cbState->tensorToCb.end()) {
+        cb = it->second;
       }
     }
     if (!cb) {
@@ -234,6 +231,11 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     rewriter.replaceOp(op, token);
     return success();
   }
+
+  // Analysis state carrying precomputed CB attachments:
+  // - blockArgToCb maps ttl.compute block args to their CB
+  // - tensorToCb maps tensors (including attach_cb results) to their CB
+  const CopyTileCBState *cbState;
 };
 
 //===----------------------------------------------------------------------===//
@@ -284,6 +286,7 @@ using MaxTileLowering =
 //===----------------------------------------------------------------------===//
 
 void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
+                                          const CopyTileCBState *cbState,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
@@ -294,9 +297,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
       TanhTileLowering, SigmoidTileLowering, AbsTileLowering, NegTileLowering,
       ReluTileLowering,
       // Binary ops
-      AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering,
-      // Copy
-      TTLTileCopyToTTKernel>(*typeConverter, ctx);
+      AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering>(ctx);
+  // Copy op needs the type converter and CB map.
+  patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx, cbState);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)

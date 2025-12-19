@@ -4,8 +4,10 @@
 // The lowering traces src back to the attached CB via tensor.extract (post loop-lowering).
 
 // CHECK-LABEL: func.func @copy_tile_in_compute
-// CHECK:       ttkernel.copy_tile_init
-// CHECK-NEXT:  ttkernel.copy_tile
+// CHECK:       %[[CB_TTL:.*]] = builtin.unrealized_conversion_cast %{{.*}} : i32 to !ttl.cb
+// CHECK:       %[[CB_TTK:.*]] = builtin.unrealized_conversion_cast %[[CB_TTL]] : !ttl.cb<{{.*}}> to !ttkernel.cb<{{.*}}>
+// CHECK:       ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
+// CHECK-NEXT:  ttkernel.copy_tile(%[[CB_TTK]], %[[SRC_IDX:.*]], %[[DST_IDX:.*]]) : (!ttkernel.cb<{{.*}}>, index, index) -> ()
 // CHECK-NOT:   ttl.copy_tile
 func.func @copy_tile_in_compute(
     %t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>,
