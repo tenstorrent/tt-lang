@@ -3,11 +3,13 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
+  TTLTileAndAssignDST.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRAnalysis
   MLIRArithDialect
   MLIRFuncDialect
   MLIRLinalgDialect

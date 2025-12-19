@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst-registers),canonicalize)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-tile-and-assign-dst),canonicalize)' | FileCheck %s
 
 // Basic elementwise operations lowered to ttl.compute with tile ops and DST assignment.
 

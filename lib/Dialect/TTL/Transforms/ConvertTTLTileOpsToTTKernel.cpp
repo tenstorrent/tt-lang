@@ -91,7 +91,7 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Get dst_idx from attribute (assigned by ttl-assign-dst-registers pass)
+    // Get dst_idx from attribute (assigned by ttl-tile-and-assign-dst pass)
     // Default to 0 if not assigned yet (for testing/development)
     int64_t dstIdx = 0;
     if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
@@ -114,7 +114,7 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
 /// Binary SFPU ops: DST[odst] = DST[src0] op DST[src1]
 ///
-/// DST index assignment: The ttl-assign-dst-registers pass assigns dst_idx
+/// DST index assignment: The ttl-tile-and-assign-dst pass assigns dst_idx
 /// attributes to operands. For now, we use simple defaults: src0=0, src1=1,
 /// odst=0 (in-place on src0).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>

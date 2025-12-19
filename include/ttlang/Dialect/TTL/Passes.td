@@ -37,17 +37,24 @@ def TTLConvertTTLToCompute
   ];
 }
 
-def TTLAssignDSTRegisters
-    : Pass<"ttl-assign-dst-registers", "::mlir::func::FuncOp"> {
-  let summary = "Assign DST registers with a simple linear scan (MVP, no spill)";
+def TTLTileAndAssignDST
+    : Pass<"ttl-tile-and-assign-dst", "::mlir::func::FuncOp"> {
+  let summary = "Analyze DST usage, tile if needed, and assign dst_idx";
   let description = [{
-    Performs a lightweight linear scan over ttl.compute producers to annotate
-    expected DST usage. Errors if requested capacity exceeds a fixed budget.
-    This is an MVP placeholder for a fuller allocator.
+    Analyzes dst register pressure in ttl.compute bodies, performs inner
+    batching when capacity is exceeded, and assigns dst_idx attributes to tile
+    operations. Inserts ttl.copy_tile for block arguments and emits clear
+    diagnostics on overflow.
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect"
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+
+  let options = [
+    Option<"dstCapacity", "dst-capacity", "unsigned", "8",
+           "DST register capacity (tile registers).">
   ];
 }
 
