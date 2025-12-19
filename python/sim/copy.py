@@ -109,6 +109,20 @@ class CopyTransaction:
 
         self._completed = True
 
+    def can_wait(self) -> bool:
+        """
+        Check if wait() can proceed without blocking.
+
+        The semantics depend on the copy type:
+        - Tensor ↔ Block: Always returns True (synchronous transfer)
+        - Block → Pipe: Always returns True (completes immediately)
+        - Pipe → Block: Returns True only when pipe has data available
+
+        Returns:
+            True if wait() can proceed without blocking
+        """
+        return self._handler.can_wait(self._src, self._dst)
+
     @property
     def is_completed(self) -> bool:
         """Check if the copy transaction has completed."""

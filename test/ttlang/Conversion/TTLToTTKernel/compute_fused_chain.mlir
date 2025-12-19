@@ -17,7 +17,7 @@
 // CHECK:       %[[B_CB:.*]] = ttl.attach_cb %[[BARG]],
 // CHECK:       %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]],
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
-// CHECK:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[INIT_CB]])
+// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[INIT_CB]])
 // CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
 // CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
@@ -30,7 +30,7 @@
 // CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.exp_tile_init()
 // CHECK-NEXT:      ttkernel.exp_tile(%[[C1]])
-// CHECK:           ttkernel.tile_regs_commit
+// CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // TODO: This tensor.insert should be converted to a ttl.store and lowered to pack_tile
 // CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]

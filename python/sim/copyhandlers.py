@@ -84,6 +84,19 @@ class CopyTransferHandler(Protocol):
         """
         ...
 
+    def can_wait(self, src: Any, dst: Any) -> bool:
+        """
+        Check if wait() can proceed without blocking.
+
+        Args:
+            src: Source object
+            dst: Destination object
+
+        Returns:
+            True if the transfer can complete without blocking
+        """
+        ...
+
 
 # Global handler registry: (src_type, dst_type) -> handler instance
 handler_registry: Dict[
@@ -155,6 +168,10 @@ class TensorToBlockHandler:
             tile = src[start_row:end_row, start_col:end_col]
             dst[tile_idx] = tile
 
+    def can_wait(self, src: torch.Tensor, dst: Block[torch.Tensor]) -> bool:
+        """Tensor to Block copy completes immediately on wait()."""
+        return True
+
 
 @register_copy_handler(Block, torch.Tensor)
 class BlockToTensorHandler:
@@ -189,6 +206,10 @@ class BlockToTensorHandler:
 
             tile = src[tile_idx]
             dst[start_row:end_row, start_col:end_col] = tile
+
+    def can_wait(self, src: Block[torch.Tensor], dst: torch.Tensor) -> bool:
+        """Block to Tensor copy completes immediately on wait()."""
+        return True
 
 
 @register_copy_handler(Block, Pipe)
@@ -238,6 +259,10 @@ class BlockToPipeHandler:
             # Signal that data is available
             entry["event"].set()
 
+    def can_wait(self, src: Block[torch.Tensor], dst: Pipe) -> bool:
+        """Block to Pipe copy completes immediately on wait()."""
+        return True
+
 
 @register_copy_handler(Pipe, Block)
 class PipeToBlockHandler:
@@ -246,6 +271,17 @@ class PipeToBlockHandler:
     def validate(self, src: Pipe, dst: Block[torch.Tensor]) -> None:
         """Validate pipe receive - validation happens during transfer when data is available."""
         pass
+
+    def can_wait(self, src: Pipe, dst: Block[torch.Tensor]) -> bool:
+        """Pipe to Block copy can only proceed when pipe has data."""
+        # Check if pipe has data available without blocking
+        with _pipe_registry_lock:
+            entry = _pipe_buffer.get(src)
+            if entry is None:
+                return False
+
+        with entry["lock"]:
+            return len(entry["queue"]) > 0
 
     def transfer(self, src: Pipe, dst: Block[torch.Tensor]) -> None:
         """Pipe receive: retrieve data from shared pipe buffer."""

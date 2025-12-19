@@ -43,9 +43,6 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         cb.pop()  # Free consumed tiles
     """
 
-    # Class-level default API instance
-    _default_api = CBAPI()
-
     def __init__(
         self,
         shape: Shape,
@@ -70,16 +67,37 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         self._shape = shape
         self._buffer_factor = buffer_factor
 
-        # Use provided API instance or default
-        self._api: CBAPI = api if api is not None else self._default_api
+        # Store API instance (may be None)
+        self._api: Optional[CBAPI] = api
 
         # Calculate total capacity in tiles
         self._tiles_per_operation = shape[0] * shape[1]
         self._capacity_tiles = self._tiles_per_operation * buffer_factor
 
-        # Allocate and configure CB from the API instance
-        self._cb_id = self._api.allocate_cb_id()
-        self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
+        # Only allocate and configure if API is provided
+        # If None, this will be done when the CB is copied by Program
+        if self._api is not None:
+            self._cb_id: Optional[CBID] = self._api.allocate_cb_id()
+            self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
+        else:
+            self._cb_id: Optional[CBID] = None  # Placeholder until properly initialized
+
+    def _ensure_initialized(self) -> Tuple[CBAPI, CBID]:
+        """Verify that the CircularBuffer has been properly initialized with an API.
+
+        Returns:
+            Tuple of (api, cb_id) for use in operations
+
+        Raises:
+            RuntimeError: If the CB was not initialized with an API instance
+        """
+        if self._api is None or self._cb_id is None:
+            raise RuntimeError(
+                "CircularBuffer was not properly initialized with a CBAPI instance. "
+                "This likely means it was created outside of a kernel context. "
+                "CircularBuffers must be created within @ttl.kernel decorated functions."
+            )
+        return self._api, self._cb_id
 
     def wait(self) -> Block[CBElemTypeVar]:
         """Wait for data to be available and return a read view.
@@ -94,9 +112,25 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         Raises:
             CBTimeoutError: If the wait times out
             CBContractError: If called incorrectly (e.g., multiple concurrent waits)
+            RuntimeError: If CircularBuffer was not properly initialized with an API
         """
-        self._api.cb_wait_front(self._cb_id, self._tiles_per_operation)
-        return self._api.get_read_ptr(self._cb_id)  # type: ignore
+        api, cb_id = self._ensure_initialized()
+        api.cb_wait_front(cb_id, self._tiles_per_operation)
+        return api.get_read_ptr(cb_id)
+
+    def can_wait(self) -> bool:
+        """
+        Check if wait() can proceed without blocking.
+
+        Returns:
+            True if sufficient data is available for wait(), False otherwise
+
+        Raises:
+            RuntimeError: If CircularBuffer was not properly initialized with an API
+        """
+        api, cb_id = self._ensure_initialized()
+        stats = api.cb_stats(cb_id)
+        return stats.visible >= self._tiles_per_operation
 
     def reserve(self) -> Block[CBElemTypeVar]:
         """
@@ -112,9 +146,25 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         Raises:
             CBTimeoutError: If the reservation times out
             CBContractError: If called incorrectly (e.g., multiple concurrent reserves)
+            RuntimeError: If CircularBuffer was not properly initialized with an API
         """
-        self._api.cb_reserve_back(self._cb_id, self._tiles_per_operation)
-        return self._api.get_write_ptr(self._cb_id)  # type: ignore
+        api, cb_id = self._ensure_initialized()
+        api.cb_reserve_back(cb_id, self._tiles_per_operation)
+        return api.get_write_ptr(cb_id)
+
+    def can_reserve(self) -> bool:
+        """
+        Check if reserve() can proceed without blocking.
+
+        Returns:
+            True if sufficient space is available for reserve(), False otherwise
+
+        Raises:
+            RuntimeError: If CircularBuffer was not properly initialized with an API
+        """
+        api, cb_id = self._ensure_initialized()
+        stats = api.cb_stats(cb_id)
+        return stats.free >= self._tiles_per_operation
 
     def push(self) -> None:
         """
@@ -127,8 +177,10 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         Raises:
             CBContractError: If called without a prior reserve() or if the
                            push amount exceeds what was reserved
+            RuntimeError: If CircularBuffer was not properly initialized with an API
         """
-        self._api.cb_push_back(self._cb_id, self._tiles_per_operation)
+        api, cb_id = self._ensure_initialized()
+        api.cb_push_back(cb_id, self._tiles_per_operation)
 
     def pop(self) -> None:
         """
@@ -144,8 +196,10 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         Raises:
             CBContractError: If called without a prior wait() or if the
                            pop amount exceeds what is visible
+            RuntimeError: If CircularBuffer was not properly initialized with an API
         """
-        self._api.cb_pop_front(self._cb_id, self._tiles_per_operation)
+        api, cb_id = self._ensure_initialized()
+        api.cb_pop_front(cb_id, self._tiles_per_operation)
 
     @property
     def shape(self) -> Tuple[Size, Size]:
@@ -153,7 +207,7 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         return self._shape
 
     @property
-    def capacity_tiles(self) -> int:
+    def capacity_tiles(self) -> Size:
         """Get the total capacity of the buffer in tiles."""
         return self._capacity_tiles
 
@@ -163,17 +217,27 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         return self._buffer_factor
 
     @property
-    def cb_id(self) -> CBID:
+    def cb_id(self) -> Optional[CBID]:
         """Get the internal CB ID (for debugging/advanced use)."""
         return self._cb_id
 
     def stats(self):
-        """Get current buffer statistics."""
-        return self._api.cb_stats(self._cb_id)
+        """Get current buffer statistics.
+
+        Raises:
+            RuntimeError: If CircularBuffer was not properly initialized with an API
+        """
+        api, cb_id = self._ensure_initialized()
+        return api.cb_stats(cb_id)
 
     def reset(self) -> None:
-        """Reset the circular buffer to initial state."""
-        self._api.host_reset_cb(self._cb_id)
+        """Reset the circular buffer to initial state.
+
+        Raises:
+            RuntimeError: If CircularBuffer was not properly initialized with an API
+        """
+        api, cb_id = self._ensure_initialized()
+        api.host_reset_cb(cb_id)
 
     def __repr__(self) -> str:
         return (

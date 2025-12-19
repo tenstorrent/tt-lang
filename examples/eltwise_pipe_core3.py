@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     grid="auto",  # NOTE: allow compiler to choose grid
     granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
-def eltwise_pipe(
+def eltwise_pipe_core3(
     a_in: torch.Tensor,
     b_in: torch.Tensor,
     c_in: torch.Tensor,
@@ -63,9 +63,9 @@ def eltwise_pipe(
     )
 
     # Create multicast address for C using 2D coordinates
-    # Source: (0,0), Destinations: rectangular range from (0,1) to (0,3)
-    # This expands to cores (0,1), (0,2), (0,3)
-    pipe = ttl.Pipe((0, 0), ((0, 1), (0, 3)))
+    # Source: (0,3) (core 3), Destinations: rectangular range from (0,0) to (0,2)
+    # This expands to cores (0,0), (0,1), (0,2)
+    pipe = ttl.Pipe((0, 3), ((0, 0), (0, 2)))
 
     @ttl.compute()
     def compute_func():
