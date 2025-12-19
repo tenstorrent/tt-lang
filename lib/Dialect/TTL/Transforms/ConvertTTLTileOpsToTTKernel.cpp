@@ -29,6 +29,8 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
+#define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
+
 namespace mlir::tt::ttl {
 
 namespace ttk = mlir::tt::ttkernel;
@@ -222,13 +224,20 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
                                      adaptor.getDstIndex());
 
-    // Materialize a DST token from the dst_index to satisfy the result type.
-    auto token =
-        rewriter
-            .create<mlir::UnrealizedConversionCastOp>(
-                loc, TypeRange{op.getType()}, ValueRange{adaptor.getDstIndex()})
-            .getResult(0);
-    rewriter.replaceOp(op, token);
+    // Materialize results: dst token from dst_index, and a tile value
+    // passthrough (the tile remains the same logical value for downstream tile
+    // ops).
+    auto token = rewriter
+                     .create<mlir::UnrealizedConversionCastOp>(
+                         loc, TypeRange{op.getResult(0).getType()},
+                         ValueRange{adaptor.getDstIndex()})
+                     .getResult(0);
+    auto tile = rewriter
+                    .create<mlir::UnrealizedConversionCastOp>(
+                        loc, TypeRange{op.getResult(1).getType()},
+                        ValueRange{op.getSrc()})
+                    .getResult(0);
+    rewriter.replaceOp(op, ValueRange{token, tile});
     return success();
   }
 

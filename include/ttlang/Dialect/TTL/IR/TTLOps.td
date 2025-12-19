@@ -277,11 +277,11 @@ def TTL_CopyTileOp : TTL_TileOp<"copy_tile", [MemoryEffects<[MemWrite]>]> {
     Index:$src_index,
     Index:$dst_index
   );
-  let results = (outs TTL_DSTRegister:$result);
+  let results = (outs TTL_DSTRegister:$dst_token, TTL_TileType:$dst_tile);
   let assemblyFormat =
       "$src `,` $src_index `,` $dst_index attr-dict `:` "
       "type($src) `,` type($src_index) `,` type($dst_index) "
-      "`->` type($result)";
+      "`->` type($dst_token) `,` type($dst_tile)";
   let hasVerifier = 1;
 }
 

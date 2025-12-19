@@ -6,17 +6,19 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
-#define GEN_PASS_DEF_TTLCONVERTTTLTOCOMPUTE
-#define GEN_PASS_DEF_TTLASSIGNDSTREGISTERS
-#include "ttlang/Dialect/TTL/Passes.h.inc"
-
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/MapVector.h"
 
+#define DEBUG_TYPE "ttl-convert-ttl-to-compute"
+
 namespace mlir::tt::ttl {
+
+#define GEN_PASS_DEF_TTLCONVERTTTLTOCOMPUTE
+#include "ttlang/Dialect/TTL/Passes.h.inc"
+
 static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
@@ -258,7 +260,11 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
 //===----------------------------------------------------------------------===//
 
 struct TTLConvertTTLToComputePass
-    : public ::impl::TTLConvertTTLToComputeBase<TTLConvertTTLToComputePass> {
+    : public tt::ttl::impl::TTLConvertTTLToComputeBase<
+          TTLConvertTTLToComputePass> {
+  using tt::ttl::impl::TTLConvertTTLToComputeBase<
+      TTLConvertTTLToComputePass>::TTLConvertTTLToComputeBase;
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     RewritePatternSet patterns(func.getContext());
@@ -283,10 +289,6 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP) patterns.add<Lower##TTL_OP>(ctx);
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP) patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-}
-
-std::unique_ptr<Pass> createTTLConvertTTLToCompute() {
-  return std::make_unique<TTLConvertTTLToComputePass>();
 }
 
 } // namespace mlir::tt::ttl

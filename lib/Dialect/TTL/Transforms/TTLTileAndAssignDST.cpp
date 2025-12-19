@@ -20,6 +20,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include <algorithm>
 #include <cstdint>
@@ -131,6 +132,57 @@ struct TTLTileAndAssignDSTPass
                "enabling register spilling";
         signalPassFailure();
         return;
+      }
+
+      // Insert copy_tile immediately before the first use of each
+      // block-argument tile, annotate math ops with dst_idx for debugging.
+      DenseMap<BlockArgument, std::uint32_t> dstForArg;
+      DenseMap<BlockArgument, Value> tileForArg;
+      std::uint32_t nextDst = 0;
+      for (Operation &op : *body) {
+        for (OpOperand &operand : op.getOpOperands()) {
+          auto arg = dyn_cast<BlockArgument>(operand.get());
+          if (!arg || !isTileValue(arg)) {
+            continue;
+          }
+          if (auto it = tileForArg.find(arg); it != tileForArg.end()) {
+            operand.set(it->second);
+            continue;
+          }
+          OpBuilder builder(&op);
+          Location loc = op.getLoc();
+          Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+          std::uint32_t assigned = nextDst++;
+          Value dstIdx = builder.create<arith::ConstantIndexOp>(loc, assigned);
+          auto copy = builder.create<CopyTileOp>(
+              loc,
+              TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
+              ValueRange{arg, c0, dstIdx});
+          dstForArg[arg] = assigned;
+          tileForArg[arg] = copy.getDstTile();
+          operand.set(copy.getDstTile());
+        }
+
+        if (isTileOp(&op) && !isa<CopyTileOp>(&op) && op.getNumResults() == 1) {
+          for (OpOperand &operand : op.getOpOperands()) {
+            auto arg = dyn_cast<BlockArgument>(operand.get());
+            if (!arg) {
+              continue;
+            }
+            auto it = dstForArg.find(arg);
+            if (it != dstForArg.end()) {
+              OpBuilder builder(&op);
+              op.setAttr("dst_idx", builder.getI32IntegerAttr(it->second));
+              break;
+            }
+            if (tileForArg.count(arg)) {
+              OpBuilder builder(&op);
+              op.setAttr("dst_idx",
+                         builder.getI32IntegerAttr(dstForArg.lookup(arg)));
+              break;
+            }
+          }
+        }
       }
     });
   }

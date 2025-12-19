@@ -7,19 +7,19 @@
 // CHECK-LABEL: func.func @binary_add
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>, %[[ARG1:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>)
 func.func @binary_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK-NEXT: %[[INIT:.*]] = tensor.empty
-  // CHECK-NEXT: %[[CB0:.*]] = ttl.bind_cb
-  // CHECK-NEXT: %[[CB1:.*]] = ttl.bind_cb
-  // CHECK-NEXT: %[[CB2:.*]] = ttl.bind_cb
-  // CHECK-NEXT: %[[ARG0_CB:.*]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
-  // CHECK-NEXT: %[[ARG1_CB:.*]] = ttl.attach_cb %[[ARG1]], %[[CB1]]
-  // CHECK-NEXT: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB2]]
-  // CHECK-NEXT: %[[RESULT:.*]] = ttl.compute ins(%[[ARG0_CB]], %[[ARG1_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} {
-  // CHECK-NEXT: ^bb0(%[[LHS:.*]]: !ttcore.tile<32x32, f32>, %[[RHS:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[SUM:.*]] = ttl.tile_add %[[LHS]], %[[RHS]]
-  // CHECK-NEXT:   ttl.yield %[[SUM]]
-  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: return %[[RESULT]]
+  // CHECK: %[[INIT:.*]] = tensor.empty
+  // CHECK: %[[CB0:.*]] = ttl.bind_cb
+  // CHECK: %[[CB1:.*]] = ttl.bind_cb
+  // CHECK: %[[CB2:.*]] = ttl.bind_cb
+  // CHECK: %[[ARG0_CB:.*]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK: %[[ARG1_CB:.*]] = ttl.attach_cb %[[ARG1]], %[[CB1]]
+  // CHECK: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB2]]
+  // CHECK: %[[RESULT:.*]] = ttl.compute ins(%[[ARG0_CB]], %[[ARG1_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} {
+  // CHECK: ^bb0(%[[LHS:.*]]: !ttcore.tile<32x32, f32>, %[[RHS:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+  // CHECK:   %[[SUM:.*]] = ttl.tile_add %[[LHS]], %[[RHS]]
+  // CHECK:   ttl.yield %[[SUM]]
+  // CHECK: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK: return %[[RESULT]]
   %0 = ttl.add %arg0, %arg1 : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<4x4x!ttcore.tile<32x32, f32>>
 }
@@ -27,17 +27,17 @@ func.func @binary_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1: tensor
 // CHECK-LABEL: func.func @unary_exp
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>)
 func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK-NEXT: %[[INIT:.*]] = tensor.empty
-  // CHECK-NEXT: %[[CB0:.*]] = ttl.bind_cb
-  // CHECK-NEXT: %[[CB1:.*]] = ttl.bind_cb
-  // CHECK-NEXT: %[[ARG0_CB:.*]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
-  // CHECK-NEXT: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB1]]
-  // CHECK-NEXT: %[[RESULT:.*]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
-  // CHECK-NEXT: ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[IN]]
-  // CHECK-NEXT:   ttl.yield %[[EXP]]
-  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: return %[[RESULT]]
+  // CHECK: %[[INIT:.*]] = tensor.empty
+  // CHECK: %[[CB0:.*]] = ttl.bind_cb
+  // CHECK: %[[CB1:.*]] = ttl.bind_cb
+  // CHECK: %[[ARG0_CB:.*]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK: %[[RESULT:.*]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
+  // CHECK: ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+  // CHECK:   %[[EXP:.*]] = ttl.tile_exp %[[IN]]
+  // CHECK:   ttl.yield %[[EXP]]
+  // CHECK: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK: return %[[RESULT]]
   %0 = ttl.exp %arg0 : tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<4x4x!ttcore.tile<32x32, f32>>
 }
@@ -46,7 +46,7 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>, %[[ARG1:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>)
 func.func @chain_binary_unary(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
   // First compute: binary add
-  // CHECK-NEXT: %[[INIT0:.*]] = tensor.empty
+  // CHECK: %[[INIT0:.*]] = tensor.empty
   // CHECK-NEXT: %[[CB0:.*]] = ttl.bind_cb
   // CHECK-NEXT: %[[CB1:.*]] = ttl.bind_cb
   // CHECK-NEXT: %[[CB2:.*]] = ttl.bind_cb

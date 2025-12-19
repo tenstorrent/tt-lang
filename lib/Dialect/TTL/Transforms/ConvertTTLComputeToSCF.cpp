@@ -17,10 +17,12 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-#define GEN_PASS_DEF_TTLLOWERTOLOOPS
-#include "ttlang/Dialect/TTL/Passes.h.inc"
+#define DEBUG_TYPE "ttl-lower-to-loops"
 
 namespace mlir::tt::ttl {
+
+#define GEN_PASS_DEF_TTLLOWERTOLOOPS
+#include "ttlang/Dialect/TTL/Passes.h.inc"
 namespace {
 
 /// Get the iteration domain for a ComputeOp. The verifier ensures that the
@@ -187,7 +189,10 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 };
 
 struct TTLLowerToLoopsPass
-    : public ::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
+    : public tt::ttl::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
+  using tt::ttl::impl::TTLLowerToLoopsBase<
+      TTLLowerToLoopsPass>::TTLLowerToLoopsBase;
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<affine::AffineDialect, arith::ArithDialect, scf::SCFDialect,
                     tensor::TensorDialect>();
@@ -206,9 +211,5 @@ struct TTLLowerToLoopsPass
 };
 
 } // namespace
-
-std::unique_ptr<Pass> createTTLLowerToLoops() {
-  return std::make_unique<TTLLowerToLoopsPass>();
-}
 
 } // namespace mlir::tt::ttl

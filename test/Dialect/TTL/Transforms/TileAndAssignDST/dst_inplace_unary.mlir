@@ -4,7 +4,8 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @inplace_unary_chain
-// Purpose: verify unary tile ops appear without dst_idx attributes.
+// Purpose: verify copy_tile emits token+tile, unary ops consume copied tile,
+// and no dst_idx/tile_batch_size are present.
 func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -18,12 +19,15 @@ func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK: %[[RESULT:.*]] = ttl.compute
   // CHECK-SAME: ins(%{{.*}} : {{.*}}) outs(%{{.*}} : {{.*}})
   // CHECK-SAME: {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]}
-  // CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[A]]
-  // CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]]
-  // CHECK-NEXT:   %[[SIGMOID:.*]] = ttl.tile_sigmoid %[[RELU]]
-  // CHECK-NEXT:   ttl.yield %[[SIGMOID]]
-  // CHECK-NEXT: }
+  // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[C0:.*]] = arith.constant 0 : index
+  // CHECK-NEXT:   %[[DST0:.*]] = arith.constant 0 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[A]], %[[C0]], %[[DST0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[SIGMOID:.*]] = ttl.tile_sigmoid %[[RELU]] : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.yield %[[SIGMOID]] : !ttcore.tile<32x32, f32>
+  // CHECK: }
   // CHECK-NOT: tile_batch_size
   // CHECK-NOT: dst_idx
   %result = ttl.compute
