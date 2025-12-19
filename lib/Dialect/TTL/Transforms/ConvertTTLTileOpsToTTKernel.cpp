@@ -79,6 +79,21 @@ static int64_t getDstIdxForValue(Value v) {
 }
 
 //===----------------------------------------------------------------------===//
+// DST lifecycle ops
+//===----------------------------------------------------------------------===//
+
+struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
+  using OpConversionPattern<TileRegsAcquireOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileRegsAcquireOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<ttk::TileRegsAcquireOp>(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Generic Tile Op Lowering Templates (using ConversionPattern)
 //===----------------------------------------------------------------------===//
 
@@ -298,6 +313,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
                                           const CopyTileCBState *cbState,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
+
+  // Control ops.
+  patterns.add<TTLTileRegsAcquireToTTKernel>(ctx);
 
   // Tile op lowerings (ttl.tile_* → ttkernel.*_tile)
   patterns.add<

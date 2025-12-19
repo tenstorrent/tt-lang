@@ -252,6 +252,24 @@ def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
 }
 
 //===----------------------------------------------------------------------===//
+// DST register control operations
+//===----------------------------------------------------------------------===//
+
+def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Acquire the DST register lock.";
+  let description = [{
+    Acquire an exclusive lock on the DST register before issuing tile
+    computations that write to DST. This mirrors the TTKernel
+    `tile_regs_acquire` operation (preferred over the deprecated
+    `acquire_dst`). The call is blocking and ensures mutual exclusion on the DST
+    register bank.
+  }];
+
+  let assemblyFormat = [{ `(` `)` attr-dict }];
+}
+
+//===----------------------------------------------------------------------===//
 // Tile-Level Operations (for use inside ttl.compute body)
 //===----------------------------------------------------------------------===//
 
