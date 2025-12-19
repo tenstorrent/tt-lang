@@ -3,9 +3,9 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: func.func @inplace_unary_chain
 // Purpose: verify copy_tile emits token+tile, unary ops consume copied tile,
 // and no dst_idx/tile_batch_size are present.
+// CHECK-LABEL: func.func @inplace_unary_chain
 func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>

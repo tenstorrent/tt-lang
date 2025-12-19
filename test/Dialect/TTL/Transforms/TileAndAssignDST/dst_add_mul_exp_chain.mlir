@@ -2,9 +2,33 @@
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
+// Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles, and dst_idx/tile_batch_size are absent.
 // CHECK-LABEL: func.func @add_mul_exp_chain
-// Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles,
-// and dst_idx/tile_batch_size are absent.
+// CHECK-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[CARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[CB0:.*]] = ttl.bind_cb
+// CHECK-DAG: %[[CB1:.*]] = ttl.bind_cb
+// CHECK-DAG: %[[CB2:.*]] = ttl.bind_cb
+// CHECK-DAG: %[[CB3:.*]] = ttl.bind_cb
+// CHECK-DAG: %[[A_CB:.*]] = ttl.attach_cb %[[AARG:.*]], %[[CB0]]
+// CHECK-DAG: %[[B_CB:.*]] = ttl.attach_cb %[[BARG:.*]], %[[CB1]]
+// CHECK-DAG: %[[C_CB:.*]] = ttl.attach_cb %[[CARG:.*]], %[[CB2]]
+// CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT:.*]], %[[CB3]]
+// CHECK: ttl.compute
+// CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %[[C0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %[[C0]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] : !ttcore.tile<32x32, f32>
+// CHECK:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]], %[[C0]], %[[C_IDX:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE2]] : !ttcore.tile<32x32, f32>
+// CHECK:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] : !ttcore.tile<32x32, f32>
+// CHECK:   ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
+// CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+// CHECK: return
+// CHECK-NOT: dst_idx
+// CHECK-NOT: tile_batch_size
 func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %c: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -21,17 +45,6 @@ func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %c_cb = ttl.attach_cb %c, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb3 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // CHECK: %[[RESULT:.*]] = ttl.compute
-  // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK: ttl.copy_tile %[[A]]
-  // CHECK: ttl.copy_tile %[[B]]
-  // CHECK: ttl.tile_add
-  // CHECK: ttl.copy_tile %[[C]]
-  // CHECK: ttl.tile_mul
-  // CHECK: ttl.tile_exp
-  // CHECK: }
-  // CHECK-NOT: dst_idx
-  // CHECK-NOT: tile_batch_size
   %result = ttl.compute
       ins(%a_cb, %b_cb, %c_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -48,7 +61,5 @@ func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-
-  // CHECK: return %[[RESULT]]
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }

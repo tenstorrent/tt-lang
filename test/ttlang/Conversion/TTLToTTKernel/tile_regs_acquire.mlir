@@ -45,3 +45,24 @@ func.func @acquire_two_compute_lowers(%t0: !ttcore.tile<32x32, f32>, %t1: !ttcor
   ttl.tile_regs_release
   func.return
 }
+
+// -----
+
+// CHECK-LABEL: func.func @acquire_chain_lowers
+// Purpose: chain add->mul->exp with reg ops lowers fully to TTKernel.
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK: ttkernel.tile_regs_commit
+// CHECK: ttkernel.tile_regs_wait
+// CHECK: ttkernel.tile_regs_release
+func.func @acquire_chain_lowers(%t0: !ttcore.tile<32x32, f32>,
+                                %t1: !ttcore.tile<32x32, f32>,
+                                %t2: !ttcore.tile<32x32, f32>) {
+  ttl.tile_regs_acquire
+  %a = ttl.tile_add %t0, %t1 : !ttcore.tile<32x32, f32>
+  %b = ttl.tile_mul %a, %t2 : !ttcore.tile<32x32, f32>
+  %c = ttl.tile_exp %b : !ttcore.tile<32x32, f32>
+  ttl.tile_regs_commit
+  ttl.tile_regs_wait
+  ttl.tile_regs_release
+  func.return
+}

@@ -3,9 +3,9 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: func.func @simple_add
 // Purpose: verify copy_tile insertion, dst token + tile results, and that tile
 // ops consume the copied tiles (no dst_idx).
+// CHECK-LABEL: func.func @simple_add
 func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                       %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
