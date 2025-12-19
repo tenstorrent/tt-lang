@@ -355,3 +355,142 @@ class TestMulticastCopy:
         tx_recv = copy(pipe, dst_ring)
         with pytest.raises(ValueError, match="Timeout waiting for pipe data"):
             tx_recv.wait()
+
+
+class TestCopyTransactionCanWait:
+    """Test can_wait() functionality for CopyTransaction."""
+
+    def test_can_wait_before_transfer(self) -> None:
+        """Test that can_wait() returns True for synchronous Tensor→Block copies."""
+        source = tu.ones(32, 32)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+        # Tensor→Block is synchronous, can_wait() returns True immediately
+        assert tx.can_wait() is True
+        assert tx.is_completed is False
+
+    def test_can_wait_after_transfer(self) -> None:
+        """Test that can_wait() returns True after wait() completes."""
+        source = tu.ones(32, 32)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+        tx.wait()
+        # After wait() completes, transfer is done
+        assert tx.can_wait() is True
+        assert tx.is_completed is True
+
+    def test_can_wait_idempotent(self) -> None:
+        """Test that can_wait() can be called multiple times."""
+        source = tu.full((32, 32), 3.14)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+
+        # Tensor→Block is synchronous, returns True before wait()
+        assert tx.can_wait() is True
+        assert tx.can_wait() is True  # Multiple calls
+
+        tx.wait()
+
+        # After wait, still True
+        assert tx.can_wait() is True
+        assert tx.can_wait() is True  # Multiple calls
+        assert tx.can_wait() is True
+
+    def test_can_wait_multiple_waits(self) -> None:
+        """Test that wait() can be called multiple times after completion."""
+        source = tu.ones(32, 32)
+        buf: List[Optional[torch.Tensor]] = [None]
+        block = Block(buf, 1, Span(0, 1))
+
+        tx = copy(source, block)
+        # Tensor→Block is synchronous
+        assert tx.can_wait() is True
+
+        # First wait
+        tx.wait()
+        assert tx.can_wait() is True
+
+        # Second wait (should be no-op since already completed)
+        tx.wait()
+        assert tx.can_wait() is True
+
+        # Verify data is still correct
+        assert tu.allclose(block[0], source)
+
+    def test_can_wait_with_multi_tile_transfer(self) -> None:
+        """Test can_wait() with multi-tile transfer."""
+        # Create 2x2 tile tensor
+        source = tu.randn(64, 64)  # 2x2 tiles
+        buf: List[Optional[torch.Tensor]] = [None, None, None, None]
+        block = Block(buf, 4, Span(0, 4))
+
+        tx = copy(source, block)
+        # Tensor→Block is synchronous
+        assert tx.can_wait() is True
+        assert not tx.is_completed
+
+        tx.wait()
+        assert tx.can_wait() is True
+        assert tx.is_completed
+
+    def test_can_wait_block_to_tensor(self) -> None:
+        """Test can_wait() with Block to tensor transfer."""
+        # Create source Block
+        buf: List[Optional[torch.Tensor]] = [tu.ones(32, 32), tu.full((32, 32), 2.0)]
+        block = Block(buf, 2, Span(0, 2))
+
+        # Create destination tensor
+        dst = tu.zeros(64, 32)  # 2x1 tiles
+
+        tx = copy(block, dst)
+        # Block→Tensor is synchronous
+        assert tx.can_wait() is True
+
+        tx.wait()
+        assert tx.can_wait() is True
+        assert tx.is_completed
+
+    def test_can_wait_with_pipe(self) -> None:
+        """Test can_wait() with pipe transfers."""
+        # Setup pipe
+        pipe = Pipe(10, 20)
+
+        # Pipe→Block without data returns False
+        dst_buf_empty: List[Optional[torch.Tensor]] = [None]
+        dst_block_empty = Block(dst_buf_empty, 1, Span(0, 1))
+        tx_recv_empty = copy(pipe, dst_block_empty)
+        # Pipe has no data yet
+        assert tx_recv_empty.can_wait() is False
+
+        # Source (Block to Pipe) - synchronous
+        src_buf: List[Optional[torch.Tensor]] = [tu.full((32, 32), 5.0)]
+        src_block = Block(src_buf, 1, Span(0, 1))
+        tx_send = copy(src_block, pipe)
+
+        # Block→Pipe is synchronous
+        assert tx_send.can_wait() is True
+        tx_send.wait()
+        assert tx_send.can_wait() is True
+
+        # Now pipe has data, so can_wait() should return True
+        assert tx_recv_empty.can_wait() is True
+
+        # Destination (Pipe to Block) - asynchronous, data now available
+        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_block = Block(dst_buf, 1, Span(0, 1))
+        tx_recv = copy(pipe, dst_block)
+
+        # Pipe→Block can proceed because pipe has data (from tx_send)
+        assert tx_recv.can_wait() is True
+        tx_recv.wait()
+        # After consuming the data, pipe is empty again, so can_wait() returns False
+        assert tx_recv.can_wait() is False
+
+        # Verify data
+        assert tu.allclose(dst_block[0], src_block[0])
