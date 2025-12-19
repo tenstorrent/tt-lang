@@ -47,6 +47,11 @@ def TTLTileAndAssignDST
     diagnostics on overflow.
   }];
 
+  let options = [
+    Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
+           "Override DST register capacity (testing only, default auto-computed).">
+  ];
+
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::tt::ttl::TTLDialect"

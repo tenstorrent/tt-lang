@@ -122,7 +122,8 @@ struct TTLTileAndAssignDSTPass
       }
 
       std::uint32_t peakUsage = estimatePeakDSTUsage(body);
-      std::uint32_t capacity = computeDefaultCapacity();
+      std::uint32_t capacity =
+          dstCapacity == 0 ? computeDefaultCapacity() : dstCapacity;
 
       if (peakUsage > capacity) {
         computeOp.emitOpError()
