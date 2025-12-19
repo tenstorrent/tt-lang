@@ -148,27 +148,44 @@ static bool eraseUnusedArguments(FuncLike funcLike) {
   return true;
 }
 
+/// Convert TTL CircularBufferType to TTKernel CBType.
+static ttk::CBType convertToKernelCBType(CircularBufferType ttlCb) {
+  return ttk::CBType::get(ttlCb.getContext(), ttlCb.getTotalElements(),
+                          ttlCb.getElementType());
+}
+
 struct BindCBLowering : OpConversionPattern<BindCBOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(BindCBOp op, OpAdaptor /*adaptor*/,
                   ConversionPatternRewriter &rewriter) const override {
-    auto *typeConverter = this->getTypeConverter();
-    if (!typeConverter) {
-      return rewriter.notifyMatchFailure(op, "no type converter");
+    auto ttlCbType =
+        mlir::dyn_cast<CircularBufferType>(op.getResult().getType());
+    if (!ttlCbType) {
+      return rewriter.notifyMatchFailure(op,
+                                         "result is not CircularBufferType");
     }
 
-    auto converted = typeConverter->convertType(op.getResult().getType());
-    if (!converted) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB type");
+    // Convert to TTKernel CB type.
+    auto cbType = convertToKernelCBType(ttlCbType);
+
+    // Get the CB index from the bind_cb op attribute.
+    int64_t cbIndex = op.getCbIndex().getSExtValue();
+    if (cbIndex < 0 || cbIndex >= kMaxCircularBuffers) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << "cb_index " << cbIndex << " out of valid range [0, "
+             << kMaxCircularBuffers - 1 << "]";
+      });
     }
 
-    // For now, bind to a placeholder CB handle via unrealized cast; real
-    // lowering would thread the provisioned hardware CB handle.
-    auto zero = rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 32);
+    // Create ttkernel.get_compile_time_arg_val to get the CB handle.
+    auto getArgVal = rewriter.create<ttk::GetCompileArgValOp>(
+        op.getLoc(), cbType, static_cast<int32_t>(cbIndex));
+
+    // Cast back to TTL CB type for downstream ops that still expect it.
     auto cast = rewriter.create<UnrealizedConversionCastOp>(
-        op.getLoc(), converted, ValueRange{zero});
+        op.getLoc(), op.getResult().getType(), ValueRange{getArgVal});
     rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
