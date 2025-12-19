@@ -266,10 +266,10 @@ def TTL_TileType : TypeConstraint<
 def TTL_CopyTileOp : TTL_TileOp<"copy_tile", [MemoryEffects<[MemWrite]>]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
-    Performs a CB → DST copy, matching `copy_tile_init` + `copy_tile` in the
+    Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
     TTKernel API. The source is identified by a circular buffer operand and an
     input tile index; the destination is the DST register index. This is used by
-    the DST assignment pass to make CB → DST copies explicit before tile-level
+    the DST assignment pass to make CB -> DST copies explicit before tile-level
     compute is lowered.
   }];
   let arguments = (ins

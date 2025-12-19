@@ -209,17 +209,14 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
       return rewriter.notifyMatchFailure(op,
                                          "failed to determine cb target type");
     }
-    if (typeConverter) {
-      if (auto materialized = typeConverter->materializeTargetConversion(
-              rewriter, loc, targetCbTy, cb)) {
-        cb = materialized;
-      }
+    if (!typeConverter) {
+      return rewriter.notifyMatchFailure(op, "no type converter available");
     }
-    // If no type converter or materialization failed, fall back to a cast.
-    if (cb.getType() != targetCbTy) {
-      cb =
-          rewriter.create<mlir::UnrealizedConversionCastOp>(loc, targetCbTy, cb)
-              .getResult(0);
+    cb = typeConverter->materializeTargetConversion(rewriter, loc, targetCbTy,
+                                                    cb);
+    if (!cb || cb.getType() != targetCbTy) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to materialize ttkernel.cb");
     }
 
     // Initialize the copy for the given CB (matches TTKernel contract).

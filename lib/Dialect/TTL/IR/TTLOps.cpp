@@ -187,14 +187,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
     return emitOpError() << "expects src to be ttcore.tile";
   }
 
-  if (!mlir::isa<mlir::IndexType>(getSrcIndex().getType())) {
-    return emitOpError() << "src_index operand must have index type";
-  }
-
-  if (!mlir::isa<mlir::IndexType>(getDstIndex().getType())) {
-    return emitOpError() << "dst_index operand must have index type";
-  }
-
   return mlir::success();
 }
 

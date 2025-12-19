@@ -15,12 +15,3 @@ func.func @mismatched_result_type(%t: !ttcore.tile<32x32, f32>, %idx: index) {
   %0 = ttl.copy_tile %t, %idx, %idx : !ttcore.tile<32x32, f32>, index, index -> !ttcore.tile<32x32, bf16>
   func.return
 }
-
-// -----
-
-// Test: src_index must have index type.
-func.func @non_index_src_idx(%t: !ttcore.tile<32x32, f32>, %idx: i32) {
-  // expected-error @+1 {{custom op 'ttl.copy_tile' invalid kind of type specified}}
-  %0 = ttl.copy_tile %t, %idx, %idx : !ttcore.tile<32x32, f32>, i32, i32 -> !ttl.dst
-  func.return
-}
