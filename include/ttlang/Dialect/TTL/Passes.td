@@ -53,6 +53,21 @@ def TTLTileAndAssignDST
   ];
 }
 
+def TTLInsertTileRegsSync
+    : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
+  let summary = "Insert tile_regs_* synchronization ops around ttl.compute";
+  let description = [{
+    Inserts DST register synchronization ops mirroring the TTKernel reg API:
+    - Inside ttl.compute: tile_regs_acquire at entry, tile_regs_commit before yield.
+    - Around ttl.compute: tile_regs_wait and tile_regs_release immediately after
+      the compute op in the parent block.
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLLowerToLoops
     : Pass<"ttl-lower-to-loops", "::mlir::func::FuncOp"> {
   let summary = "Lower ttl.compute structured ops to scf.for loops";

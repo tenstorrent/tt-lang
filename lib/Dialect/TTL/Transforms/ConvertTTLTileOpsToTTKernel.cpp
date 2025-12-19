@@ -93,6 +93,39 @@ struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
   }
 };
 
+struct TTLTileRegsCommitToTTKernel : OpConversionPattern<TileRegsCommitOp> {
+  using OpConversionPattern<TileRegsCommitOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileRegsCommitOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<ttk::TileRegsCommitOp>(op);
+    return success();
+  }
+};
+
+struct TTLTileRegsWaitToTTKernel : OpConversionPattern<TileRegsWaitOp> {
+  using OpConversionPattern<TileRegsWaitOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileRegsWaitOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<ttk::TileRegsWaitOp>(op);
+    return success();
+  }
+};
+
+struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
+  using OpConversionPattern<TileRegsReleaseOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileRegsReleaseOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<ttk::TileRegsReleaseOp>(op);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Generic Tile Op Lowering Templates (using ConversionPattern)
 //===----------------------------------------------------------------------===//
@@ -315,7 +348,8 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   MLIRContext *ctx = patterns.getContext();
 
   // Control ops.
-  patterns.add<TTLTileRegsAcquireToTTKernel>(ctx);
+  patterns.add<TTLTileRegsAcquireToTTKernel, TTLTileRegsCommitToTTKernel,
+               TTLTileRegsWaitToTTKernel, TTLTileRegsReleaseToTTKernel>(ctx);
 
   // Tile op lowerings (ttl.tile_* → ttkernel.*_tile)
   patterns.add<

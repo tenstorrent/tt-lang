@@ -121,13 +121,6 @@ struct TTLTileAndAssignDSTPass
         return;
       }
 
-      // Insert ttl.tile_regs_acquire at the start of the compute body if not
-      // present.
-      if (body->empty() || !isa<TileRegsAcquireOp>(body->front())) {
-        OpBuilder frontBuilder(body, body->begin());
-        frontBuilder.create<TileRegsAcquireOp>(computeOp.getLoc());
-      }
-
       std::uint32_t peakUsage = estimatePeakDSTUsage(body);
       std::uint32_t capacity = computeDefaultCapacity();
 

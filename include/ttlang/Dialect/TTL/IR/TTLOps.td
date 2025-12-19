@@ -266,7 +266,39 @@ def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
     register bank.
   }];
 
-  let assemblyFormat = [{ `(` `)` attr-dict }];
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_TileRegsCommitOp : TTL_Op<"tile_regs_commit",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Commit the DST register lock (MATH thread).";
+  let description = [{
+    Release the DST register lock held by the MATH thread, mirroring
+    `ttkernel.tile_regs_commit`. This is blocking and must be paired with a
+    preceding `tile_regs_acquire`.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_TileRegsWaitOp : TTL_Op<"tile_regs_wait",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Wait for DST register availability (PACK thread).";
+  let description = [{
+    Acquire the DST register lock for the PACK thread, blocking until the MATH
+    thread commits. Mirrors `ttkernel.tile_regs_wait`.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Release DST register lock (PACK thread).";
+  let description = [{
+    Release the DST register lock held by the PACK thread, mirroring
+    `ttkernel.tile_regs_release`. Must be paired with a preceding
+    `tile_regs_wait`.
+  }];
+  let assemblyFormat = "attr-dict";
 }
 
 //===----------------------------------------------------------------------===//

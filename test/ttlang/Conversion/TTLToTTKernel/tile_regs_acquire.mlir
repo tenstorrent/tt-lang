@@ -2,11 +2,46 @@
 // RUN: ttlang-opt %s --convert-ttl-to-ttkernel | FileCheck %s
 
 // CHECK-LABEL: func.func @acquire_lower
-// Purpose: confirm tile_regs_acquire is preserved and rewritten to the TTKernel lock op.
+// Purpose: confirm tile_regs_* ops lower to TTKernel equivalents.
 // CHECK: ttkernel.tile_regs_acquire
+// CHECK: ttkernel.tile_regs_commit
+// CHECK: ttkernel.tile_regs_wait
+// CHECK: ttkernel.tile_regs_release
 // CHECK-NOT: ttl.acquire_dst
 // CHECK-NOT: ttl.tile_regs_wait
 func.func @acquire_lower() {
-  ttl.tile_regs_acquire()
+  ttl.tile_regs_acquire
+  ttl.tile_regs_commit
+  ttl.tile_regs_wait
+  ttl.tile_regs_release
+  func.return
+}
+
+// -----
+
+// CHECK-LABEL: func.func @acquire_two_compute_lowers
+// Purpose: ensure multiple compute regions each lower their reg ops to TTKernel, preserving order.
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK: ttkernel.tile_regs_commit
+// CHECK: ttkernel.tile_regs_wait
+// CHECK: ttkernel.tile_regs_release
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK: ttkernel.tile_regs_commit
+// CHECK: ttkernel.tile_regs_wait
+// CHECK: ttkernel.tile_regs_release
+func.func @acquire_two_compute_lowers(%t0: !ttcore.tile<32x32, f32>, %t1: !ttcore.tile<32x32, f32>) {
+  // First region
+  ttl.tile_regs_acquire
+  %a = ttl.tile_add %t0, %t1 : !ttcore.tile<32x32, f32>
+  ttl.tile_regs_commit
+  ttl.tile_regs_wait
+  ttl.tile_regs_release
+
+  // Second region
+  ttl.tile_regs_acquire
+  %b = ttl.tile_mul %a, %t1 : !ttcore.tile<32x32, f32>
+  ttl.tile_regs_commit
+  ttl.tile_regs_wait
+  ttl.tile_regs_release
   func.return
 }

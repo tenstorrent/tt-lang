@@ -636,7 +636,8 @@ struct TTLConvertTTLToTTKernelPass
     // Mark compute-related ops as legal during partial conversion since they're
     // handled by the separate greedy rewrite phase
     // (populateTTLTileOpsToTTKernelPatterns).
-    target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, TileRegsAcquireOp>();
+    target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, TileRegsAcquireOp,
+                      TileRegsCommitOp, TileRegsWaitOp, TileRegsReleaseOp>();
     // Tile ops (handled by tile ops phase later):
     target.addLegalOp<
         // Binary tile ops
@@ -701,7 +702,8 @@ struct TTLConvertTTLToTTKernelPass
         // Copy tile op
         CopyTileOp,
         // DST lifecycle
-        TileRegsAcquireOp>();
+        TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+        TileRegsReleaseOp>();
 
     auto cbState = buildCopyTileCBState(mod);
 
