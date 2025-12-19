@@ -21,15 +21,15 @@
 // CHECK:           %[[ATILE:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
 // CHECK:           ttkernel.tile_regs_acquire
 // CHECK:           ttkernel.copy_tile_init(%[[CB0_TTK]])
-// CHECK:           ttkernel.copy_tile(%[[CB0_TTK]], %[[C0]], %[[C0]])
+// CHECK:           ttkernel.copy_tile(%[[CB0_TTK]], %[[IDX0:.*]], %[[DST0:.*]])
 // CHECK:           ttkernel.copy_tile_init(%[[CB1_TTK]])
-// CHECK:           ttkernel.copy_tile(%[[CB1_TTK]], %[[C0]], %[[C1]])
+// CHECK:           ttkernel.copy_tile(%[[CB1_TTK]], %[[IDX0]], %[[DST1:.*]])
 // CHECK:           ttkernel.add_binary_tile_init()
-// CHECK:           ttkernel.add_binary_tile
+// CHECK:           ttkernel.add_binary_tile(%[[DST0]], %[[DST1]], %[[DST2:.*]])
 // CHECK:           ttkernel.mul_binary_tile_init()
-// CHECK:           ttkernel.mul_binary_tile
+// CHECK:           ttkernel.mul_binary_tile(%[[DST2]], %[[DST1]], %[[DST0]])
 // CHECK:           ttkernel.exp_tile_init()
-// CHECK:           ttkernel.exp_tile
+// CHECK:           ttkernel.exp_tile(%[[DST1]])
 // CHECK:           ttkernel.tile_regs_commit
 // CHECK:           %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
 // CHECK:         scf.yield %[[INSERT]]
