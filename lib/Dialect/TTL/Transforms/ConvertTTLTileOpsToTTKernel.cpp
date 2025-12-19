@@ -19,7 +19,6 @@
 // - copy_tile (CB → DST) before compute, pack_tile (DST → CB) after
 // - ttl.compute is lowered to scf.for loops BEFORE bufferization by
 //   ttl-lower-to-loops pass; this pass only converts the ttl.tile_* ops
-// - TODO: Add lowering for ttl.copy_tile once DST assignment uses it (#120)
 //
 // Following LLVM/MLIR best practices:
 // - Generic template patterns for tile op categories (like ArithToLLVM)
@@ -170,22 +169,7 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   matchAndRewrite(CopyTileOp op, CopyTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    auto blockArg = llvm::dyn_cast<BlockArgument>(adaptor.getSrc());
-    if (!blockArg) {
-      return rewriter.notifyMatchFailure(op, "src must be a block argument");
-    }
-    auto compute =
-        llvm::dyn_cast_or_null<ComputeOp>(blockArg.getOwner()->getParentOp());
-    if (!compute) {
-      return rewriter.notifyMatchFailure(op,
-                                         "src must belong to ttl.compute body");
-    }
-    unsigned argNum = blockArg.getArgNumber();
-    if (argNum >= compute.getInputs().size()) {
-      return rewriter.notifyMatchFailure(op, "src must map to a compute input");
-    }
-    Value tensorOperand = compute.getInputs()[argNum];
-    Value cb = lookupAttachedCB(tensorOperand);
+    Value cb = lookupAttachedCB(op.getSrc());
     if (!cb) {
       return rewriter.notifyMatchFailure(op, "no attached cb for src tensor");
     }
@@ -195,6 +179,7 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     // Emit the copy from CB[src_index] to DST[dst_index].
     rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
                                      adaptor.getDstIndex());
+
     // Materialize a DST token from the dst_index to satisfy the result type.
     auto token =
         rewriter
