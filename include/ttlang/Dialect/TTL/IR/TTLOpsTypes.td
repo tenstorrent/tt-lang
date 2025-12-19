@@ -42,4 +42,13 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let assemblyFormat = "(`<` $kind^ `>`)?";
 }
 
+def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
+  let summary = "Handle representing a tile resident in a DST register";
+  let description = [{
+    A lightweight handle (token) indicating that a tile now lives in a DST register
+    slot. Carries no payload; downstream consumers use it to ensure correct
+    ordering of DST-producing/consuming operations.
+  }];
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

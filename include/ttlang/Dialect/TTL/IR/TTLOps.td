@@ -7,6 +7,7 @@
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
+include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -257,6 +258,32 @@ def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
 // Base class for tile operations
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
     : TTL_Op<mnemonic, !listconcat(traits, [Pure])>;
+
+def TTL_TileType : TypeConstraint<
+    CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
+    "ttcore.tile type">;
+
+def TTL_CopyTileOp : TTL_TileOp<"copy_tile", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Copy a tile from a circular buffer into a DST register";
+  let description = [{
+    Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
+    TTKernel API. The source is identified by a circular buffer operand and an
+    input tile index; the destination is the DST register index. This is used by
+    the DST assignment pass to make CB -> DST copies explicit before tile-level
+    compute is lowered.
+  }];
+  let arguments = (ins
+    TTL_TileType:$src,
+    Index:$src_index,
+    Index:$dst_index
+  );
+  let results = (outs TTL_DSTRegister:$result);
+  let assemblyFormat =
+      "$src `,` $src_index `,` $dst_index attr-dict `:` "
+      "type($src) `,` type($src_index) `,` type($dst_index) "
+      "`->` type($result)";
+  let hasVerifier = 1;
+}
 
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
