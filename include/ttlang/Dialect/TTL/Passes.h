@@ -5,13 +5,42 @@
 #ifndef TTLANG_DIALECT_TTL_PASSES_H
 #define TTLANG_DIALECT_TTL_PASSES_H
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/DenseMap.h"
+
+namespace mlir {
+class RewritePatternSet;
+class TypeConverter;
+class BlockArgument;
+class Value;
+} // namespace mlir
 
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "ttlang/Dialect/TTL/Passes.h.inc"
+
+/// Populate patterns for lowering TTL elementwise tensor ops to ttl.compute.
+void populateTTLToComputePatterns(RewritePatternSet &patterns);
+
+/// Populate patterns for lowering ttl.tile_* ops to TTKernel (tile-only pass).
+/// Optionally pass CB analysis state for copy_tile to avoid IR walks.
+struct CopyTileCBState {
+  llvm::DenseMap<mlir::BlockArgument, mlir::Value> blockArgToCb;
+  llvm::DenseMap<mlir::Value, mlir::Value> tensorToCb;
+};
+
+/// Build CB analysis state (block arguments and attached tensors).
+CopyTileCBState buildCopyTileCBState(mlir::Operation *root);
+
+void populateTTLTileOpsToTTKernelPatterns(mlir::TypeConverter *typeConverter,
+                                          const CopyTileCBState *cbState,
+                                          RewritePatternSet &patterns);
 
 } // namespace mlir::tt::ttl
 

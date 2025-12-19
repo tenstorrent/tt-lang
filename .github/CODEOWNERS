@@ -1,1 +1,5 @@
+# Global
 * @tenstorrent/tt-lang-maintainers
+
+# CI
+/.github/ @tenstorrent/forge-developers-mlir-devops
