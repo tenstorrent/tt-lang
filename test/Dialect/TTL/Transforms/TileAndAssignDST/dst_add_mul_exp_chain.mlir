@@ -1,13 +1,15 @@
-// Summary: three-op chain (add -> mul -> exp) should flow via tokens (no dst_idx).
+// Summary: three-op chain (add -> mul -> exp) with DST register reuse.
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles, and dst_idx/tile_batch_size are absent.
+// Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles,
+// DST registers are reused after last use, and dst_idx/tile_batch_size are absent.
+// With register reuse: A->DST0, B->DST1, after tile_add A&B are dead,
+// C reuses DST0.
 // CHECK-LABEL: func.func @add_mul_exp_chain
 // CHECK-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[CARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
 // CHECK-DAG: %[[CB0:.*]] = ttl.bind_cb
 // CHECK-DAG: %[[CB1:.*]] = ttl.bind_cb
 // CHECK-DAG: %[[CB2:.*]] = ttl.bind_cb
@@ -21,7 +23,8 @@
 // CHECK-NEXT:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %[[C0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %[[C0]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]], %[[C0]], %[[C_IDX:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// After tile_add, A and B are dead. C should REUSE DST index 0.
+// CHECK-NEXT:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]], %[[C0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE2]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
