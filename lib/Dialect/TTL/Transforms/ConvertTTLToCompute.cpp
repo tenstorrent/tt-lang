@@ -59,6 +59,8 @@ static Value findOutputCB(Operation *op) {
 
 /// Find unused bind_cb ops in the function that can be used for output CBs.
 /// Returns bind_cb ops that are not used by any attach_cb op.
+// TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
+// the function for each operation.
 static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
   SmallVector<BindCBOp> unused;
   auto parentFunc = op->getParentOfType<func::FuncOp>();
@@ -66,14 +68,16 @@ static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
     return unused;
   }
 
-  // Collect all bind_cb ops
+  // Collect all bind_cb ops and used CBs in a single walk.
   SmallVector<BindCBOp> allBindCBs;
-  parentFunc->walk([&](BindCBOp bindOp) { allBindCBs.push_back(bindOp); });
-
-  // Find which CBs are already used by attach_cb
   DenseSet<Value> usedCBs;
-  parentFunc->walk(
-      [&](AttachCBOp attachOp) { usedCBs.insert(attachOp.getCb()); });
+  parentFunc->walk([&](Operation *walkOp) {
+    if (auto bindOp = dyn_cast<BindCBOp>(walkOp)) {
+      allBindCBs.push_back(bindOp);
+    } else if (auto attachOp = dyn_cast<AttachCBOp>(walkOp)) {
+      usedCBs.insert(attachOp.getCb());
+    }
+  });
 
   // Return unused ones
   for (auto bindOp : allBindCBs) {
