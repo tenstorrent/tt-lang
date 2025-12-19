@@ -195,21 +195,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
     return emitOpError() << "dst_index operand must have index type";
   }
 
-  // Require source to be a block argument of ttl.compute so lowering can
-  // recover the attached CB.
-  auto blockArg = dyn_cast<BlockArgument>(getSrc());
-  if (!blockArg) {
-    return emitOpError() << "src must be a block argument from ttl.compute";
-  }
-  auto compute =
-      dyn_cast_or_null<ComputeOp>(blockArg.getOwner()->getParentOp());
-  if (!compute) {
-    return emitOpError() << "src must belong to ttl.compute body";
-  }
-  if (blockArg.getArgNumber() >= compute.getInputs().size()) {
-    return emitOpError() << "src block argument must map to a compute input";
-  }
-
   return mlir::success();
 }
 

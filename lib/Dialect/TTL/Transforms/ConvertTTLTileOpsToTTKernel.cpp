@@ -28,6 +28,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -40,6 +41,8 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+/// Lookup the CB attached to a tensor via ttl.attach_cb.
+/// Returns the !ttl.cb from attach_cb (conversion handled by caller).
 static Value lookupAttachedCB(Value tensor) {
   if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
     return attach.getCb();
@@ -169,9 +172,54 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   matchAndRewrite(CopyTileOp op, CopyTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    Value cb = lookupAttachedCB(op.getSrc());
+
+    // Find the CB by tracing the src back to an attach_cb.
+    // Pre-lowering: src is a block arg of ttl.compute, trace via compute
+    // inputs. Post-lowering: src is from tensor.extract, trace via the
+    // extracted tensor.
+    Value cb;
+    if (auto blockArg = llvm::dyn_cast<BlockArgument>(op.getSrc())) {
+      if (auto compute = llvm::dyn_cast_or_null<ComputeOp>(
+              blockArg.getOwner()->getParentOp())) {
+        unsigned argNum = blockArg.getArgNumber();
+        if (argNum < compute.getInputs().size()) {
+          cb = lookupAttachedCB(compute.getInputs()[argNum]);
+        }
+      }
+    }
     if (!cb) {
-      return rewriter.notifyMatchFailure(op, "no attached cb for src tensor");
+      if (auto extract = op.getSrc().getDefiningOp<tensor::ExtractOp>()) {
+        cb = lookupAttachedCB(extract.getTensor());
+      }
+    }
+    if (!cb) {
+      return rewriter.notifyMatchFailure(op, "cannot find attached cb for src");
+    }
+
+    // Convert !ttl.cb to !ttkernel.cb.
+    auto *typeConverter = this->getTypeConverter();
+    Type targetCbTy;
+    if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
+      targetCbTy = ttkCb;
+    } else if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+      targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
+                                    ttlCb.getElementType());
+    }
+    if (!targetCbTy) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to determine cb target type");
+    }
+    if (typeConverter) {
+      if (auto materialized = typeConverter->materializeTargetConversion(
+              rewriter, loc, targetCbTy, cb)) {
+        cb = materialized;
+      }
+    }
+    // If no type converter or materialization failed, fall back to a cast.
+    if (cb.getType() != targetCbTy) {
+      cb =
+          rewriter.create<mlir::UnrealizedConversionCastOp>(loc, targetCbTy, cb)
+              .getResult(0);
     }
 
     // Initialize the copy for the given CB (matches TTKernel contract).
@@ -238,7 +286,8 @@ using MaxTileLowering =
 // Pattern Population
 //===----------------------------------------------------------------------===//
 
-void populateTTLTileOpsToTTKernelPatterns(RewritePatternSet &patterns) {
+void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
+                                          RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
   // Tile op lowerings (ttl.tile_* → ttkernel.*_tile)
@@ -250,7 +299,7 @@ void populateTTLTileOpsToTTKernelPatterns(RewritePatternSet &patterns) {
       // Binary ops
       AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering,
       // Copy
-      TTLTileCopyToTTKernel>(ctx);
+      TTLTileCopyToTTKernel>(*typeConverter, ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)
