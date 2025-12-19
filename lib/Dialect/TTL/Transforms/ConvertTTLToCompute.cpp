@@ -72,7 +72,8 @@ static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
 
   // Find which CBs are already used by attach_cb
   DenseSet<Value> usedCBs;
-  parentFunc->walk([&](AttachCBOp attachOp) { usedCBs.insert(attachOp.getCb()); });
+  parentFunc->walk(
+      [&](AttachCBOp attachOp) { usedCBs.insert(attachOp.getCb()); });
 
   // Return unused ones
   for (auto bindOp : allBindCBs) {
