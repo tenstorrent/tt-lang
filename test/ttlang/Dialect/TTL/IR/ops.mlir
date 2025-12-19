@@ -60,3 +60,23 @@ func.func @copy_read_wait_tile_layout(%t: tensor<32x32xf32, #layout_tile>) attri
   ttl.wait %xf : !ttl.transfer_handle<read>
   func.return
 }
+
+// -----
+
+// CHECK-LABEL: func.func @copy_tile_basic
+// CHECK: %[[R:.*]] = ttl.copy_tile %[[T:.*]], %[[SRC_IDX:.*]], %[[DST_IDX:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst
+// CHECK: return %[[R]] : !ttl.dst
+func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src_idx: index, %dst_idx: index) -> !ttl.dst {
+  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %t_attached = ttl.attach_cb %t_tensor, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %dst_token = ttl.compute
+      ins(%t_attached : tensor<1x1x!ttcore.tile<32x32, f32>>)
+      outs(%t_attached : tensor<1x1x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%t: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+    %dst = ttl.copy_tile %t, %src_idx, %dst_idx : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst
+    ttl.yield %dst : !ttl.dst
+  } -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  func.return %dst_token : !ttl.dst
+}

@@ -19,6 +19,7 @@
 // - copy_tile (CB → DST) before compute, pack_tile (DST → CB) after
 // - ttl.compute is lowered to scf.for loops BEFORE bufferization by
 //   ttl-lower-to-loops pass; this pass only converts the ttl.tile_* ops
+// - TODO: Add lowering for ttl.copy_tile once DST assignment uses it (#120)
 //
 // Following LLVM/MLIR best practices:
 // - Generic template patterns for tile op categories (like ArithToLLVM)
@@ -40,6 +41,12 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+static Value lookupAttachedCB(Value tensor) {
+  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+    return attach.getCb();
+  }
+  return Value();
+}
 /// Get dst_idx for a value (op result or block argument). Defaults to 0.
 /// TODO(#120): Remove after implementing proper DST assignment pass.
 static int64_t getDstIdxForValue(Value v) {
@@ -155,6 +162,50 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
+/// Lower ttl.copy_tile to TTKernel copy_tile_init + copy_tile.
+struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
+  using OpConversionPattern<CopyTileOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CopyTileOp op, CopyTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto blockArg = llvm::dyn_cast<BlockArgument>(adaptor.getSrc());
+    if (!blockArg) {
+      return rewriter.notifyMatchFailure(op, "src must be a block argument");
+    }
+    auto compute =
+        llvm::dyn_cast_or_null<ComputeOp>(blockArg.getOwner()->getParentOp());
+    if (!compute) {
+      return rewriter.notifyMatchFailure(op,
+                                         "src must belong to ttl.compute body");
+    }
+    unsigned argNum = blockArg.getArgNumber();
+    if (argNum >= compute.getInputs().size()) {
+      return rewriter.notifyMatchFailure(op, "src must map to a compute input");
+    }
+    Value tensorOperand = compute.getInputs()[argNum];
+    Value cb = lookupAttachedCB(tensorOperand);
+    if (!cb) {
+      return rewriter.notifyMatchFailure(op, "no attached cb for src tensor");
+    }
+
+    // Initialize the copy for the given CB (matches TTKernel contract).
+    rewriter.create<ttk::CopyTileInitOp>(loc, cb);
+    // Emit the copy from CB[src_index] to DST[dst_index].
+    rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
+                                     adaptor.getDstIndex());
+    // Materialize a DST token from the dst_index to satisfy the result type.
+    auto token =
+        rewriter
+            .create<mlir::UnrealizedConversionCastOp>(
+                loc, TypeRange{op.getType()}, ValueRange{adaptor.getDstIndex()})
+            .getResult(0);
+    rewriter.replaceOp(op, token);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Unary Tile Op Lowerings (LLVM-style type aliases)
 //===----------------------------------------------------------------------===//
@@ -212,7 +263,9 @@ void populateTTLTileOpsToTTKernelPatterns(RewritePatternSet &patterns) {
       TanhTileLowering, SigmoidTileLowering, AbsTileLowering, NegTileLowering,
       ReluTileLowering,
       // Binary ops
-      AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering>(ctx);
+      AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering,
+      // Copy
+      TTLTileCopyToTTKernel>(ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)
