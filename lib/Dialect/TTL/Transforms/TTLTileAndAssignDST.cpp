@@ -66,8 +66,10 @@ static_assert(std::is_class_v<TTLDialect>);
 /// Default DST capacity (16-bit, double-buffered).
 constexpr std::uint32_t kDefaultDSTCapacity = 8;
 
-/// TODO(#XXX): Pull from device/ComputeKernelConfig (fp32_dest_acc_en,
-/// double-buffer). Mirrors tt-mlir graph-coloring allocator defaults.
+/// TODO(#150): Compute capacity from datatype and device configuration.
+/// - f16/bf16: 16 tiles (8 with double-buffering)
+/// - f32: 8 tiles (4 with double-buffering)
+/// Pull from device/ComputeKernelConfig (fp32_dest_acc_en, fullSyncEn).
 static std::uint32_t computeDefaultCapacity() { return kDefaultDSTCapacity; }
 
 static bool isTileOp(Operation *op) {
