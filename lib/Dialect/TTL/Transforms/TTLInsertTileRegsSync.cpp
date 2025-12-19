@@ -78,10 +78,17 @@ struct TTLInsertTileRegsSyncPass
 
       // Insert wait/release after the compute op in the parent block.
       Operation *computeOperation = computeOp.getOperation();
+      Operation *next = computeOperation->getNextNode();
       OpBuilder afterBuilder(computeOperation->getBlock(),
                              ++Block::iterator(computeOperation));
-      afterBuilder.create<TileRegsWaitOp>(computeOp.getLoc());
-      afterBuilder.create<TileRegsReleaseOp>(computeOp.getLoc());
+      if (!isa_and_nonnull<TileRegsWaitOp>(next)) {
+        afterBuilder.create<TileRegsWaitOp>(computeOp.getLoc());
+        next = computeOperation->getNextNode();
+      }
+      if (!isa_and_nonnull<TileRegsReleaseOp>(next ? next->getNextNode()
+                                                   : nullptr)) {
+        afterBuilder.create<TileRegsReleaseOp>(computeOp.getLoc());
+      }
     });
   }
 };

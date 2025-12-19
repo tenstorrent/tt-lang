@@ -167,8 +167,16 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t odstIdx = dstIdxAttr.getInt();
-    int64_t src0Idx = 0;
-    int64_t src1Idx = 1;
+
+    FailureOr<int64_t> src0IdxOrErr =
+        getDstIdxRequired(adaptor.getLhs(), rewriter, loc);
+    FailureOr<int64_t> src1IdxOrErr =
+        getDstIdxRequired(adaptor.getRhs(), rewriter, loc);
+    if (failed(src0IdxOrErr) || failed(src1IdxOrErr)) {
+      return failure();
+    }
+    int64_t src0Idx = *src0IdxOrErr;
+    int64_t src1Idx = *src1IdxOrErr;
 
     Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
     Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
@@ -197,11 +205,16 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    int64_t dst0Idx = 0;
-    int64_t dst1Idx = 1;
+    FailureOr<int64_t> dst0IdxOrErr =
+        getDstIdxRequired(adaptor.getLhs(), rewriter, loc);
+    FailureOr<int64_t> dst1IdxOrErr =
+        getDstIdxRequired(adaptor.getRhs(), rewriter, loc);
+    if (failed(dst0IdxOrErr) || failed(dst1IdxOrErr)) {
+      return failure();
+    }
 
-    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
-    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
+    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, *dst0IdxOrErr);
+    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, *dst1IdxOrErr);
 
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, dst0, dst1);
