@@ -1,10 +1,10 @@
-// Summary: SFPU unary chain should reuse the same DST register in-place.
+// Summary: SFPU unary chain should flow via tokens (no dst_idx).
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @inplace_unary_chain
-// Purpose: verify dst_idx reuse across multiple unary ops.
+// Purpose: verify unary tile ops appear without dst_idx attributes.
 func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -19,12 +19,13 @@ func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK-SAME: ins(%{{.*}} : {{.*}}) outs(%{{.*}} : {{.*}})
   // CHECK-SAME: {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]}
   // CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[A]] {dst_idx = 0 : i32}
-  // CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]] {dst_idx = 0 : i32}
-  // CHECK-NEXT:   %[[SIGMOID:.*]] = ttl.tile_sigmoid %[[RELU]] {dst_idx = 0 : i32}
+  // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[A]]
+  // CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]]
+  // CHECK-NEXT:   %[[SIGMOID:.*]] = ttl.tile_sigmoid %[[RELU]]
   // CHECK-NEXT:   ttl.yield %[[SIGMOID]]
   // CHECK-NEXT: }
   // CHECK-NOT: tile_batch_size
+  // CHECK-NOT: dst_idx
   %result = ttl.compute
       ins(%a_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)

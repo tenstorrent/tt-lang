@@ -51,11 +51,6 @@ def TTLTileAndAssignDST
     "::mlir::arith::ArithDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
-
-  let options = [
-    Option<"dstCapacity", "dst-capacity", "unsigned", "8",
-           "DST register capacity (tile registers).">
-  ];
 }
 
 def TTLLowerToLoops

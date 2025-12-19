@@ -81,7 +81,7 @@ static int64_t getDstIdxForValue(Value v) {
 //===----------------------------------------------------------------------===//
 
 /// Generic pattern for lowering TTL unary tile ops to TTKernel SFPU ops.
-/// Unary SFPU ops: DST[dst_idx] = op(DST[dst_idx]) - operates in-place
+/// Unary SFPU ops: DST[dst_idx] = op(DST[dst_idx]) - operates in-place.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -91,8 +91,7 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Get dst_idx from attribute (assigned by ttl-tile-and-assign-dst pass)
-    // Default to 0 if not assigned yet (for testing/development)
+    // Get dst_idx from attribute if present (defaults to 0 for now).
     int64_t dstIdx = 0;
     if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
       dstIdx = dstIdxAttr.getInt();

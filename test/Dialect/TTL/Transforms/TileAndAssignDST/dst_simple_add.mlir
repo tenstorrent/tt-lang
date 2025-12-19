@@ -1,10 +1,10 @@
-// Summary: ensure simple add fits in DST without batching.
+// Summary: ensure simple add fits in DST without batching or dst_idx.
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @simple_add
-// Purpose: verify dst_idx is assigned on a single binary op that fits capacity.
+// Purpose: verify tile op is present without dst_idx attributes.
 func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                       %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -31,7 +31,8 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
-    // CHECK: ttl.tile_add {{.*}} {dst_idx = {{[0-9]+}} : i32}
+    // CHECK: ttl.tile_add
+    // CHECK-NOT: dst_idx
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

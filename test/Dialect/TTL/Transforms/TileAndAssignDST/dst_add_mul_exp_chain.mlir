@@ -1,10 +1,10 @@
-// Summary: three-op chain (add -> mul -> exp) should reuse dst_idx efficiently.
+// Summary: three-op chain (add -> mul -> exp) should flow via tokens (no dst_idx).
 // RUN: ttlang-opt %s --ttl-tile-and-assign-dst --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @add_mul_exp_chain
-// Purpose: verify binary + unary chain gets consistent dst_idx assignments.
+// Purpose: verify tile ops are present without dst_idx attributes.
 func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %c: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -25,11 +25,12 @@ func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   // CHECK-SAME: ins(%{{.*}}, %{{.*}}, %{{.*}} : {{.*}}) outs(%{{.*}} : {{.*}})
   // CHECK-SAME: {indexing_maps = [#map, #map, #map, #map], iterator_types = ["parallel", "parallel"]}
   // CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[SUM:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32}
-  // CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[SUM]], %[[C]] {dst_idx = 0 : i32}
-  // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
+  // CHECK-NEXT:   %[[SUM:.*]] = ttl.tile_add %[[A]], %[[B]]
+  // CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[SUM]], %[[C]]
+  // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
   // CHECK-NEXT:   ttl.yield %[[EXP]]
   // CHECK-NEXT: }
+  // CHECK-NOT: dst_idx
   // CHECK-NOT: tile_batch_size
   %result = ttl.compute
       ins(%a_cb, %b_cb, %c_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
