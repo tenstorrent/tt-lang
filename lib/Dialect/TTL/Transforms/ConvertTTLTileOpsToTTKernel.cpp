@@ -42,6 +42,33 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+/// Look up a CB using precomputed analysis state. Handles block arguments and
+/// tensors (including tensor.extract bases).
+static Value lookupCB(Value src, const CopyTileCBState *state) {
+  if (!state) {
+    return Value();
+  }
+
+  // Block argument path.
+  if (auto barg = llvm::dyn_cast<BlockArgument>(src)) {
+    if (auto it = state->blockArgToCb.find(barg);
+        it != state->blockArgToCb.end()) {
+      return it->second;
+    }
+  }
+
+  // Tensor path (including tensor.extract bases).
+  Value tensor = src;
+  if (auto extract = tensor.getDefiningOp<tensor::ExtractOp>()) {
+    tensor = extract.getTensor();
+  }
+  if (auto it = state->tensorToCb.find(tensor); it != state->tensorToCb.end()) {
+    return it->second;
+  }
+
+  return Value();
+}
+
 /// Get dst_idx for a value (op result or block argument). Defaults to 0.
 /// TODO(#120): Remove after implementing proper DST assignment pass.
 static int64_t getDstIdxForValue(Value v) {
@@ -168,27 +195,8 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Look up the CB via analysis state: block-arg map, then tensor map
-    // (tensor.extract base or direct tensor).
-    Value cb;
-    if (auto barg = llvm::dyn_cast<BlockArgument>(op.getSrc())) {
-      if (cbState) {
-        auto it = cbState->blockArgToCb.find(barg);
-        if (it != cbState->blockArgToCb.end()) {
-          cb = it->second;
-        }
-      }
-    }
-    if (!cb && cbState) {
-      Value tensor = op.getSrc();
-      if (auto extract = tensor.getDefiningOp<tensor::ExtractOp>()) {
-        tensor = extract.getTensor();
-      }
-      auto it = cbState->tensorToCb.find(tensor);
-      if (it != cbState->tensorToCb.end()) {
-        cb = it->second;
-      }
-    }
+    // Look up the CB via analysis state.
+    Value cb = lookupCB(op.getSrc(), cbState);
     if (!cb) {
       return rewriter.notifyMatchFailure(op, "cannot find attached cb for src");
     }
