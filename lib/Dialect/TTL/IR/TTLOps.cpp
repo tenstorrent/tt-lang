@@ -519,3 +519,20 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   // tablegen constraints.
   return success();
 }
+
+mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
+  auto tileType = mlir::dyn_cast<ttcore::TileType>(getTile().getType());
+  if (!tileType) {
+    return emitOpError() << "tile operand must be !ttcore.tile, got "
+                         << getTile().getType();
+  }
+
+  auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
+  auto viewElemTy = viewTy.getElementType();
+  if (viewElemTy != tileType) {
+    return emitOpError() << "view element type (" << viewElemTy
+                         << ") must match tile type (" << tileType << ")";
+  }
+
+  return success();
+}

@@ -35,48 +35,50 @@
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
-// CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 3;
-// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
-// CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
-// CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
-// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 64;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
-// CHECK:   TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:   TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[ZERO]], [[ADDR]]);
+// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
+// CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 3;
+// CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
 
 // User loop from input MLIR (0..3)
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
 
 // First copy: 64x64 (2x2 tiles) → CB1
+// CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
+// CHECK:     TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
+// CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Tile loops: for tile_y in 0..2, for tile_x in 0..2
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[STEP]]) {
-// CHECK-NEXT:      for (size_t [[TILE1_X:[a-z][0-9]+]] = [[LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[STEP]]) {
-// CHECK-NEXT:        size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
-// CHECK-NEXT:        size_t [[TILE1_OFFSET_X:v[0-9]+]] = [[TILE1_OFFSET_Y]] + [[TILE1_X]];
-// CHECK-NEXT:        ptrdiff_t [[TILE1_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE1_OFFSET_X]];
-// CHECK-NEXT:        int32_t [[TILE1_OFFSET:v[0-9]+]] = (int32_t) [[TILE1_OFFSET_PTR]];
-// CHECK-NEXT:        noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[ZERO]]);
-// CHECK-NEXT:      }
-// CHECK-NEXT:    }
+// CHECK:       for (size_t [[TILE1_X:[a-z][0-9]+]] = [[LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[STEP]]) {
+// CHECK:         size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
+// CHECK:         size_t [[TILE1_OFFSET_X:v[0-9]+]] = [[TILE1_OFFSET_Y]] + [[TILE1_X]];
+// CHECK:         ptrdiff_t [[TILE1_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE1_OFFSET_X]];
+// CHECK:         int32_t [[TILE1_OFFSET:v[0-9]+]] = (int32_t) [[TILE1_OFFSET_PTR]];
+// CHECK:         noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_PTR1]]);
+// CHECK:       }
+// CHECK:     }
 
 // Second copy: 64x64 (2x2 tiles) → CB2
+// CHECK:     int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
+// CHECK:     TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
+// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
+// CHECK:     int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[STEP]]) {
-// CHECK-NEXT:      for (size_t [[TILE2_X:[a-z][0-9]+]] = [[LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[STEP]]) {
-// CHECK-NEXT:        size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
-// CHECK-NEXT:        size_t [[TILE2_OFFSET_X:v[0-9]+]] = [[TILE2_OFFSET_Y]] + [[TILE2_X]];
-// CHECK-NEXT:        ptrdiff_t [[TILE2_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE2_OFFSET_X]];
-// CHECK-NEXT:        int32_t [[TILE2_OFFSET:v[0-9]+]] = (int32_t) [[TILE2_OFFSET_PTR]];
-// CHECK-NEXT:        noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[ZERO]]);
-// CHECK-NEXT:      }
-// CHECK-NEXT:    }
+// CHECK:       for (size_t [[TILE2_X:[a-z][0-9]+]] = [[LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[STEP]]) {
+// CHECK:         size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
+// CHECK:         size_t [[TILE2_OFFSET_X:v[0-9]+]] = [[TILE2_OFFSET_Y]] + [[TILE2_X]];
+// CHECK:         ptrdiff_t [[TILE2_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE2_OFFSET_X]];
+// CHECK:         int32_t [[TILE2_OFFSET:v[0-9]+]] = (int32_t) [[TILE2_OFFSET_PTR]];
+// CHECK:         noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_PTR2]]);
+// CHECK:       }
+// CHECK:     }
 
 // Consecutive barriers deduplicated to single barrier.
-// CHECK-NEXT:    noc_async_read_barrier();
-// CHECK-NEXT:  }
-// CHECK-NEXT:  return;
+// CHECK:     noc_async_read_barrier();
+// CHECK:   }
+// CHECK:   return;
 // CHECK-NEXT: }
 
 module {
