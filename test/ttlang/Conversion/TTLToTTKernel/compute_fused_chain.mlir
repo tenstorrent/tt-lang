@@ -25,11 +25,11 @@
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
 // CHECK-NEXT:      ttkernel.copy_tile(%[[CB1_TTK]], %[[C0]], %[[DST1:.*]])
 // CHECK-NEXT:      ttkernel.add_binary_tile_init()
-// CHECK-NEXT:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C2]])
+// CHECK-NEXT:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.mul_binary_tile_init()
 // CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.exp_tile_init()
-// CHECK-NEXT:      ttkernel.exp_tile(%[[C1]])
+// CHECK-NEXT:      ttkernel.exp_tile(%[[C0]])
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // TODO: This tensor.insert should be converted to a ttl.store and lowered to pack_tile

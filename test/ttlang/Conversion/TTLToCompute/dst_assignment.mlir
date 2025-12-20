@@ -10,5 +10,5 @@ func.func @ok(%a: tensor<2x2xf32>, %b: tensor<2x2xf32>) -> tensor<2x2xf32> {
 // CHECK-LABEL: func.func @ok
 // CHECK: tensor.empty
 // CHECK: ttl.compute
-// CHECK: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 0 : i32}
 // CHECK: ttl.yield

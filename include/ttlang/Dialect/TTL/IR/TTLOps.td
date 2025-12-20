@@ -28,7 +28,7 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     threaded into data movement and compute threads.
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
-    - `buffer_factor` is the number of blocks (for example 2 for double buffering).
+    - `buffer_factor` is the number of blocks (default 2 for double buffering).
     Example:
 
     ```mlir
@@ -38,7 +38,7 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    I64Attr:$buffer_factor
+    DefaultValuedAttr<I64Attr, "2">:$buffer_factor
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `buffer_factor` `=` $buffer_factor `}` attr-dict `:` type($result)";

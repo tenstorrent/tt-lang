@@ -187,6 +187,14 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
     return emitOpError() << "expects src to be ttcore.tile";
   }
 
+  // Verify that dst_tile type matches src type.
+  auto dstTileTy = getDstTile().getType();
+  if (dstTileTy != srcTy) {
+    return emitOpError()
+           << "dst_tile type must match src type, but got dst_tile: "
+           << dstTileTy << ", src: " << srcTy;
+  }
+
   return mlir::success();
 }
 
