@@ -36,8 +36,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 
-#include <type_traits>
-
 #define DEBUG_TYPE "ttl-insert-tile-regs-sync"
 
 namespace mlir::tt::ttl {
@@ -53,8 +51,6 @@ struct TTLInsertTileRegsSyncPass
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
-
-    static_assert(std::is_class_v<TTLDialect>);
 
     funcOp.walk([&](ComputeOp computeOp) {
       Operation *computeOperation = computeOp.getOperation();

@@ -290,7 +290,7 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     auto tile = rewriter
                     .create<mlir::UnrealizedConversionCastOp>(
                         loc, TypeRange{op.getResult(1).getType()},
-                        ValueRange{op.getSrc()})
+                        ValueRange{adaptor.getSrc()})
                     .getResult(0);
     rewriter.replaceOp(op, ValueRange{token, tile});
     return success();

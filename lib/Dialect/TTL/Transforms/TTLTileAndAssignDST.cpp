@@ -52,7 +52,8 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include <algorithm>
 #include <cstdint>
-#include <type_traits>
+
+#define DEBUG_TYPE "ttl-tile-and-assign-dst"
 
 namespace mlir::tt::ttl {
 
@@ -60,8 +61,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-static_assert(std::is_class_v<TTLDialect>);
 
 /// Default DST capacity (16-bit, double-buffered).
 constexpr std::uint32_t kDefaultDSTCapacity = 8;
@@ -72,11 +71,7 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 /// Pull from device/ComputeKernelConfig (fp32_dest_acc_en, fullSyncEn).
 static std::uint32_t computeDefaultCapacity() { return kDefaultDSTCapacity; }
 
-static bool isTileOp(Operation *op) {
-  return isa<AddTileOp, SubTileOp, MulTileOp, MaxTileOp, ExpTileOp, LogTileOp,
-             SqrtTileOp, RsqrtTileOp, TanhTileOp, SigmoidTileOp, AbsTileOp,
-             NegTileOp, ReluTileOp, CopyTileOp>(op);
-}
+static bool isTileOp(Operation *op) { return op->hasTrait<TTLTileOpTrait>(); }
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
