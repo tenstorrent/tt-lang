@@ -1,8 +1,6 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst-registers),canonicalize)' | FileCheck %s
 
-// Test: DST assignment assigns dst_idx attributes to tile ops. This is
-// mostly a placeholder, there will be extensive tests after the DST pass is added.
-// Input provides explicit bind_cb and attach_cb ops.
+// Test: token-based lowering with dst_idx annotations on math ops.
 
 func.func @ok(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
