@@ -289,6 +289,61 @@ using CBWaitLowering =
 using CBPopLowering =
     CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
 
+/// Trace through unrealized casts to find a TTKernel CB from a view value.
+/// Returns failure if no CB can be found.
+///
+/// IMPORTANT: This assumes the view comes directly from a CBReserveLowering-
+/// created unrealized_cast. If there's any IR transformation between reserve
+/// and store (CSE, canonicalization, block arguments, etc.), this pattern
+/// match will fail.
+///
+/// TODO(#149): The long-term fix is to extend CBReserveOp to implement
+/// ViewLikeOpInterface. Then instead of pattern-matching on
+/// UnrealizedConversionCastOp (which is an implementation detail of the type
+/// converter and thus fragile), we can call viewOp.getViewSource() in a loop
+/// until we reach a non-view type (the actual CB).
+static FailureOr<Value> getCBFromView(Value view) {
+  // The view comes from CBReserveLowering, which creates an unrealized_cast
+  // from the converted TTKernel CB to the tensor view type.
+  auto castOp = view.getDefiningOp<UnrealizedConversionCastOp>();
+  if (!castOp || castOp.getInputs().size() != 1) {
+    return failure();
+  }
+  Value cb = castOp.getInputs()[0];
+  if (!llvm::isa<ttk::CBType>(cb.getType())) {
+    return failure();
+  }
+  return cb;
+}
+
+struct StoreLowering : OpConversionPattern<StoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // Trace from the view back to the CB.
+    auto cb = getCBFromView(adaptor.getView());
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(
+          op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
+    }
+
+    // Create pack_tile(dst_index=0, cb, out_index=0).
+    // TODO(#120): Replace hardcoded dst_index=0 with the actual DST register
+    // index from the op that produced the tile being stored, once DST
+    // assignment is implemented.
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    rewriter.create<ttk::PackTileOp>(loc, zero, *cb, zero,
+                                     /*out_of_order=*/false);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 enum class CopySourceKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 enum class CopyDestKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
 
@@ -651,8 +706,8 @@ struct TTLConvertTTLToTTKernelPass
 
     RewritePatternSet patterns(&ctx);
     patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-                 CBPushLowering, CBWaitLowering, CBPopLowering>(typeConverter,
-                                                                &ctx);
+                 CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
+        typeConverter, &ctx);
     populateFunctionOpInterfaceTypeConversionPattern(
         func::FuncOp::getOperationName(), patterns, typeConverter);
 

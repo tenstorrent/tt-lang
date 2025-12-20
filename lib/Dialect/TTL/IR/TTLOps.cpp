@@ -13,8 +13,9 @@
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"    // IWYU pragma: keep
-#include "llvm/ADT/TypeSwitch.h"               // IWYU pragma: keep
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h"            // IWYU pragma: keep
 #include <cstdint>
 
 #define GET_OP_CLASSES
@@ -490,5 +491,22 @@ mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   // cb_pop has no result to verify; the CB type is already enforced by
   // tablegen constraints.
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
+  auto tileType = mlir::dyn_cast<ttcore::TileType>(getTile().getType());
+  if (!tileType) {
+    return emitOpError() << "tile operand must be !ttcore.tile, got "
+                         << getTile().getType();
+  }
+
+  auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
+  auto viewElemTy = viewTy.getElementType();
+  if (viewElemTy != tileType) {
+    return emitOpError() << "view element type (" << viewElemTy
+                         << ") must match tile type (" << tileType << ")";
+  }
+
   return success();
 }
