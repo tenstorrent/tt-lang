@@ -1,5 +1,5 @@
 // This file tests ttl.store handling in TTLInsertTileRegsSync.
-// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(ttl-validate-stores,ttl-insert-tile-regs-sync))' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(ttl-insert-tile-regs-sync))' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

@@ -57,22 +57,6 @@ def TTLTileAndAssignDST
   ];
 }
 
-def TTLValidateStores
-    : Pass<"ttl-validate-stores", "::mlir::func::FuncOp"> {
-  let summary = "Validate ttl.store placement and circular buffer usage";
-  let description = [{
-    Checks that ttl.store operations inside ttl.compute bodies store yielded
-    tiles into views produced by ttl.cb_reserve on the corresponding attached
-    circular buffers. Missing ttl.store ops are permitted here; TTLInsertTileRegsSync
-    will insert them when views exist.
-  }];
-
-  let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect",
-    "::mlir::func::FuncDialect"
-  ];
-}
-
 def TTLInsertTileRegsSync
     : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
   let summary = "Insert tile_regs_* synchronization ops around ttl.compute";

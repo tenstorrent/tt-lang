@@ -1,5 +1,5 @@
 // Invalid ttl.store placements caught by ttl-validate-stores.
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics --pass-pipeline='builtin.module(func.func(ttl-validate-stores))'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
