@@ -258,8 +258,8 @@ convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
 }
 
 // num_pages = product of CB shape dimensions (elements per block).
-[[maybe_unused]] static Value computeNumPages(
-    Value cb, ConversionPatternRewriter &rewriter, Location loc) {
+[[maybe_unused]] static Value
+computeNumPages(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
   int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
   return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);

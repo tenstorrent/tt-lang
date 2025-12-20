@@ -97,8 +97,7 @@ struct TTLValidateStoresPass
         }
 
         if (!storeForOutput.try_emplace(outputIdx, store).second) {
-          store.emitOpError()
-              << "duplicate ttl.store for output " << outputIdx;
+          store.emitOpError() << "duplicate ttl.store for output " << outputIdx;
           return WalkResult::interrupt();
         }
       }
@@ -115,4 +114,3 @@ struct TTLValidateStoresPass
 } // namespace
 
 } // namespace mlir::tt::ttl
-
