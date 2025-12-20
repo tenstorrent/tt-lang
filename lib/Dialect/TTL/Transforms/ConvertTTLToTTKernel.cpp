@@ -258,8 +258,8 @@ convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
 }
 
 // num_pages = product of CB shape dimensions (elements per block).
-static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
-                             Location loc) {
+[[maybe_unused]] static Value computeNumPages(
+    Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
   int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
   return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);
@@ -307,31 +307,41 @@ using CBWaitLowering =
 using CBPopLowering =
     CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
 
-/// Trace through unrealized casts to find a TTKernel CB from a view value.
-/// Returns failure if no CB can be found.
-///
-/// IMPORTANT: This assumes the view comes directly from a CBReserveLowering-
-/// created unrealized_cast. If there's any IR transformation between reserve
-/// and store (CSE, canonicalization, block arguments, etc.), this pattern
-/// match will fail.
-///
-/// TODO(#149): The long-term fix is to extend CBReserveOp to implement
-/// ViewLikeOpInterface. Then instead of pattern-matching on
-/// UnrealizedConversionCastOp (which is an implementation detail of the type
-/// converter and thus fragile), we can call viewOp.getViewSource() in a loop
-/// until we reach a non-view type (the actual CB).
+/// Trace back from a view value to the underlying TTKernel CB. Handles simple
+/// cast chains and direct ttl.cb_reserve producers. Returns failure if no CB
+/// can be found.
 static FailureOr<Value> getCBFromView(Value view) {
-  // The view comes from CBReserveLowering, which creates an unrealized_cast
-  // from the converted TTKernel CB to the tensor view type.
-  auto castOp = view.getDefiningOp<UnrealizedConversionCastOp>();
-  if (!castOp || castOp.getInputs().size() != 1) {
-    return failure();
+  SmallVector<Value, 4> worklist = {view};
+  SmallPtrSet<Value, 4> visited;
+
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!visited.insert(v).second) {
+      continue;
+    }
+
+    if (llvm::isa<ttk::CBType>(v.getType())) {
+      return v;
+    }
+
+    if (auto viewLike =
+            dyn_cast_or_null<ViewLikeOpInterface>(v.getDefiningOp())) {
+      worklist.push_back(viewLike.getViewSource());
+      continue;
+    }
+
+    if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
+      llvm::append_range(worklist, castOp.getInputs());
+      continue;
+    }
+
+    if (auto tensorCast = v.getDefiningOp<tensor::CastOp>()) {
+      worklist.push_back(tensorCast.getSource());
+      continue;
+    }
   }
-  Value cb = castOp.getInputs()[0];
-  if (!llvm::isa<ttk::CBType>(cb.getType())) {
-    return failure();
-  }
-  return cb;
+
+  return failure();
 }
 
 struct StoreLowering : OpConversionPattern<StoreOp> {

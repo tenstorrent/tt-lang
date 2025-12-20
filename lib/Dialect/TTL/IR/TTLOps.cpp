@@ -11,6 +11,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
 #include "llvm/ADT/TypeSwitch.h"            // IWYU pragma: keep
@@ -236,15 +237,6 @@ void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
 //===----------------------------------------------------------------------===//
 // ComputeOp - Helper functions
 //===----------------------------------------------------------------------===//
-
-/// Return the circular buffer attached to `tensor` via `ttl.attach_cb`, or null
-/// if none/ambiguous.
-mlir::Value getAttachedCB(mlir::Value tensor) {
-  if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
-    return attach.getCb();
-  }
-  return mlir::Value();
-}
 
 //===----------------------------------------------------------------------===//
 // ComputeOp - DestinationStyleOpInterface implementations
@@ -493,6 +485,53 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
+  // Validate any ttl.store ops in the body.
+  auto yieldOp = cast<YieldOp>(bodyBlock.getTerminator());
+  SmallVector<Value> yielded(yieldOp->operand_begin(), yieldOp->operand_end());
+  SmallVector<bool> storeSeen(numOutputs, false);
+
+  for (Operation &op : bodyBlock.without_terminator()) {
+    auto store = dyn_cast<StoreOp>(&op);
+    if (!store) {
+      continue;
+    }
+
+    auto it = llvm::find(yielded, store.getTile());
+    if (it == yielded.end()) {
+      return store.emitOpError()
+             << "tile operand must be yielded by the enclosing ttl.compute";
+    }
+    size_t outputIdx = static_cast<size_t>(it - yielded.begin());
+
+    Value attachedCb = getAttachedCB(getOutputs()[outputIdx]);
+    if (!attachedCb) {
+      return emitOpError()
+             << "output " << outputIdx
+             << " must have an attached circular buffer before ttl.store";
+    }
+
+    auto reserve = store.getView().getDefiningOp<CBReserveOp>();
+    if (!reserve) {
+      return store.emitOpError()
+             << "view must be produced by ttl.cb_reserve for the output CB";
+    }
+    if (reserve.getCb() != attachedCb) {
+      return store.emitOpError()
+             << "view CB does not match the circular buffer attached to output "
+             << outputIdx;
+    }
+
+    if (!store->isBeforeInBlock(yieldOp)) {
+      return store.emitOpError() << "must appear before ttl.yield";
+    }
+
+    if (storeSeen[outputIdx]) {
+      return store.emitOpError()
+             << "duplicate ttl.store for output " << outputIdx;
+    }
+    storeSeen[outputIdx] = true;
+  }
+
   return mlir::success();
 }
 
@@ -513,6 +552,8 @@ mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
+
+mlir::Value mlir::tt::ttl::CBReserveOp::getViewSource() { return getCb(); }
 
 mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   // cb_pop has no result to verify; the CB type is already enforced by

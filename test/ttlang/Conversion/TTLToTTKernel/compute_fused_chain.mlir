@@ -32,9 +32,10 @@
 // CHECK-NEXT:      ttkernel.exp_tile(%[[C0]])
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
-// TODO: This tensor.insert should be converted to a ttl.store and lowered to pack_tile
-// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
-// CHECK-NEXT:    scf.yield %[[INSERT]]
+// CHECK:            ttkernel.cb_reserve_back(%[[CB2_TTK:.*]], %[[ANYC:.*]]) : (!ttkernel.cb<{{.*}}>, i32) -> ()
+// CHECK:            ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[C0]], false)
+// CHECK:            %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
+// CHECK:          scf.yield %[[INSERT]]
 // CHECK:       scf.yield
 // CHECK:       ttkernel.tile_regs_release
 // CHECK:       return

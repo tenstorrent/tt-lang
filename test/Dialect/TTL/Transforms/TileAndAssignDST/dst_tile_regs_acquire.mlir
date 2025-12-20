@@ -14,7 +14,9 @@
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.tile_regs_commit
 // CHECK-NEXT:   ttl.tile_regs_wait
-// CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK:        ttl.cb_reserve
+// CHECK:        ttl.store %[[ADD]]
+// CHECK:        ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK: ttl.tile_regs_release
 // CHECK: return %[[RES]]
@@ -58,12 +60,16 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK: %[[R0:.*]] = ttl.compute
 // CHECK:   ttl.tile_regs_commit
 // CHECK:   ttl.tile_regs_wait
+// CHECK:   ttl.cb_reserve
+// CHECK:   ttl.store
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK: ttl.tile_regs_release
 // CHECK: ttl.tile_regs_acquire
 // CHECK: %[[R1:.*]] = ttl.compute
 // CHECK:   ttl.tile_regs_commit
 // CHECK:   ttl.tile_regs_wait
+// CHECK:   ttl.cb_reserve
+// CHECK:   ttl.store
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK: ttl.tile_regs_release
 // CHECK: return %[[R1]]

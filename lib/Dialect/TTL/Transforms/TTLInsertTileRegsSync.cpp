@@ -14,7 +14,10 @@
 //
 // 1. Inside ttl.compute body:
 //    - Inserts tile_regs_acquire at the beginning (if not present)
-//    - Inserts tile_regs_commit immediately before the ttl.yield terminator
+//    - Inserts tile_regs_commit immediately before ttl.store/ttl.yield
+//    - Inserts tile_regs_wait before ttl.store
+//    - Inserts ttl.store for any outputs that lack one (using existing CB
+//    views)
 //
 // 2. Outside ttl.compute (in parent block):
 //    - Inserts tile_regs_wait immediately after the ttl.compute operation
@@ -31,10 +34,12 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Pass/Pass.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttl-insert-tile-regs-sync"
 
@@ -64,24 +69,100 @@ struct TTLInsertTileRegsSyncPass
         beforeBuilder.create<TileRegsAcquireOp>(computeOp.getLoc());
       }
 
-      // Commit: inside compute body, immediately before ttl.yield.
       Block &body = computeOp.getRegion().front();
-      if (Operation *terminator = body.getTerminator()) {
-        Operation *beforeTerminator = terminator->getPrevNode();
-        if (!beforeTerminator || !isa<TileRegsCommitOp>(beforeTerminator)) {
-          OpBuilder inBody(terminator);
-          inBody.create<TileRegsCommitOp>(computeOp.getLoc());
+      auto *terminator = body.getTerminator();
+      auto yieldOp = cast<YieldOp>(terminator);
+
+      // Collect existing sync and store ops.
+      SmallVector<StoreOp> storeOps;
+      TileRegsCommitOp commitOp = nullptr;
+      TileRegsWaitOp waitOp = nullptr;
+      for (Operation &op : body.without_terminator()) {
+        if (auto store = dyn_cast<StoreOp>(&op)) {
+          storeOps.push_back(store);
+          continue;
+        }
+        if (auto commit = dyn_cast<TileRegsCommitOp>(&op)) {
+          commitOp = commit;
+          continue;
+        }
+        if (auto wait = dyn_cast<TileRegsWaitOp>(&op)) {
+          waitOp = wait;
+          continue;
         }
       }
 
-      // Wait: place immediately before ttl.yield (after commit), to guard the
-      // impending write back (currently tensor.insert; TODO: lower to store).
-      if (Operation *terminator = body.getTerminator()) {
-        Operation *beforeTerminator = terminator->getPrevNode();
-        if (!beforeTerminator || !isa<TileRegsWaitOp>(beforeTerminator)) {
-          OpBuilder inBody(terminator);
-          inBody.create<TileRegsWaitOp>(computeOp.getLoc());
+      // Ensure commit and wait exist near the end of the block.
+      OpBuilder endBuilder(terminator);
+      if (!commitOp) {
+        commitOp = endBuilder.create<TileRegsCommitOp>(computeOp.getLoc());
+      }
+      if (!waitOp) {
+        waitOp = endBuilder.create<TileRegsWaitOp>(computeOp.getLoc());
+      }
+      // Enforce ordering: commit -> wait.
+      if (!commitOp->isBeforeInBlock(waitOp)) {
+        commitOp->moveBefore(waitOp);
+      }
+
+      // Map yielded outputs to existing stores.
+      SmallVector<Value> yielded(yieldOp.getValues().begin(),
+                                 yieldOp.getValues().end());
+      llvm::DenseMap<size_t, StoreOp> storeForOutput;
+      for (StoreOp store : storeOps) {
+        auto it = llvm::find(yielded, store.getTile());
+        if (it != yielded.end()) {
+          storeForOutput.try_emplace(static_cast<size_t>(it - yielded.begin()),
+                                     store);
         }
+      }
+
+      // Helper: find a cb_reserve view in the body for the given CB.
+      auto findViewForCB = [&](Value cb) -> Value {
+        for (Operation &op : body.without_terminator()) {
+          if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
+            if (reserve.getCb() == cb) {
+              return reserve.getResult();
+            }
+          }
+        }
+        return Value();
+      };
+
+      // Reorder existing stores after wait in original order.
+      Operation *tail = waitOp.getOperation();
+      for (StoreOp store : storeOps) {
+        if (store.getOperation() == tail) {
+          continue;
+        }
+        store.getOperation()->moveAfter(tail);
+        tail = store.getOperation();
+      }
+
+      // Insert missing stores for outputs using existing views.
+      for (auto [idx, tile] : llvm::enumerate(yielded)) {
+        if (storeForOutput.contains(idx)) {
+          continue;
+        }
+
+        Value cb = getAttachedCB(computeOp.getOutputs()[idx]);
+        Value view = findViewForCB(cb);
+        if (!view) {
+          auto viewType = mlir::cast<RankedTensorType>(
+              computeOp.getOutputs()[idx].getType());
+          OpBuilder reserveBuilder(terminator);
+          reserveBuilder.setInsertionPointAfter(tail);
+          view = reserveBuilder.create<CBReserveOp>(computeOp.getLoc(),
+                                                    viewType, cb);
+          tail = view.getDefiningOp();
+        }
+
+        OpBuilder storeBuilder(terminator);
+        storeBuilder.setInsertionPointAfter(tail);
+        auto newStore =
+            storeBuilder.create<StoreOp>(computeOp.getLoc(), tile, view);
+        tail = newStore.getOperation();
+        storeForOutput.try_emplace(idx, newStore);
       }
 
       // Release: after compute in parent block.

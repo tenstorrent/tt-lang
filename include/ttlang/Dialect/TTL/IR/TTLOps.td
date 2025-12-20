@@ -12,6 +12,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
 
 //===----------------------------------------------------------------------===//
@@ -406,7 +407,8 @@ defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 
-def TTL_CBReserveOp : TTL_Op<"cb_reserve", [MemoryEffects<[MemWrite]>]> {
+def TTL_CBReserveOp : TTL_Op<"cb_reserve",
+    [MemoryEffects<[MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Reserve pages in a circular buffer for writing";
   let description = [{
     `ttl.cb_reserve` blocks until pages are available in the circular buffer

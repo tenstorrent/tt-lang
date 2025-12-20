@@ -2,7 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
@@ -33,15 +35,6 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
   }
   return b.create<tensor::EmptyOp>(loc, type.getShape(), type.getElementType(),
                                    dynDims);
-}
-
-/// Get the CB associated with a tensor value.
-/// The tensor must come from an attach_cb op.
-static Value getAttachedCB(Value tensor) {
-  if (auto attachOp = tensor.getDefiningOp<AttachCBOp>()) {
-    return attachOp.getCb();
-  }
-  return nullptr;
 }
 
 /// Find the CB that this operation's result will be attached to.
