@@ -307,40 +307,38 @@ using CBWaitLowering =
 using CBPopLowering =
     CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
 
-/// Trace back from a view value to the underlying TTKernel CB. Handles simple
-/// cast chains and direct ttl.cb_reserve producers. Returns failure if no CB
-/// can be found.
-static FailureOr<Value> getCBFromView(Value view) {
-  SmallVector<Value, 4> worklist = {view};
-  SmallPtrSet<Value, 4> visited;
-
-  while (!worklist.empty()) {
-    Value v = worklist.pop_back_val();
-    if (!visited.insert(v).second) {
-      continue;
-    }
-
+/// Trace back from a view value to the underlying TTKernel CB.
+/// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
+static FailureOr<Value> getCBFromView(Value v) {
+  while (v) {
     if (llvm::isa<ttk::CBType>(v.getType())) {
       return v;
     }
 
-    if (auto viewLike =
-            dyn_cast_or_null<ViewLikeOpInterface>(v.getDefiningOp())) {
-      worklist.push_back(viewLike.getViewSource());
+    Operation *def = v.getDefiningOp();
+    if (!def) {
+      break;
+    }
+
+    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
+      v = viewLike.getViewSource();
       continue;
     }
 
-    if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
-      llvm::append_range(worklist, castOp.getInputs());
+    if (auto cast = llvm::dyn_cast<UnrealizedConversionCastOp>(def)) {
+      if (cast.getInputs().size() == 1) {
+        v = cast.getInputs()[0];
+        continue;
+      }
+    }
+
+    if (auto cast = llvm::dyn_cast<tensor::CastOp>(def)) {
+      v = cast.getSource();
       continue;
     }
 
-    if (auto tensorCast = v.getDefiningOp<tensor::CastOp>()) {
-      worklist.push_back(tensorCast.getSource());
-      continue;
-    }
+    break;
   }
-
   return failure();
 }
 

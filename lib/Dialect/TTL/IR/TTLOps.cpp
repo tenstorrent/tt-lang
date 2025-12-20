@@ -555,6 +555,8 @@ mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
 
 mlir::Value mlir::tt::ttl::CBReserveOp::getViewSource() { return getCb(); }
 
+mlir::Value mlir::tt::ttl::CBWaitOp::getViewSource() { return getCb(); }
+
 mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   // cb_pop has no result to verify; the CB type is already enforced by
   // tablegen constraints.
