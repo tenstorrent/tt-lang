@@ -26,6 +26,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
@@ -76,6 +77,53 @@ static int64_t getDstIdxForValue(Value v) {
   return 0;
 }
 
+/// Check if the tile operand is inside a ttl.compute context with attached CB.
+/// Returns true if the tile is a block argument of a ttl.compute body and has
+/// a CB attached via ttl.attach_cb.
+static bool isInComputeContext(Value tile) {
+  auto blockArg = dyn_cast<BlockArgument>(tile);
+  if (!blockArg) {
+    return false;
+  }
+
+  Block *block = blockArg.getParentBlock();
+  if (!block) {
+    return false;
+  }
+
+  auto computeOp = dyn_cast<ComputeOp>(block->getParentOp());
+  if (!computeOp) {
+    return false;
+  }
+
+  unsigned argIdx = blockArg.getArgNumber();
+  unsigned numInputs = computeOp.getNumInputs();
+
+  Value tensorValue;
+  if (argIdx < numInputs) {
+    tensorValue = computeOp.getInputs()[argIdx];
+  } else if (argIdx < numInputs + computeOp.getNumOutputs()) {
+    tensorValue = computeOp.getOutputs()[argIdx - numInputs];
+  } else {
+    return false;
+  }
+
+  return tensorValue.getDefiningOp<AttachCBOp>() != nullptr;
+}
+
+/// Emit a ttl.copy_tile op to load a tile from CB to DST.
+/// Only emits if the tile is inside a compute context with attached CB.
+static void emitCopyTileOp(Value tile, int64_t srcIdx, int64_t dstIdx,
+                           Location loc, OpBuilder &builder) {
+  if (!isInComputeContext(tile)) {
+    return;
+  }
+  Value srcIdxVal = builder.create<arith::ConstantIndexOp>(loc, srcIdx);
+  Value dstIdxVal = builder.create<arith::ConstantIndexOp>(loc, dstIdx);
+  builder.create<CopyTileOp>(loc, DSTRegisterType::get(builder.getContext()),
+                             tile, srcIdxVal, dstIdxVal);
+}
+
 //===----------------------------------------------------------------------===//
 // Generic Tile Op Lowering Templates (using ConversionPattern)
 //===----------------------------------------------------------------------===//
@@ -91,21 +139,23 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Get dst_idx from attribute (assigned by ttl-assign-dst-registers pass)
-    // Default to 0 if not assigned yet (for testing/development)
+    // Get dst_idx from attribute (assigned by ttl-assign-dst-registers pass).
+    // Default to 0 if not assigned yet (for testing/development).
     int64_t dstIdx = 0;
     if (auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>("dst_idx")) {
       dstIdx = dstIdxAttr.getInt();
     }
 
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+    // Emit ttl.copy_tile to load input from CB to DST (if in compute context).
+    emitCopyTileOp(op.getInput(), /*srcIdx=*/0, dstIdx, loc, rewriter);
 
-    // Emit init + compute ops
+    // Emit init + compute ops.
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, dstIdxVal);
 
-    // Replace all uses with a placeholder (the value is now in DST register)
-    // For tile ops, we pass through the input since the result is implicit
+    // Replace all uses with a placeholder (the value is now in DST register).
+    // For tile ops, we pass through the input since the result is implicit.
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }
@@ -133,15 +183,19 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
       odstIdx = dstIdxAttr.getInt();
     }
 
+    // Emit ttl.copy_tile for each operand (if in compute context).
+    emitCopyTileOp(op.getLhs(), /*srcIdx=*/0, src0Idx, loc, rewriter);
+    emitCopyTileOp(op.getRhs(), /*srcIdx=*/0, src1Idx, loc, rewriter);
+
     Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
     Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
     Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
 
-    // Emit init + compute ops
+    // Emit init + compute ops.
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
 
-    // Replace with lhs (result is in DST[odst], which is typically src0)
+    // Replace with lhs (result is in DST[odst], which is typically src0).
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
   }
@@ -163,11 +217,13 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     // MaxTilesOp is in-place: DST[dst0] = max(DST[dst0], DST[dst1])
     // TODO(#124): Get DST indices from dst_idx attributes. For now use
     // defaults.
-    int64_t dst0Idx = 0;
-    int64_t dst1Idx = 1;
 
-    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
-    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
+    // Emit ttl.copy_tile for each operand (if in compute context).
+    emitCopyTileOp(op.getLhs(), /*srcIdx=*/0, /*dstIdx=*/0, loc, rewriter);
+    emitCopyTileOp(op.getRhs(), /*srcIdx=*/0, /*dstIdx=*/1, loc, rewriter);
+
+    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, dst0, dst1);
