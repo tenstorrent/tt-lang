@@ -126,28 +126,38 @@ struct TTLInsertTileRegsSyncPass
       // pass emits an error otherwise). We prefer existing views and only
       // materialize a new reserve if none exists.
 
-      // Helper: find a cb_reserve view for the given CB. Prefer in-body
-      // reserves; otherwise look in the parent block before the compute.
-      auto findViewForCB = [&](Value cb) -> Value {
-        // Check inside the compute body.
-        for (Operation &op : body.without_terminator()) {
-          if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
-            if (reserve.getCb() == cb) {
-              return reserve.getResult();
-            }
-          }
-        }
-        // Check the parent block before the compute op.
-        for (Operation &op : *parent) {
-          if (&op == computeOperation) {
+      // Helper: find a cb_reserve view for the given CB that dominates the
+      // store insertion point. Prefer the last in-body reserve before the
+      // insertion; otherwise use the nearest reserve in the parent block before
+      // the compute.
+      auto findViewForCB = [&](Value cb, Operation *insertAfter) -> Value {
+        Value candidate;
+
+        // Scan the compute body up to (but not including) insertAfter.
+        for (Operation &op : body) {
+          if (&op == insertAfter) {
             break;
           }
           if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
             if (reserve.getCb() == cb) {
+              candidate = reserve.getResult(); // keep the last dominating one
+            }
+          }
+        }
+        if (candidate) {
+          return candidate;
+        }
+
+        // Scan the parent block backwards from the compute op.
+        for (Operation *curr = computeOperation->getPrevNode(); curr;
+             curr = curr->getPrevNode()) {
+          if (auto reserve = dyn_cast<CBReserveOp>(curr)) {
+            if (reserve.getCb() == cb) {
               return reserve.getResult();
             }
           }
         }
+
         return Value();
       };
 
@@ -165,7 +175,7 @@ struct TTLInsertTileRegsSyncPass
         }
 
         Value cb = getAttachedCB(computeOp.getOutputs()[idx]);
-        Value view = findViewForCB(cb);
+        Value view = findViewForCB(cb, tail->getNextNode());
         if (!view) {
           OpBuilder storeBuilder(terminator);
           storeBuilder.setInsertionPointAfter(tail);

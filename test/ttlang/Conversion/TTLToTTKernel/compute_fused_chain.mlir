@@ -9,15 +9,15 @@
 // CHECK-DAG:   %[[C2:.*]] = arith.constant 2 : index
 // CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
-// CHECK:       %[[INIT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+// CHECK:       %[[OUTPUT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK:       %[[CB0_TTK:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK:       %[[CB1_TTK:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK:       %[[CB2_TTK:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK:       %[[A_CB:.*]] = ttl.attach_cb %[[AARG]],
 // CHECK:       %[[B_CB:.*]] = ttl.attach_cb %[[BARG]],
-// CHECK:       %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]],
+// CHECK:       %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]],
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
-// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[INIT_CB]])
+// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT_CB]])
 // CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
 // CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
@@ -34,16 +34,16 @@
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[C0]], false)
-// CHECK:           %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
-// CHECK:          scf.yield %[[INSERT]]
+// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
+// CHECK-NEXT:    scf.yield %[[INSERT]]
 // CHECK:       scf.yield
 // CHECK:       ttkernel.tile_regs_release
 // CHECK:       return
-// CHECK-NOT:   ttl.copy_tile %[[INIT_CB]]
+// CHECK-NOT:   ttl.copy_tile %[[OUTPUT_CB]]
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
-  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %output = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
@@ -51,12 +51,12 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %output_cb = ttl.attach_cb %output, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                          tensor<2x2x!ttcore.tile<32x32, f32>>)
-      outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%output_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>],
