@@ -32,25 +32,32 @@ foo(x, y)
 
 Thread functions are Python functions with no arguments, annotated by `@ttl.compute()` or `@ttl.datamovement()`. They are typically defined in the kernel function scope to capture shared objects.
 
-**Compute threads** execute compute operations on blocks. **Data movement threads** handle memory transfers and synchronization. An analogy is a restaurant kitchen where the host program is the customer who places an order and receives the finished meal. Inside the kitchen, the first data movement thread acts as a prep cook fetching ingredients from storage, the compute thread is the line cook preparing the dish, and the second data movement thread serves as the server delivering the finished dish back to the customer.
+**Compute threads** execute compute operations on blocks. **Data movement (DM) threads** handle memory transfers and synchronization. An analogy is a restaurant where the host program is the customer who places an order for a multi-course meal. Inside the kitchen (Tensix core), the first data movement thread acts as a worker fetching ingredients from storage, the compute thread is the cook preparing each course as soon as the ingredients are available, and the second data movement thread is the server that brings each finished course to the customer as soon as it's ready. Multiple courses move through this pipeline at once—while one dish is being plated, another is cooking, and a third is being prepped.
 
 ```{mermaid}
 graph TB
-    Host[Host Program] -->|sends input data| DRAM[DRAM/L1]
+    Host["Host Program<br/>(🧑 Customer)"] -->|sends input data| DRAM["DRAM/L1<br/>(🍚🐟🥒🥑 Ingredients)"]
 
-    subgraph KernelFunction[Kernel Function on Tensix Core]
-        DM1[Data Movement Thread 1<br/>Reader]
-        CT[Compute Thread]
-        DM2[Data Movement Thread 2<br/>Writer]
+    subgraph KernelFunction["Kernel Function on Tensix Core (Kitchen)"]
+        subgraph pad[" "]
+            subgraph threads[" "]
+                DM1["DM Thread 1<br/>Reader (🧑🏻 Prep Cook)"]
+                CT["Compute Thread<br/>(👩🏽‍🍳 Cook)"]
+                DM2["DM Thread 2<br/>Writer (👧🏼 Server)"]
+            end
+        end
     end
 
     DRAM -->|reads from| DM1
-    DM1 -->|writes to| CB1[Circular Buffer]
+    DM1 -->|writes to| CB1["Circular Buffer<br/>(🔔 Ingredients ready)"]
     CB1 -->|provides data| CT
-    CT -->|writes to| CB2[Circular Buffer]
+    CT -->|writes to| CB2["Circular Buffer<br/>(🔔 Course ready)"]
     CB2 -->|provides data| DM2
-    DM2 -->|writes to| DRAM2[DRAM/L1]
+    DM2 -->|writes to| DRAM2["DRAM/L1<br/>(🍱 Ready to eat course)"]
     DRAM2 -->|returns results| Host
+
+    classDef invisible fill:none,stroke:none;
+    class pad,threads invisible;
 ```
 
 ## Grid and Core Functions
@@ -59,7 +66,7 @@ graph TB
 
 `ttl.grid_size(dims)` returns the size of the grid in the specified dimensionality. If requested dimensions differ from grid dimensions, the highest rank dimension is flattened or padded.
 
-Think of the grid like an office building: a single-chip grid is one floor with an 8x8 arrangement of cubicles (cores). When you ask for a 1D view, you're counting all cubicles in a line (64 total). A multi-chip grid adds more floors, and you can choose whether to count by floor, by cubicle-within-floor, or flatten everything into one long hallway.
+An analogy is an office building: a single-chip grid is one floor with an 8x8 arrangement of cubicles (cores). A 1D view counts all cubicles in a line (64 total). A multi-chip grid adds more floors, and the view can count by floor, by cubicle-within-floor, or flatten everything into one long hallway.
 
 ```python
 # For (8, 8) single-chip grid

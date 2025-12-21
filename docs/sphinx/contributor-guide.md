@@ -11,6 +11,6 @@
 - Targeted MLIR coverage: `llvm-lit test/ttlang/<path>.mlir`.
 
 ## Documentation
-- Add new user-facing pages under `docs/src` and link them in `SUMMARY.md`.
+- Add new user-facing pages under `docs/sphinx` and link them in `index.rst`.
 - Keep contributor-only instructions in this guide or `guidelines.md`.
-- Build docs with `cmake --build build --target ttlang-docs` or `make -C docs/sphinx html`.
+- Build docs with `cmake --build build --target ttlang-docs`.

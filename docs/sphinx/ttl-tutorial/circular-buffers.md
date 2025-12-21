@@ -2,7 +2,7 @@
 
 ## Overview
 
-A circular buffer is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. Think of it like a conveyor belt in a factory: the producer (data movement thread) places items onto the belt, and the consumer (compute thread) picks them up. The belt has a fixed number of slots, and when full, the producer must wait for the consumer to free up space.
+A circular buffer is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. An analogy is a conveyor belt in a factory: the producer (data movement thread) places items onto the belt, and the consumer (compute thread) picks them up. The belt has a fixed number of slots, and when full, the producer must wait for the consumer to free up space.
 
 A circular buffer is created with the `ttl.make_circular_buffer_like` function by passing a TT-NN tensor, shape, and buffer factor.
 
@@ -18,7 +18,7 @@ graph LR
 
 There are two acquisition functions on a circular buffer object: `wait` and `reserve`. A circular buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions.
 
-Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope—like checking out a library book that's automatically returned when you leave the reading room. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function: `pop` for `wait` and `push` for `reserve`.
+Acquisition functions can be used with Python `with` statement, which automatically releases acquired blocks at the end of the `with` scope—like checking out a library book that is automatically returned when leaving the reading room. Alternatively, if acquisition functions are used without `with`, a corresponding release function must be called explicitly: `pop` for `wait` and `push` for `reserve`.
 
 **Producer-consumer flow:**
 

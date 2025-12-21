@@ -1,8 +1,5 @@
 # Introduction
 
-tt-lang is a Python DSL for authoring Tenstorrent kernels with compiler-managed memory, scheduling, and validation. It builds on tt-mlir for dialects, passes, and runtime support, giving a middle ground between TT-NN ease of use and TT-Metalium control.
+TT-Lang is a Python-based domain-specific language for writing custom kernels on Tenstorrent hardware. It integrates tightly with [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html), enabling programs that mix high-level TT-NN operations with low-level kernel code.
 
-Key goals:
-- Express fused kernels quickly while the compiler infers compute, memory, and synchronization when possible.
-- Keep low-level control available for performance tuning.
-- Validate via simulation before hardware runs.
+The language is built around explicit data movement and compute threads with explicit synchronization. This provides fine-grained control over kernel execution and performance characteristics. TT-Lang includes abstractions familiar to TT-Metalium users, such as circular buffers and semaphores, alongside higher-level constructs like tensor slices, blocks, and pipes that handle the details of memory layout, compute APIs, and inter-core communication.
