@@ -504,7 +504,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     size_t outputIdx = static_cast<size_t>(it - yielded.begin());
 
     Value attachedCb = getAttachedCB(getOutputs()[outputIdx]);
-    // attachedCb is guaranteed to be non-null by earlier verification.
+    assert(attachedCb && "output CB verified by earlier check");
 
     auto reserve = store.getView().getDefiningOp<CBReserveOp>();
     if (!reserve) {

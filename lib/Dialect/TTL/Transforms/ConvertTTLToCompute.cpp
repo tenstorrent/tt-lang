@@ -12,7 +12,6 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "llvm/ADT/DenseSet.h"
 
 #define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 

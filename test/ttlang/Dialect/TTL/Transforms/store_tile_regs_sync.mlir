@@ -9,14 +9,14 @@
 // CHECK-NEXT:    %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
 // CHECK-NEXT:    %[[INIT:.*]] = tensor.empty
 // CHECK-NEXT:    %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB]]
-// CHECK-NEXT:    %[[VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:    ttl.tile_regs_acquire
-// CHECK-NEXT:    %[[RES:.*]] = ttl.compute
+// CHECK-NEXT:    %[[VIEW_PRE:.*]] = ttl.cb_reserve %[[CB]]
+// CHECK:         ttl.tile_regs_acquire
+// CHECK:         %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
 // CHECK-NEXT:      %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN]]
 // CHECK-NEXT:      ttl.tile_regs_commit
 // CHECK-NEXT:      ttl.tile_regs_wait
-// CHECK-NEXT:      ttl.store %[[TILE]], %[[VIEW]]
+// CHECK-NEXT:      ttl.store %[[TILE]], %[[VIEW_PRE]]
 // CHECK-NEXT:      ttl.yield %[[TILE]] : !ttcore.tile<32x32, bf16>
 // CHECK-NEXT:    } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 // CHECK-NEXT:    ttl.tile_regs_release
@@ -49,8 +49,8 @@ func.func @store_reorder_after_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>
 // CHECK-NEXT:    %[[INIT:.*]] = tensor.empty
 // CHECK-NEXT:    %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB]]
 // CHECK-NEXT:    %[[VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:    ttl.tile_regs_acquire
-// CHECK-NEXT:    %[[RES:.*]] = ttl.compute
+// CHECK:         ttl.tile_regs_acquire
+// CHECK:         %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
 // CHECK-NEXT:      %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN]]
 // CHECK-NEXT:      ttl.tile_regs_commit

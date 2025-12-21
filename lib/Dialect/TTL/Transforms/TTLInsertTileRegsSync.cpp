@@ -19,8 +19,7 @@
 //    - Inserts ttl.store for outputs that lack one (requires existing CB view)
 //
 // 2. Outside ttl.compute (in parent block):
-//    - Inserts tile_regs_wait immediately after the ttl.compute operation
-//    - Inserts tile_regs_release immediately after tile_regs_wait
+//    - Inserts tile_regs_release immediately after the ttl.compute operation
 //
 // This establishes the correct DST lifecycle:
 //   MATH thread:  acquire -> [compute] -> commit
@@ -59,6 +58,14 @@ struct TTLInsertTileRegsSyncPass
       Operation *computeOperation = computeOp.getOperation();
       Block *parent = computeOperation->getBlock();
       assert(parent && "ComputeOp must have parent block");
+
+      if (computeOperation->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+        computeOp.emitOpError()
+            << "ttl-insert-tile-regs-sync expects ttl.compute to be "
+            << "non-IsolatedFromAbove; it rematerializes cb_reserve inside "
+            << "the body for auto-inserted stores";
+        return WalkResult::interrupt();
+      }
 
       // Acquire: before the compute op in parent block.
       Operation *prev = computeOperation->getPrevNode();
@@ -115,10 +122,14 @@ struct TTLInsertTileRegsSyncPass
         }
       }
 
-      // Helper: find a cb_reserve view for the given CB. Searches both inside
-      // the compute body and in the parent block before the compute op.
+      // NOTE: This pass requires ttl.compute to be non-IsolatedFromAbove (the
+      // pass emits an error otherwise). We prefer existing views and only
+      // materialize a new reserve if none exists.
+
+      // Helper: find a cb_reserve view for the given CB. Prefer in-body
+      // reserves; otherwise look in the parent block before the compute.
       auto findViewForCB = [&](Value cb) -> Value {
-        // First check inside the compute body.
+        // Check inside the compute body.
         for (Operation &op : body.without_terminator()) {
           if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
             if (reserve.getCb() == cb) {
@@ -126,7 +137,7 @@ struct TTLInsertTileRegsSyncPass
             }
           }
         }
-        // Then check the parent block before the compute op.
+        // Check the parent block before the compute op.
         for (Operation &op : *parent) {
           if (&op == computeOperation) {
             break;
@@ -143,9 +154,6 @@ struct TTLInsertTileRegsSyncPass
       // Reorder existing stores after wait in original order.
       Operation *tail = waitOp.getOperation();
       for (StoreOp store : storeOps) {
-        if (store.getOperation() == tail) {
-          continue;
-        }
         store.getOperation()->moveAfter(tail);
         tail = store.getOperation();
       }
@@ -159,11 +167,12 @@ struct TTLInsertTileRegsSyncPass
         Value cb = getAttachedCB(computeOp.getOutputs()[idx]);
         Value view = findViewForCB(cb);
         if (!view) {
-          computeOp.emitError()
-              << "output " << idx
-              << " requires a ttl.cb_reserve view but none exists; "
-              << "insert ttl.cb_reserve before ttl.store";
-          return WalkResult::interrupt();
+          OpBuilder storeBuilder(terminator);
+          storeBuilder.setInsertionPointAfter(tail);
+          auto newReserve = storeBuilder.create<CBReserveOp>(
+              computeOp.getLoc(), computeOp.getOutputs()[idx].getType(), cb);
+          view = newReserve.getResult();
+          tail = newReserve.getOperation();
         }
 
         OpBuilder storeBuilder(terminator);
