@@ -36,6 +36,24 @@ namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
+// Build CB analysis state (block arguments and attached tensors).
+CopyTileCBState buildCopyTileCBState(Operation *root) {
+  CopyTileCBState state;
+  root->walk([&](ComputeOp compute) {
+    for (auto it : llvm::enumerate(compute.getInputs())) {
+      if (auto attach = it.value().template getDefiningOp<AttachCBOp>()) {
+        BlockArgument barg = compute.getBody().front().getArgument(it.index());
+        state.blockArgToCb.try_emplace(barg, attach.getCb());
+      }
+    }
+  });
+  root->walk([&](AttachCBOp attach) {
+    state.tensorToCb.try_emplace(attach.getResult(), attach.getCb());
+    state.tensorToCb.try_emplace(attach.getTensor(), attach.getCb());
+  });
+  return state;
+}
+
 namespace {
 
 using mlir::LogicalResult;
@@ -686,14 +704,16 @@ struct TTLConvertTTLToTTKernelPass
     // Mark compute-related ops as legal during partial conversion since they're
     // handled by the separate greedy rewrite phase
     // (populateTTLTileOpsToTTKernelPatterns).
-    target.addLegalOp<ComputeOp, YieldOp>();
-    // Tile ops (handled by greedy phase):
+    target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
+    // Tile ops (handled by tile ops phase later):
     target.addLegalOp<
         // Binary tile ops
         AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
         // Unary tile ops
         ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
-        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp>();
+        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp,
+        // Copy tile op
+        CopyTileOp>();
 
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());
@@ -736,18 +756,24 @@ struct TTLConvertTTLToTTKernelPass
     computeTarget.addLegalDialect<arith::ArithDialect>();
     // Keep compute ops legal (tile-only lowering here).
     computeTarget.addLegalOp<ComputeOp, YieldOp>();
+    // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
+    computeTarget.markUnknownOpDynamicallyLegal(
+        [](Operation *) { return true; });
+    // Mark tile ops as illegal so they get converted.
     computeTarget.addIllegalOp<
         // Binary tile ops
         AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
         // Unary tile ops
         ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
-        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp>();
-    // Other dialects are legal (func, tensor, etc.)
-    computeTarget.markUnknownOpDynamicallyLegal(
-        [](Operation *) { return true; });
+        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp,
+        // Copy tile op
+        CopyTileOp>();
+
+    auto cbState = buildCopyTileCBState(mod);
 
     RewritePatternSet computePatterns(&ctx);
-    populateTTLTileOpsToTTKernelPatterns(computePatterns);
+    populateTTLTileOpsToTTKernelPatterns(&typeConverter, &cbState,
+                                         computePatterns);
     if (failed(applyPartialConversion(mod, computeTarget,
                                       std::move(computePatterns)))) {
       signalPassFailure();

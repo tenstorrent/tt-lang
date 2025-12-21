@@ -3,11 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "TTLOpsVerifyUtils.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
@@ -24,12 +22,22 @@
 #define GET_ATTRDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrDefs.cpp.inc"
 
+#define GET_TYPEDEF_CLASSES
+#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
+
 namespace mlir::tt::ttl {
 
 void TTLDialect::registerAttributes() {
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrDefs.cpp.inc"
+      >();
+}
+
+void TTLDialect::registerTypes() {
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
       >();
 }
 
@@ -170,6 +178,16 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
     return failure();
   }
   return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
+  auto srcTy = getSrc().getType();
+
+  if (!mlir::isa<tt::ttcore::TileType>(srcTy)) {
+    return emitOpError() << "expects src to be ttcore.tile";
+  }
+
+  return mlir::success();
 }
 
 void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
