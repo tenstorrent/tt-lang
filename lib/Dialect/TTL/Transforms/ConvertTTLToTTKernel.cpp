@@ -696,6 +696,50 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   }
 };
 
+/// Fold away late ttl wrappers (attach_cb and trivial casts) so downstream
+/// stages (emitc/translate) need not load the TTL dialect.
+static LogicalResult foldTTLLateWrappers(ModuleOp mod) {
+  bool hadFailure = false;
+  mod.walk([&](Operation *op) {
+    if (auto attach = dyn_cast<AttachCBOp>(op)) {
+      // attach_cb is a type-only wrapper; replace uses with the original tensor.
+      attach.getResult().replaceAllUsesWith(attach.getTensor());
+      attach.erase();
+      return;
+    }
+    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
+      // Only allow simple 1:1 casts that can be folded away; reject anything
+      // multi-arity to avoid silently changing semantics.
+      if (cast.getInputs().size() != 1 || cast.getOutputs().size() != 1) {
+        cast.emitOpError()
+            << "expected single-input single-output cast during TTL cleanup";
+        hadFailure = true;
+        return;
+      }
+
+      Value in = cast.getInputs().front();
+      Value out = cast.getResult(0);
+
+      // Drop dead casts outright.
+      if (out.use_empty()) {
+        cast.erase();
+        return;
+      }
+
+      // Fold identity casts; non-identity casts require the TTL dialect and are
+      // rejected so downstream tools remain TTL-free.
+      if (in.getType() == out.getType()) {
+        out.replaceAllUsesWith(in);
+        cast.erase();
+        return;
+      }
+      // Leave differing-type casts intact; they may be required for other
+      // dialects (e.g., transfer handles) and will be handled downstream.
+    }
+  });
+  return success(!hadFailure);
+}
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
@@ -710,20 +754,16 @@ struct TTLConvertTTLToTTKernelPass
                            func::FuncDialect, tensor::TensorDialect,
                            ttkernel::TTKernelDialect>();
 
-    // Mark compute-related ops as legal during partial conversion since they're
-    // handled by the separate later-stage rewrite phase
-    // (populateTTLTileOpsToTTKernelPatterns).
+    // Mark compute-related ops as legal during this partial conversion. Tile
+    // ops will be lowered in a later phase (see computeTarget below), so keep
+    // them legal here via the tile trait to avoid early legalization failures.
     target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, TileRegsAcquireOp,
                       TileRegsCommitOp, TileRegsWaitOp, TileRegsReleaseOp>();
-    // Tile ops (handled by tile ops phase later):
     target.addLegalOp<
-        // Binary tile ops
-        AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
-        // Unary tile ops
-        ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
-        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp,
-        // Copy tile op
-        CopyTileOp>();
+        // Tile ops kept legal in this phase; lowered later in computeTarget.
+        AddTileOp, SubTileOp, MulTileOp, MaxTileOp, ExpTileOp, LogTileOp,
+        SqrtTileOp, RsqrtTileOp, TanhTileOp, SigmoidTileOp, AbsTileOp,
+        NegTileOp, ReluTileOp, CopyTileOp>();
 
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());
@@ -767,8 +807,6 @@ struct TTLConvertTTLToTTKernelPass
     // Keep compute ops legal (tile-only lowering here).
     computeTarget.addLegalOp<ComputeOp, YieldOp>();
     // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
-    computeTarget.markUnknownOpDynamicallyLegal(
-        [](Operation *) { return true; });
     // Mark tile ops as illegal so they get converted.
     computeTarget.addIllegalOp<
         // Binary tile ops
@@ -798,6 +836,11 @@ struct TTLConvertTTLToTTKernelPass
     finalizePatterns.add<FuncKernelFinalize>(&ctx);
     if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
       signalPassFailure();
+    }
+
+    if (failed(foldTTLLateWrappers(mod))) {
+      signalPassFailure();
+      return;
     }
   }
 };
