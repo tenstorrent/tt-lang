@@ -22,9 +22,6 @@ inline constexpr int32_t kMaxCircularBuffers = 32;
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 
 /// Trait for tile compute operations (add, mul, exp, etc.).
-/// These are arithmetic/math operations that execute on tiles in DST registers.
-/// Excludes data movement ops (CopyTileOp) and DST lifecycle ops.
-/// Used by conversion passes to identify tile compute ops for lowering.
 template <typename ConcreteType>
 class TTLTileComputeOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileComputeOpTrait> {};

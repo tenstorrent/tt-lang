@@ -22,7 +22,6 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
 /// Check if an operation is a tile compute operation.
 /// Returns true for arithmetic/math tile operations (add, mul, exp, etc.).
 /// Excludes data movement ops (copy_tile) and DST lifecycle ops.
-/// Used by conversion passes and DST assignment to identify tile compute ops.
 inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }

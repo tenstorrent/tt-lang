@@ -737,8 +737,8 @@ struct TTLConvertTTLToTTKernelPass
     // CopyTileOp is a data movement op (CB -> DST), lowered in phase 2.
     target.addLegalOp<CopyTileOp>();
 
-    // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal in phase 1.
-    // They are lowered in phase 2 (computeTarget).
+    // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal in
+    // phase 1. They are lowered in phase 2 (computeTarget).
     target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
         [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
 
@@ -773,9 +773,10 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
     }
 
-    // Lower tile ops to TTKernel ops using DialectConversion. Tile compute ops are
-    // identified by TTLTileComputeOpTrait. ttl.compute is kept legal here because full
-    // compute lowering happens after loops and bufferization in a later stage.
+    // Lower tile ops to TTKernel ops using DialectConversion. Tile compute ops
+    // are identified by TTLTileComputeOpTrait. ttl.compute is kept legal here
+    // because full compute lowering happens after loops and bufferization in a
+    // later stage.
     ConversionTarget computeTarget(ctx);
     // TTKernel ops are legal (target dialect)
     computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
@@ -785,10 +786,12 @@ struct TTLConvertTTLToTTKernelPass
     computeTarget.addLegalOp<ComputeOp, YieldOp>();
 
     // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
-    computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+    computeTarget.markUnknownOpDynamicallyLegal(
+        [](Operation *) { return true; });
 
-    // Mark TTL ops that need lowering as illegal (tile compute ops, CopyTileOp, DST lifecycle).
-    // All other TTL ops (ComputeOp, YieldOp, AttachCBOp) were explicitly marked legal above.
+    // Mark TTL ops that need lowering as illegal (tile compute ops, CopyTileOp,
+    // DST lifecycle). All other TTL ops (ComputeOp, YieldOp, AttachCBOp) were
+    // explicitly marked legal above.
     computeTarget.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
         [](Operation *op) {
           // Tile compute ops (add, mul, exp, etc.) are illegal.
@@ -822,9 +825,9 @@ struct TTLConvertTTLToTTKernelPass
     // Phase 3: Remove remaining TTL structural ops (AttachCBOp).
     // These are now dead after tile ops have been lowered.
     ConversionTarget cleanupTarget(ctx);
-    cleanupTarget.addLegalDialect<ttkernel::TTKernelDialect, arith::ArithDialect,
-                                   BuiltinDialect, scf::SCFDialect,
-                                   func::FuncDialect, tensor::TensorDialect>();
+    cleanupTarget.addLegalDialect<
+        ttkernel::TTKernelDialect, arith::ArithDialect, BuiltinDialect,
+        scf::SCFDialect, func::FuncDialect, tensor::TensorDialect>();
     cleanupTarget.addIllegalOp<AttachCBOp>();
     // ComputeOp/YieldOp should be gone after loop lowering, but mark illegal
     // just in case.
@@ -847,9 +850,11 @@ struct TTLConvertTTLToTTKernelPass
 
     // Phase 4: Remove tensor dataflow ops that were used only for SSA tracking.
     // After tile ops are lowered, tensor.extract/insert/empty are dead code.
-    // The actual computation happens through circular buffers and DST registers.
+    // The actual computation happens through circular buffers and DST
+    // registers.
     mod.walk([&](func::FuncOp func) {
-      // Check for compute kernel via either ttkernel.thread or ttl.kernel_thread.
+      // Check for compute kernel via either ttkernel.thread or
+      // ttl.kernel_thread.
       auto threadAttr =
           func->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread");
       auto ttlThreadAttr =
@@ -935,7 +940,8 @@ struct TTLConvertTTLToTTKernelPass
       bool hasResultUses = false;
       func.walk([&](func::ReturnOp returnOp) {
         if (returnOp.getNumOperands() > 0) {
-          // Check if the return value is actually used (it can't be for func.return)
+          // Check if the return value is actually used (it can't be for
+          // func.return)
           hasResultUses = true;
         }
       });

@@ -4,6 +4,7 @@
 // RUN:   | FileCheck %s
 
 // Purpose: ensure copy_tile + fused math ops lower to ttkernel with no TTL ops left.
+// After conversion, attach_cb ops are removed (replaced with their tensor operands).
 // CHECK-LABEL: func.func @fused_chain_lowering
 // CHECK-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-DAG:   %[[C2:.*]] = arith.constant 2 : index
@@ -13,13 +14,10 @@
 // CHECK:       %[[CB0_TTK:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK:       %[[CB1_TTK:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK:       %[[CB2_TTK:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK:       %[[A_CB:.*]] = ttl.attach_cb %[[AARG]],
-// CHECK:       %[[B_CB:.*]] = ttl.attach_cb %[[BARG]],
-// CHECK:       %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]],
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
-// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT_CB]])
+// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT]])
 // CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
-// CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
+// CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[AARG]][%[[I]], %[[J]]]
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
 // CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[C0]], %[[DST0:.*]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
@@ -30,16 +28,19 @@
 // CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.exp_tile_init()
 // CHECK-NEXT:      ttkernel.exp_tile(%[[C0]])
-// CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK:.*]], %[[ANYC:.*]])
+// CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK]], %[[ANYC:.*]])
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[C0]], false)
 // CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
-// CHECK-NEXT:    scf.yield %[[INSERT]]
-// CHECK:       scf.yield
-// CHECK:       ttkernel.tile_regs_release
-// CHECK:       return
-// CHECK-NOT:   ttl.copy_tile %[[OUTPUT_CB]]
+// CHECK-NEXT:      scf.yield %[[INSERT]]
+// CHECK-NEXT:    }
+// CHECK-NEXT:    scf.yield
+// CHECK:       }
+// CHECK-NEXT:  ttkernel.tile_regs_release
+// CHECK-NEXT:  return
+// CHECK-NOT:   ttl.attach_cb
+// CHECK-NOT:   ttl.copy_tile
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {

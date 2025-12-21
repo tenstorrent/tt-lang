@@ -6,24 +6,63 @@
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // Purpose: end-to-end TTL -> TTKernel -> emitc -> C++ for fused chain.
+// Verifies: add + exp fused compute with CB-based data flow.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK: void kernel_main()
-// CHECK: tile_regs_acquire
-// CHECK: copy_tile_init(get_compile_time_arg_val(0))
-// CHECK: copy_tile(get_compile_time_arg_val(0)
-// CHECK: copy_tile_init(get_compile_time_arg_val(1))
-// CHECK: copy_tile(get_compile_time_arg_val(1)
-// CHECK: add_binary_tile_init
-// CHECK: add_binary_tile
-// CHECK: exp_tile_init
-// CHECK: exp_tile
-// CHECK: cb_reserve_back(get_compile_time_arg_val(2)
-// CHECK: tile_regs_commit
-// CHECK: tile_regs_wait
-// CHECK: pack_tile
-// CHECK: tile_regs_release
+// CHECK-LABEL: void kernel_main()
+
+// --- Constants ---
+// CHECK-DAG:   int32_t [[TILES:v[0-9]+]] = 4
+// CHECK-DAG:   size_t [[BOUND:v[0-9]+]] = 2
+// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1
+// CHECK-DAG:   size_t [[ZERO:v[0-9]+]] = 0
+
+// --- DST register lifecycle (acquire before loops) ---
+// CHECK:       tile_regs_acquire();
+
+// --- Nested loops over 2x2 tile grid ---
+// CHECK-NEXT:  for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
+// CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
+
+// --- Load tile from CB0 (input A) into DST[0] ---
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[ZERO]], [[ZERO]]);
+
+// --- Load tile from CB1 (input B) into DST[1] ---
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[ZERO]], [[STEP]]);
+
+// --- Add: DST[0] + DST[1] -> DST[0] ---
+// CHECK-NEXT:      add_binary_tile_init();
+// CHECK-NEXT:      add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+
+// --- Exp: exp(DST[0]) -> DST[0] ---
+// CHECK-NEXT:      exp_tile_init();
+// CHECK-NEXT:      exp_tile([[ZERO]]);
+
+// --- Reserve output CB2 for packing ---
+// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+
+// --- DST register synchronization before pack ---
+// CHECK-NEXT:      tile_regs_commit();
+// CHECK-NEXT:      tile_regs_wait();
+
+// --- Pack DST[0] to output CB2 ---
+// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[ZERO]]);
+
+// --- End of inner and outer loops ---
+// CHECK-NEXT:    }
+// CHECK-NEXT:  }
+
+// --- DST register lifecycle (release after loops) ---
+// CHECK-NEXT:  tile_regs_release();
+// CHECK-NEXT:  return;
+
+// --- Verify no tensor operations remain ---
+// CHECK-NOT:   tensor.extract
+// CHECK-NOT:   tensor.insert
+// CHECK-NOT:   tensor.empty
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>>

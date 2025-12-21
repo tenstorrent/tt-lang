@@ -2,13 +2,17 @@
 
 // Test: ttl.copy_tile inside ttl.compute lowers to ttkernel.copy_tile_init + ttkernel.copy_tile.
 // The lowering traces src back to the attached CB via tensor.extract (post loop-lowering).
+// After conversion, attach_cb ops are removed (replaced with their tensor operands).
 
 // CHECK-LABEL: func.func @copy_tile_in_compute
 // CHECK:       %[[CB_TTK:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, f32>>
-// CHECK:       %[[CB_TTL:.*]] = builtin.unrealized_conversion_cast %[[CB_TTK]] : !ttkernel.cb<1, !ttcore.tile<32x32, f32>> to !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-// CHECK:       ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
-// CHECK-NEXT:  ttkernel.copy_tile(%[[CB_TTK]], %[[SRC_IDX:.*]], %[[DST_IDX:.*]]) : (!ttkernel.cb<{{.*}}>, index, index) -> ()
+// CHECK:       scf.for
+// CHECK:         scf.for
+// CHECK:           tensor.extract
+// CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
+// CHECK-NEXT:      ttkernel.copy_tile(%[[CB_TTK]], %[[SRC_IDX:.*]], %[[DST_IDX:.*]]) : (!ttkernel.cb<{{.*}}>, index, index) -> ()
 // CHECK-NOT:   ttl.copy_tile
+// CHECK-NOT:   ttl.attach_cb
 func.func @copy_tile_in_compute(
     %t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %src_idx: index,
