@@ -844,6 +844,117 @@ struct TTLConvertTTLToTTKernelPass
     if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
       signalPassFailure();
     }
+
+    // Phase 4: Remove tensor dataflow ops that were used only for SSA tracking.
+    // After tile ops are lowered, tensor.extract/insert/empty are dead code.
+    // The actual computation happens through circular buffers and DST registers.
+    mod.walk([&](func::FuncOp func) {
+      // Check for compute kernel via either ttkernel.thread or ttl.kernel_thread.
+      auto threadAttr =
+          func->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread");
+      auto ttlThreadAttr =
+          func->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
+
+      bool isCompute = false;
+      if (threadAttr && threadAttr.getValue() == ttk::ThreadType::Compute) {
+        isCompute = true;
+      } else if (ttlThreadAttr &&
+                 ttlThreadAttr.getValue() == ttk::ThreadType::Compute) {
+        isCompute = true;
+        // Convert ttl.kernel_thread to ttkernel.thread for compute kernels.
+        func->removeAttr("ttl.kernel_thread");
+        func->setAttr("ttkernel.thread", ttlThreadAttr);
+      }
+
+      if (!isCompute) {
+        return;
+      }
+
+      // Remove tensor ops in stages. Each stage must complete before the next
+      // so use counts are updated correctly.
+
+      // Stage 1: Replace tensor.insert results with dest tensor, then erase.
+      // This makes tensor.extract results dead.
+      SmallVector<tensor::InsertOp> insertOps;
+      func.walk([&](tensor::InsertOp op) { insertOps.push_back(op); });
+      for (auto op : insertOps) {
+        op.getResult().replaceAllUsesWith(op.getDest());
+        op.erase();
+      }
+
+      // Stage 2: Erase dead tensor.extract ops.
+      SmallVector<tensor::ExtractOp> extractOps;
+      func.walk([&](tensor::ExtractOp op) { extractOps.push_back(op); });
+      for (auto op : extractOps) {
+        if (op.getResult().use_empty()) {
+          op.erase();
+        }
+      }
+
+      // Stage 3: Erase dead tensor.empty ops.
+      SmallVector<tensor::EmptyOp> emptyOps;
+      func.walk([&](tensor::EmptyOp op) { emptyOps.push_back(op); });
+      for (auto op : emptyOps) {
+        if (op.getResult().use_empty()) {
+          op.erase();
+        }
+      }
+
+      // Simplify scf.for loops: remove unused iter_args and simplify yields.
+      // After tensor dataflow removal, loops may have dead iter_args.
+      func.walk([&](scf::ForOp forOp) {
+        // Collect indices of iter_args that are still used outside the loop.
+        SmallVector<unsigned> unusedArgIndices;
+        for (unsigned i = 0; i < forOp.getNumResults(); ++i) {
+          if (forOp.getResult(i).use_empty()) {
+            unusedArgIndices.push_back(i);
+          }
+        }
+
+        // If all iter_args are unused, we can simplify but keep the loop
+        // structure for the side effects (TTKernel ops).
+        // The scf.yield will be updated in canonicalization.
+      });
+
+      // Erase unused function arguments. Compute kernels get data from CBs.
+      // Only erase arguments that have no uses.
+      if (func.getNumArguments() > 0) {
+        llvm::BitVector argsToErase(func.getNumArguments());
+        for (unsigned i = 0; i < func.getNumArguments(); ++i) {
+          if (func.getArgument(i).use_empty()) {
+            argsToErase.set(i);
+          }
+        }
+        if (argsToErase.any()) {
+          (void)func.eraseArguments(argsToErase);
+        }
+      }
+
+      // Update return statements to return void if function has no results.
+      // First check if there are any result uses.
+      bool hasResultUses = false;
+      func.walk([&](func::ReturnOp returnOp) {
+        if (returnOp.getNumOperands() > 0) {
+          // Check if the return value is actually used (it can't be for func.return)
+          hasResultUses = true;
+        }
+      });
+
+      // For compute kernels, update function to return void.
+      if (!func.getResultTypes().empty()) {
+        func.walk([](func::ReturnOp returnOp) {
+          if (returnOp.getNumOperands() > 0) {
+            OpBuilder builder(returnOp);
+            builder.create<func::ReturnOp>(returnOp.getLoc());
+            returnOp.erase();
+          }
+        });
+        // Update function type to return void.
+        auto newFuncType =
+            FunctionType::get(&ctx, func.getArgumentTypes(), TypeRange{});
+        func.setType(newFuncType);
+      }
+    });
   }
 };
 
