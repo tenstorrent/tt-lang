@@ -344,6 +344,22 @@ static FailureOr<Value> getCBFromView(Value v) {
   return failure();
 }
 
+/// Lower ttl.attach_cb to its input tensor.
+/// After all CB-aware lowerings are done, attach_cb is purely metadata and
+/// can be erased. We replace it with its input tensor to preserve SSA form.
+struct AttachCBLowering : OpConversionPattern<AttachCBOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(AttachCBOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Replace the attach_cb result with its input tensor.
+    // The CB association metadata has already been used by earlier lowerings.
+    rewriter.replaceOp(op, adaptor.getTensor());
+    return success();
+  }
+};
+
 struct StoreLowering : OpConversionPattern<StoreOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -799,6 +815,25 @@ struct TTLConvertTTLToTTKernelPass
                                          computePatterns);
     if (failed(applyPartialConversion(mod, computeTarget,
                                       std::move(computePatterns)))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Phase 3: Remove remaining TTL structural ops (AttachCBOp).
+    // These are now dead after tile ops have been lowered.
+    ConversionTarget cleanupTarget(ctx);
+    cleanupTarget.addLegalDialect<ttkernel::TTKernelDialect, arith::ArithDialect,
+                                   BuiltinDialect, scf::SCFDialect,
+                                   func::FuncDialect, tensor::TensorDialect>();
+    cleanupTarget.addIllegalOp<AttachCBOp>();
+    // ComputeOp/YieldOp should be gone after loop lowering, but mark illegal
+    // just in case.
+    cleanupTarget.addIllegalOp<ComputeOp, YieldOp>();
+
+    RewritePatternSet structuralPatterns(&ctx);
+    structuralPatterns.add<AttachCBLowering>(typeConverter, &ctx);
+    if (failed(applyPartialConversion(mod, cleanupTarget,
+                                      std::move(structuralPatterns)))) {
       signalPassFailure();
       return;
     }
