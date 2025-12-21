@@ -71,6 +71,7 @@ Note: this project is currently in early prototype phase, examples are not final
 - [Hitchhiker's Guide](docs/HITCHHIKERS_GUIDE.md) - Complete DSL guide with examples and pipeline architecture
 - [Build System](docs/BUILD_SYSTEM.md) - Detailed build configuration options and integration scenarios
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
+- [Sphinx docs](docs/README.md) - How to build, view, and extend the documentation (docs are disabled by default; enable with `-DTTLANG_ENABLE_DOCS=ON` and build with `cmake --build build --target ttlang-docs`)
 
 ## Testing
 
