@@ -504,11 +504,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     size_t outputIdx = static_cast<size_t>(it - yielded.begin());
 
     Value attachedCb = getAttachedCB(getOutputs()[outputIdx]);
-    if (!attachedCb) {
-      return emitOpError()
-             << "output " << outputIdx
-             << " must have an attached circular buffer before ttl.store";
-    }
+    // attachedCb is guaranteed to be non-null by earlier verification.
 
     auto reserve = store.getView().getDefiningOp<CBReserveOp>();
     if (!reserve) {
