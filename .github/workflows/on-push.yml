@@ -31,14 +31,14 @@ jobs:
     with:
       # macOS is disabled by default for pushes. Enable via workflow_dispatch.
       run_macos: ${{ github.event_name == 'workflow_dispatch' && inputs.run_macos }}
-      build_docs: ${{ github.ref == 'refs/heads/main' }}
+      build_docs: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/bnorris/docs-sphinx' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   deploy-docs:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/bnorris/docs-sphinx'
     needs: build
     runs-on: ubuntu-latest
     environment:
