@@ -258,6 +258,7 @@ convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
 }
 
 // num_pages = product of CB shape dimensions (elements per block).
+// Used by CBOpLowering template; [[maybe_unused]] silences false positive.
 [[maybe_unused]] static Value
 computeNumPages(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   auto ttlCbTy = getTTLCBType(cb);

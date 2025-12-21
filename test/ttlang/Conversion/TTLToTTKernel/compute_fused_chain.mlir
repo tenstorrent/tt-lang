@@ -30,10 +30,10 @@
 // CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.exp_tile_init()
 // CHECK-NEXT:      ttkernel.exp_tile(%[[C0]])
+// CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK:.*]], %[[ANYC:.*]])
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
-// CHECK:            ttkernel.cb_reserve_back(%[[CB2_TTK:.*]], %[[ANYC:.*]]) : (!ttkernel.cb<{{.*}}>, i32) -> ()
-// CHECK:            ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[C0]], false)
+// CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[C0]], false)
 // CHECK:            %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
 // CHECK:          scf.yield %[[INSERT]]
 // CHECK:       scf.yield
@@ -67,6 +67,8 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
+    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

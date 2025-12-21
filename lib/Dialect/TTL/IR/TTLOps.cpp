@@ -521,10 +521,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
              << outputIdx;
     }
 
-    if (!store->isBeforeInBlock(yieldOp)) {
-      return store.emitOpError() << "must appear before ttl.yield";
-    }
-
     if (storeSeen[outputIdx]) {
       return store.emitOpError()
              << "duplicate ttl.store for output " << outputIdx;

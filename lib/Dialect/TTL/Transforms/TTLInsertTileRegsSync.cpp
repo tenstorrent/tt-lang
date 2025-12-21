@@ -16,8 +16,7 @@
 //    - Inserts tile_regs_acquire at the beginning (if not present)
 //    - Inserts tile_regs_commit immediately before ttl.store/ttl.yield
 //    - Inserts tile_regs_wait before ttl.store
-//    - Inserts ttl.store for any outputs that lack one (using existing CB
-//    views)
+//    - Inserts ttl.store for outputs that lack one (requires existing CB view)
 //
 // 2. Outside ttl.compute (in parent block):
 //    - Inserts tile_regs_wait immediately after the ttl.compute operation
@@ -32,7 +31,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -57,7 +55,7 @@ struct TTLInsertTileRegsSyncPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    funcOp.walk([&](ComputeOp computeOp) {
+    WalkResult result = funcOp.walk([&](ComputeOp computeOp) -> WalkResult {
       Operation *computeOperation = computeOp.getOperation();
       Block *parent = computeOperation->getBlock();
       assert(parent && "ComputeOp must have parent block");
@@ -117,9 +115,22 @@ struct TTLInsertTileRegsSyncPass
         }
       }
 
-      // Helper: find a cb_reserve view in the body for the given CB.
+      // Helper: find a cb_reserve view for the given CB. Searches both inside
+      // the compute body and in the parent block before the compute op.
       auto findViewForCB = [&](Value cb) -> Value {
+        // First check inside the compute body.
         for (Operation &op : body.without_terminator()) {
+          if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
+            if (reserve.getCb() == cb) {
+              return reserve.getResult();
+            }
+          }
+        }
+        // Then check the parent block before the compute op.
+        for (Operation &op : *parent) {
+          if (&op == computeOperation) {
+            break;
+          }
           if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
             if (reserve.getCb() == cb) {
               return reserve.getResult();
@@ -148,13 +159,11 @@ struct TTLInsertTileRegsSyncPass
         Value cb = getAttachedCB(computeOp.getOutputs()[idx]);
         Value view = findViewForCB(cb);
         if (!view) {
-          auto viewType = mlir::cast<RankedTensorType>(
-              computeOp.getOutputs()[idx].getType());
-          OpBuilder reserveBuilder(terminator);
-          reserveBuilder.setInsertionPointAfter(tail);
-          view = reserveBuilder.create<CBReserveOp>(computeOp.getLoc(),
-                                                    viewType, cb);
-          tail = view.getDefiningOp();
+          computeOp.emitError()
+              << "output " << idx
+              << " requires a ttl.cb_reserve view but none exists; "
+              << "insert ttl.cb_reserve before ttl.store";
+          return WalkResult::interrupt();
         }
 
         OpBuilder storeBuilder(terminator);
@@ -171,7 +180,13 @@ struct TTLInsertTileRegsSyncPass
       if (!isa_and_nonnull<TileRegsReleaseOp>(next)) {
         afterBuilder.create<TileRegsReleaseOp>(computeOp.getLoc());
       }
+
+      return WalkResult::advance();
     });
+
+    if (result.wasInterrupted()) {
+      signalPassFailure();
+    }
   }
 };
 

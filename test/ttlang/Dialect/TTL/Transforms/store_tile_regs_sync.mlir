@@ -4,12 +4,13 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @store_with_explicit_view
+// CHECK: ttl.cb_reserve
 // CHECK: tile_regs_acquire
 // CHECK: ttl.compute
-// CHECK:   %[[COPY:.*]] = ttl.copy_tile
+// CHECK:   %[[DST_TOK:.*]], %[[DST_TILE:.*]] = ttl.copy_tile
 // CHECK:   tile_regs_commit
 // CHECK-NEXT:   tile_regs_wait
-// CHECK-NEXT:   ttl.store %[[COPY_RET:.*]], %[[VIEW:.*]] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+// CHECK-NEXT:   ttl.store %[[DST_TILE]]
 // CHECK:   ttl.yield
 // CHECK: tile_regs_release
 func.func @store_with_explicit_view(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
@@ -32,12 +33,13 @@ func.func @store_with_explicit_view(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
+// Test that stores are auto-inserted for yielded tiles using views from parent.
 // CHECK-LABEL: func.func @store_auto_insert_missing
+// CHECK: ttl.cb_reserve
 // CHECK: tile_regs_acquire
 // CHECK: ttl.compute
 // CHECK:   tile_regs_commit
 // CHECK-NEXT:   tile_regs_wait
-// CHECK:   ttl.cb_reserve
 // CHECK-NEXT:   ttl.store
 // CHECK:   ttl.yield
 // CHECK: tile_regs_release
