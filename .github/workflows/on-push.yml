@@ -13,6 +13,8 @@ on:
 permissions:
   checks: write
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,10 +31,23 @@ jobs:
     with:
       # macOS is disabled by default for pushes. Enable via workflow_dispatch.
       run_macos: ${{ github.event_name == 'workflow_dispatch' && inputs.run_macos }}
+      build_docs: ${{ github.ref == 'refs/heads/main' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
+
+  deploy-docs:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   check-all-green:
     if: always()

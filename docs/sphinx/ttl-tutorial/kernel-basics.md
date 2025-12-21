@@ -37,13 +37,13 @@ Thread functions are Python functions with no arguments, annotated by `@ttl.comp
 ```{mermaid}
 graph TB
     Host[Host Program] -->|sends input data| DRAM[DRAM/L1]
-    
+
     subgraph KernelFunction[Kernel Function on Tensix Core]
         DM1[Data Movement Thread 1<br/>Reader]
         CT[Compute Thread]
         DM2[Data Movement Thread 2<br/>Writer]
     end
-    
+
     DRAM -->|reads from| DM1
     DM1 -->|writes to| CB1[Circular Buffer]
     CB1 -->|provides data| CT
