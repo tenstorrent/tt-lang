@@ -22,6 +22,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttlang/Dialect/Utils/LayoutUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
@@ -696,50 +697,6 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   }
 };
 
-/// Fold away late ttl wrappers (attach_cb and trivial casts) so downstream
-/// stages (emitc/translate) need not load the TTL dialect.
-static LogicalResult foldTTLLateWrappers(ModuleOp mod) {
-  bool hadFailure = false;
-  mod.walk([&](Operation *op) {
-    if (auto attach = dyn_cast<AttachCBOp>(op)) {
-      // attach_cb is a type-only wrapper; replace uses with the original tensor.
-      attach.getResult().replaceAllUsesWith(attach.getTensor());
-      attach.erase();
-      return;
-    }
-    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
-      // Only allow simple 1:1 casts that can be folded away; reject anything
-      // multi-arity to avoid silently changing semantics.
-      if (cast.getInputs().size() != 1 || cast.getOutputs().size() != 1) {
-        cast.emitOpError()
-            << "expected single-input single-output cast during TTL cleanup";
-        hadFailure = true;
-        return;
-      }
-
-      Value in = cast.getInputs().front();
-      Value out = cast.getResult(0);
-
-      // Drop dead casts outright.
-      if (out.use_empty()) {
-        cast.erase();
-        return;
-      }
-
-      // Fold identity casts; non-identity casts require the TTL dialect and are
-      // rejected so downstream tools remain TTL-free.
-      if (in.getType() == out.getType()) {
-        out.replaceAllUsesWith(in);
-        cast.erase();
-        return;
-      }
-      // Leave differing-type casts intact; they may be required for other
-      // dialects (e.g., transfer handles) and will be handled downstream.
-    }
-  });
-  return success(!hadFailure);
-}
-
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
@@ -754,16 +711,20 @@ struct TTLConvertTTLToTTKernelPass
                            func::FuncDialect, tensor::TensorDialect,
                            ttkernel::TTKernelDialect>();
 
-    // Mark compute-related ops as legal during this partial conversion. Tile
-    // ops will be lowered in a later phase (see computeTarget below), so keep
-    // them legal here via the tile trait to avoid early legalization failures.
-    target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, TileRegsAcquireOp,
-                      TileRegsCommitOp, TileRegsWaitOp, TileRegsReleaseOp>();
-    target.addLegalOp<
-        // Tile ops kept legal in this phase; lowered later in computeTarget.
-        AddTileOp, SubTileOp, MulTileOp, MaxTileOp, ExpTileOp, LogTileOp,
-        SqrtTileOp, RsqrtTileOp, TanhTileOp, SigmoidTileOp, AbsTileOp,
-        NegTileOp, ReluTileOp, CopyTileOp>();
+    // Structural ops remain legal (converted elsewhere or kept as-is).
+    target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
+
+    // DST lifecycle ops are not tile compute ops; keep them legal in phase 1.
+    target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+                      TileRegsReleaseOp>();
+
+    // CopyTileOp is a data movement op (CB -> DST), lowered in phase 2.
+    target.addLegalOp<CopyTileOp>();
+
+    // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal in phase 1.
+    // They are lowered in phase 2 (computeTarget).
+    target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
+        [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
 
     target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
       return typeConverter.isLegal(&op.getBodyRegion());
@@ -796,9 +757,9 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
     }
 
-    // Lower tile ops to TTKernel ops using DialectConversion. ttl.compute is
-    // kept legal here because full compute lowering happens after loops and
-    // bufferization in a later stage.
+    // Lower tile ops to TTKernel ops using DialectConversion. Tile compute ops are
+    // identified by TTLTileComputeOpTrait. ttl.compute is kept legal here because full
+    // compute lowering happens after loops and bufferization in a later stage.
     ConversionTarget computeTarget(ctx);
     // TTKernel ops are legal (target dialect)
     computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
@@ -806,19 +767,30 @@ struct TTLConvertTTLToTTKernelPass
     computeTarget.addLegalDialect<arith::ArithDialect>();
     // Keep compute ops legal (tile-only lowering here).
     computeTarget.addLegalOp<ComputeOp, YieldOp>();
+
     // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
-    // Mark tile ops as illegal so they get converted.
-    computeTarget.addIllegalOp<
-        // Binary tile ops
-        AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
-        // Unary tile ops
-        ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
-        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp,
-        // Copy tile op
-        CopyTileOp,
-        // DST lifecycle
-        TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-        TileRegsReleaseOp>();
+    computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+
+    // Mark TTL ops that need lowering as illegal (tile compute ops, CopyTileOp, DST lifecycle).
+    // All other TTL ops (ComputeOp, YieldOp, AttachCBOp) were explicitly marked legal above.
+    computeTarget.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
+        [](Operation *op) {
+          // Tile compute ops (add, mul, exp, etc.) are illegal.
+          if (tt::ttl::isTileComputeOp(op)) {
+            return false;
+          }
+          // CopyTileOp (data movement) is illegal.
+          if (isa<CopyTileOp>(op)) {
+            return false;
+          }
+          // DST lifecycle ops are illegal.
+          if (isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+                  TileRegsReleaseOp>(op)) {
+            return false;
+          }
+          // All other TTL ops are legal (ComputeOp, YieldOp, AttachCBOp).
+          return true;
+        });
 
     auto cbState = buildCopyTileCBState(mod);
 
@@ -836,11 +808,6 @@ struct TTLConvertTTLToTTKernelPass
     finalizePatterns.add<FuncKernelFinalize>(&ctx);
     if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
       signalPassFailure();
-    }
-
-    if (failed(foldTTLLateWrappers(mod))) {
-      signalPassFailure();
-      return;
     }
   }
 };

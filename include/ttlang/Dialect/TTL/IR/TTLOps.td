@@ -308,15 +308,14 @@ def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
 
 // Base class for tile operations
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [Pure, TTL_TileOpTrait])>;
+    : TTL_Op<mnemonic, !listconcat(traits, [Pure, TTL_TileComputeOpTrait])>;
 
 def TTL_TileType : TypeConstraint<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
     "ttcore.tile type">;
 
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
-                            [MemoryEffects<[MemRead, MemWrite]>,
-                             TTL_TileOpTrait]> {
+                            [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the

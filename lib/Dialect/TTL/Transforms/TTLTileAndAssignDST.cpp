@@ -44,6 +44,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
@@ -71,8 +72,6 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 /// Pull from device/ComputeKernelConfig (fp32_dest_acc_en, fullSyncEn).
 static std::uint32_t computeDefaultCapacity() { return kDefaultDSTCapacity; }
 
-static bool isTileOp(Operation *op) { return op->hasTrait<TTLTileOpTrait>(); }
-
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
 static bool isLastUse(Operation &op, Value v) {
@@ -96,7 +95,7 @@ static std::uint32_t estimatePeakDSTUsage(Block *body) {
   std::uint32_t peakUsage = static_cast<std::uint32_t>(live.size());
 
   for (Operation &op : *body) {
-    if (!isTileOp(&op)) {
+    if (!tt::ttl::isTileComputeOp(&op)) {
       continue;
     }
 
@@ -212,7 +211,7 @@ struct TTLTileAndAssignDSTPass
         }
 
         // Third pass: allocate registers for results.
-        if (isTileOp(&op) && !isa<CopyTileOp>(&op)) {
+        if (tt::ttl::isTileComputeOp(&op)) {
           for (Value res : op.getResults()) {
             if (!isTileValue(res)) {
               continue;

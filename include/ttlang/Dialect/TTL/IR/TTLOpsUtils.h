@@ -5,6 +5,7 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 #define TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
 namespace mlir::tt::ttl {
@@ -16,6 +17,14 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
     return attach.getCb();
   }
   return mlir::Value();
+}
+
+/// Check if an operation is a tile compute operation.
+/// Returns true for arithmetic/math tile operations (add, mul, exp, etc.).
+/// Excludes data movement ops (copy_tile) and DST lifecycle ops.
+/// Used by conversion passes and DST assignment to identify tile compute ops.
+inline bool isTileComputeOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileComputeOpTrait>();
 }
 
 } // namespace mlir::tt::ttl

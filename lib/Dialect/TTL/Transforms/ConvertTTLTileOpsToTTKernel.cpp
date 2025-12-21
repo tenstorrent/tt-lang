@@ -27,6 +27,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
@@ -60,6 +61,11 @@ static Value lookupCB(Value src, const CopyTileCBState *state) {
   }
   if (auto it = state->tensorToCb.find(tensor); it != state->tensorToCb.end()) {
     return it->second;
+  }
+
+  // Fallback: use attach metadata if present.
+  if (Value attached = getAttachedCB(tensor)) {
+    return attached;
   }
 
   return Value();
