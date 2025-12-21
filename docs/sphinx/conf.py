@@ -44,6 +44,7 @@ autosummary_generate = True
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
+templates_path = ["_templates"]
 
 
 def autodoc_skip_member(
