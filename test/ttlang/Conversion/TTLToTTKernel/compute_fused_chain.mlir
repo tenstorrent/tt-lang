@@ -34,7 +34,7 @@
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[C0]], false)
-// CHECK:            %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
+// CHECK:           %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
 // CHECK:          scf.yield %[[INSERT]]
 // CHECK:       scf.yield
 // CHECK:       ttkernel.tile_regs_release
