@@ -10,7 +10,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/DenseSet.h"
 
 #define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 
@@ -35,23 +35,60 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                    dynDims);
 }
 
-/// Create a circular buffer for a tensor operand.
-/// Buffer factor defaults to 2 (double buffering).
-static Value bindCBForTensor(OpBuilder &b, Location loc,
-                             RankedTensorType tensorType, int32_t index) {
-  // Extract tile shape from tensor
-  SmallVector<int64_t> shape(tensorType.getShape().begin(),
-                             tensorType.getShape().end());
-  Type elemType = tensorType.getElementType();
-  // TODO(#137): Make buffer factor configurable.
-  int64_t bufferFactor = 2; // Double buffering
+/// Get the CB associated with a tensor value.
+/// The tensor must come from an attach_cb op.
+static Value getAttachedCB(Value tensor) {
+  if (auto attachOp = tensor.getDefiningOp<AttachCBOp>()) {
+    return attachOp.getCb();
+  }
+  return nullptr;
+}
 
-  auto bufferFactorAttr = b.getI64IntegerAttr(bufferFactor);
-  auto cbType = CircularBufferType::get(tensorType.getContext(), shape,
-                                        elemType, bufferFactor);
+/// Find the CB that this operation's result will be attached to.
+/// Looks for an attach_cb op that uses this operation's result.
+static Value findOutputCB(Operation *op) {
+  if (op->getNumResults() == 0) {
+    return nullptr;
+  }
+  Value result = op->getResult(0);
+  for (OpOperand &use : result.getUses()) {
+    if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
+      return attachOp.getCb();
+    }
+  }
+  return nullptr;
+}
 
-  return b.create<BindCBOp>(loc, cbType, b.getIndexAttr(index),
-                            bufferFactorAttr);
+/// Find unused bind_cb ops in the function that can be used for output CBs.
+/// Returns bind_cb ops that are not used by any attach_cb op.
+// TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
+// the function for each operation.
+static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
+  SmallVector<BindCBOp> unused;
+  auto parentFunc = op->getParentOfType<func::FuncOp>();
+  if (!parentFunc) {
+    return unused;
+  }
+
+  // Collect all bind_cb ops and used CBs in a single walk.
+  SmallVector<BindCBOp> allBindCBs;
+  DenseSet<Value> usedCBs;
+  parentFunc->walk([&](Operation *walkOp) {
+    if (auto bindOp = dyn_cast<BindCBOp>(walkOp)) {
+      allBindCBs.push_back(bindOp);
+    } else if (auto attachOp = dyn_cast<AttachCBOp>(walkOp)) {
+      usedCBs.insert(attachOp.getCb());
+    }
+  });
+
+  // Return unused ones
+  for (auto bindOp : allBindCBs) {
+    if (!usedCBs.contains(bindOp.getResult())) {
+      unused.push_back(bindOp);
+    }
+  }
+
+  return unused;
 }
 
 //===----------------------------------------------------------------------===//
@@ -59,6 +96,8 @@ static Value bindCBForTensor(OpBuilder &b, Location loc,
 //===----------------------------------------------------------------------===//
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
+/// Inputs must already be attached to CBs via ttl.attach_cb.
+/// An unused bind_cb must exist for the output.
 template <typename TileOp>
 static LogicalResult buildBinaryCompute(Operation *op,
                                         PatternRewriter &rewriter, Value lhs,
@@ -68,10 +107,28 @@ static LogicalResult buildBinaryCompute(Operation *op,
     return failure();
   }
 
+  // Inputs must already be attached to CBs.
+  Value lhsCb = getAttachedCB(lhs);
+  Value rhsCb = getAttachedCB(rhs);
+  if (!lhsCb || !rhsCb) {
+    return op->emitError("inputs must be attached to circular buffers via "
+                         "ttl.attach_cb before lowering to ttl.compute");
+  }
+
+  // Find the output CB. First check if there's an attach_cb that uses this
+  // result, and use that CB. Otherwise, find an unused bind_cb.
+  Value outCb = findOutputCB(op);
+  if (!outCb) {
+    auto unusedCBs = findUnusedBindCBs(op);
+    if (unusedCBs.empty()) {
+      return op->emitError("no unused bind_cb found for output; ensure a "
+                           "ttl.bind_cb exists for the output tensor");
+    }
+    outCb = unusedCBs.front().getResult();
+  }
+
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
-
-  int32_t nextCbIndex = 0;
 
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
   SmallVector<Attribute> maps;
@@ -89,37 +146,16 @@ static LogicalResult buildBinaryCompute(Operation *op,
     iterTypes.push_back(rewriter.getStringAttr("parallel"));
   }
 
+  // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, lhs);
-
-  // Create CBs for inputs and outputs (reuse CB when operands alias).
-  llvm::MapVector<Value, Value> cbCache;
-  auto getOrBindCb = [&](Value tensor) -> Value {
-    auto it = cbCache.find(tensor);
-    if (it != cbCache.end()) {
-      return it->second;
-    }
-    Value cb =
-        bindCBForTensor(rewriter, loc, getTensorType(tensor), nextCbIndex++);
-    cbCache.insert({tensor, cb});
-    return cb;
-  };
-
-  Value lhsCb = getOrBindCb(lhs);
-  Value rhsCb = getOrBindCb(rhs);
-  Value outCb = bindCBForTensor(rewriter, loc, type, nextCbIndex++);
-
-  Value lhsAttached =
-      rewriter.create<AttachCBOp>(loc, lhs.getType(), lhs, lhsCb);
-  Value rhsAttached =
-      rewriter.create<AttachCBOp>(loc, rhs.getType(), rhs, rhsCb);
   Value initAttached =
       rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
+  // Inputs are already attached, use them directly.
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{lhsAttached, rhsAttached},
-      ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-      rewriter.getArrayAttr(iterTypes));
+      loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{initAttached},
+      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -140,6 +176,8 @@ static LogicalResult buildBinaryCompute(Operation *op,
 }
 
 /// Build a ttl.compute op with a single unary tile operation in the body.
+/// Input must already be attached to a CB via ttl.attach_cb.
+/// An unused bind_cb must exist for the output.
 template <typename TileOp>
 static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
                                        Value input) {
@@ -148,10 +186,27 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
 
+  // Input must already be attached to a CB.
+  Value inputCb = getAttachedCB(input);
+  if (!inputCb) {
+    return op->emitError("input must be attached to a circular buffer via "
+                         "ttl.attach_cb before lowering to ttl.compute");
+  }
+
+  // Find the output CB. First check if there's an attach_cb that uses this
+  // result, and use that CB. Otherwise, find an unused bind_cb.
+  Value outCb = findOutputCB(op);
+  if (!outCb) {
+    auto unusedCBs = findUnusedBindCBs(op);
+    if (unusedCBs.empty()) {
+      return op->emitError("no unused bind_cb found for output; ensure a "
+                           "ttl.bind_cb exists for the output tensor");
+    }
+    outCb = unusedCBs.front().getResult();
+  }
+
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
-
-  int32_t nextCbIndex = 0;
 
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
   SmallVector<Attribute> maps;
@@ -168,32 +223,15 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     iterTypes.push_back(rewriter.getStringAttr("parallel"));
   }
 
+  // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, input);
-
-  // Create CBs (reuse when operand aliases).
-  llvm::MapVector<Value, Value> cbCache;
-  auto getOrBindCb = [&](Value tensor) -> Value {
-    auto it = cbCache.find(tensor);
-    if (it != cbCache.end()) {
-      return it->second;
-    }
-    Value cb =
-        bindCBForTensor(rewriter, loc, getTensorType(tensor), nextCbIndex++);
-    cbCache.insert({tensor, cb});
-    return cb;
-  };
-
-  Value inputCb = getOrBindCb(input);
-  Value outCb = bindCBForTensor(rewriter, loc, type, nextCbIndex++);
-
-  Value inputAttached =
-      rewriter.create<AttachCBOp>(loc, input.getType(), input, inputCb);
   Value initAttached =
       rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
+  // Input is already attached, use it directly.
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{inputAttached}, ValueRange{initAttached},
+      loc, TypeRange{type}, ValueRange{input}, ValueRange{initAttached},
       rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
