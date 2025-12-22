@@ -40,10 +40,9 @@ def test_metal_matmul(M, K, N):
     assert Kt % K_block_size == 0, "K_block_size must divide Kt"  # huh
     num_blocks_y = Mt // per_core_M
     num_blocks_x = Nt // per_core_N
-    num_blocks_total = num_blocks_x * num_blocks_y
     assert (
-        num_blocks_total <= num_cores_x * num_cores_y
-    ), "num_blocks must be less than or equal to num cores"
+        num_blocks_x <= num_cores_x and num_blocks_y <= num_cores_y
+    ), "number of total blocks must be less than or equal to num cores in each dimension"
     all_cores = ttnn.num_cores_to_corerangeset(
         num_blocks_total, device_core_grid.ranges()[0].end, row_wise=True
     )
@@ -169,6 +168,11 @@ def test_metal_matmul(M, K, N):
     print(
         f"num_blocks_x: {num_blocks_x}, num_blocks_y: {num_blocks_y}, output tiles is {Mt}x{Nt}"
     )
+    """
+    Copied core assignment logic from c++ programming example host code.  It originally asserted that num_blocks_y * num_blocks_x <= num_cores_x * num_cores_y, but really
+    we only need to ensure that num_blocks_x <= num_cores_x and num_blocks_y <= num_cores_y, as having more blocks than cores in either dimension, causes an overwriting of args.
+    This core assignment logic is simplified in the tt-lang example with this knowledge
+    """
     for output_idx_y in range(num_blocks_y):
         for output_idx_x in range(num_blocks_x):
             core_x = current_blk % num_cores_x
