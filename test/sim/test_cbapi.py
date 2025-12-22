@@ -86,14 +86,14 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI, CBID]):
 
 def test_per_instance_timeout_effect():
     # consumer should timeout based on instance timeout
-    api = CBAPI(timeout=0.01)
+    api = CBAPI(timeout=0.2)
     cb = 3
     api.host_configure_cb(cb, 4)
-    start = time.time()
-    with pytest.raises(CBTimeoutError, match="timed out after 0.01s"):
+    start = time.perf_counter()
+    with pytest.raises(CBTimeoutError, match="timed out after 0.2s"):
         api.cb_wait_front(cb, 1)
-    elapsed = time.time() - start
-    assert elapsed < 0.1
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.4
 
 
 def test_threaded_produce_consume(configured_cb: Tuple[CBAPI, CBID]):
