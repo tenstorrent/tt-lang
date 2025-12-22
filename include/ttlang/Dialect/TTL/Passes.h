@@ -29,7 +29,7 @@ namespace mlir::tt::ttl {
 void populateTTLToComputePatterns(RewritePatternSet &patterns);
 
 /// Populate patterns for lowering ttl.tile_* ops to TTKernel (tile-only pass).
-/// Optionally pass CB analysis state for copy_tile to avoid IR walks.
+/// CB associations are read from ttl.cb_index.N attributes on ttl.compute ops.
 void populateTTLTileOpsToTTKernelPatterns(mlir::TypeConverter *typeConverter,
                                           RewritePatternSet &patterns);
 

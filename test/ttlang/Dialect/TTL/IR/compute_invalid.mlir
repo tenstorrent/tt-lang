@@ -159,7 +159,7 @@ func.func @compute_missing_input_cb(
   %init_att = ttl.attach_cb %init, %cbout
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{input 0 must have a circular buffer attached via ttl.attach_cb}}
+  // expected-error @below {{input 0 must have a circular buffer attached via `ttl.attach_cb` or `ttl.cb_wait`}}
   %0 = ttl.compute
       ins(%a : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -184,7 +184,7 @@ func.func @compute_missing_output_cb(
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
   // %init has no CB attached
-  // expected-error @below {{output 0 must have a circular buffer attached via ttl.attach_cb}}
+  // expected-error @below {{output 0 must have a circular buffer attached via `ttl.attach_cb` or `ttl.cb_wait`}}
   %0 = ttl.compute
       ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -245,7 +245,7 @@ func.func @ambiguous_cb_attachment(
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // expected-error @below {{input 0 must have a circular buffer attached via ttl.attach_cb}}
+  // expected-error @below {{input 0 must have a circular buffer attached via `ttl.attach_cb` or `ttl.cb_wait`}}
   %0 = ttl.compute
       ins(%t : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)

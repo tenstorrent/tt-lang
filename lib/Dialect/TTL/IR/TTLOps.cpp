@@ -448,7 +448,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (!cb) {
       return emitOpError() << kind << " " << idx
                            << " must have a circular buffer attached via "
-                              "ttl.attach_cb or ttl.cb_wait";
+                              "`ttl.attach_cb` or `ttl.cb_wait`";
     }
     return success();
   };

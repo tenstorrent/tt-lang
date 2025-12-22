@@ -77,7 +77,7 @@ func.func @output_no_cb(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
   // Output not attached to CB
   %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // expected-error @below {{output 0 must have a circular buffer attached via ttl.attach_cb}}
+  // expected-error @below {{output 0 must have a circular buffer attached via `ttl.attach_cb` or `ttl.cb_wait`}}
   %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
     ^bb0(%in: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
       %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>

@@ -104,7 +104,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
   if (!lhsCb || !rhsCb) {
     return op->emitError(
         "inputs must be attached to circular buffers via "
-        "ttl.attach_cb or ttl.cb_wait before lowering to ttl.compute");
+        "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this
@@ -183,7 +183,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   if (!inputCb) {
     return op->emitError(
         "input must be attached to a circular buffer via "
-        "ttl.attach_cb or ttl.cb_wait before lowering to ttl.compute");
+        "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this
