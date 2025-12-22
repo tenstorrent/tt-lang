@@ -10,11 +10,29 @@
 
 namespace mlir::tt::ttl {
 
-/// Return the circular buffer attached to `tensor` via `ttl.attach_cb`, or null
-/// if none/ambiguous.
+/// Return the circular buffer attached to `tensor`, or null if none/ambiguous.
+///
+/// Recognized producers:
+/// - `ttl.attach_cb`: explicit association between a tensor SSA value and a CB.
+/// - `ttl.cb_wait`: returns a tensor view backed by the CB's pages.
+/// - `unrealized_conversion_cast`: trace through to find the original producer.
+///
+/// Both operations establish a tensor->CB association for compute/DMA purposes.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
+  // Trace through unrealized conversion casts (from dialect conversion).
+  while (auto cast = tensor.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      tensor = cast.getInputs()[0];
+    } else {
+      break;
+    }
+  }
+
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();
+  }
+  if (auto wait = tensor.getDefiningOp<mlir::tt::ttl::CBWaitOp>()) {
+    return wait.getCb();
   }
   return mlir::Value();
 }

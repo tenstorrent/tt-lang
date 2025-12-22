@@ -102,8 +102,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Value lhsCb = getAttachedCB(lhs);
   Value rhsCb = getAttachedCB(rhs);
   if (!lhsCb || !rhsCb) {
-    return op->emitError("inputs must be attached to circular buffers via "
-                         "ttl.attach_cb before lowering to ttl.compute");
+    return op->emitError(
+        "inputs must be attached to circular buffers via "
+        "ttl.attach_cb or ttl.cb_wait before lowering to ttl.compute");
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this
@@ -180,8 +181,9 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   // Input must already be attached to a CB.
   Value inputCb = getAttachedCB(input);
   if (!inputCb) {
-    return op->emitError("input must be attached to a circular buffer via "
-                         "ttl.attach_cb before lowering to ttl.compute");
+    return op->emitError(
+        "input must be attached to a circular buffer via "
+        "ttl.attach_cb or ttl.cb_wait before lowering to ttl.compute");
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this

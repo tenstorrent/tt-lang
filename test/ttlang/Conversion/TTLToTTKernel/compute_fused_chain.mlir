@@ -1,12 +1,13 @@
 // Summary: Fused add->mul->exp lowers through loops to TTKernel ops (with sync).
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops), convert-ttl-to-ttkernel, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // Purpose: ensure copy_tile + fused math ops lower to ttkernel with no TTL ops left.
 // After conversion, attach_cb ops are removed (replaced with their tensor operands).
 // CHECK-LABEL: func.func @fused_chain_lowering
 // CHECK-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// CHECK-DAG:   %[[C4:.*]] = arith.constant 4 : i32
 // CHECK-DAG:   %[[C2:.*]] = arith.constant 2 : index
 // CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
@@ -14,10 +15,13 @@
 // CHECK:       %[[CB0_TTK:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK:       %[[CB1_TTK:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK:       %[[CB2_TTK:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB0_TTK]], %[[C4]])
+// CHECK-NEXT:  %[[CAST0:.*]] = builtin.unrealized_conversion_cast %[[CB0_TTK]]
+// CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB1_TTK]], %[[C4]])
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
 // CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT]])
 // CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
-// CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[AARG]][%[[I]], %[[J]]]
+// CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[CAST0]][%[[I]], %[[J]]]
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
 // CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[C0]], %[[DST0:.*]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
@@ -50,13 +54,14 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
 
-  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  // Wait for input CBs (entire blocks) before compute.
+  %a_ready = ttl.cb_wait %cb0 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_ready = ttl.cb_wait %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %output_cb = ttl.attach_cb %output, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   %result = ttl.compute
-      ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
-                         tensor<2x2x!ttcore.tile<32x32, f32>>)
+      ins(%a_ready, %b_ready : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                               tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%output_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
                         affine_map<(d0, d1) -> (d0, d1)>,
