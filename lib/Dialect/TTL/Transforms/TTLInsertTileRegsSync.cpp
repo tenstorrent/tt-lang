@@ -36,6 +36,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #define DEBUG_TYPE "ttl-insert-tile-regs-sync"
 
@@ -84,26 +85,13 @@ struct TTLInsertTileRegsSyncPass
       TileRegsCommitOp commitOp = nullptr;
       TileRegsWaitOp waitOp = nullptr;
       for (Operation &op : body.without_terminator()) {
-        if (auto store = dyn_cast<StoreOp>(&op)) {
-          storeOps.push_back(store);
-          continue;
-        }
-        if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
-          reserveOps.push_back(reserve);
-          continue;
-        }
-        if (auto push = dyn_cast<CBPushOp>(&op)) {
-          pushOps.push_back(push);
-          continue;
-        }
-        if (auto commit = dyn_cast<TileRegsCommitOp>(&op)) {
-          commitOp = commit;
-          continue;
-        }
-        if (auto wait = dyn_cast<TileRegsWaitOp>(&op)) {
-          waitOp = wait;
-          continue;
-        }
+        TypeSwitch<Operation *>(&op)
+            .Case<StoreOp>([&](auto store) { storeOps.push_back(store); })
+            .Case<CBReserveOp>(
+                [&](auto reserve) { reserveOps.push_back(reserve); })
+            .Case<CBPushOp>([&](auto push) { pushOps.push_back(push); })
+            .Case<TileRegsCommitOp>([&](auto commit) { commitOp = commit; })
+            .Case<TileRegsWaitOp>([&](auto wait) { waitOp = wait; });
       }
 
       // Ensure commit and wait exist near the end of the block.
