@@ -195,23 +195,25 @@ struct TTLTileAndAssignDSTPass
           });
         }
 
-        // Second pass: free registers for operands at their last use.
-        // We do this BEFORE result allocation to allow reuse (in-place
-        // updates).
-        for (Value operand : op.getOperands()) {
-          if (!isTileValue(operand)) {
-            continue;
-          }
-          if (isLastUse(op, operand)) {
-            auto it = dstIndexForValue.find(operand);
-            if (it != dstIndexForValue.end()) {
-              inUse.reset(it->second);
+        // Combined pass: free operands at last use, then allocate results
+        // atomically. This prevents register conflicts within a single
+        // operation (e.g., freeing and reallocating the same register).
+        if (tt::ttl::isTileComputeOp(&op)) {
+          // First: free operands at their last use
+          for (Value operand : op.getOperands()) {
+            if (!isTileValue(operand)) {
+              continue;
+            }
+            if (isLastUse(op, operand)) {
+              auto it = dstIndexForValue.find(operand);
+              if (it != dstIndexForValue.end()) {
+                inUse.reset(it->second);
+              }
             }
           }
-        }
 
-        // Third pass: allocate registers for results.
-        if (tt::ttl::isTileComputeOp(&op)) {
+          // Second: allocate registers for results (can now safely reuse
+          // freed regs)
           for (Value res : op.getResults()) {
             if (!isTileValue(res)) {
               continue;
@@ -227,6 +229,19 @@ struct TTLTileAndAssignDSTPass
             OpBuilder attrBuilder(res.getContext());
             op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
                                             static_cast<int32_t>(freeReg)));
+          }
+        } else {
+          // For non-compute ops, still free operands at last use
+          for (Value operand : op.getOperands()) {
+            if (!isTileValue(operand)) {
+              continue;
+            }
+            if (isLastUse(op, operand)) {
+              auto it = dstIndexForValue.find(operand);
+              if (it != dstIndexForValue.end()) {
+                inUse.reset(it->second);
+              }
+            }
           }
         }
       }

@@ -77,13 +77,23 @@ struct TTLInsertTileRegsSyncPass
       auto *terminator = body.getTerminator();
       auto yieldOp = cast<YieldOp>(terminator);
 
-      // Collect existing sync and store ops.
+      // Collect existing sync, store, cb_reserve, and cb_push ops.
       SmallVector<StoreOp> storeOps;
+      SmallVector<CBReserveOp> reserveOps;
+      SmallVector<CBPushOp> pushOps;
       TileRegsCommitOp commitOp = nullptr;
       TileRegsWaitOp waitOp = nullptr;
       for (Operation &op : body.without_terminator()) {
         if (auto store = dyn_cast<StoreOp>(&op)) {
           storeOps.push_back(store);
+          continue;
+        }
+        if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
+          reserveOps.push_back(reserve);
+          continue;
+        }
+        if (auto push = dyn_cast<CBPushOp>(&op)) {
+          pushOps.push_back(push);
           continue;
         }
         if (auto commit = dyn_cast<TileRegsCommitOp>(&op)) {
@@ -160,11 +170,20 @@ struct TTLInsertTileRegsSyncPass
         return Value();
       };
 
-      // Reorder existing stores after wait in original order.
+      // Reorder existing cb_reserve, stores, and cb_push after wait in original
+      // order. Order: commit → wait → [cb_reserve → store → cb_push] → yield
       Operation *tail = waitOp.getOperation();
+      for (CBReserveOp reserve : reserveOps) {
+        reserve.getOperation()->moveAfter(tail);
+        tail = reserve.getOperation();
+      }
       for (StoreOp store : storeOps) {
         store.getOperation()->moveAfter(tail);
         tail = store.getOperation();
+      }
+      for (CBPushOp push : pushOps) {
+        push.getOperation()->moveAfter(tail);
+        tail = push.getOperation();
       }
 
       // Insert missing stores for outputs using existing views.

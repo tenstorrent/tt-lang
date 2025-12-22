@@ -37,22 +37,26 @@
 // CHECK-NEXT:      add_binary_tile_init();
 // CHECK-NEXT:      add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
 
+// --- Mul: DST[0] * DST[1] -> DST[0] ---
+// CHECK-NEXT:      mul_binary_tile_init();
+// CHECK-NEXT:      mul_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+
 // --- Exp: exp(DST[0]) -> DST[0] ---
 // CHECK-NEXT:      exp_tile_init();
 // CHECK-NEXT:      exp_tile([[ZERO]]);
 
-// --- Reserve output CB2 for packing ---
-// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// --- Push to output CB2 ---
-// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// --- DST register synchronization before pack ---
+// --- DST register synchronization ---
 // CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
 
+// --- Reserve output CB2 for packing ---
+// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+
 // --- Pack DST[0] to output CB2 ---
 // CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[ZERO]]);
+
+// --- Push to signal data ready ---
+// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // --- End of inner and outer loops ---
 // CHECK-NEXT:    }
@@ -91,7 +95,8 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %exp = ttl.tile_exp %sum : !ttcore.tile<32x32, f32>
+    %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
+    %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>

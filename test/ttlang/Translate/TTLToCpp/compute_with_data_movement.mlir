@@ -99,16 +99,18 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK-NEXT:       exp_tile_init();
 // CHECK-NEXT:       exp_tile([[ZERO]]);
 
-// Reserve and push output to CB2
-// CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
-// CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
-
 // Synchronize DST registers before pack
 // CHECK-NEXT:       tile_regs_commit();
 // CHECK-NEXT:       tile_regs_wait();
 
+// Reserve output CB2
+// CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+
 // Pack result to output CB2
 // CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[ZERO]]);
+
+// Push to signal data ready
+// CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // End loops
 // CHECK-NEXT:     }

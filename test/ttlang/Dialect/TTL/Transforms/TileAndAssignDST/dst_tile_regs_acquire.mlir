@@ -14,9 +14,9 @@
 // CHECK-NEXT:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
 // CHECK-NEXT:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
 // CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.store %[[ADD]], %[[V]]
 // CHECK-NEXT:        ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -65,9 +65,9 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[R0:.*]] = ttl.compute
 // CHECK:           ^bb0
 // CHECK:             %[[SUM0:.*]] = ttl.tile_add
-// CHECK-NEXT:        %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
+// CHECK-NEXT:        %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.store %[[SUM0]], %[[V0]]
 // CHECK-NEXT:        ttl.yield %[[SUM0]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -78,9 +78,9 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[R1:.*]] = ttl.compute
 // CHECK:           ^bb0
 // CHECK:             %[[SUM1:.*]] = ttl.tile_add
-// CHECK-NEXT:        %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
+// CHECK-NEXT:        %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.store %[[SUM1]], %[[V1]]
 // CHECK-NEXT:        ttl.yield %[[SUM1]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -152,9 +152,9 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        ttl.copy_tile
 // CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[ADD]],
 // CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
-// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB3]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB3]]
 // CHECK-NEXT:        ttl.store %[[EXP]], %[[V]]
 // CHECK-NEXT:        ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
