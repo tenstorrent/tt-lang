@@ -21,5 +21,6 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRTensorDialect
   MLIRTTKernelDialect
   MLIRTTLDialect
+  TTLangDialectUtils
   TTLangTTKernelTransforms
 )
