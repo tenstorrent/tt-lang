@@ -8,9 +8,10 @@ from typing import List, Optional, Any
 from dataclasses import dataclass
 
 from ttmlir.ir import *
-from ttmlir.dialects import ttcore, d2m
+from ttmlir.dialects import ttcore, ttnn, d2m
 
-from .constants import DEFAULT_TILE_SHAPE, DEFAULT_TENSOR_MEMORY_LAYOUT
+from .constants import DEFAULT_TILE_SHAPE, DEFAULT_TENSOR_MEMORY_LAYOUT, DEFAULT_TILE_SIZE
+from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,15 @@ class StreamLayoutConfig:
     grid: List[int]
     tiled: bool
     memory_space: str
+
+
+@dataclass(frozen=True)
+class TTNNLayoutConfig:
+    """Configuration for TTNN layout creation. Only supports L1 + HeightSharded + tiled."""
+
+    logical_shape: List[int]
+    grid: List[int]
+    dtype: str
 
 
 def compute_device_shape(
@@ -136,6 +146,61 @@ def create_metal_layout(ctx, config: MetalLayoutConfig) -> "ttcore.MetalLayoutAt
     )
 
     return layout
+
+
+# TTNN BufferType enum values (from TTNNOpsEnums.td)
+_TTNN_BUFFER_TYPE_L1 = 1
+
+# TTNN TensorMemoryLayout enum values (from TTNNOpsEnums.td)
+_TTNN_TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED = 2
+
+
+def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
+    """
+    Create a TTNNLayoutAttr for L1 height-sharded tiled tensors.
+
+    Only supports: L1 memory, HeightSharded layout, tiled (32x32 tiles).
+
+    Args:
+        ctx: MLIR context
+        config: Configuration with logical_shape, grid, and dtype
+
+    Returns:
+        TTNNLayoutAttr
+
+    Raises:
+        ValueError: If configuration is unsupported
+    """
+    if len(config.logical_shape) != 2:
+        raise ValueError(
+            f"Only 2D tensors supported, got shape {config.logical_shape}"
+        )
+
+    if len(config.grid) != 2:
+        raise ValueError(f"Only 2D grids supported, got grid {config.grid}")
+
+    for i in range(2):
+        if config.logical_shape[i] % config.grid[i] != 0:
+            raise ValueError(
+                f"Logical dim {i} ({config.logical_shape[i]}) must be divisible "
+                f"by grid dim {i} ({config.grid[i]})"
+            )
+
+    ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
+    element_type = ttcore.ir.TileType.get(
+        ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
+    )
+
+    grid_attr = ttcore.ir.GridAttr.get(ctx, config.grid)
+
+    return ttnn.ir.TTNNLayoutAttr.get(
+        ctx,
+        config.logical_shape,
+        element_type,
+        _TTNN_BUFFER_TYPE_L1,
+        grid_attr,
+        _TTNN_TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED,
+    )
 
 
 def create_stream_layout_for_input(

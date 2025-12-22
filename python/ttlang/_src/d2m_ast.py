@@ -8,27 +8,62 @@ from typing import List, Set
 from dataclasses import dataclass
 
 from ttmlir.ir import *
-from ttmlir.dialects import ttcore, d2m, func, arith
+from ttmlir.dialects import ttcore, func, arith, ttkernel
 
 from pykernel._src.kernel_types import *
 from pykernel._src.kernel_ast import TTCompilerBase
 from .tensor_accessor import TensorAccessor
 
-from ..layouts import create_metal_layout, compute_device_shape, MetalLayoutConfig
+from ..dialects import ttl
+from ..layouts import create_ttnn_layout, TTNNLayoutConfig
 from ..dtype_utils import tensor_dtype_to_mlir_type, tensor_dtype_to_ttcore_datatype
-from ..constants import DEFAULT_TILE_SHAPE, DEFAULT_TILE_SIZE
+from ..constants import DEFAULT_TILE_SIZE
+
+
+def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
+    """Build MLIR tensor type for a TensorAccessor with TTNNLayoutAttr."""
+    if not tiled:
+        raise ValueError("Only tiled tensors supported for TTNN interop")
+    if memory_space != "L1":
+        raise ValueError(f"Only L1 memory space supported, got {memory_space}")
+    if len(accessor.shape) != 2:
+        raise ValueError(f"Only 2D tensors supported, got shape {accessor.shape}")
+
+    layout = create_ttnn_layout(
+        ctx,
+        TTNNLayoutConfig(
+            logical_shape=accessor.shape,
+            grid=grid,
+            dtype=accessor.dtype,
+        ),
+    )
+
+    ttcore_dtype = tensor_dtype_to_ttcore_datatype(accessor.dtype)
+    element_type = ttcore.ir.TileType.get(
+        ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
+    )
+
+    # Device shape: grid dims + shard dims (1x1 tiles per core for single-core)
+    shard_tiles = [
+        accessor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)
+    ]
+    device_shape = list(grid) + shard_tiles
+
+    return RankedTensorType.get(device_shape, element_type, layout)
 
 
 @dataclass(frozen=True)
 class CompilerContext:
-    """Immutable compilation context for D2M kernels."""
+    """Immutable compilation context for TTL kernels."""
 
     grid: List[int]
     memory_space: str
     tiled: bool
 
 
-class D2MGenericCompiler(TTCompilerBase):
+class TTLGenericCompiler(TTCompilerBase):
+    """Compiler that generates TTL dialect ops from Python AST."""
+
     _syntax = {}
 
     def __init__(self, name, kernel_type=None, captures={}, *args, **kwargs):
@@ -45,16 +80,12 @@ class D2MGenericCompiler(TTCompilerBase):
             tiled=kwargs.get("tiled", True),
         )
 
+        # Track CB info for binding inside function body
+        self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
+        self._next_cb_index = 0
+
         self._fn_map = {}
-        self._fn_map["iter_index"] = (
-            d2m.iter_index,
-            [True],
-        )  # True for arg as attribute
-        self._fn_map["core_index"] = (
-            d2m.core_index,
-            [True],
-        )  # True for arg as attribute
-        for name, val in D2MGenericCompiler._syntax.items():
+        for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
 
     # Override to use i64 for all integer constants (attributes or not)
@@ -73,129 +104,125 @@ class D2MGenericCompiler(TTCompilerBase):
                 f"constant type {type(node.value).__name__} not implemented"
             )
 
+    def _get_ttkernel_thread_type(self) -> str:
+        """Map kernel_type to ttkernel thread type string."""
+        if self.kernel_type == "compute":
+            return "compute"
+        elif self.kernel_type == "datamovement":
+            return "noc"
+        else:
+            raise ValueError(f"Unknown kernel type: {self.kernel_type}")
+
     def _emit_entry(self, node):
-        # TODO: add alloca args name into symbol table
         assert not self.func_entry, "Cannot declare function within a function"
 
-        func_operand_types = []
+        # Collect CB info for binding inside function body
+        self._cb_info = []
+        self._next_cb_index = 0
+
         for i in range(len(node.args.args)):
             arg = node.args.args[i]
 
             if not arg.annotation:
                 raise TypeError("All kernel arguments must have a type annotation")
             elif arg.annotation.id == "TensorBlock":
-                shape = self.args[i].shape
-                shard_shape = [
-                    shape[j] // self.context.grid[j] for j in range(len(shape))
-                ]
-                dtype = tensor_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
-                tensor_type = RankedTensorType.get(shard_shape, dtype)
-                func_operand_types.append(tensor_type)
+                raise NotImplementedError("TensorBlock not yet supported in TTL mode")
             elif arg.annotation.id == "CircularBuffer":
+                if not self.context.tiled:
+                    raise ValueError("Only tiled CBs supported")
                 shape = list(self.args[i].shape)
-                dtype = tensor_dtype_to_mlir_type(self.args[i].dtype, self.ctx)
+                if len(shape) != 2:
+                    raise ValueError(f"Only 2D CBs supported, got shape {shape}")
 
-                # Compute shard shape (tiles per core)
-                layout = create_metal_layout(
-                    self.ctx,
-                    MetalLayoutConfig(
-                        logical_shape=shape,
-                        grid=self.context.grid,
-                        tiled=self.context.tiled,
-                        memory_space=self.context.memory_space,
-                    ),
+                # Compute shard shape: tiles per core
+                shard_shape = [
+                    shape[i] // self.context.grid[i] // DEFAULT_TILE_SIZE
+                    for i in range(2)
+                ]
+
+                ttcore_dtype = tensor_dtype_to_ttcore_datatype(self.args[i].dtype)
+                element_type = ttcore.ir.TileType.get(
+                    self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
                 )
-                tile_shape = DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
-                device_shape = compute_device_shape(
-                    layout, self.context.grid, shape, tile_shape
-                )
-                shard_shape = device_shape[len(device_shape) // 2 :]
 
-                # CBs wrap the tensor type that enters the generic op
-                # Generic operates on device tensors (tiled L1), so CBs should have tile element types
-                if self.context.tiled:
-                    ttcore_dtype = tensor_dtype_to_ttcore_datatype(self.args[i].dtype)
-                    element_type = ttcore.ir.TileType.get(
-                        self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
-                    )
-                else:
-                    element_type = dtype
-
-                # CBs use local memory (no MetalLayoutAttr) - they represent per-core views
-                cb_tensor_type = RankedTensorType.get(shard_shape, element_type, None)
-                func_operand_types.append(d2m.ir.CBType.get(self.ctx, cb_tensor_type))
+                self._cb_info.append({
+                    "name": arg.arg,
+                    "shard_shape": shard_shape,
+                    "element_type": element_type,
+                    "cb_index": self._next_cb_index,
+                })
+                self._next_cb_index += 1
             elif arg.annotation.id == "Semaphore":
-                func_operand_types.append(d2m.ir.SemaphoreType.get(self.ctx))
+                raise NotImplementedError("Semaphore not yet supported in TTL mode")
             else:
                 raise TypeError(
                     f"Unknown kernel arguments type annotation {arg.annotation.id}"
                 )
 
-        self.func_entry = func.FuncOp(name=node.name, type=(func_operand_types, []))
+        # Collect TensorAccessor captures for function arguments
+        self._tensor_accessor_names = []
+        func_arg_types = []
+        for name, val in self.captures.items():
+            if isinstance(val, TensorAccessor):
+                tensor_type = _build_tensor_accessor_type(
+                    self.ctx, val, self.context.grid,
+                    self.context.tiled, self.context.memory_space
+                )
+                self._tensor_accessor_names.append(name)
+                func_arg_types.append(tensor_type)
 
-        self.func_entry.attributes[d2m.ir.ThreadAttr.name] = d2m.ir.ThreadAttr.get(
-            self.ctx, self.kernel_type
-        )
+        self.func_entry = func.FuncOp(name=node.name, type=(func_arg_types, []))
+
+        # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
+        thread_type = self._get_ttkernel_thread_type()
+        thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
+        self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
 
         self.symbol_tables.append({})
-
-        # prepopulate bb arguments into symbol table
         func_bb = self.func_entry.add_entry_block()
-        for i, bb_arg in enumerate(func_bb.arguments):
-            self.symbol_tables[-1][node.args.args[i].arg] = bb_arg
 
-        # Add d2m module to symbol table
-        self.symbol_tables[-1]["d2m"] = d2m
+        # Add ttl module to symbol table
+        self.symbol_tables[-1]["ttl"] = ttl
+
+        # Ensure TTL dialect is registered for type parsing
+        ttl.ensure_dialects_registered(self.ctx)
 
         self.module_symbol_table = SymbolTable(self.module.operation)
 
-        # update basic block
+        # Emit function body
         with InsertionPoint(func_bb):
-            # prepopulate captures at the top of the scope
+            # Emit ttl.bind_cb ops at function entry for each CB argument
+            for cb_info in self._cb_info:
+                # Parse CB type: !ttl.cb<[shape], element_type, buffer_factor>
+                shape_str = ", ".join(str(s) for s in cb_info["shard_shape"])
+                elem_str = str(cb_info["element_type"])
+                buffer_factor = 2  # Default buffer factor
+                cb_type = Type.parse(
+                    f"!ttl.cb<[{shape_str}], {elem_str}, {buffer_factor}>", self.ctx
+                )
+
+                # Emit: %cb = ttl.bind_cb {cb_index = N, buffer_factor = M} : !ttl.cb<...>
+                cb_val = ttl.bind_cb(
+                    cb_type,
+                    cb_info["cb_index"],
+                    buffer_factor=buffer_factor,
+                )
+                self.symbol_tables[-1][cb_info["name"]] = cb_val
+
+            # Map TensorAccessor function arguments to symbol table
+            for i, name in enumerate(self._tensor_accessor_names):
+                self.symbol_tables[-1][name] = func_bb.arguments[i]
+                self.streams.add(name)
+
+            # Prepopulate other captures (non-TensorAccessor)
             for name, val in self.captures.items():
+                if isinstance(val, TensorAccessor):
+                    continue  # Already handled via function arguments
                 assert isinstance(name, str)
                 if isinstance(val, int):
                     self.symbol_tables[-1][name] = arith.ConstantOp(
                         IndexType.get(self.ctx), val
                     )
-                elif isinstance(val, TensorAccessor):
-                    with InsertionPoint.at_block_begin(self.module.body):
-                        layout = create_metal_layout(
-                            self.ctx,
-                            MetalLayoutConfig(
-                                logical_shape=val.shape,
-                                grid=self.context.grid,
-                                tiled=self.context.tiled,
-                                memory_space=self.context.memory_space,
-                            ),
-                        )
-                        tile_shape = (
-                            DEFAULT_TILE_SHAPE if self.context.tiled else [1, 1]
-                        )
-                        device_shape = compute_device_shape(
-                            layout, self.context.grid, val.shape, tile_shape
-                        )
-
-                        # Get dtype from TensorAccessor
-                        stream_dtype = tensor_dtype_to_mlir_type(val.dtype, self.ctx)
-                        stream_ttcore_dtype = tensor_dtype_to_ttcore_datatype(val.dtype)
-                        element_type = (
-                            ttcore.ir.TileType.get(
-                                self.ctx,
-                                DEFAULT_TILE_SIZE,
-                                DEFAULT_TILE_SIZE,
-                                stream_ttcore_dtype,
-                            )
-                            if self.context.tiled
-                            else stream_dtype
-                        )
-                        tensor = RankedTensorType.get(
-                            device_shape, element_type, layout
-                        )
-                        globalTensor = ttcore.GlobalOp(val.name, tensor)
-                        self.module_symbol_table.insert(globalTensor.operation)
-                    self.symbol_tables[-1][name] = ttcore.get_global(tensor, val.name)
-                    self.streams.add(val.name)
                 else:
                     raise TypeError(f"Invalid capture type for var {name}: {type(val)}")
 
@@ -213,6 +240,22 @@ class D2MGenericCompiler(TTCompilerBase):
     def visit_AsyncFunctionDef(self, node):
         with self.loc:
             return self._emit_entry(node)
+
+    def _get_cb_tensor_type(self, cb_val):
+        """Extract the tensor type from a TTL CB type by parsing it."""
+        # CB type is !ttl.cb<[shape], element_type, buffer_factor>
+        cb_type_str = str(cb_val.type)
+        # Parse: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        # Element type may contain commas inside <>, so match up to last comma
+        import re
+        match = re.match(r"!ttl\.cb<\[([^\]]+)\], (.+), (\d+)>$", cb_type_str)
+        if match:
+            shape_str = match.group(1)
+            elem_str = match.group(2)
+            shape = [int(s.strip()) for s in shape_str.split(",")]
+            elem_type = Type.parse(elem_str, self.ctx)
+            return RankedTensorType.get(shape, elem_type)
+        raise ValueError(f"Could not parse CB type: {cb_type_str}")
 
     def visit_With(self, node):
         """
@@ -262,13 +305,14 @@ class D2MGenericCompiler(TTCompilerBase):
                     raise NameError(f"'{cb_node.id}' not found in scope")
                 cb_val = cb_table[cb_node.id]
 
-                cb_underlying = d2m.ir.CBType.cast(cb_val.type).get_underlying()
+                # Get tensor type from CB for reserve/wait result
+                tensor_type = self._get_cb_tensor_type(cb_val)
                 if method_name == "reserve":
-                    acquire_result = d2m.reserve(cb_underlying, cb_val)
-                    releases.append((d2m.push, cb_val))
+                    acquire_result = ttl.cb_reserve(tensor_type, cb_val)
+                    releases.append((ttl.cb_push, cb_val))
                 else:  # wait
-                    acquire_result = d2m.wait(cb_underlying, cb_val)
-                    releases.append((d2m.pop, cb_val))
+                    acquire_result = ttl.cb_wait(tensor_type, cb_val)
+                    releases.append((ttl.cb_pop, cb_val))
 
                 if optional_vars is not None:
                     if not isinstance(optional_vars, ast.Name):
@@ -298,7 +342,7 @@ def syntax(syntax_name):
                     if first_arg_name == "ast_self":
                         setattr(cls, name, staticmethod(method))
                         qualified = f"{syntax_name}.{name}"
-                        D2MGenericCompiler._syntax[qualified] = method
+                        TTLGenericCompiler._syntax[qualified] = method
 
             return cls
 
@@ -307,7 +351,11 @@ def syntax(syntax_name):
 
         def _fn_wrapper(fn):
             assert callable(fn)
-            D2MGenericCompiler._syntax[fn.__name__] = fn
+            TTLGenericCompiler._syntax[fn.__name__] = fn
             return fn
 
         return _fn_wrapper
+
+
+# Alias for backwards compatibility
+D2MGenericCompiler = TTLGenericCompiler

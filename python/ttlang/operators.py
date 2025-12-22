@@ -2,15 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""DSL operators for tensor operations, DMA, and memory transactions."""
+"""DSL operators for tensor operations, data movement, and memory transactions."""
 
 from __future__ import annotations
 
 from typing import List, Callable, Optional, Tuple, Union
 
 from ttmlir.ir import *
-from ttmlir.dialects import d2m, arith, linalg
+from ttmlir.dialects import arith, linalg, d2m
 
+from .dialects import ttl
 from ._src.d2m_ast import syntax
 from pykernel._src.utils import _asindex
 
@@ -209,10 +210,11 @@ def _binary_elementwise(
 @syntax("!tensor")
 class TensorBlock:
     """
-    Represents a block of tensor data in the D2M dialect.
+    Represents a block of tensor data in the TTL dialect.
 
     TensorBlock supports arithmetic and matrix operations through operator
-    overloading. Operations generate linalg.generic ops with D2M tile operations.
+    overloading. Operations generate TTL high-level ops that get lowered
+    to ttl.compute blocks.
     """
 
     def __init__(self, shape, dtype):
@@ -221,7 +223,7 @@ class TensorBlock:
 
     def __add__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """
-        Element-wise addition generating linalg.generic with d2m.tile_add.
+        Element-wise addition using ttl.add.
 
         Args:
             rhs: Right operand tensor. Must have the same shape as self.
@@ -229,105 +231,71 @@ class TensorBlock:
         Returns:
             Result tensor with the same shape as inputs.
         """
-        return _binary_elementwise(ast_self, rhs, d2m.tile_add)
+        return ttl.add(ast_self.type, ast_self, rhs)
 
     def __sub__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Element-wise subtraction."""
-        return _binary_elementwise(ast_self, rhs, d2m.tile_sub)
+        """Element-wise subtraction using ttl.sub."""
+        return ttl.sub(ast_self.type, ast_self, rhs)
 
     def __mul__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Element-wise multiplication."""
-        return _binary_elementwise(ast_self, rhs, d2m.tile_mul)
-
-    def __truediv__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Element-wise division."""
-        return _binary_elementwise(ast_self, rhs, d2m.tile_div)
+        """Element-wise multiplication using ttl.mul."""
+        return ttl.mul(ast_self.type, ast_self, rhs)
 
     def __matmul__(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
         """
-        Matrix multiplication generating linalg.generic with d2m.tile_matmul.
-
-        Args:
-            rhs: Right operand tensor. Shape must be compatible for matrix multiplication.
-                 For 2D: (M, K) @ (K, N) -> (M, N)
-                 Inner dimensions must match: lhs.shape[-1] == rhs.shape[-2]
-
-        Returns:
-            Result tensor with shape (..., M, N) where M = lhs.shape[-2], N = rhs.shape[-1]
-
-        Raises:
-            TypeError: If operands are not ranked tensors
-            ValueError: If ranks are < 2 or inner dimensions don't match
+        Matrix multiplication is not yet supported in TTL mode.
         """
-        print(
-            "WARNING: matmul uses DST register as accumulator. "
-            "Ensure output tensor is pre-initialized with zeros to avoid garbage accumulation. "
-            "See GitHub issue #31 for details."
-        )
-        lhs = ast_self
+        raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
 
-        if not isinstance(lhs.type, RankedTensorType):
-            raise TypeError("lhs must be a ranked tensor")
-        if not isinstance(rhs.type, RankedTensorType):
-            raise TypeError("rhs must be a ranked tensor")
-
-        # Validate ranks and shapes for matmul
-        lhs_rank = len(lhs.type.shape)
-        rhs_rank = len(rhs.type.shape)
-        if lhs_rank < 2 or rhs_rank < 2:
-            raise ValueError(
-                f"matmul requires at least 2D tensors, got lhs rank {lhs_rank}, rhs rank {rhs_rank}"
-            )
-        if lhs.type.shape[-1] != rhs.type.shape[-2]:
-            raise ValueError(
-                f"matmul inner dimensions must match, got lhs[-1]={lhs.type.shape[-1]}, "
-                f"rhs[-2]={rhs.type.shape[-2]}"
-            )
-
-        out_shape = list(lhs.type.shape)
-        out_shape[-1] = rhs.type.shape[-1]
-
-        ctx = lhs.type.context
-        matmul_maps = [
-            AffineMap.get(
-                3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(2, ctx)], ctx
-            ),
-            AffineMap.get(
-                3, 0, [AffineDimExpr.get(2, ctx), AffineDimExpr.get(1, ctx)], ctx
-            ),
-            AffineMap.get(
-                3, 0, [AffineDimExpr.get(0, ctx), AffineDimExpr.get(1, ctx)], ctx
-            ),
-        ]
-
-        return _create_linalg_generic(
-            lhs,
-            rhs,
-            output_shape=out_shape,
-            affine_maps=matmul_maps,
-            iterator_types=["parallel", "parallel", "reduction"],
-            tile_op_builder=lambda result_type, lhs_arg, rhs_arg, acc_arg: d2m.tile_matmul(
-                result_type, lhs_arg, rhs_arg, acc_arg
-            ),
-        )
-
-    def store(ast_self: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-        """Store operation for writing tensor data."""
-        return d2m.store(ast_self, rhs)
+    def store(ast_self: "TensorBlock", rhs: "TensorBlock") -> None:
+        """Store result tensor to CB by propagating CB association from output view."""
+        # ast_self is the result of attach_cb(tensor, cb) from reserve()
+        # Extract the CB operand and attach it to the result tensor
+        cb = ast_self.owner.operands[1]
+        return ttl.attach_cb(rhs.type, rhs, cb)
 
 
-@syntax("!d2m.mem_tx")
+@syntax("!ttl.transfer_handle")
 class MemTx:
     """
-    Memory transaction handle for asynchronous DMA operations.
+    Memory transaction handle for asynchronous copy operations.
 
-    MemTx objects are returned by dma() calls and must be explicitly
-    waited on to ensure DMA completion.
+    MemTx objects are returned by dma()/copy() calls and must be explicitly
+    waited on to ensure transfer completion.
     """
 
     def wait(ast_self: MemTx):
-        """Block until the DMA operation completes."""
-        return d2m.dma_wait(ast_self)
+        """Block until the copy operation completes."""
+        return ttl.wait(ast_self)
+
+
+def _determine_transfer_direction(src, dst) -> str:
+    """Determine transfer direction based on src/dst tensor types."""
+    # If source has MetalLayoutAttr (device tensor), it's a read from device
+    # If dest has MetalLayoutAttr (device tensor), it's a write to device
+    src_type = src.type if hasattr(src, "type") else None
+    dst_type = dst.type if hasattr(dst, "type") else None
+
+    # Check if source has device layout (MetalLayoutAttr)
+    src_is_device = False
+    dst_is_device = False
+
+    if src_type and isinstance(src_type, RankedTensorType):
+        if src_type.encoding is not None:
+            src_is_device = True
+
+    if dst_type and isinstance(dst_type, RankedTensorType):
+        if dst_type.encoding is not None:
+            dst_is_device = True
+
+    # read = device -> CB, write = CB -> device
+    if src_is_device and not dst_is_device:
+        return "read"
+    elif not src_is_device and dst_is_device:
+        return "write"
+    else:
+        # Default to read for now
+        return "read"
 
 
 @syntax("dma")
@@ -338,31 +306,75 @@ def dma(
     mcast: Optional[CoreCoordinate] = None,
 ) -> MemTx:
     """
-    Initiate an asynchronous DMA transfer.
+    DEPRECATED: Use copy() instead.
 
-    Args:
-        src: Source tensor or tuple of (tensor, indices)
-        dst: Destination tensor or tuple of (tensor, indices)
-        core: Optional tuple specifying core coordinates for multicast
-        mcast: Optional tuple specifying multicast dimensions
-
-    Returns:
-        MemTx handle that must be waited on for completion
+    Initiate an asynchronous data transfer using ttl.copy.
     """
+    import warnings
+    warnings.warn(
+        "dma() is deprecated, use copy() instead",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    if core is not None or mcast is not None:
+        raise NotImplementedError("core and mcast parameters not supported, use copy() instead")
+
     src_indices = None
     dst_indices = None
     if isinstance(src, tuple):
         src, src_indices = src
     if isinstance(dst, tuple):
         dst, dst_indices = dst
-    return d2m.dma(
-        src,
-        _asindex(src_indices),
-        dst,
-        _asindex(dst_indices),
-        _asindex(core),
-        _asindex(mcast),
-    )
+
+    if src_indices is not None or dst_indices is not None:
+        raise NotImplementedError("Indexed tensor access not supported, use copy() instead")
+
+    return copy(src, dst)
+
+
+@syntax("copy")
+def copy(src, dst) -> MemTx:
+    """
+    Initiate an asynchronous data transfer using ttl.copy.
+
+    Args:
+        src: Source tensor (for reads) or CB (for writes)
+        dst: Destination CB (for reads) or tensor (for writes)
+
+    Returns:
+        MemTx handle that must be waited on for completion
+    """
+    # TODO: Support non-zero indices for tensor accessors
+    if isinstance(src, tuple):
+        src, indices = src
+        # indices are MLIR ConstantOp objects, extract literal values
+        idx_vals = [getattr(i, 'literal_value', i) for i in indices]
+        assert idx_vals == [0, 0], f"Only [0, 0] index supported, got {idx_vals}"
+    if isinstance(dst, tuple):
+        dst, indices = dst
+        idx_vals = [getattr(i, 'literal_value', i) for i in indices]
+        assert idx_vals == [0, 0], f"Only [0, 0] index supported, got {idx_vals}"
+
+    ctx = src.type.context
+
+    src_type_str = str(src.type)
+    dst_type_str = str(dst.type)
+    src_is_cb = src_type_str.startswith("!ttl.cb")
+    dst_is_cb = dst_type_str.startswith("!ttl.cb")
+
+    if dst_is_cb and not src_is_cb:
+        # Read: device tensor -> CB
+        xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
+        return ttl.copy(xf_type, src, dst)
+    elif src_is_cb and not dst_is_cb:
+        # Write: CB -> device tensor
+        xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
+        return ttl.copy(xf_type, src, dst)
+    else:
+        raise ValueError(
+            f"copy() requires exactly one CB argument. "
+            f"Got src={src_type_str}, dst={dst_type_str}"
+        )
 
 
 # Unary element-wise operations

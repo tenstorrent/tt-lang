@@ -4,13 +4,31 @@
 
 """Circular buffer operations for inter-thread communication."""
 
-from ttmlir.dialects import d2m
+import re
 from ttmlir.ir import *
 
+from .dialects import ttl
 from ._src.d2m_ast import syntax
 
 
-@syntax("!d2m.cb")
+def _get_cb_tensor_type(cb_val):
+    """Extract the tensor type from a TTL CB type by parsing it."""
+    # CB type is !ttl.cb<[shape], element_type, buffer_factor>
+    cb_type_str = str(cb_val.type)
+    # Parse: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    # Element type may contain commas inside <>, so match up to last comma
+    match = re.match(r"!ttl\.cb<\[([^\]]+)\], (.+), (\d+)>$", cb_type_str)
+    if match:
+        shape_str = match.group(1)
+        elem_str = match.group(2)
+        shape = [int(s.strip()) for s in shape_str.split(",")]
+        ctx = cb_val.type.context
+        elem_type = Type.parse(elem_str, ctx)
+        return RankedTensorType.get(shape, elem_type)
+    raise ValueError(f"Could not parse CB type: {cb_type_str}")
+
+
+@syntax("!ttl.cb")
 class CircularBuffer:
     """
     Circular buffer for inter-thread communication.
@@ -27,14 +45,16 @@ class CircularBuffer:
         to signal consumption is complete.
 
         Returns:
-            TensorBlock: The acquired data.
+            TensorBlock: The acquired data with CB association.
 
         Example:
             shard = cb.wait()
             result = compute(shard)
             cb.pop()
         """
-        return d2m.wait(d2m.ir.CBType.cast(ast_self.type).get_underlying(), ast_self)
+        tensor_type = _get_cb_tensor_type(ast_self)
+        tensor = ttl.cb_wait(tensor_type, ast_self)
+        return ttl.attach_cb(tensor.type, tensor, ast_self)
 
     def pop(ast_self: "CircularBuffer") -> None:
         """
@@ -48,12 +68,7 @@ class CircularBuffer:
             result = compute(shard)
             cb.pop()  # Signal consumption complete
         """
-        if not hasattr(d2m, "pop"):
-            raise AttributeError(
-                "d2m.pop is not available. Please ensure your tt-mlir build "
-                "includes the d2m.pop operation in the Python bindings."
-            )
-        d2m.pop(ast_self)
+        ttl.cb_pop(ast_self)
 
     def reserve(ast_self: "CircularBuffer") -> "TensorBlock":
         """
@@ -63,14 +78,16 @@ class CircularBuffer:
         by push() to signal data is ready.
 
         Returns:
-            TensorBlock: The reserved space.
+            TensorBlock: The reserved space with CB association.
 
         Example:
-            shard = cb.reserve()
-            dma(stream[idx], shard).wait()
+            cb.reserve()
+            copy(stream[idx], cb).wait()
             cb.push()
         """
-        return d2m.reserve(d2m.ir.CBType.cast(ast_self.type).get_underlying(), ast_self)
+        tensor_type = _get_cb_tensor_type(ast_self)
+        tensor = ttl.cb_reserve(tensor_type, ast_self)
+        return ttl.attach_cb(tensor.type, tensor, ast_self)
 
     def push(ast_self: "CircularBuffer") -> None:
         """
@@ -81,12 +98,7 @@ class CircularBuffer:
 
         Example:
             shard = cb.reserve()
-            dma(stream[idx], shard).wait()
+            copy(stream[idx], shard).wait()
             cb.push()  # Signal data ready
         """
-        if not hasattr(d2m, "push"):
-            raise AttributeError(
-                "d2m.push is not available. Please ensure your tt-mlir build "
-                "includes the d2m.push operation in the Python bindings."
-            )
-        d2m.push(ast_self)
+        ttl.cb_push(ast_self)

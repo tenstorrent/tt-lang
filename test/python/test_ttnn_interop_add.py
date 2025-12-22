@@ -43,20 +43,20 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
     @datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Read both inputs
-        lhs_shard = lhs_cb.reserve()
-        tx_lhs = dma(lhs_accessor[0, 0], lhs_shard)
+        # Read both inputs - reserve CB and copy directly from accessor to CB
+        lhs_cb.reserve()
+        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
         tx_lhs.wait()
 
-        rhs_shard = rhs_cb.reserve()
-        tx_rhs = dma(rhs_accessor[0, 0], rhs_shard)
+        rhs_cb.reserve()
+        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
         tx_rhs.wait()
 
     @datamovement()
     def dm_out(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Write output
-        out_shard = out_cb.wait()
-        tx = dma(out_shard, out_accessor[0, 0])
+        # Write output - wait for data in CB and copy directly from CB to device
+        out_cb.wait()
+        tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
         out_cb.pop()
 

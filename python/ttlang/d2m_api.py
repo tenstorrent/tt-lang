@@ -47,7 +47,7 @@ from ._src.tensor_registry import register_tensor_name
 
 from ._src.d2m_ast import D2MGenericCompiler
 
-from .operators import TensorBlock, MemTx, dma
+from .operators import TensorBlock, MemTx, dma, copy
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
@@ -638,34 +638,11 @@ def _compile_and_run_kernel(
 
         module = Module.create(loc)
 
-        module_symbol_table = SymbolTable(module.operation)
-        with InsertionPoint.at_block_begin(module.body):
-            copy_symbol_table_globals(module_symbol_table, compiled_threads, f_params)
-
-        streams = set().union(*[ct.streams for ct in compiled_threads])
-        positional_arg_names = list(f_params.keys())[: len(args)]
-        stream_func_arg_attrs = [
-            DictAttr.get({"d2m.stream": BoolAttr.get(p in streams)})
-            for p in positional_arg_names
-        ]
-        if positional_arg_names[-num_outs] in streams and not ttnn_interop:
-            raise ValueError("Output streaming is not supported")
-
+        # Insert standalone thread functions directly into module
         with InsertionPoint(module.body):
-            create_generic_func(
-                ctx,
-                f.__name__,
-                stream_func_arg_attrs,
-                grid,
-                block_factors,
-                indexing_maps,
-                iterator_types,
-                compiled_threads,
-                num_outs,
-                args,
-                tiled,
-                memory_space,
-            )
+            for ct in compiled_threads:
+                ct.func_entry.operation.detach_from_parent()
+                module.body.append(ct.func_entry)
 
         initial_mlir_path = os.environ.get("TTLANG_INITIAL_MLIR")
         if initial_mlir_path:
@@ -678,48 +655,40 @@ def _compile_and_run_kernel(
         config = CompilerConfig(ttnn_interop, compile_only)
 
         # fmt: off
-        # Common pipeline passes up through EmitC conversion
-        common_pipeline_passes = [
-            "d2m-generic-replace-globals",
-            "d2m-lower-to-layout",                         # Lower to_layout to data movement
-            "d2m-elementwise-fusion",                      # Fuse d2m.generic operations
-            "canonicalize",                                # Cleanup and simplify
-            "ttcore-one-shot-bufferize",
-            "func.func(d2m-simple-allocate)",              # Our simplified allocator
-            "d2m-linalg-to-affine{use-tile-matmul=1}",     # Convert all linalg including matmul
-            "func.func(d2m-insert-dst-register-gc)",       # Boyana's graph coloring DST allocator
-            "lower-affine",
-            "d2m-generic-linearize-memref",
-            "d2m-generic-generate-datamovement",           # Generate DMA regions for streams
-            "d2m-generic-lower-dmas",                      # Lower DMAs to hardware
-            "canonicalize",                                # Simplify before region extraction
-            "loop-invariant-code-motion",                  # Hoist invariants
-            "sccp",                                        # Sparse conditional constant propagation
-            "cse",                                         # Eliminate common subexpressions
-            "d2m-generic-regions-to-funcs",                # Extract regions to functions
-            f"convert-d2m-to-ttkernel{{ttnn-mode={config.ttnn_mode}}}",
-            "ttkernel-control-dst-section",                # Insert tile_regs_commit/wait/release
-            "convert-ttkernel-to-emitc",                   # Convert TTKernel ops to EmitC
+        # TTL pipeline passes - simpler than D2M since TTL handles more at the dialect level
+        ttl_pipeline_passes = [
+            # Convert high-level TTL tensor ops (ttl.add, etc.) to ttl.compute with tile ops
+            "func.func(convert-ttl-to-compute)",
+            # DST register allocation and copy_tile insertion
+            "func.func(ttl-tile-and-assign-dst)",
+            # Insert tile_regs_* synchronization ops
+            "func.func(ttl-insert-tile-regs-sync)",
+            # Lower ttl.compute to scf.for loops
+            "func.func(ttl-lower-to-loops)",
+            # Annotate CB associations for copy_tile lowering
+            "func.func(ttl-annotate-cb-associations)",
+            # Lower TTL DMA ops to TTKernel
+            "convert-ttl-to-ttkernel",
+            # Cleanup
+            "canonicalize",
+            "cse",
+            # Convert TTKernel to EmitC
+            "convert-ttkernel-to-emitc",
         ]
 
         # Cleanup passes applied to both paths
         cleanup_passes = [
             "canonicalize",                                # Cleanup after conversion
-            "loop-invariant-code-motion",                  # Hoist again after backend lowering
-            "sccp",                                        # Propagate constants
             "cse",                                         # Final deduplication
             "symbol-dce"                                   # Remove unused functions
         ]
 
         if config.is_ttnn:
-            # TTNN interop path: stop at EmitC, apply cleanup, translate to C++
-            pipeline_passes = common_pipeline_passes + cleanup_passes
+            # TTNN interop path with TTL
+            pipeline_passes = ttl_pipeline_passes + cleanup_passes
         else:
-            # Metal path: continue to TTMetal, apply cleanup, then flatbuffer
-            metal_pipeline_passes = [
-                "convert-d2m-to-ttmetal",                  # Convert to_layout to ttmetal enqueue ops
-            ]
-            pipeline_passes = common_pipeline_passes + metal_pipeline_passes + cleanup_passes
+            # Metal path - not yet supported with TTL
+            raise NotImplementedError("Metal path not yet supported with TTL bindings")
 
         pipeline = ",".join(pipeline_passes)
 
@@ -933,7 +902,8 @@ __all__ = [
     "CircularBuffer",
     "MemTx",
     "Semaphore",
-    "dma",
+    "copy",
+    "dma",  # Deprecated, use copy instead
     "TensorAccessor",
     "CompiledTTNNKernel",
     "create_metal_layout",
