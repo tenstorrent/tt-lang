@@ -28,7 +28,7 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     threaded into data movement and compute threads.
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
-    - `buffer_factor` is the number of blocks (for example 2 for double buffering).
+    - `buffer_factor` is the number of blocks (default 2 for double buffering).
     Example:
 
     ```mlir
@@ -38,7 +38,7 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    I64Attr:$buffer_factor
+    DefaultValuedAttr<I64Attr, "2">:$buffer_factor
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `buffer_factor` `=` $buffer_factor `}` attr-dict `:` type($result)";
@@ -252,18 +252,70 @@ def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
 }
 
 //===----------------------------------------------------------------------===//
+// DST register control operations
+//===----------------------------------------------------------------------===//
+
+def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Acquire the DST register lock.";
+  let description = [{
+    Acquire an exclusive lock on the DST register before issuing tile
+    computations that write to DST. This mirrors the TTKernel
+    `tile_regs_acquire` operation (preferred over the deprecated
+    `acquire_dst`). The call is blocking and ensures mutual exclusion on the DST
+    register bank.
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_TileRegsCommitOp : TTL_Op<"tile_regs_commit",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Commit the DST register lock (MATH thread).";
+  let description = [{
+    Release the DST register lock held by the MATH thread, mirroring
+    `ttkernel.tile_regs_commit`. This is blocking and must be paired with a
+    preceding `tile_regs_acquire`.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_TileRegsWaitOp : TTL_Op<"tile_regs_wait",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Wait for DST register availability (PACK thread).";
+  let description = [{
+    Acquire the DST register lock for the PACK thread, blocking until the MATH
+    thread commits. Mirrors `ttkernel.tile_regs_wait`.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Release DST register lock (PACK thread).";
+  let description = [{
+    Release the DST register lock held by the PACK thread, mirroring
+    `ttkernel.tile_regs_release`. Must be paired with a preceding
+    `tile_regs_wait`.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // Tile-Level Operations (for use inside ttl.compute body)
 //===----------------------------------------------------------------------===//
 
 // Base class for tile operations
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [Pure])>;
+    : TTL_Op<mnemonic, !listconcat(traits, [Pure, TTL_TileOpTrait])>;
 
 def TTL_TileType : TypeConstraint<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
     "ttcore.tile type">;
 
-def TTL_CopyTileOp : TTL_TileOp<"copy_tile", [MemoryEffects<[MemWrite]>]> {
+def TTL_CopyTileOp : TTL_Op<"copy_tile",
+                            [MemoryEffects<[MemRead, MemWrite]>,
+                             TTL_TileOpTrait]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -277,11 +329,11 @@ def TTL_CopyTileOp : TTL_TileOp<"copy_tile", [MemoryEffects<[MemWrite]>]> {
     Index:$src_index,
     Index:$dst_index
   );
-  let results = (outs TTL_DSTRegister:$result);
+  let results = (outs TTL_DSTRegister:$dst_token, TTL_TileType:$dst_tile);
   let assemblyFormat =
       "$src `,` $src_index `,` $dst_index attr-dict `:` "
       "type($src) `,` type($src_index) `,` type($dst_index) "
-      "`->` type($result)";
+      "`->` type($dst_token) `,` type($dst_tile)";
   let hasVerifier = 1;
 }
 

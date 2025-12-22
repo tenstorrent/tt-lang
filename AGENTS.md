@@ -65,8 +65,12 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 ### Lit tests
 - Always add a brief comment in front of tests to specify the purpose of the test. Add a concise summary on top of the test file about what is being tested.
 - Use `--split-input-file` for multiple lit tests in the same file.
-- Use "// PREFIX-NEXT:" (for FileCheck prefix PREFIX) whenever possible instead of just "// PREFIX:"
-- Always include negative/invalid tests, which should be in a file named *_invalid.<suffix>. For invalid tests, use `--verify-diagnostics` and `expected-error @below` as well as `--split-input-file` if file contains multiple tests.
+- **Negative/invalid tests**: should be in a file named *_invalid.<suffix>. For invalid tests, use `--verify-diagnostics` and `expected-error @below` as well as `--split-input-file` if file contains multiple tests.
+- **CHECK-LABEL**: Start each test function
+- **CHECK-NEXT**: Verify operation ordering (catches extra/missing ops)
+- **Capture variables**: `%[[VAR:.*]]` for reuse in subsequent checks
+- **Verify data flow**: Check that operations consume correct SSA values
+- **CHECK-NOT**: Ensure unwanted operations/attributes are not present
 
 ## Additional Notes
 - **Agent Design Principle**: Implement only the minimum necessary

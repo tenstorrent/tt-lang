@@ -37,17 +37,38 @@ def TTLConvertTTLToCompute
   ];
 }
 
-def TTLAssignDSTRegisters
-    : Pass<"ttl-assign-dst-registers", "::mlir::func::FuncOp"> {
-  let summary = "Assign DST registers with a simple linear scan (MVP, no spill)";
+def TTLTileAndAssignDST
+    : Pass<"ttl-tile-and-assign-dst", "::mlir::func::FuncOp"> {
+  let summary = "Analyze DST usage, insert copy_tile, assign dst_idx, check capacity";
   let description = [{
-    Performs a lightweight linear scan over ttl.compute producers to annotate
-    expected DST usage. Errors if requested capacity exceeds a fixed budget.
-    This is an MVP placeholder for a fuller allocator.
+    Analyzes DST register pressure in ttl.compute bodies, inserts ttl.copy_tile
+    for block arguments, assigns dst_idx attributes to tile math operations, and
+    emits clear diagnostics on overflow. No loop tiling is performed yet.
+  }];
+
+  let options = [
+    Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
+           "Override DST register capacity (testing only, default auto-computed).">
+  ];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLInsertTileRegsSync
+    : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
+  let summary = "Insert tile_regs_* synchronization ops around ttl.compute";
+  let description = [{
+    Inserts DST register synchronization ops mirroring the TTKernel reg API:
+    - Inside ttl.compute: tile_regs_acquire at entry, tile_regs_commit before yield.
+    - Around ttl.compute: tile_regs_wait and tile_regs_release immediately after
+      the compute op in the parent block.
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect"
+    "::mlir::tt::ttl::TTLDialect"
   ];
 }
 
