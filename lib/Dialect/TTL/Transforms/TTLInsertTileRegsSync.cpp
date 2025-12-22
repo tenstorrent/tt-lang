@@ -24,8 +24,8 @@
 //   MATH thread:  acquire -> [compute] -> commit
 //   PACK thread:  wait -> release
 //
-// The pass is idempotent - it checks if sync ops are already present before
-// inserting them, allowing it to be run multiple times safely.
+// The pass is designed to run once during lowering; it does not check for
+// existing sync ops.
 //
 //===----------------------------------------------------------------------===//
 
