@@ -327,8 +327,9 @@ static FailureOr<Value> getCBFromView(Value v) {
 }
 
 /// Lower ttl.attach_cb to its input tensor.
-/// After all CB-aware lowerings are done, attach_cb is purely metadata and
-/// can be erased. We replace it with its input tensor to preserve SSA form.
+/// After tile ops (including copy_tile) have been lowered and CB associations
+/// have been used, attach_cb is purely metadata and can be erased. We replace
+/// it with its input tensor to preserve SSA form.
 struct AttachCBLowering : OpConversionPattern<AttachCBOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -357,12 +358,32 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // Create pack_tile(dst_index=0, cb, out_index=0).
-    // TODO(#120): Replace hardcoded dst_index=0 with the actual DST register
-    // index from the op that produced the tile being stored, once DST
-    // assignment is implemented.
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    rewriter.create<ttk::PackTileOp>(loc, zero, *cb, zero,
+    // Get the DST index from the tile value's dst_idx attribute.
+    // The DST assignment pass (ttl-tile-and-assign-dst) should run before this
+    // pass and annotates tile-producing operations with DST register indices.
+    // If the attribute is missing, we default to DST index 0.
+    auto tileValue = adaptor.getTile();
+    Value dstIndex;
+
+    if (auto defOp = tileValue.getDefiningOp()) {
+      if (auto dstIdxAttr =
+              defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+        dstIndex =
+            rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+      }
+    }
+
+    // Default to DST index 0 if no attribute is found.
+    // This can happen in unit tests or if DST assignment hasn't run.
+    if (!dstIndex) {
+      dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    }
+
+    // The CB tile index is always 0 because we pack one tile at a time into
+    // the reserved section of the CB. The index is relative to the current
+    // reserved section (from cb_reserve_back), not the absolute CB position.
+    auto cbTileIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
     rewriter.eraseOp(op);
@@ -712,15 +733,17 @@ struct TTLConvertTTLToTTKernelPass
     // Structural ops remain legal (converted elsewhere or kept as-is).
     target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
 
-    // DST lifecycle ops are not tile compute ops; keep them legal in phase 1.
+    // DST lifecycle ops are not tile compute ops; keep them legal until the
+    // tile ops lowering phase.
     target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                       TileRegsReleaseOp>();
 
-    // CopyTileOp is a data movement op (CB -> DST), lowered in phase 2.
+    // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
+    // lowering phase.
     target.addLegalOp<CopyTileOp>();
 
-    // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal in
-    // phase 1. They are lowered in phase 2 (computeTarget).
+    // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal
+    // until the tile ops lowering phase.
     target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
         [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
 
@@ -731,7 +754,6 @@ struct TTLConvertTTLToTTKernelPass
       return typeConverter.isSignatureLegal(op.getFunctionType()) &&
              typeConverter.isLegal(&op.getBody());
     });
-    // WaitOp will be lowered; do not mark it legal.
 
     RewritePatternSet patterns(&ctx);
     patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
@@ -757,8 +779,7 @@ struct TTLConvertTTLToTTKernelPass
 
     // Lower tile ops to TTKernel ops using DialectConversion. Tile compute ops
     // are identified by TTLTileComputeOpTrait. ttl.compute is kept legal here
-    // because full compute lowering happens after loops and bufferization in a
-    // later stage.
+    // because it is lowered to loops in an earlier pass (ttl-lower-to-loops).
     ConversionTarget computeTarget(ctx);
     // TTKernel ops are legal (target dialect)
     computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
@@ -801,8 +822,9 @@ struct TTLConvertTTLToTTKernelPass
       return;
     }
 
-    // Phase 3: Remove remaining TTL structural ops (AttachCBOp).
-    // These are now dead after tile ops have been lowered.
+    // Remove remaining TTL structural ops (AttachCBOp).
+    // These are now dead after tile ops have been lowered and CB associations
+    // have been used by copy_tile lowering.
     ConversionTarget cleanupTarget(ctx);
     cleanupTarget.addLegalDialect<
         ttkernel::TTKernelDialect, arith::ArithDialect, BuiltinDialect,
@@ -827,10 +849,10 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
     }
 
-    // Phase 4: Remove tensor dataflow ops that were used only for SSA tracking.
-    // After tile ops are lowered, tensor.extract/insert/empty are dead code.
-    // The actual computation happens through circular buffers and DST
-    // registers.
+    // Remove tensor dataflow ops that were used only for SSA tracking.
+    // After loops are lowered and tile ops are converted,
+    // tensor.extract/insert/ empty are dead code. The actual computation
+    // happens through circular buffers and DST registers.
     mod.walk([&](func::FuncOp func) {
       // Check for compute kernel via either ttkernel.thread or
       // ttl.kernel_thread.
@@ -867,6 +889,8 @@ struct TTLConvertTTLToTTKernelPass
       }
 
       // Stage 2: Erase dead tensor.extract ops.
+      // Must run after Stage 1 because replacing tensor.insert results makes
+      // their corresponding extracts dead.
       SmallVector<tensor::ExtractOp> extractOps;
       func.walk([&](tensor::ExtractOp op) { extractOps.push_back(op); });
       for (auto op : extractOps) {
@@ -876,6 +900,8 @@ struct TTLConvertTTLToTTKernelPass
       }
 
       // Stage 3: Erase dead tensor.empty ops.
+      // Must run after Stage 2 because erasing extracts may make their source
+      // tensor.empty ops dead.
       SmallVector<tensor::EmptyOp> emptyOps;
       func.walk([&](tensor::EmptyOp op) { emptyOps.push_back(op); });
       for (auto op : emptyOps) {
