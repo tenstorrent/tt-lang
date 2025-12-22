@@ -14,6 +14,8 @@
 
 #define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 
+#define DEBUG_TYPE "ttl-convert-ttl-to-compute"
+
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DEF_TTLCONVERTTTLTOCOMPUTE

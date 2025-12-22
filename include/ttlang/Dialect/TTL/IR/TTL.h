@@ -19,6 +19,13 @@ namespace mlir::tt::ttl {
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
 inline constexpr int32_t kMaxCircularBuffers = 32;
+inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
+
+/// Purpose: Enable tagging of all tile-level operations so we can identify them
+/// later as tile-level operations without having to check individual types.
+template <typename ConcreteType>
+class TTLTileOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileOpTrait> {};
 
 /// Attribute names.
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";

@@ -25,18 +25,16 @@
 //   MATH thread:  acquire -> [compute] -> commit
 //   PACK thread:  wait -> release
 //
-// The pass is idempotent - it checks if sync ops are already present before
-// inserting them, allowing it to be run multiple times safely.
+// The pass is designed to run once during lowering; it does not check for
+// existing sync ops.
 //
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
+#include "mlir/Pass/Pass.h"
 
 #define DEBUG_TYPE "ttl-insert-tile-regs-sync"
 
