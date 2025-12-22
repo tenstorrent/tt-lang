@@ -126,12 +126,19 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
+/// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
+/// ctaIndex: Index into compile-time args where tensor config starts.
+/// crtaIndex: Index into compile-runtime args (typically 0).
 static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
-                                 Value rowStride, Value colStride,
+                                 int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
+  auto ctaConst =
+      rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  auto crtaConst =
+      rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
   auto args =
-      rewriter.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
+      rewriter.create<ttk::TensorAccessorArgsOp>(loc, ctaConst, crtaConst);
   auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
                                                          bankBase, pageSize);
   return accessor.getResult();
@@ -430,15 +437,17 @@ materializeTensorAccessor(Value tensor, Value bankBase,
   auto loc = tensor.getLoc();
   utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
 
-  auto rowStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
-  auto colStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
+  // TODO(XX): Placeholder CTA offsets - Python regex replaces 42+argIdx
+  // with actual offsets from ttnn.TensorAccessorArgs.get_compile_time_args().
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  int32_t ctaPlaceholder = 42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
+  constexpr int32_t crtaPlaceholder = 0;
+
   auto pageSize =
       rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, rowStride, colStride, bankBase,
-                             pageSize);
+  return buildTensorAccessor(loc, rewriter, ctaPlaceholder, crtaPlaceholder,
+                             bankBase, pageSize);
 }
 
 static std::pair<int64_t, int64_t>

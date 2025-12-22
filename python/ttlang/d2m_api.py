@@ -131,7 +131,8 @@ class CompiledTTNNKernel:
     """
 
     def __init__(
-        self, kernel_paths, kernel_configs, kernel_arg_specs, num_tensors, core_ranges
+        self, kernel_paths, kernel_configs, kernel_arg_specs, num_tensors, core_ranges,
+        args_per_tensor=0
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -142,17 +143,25 @@ class CompiledTTNNKernel:
             kernel_arg_specs: List of arg specs (rt_args list) for each kernel
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
+            args_per_tensor: Number of compile-time args per TensorAccessorArgs
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
         self.kernel_arg_specs = kernel_arg_specs
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
+        self.args_per_tensor = args_per_tensor
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
+
+        # Build compile_time_args from TensorAccessorArgs for each tensor
+        compile_time_args = []
+        for tensor in args:
+            tensor_args = ttnn.TensorAccessorArgs(tensor).get_compile_time_args()
+            compile_time_args.extend(tensor_args)
 
         # Build kernel descriptors with current tensor addresses
         kernel_descriptors = []
@@ -160,8 +169,6 @@ class CompiledTTNNKernel:
         for (kernel_path, thread_type), config, rt_args in zip(
             self.kernel_paths, self.kernel_configs, self.kernel_arg_specs
         ):
-            # TODO: Derive compile-time args from kernel IR (CB indices, tile counts, etc.)
-            compile_time_args = list(range(self.num_tensors))
             # runtime_args structure: [cores][core_ranges][args_per_core]
             # For single-core execution, this is one empty list per core range.
             # TODO: Support per-core runtime args for multi-core grids
@@ -256,11 +263,44 @@ def _execute_on_metal_runtime(flatbuffer_binary, args):
     runtime.close_mesh_device(device)
 
 
-def _write_kernel_to_tmp(name: str, source: str) -> str:
+def _write_kernel_to_tmp(name: str, source: str, args_per_tensor: int = 0) -> str:
     """Write kernel source to /tmp and return the file path."""
+    import re
+
+    # TODO(XX): Fix TensorAccessorArgs CTA offsets. C++ emits placeholder 42+idx,
+    # replace with actual offset = idx * args_per_tensor.
+    if args_per_tensor > 0:
+        def replace_cta_offset(m):
+            placeholder = int(m.group(1))
+            tensor_idx = placeholder - 42
+            actual_offset = tensor_idx * args_per_tensor
+            return f'TensorAccessorArgs<{actual_offset}, 0>()'
+        source = re.sub(
+            r'TensorAccessorArgs<(\d+), 0>\(\)',
+            replace_cta_offset,
+            source
+        )
+
+    # HACK: Fix TensorAccessorArgs type. EmitC emits "TensorAccessorArgs v = ..."
+    # but TensorAccessorArgs is a class template, need "auto v = ..." instead.
+    source = re.sub(
+        r'TensorAccessorArgs (\w+) = (TensorAccessorArgs<[^>]+>\(\))',
+        r'auto \1 = \2',
+        source
+    )
+    # HACK: Fix TensorAccessor CTAD. Deduction guide expects exact types (size_t, uint32_t)
+    # but EmitC emits int32_t. Also need "auto v = ..." for class template.
+    source = re.sub(
+        r'TensorAccessor (\w+) = TensorAccessor\((\w+), (\w+), (\w+)\)',
+        r'auto \1 = TensorAccessor(\2, static_cast<size_t>(\3), static_cast<uint32_t>(\4))',
+        source
+    )
     path = f"/tmp/ttlang_kernel_{name}.cpp"
     with open(path, "w") as f:
         f.write(source)
+    print(f"=== {name} kernel written to {path} ===")
+    print(source)
+    print("=" * 60)
     return path
 
 
@@ -348,10 +388,13 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
+    # Compute args_per_tensor from first tensor for TensorAccessorArgs offset calculation
+    args_per_tensor = len(ttnn.TensorAccessorArgs(args[0]).get_compile_time_args())
+
     # Write all kernels to /tmp for debugging
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        _write_kernel_to_tmp(name, cpp_source)
+        _write_kernel_to_tmp(name, cpp_source, args_per_tensor)
 
     kernel_paths = []
     kernel_configs = []
@@ -360,7 +403,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
 
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        kernel_path = _write_kernel_to_tmp(name, cpp_source)
+        kernel_path = _write_kernel_to_tmp(name, cpp_source, args_per_tensor)
         kernel_paths.append((kernel_path, thread_type))
 
         if thread_type == "compute":
@@ -389,6 +432,7 @@ def _compile_ttnn_kernel(module, args, grid, num_outs, verbose=True):
         kernel_arg_specs=kernel_arg_specs,
         num_tensors=len(args),
         core_ranges=core_ranges,
+        args_per_tensor=args_per_tensor,
     )
 
     if verbose:
