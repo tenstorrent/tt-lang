@@ -10,6 +10,20 @@
 
 namespace mlir::tt::ttl {
 
+/// Trace through unrealized conversion casts to find the original value.
+/// This is useful during dialect conversion when values are wrapped in
+/// UnrealizedConversionCastOp to represent type conversions.
+inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
+  while (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      value = cast.getInputs()[0];
+    } else {
+      break;
+    }
+  }
+  return value;
+}
+
 /// Return the circular buffer attached to `tensor`, or null if none/ambiguous.
 ///
 /// Recognized producers:
@@ -20,13 +34,7 @@ namespace mlir::tt::ttl {
 /// Both operations establish a tensor->CB association for compute/DMA purposes.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
-  while (auto cast = tensor.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
-    if (cast.getInputs().size() == 1) {
-      tensor = cast.getInputs()[0];
-    } else {
-      break;
-    }
-  }
+  tensor = traceUnrealizedCasts(tensor);
 
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();

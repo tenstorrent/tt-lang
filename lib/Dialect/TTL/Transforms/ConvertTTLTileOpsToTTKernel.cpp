@@ -49,17 +49,16 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     // Find the parent compute op and read the cb_index attribute.
     auto computeOp = llvm::dyn_cast<ComputeOp>(barg.getOwner()->getParentOp());
     if (computeOp) {
-      // Build attribute name: "ttl.cb_index.N" where N is the block arg index.
       unsigned argIdx = barg.getArgNumber();
-      std::string attrName =
-          (kCBIndexAttrPrefix + std::to_string(argIdx)).str();
-      auto cbIndexAttr = computeOp->getAttrOfType<IntegerAttr>(attrName);
-      if (cbIndexAttr) {
-        int64_t cbIndex = cbIndexAttr.getInt();
+      if (auto cbIndex = getCBIndexAttr(computeOp, argIdx)) {
+        // Validate cb_index is in valid range.
+        assert(*cbIndex >= 0 && *cbIndex < kMaxCircularBuffers &&
+               "cb_index must be in range [0, 31]");
+
         // Find the bind_cb op with matching cb_index in the function.
         Value result;
         funcOp->walk([&](BindCBOp bindOp) {
-          if (bindOp.getCbIndexAttr().getInt() == cbIndex) {
+          if (bindOp.getCbIndexAttr().getInt() == *cbIndex) {
             result = bindOp.getResult();
             return WalkResult::interrupt();
           }
@@ -79,19 +78,14 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
 
   // Trace through unrealized conversion casts.
   // After cb_wait lowering, the tensor is an unrealized_cast(ttkernel.cb).
-  while (auto cast = tensor.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (cast.getInputs().size() == 1) {
-      Value input = cast.getInputs()[0];
-      // If the input is already a ttkernel.cb, return it directly.
-      if (llvm::isa<ttkernel::CBType>(input.getType())) {
-        return input;
-      }
-      tensor = input;
-    } else {
-      break;
-    }
+  tensor = traceUnrealizedCasts(tensor);
+
+  // If we traced to a ttkernel.cb, return it directly.
+  if (llvm::isa<ttkernel::CBType>(tensor.getType())) {
+    return tensor;
   }
 
+  // Otherwise, try to find the attached CB.
   if (Value attached = getAttachedCB(tensor)) {
     return attached;
   }

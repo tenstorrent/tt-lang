@@ -29,6 +29,34 @@ template <typename ConcreteType>
 class TTLTileComputeOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileComputeOpTrait> {};
 
+//===----------------------------------------------------------------------===//
+// CB Index Attribute Helpers
+//===----------------------------------------------------------------------===//
+
+/// Get the CB index attribute name for a compute input.
+inline std::string getCBIndexAttrName(unsigned inputIdx) {
+  return (kCBIndexAttrPrefix + std::to_string(inputIdx)).str();
+}
+
+/// Set CB index attribute on a compute op for a specific input.
+inline void setCBIndexAttr(mlir::Operation *compute, unsigned inputIdx,
+                           int64_t cbIndex) {
+  auto attr = mlir::IntegerAttr::get(
+      mlir::IntegerType::get(compute->getContext(), 64), cbIndex);
+  compute->setAttr(getCBIndexAttrName(inputIdx), attr);
+}
+
+/// Get CB index attribute from a compute op for a specific input.
+/// Returns std::nullopt if the attribute is not present.
+inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
+                                             unsigned inputIdx) {
+  if (auto attr = compute->getAttrOfType<mlir::IntegerAttr>(
+          getCBIndexAttrName(inputIdx))) {
+    return attr.getInt();
+  }
+  return std::nullopt;
+}
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_IR_TTL_H

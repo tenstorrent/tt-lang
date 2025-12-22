@@ -41,10 +41,17 @@ struct TTLAnnotateCBAssociationsPass
           // lowering failures if the input is used in copy_tile operations.
           // The compute verifier should catch this, but we warn here for
           // better diagnostics.
-          compute.emitWarning("input ")
-              << idx
-              << " does not have an attached circular buffer; this may cause "
-                 "lowering failures if used in copy_tile operations";
+          auto diag = compute.emitWarning()
+                      << "input " << idx
+                      << " does not have an attached circular buffer";
+          diag.attachNote(input.getLoc()) << "input defined here";
+          diag.attachNote(compute.getLoc())
+              << "to fix: add 'ttl.attach_cb' or 'ttl.cb_wait' before this "
+                 "compute operation, e.g.:\n"
+              << "  %cb = ttl.bind_cb {cb_index = N, ...}\n"
+              << "  %attached = ttl.attach_cb <input>, %cb\n"
+              << "  or\n"
+              << "  %view = ttl.cb_wait %cb, <num_pages>";
           continue;
         }
 
@@ -54,18 +61,27 @@ struct TTLAnnotateCBAssociationsPass
           cbIndexAttr = bindOp.getCbIndexAttr();
         } else {
           // CB is not from bind_cb (shouldn't happen in well-formed IR).
-          compute.emitWarning("input ")
-              << idx
-              << " has a circular buffer that is not from ttl.bind_cb; "
-                 "skipping annotation";
+          auto diag = compute.emitWarning()
+                      << "input " << idx
+                      << " has a circular buffer that is not from ttl.bind_cb";
+          diag.attachNote(cb.getLoc()) << "circular buffer defined here";
+          diag.attachNote(compute.getLoc())
+              << "all circular buffers must be created with ttl.bind_cb";
           continue;
         }
 
+        // Validate cb_index is in valid range [0, 31].
+        int64_t cbIndex = cbIndexAttr.getInt();
+        if (cbIndex < 0 || cbIndex >= kMaxCircularBuffers) {
+          compute.emitError("input ")
+              << idx << " has invalid cb_index " << cbIndex
+              << " (must be in range [0, " << (kMaxCircularBuffers - 1) << "])";
+          signalPassFailure();
+          return;
+        }
+
         // Store the mapping on the compute op itself using an attribute.
-        // Build attribute name: "ttl.cb_index.N" where N is the block arg
-        // index.
-        std::string attrName = (kCBIndexAttrPrefix + std::to_string(idx)).str();
-        compute->setAttr(attrName, cbIndexAttr);
+        setCBIndexAttr(compute, idx, cbIndex);
       }
     });
   }
