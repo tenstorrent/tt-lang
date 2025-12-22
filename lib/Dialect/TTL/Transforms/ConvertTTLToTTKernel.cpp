@@ -37,24 +37,6 @@ namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
-// Build CB analysis state (block arguments and attached tensors).
-CopyTileCBState buildCopyTileCBState(Operation *root) {
-  CopyTileCBState state;
-  root->walk([&](ComputeOp compute) {
-    for (auto it : llvm::enumerate(compute.getInputs())) {
-      if (auto attach = it.value().template getDefiningOp<AttachCBOp>()) {
-        BlockArgument barg = compute.getBody().front().getArgument(it.index());
-        state.blockArgToCb.try_emplace(barg, attach.getCb());
-      }
-    }
-  });
-  root->walk([&](AttachCBOp attach) {
-    state.tensorToCb.try_emplace(attach.getResult(), attach.getCb());
-    state.tensorToCb.try_emplace(attach.getTensor(), attach.getCb());
-  });
-  return state;
-}
-
 namespace {
 
 using mlir::LogicalResult;
@@ -811,11 +793,8 @@ struct TTLConvertTTLToTTKernelPass
           return true;
         });
 
-    auto cbState = buildCopyTileCBState(mod);
-
     RewritePatternSet computePatterns(&ctx);
-    populateTTLTileOpsToTTKernelPatterns(&typeConverter, &cbState,
-                                         computePatterns);
+    populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
     if (failed(applyPartialConversion(mod, computeTarget,
                                       std::move(computePatterns)))) {
       signalPassFailure();

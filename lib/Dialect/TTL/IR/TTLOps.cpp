@@ -446,9 +446,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
                                StringRef kind) -> LogicalResult {
     Value cb = getAttachedCB(tensor);
     if (!cb) {
-      return emitOpError()
-             << kind << " " << idx
-             << " must have a circular buffer attached via ttl.attach_cb";
+      return emitOpError() << kind << " " << idx
+                           << " must have a circular buffer attached via "
+                              "ttl.attach_cb or ttl.cb_wait";
     }
     return success();
   };
