@@ -83,13 +83,17 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK-NEXT:   for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
 // CHECK-NEXT:     for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
 
+// Compute linear tile index: i * cols + j
+// CHECK-NEXT:       size_t [[IOFF:.*]] = [[I]] * [[BOUND]];
+// CHECK-NEXT:       size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
+
 // Load tile from CB0 into DST[0]
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[ZERO]], [[ZERO]]);
+// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
 
 // Load tile from CB1 into DST[1]
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[ZERO]], [[STEP]]);
+// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
 
 // Compute: A + B
 // CHECK-NEXT:       add_binary_tile_init();

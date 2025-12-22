@@ -127,7 +127,52 @@ static scf::ValueVector generateTileProcessing(OpBuilder &b, Location loc,
     mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
   }
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    b.clone(bodyOp, mapping);
+    bool handled = false;
+
+    // Special handling for copy_tile: compute CB tile index from loop IVs.
+    // TTLTileAndAssignDST creates copy_tile with hardcoded srcIndex=0, but
+    // when inside loops we need linear offset: i * cols + j.
+    if (auto copyTile = dyn_cast<CopyTileOp>(&bodyOp)) {
+      if (auto constIdx =
+              copyTile.getSrcIndex().getDefiningOp<arith::ConstantIndexOp>()) {
+        if (constIdx.value() == 0 && ivs.size() == 2) {
+          Value src = copyTile.getSrc();
+          for (auto [idx, blockArg] :
+               llvm::enumerate(bodyBlock.getArguments())) {
+            if (src == blockArg && idx < op.getInputs().size()) {
+              auto tensorType =
+                  cast<RankedTensorType>(op.getInputs()[idx].getType());
+              if (tensorType.getRank() == 2) {
+                // Compute: linearIdx = i * cols + j
+                int64_t cols = tensorType.getShape()[1];
+                Value colsVal = b.create<arith::ConstantIndexOp>(loc, cols);
+                Value iOffset = b.create<arith::MulIOp>(loc, ivs[0], colsVal);
+                Value linearIdx = b.create<arith::AddIOp>(loc, iOffset, ivs[1]);
+
+                // Create new copy_tile with computed srcIndex.
+                // Don't use IRMapping for srcIndex to avoid affecting dstIndex
+                // if they share the same constant value.
+                Value mappedSrc = mapping.lookupOrDefault(copyTile.getSrc());
+                Value mappedDstIdx =
+                    mapping.lookupOrDefault(copyTile.getDstIndex());
+                auto newCopyTile =
+                    b.create<CopyTileOp>(loc, copyTile.getResultTypes(),
+                                         mappedSrc, linearIdx, mappedDstIdx);
+                // Update main mapping with new results for dependent ops.
+                mapping.map(copyTile.getDstToken(), newCopyTile.getDstToken());
+                mapping.map(copyTile.getDstTile(), newCopyTile.getDstTile());
+                handled = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (!handled) {
+      b.clone(bodyOp, mapping);
+    }
   }
 
   // Get yielded values from terminator.
