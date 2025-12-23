@@ -22,6 +22,7 @@ def ensure_dialects_registered(ctx):
 
 # Re-export C++-bound attributes/types for convenience.
 SliceAttr = ir.SliceAttr
+CircularBufferType = ir.CircularBufferType
 
 __all__ = [  # noqa: F405
     *[name for name in globals().keys() if not name.startswith("_")],

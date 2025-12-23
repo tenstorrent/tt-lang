@@ -193,12 +193,12 @@ class TTLGenericCompiler(TTCompilerBase):
         with InsertionPoint(func_bb):
             # Emit ttl.bind_cb ops at function entry for each CB argument
             for cb_info in self._cb_info:
-                # Parse CB type: !ttl.cb<[shape], element_type, buffer_factor>
-                shape_str = ", ".join(str(s) for s in cb_info["shard_shape"])
-                elem_str = str(cb_info["element_type"])
                 buffer_factor = 2  # Default buffer factor
-                cb_type = Type.parse(
-                    f"!ttl.cb<[{shape_str}], {elem_str}, {buffer_factor}>", self.ctx
+                cb_type = ttl.CircularBufferType.get(
+                    self.ctx,
+                    cb_info["shard_shape"],
+                    cb_info["element_type"],
+                    buffer_factor,
                 )
 
                 # Emit: %cb = ttl.bind_cb {cb_index = N, buffer_factor = M} : !ttl.cb<...>
@@ -242,20 +242,11 @@ class TTLGenericCompiler(TTCompilerBase):
             return self._emit_entry(node)
 
     def _get_cb_tensor_type(self, cb_val):
-        """Extract the tensor type from a TTL CB type by parsing it."""
-        # CB type is !ttl.cb<[shape], element_type, buffer_factor>
-        cb_type_str = str(cb_val.type)
-        # Parse: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-        # Element type may contain commas inside <>, so match up to last comma
-        import re
-        match = re.match(r"!ttl\.cb<\[([^\]]+)\], (.+), (\d+)>$", cb_type_str)
-        if match:
-            shape_str = match.group(1)
-            elem_str = match.group(2)
-            shape = [int(s.strip()) for s in shape_str.split(",")]
-            elem_type = Type.parse(elem_str, self.ctx)
-            return RankedTensorType.get(shape, elem_type)
-        raise ValueError(f"Could not parse CB type: {cb_type_str}")
+        """Extract the tensor type from a TTL CB type."""
+        cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
+        if cb_type is None:
+            raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
+        return RankedTensorType.get(cb_type.shape, cb_type.element_type)
 
     def visit_With(self, node):
         """

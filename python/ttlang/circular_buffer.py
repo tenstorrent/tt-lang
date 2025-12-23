@@ -4,7 +4,6 @@
 
 """Circular buffer operations for inter-thread communication."""
 
-import re
 from ttmlir.ir import *
 
 from .dialects import ttl
@@ -12,20 +11,11 @@ from ._src.ttl_ast import syntax
 
 
 def _get_cb_tensor_type(cb_val):
-    """Extract the tensor type from a TTL CB type by parsing it."""
-    # CB type is !ttl.cb<[shape], element_type, buffer_factor>
-    cb_type_str = str(cb_val.type)
-    # Parse: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    # Element type may contain commas inside <>, so match up to last comma
-    match = re.match(r"!ttl\.cb<\[([^\]]+)\], (.+), (\d+)>$", cb_type_str)
-    if match:
-        shape_str = match.group(1)
-        elem_str = match.group(2)
-        shape = [int(s.strip()) for s in shape_str.split(",")]
-        ctx = cb_val.type.context
-        elem_type = Type.parse(elem_str, ctx)
-        return RankedTensorType.get(shape, elem_type)
-    raise ValueError(f"Could not parse CB type: {cb_type_str}")
+    """Extract the tensor type from a TTL CB type."""
+    cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
+    if cb_type is None:
+        raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
+    return RankedTensorType.get(cb_type.shape, cb_type.element_type)
 
 
 @syntax("!ttl.cb")
