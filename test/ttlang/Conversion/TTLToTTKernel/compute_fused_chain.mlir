@@ -22,9 +22,8 @@
 // CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT]])
 // CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
 // CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[CAST0]][%[[I]], %[[J]]]
-// Compute linear tile index: i * cols + j
-// CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[I]], %[[C2]]
-// CHECK-NEXT:      %[[LINIDX:.*]] = arith.addi %[[IOFF]], %[[J]]
+// Compute linear tile index: i * cols + j (via affine map)
+// CHECK-NEXT:      %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
 // CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]], %[[C0]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
