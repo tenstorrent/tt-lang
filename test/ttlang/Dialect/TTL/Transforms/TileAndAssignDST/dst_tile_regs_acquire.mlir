@@ -7,8 +7,10 @@
 // yield, stores are inserted before yield, and release follows the compute. Tile
 // ops consume copied tiles.
 // CHECK-LABEL:   func.func @acquire_insert
+// CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
-// CHECK:           ttl.tile_regs_acquire
+// CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      ttl.tile_regs_acquire
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
@@ -60,8 +62,10 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Purpose: ensure per-compute acquire, commit/wait before yield, store before yield, and release after.
 // CHECK-LABEL:   func.func @acquire_two_computes
+// CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
-// CHECK:           ttl.tile_regs_acquire
+// CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      ttl.tile_regs_acquire
 // CHECK-NEXT:      %[[R0:.*]] = ttl.compute
 // CHECK:           ^bb0
 // CHECK:             %[[SUM0:.*]] = ttl.tile_add
@@ -74,6 +78,7 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // CHECK-NEXT:      %[[R0CB:.*]] = ttl.attach_cb %[[R0]], %[[CB3]]
+// CHECK-NEXT:      ttl.init_sfpu(%[[CB3]], %[[CB2]])
 // CHECK-NEXT:      ttl.tile_regs_acquire
 // CHECK-NEXT:      %[[R1:.*]] = ttl.compute
 // CHECK:           ^bb0
@@ -144,8 +149,10 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // Purpose: op chain add->mul->exp with reg sync: acquire before compute, commit/wait inside compute, store before yield, release after.
 // CHECK-LABEL:   func.func @acquire_chain_three_ops
 // CHECK-SAME:      (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[CARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
-// CHECK:           ttl.tile_regs_acquire
+// CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB3]])
+// CHECK-NEXT:      ttl.tile_regs_acquire
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0
 // CHECK:             %[[ADD:.*]] = ttl.tile_add

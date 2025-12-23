@@ -256,6 +256,22 @@ def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
 // DST register control operations
 //===----------------------------------------------------------------------===//
 
+def TTL_InitSFPUOp : TTL_Op<"init_sfpu",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Initialize SFPU unpacker/packer for CB data formats.";
+  let description = [{
+    Configures the unpacker and packer hardware for SFPU operations based
+    on the data formats of the input and output circular buffers. Must be
+    called once before SFPU computations. The icb (input CB) and ocb (output
+    CB) provide data format information for the unpacker and packer
+    respectively.
+
+    Both operands must be circular buffer handles obtained from `ttl.bind_cb`.
+  }];
+  let arguments = (ins TTL_CircularBuffer:$icb, TTL_CircularBuffer:$ocb);
+  let assemblyFormat = "`(` $icb `,` $ocb `)` attr-dict `:` type($icb) `,` type($ocb)";
+}
+
 def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Acquire the DST register lock.";

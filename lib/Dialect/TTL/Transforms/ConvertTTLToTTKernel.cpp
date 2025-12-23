@@ -226,18 +226,7 @@ static CircularBufferType getTTLCBType(Value cb) {
 
 static FailureOr<Value>
 convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
-  if (mlir::isa<ttk::CBType>(cb.getType())) {
-    return cb;
-  }
-  auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
-  if (!ttlCbTy) {
-    return failure();
-  }
-  Type tkCbTy =
-      ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
-                       ttlCbTy.getElementType());
-  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, tkCbTy, cb);
-  return cast.getResult(0);
+  return utils::convertTTLCBToTTKernel(cb, rewriter, loc);
 }
 
 // num_pages = product of CB shape dimensions (elements per block).
@@ -739,8 +728,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
   // tile ops lowering phase.
-  target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-                    TileRegsReleaseOp>();
+  target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
+                    TileRegsWaitOp, TileRegsReleaseOp>();
 
   // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
   // lowering phase.
@@ -815,7 +804,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
           return false;
         }
         // DST lifecycle ops are illegal.
-        if (isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+        if (isa<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                 TileRegsReleaseOp>(op)) {
           return false;
         }

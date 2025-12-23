@@ -76,6 +76,9 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK:   cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
 // CHECK-NEXT:   cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
 
+// Initialize SFPU for CB data formats
+// CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+
 // Acquire DST registers
 // CHECK-NEXT:   tile_regs_acquire();
 

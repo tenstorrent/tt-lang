@@ -68,9 +68,23 @@ struct TTLInsertTileRegsSyncPass
       }
 
       // Acquire: before the compute op in parent block.
+      // Also insert init_sfpu before tile_regs_acquire if CBs are available.
       Operation *prev = computeOperation->getPrevNode();
       if (!isa_and_nonnull<TileRegsAcquireOp>(prev)) {
         OpBuilder beforeBuilder(parent, Block::iterator(computeOperation));
+
+        // Get first input CB and output CB for init_sfpu.
+        Value icb, ocb;
+        if (!computeOp.getInputs().empty()) {
+          icb = getAttachedCB(computeOp.getInputs()[0]);
+        }
+        if (!computeOp.getOutputs().empty()) {
+          ocb = getAttachedCB(computeOp.getOutputs()[0]);
+        }
+        if (icb && ocb) {
+          beforeBuilder.create<InitSFPUOp>(computeOp.getLoc(), icb, ocb);
+        }
+
         beforeBuilder.create<TileRegsAcquireOp>(computeOp.getLoc());
       }
 

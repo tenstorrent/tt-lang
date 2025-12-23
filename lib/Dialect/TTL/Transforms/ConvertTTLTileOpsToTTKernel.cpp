@@ -30,6 +30,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
@@ -96,6 +97,31 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
 //===----------------------------------------------------------------------===//
 // DST lifecycle ops
 //===----------------------------------------------------------------------===//
+
+struct TTLInitSFPUToTTKernel : OpConversionPattern<InitSFPUOp> {
+  using OpConversionPattern<InitSFPUOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(InitSFPUOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto icb = utils::convertTTLCBToTTKernel(adaptor.getIcb(), rewriter, loc,
+                                             getTypeConverter());
+    if (failed(icb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert icb type");
+    }
+
+    auto ocb = utils::convertTTLCBToTTKernel(adaptor.getOcb(), rewriter, loc,
+                                             getTypeConverter());
+    if (failed(ocb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert ocb type");
+    }
+
+    rewriter.replaceOpWithNewOp<ttk::InitSFPUOp>(op, *icb, *ocb);
+    return success();
+  }
+};
 
 struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
   using OpConversionPattern<TileRegsAcquireOp>::OpConversionPattern;
@@ -379,7 +405,8 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
-  // Control ops.
+  // Control ops (init_sfpu needs type converter for CB conversion).
+  patterns.add<TTLInitSFPUToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileRegsAcquireToTTKernel, TTLTileRegsCommitToTTKernel,
                TTLTileRegsWaitToTTKernel, TTLTileRegsReleaseToTTKernel>(ctx);
 
