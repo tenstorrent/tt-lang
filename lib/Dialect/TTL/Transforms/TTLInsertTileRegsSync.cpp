@@ -38,8 +38,6 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
 
-#define DEBUG_TYPE "ttl-insert-tile-regs-sync"
-
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DEF_TTLINSERTTILEREGSSYNC
@@ -81,9 +79,13 @@ struct TTLInsertTileRegsSyncPass
         if (!computeOp.getOutputs().empty()) {
           ocb = getAttachedCB(computeOp.getOutputs()[0]);
         }
-        if (icb && ocb) {
-          beforeBuilder.create<InitSFPUOp>(computeOp.getLoc(), icb, ocb);
+        if (!icb || !ocb) {
+          computeOp.emitOpError()
+              << "requires CB attachments on inputs and outputs for init_sfpu; "
+              << "missing " << (!icb ? "input" : "output") << " CB";
+          return WalkResult::interrupt();
         }
+        beforeBuilder.create<InitSFPUOp>(computeOp.getLoc(), icb, ocb);
 
         beforeBuilder.create<TileRegsAcquireOp>(computeOp.getLoc());
       }
