@@ -685,37 +685,21 @@ def _compile_and_run_kernel(
         config = CompilerConfig(ttnn_interop, compile_only)
 
         # fmt: off
-        # TTL pipeline passes - simpler than D2M since TTL handles more at the dialect level
         ttl_pipeline_passes = [
-            # Convert high-level TTL tensor ops (ttl.add, etc.) to ttl.compute with tile ops
             "func.func(convert-ttl-to-compute)",
-            # DST register allocation and copy_tile insertion
             "func.func(ttl-tile-and-assign-dst)",
-            # Insert tile_regs_* synchronization ops
             "func.func(ttl-insert-tile-regs-sync)",
-            # Lower ttl.compute to scf.for loops
             "func.func(ttl-lower-to-loops)",
-            # Annotate CB associations for copy_tile lowering
             "func.func(ttl-annotate-cb-associations)",
-            # Lower TTL DMA ops to TTKernel
             "convert-ttl-to-ttkernel",
-            # Cleanup
             "canonicalize",
             "cse",
-            # Convert TTKernel to EmitC
             "convert-ttkernel-to-emitc",
-        ]
-
-        # Cleanup passes applied to both paths
-        cleanup_passes = [
-            "canonicalize",                                # Cleanup after conversion
-            "cse",                                         # Final deduplication
-            "symbol-dce"                                   # Remove unused functions
+            "symbol-dce",
         ]
 
         if config.is_ttnn:
-            # TTNN interop path with TTL
-            pipeline_passes = ttl_pipeline_passes + cleanup_passes
+            pipeline_passes = ttl_pipeline_passes
         else:
             # Metal path - not yet supported with TTL
             raise NotImplementedError("Metal path not yet supported with TTL bindings")
