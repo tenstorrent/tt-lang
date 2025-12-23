@@ -224,11 +224,6 @@ static CircularBufferType getTTLCBType(Value cb) {
   return nullptr;
 }
 
-static FailureOr<Value>
-convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
-  return utils::convertTTLCBToTTKernel(cb, rewriter, loc);
-}
-
 // num_pages = product of CB shape dimensions (elements per block).
 // Used by CBOpLowering template; [[maybe_unused]] silences false positive.
 [[maybe_unused]] static Value
@@ -252,7 +247,8 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to get TTL CB type");
     }
 
-    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    auto convertedCb =
+        utils::convertTTLCBToTTKernel(adaptor.getCb(), rewriter, loc);
     if (failed(convertedCb)) {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
@@ -522,7 +518,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   }
 
   // Convert CB to TTKernel type and get write pointer.
-  auto cbConverted = convertCBOperand(dstCB, rewriter, loc);
+  auto cbConverted = utils::convertTTLCBToTTKernel(dstCB, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }
@@ -563,7 +559,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   }
 
   // Convert CB to TTKernel type and get read pointer.
-  auto cbConverted = convertCBOperand(srcCB, rewriter, loc);
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }

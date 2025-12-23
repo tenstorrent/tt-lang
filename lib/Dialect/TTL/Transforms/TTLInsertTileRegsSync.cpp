@@ -65,36 +65,33 @@ struct TTLInsertTileRegsSyncPass
         return WalkResult::interrupt();
       }
 
-      // Acquire: before the compute op in parent block.
-      // Also insert init_sfpu before tile_regs_acquire if CBs are available.
+      Value icb = getAttachedCB(computeOp.getInputs().front());
+      Value ocb = getAttachedCB(computeOp.getOutputs().front());
+      Location loc = computeOp.getLoc();
+
       Operation *prev = computeOperation->getPrevNode();
-      if (!isa_and_nonnull<TileRegsAcquireOp>(prev)) {
-        OpBuilder beforeBuilder(parent, Block::iterator(computeOperation));
+      bool hasAcquire = isa_and_nonnull<TileRegsAcquireOp>(prev);
+      Operation *initCheckPoint = hasAcquire ? prev->getPrevNode() : prev;
+      bool hasInitSfpu = isa_and_nonnull<InitSFPUOp>(initCheckPoint);
 
-        // Get first input CB and output CB for init_sfpu.
-        Value icb, ocb;
-        if (!computeOp.getInputs().empty()) {
-          icb = getAttachedCB(computeOp.getInputs()[0]);
-        }
-        if (!computeOp.getOutputs().empty()) {
-          ocb = getAttachedCB(computeOp.getOutputs()[0]);
-        }
-        if (!icb || !ocb) {
-          computeOp.emitOpError()
-              << "requires CB attachments on inputs and outputs for init_sfpu; "
-              << "missing " << (!icb ? "input" : "output") << " CB";
-          return WalkResult::interrupt();
-        }
-        beforeBuilder.create<InitSFPUOp>(computeOp.getLoc(), icb, ocb);
+      OpBuilder builder(computeOp);
 
-        beforeBuilder.create<TileRegsAcquireOp>(computeOp.getLoc());
+      if (!hasInitSfpu) {
+        Operation *insertBefore = hasAcquire ? prev : computeOperation;
+        builder.setInsertionPoint(insertBefore);
+        builder.create<InitSFPUOp>(loc, icb, ocb);
+      }
+
+      if (!hasAcquire) {
+        builder.setInsertionPoint(computeOperation);
+        builder.create<TileRegsAcquireOp>(loc);
       }
 
       Block &body = computeOp.getRegion().front();
       auto *terminator = body.getTerminator();
       auto yieldOp = cast<YieldOp>(terminator);
+      OperandRange yieldedValues = yieldOp.getValues();
 
-      // Collect existing sync, store, cb_reserve, and cb_push ops.
       SmallVector<StoreOp> storeOps;
       SmallVector<CBReserveOp> reserveOps;
       SmallVector<CBPushOp> pushOps;
@@ -110,28 +107,23 @@ struct TTLInsertTileRegsSyncPass
             .Case<TileRegsWaitOp>([&](auto wait) { waitOp = wait; });
       }
 
-      // Ensure commit and wait exist near the end of the block.
-      OpBuilder endBuilder(terminator);
+      builder.setInsertionPoint(terminator);
       if (!commitOp) {
-        commitOp = endBuilder.create<TileRegsCommitOp>(computeOp.getLoc());
+        commitOp = builder.create<TileRegsCommitOp>(loc);
       }
       if (!waitOp) {
-        waitOp = endBuilder.create<TileRegsWaitOp>(computeOp.getLoc());
+        waitOp = builder.create<TileRegsWaitOp>(loc);
       }
-      // Enforce ordering: commit -> wait.
       if (!commitOp->isBeforeInBlock(waitOp)) {
         commitOp->moveBefore(waitOp);
       }
 
-      // Map yielded outputs to existing stores.
-      SmallVector<Value> yielded(yieldOp.getValues().begin(),
-                                 yieldOp.getValues().end());
       llvm::DenseMap<size_t, StoreOp> storeForOutput;
       for (StoreOp store : storeOps) {
-        auto it = llvm::find(yielded, store.getTile());
-        if (it != yielded.end()) {
-          storeForOutput.try_emplace(static_cast<size_t>(it - yielded.begin()),
-                                     store);
+        auto it = llvm::find(yieldedValues, store.getTile());
+        if (it != yieldedValues.end()) {
+          storeForOutput.try_emplace(
+              static_cast<size_t>(it - yieldedValues.begin()), store);
         }
       }
 
@@ -191,7 +183,7 @@ struct TTLInsertTileRegsSyncPass
       }
 
       // Insert missing stores for outputs using existing views.
-      for (auto [idx, tile] : llvm::enumerate(yielded)) {
+      for (auto [idx, tile] : llvm::enumerate(yieldedValues)) {
         if (storeForOutput.contains(idx)) {
           continue;
         }
@@ -199,27 +191,24 @@ struct TTLInsertTileRegsSyncPass
         Value cb = getAttachedCB(computeOp.getOutputs()[idx]);
         Value view = findViewForCB(cb, tail->getNextNode());
         if (!view) {
-          OpBuilder storeBuilder(terminator);
-          storeBuilder.setInsertionPointAfter(tail);
-          auto newReserve = storeBuilder.create<CBReserveOp>(
-              computeOp.getLoc(), computeOp.getOutputs()[idx].getType(), cb);
+          builder.setInsertionPointAfter(tail);
+          auto newReserve = builder.create<CBReserveOp>(
+              loc, computeOp.getOutputs()[idx].getType(), cb);
           view = newReserve.getResult();
           tail = newReserve.getOperation();
         }
 
-        OpBuilder storeBuilder(terminator);
-        storeBuilder.setInsertionPointAfter(tail);
-        auto newStore =
-            storeBuilder.create<StoreOp>(computeOp.getLoc(), tile, view);
+        builder.setInsertionPointAfter(tail);
+        auto newStore = builder.create<StoreOp>(loc, tile, view);
         tail = newStore.getOperation();
         storeForOutput.try_emplace(idx, newStore);
       }
 
       // Release: after compute in parent block.
       Operation *next = computeOperation->getNextNode();
-      OpBuilder afterBuilder(parent, ++Block::iterator(computeOperation));
       if (!isa_and_nonnull<TileRegsReleaseOp>(next)) {
-        afterBuilder.create<TileRegsReleaseOp>(computeOp.getLoc());
+        builder.setInsertionPointAfter(computeOperation);
+        builder.create<TileRegsReleaseOp>(loc);
       }
 
       return WalkResult::advance();

@@ -412,12 +412,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // The iteration domain is derived from the maximum tensor rank, which should
   // match iteratorCount.
   int64_t maxTensorRank = 0;
-  for (Value input : getInputs()) {
-    auto ty = cast<RankedTensorType>(input.getType());
-    maxTensorRank = std::max(maxTensorRank, ty.getRank());
-  }
-  for (Value output : getOutputs()) {
-    auto ty = cast<RankedTensorType>(output.getType());
+  for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
+    auto ty = cast<RankedTensorType>(operand.getType());
     maxTensorRank = std::max(maxTensorRank, ty.getRank());
   }
   if (static_cast<size_t>(maxTensorRank) != iteratorCount) {
