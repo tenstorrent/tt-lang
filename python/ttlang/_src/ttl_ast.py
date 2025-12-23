@@ -24,8 +24,8 @@ def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
     """Build MLIR tensor type for a TensorAccessor with TTNNLayoutAttr."""
     if not tiled:
         raise ValueError("Only tiled tensors supported for TTNN interop")
-    if memory_space != "L1":
-        raise ValueError(f"Only L1 memory space supported, got {memory_space}")
+    if memory_space not in ("L1", "DRAM"):
+        raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(accessor.shape) != 2:
         raise ValueError(f"Only 2D tensors supported, got shape {accessor.shape}")
 

@@ -103,22 +103,11 @@ try:
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
-    # Move to L1 with SHARDED layout on a single core
-    # This ensures we know exactly which core has the data
-    print("\nMoving tensors from DRAM to L1 (sharded on single core)...")
-    shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]),
-        (32, 32),  # shard shape = full tensor
-        ttnn.ShardOrientation.ROW_MAJOR,
-    )
-    l1_sharded_config = ttnn.MemoryConfig(
-        memory_layout=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
-        buffer_type=ttnn.BufferType.L1,
-        shard_spec=shard_spec,
-    )
-    lhs = ttnn.to_memory_config(lhs_dram, memory_config=l1_sharded_config)
-    rhs = ttnn.to_memory_config(rhs_dram, memory_config=l1_sharded_config)
-    out = ttnn.to_memory_config(out_dram, memory_config=l1_sharded_config)
+    # Move to L1 with interleaved layout
+    print("\nMoving tensors from DRAM to L1 (interleaved)...")
+    lhs = ttnn.to_memory_config(lhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
+    rhs = ttnn.to_memory_config(rhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
 
     print(f"\nttnn.Tensors in L1:")
     print(f"  lhs: {lhs.shape}, dtype={lhs.dtype}, memory_config={lhs.memory_config()}")

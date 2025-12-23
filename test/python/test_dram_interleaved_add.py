@@ -51,25 +51,18 @@ def add_dram_direct(lhs, rhs, out):
     @datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         # Read from DRAM directly (no L1 intermediate!)
-        lhs_shard = lhs_cb.reserve()
-        tx_lhs = dma(lhs_accessor[0, 0], lhs_shard)
+        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
         tx_lhs.wait()
-        lhs_cb.push()
-
-        rhs_shard = rhs_cb.reserve()
-        tx_rhs = dma(rhs_accessor[0, 0], rhs_shard)
+        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
         tx_rhs.wait()
-        rhs_cb.push()
 
     @datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
         # Write result back to DRAM directly
-        out_shard = out_cb.wait()
-        tx = dma(out_shard, out_accessor[0, 0])
+        tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
-        out_cb.pop()
 
     return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
