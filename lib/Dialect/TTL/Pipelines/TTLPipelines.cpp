@@ -25,6 +25,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // See test/ttlang/Conversion/TTLToTTKernel/compute_fused_chain.mlir for an
   // example of the full compute pipeline.
   pm.addPass(createTTLConvertTTLToCompute());
+  // DST register assignment and synchronization (strict ordering required):
+  // 1. ttl-tile-and-assign-dst: Assigns DST indices via copy_tile insertion
+  // 2. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops
+  // (acquire/commit/wait/release) These must run before TTKernel lowering and
+  // in this specific order.
   pm.addPass(createTTLTileAndAssignDST());
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLConvertTTLToTTKernel());

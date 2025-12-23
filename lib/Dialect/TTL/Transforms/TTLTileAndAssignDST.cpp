@@ -90,7 +90,7 @@ static bool isLastUse(Operation &op, Value v) {
 static std::uint32_t estimatePeakDSTUsage(Block *body) {
   llvm::SmallPtrSet<Value, 16> live;
   for (BlockArgument arg : body->getArguments()) {
-    if (isTileValue(arg)) {
+    if (isTileValue(arg) && !arg.use_empty()) {
       live.insert(arg);
     }
   }
@@ -234,9 +234,10 @@ struct TTLTileAndAssignDSTPass
             }
             dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
             inUse.set(freeReg);
-            // NOTE: Sets single dst_idx on the operation. All tile ops currently
-            // produce exactly one tile result, so this is safe. If multi-result
-            // tile ops are added, this will need per-result attributes.
+            // NOTE: Sets single dst_idx on the operation. All tile ops
+            // currently produce exactly one tile result, so this is safe. If
+            // multi-result tile ops are added, this will need per-result
+            // attributes.
             OpBuilder attrBuilder(res.getContext());
             op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
                                             static_cast<int32_t>(freeReg)));

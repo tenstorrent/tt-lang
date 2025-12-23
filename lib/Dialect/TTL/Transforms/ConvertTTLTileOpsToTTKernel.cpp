@@ -44,6 +44,8 @@ namespace {
 /// Look up a CB for a copy_tile source.
 /// After loop lowering, src is typically a tensor.extract result.
 /// We trace back to find the tensor, then use getAttachedCB to find the CB.
+// TODO(#161): Cache cb_index → BindCBOp mapping to avoid O(n×m) complexity
+// where n = copy_tile ops, m = bind_cb ops.
 static Value lookupCBByIndex(Value src, Operation *funcOp) {
   // Check if src is a block argument (before loop lowering).
   if (auto barg = llvm::dyn_cast<BlockArgument>(src)) {

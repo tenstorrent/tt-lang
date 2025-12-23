@@ -138,11 +138,12 @@ struct TTLInsertTileRegsSyncPass
       // pass emits an error otherwise). We prefer existing views and only
       // materialize a new reserve if none exists.
 
-      // Helper: find a cb_reserve view for auto-inserted stores. Only cb_reserve
-      // views are valid (verifier rejects cb_wait). Prefers the last in-body
-      // reserve before the insertion point; otherwise uses the nearest reserve
-      // in the parent block before the compute.
-      auto findReserveViewForStore = [&](Value cb, Operation *insertAfter) -> Value {
+      // Helper: find a cb_reserve view for auto-inserted stores. Only
+      // cb_reserve views are valid (verifier rejects cb_wait). Prefers the last
+      // in-body reserve before the insertion point; otherwise uses the nearest
+      // reserve in the parent block before the compute.
+      auto findReserveViewForStore = [&](Value cb,
+                                         Operation *insertAfter) -> Value {
         Value candidate;
 
         // Scan the compute body up to (but not including) insertAfter.
