@@ -21,12 +21,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
@@ -38,28 +40,54 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
-/// Look up a CB using precomputed analysis state. Handles block arguments and
-/// tensors (including tensor.extract bases).
-static Value lookupCB(Value src, const CopyTileCBState *state) {
-  if (!state) {
-    return Value();
-  }
-
-  // Block argument path.
+/// Look up a CB for a copy_tile source.
+/// After loop lowering, src is typically a tensor.extract result.
+/// We trace back to find the tensor, then use getAttachedCB to find the CB.
+static Value lookupCBByIndex(Value src, Operation *funcOp) {
+  // Check if src is a block argument (before loop lowering).
   if (auto barg = llvm::dyn_cast<BlockArgument>(src)) {
-    if (auto it = state->blockArgToCb.find(barg);
-        it != state->blockArgToCb.end()) {
-      return it->second;
+    // Find the parent compute op and read the cb_index attribute.
+    auto computeOp = llvm::dyn_cast<ComputeOp>(barg.getOwner()->getParentOp());
+    if (computeOp) {
+      unsigned argIdx = barg.getArgNumber();
+      if (auto cbIndex = getCBIndexAttr(computeOp, argIdx)) {
+        // Validate cb_index is in valid range.
+        assert(*cbIndex >= 0 && *cbIndex < kMaxCircularBuffers &&
+               "cb_index must be in range [0, 31]");
+
+        // Find the bind_cb op with matching cb_index in the function.
+        Value result;
+        funcOp->walk([&](BindCBOp bindOp) {
+          if (bindOp.getCbIndexAttr().getInt() == *cbIndex) {
+            result = bindOp.getResult();
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        return result;
+      }
     }
   }
 
-  // Tensor path (including tensor.extract bases).
+  // After loop lowering: src is a tile from tensor.extract.
+  // Trace back to the tensor and use getAttachedCB.
   Value tensor = src;
-  if (auto extract = tensor.getDefiningOp<tensor::ExtractOp>()) {
+  if (auto extract = src.getDefiningOp<tensor::ExtractOp>()) {
     tensor = extract.getTensor();
   }
-  if (auto it = state->tensorToCb.find(tensor); it != state->tensorToCb.end()) {
-    return it->second;
+
+  // Trace through unrealized conversion casts.
+  // After cb_wait lowering, the tensor is an unrealized_cast(ttkernel.cb).
+  tensor = traceUnrealizedCasts(tensor);
+
+  // If we traced to a ttkernel.cb, return it directly.
+  if (llvm::isa<ttkernel::CBType>(tensor.getType())) {
+    return tensor;
+  }
+
+  // Otherwise, try to find the attached CB.
+  if (Value attached = getAttachedCB(tensor)) {
+    return attached;
   }
 
   return Value();
@@ -235,17 +263,20 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
 
 /// Lower ttl.copy_tile to TTKernel copy_tile_init + copy_tile.
 struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
-  TTLTileCopyToTTKernel(TypeConverter &tc, MLIRContext *ctx,
-                        const CopyTileCBState *state)
-      : OpConversionPattern<CopyTileOp>(tc, ctx), cbState(state) {}
+  using OpConversionPattern<CopyTileOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(CopyTileOp op, CopyTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Look up the CB via analysis state.
-    Value cb = lookupCB(op.getSrc(), cbState);
+    // Look up the CB by reading cb_index annotation from the compute op.
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "copy_tile not in function");
+    }
+
+    Value cb = lookupCBByIndex(op.getSrc(), funcOp);
     if (!cb) {
       return rewriter.notifyMatchFailure(op, "cannot find attached cb for src");
     }
@@ -295,11 +326,6 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     rewriter.replaceOp(op, ValueRange{token, tile});
     return success();
   }
-
-  // Analysis state carrying precomputed CB attachments:
-  // - blockArgToCb maps ttl.compute block args to their CB
-  // - tensorToCb maps tensors (including attach_cb results) to their CB
-  const CopyTileCBState *cbState;
 };
 
 //===----------------------------------------------------------------------===//
@@ -350,7 +376,6 @@ using MaxTileLowering =
 //===----------------------------------------------------------------------===//
 
 void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
-                                          const CopyTileCBState *cbState,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
@@ -367,8 +392,8 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
       // Binary ops
       AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering>(ctx);
 
-  // Copy op needs the type converter and CB map.
-  patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx, cbState);
+  // Copy op needs the type converter.
+  patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)

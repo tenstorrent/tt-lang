@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
@@ -10,7 +11,8 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "llvm/ADT/DenseSet.h"
+
+#define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 
 #define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 
@@ -33,15 +35,6 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
   }
   return b.create<tensor::EmptyOp>(loc, type.getShape(), type.getElementType(),
                                    dynDims);
-}
-
-/// Get the CB associated with a tensor value.
-/// The tensor must come from an attach_cb op.
-static Value getAttachedCB(Value tensor) {
-  if (auto attachOp = tensor.getDefiningOp<AttachCBOp>()) {
-    return attachOp.getCb();
-  }
-  return nullptr;
 }
 
 /// Find the CB that this operation's result will be attached to.
@@ -111,8 +104,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Value lhsCb = getAttachedCB(lhs);
   Value rhsCb = getAttachedCB(rhs);
   if (!lhsCb || !rhsCb) {
-    return op->emitError("inputs must be attached to circular buffers via "
-                         "ttl.attach_cb before lowering to ttl.compute");
+    return op->emitError(
+        "inputs must be attached to circular buffers via "
+        "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this
@@ -189,8 +183,9 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   // Input must already be attached to a CB.
   Value inputCb = getAttachedCB(input);
   if (!inputCb) {
-    return op->emitError("input must be attached to a circular buffer via "
-                         "ttl.attach_cb before lowering to ttl.compute");
+    return op->emitError(
+        "input must be attached to a circular buffer via "
+        "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this

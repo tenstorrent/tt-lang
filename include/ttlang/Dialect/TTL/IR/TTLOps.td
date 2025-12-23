@@ -12,6 +12,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
 
 //===----------------------------------------------------------------------===//
@@ -307,15 +308,14 @@ def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
 
 // Base class for tile operations
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [Pure, TTL_TileOpTrait])>;
+    : TTL_Op<mnemonic, !listconcat(traits, [Pure, TTL_TileComputeOpTrait])>;
 
 def TTL_TileType : TypeConstraint<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
     "ttcore.tile type">;
 
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
-                            [MemoryEffects<[MemRead, MemWrite]>,
-                             TTL_TileOpTrait]> {
+                            [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -406,7 +406,8 @@ defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 
-def TTL_CBReserveOp : TTL_Op<"cb_reserve", [MemoryEffects<[MemWrite]>]> {
+def TTL_CBReserveOp : TTL_Op<"cb_reserve",
+    [MemoryEffects<[MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Reserve pages in a circular buffer for writing";
   let description = [{
     `ttl.cb_reserve` blocks until pages are available in the circular buffer
@@ -454,7 +455,8 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
-def TTL_CBWaitOp : TTL_Op<"cb_wait", [MemoryEffects<[MemRead]>]> {
+def TTL_CBWaitOp : TTL_Op<"cb_wait",
+    [MemoryEffects<[MemRead]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for

@@ -22,6 +22,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttlang/Dialect/Utils/LayoutUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
@@ -35,24 +36,6 @@
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
 #include "ttlang/Dialect/TTL/Passes.h.inc"
-
-// Build CB analysis state (block arguments and attached tensors).
-CopyTileCBState buildCopyTileCBState(Operation *root) {
-  CopyTileCBState state;
-  root->walk([&](ComputeOp compute) {
-    for (auto it : llvm::enumerate(compute.getInputs())) {
-      if (auto attach = it.value().template getDefiningOp<AttachCBOp>()) {
-        BlockArgument barg = compute.getBody().front().getArgument(it.index());
-        state.blockArgToCb.try_emplace(barg, attach.getCb());
-      }
-    }
-  });
-  root->walk([&](AttachCBOp attach) {
-    state.tensorToCb.try_emplace(attach.getResult(), attach.getCb());
-    state.tensorToCb.try_emplace(attach.getTensor(), attach.getCb());
-  });
-  return state;
-}
 
 namespace {
 
@@ -258,8 +241,9 @@ convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
 }
 
 // num_pages = product of CB shape dimensions (elements per block).
-static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
-                             Location loc) {
+// Used by CBOpLowering template; [[maybe_unused]] silences false positive.
+[[maybe_unused]] static Value
+computeNumPages(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
   int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
   return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);
@@ -307,32 +291,57 @@ using CBWaitLowering =
 using CBPopLowering =
     CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
 
-/// Trace through unrealized casts to find a TTKernel CB from a view value.
-/// Returns failure if no CB can be found.
-///
-/// IMPORTANT: This assumes the view comes directly from a CBReserveLowering-
-/// created unrealized_cast. If there's any IR transformation between reserve
-/// and store (CSE, canonicalization, block arguments, etc.), this pattern
-/// match will fail.
-///
-/// TODO(#149): The long-term fix is to extend CBReserveOp to implement
-/// ViewLikeOpInterface. Then instead of pattern-matching on
-/// UnrealizedConversionCastOp (which is an implementation detail of the type
-/// converter and thus fragile), we can call viewOp.getViewSource() in a loop
-/// until we reach a non-view type (the actual CB).
-static FailureOr<Value> getCBFromView(Value view) {
-  // The view comes from CBReserveLowering, which creates an unrealized_cast
-  // from the converted TTKernel CB to the tensor view type.
-  auto castOp = view.getDefiningOp<UnrealizedConversionCastOp>();
-  if (!castOp || castOp.getInputs().size() != 1) {
-    return failure();
+/// Trace back from a view value to the underlying TTKernel CB.
+/// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
+static FailureOr<Value> getCBFromView(Value v) {
+  while (v) {
+    if (llvm::isa<ttk::CBType>(v.getType())) {
+      return v;
+    }
+
+    Operation *def = v.getDefiningOp();
+    if (!def) {
+      break;
+    }
+
+    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
+      v = viewLike.getViewSource();
+      continue;
+    }
+
+    if (auto cast = llvm::dyn_cast<UnrealizedConversionCastOp>(def)) {
+      if (cast.getInputs().size() == 1) {
+        v = cast.getInputs()[0];
+        continue;
+      }
+    }
+
+    if (auto cast = llvm::dyn_cast<tensor::CastOp>(def)) {
+      v = cast.getSource();
+      continue;
+    }
+
+    break;
   }
-  Value cb = castOp.getInputs()[0];
-  if (!llvm::isa<ttk::CBType>(cb.getType())) {
-    return failure();
-  }
-  return cb;
+  return failure();
 }
+
+/// Lower ttl.attach_cb to its input tensor.
+/// After tile ops (including copy_tile) have been lowered and CB associations
+/// have been used, attach_cb is purely metadata and can be erased. We replace
+/// it with its input tensor to preserve SSA form.
+struct AttachCBLowering : OpConversionPattern<AttachCBOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(AttachCBOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Replace the attach_cb result with its input tensor.
+    // The CB association metadata has already been used by earlier lowerings.
+    rewriter.replaceOp(op, adaptor.getTensor());
+    return success();
+  }
+};
 
 struct StoreLowering : OpConversionPattern<StoreOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -349,12 +358,32 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // Create pack_tile(dst_index=0, cb, out_index=0).
-    // TODO(#120): Replace hardcoded dst_index=0 with the actual DST register
-    // index from the op that produced the tile being stored, once DST
-    // assignment is implemented.
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    rewriter.create<ttk::PackTileOp>(loc, zero, *cb, zero,
+    // Get the DST index from the tile value's dst_idx attribute.
+    // The DST assignment pass (ttl-tile-and-assign-dst) should run before this
+    // pass and annotates tile-producing operations with DST register indices.
+    // If the attribute is missing, we default to DST index 0.
+    auto tileValue = adaptor.getTile();
+    Value dstIndex;
+
+    if (auto defOp = tileValue.getDefiningOp()) {
+      if (auto dstIdxAttr =
+              defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+        dstIndex =
+            rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+      }
+    }
+
+    // Default to DST index 0 if no attribute is found.
+    // This can happen in unit tests or if DST assignment hasn't run.
+    if (!dstIndex) {
+      dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    }
+
+    // The CB tile index is always 0 because we pack one tile at a time into
+    // the reserved section of the CB. The index is relative to the current
+    // reserved section (from cb_reserve_back), not the absolute CB position.
+    auto cbTileIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
     rewriter.eraseOp(op);
@@ -687,109 +716,312 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// TTLConvertTTLToTTKernelPass helper methods
+//===----------------------------------------------------------------------===//
+
+// Forward declarations
+static void removeTensorDataflowOps(func::FuncOp func);
+
+/// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
+static LogicalResult
+lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
+                      TTLToTTKernelTypeConverter &typeConverter,
+                      StringRef passName) {
+  ConversionTarget target(ctx);
+  target.addIllegalDialect<tt::ttl::TTLDialect>();
+  target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
+                         func::FuncDialect, tensor::TensorDialect,
+                         ttkernel::TTKernelDialect>();
+
+  // Structural ops remain legal (converted elsewhere or kept as-is).
+  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
+
+  // DST lifecycle ops are not tile compute ops; keep them legal until the
+  // tile ops lowering phase.
+  target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+                    TileRegsReleaseOp>();
+
+  // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
+  // lowering phase.
+  target.addLegalOp<CopyTileOp>();
+
+  // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal
+  // until the tile ops lowering phase.
+  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
+      [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
+
+  target.addDynamicallyLegalOp<ModuleOp>(
+      [&](ModuleOp op) { return typeConverter.isLegal(&op.getBodyRegion()); });
+  target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+    return typeConverter.isSignatureLegal(op.getFunctionType()) &&
+           typeConverter.isLegal(&op.getBody());
+  });
+
+  RewritePatternSet patterns(&ctx);
+  patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+               CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
+      typeConverter, &ctx);
+  populateFunctionOpInterfaceTypeConversionPattern(
+      func::FuncOp::getOperationName(), patterns, typeConverter);
+
+  FrozenRewritePatternSet frozen(std::move(patterns));
+  std::string diagMessage;
+  if (utils::applyPartialConversionWithDiag(mod, target, frozen, passName,
+                                            diagMessage)) {
+    mod.emitError() << diagMessage;
+    return failure();
+  }
+
+  // Apply post-conversion cleanup patterns (e.g., barrier deduplication).
+  RewritePatternSet cleanupPatterns(&ctx);
+  ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns);
+  if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns)))) {
+    return failure();
+  }
+
+  return success();
+}
+
+/// Phase 2: Lower tile compute ops and DST lifecycle ops to TTKernel.
+/// Tile compute ops are identified by TTLTileComputeOpTrait. ttl.compute is
+/// kept legal here because it is lowered to loops in an earlier pass
+/// (ttl-lower-to-loops).
+static LogicalResult
+lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
+                       TTLToTTKernelTypeConverter &typeConverter) {
+  ConversionTarget computeTarget(ctx);
+  // TTKernel ops are legal (target dialect)
+  computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
+  // Arith ops are legal (used for index constants)
+  computeTarget.addLegalDialect<arith::ArithDialect>();
+  // Keep compute ops legal (tile-only lowering here).
+  computeTarget.addLegalOp<ComputeOp, YieldOp>();
+
+  // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
+  computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+
+  // Mark TTL ops that need lowering as illegal (tile compute ops, CopyTileOp,
+  // DST lifecycle). All other TTL ops (ComputeOp, YieldOp, AttachCBOp) were
+  // explicitly marked legal above.
+  computeTarget.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
+      [](Operation *op) {
+        // Tile compute ops (add, mul, exp, etc.) are illegal.
+        if (tt::ttl::isTileComputeOp(op)) {
+          return false;
+        }
+        // CopyTileOp (data movement) is illegal.
+        if (isa<CopyTileOp>(op)) {
+          return false;
+        }
+        // DST lifecycle ops are illegal.
+        if (isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+                TileRegsReleaseOp>(op)) {
+          return false;
+        }
+        // All other TTL ops are legal (ComputeOp, YieldOp, AttachCBOp).
+        return true;
+      });
+
+  RewritePatternSet computePatterns(&ctx);
+  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
+  if (failed(applyPartialConversion(mod, computeTarget,
+                                    std::move(computePatterns)))) {
+    return failure();
+  }
+
+  return success();
+}
+
+/// Phase 3: Remove structural TTL ops (AttachCBOp, ComputeOp, YieldOp).
+/// These are now dead after tile ops have been lowered and CB associations
+/// have been used by copy_tile lowering.
+static LogicalResult
+removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
+                       TTLToTTKernelTypeConverter &typeConverter) {
+  ConversionTarget cleanupTarget(ctx);
+  cleanupTarget.addLegalDialect<ttkernel::TTKernelDialect, arith::ArithDialect,
+                                BuiltinDialect, scf::SCFDialect,
+                                func::FuncDialect, tensor::TensorDialect>();
+  cleanupTarget.addIllegalOp<AttachCBOp>();
+  // ComputeOp/YieldOp should be gone after loop lowering, but mark illegal
+  // just in case.
+  cleanupTarget.addIllegalOp<ComputeOp, YieldOp>();
+
+  RewritePatternSet structuralPatterns(&ctx);
+  structuralPatterns.add<AttachCBLowering>(typeConverter, &ctx);
+  if (failed(applyPartialConversion(mod, cleanupTarget,
+                                    std::move(structuralPatterns)))) {
+    return failure();
+  }
+
+  // Apply FuncKernelFinalize as a greedy rewrite after tile lowering.
+  RewritePatternSet finalizePatterns(&ctx);
+  finalizePatterns.add<FuncKernelFinalize>(&ctx);
+  if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
+    return failure();
+  }
+
+  return success();
+}
+
+/// Phase 4: Clean up tensor dataflow ops in compute kernels.
+/// Remove tensor dataflow ops that were used only for SSA tracking.
+/// After loops are lowered and tile ops are converted, tensor.extract/insert/
+/// empty are dead code. The actual computation happens through circular
+/// buffers and DST registers.
+static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
+  mod.walk([&](func::FuncOp func) {
+    // Check for compute kernel via either ttkernel.thread or
+    // ttl.kernel_thread.
+    auto threadAttr =
+        func->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread");
+    auto ttlThreadAttr =
+        func->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
+
+    bool isCompute = false;
+    if (threadAttr && threadAttr.getValue() == ttk::ThreadType::Compute) {
+      isCompute = true;
+    } else if (ttlThreadAttr &&
+               ttlThreadAttr.getValue() == ttk::ThreadType::Compute) {
+      isCompute = true;
+      // Convert ttl.kernel_thread to ttkernel.thread for compute kernels.
+      func->removeAttr("ttl.kernel_thread");
+      func->setAttr("ttkernel.thread", ttlThreadAttr);
+    }
+
+    if (!isCompute) {
+      return;
+    }
+
+    removeTensorDataflowOps(func);
+
+    // Erase unused function arguments. Compute kernels get data from CBs.
+    // Only erase arguments that have no uses.
+    if (func.getNumArguments() > 0) {
+      llvm::BitVector argsToErase(func.getNumArguments());
+      for (unsigned i = 0; i < func.getNumArguments(); ++i) {
+        if (func.getArgument(i).use_empty()) {
+          argsToErase.set(i);
+        }
+      }
+      if (argsToErase.any()) {
+        (void)func.eraseArguments(argsToErase);
+      }
+    }
+
+    // Update return statements to return void if function has no results.
+    // First check if there are any result uses.
+    bool hasResultUses = false;
+    func.walk([&](func::ReturnOp returnOp) {
+      if (returnOp.getNumOperands() > 0) {
+        // Check if the return value is actually used (it can't be for
+        // func.return)
+        hasResultUses = true;
+      }
+    });
+
+    // For compute kernels, update function to return void.
+    if (!func.getResultTypes().empty()) {
+      func.walk([](func::ReturnOp returnOp) {
+        if (returnOp.getNumOperands() > 0) {
+          OpBuilder builder(returnOp);
+          builder.create<func::ReturnOp>(returnOp.getLoc());
+          returnOp.erase();
+        }
+      });
+      // Update function type to return void.
+      auto newFuncType =
+          FunctionType::get(&ctx, func.getArgumentTypes(), TypeRange{});
+      func.setType(newFuncType);
+    }
+  });
+}
+
+/// Helper: Remove dead tensor ops from a compute kernel function.
+/// Tensor ops are removed in stages because each stage makes the next stage's
+/// ops dead. This ensures use counts are updated correctly between stages.
+static void removeTensorDataflowOps(func::FuncOp func) {
+
+  // Stage 1: Replace tensor.insert results with dest tensor, then erase.
+  // This makes tensor.extract results dead.
+  SmallVector<tensor::InsertOp> insertOps;
+  func.walk([&](tensor::InsertOp op) { insertOps.push_back(op); });
+  for (auto op : insertOps) {
+    op.getResult().replaceAllUsesWith(op.getDest());
+    op.erase();
+  }
+
+  // Stage 2: Erase dead tensor.extract ops.
+  // Must run after Stage 1 because replacing tensor.insert results makes
+  // their corresponding extracts dead.
+  SmallVector<tensor::ExtractOp> extractOps;
+  func.walk([&](tensor::ExtractOp op) { extractOps.push_back(op); });
+  for (auto op : extractOps) {
+    if (op.getResult().use_empty()) {
+      op.erase();
+    }
+  }
+
+  // Stage 3: Erase dead tensor.empty ops.
+  // Must run after Stage 2 because erasing extracts may make their source
+  // tensor.empty ops dead.
+  SmallVector<tensor::EmptyOp> emptyOps;
+  func.walk([&](tensor::EmptyOp op) { emptyOps.push_back(op); });
+  for (auto op : emptyOps) {
+    if (op.getResult().use_empty()) {
+      op.erase();
+    }
+  }
+
+  // Simplify scf.for loops: remove unused iter_args and simplify yields.
+  // After tensor dataflow removal, loops may have dead iter_args.
+  func.walk([&](scf::ForOp forOp) {
+    // Collect indices of iter_args that are still used outside the loop.
+    SmallVector<unsigned> unusedArgIndices;
+    for (unsigned i = 0; i < forOp.getNumResults(); ++i) {
+      if (forOp.getResult(i).use_empty()) {
+        unusedArgIndices.push_back(i);
+      }
+    }
+
+    // If all iter_args are unused, we can simplify but keep the loop
+    // structure for the side effects (TTKernel ops).
+    // The scf.yield will be updated in canonicalization.
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// TTLConvertTTLToTTKernelPass
+//===----------------------------------------------------------------------===//
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
-
     TTLToTTKernelTypeConverter typeConverter;
 
-    ConversionTarget target(ctx);
-    target.addIllegalDialect<tt::ttl::TTLDialect>();
-    target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
-                           func::FuncDialect, tensor::TensorDialect,
-                           ttkernel::TTKernelDialect>();
-
-    // Mark compute-related ops as legal during partial conversion since they're
-    // handled by the separate later-stage rewrite phase
-    // (populateTTLTileOpsToTTKernelPatterns).
-    target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, TileRegsAcquireOp,
-                      TileRegsCommitOp, TileRegsWaitOp, TileRegsReleaseOp>();
-    // Tile ops (handled by tile ops phase later):
-    target.addLegalOp<
-        // Binary tile ops
-        AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
-        // Unary tile ops
-        ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
-        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp,
-        // Copy tile op
-        CopyTileOp>();
-
-    target.addDynamicallyLegalOp<ModuleOp>([&](ModuleOp op) {
-      return typeConverter.isLegal(&op.getBodyRegion());
-    });
-    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
-      return typeConverter.isSignatureLegal(op.getFunctionType()) &&
-             typeConverter.isLegal(&op.getBody());
-    });
-    // WaitOp will be lowered; do not mark it legal.
-
-    RewritePatternSet patterns(&ctx);
-    patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-                 CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
-        typeConverter, &ctx);
-    populateFunctionOpInterfaceTypeConversionPattern(
-        func::FuncOp::getOperationName(), patterns, typeConverter);
-
-    FrozenRewritePatternSet frozen(std::move(patterns));
-    std::string diagMessage;
-    if (utils::applyPartialConversionWithDiag(mod, target, frozen, getName(),
-                                              diagMessage)) {
-      mod.emitError() << diagMessage;
-      signalPassFailure();
-    }
-
-    // Apply post-conversion cleanup patterns (e.g., barrier deduplication).
-    RewritePatternSet cleanupPatterns(&ctx);
-    ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns);
-    if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns)))) {
-      signalPassFailure();
-    }
-
-    // Lower tile ops to TTKernel ops using DialectConversion. ttl.compute is
-    // kept legal here because full compute lowering happens after loops and
-    // bufferization in a later stage.
-    ConversionTarget computeTarget(ctx);
-    // TTKernel ops are legal (target dialect)
-    computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
-    // Arith ops are legal (used for index constants)
-    computeTarget.addLegalDialect<arith::ArithDialect>();
-    // Keep compute ops legal (tile-only lowering here).
-    computeTarget.addLegalOp<ComputeOp, YieldOp>();
-    // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
-    computeTarget.markUnknownOpDynamicallyLegal(
-        [](Operation *) { return true; });
-    // Mark tile ops as illegal so they get converted.
-    computeTarget.addIllegalOp<
-        // Binary tile ops
-        AddTileOp, SubTileOp, MulTileOp, MaxTileOp,
-        // Unary tile ops
-        ExpTileOp, LogTileOp, SqrtTileOp, RsqrtTileOp, TanhTileOp,
-        SigmoidTileOp, AbsTileOp, NegTileOp, ReluTileOp,
-        // Copy tile op
-        CopyTileOp,
-        // DST lifecycle
-        TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-        TileRegsReleaseOp>();
-
-    auto cbState = buildCopyTileCBState(mod);
-
-    RewritePatternSet computePatterns(&ctx);
-    populateTTLTileOpsToTTKernelPatterns(&typeConverter, &cbState,
-                                         computePatterns);
-    if (failed(applyPartialConversion(mod, computeTarget,
-                                      std::move(computePatterns)))) {
+    // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
+    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {
       signalPassFailure();
       return;
     }
 
-    // Apply FuncKernelFinalize as a greedy rewrite after tile lowering.
-    RewritePatternSet finalizePatterns(&ctx);
-    finalizePatterns.add<FuncKernelFinalize>(&ctx);
-    if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
+    // Phase 2: Lower tile compute ops to TTKernel (tile_add, tile_mul, ...)
+    if (failed(lowerTileOpsToTTKernel(mod, ctx, typeConverter))) {
       signalPassFailure();
+      return;
     }
+
+    // Phase 3: Remove structural TTL ops (attach_cb, compute, yield)
+    if (failed(removeStructuralTTLOps(mod, ctx, typeConverter))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Phase 4: Clean up tensor dataflow ops in compute kernels.
+    cleanupComputeKernels(mod, ctx);
   }
 };
 

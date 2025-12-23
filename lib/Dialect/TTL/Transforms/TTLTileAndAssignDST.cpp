@@ -44,6 +44,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
@@ -71,8 +72,6 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 /// Pull from device/ComputeKernelConfig (fp32_dest_acc_en, fullSyncEn).
 static std::uint32_t computeDefaultCapacity() { return kDefaultDSTCapacity; }
 
-static bool isTileOp(Operation *op) { return op->hasTrait<TTLTileOpTrait>(); }
-
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
 static bool isLastUse(Operation &op, Value v) {
@@ -96,7 +95,7 @@ static std::uint32_t estimatePeakDSTUsage(Block *body) {
   std::uint32_t peakUsage = static_cast<std::uint32_t>(live.size());
 
   for (Operation &op : *body) {
-    if (!isTileOp(&op)) {
+    if (!tt::ttl::isTileComputeOp(&op)) {
       continue;
     }
 
@@ -196,23 +195,25 @@ struct TTLTileAndAssignDSTPass
           });
         }
 
-        // Second pass: free registers for operands at their last use.
-        // We do this BEFORE result allocation to allow reuse (in-place
-        // updates).
-        for (Value operand : op.getOperands()) {
-          if (!isTileValue(operand)) {
-            continue;
-          }
-          if (isLastUse(op, operand)) {
-            auto it = dstIndexForValue.find(operand);
-            if (it != dstIndexForValue.end()) {
-              inUse.reset(it->second);
+        // Combined pass: free operands at last use, then allocate results
+        // atomically. This prevents register conflicts within a single
+        // operation (e.g., freeing and reallocating the same register).
+        if (tt::ttl::isTileComputeOp(&op)) {
+          // First: free operands at their last use
+          for (Value operand : op.getOperands()) {
+            if (!isTileValue(operand)) {
+              continue;
+            }
+            if (isLastUse(op, operand)) {
+              auto it = dstIndexForValue.find(operand);
+              if (it != dstIndexForValue.end()) {
+                inUse.reset(it->second);
+              }
             }
           }
-        }
 
-        // Third pass: allocate registers for results.
-        if (isTileOp(&op) && !isa<CopyTileOp>(&op)) {
+          // Second: allocate registers for results (can now safely reuse
+          // freed regs)
           for (Value res : op.getResults()) {
             if (!isTileValue(res)) {
               continue;
@@ -228,6 +229,19 @@ struct TTLTileAndAssignDSTPass
             OpBuilder attrBuilder(res.getContext());
             op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
                                             static_cast<int32_t>(freeReg)));
+          }
+        } else {
+          // For non-compute ops, still free operands at last use
+          for (Value operand : op.getOperands()) {
+            if (!isTileValue(operand)) {
+              continue;
+            }
+            if (isLastUse(op, operand)) {
+              auto it = dstIndexForValue.find(operand);
+              if (it != dstIndexForValue.end()) {
+                inUse.reset(it->second);
+              }
+            }
           }
         }
       }

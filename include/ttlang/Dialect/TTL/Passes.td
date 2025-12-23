@@ -116,4 +116,25 @@ def TTLLowerToLoops
   ];
 }
 
+def TTLAnnotateCBAssociations
+    : Pass<"ttl-annotate-cb-associations", "::mlir::func::FuncOp"> {
+  let summary = "Annotate ttl.compute block args with CB index associations";
+  let description = [{
+    Analysis pass that annotates ttl.compute block arguments with the CB index
+    (0-31) of their associated circular buffer. This enables subsequent conversion
+    passes to look up the correct CB without fragile state management.
+
+    For each ttl.compute input that is produced by ttl.attach_cb or ttl.cb_wait,
+    this pass:
+    1. Traces the input to find the associated CB via getAttachedCB()
+    2. Extracts the cb_index attribute from the CB
+    3. Annotates the corresponding block argument with ttl.cb_index = N
+
+    This annotation survives subsequent IR transformations and allows copy_tile
+    lowering to find the correct CB by cb_index lookup.
+  }];
+
+  let dependentDialects = [];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

@@ -17,6 +17,13 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  // Note: This pipeline is primarily for NOC thread functions (DMA operations).
+  // For compute thread functions that use ttl.compute with ttl.copy_tile, the
+  // following passes should be added before convert-ttl-to-ttkernel:
+  //   - ttl-lower-to-loops (converts ttl.compute to scf.for)
+  //   - ttl-annotate-cb-associations (annotates CB indices for copy_tile)
+  // See test/ttlang/Conversion/TTLToTTKernel/compute_fused_chain.mlir for an
+  // example of the full compute pipeline.
   pm.addPass(createTTLConvertTTLToCompute());
   pm.addPass(createTTLTileAndAssignDST());
   pm.addPass(createTTLInsertTileRegsSync());
