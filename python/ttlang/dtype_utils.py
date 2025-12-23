@@ -39,33 +39,35 @@ def to_data_type(dtype):
     Raises:
         ValueError: If dtype has no runtime equivalent
     """
-    if dtype == torch.float32:
-        return runtime.DataType.Float32
-    if dtype == torch.float16:
-        return runtime.DataType.Float16
-    if dtype == torch.bfloat16:
-        return runtime.DataType.BFloat16
-    if dtype == torch.uint32:
-        return runtime.DataType.UInt32
-    if dtype == torch.uint16:
-        return runtime.DataType.UInt16
-    if dtype == torch.uint8:
-        return runtime.DataType.UInt8
-    if dtype == torch.int32:
-        return runtime.DataType.Int32
-    if dtype == torch.float64:
-        return runtime.DataType.Float64
-    if dtype == torch.int64:
-        return runtime.DataType.Int64
-    if dtype == torch.uint64:
-        return runtime.DataType.UInt64
-    if dtype == torch.int16:
-        return runtime.DataType.Int16
-    if dtype == torch.int8:
-        return runtime.DataType.Int8
-    if dtype == torch.bool:
-        return runtime.DataType.Bool
-    raise ValueError(f"Torch dtype: {dtype} has no runtime DataType equivalent")
+    match dtype:
+        case torch.float32:
+            return runtime.DataType.Float32
+        case torch.float16:
+            return runtime.DataType.Float16
+        case torch.bfloat16:
+            return runtime.DataType.BFloat16
+        case torch.uint32:
+            return runtime.DataType.UInt32
+        case torch.uint16:
+            return runtime.DataType.UInt16
+        case torch.uint8:
+            return runtime.DataType.UInt8
+        case torch.int32:
+            return runtime.DataType.Int32
+        case torch.float64:
+            return runtime.DataType.Float64
+        case torch.int64:
+            return runtime.DataType.Int64
+        case torch.uint64:
+            return runtime.DataType.UInt64
+        case torch.int16:
+            return runtime.DataType.Int16
+        case torch.int8:
+            return runtime.DataType.Int8
+        case torch.bool:
+            return runtime.DataType.Bool
+        case _:
+            raise ValueError(f"Torch dtype: {dtype} has no runtime DataType equivalent")
 
 
 def from_data_type(dtype):
@@ -81,33 +83,35 @@ def from_data_type(dtype):
     Raises:
         ValueError: If dtype string is not supported
     """
-    if dtype == "Float32":
-        return torch.float32
-    if dtype == "Float16":
-        return torch.float16
-    if dtype == "BFloat16":
-        return torch.bfloat16
-    if dtype == "UInt32":
-        return torch.uint32
-    if dtype == "UInt16":
-        return torch.uint16
-    if dtype == "UInt8":
-        return torch.uint8
-    if dtype == "Int32":
-        return torch.int32
-    if dtype == "Float64":
-        return torch.float64
-    if dtype == "Int64":
-        return torch.int64
-    if dtype == "UInt64":
-        return torch.uint64
-    if dtype == "Int16":
-        return torch.int16
-    if dtype == "Int8":
-        return torch.int8
-    if dtype == "Bool":
-        return torch.bool
-    raise ValueError(f"Unsupported dtype: {dtype}")
+    match dtype:
+        case "Float32":
+            return torch.float32
+        case "Float16":
+            return torch.float16
+        case "BFloat16":
+            return torch.bfloat16
+        case "UInt32":
+            return torch.uint32
+        case "UInt16":
+            return torch.uint16
+        case "UInt8":
+            return torch.uint8
+        case "Int32":
+            return torch.int32
+        case "Float64":
+            return torch.float64
+        case "Int64":
+            return torch.int64
+        case "UInt64":
+            return torch.uint64
+        case "Int16":
+            return torch.int16
+        case "Int8":
+            return torch.int8
+        case "Bool":
+            return torch.bool
+        case _:
+            raise ValueError(f"Unsupported dtype: {dtype}")
 
 
 def torch_dtype_to_mlir_type(torch_dtype, ctx):
