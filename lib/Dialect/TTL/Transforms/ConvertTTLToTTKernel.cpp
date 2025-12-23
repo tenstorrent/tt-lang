@@ -240,15 +240,6 @@ convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   return cast.getResult(0);
 }
 
-// num_pages = product of CB shape dimensions (elements per block).
-// Used by CBOpLowering template; [[maybe_unused]] silences false positive.
-[[maybe_unused]] static Value
-computeNumPages(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
-  auto ttlCbTy = getTTLCBType(cb);
-  int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
-  return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);
-}
-
 template <typename SourceOp, typename TargetOp, bool HasResult>
 struct CBOpLowering : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -268,7 +259,10 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    Value numPages = computeNumPages(originalCb, rewriter, loc);
+    // num_pages = product of CB shape dimensions (elements per block).
+    int64_t numPagesVal = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
+    Value numPages =
+        rewriter.create<arith::ConstantIntOp>(loc, numPagesVal, 32);
     rewriter.create<TargetOp>(loc, *convertedCb, numPages);
 
     if constexpr (HasResult) {
