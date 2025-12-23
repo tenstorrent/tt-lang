@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 
 from ttmlir.dialects import d2m
 
-from ._src.d2m_ast import syntax
+from ._src.ttl_ast import syntax
 from pykernel._src.utils import _asindex
 
 

@@ -10,7 +10,7 @@
 # DMAs read directly from DRAM into CBs without L1 intermediate.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 from ttlang.operators import exp, reduce_sum, recip, bcast
 import math
 

@@ -6,8 +6,8 @@
 
 __version__ = "0.1.0"
 
-# Export D2M DSL API
-from ttlang.d2m_api import (
+# Export TTL DSL API
+from ttlang.ttl_api import (
     pykernel_gen,
     Program,
     CircularBuffer,

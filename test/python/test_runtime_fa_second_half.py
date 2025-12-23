@@ -20,7 +20,7 @@
 # 6. O = P @ V                   [second half - attention-weighted values]
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 from ttlang.operators import exp, recip
 import math
 

@@ -9,7 +9,7 @@
 # Verify: Process large DRAM tensor tile-by-tile via ttnn + tt-lang kernel
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 try:
     import ttnn

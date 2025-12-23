@@ -9,7 +9,7 @@
 # Verify: TensorAccessor() creates d2m.stream_layout ops with storage and view layouts.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 
 @kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])

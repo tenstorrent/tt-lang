@@ -12,7 +12,7 @@
 # Conservative test matching typical transformer head dimensions
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 from ttlang import exp, reduce_sum, recip, bcast
 import math
 

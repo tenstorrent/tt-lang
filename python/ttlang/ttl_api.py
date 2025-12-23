@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Main API for the D2M dialect Python DSL."""
+"""Main API for the TTL dialect Python DSL."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
 from ._src.tensor_registry import register_tensor_name
 
-from ._src.d2m_ast import D2MGenericCompiler
+from ._src.ttl_ast import TTLGenericCompiler
 
 from .operators import TensorBlock, MemTx, dma, copy
 from .circular_buffer import CircularBuffer
@@ -483,7 +483,7 @@ def _compile(
                 kwargs["_verbose"] = True
 
             m = ast.parse(source_code)
-            b = D2MGenericCompiler(
+            b = TTLGenericCompiler(
                 f.__name__,
                 kernel_type,
                 _collect_captures(f),

@@ -12,7 +12,7 @@ from ttmlir.ir import *
 from ttmlir.dialects import arith, linalg, d2m
 
 from .dialects import ttl
-from ._src.d2m_ast import syntax
+from ._src.ttl_ast import syntax
 from pykernel._src.utils import _asindex
 
 # Type aliases for common patterns

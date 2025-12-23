@@ -10,7 +10,7 @@
 # Acquire ops left-to-right, release ops in reverse order
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 
 @pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])

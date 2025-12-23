@@ -10,7 +10,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-OUTPUT < %t.output.txt
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 from ttlang.operators import rsqrt
 
 

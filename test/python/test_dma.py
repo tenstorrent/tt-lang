@@ -9,7 +9,7 @@
 # Verify: dma() generates d2m.dma and MemTx.wait() generates d2m.dma_wait.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])

@@ -14,7 +14,7 @@
 # to properly bridge between programs.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 from ttlang.operators import reduce_sum, exp
 
 

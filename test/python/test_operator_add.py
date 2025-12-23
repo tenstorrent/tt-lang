@@ -9,7 +9,7 @@
 # Verify: TensorBlock.__add__ generates linalg.generic with identity maps and tile_add.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 
 @kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])

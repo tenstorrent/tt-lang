@@ -10,7 +10,7 @@
 # Tests nested for loops in compute and datamovement threads.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 try:
     import ttnn

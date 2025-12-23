@@ -12,7 +12,7 @@
 # Verify: Runtime execution of add operation works correctly on hardware.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 
 @kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])

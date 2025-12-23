@@ -14,7 +14,7 @@
 # Final result: 9 (proves loop ran twice)
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 try:
     import ttnn

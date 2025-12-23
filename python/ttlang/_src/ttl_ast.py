@@ -355,7 +355,3 @@ def syntax(syntax_name):
             return fn
 
         return _fn_wrapper
-
-
-# Alias for backwards compatibility
-D2MGenericCompiler = TTLGenericCompiler

@@ -10,7 +10,7 @@
 # Based on test_runtime_matmul.py pattern.
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 try:
     import ttnn

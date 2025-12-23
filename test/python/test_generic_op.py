@@ -9,7 +9,7 @@
 # Verify d2m.generic creation with explicit grid and block_factors (empty indexing_maps/iterator_types).
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 
 @kernel(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])

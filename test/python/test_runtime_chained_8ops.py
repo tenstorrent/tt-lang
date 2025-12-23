@@ -14,7 +14,7 @@
 # Expected: sqrt(exp(recip(sqrt(exp(recip(sqrt(exp(2.0))))))))
 
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 from ttlang.operators import exp, sqrt, recip
 import math
 

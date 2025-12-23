@@ -8,7 +8,7 @@ import re
 from ttmlir.ir import *
 
 from .dialects import ttl
-from ._src.d2m_ast import syntax
+from ._src.ttl_ast import syntax
 
 
 def _get_cb_tensor_type(cb_val):
