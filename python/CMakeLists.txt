@@ -57,7 +57,6 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
     TTLangCAPI
   PRIVATE_LINK_LIBS
     TTLangCAPI
-    TTLangD2MTransforms
     TTLangTTLTransforms
     ${TTMLIR_PYTHON_CAPI_LIB}
   PYTHON_BINDINGS_LIBRARY nanobind
@@ -91,7 +90,6 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
-    _src/codegen.py
     _src/ttl_ast.py
     _src/tensor_accessor.py
     _src/tensor_registry.py

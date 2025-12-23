@@ -4,7 +4,6 @@
 
 #include "ttlang/Bindings/Python/TTLangModule.h"
 #include "mlir/CAPI/IR.h"
-#include "ttlang/Dialect/D2M/Passes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -16,7 +15,6 @@ NB_MODULE(_ttlang, m) {
   m.doc() = "tt-lang Python bindings for TTL dialect";
 
   // Local ttlang pass registration
-  mlir::tt::d2m::registerD2MPasses();
   mlir::tt::ttl::registerTTLPasses();
 
   // Register TTL dialect with any Context that loads this module
