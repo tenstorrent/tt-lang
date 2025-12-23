@@ -103,6 +103,19 @@ config.substitutions.append(
     )
 )
 
+# Run tests via tt-lang-hw-sim VM (for tests requiring simulator)
+# Assumes tt-lang-hw-sim is a sibling directory to tt-lang
+# Note: We use env to explicitly pass HOME since limactl needs it
+_hw_sim_dir = os.path.abspath(os.path.join(config.ttlang_source_dir, os.pardir, "tt-lang-hw-sim"))
+_run_lit_test = os.path.join(_hw_sim_dir, "run-lit-test.sh")
+_home = os.environ.get("HOME", "")
+config.substitutions.append(
+    (
+        "%run-test",
+        f"env HOME={_home} {_run_lit_test} %t.initial.mlir %t.final.mlir",
+    )
+)
+
 # Get Python packages directory from site config, or fall back to default build location.
 build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)
 if build_python is None or not build_python:
