@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttmlir-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttmlir-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
@@ -25,13 +25,18 @@
 // CHECK-NEXT:  for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
 // CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
 
+// --- Compute linear tile index: i * cols + j ---
+// CHECK:           size_t [[COL_SIZE:.*]] = 2;
+// CHECK-NEXT:      size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
+// CHECK-NEXT:      size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
+
 // --- Load tile from CB0 (input A) into DST[0] ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[ZERO]], [[ZERO]]);
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
 
 // --- Load tile from CB1 (input B) into DST[1] ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[ZERO]], [[STEP]]);
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
 
 // --- Add: DST[0] + DST[1] -> DST[0] ---
 // CHECK-NEXT:      add_binary_tile_init();
