@@ -18,7 +18,7 @@
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
-// CHECK-DAG:   size_t [[STEP:.*]] = 1;
+// CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
@@ -27,20 +27,20 @@
 // CHECK-NEXT:   TensorAccessorArgs [[ARGS_A:.*]] = TensorAccessorArgs<64, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
 // CHECK:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[STEP]]) {
-// CHECK-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[STEP]]) {
+// CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
+// CHECK-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
 // CHECK:       noc_async_read_tile({{.*}}, [[ACC_A]], [[CB0_PTR]]);
 // CHECK:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   noc_async_read_barrier();
 
 // Read tensor B into CB1
-// CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[STEP]]);
+// CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
 // CHECK-NEXT:   TensorAccessorArgs [[ARGS_B:.*]] = TensorAccessorArgs<64, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
 // CHECK:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
-// CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[STEP]]) {
-// CHECK-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[STEP]]) {
+// CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
+// CHECK-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
 // CHECK:       noc_async_read_tile({{.*}}, [[ACC_B]], [[CB1_PTR]]);
 // CHECK:     }
 // CHECK-NEXT:   }
@@ -69,7 +69,7 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[TILES:.*]] = 4;
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
-// CHECK-DAG:   size_t [[STEP:.*]] = 1;
+// CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
 // Wait for inputs from reader
@@ -80,8 +80,8 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK-NEXT:   tile_regs_acquire();
 
 // Nested loops over 2x2 tile grid
-// CHECK-NEXT:   for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
-// CHECK-NEXT:     for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
+// CHECK-NEXT:   for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[ONE]]) {
+// CHECK-NEXT:     for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[ONE]]) {
 
 // Compute linear tile index: i * cols + j
 // CHECK:            size_t [[COL_SIZE:.*]] = 2;
@@ -94,11 +94,11 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 
 // Load tile from CB1 into DST[1]
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
+// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
 
 // Compute: A + B
 // CHECK-NEXT:       add_binary_tile_init();
-// CHECK-NEXT:       add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+// CHECK-NEXT:       add_binary_tile([[ZERO]], [[ONE]], [[ZERO]]);
 
 // Compute: exp(A + B)
 // CHECK-NEXT:       exp_tile_init();
@@ -167,7 +167,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
-// CHECK-DAG:   size_t [[STEP:.*]] = 1;
+// CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
@@ -176,8 +176,8 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:   TensorAccessorArgs [[ARGS_OUT:.*]] = TensorAccessorArgs<64, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACC_OUT:.*]] = TensorAccessor([[ARGS_OUT]], [[RT_ARG_OUT]],
 // CHECK:   int32_t [[CB2_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
-// CHECK-NEXT:   for (size_t [[I_OUT:.*]] = [[ZERO]]; [[I_OUT]] < [[BOUND]]; [[I_OUT]] += [[STEP]]) {
-// CHECK-NEXT:     for (size_t [[J_OUT:.*]] = [[ZERO]]; [[J_OUT]] < [[BOUND]]; [[J_OUT]] += [[STEP]]) {
+// CHECK-NEXT:   for (size_t [[I_OUT:.*]] = [[ZERO]]; [[I_OUT]] < [[BOUND]]; [[I_OUT]] += [[ONE]]) {
+// CHECK-NEXT:     for (size_t [[J_OUT:.*]] = [[ZERO]]; [[J_OUT]] < [[BOUND]]; [[J_OUT]] += [[ONE]]) {
 // CHECK:       noc_async_write_tile({{.*}}, [[ACC_OUT]], [[CB2_PTR]]);
 // CHECK:     }
 // CHECK-NEXT:   }
