@@ -32,7 +32,7 @@ class TensorAccessor:
         >>>     @datamovement()
         >>>     def dm_reader(...):
         >>>         shard = lhs_cb.reserve()
-        >>>         dma(lhs_accessor[idx, 0], shard).wait()
+        >>>         copy(lhs_accessor[idx, 0], shard).wait()
     """
 
     def __init__(self, tensor: Any):

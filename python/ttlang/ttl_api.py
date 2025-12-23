@@ -47,7 +47,7 @@ from ._src.tensor_registry import register_tensor_name
 
 from ._src.ttl_ast import TTLGenericCompiler
 
-from .operators import TensorBlock, MemTx, dma, copy
+from .operators import TensorBlock, MemTx, copy
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .layouts import create_metal_layout
@@ -917,7 +917,6 @@ __all__ = [
     "MemTx",
     "Semaphore",
     "copy",
-    "dma",  # Deprecated, use copy instead
     "TensorAccessor",
     "CompiledTTNNKernel",
     "create_metal_layout",

@@ -298,39 +298,6 @@ def _determine_transfer_direction(src, dst) -> str:
         return "read"
 
 
-@syntax("dma")
-def dma(
-    src: IndexedTensor,
-    dst: IndexedTensor,
-    core: Optional[CoreCoordinate] = None,
-    mcast: Optional[CoreCoordinate] = None,
-) -> MemTx:
-    """
-    DEPRECATED: Use copy() instead.
-
-    Initiate an asynchronous data transfer using ttl.copy.
-    """
-    import warnings
-    warnings.warn(
-        "dma() is deprecated, use copy() instead",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    if core is not None or mcast is not None:
-        raise NotImplementedError("core and mcast parameters not supported, use copy() instead")
-
-    src_indices = None
-    dst_indices = None
-    if isinstance(src, tuple):
-        src, src_indices = src
-    if isinstance(dst, tuple):
-        dst, dst_indices = dst
-
-    if src_indices is not None or dst_indices is not None:
-        raise NotImplementedError("Indexed tensor access not supported, use copy() instead")
-
-    return copy(src, dst)
-
 
 @syntax("copy")
 def copy(src, dst) -> MemTx:
