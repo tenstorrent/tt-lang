@@ -11,6 +11,9 @@ transforms wait() and reserve() calls to insert cooperative yields.
 import ast
 from python.sim.xformyield import (
     WaitReserveToYieldTransformer,
+    YieldInserter,
+    YieldingFunctionMarker,
+    YieldFromInserter,
     transform_wait_reserve_to_yield,
 )
 
@@ -399,7 +402,365 @@ def func():
     print("docstring preserved test passed!")
 
 
+# ============================================================================
+# Tests for the three-stage transformation approach
+# ============================================================================
+
+
+def test_stage1_yield_inserter_only() -> None:
+    """Test that stage 1 only inserts yields, no yield from."""
+    source = """
+def inner():
+    block = cb.wait()
+
+def outer():
+    inner()
+"""
+    tree = ast.parse(source)
+    inserter = YieldInserter()
+    tree = inserter.visit(tree)
+    result = ast.unparse(tree)
+
+    # Should have yield before wait()
+    assert "yield (cb, 'wait')" in result
+    # Should NOT have yield from yet (that's stage 3)
+    assert "yield from" not in result
+
+    print("Stage 1 yield inserter test passed!")
+
+
+def test_stage2_marker_no_yields() -> None:
+    """Test that marker correctly identifies no yields when there are none."""
+    source = """
+def func1():
+    x = 1 + 2
+    return x
+
+def func2():
+    return func1()
+"""
+    tree = ast.parse(source)
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    # No functions should be marked
+    assert len(marker.functions_with_yields) == 0
+
+    print("Stage 2 marker (no yields) test passed!")
+
+
+def test_stage2_marker_direct_yields() -> None:
+    """Test that marker identifies functions with direct yields."""
+    source = """
+def func():
+    yield (cb, 'wait')
+    block = cb.wait()
+"""
+    tree = ast.parse(source)
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    # func should be marked as it has a direct yield
+    assert "func" in marker.functions_with_yields
+
+    print("Stage 2 marker (direct yields) test passed!")
+
+
+def test_stage2_marker_transitive_yields() -> None:
+    """Test that marker identifies functions that call yielding functions."""
+    source = """
+def inner():
+    yield (cb, 'wait')
+    block = cb.wait()
+
+def middle():
+    inner()
+
+def outer():
+    middle()
+"""
+    tree = ast.parse(source)
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    # All three should be marked
+    assert "inner" in marker.functions_with_yields
+    assert "middle" in marker.functions_with_yields
+    assert "outer" in marker.functions_with_yields
+
+    print("Stage 2 marker (transitive yields) test passed!")
+
+
+def test_stage2_marker_function_params() -> None:
+    """Test that marker identifies functions that call function parameters."""
+    source = """
+def callback_wrapper(func):
+    func()
+"""
+    tree = ast.parse(source)
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    # callback_wrapper should be marked because it calls a parameter
+    assert "callback_wrapper" in marker.functions_with_yields
+
+    print("Stage 2 marker (function params) test passed!")
+
+
+def test_stage2_marker_ttl_pipe_functions() -> None:
+    """Test that marker identifies functions calling ttl.if_pipe_src/dst."""
+    source = """
+def compute():
+    ttl.if_pipe_src(pipe, callback)
+    ttl.if_pipe_dst(pipe, callback)
+"""
+    tree = ast.parse(source)
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    # compute should be marked due to ttl.if_pipe_* calls
+    assert "compute" in marker.functions_with_yields
+
+    print("Stage 2 marker (ttl pipe functions) test passed!")
+
+
+def test_stage3_yield_from_nested_function() -> None:
+    """Test that stage 3 inserts yield from for nested function calls."""
+    source = """
+def inner():
+    yield (cb, 'wait')
+    block = cb.wait()
+
+def outer():
+    inner()
+"""
+    tree = ast.parse(source)
+
+    # Run through all stages
+    inserter = YieldInserter()
+    tree = inserter.visit(tree)
+    ast.fix_missing_locations(tree)
+
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    yield_from_inserter = YieldFromInserter(marker.functions_with_yields)
+    tree = yield_from_inserter.visit(tree)
+    result = ast.unparse(tree)
+
+    # Should have yield from inner()
+    assert "yield from inner()" in result
+
+    print("Stage 3 yield from (nested function) test passed!")
+
+
+def test_stage3_yield_from_function_param() -> None:
+    """Test that stage 3 inserts yield from for function parameter calls."""
+    source = """
+def wrapper(func):
+    func()
+"""
+    tree = ast.parse(source)
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    yield_from_inserter = YieldFromInserter(marker.functions_with_yields)
+    tree = yield_from_inserter.visit(tree)
+    result = ast.unparse(tree)
+
+    # Should have yield from func()
+    assert "yield from func()" in result
+
+    print("Stage 3 yield from (function param) test passed!")
+
+
+def test_stage3_yield_from_ttl_functions() -> None:
+    """Test that stage 3 inserts yield from for ttl.if_pipe_* calls."""
+    source = """
+def compute():
+    ttl.if_pipe_src(pipe, dm0)
+    ttl.if_pipe_dst(pipe, dm1)
+"""
+    tree = ast.parse(source)
+    marker = YieldingFunctionMarker()
+    marker.visit(tree)
+
+    yield_from_inserter = YieldFromInserter(marker.functions_with_yields)
+    tree = yield_from_inserter.visit(tree)
+    result = ast.unparse(tree)
+
+    # Should have yield from for both calls
+    assert "yield from ttl.if_pipe_src(pipe, dm0)" in result
+    assert "yield from ttl.if_pipe_dst(pipe, dm1)" in result
+
+    print("Stage 3 yield from (ttl functions) test passed!")
+
+
+def test_three_level_nesting() -> None:
+    """Test three levels of nested yielding functions."""
+    source = """
+def level1():
+    block = cb.wait()
+
+def level2():
+    level1()
+
+def level3():
+    level2()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Should have yield in level1
+    assert "yield (cb, 'wait')" in result
+    # Should have yield from in level2 and level3
+    assert "yield from level1()" in result
+    assert "yield from level2()" in result
+
+    print("Three level nesting test passed!")
+
+
+def test_four_level_nesting() -> None:
+    """Test four levels of nested yielding functions."""
+    source = """
+def level1():
+    x = cb.reserve()
+
+def level2():
+    level1()
+
+def level3():
+    level2()
+
+def level4():
+    level3()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Should have yield in level1
+    assert "yield (cb, 'reserve')" in result
+    # Should have yield from in levels 2-4
+    assert "yield from level1()" in result
+    assert "yield from level2()" in result
+    assert "yield from level3()" in result
+
+    print("Four level nesting test passed!")
+
+
+def test_mixed_yielding_and_non_yielding() -> None:
+    """Test mix of yielding and non-yielding functions."""
+    source = """
+def yielding():
+    block = cb.wait()
+
+def non_yielding():
+    x = 1 + 2
+    return x
+
+def caller():
+    yielding()
+    non_yielding()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Should have yield from for yielding()
+    assert "yield from yielding()" in result
+    # Should NOT have yield from for non_yielding()
+    assert "yield from non_yielding()" not in result
+    # non_yielding() should still be called normally
+    assert "non_yielding()" in result
+
+    print("Mixed yielding/non-yielding test passed!")
+
+
+def test_multiple_nested_functions_same_level() -> None:
+    """Test multiple nested functions at the same level."""
+    source = """
+def pipe_src():
+    block = cb.wait()
+
+def pipe_dst():
+    block = cb.reserve()
+
+def coordinator():
+    pipe_src()
+    pipe_dst()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Should have yields in both inner functions
+    assert result.count("yield (cb,") == 2
+    # Should have yield from for both calls
+    assert "yield from pipe_src()" in result
+    assert "yield from pipe_dst()" in result
+
+    print("Multiple nested functions test passed!")
+
+
+def test_recursive_function_marking() -> None:
+    """Test that recursive calls are handled correctly."""
+    source = """
+def recursive(n):
+    if n > 0:
+        block = cb.wait()
+        recursive(n - 1)
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Should have yield before wait
+    assert "yield (cb, 'wait')" in result
+    # Should have yield from for recursive call
+    assert "yield from recursive(n - 1)" in result
+
+    print("Recursive function marking test passed!")
+
+
+def test_no_yields_no_transformation() -> None:
+    """Test that code with no yields remains unchanged (except formatting)."""
+    source = """
+def func1():
+    x = 1 + 2
+    return x
+
+def func2():
+    y = func1()
+    return y * 2
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Should have no yields or yield froms
+    assert "yield" not in result
+    # Functions should still exist and be callable normally
+    assert "def func1():" in result
+    assert "def func2():" in result
+    assert "func1()" in result
+
+    print("No yields no transformation test passed!")
+
+
+def test_yield_from_not_inserted_for_non_yielding() -> None:
+    """Test that yield from is not inserted for non-yielding function calls."""
+    source = """
+def helper():
+    return 42
+
+def main():
+    x = cb.wait()
+    result = helper()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Should have yield for wait
+    assert "yield (cb, 'wait')" in result
+    # Should NOT have yield from for helper()
+    assert "yield from helper()" not in result
+    # helper() should be called normally (might be in assignment)
+    assert "helper()" in result
+
+    print("Yield from not inserted for non-yielding test passed!")
+
+
 if __name__ == "__main__":
+    # Run original tests
     test_transform_wait_assignment()
     test_transform_reserve_assignment()
     test_transform_wait_expression()
@@ -419,4 +780,23 @@ if __name__ == "__main__":
     test_yield_tuple_structure()
     test_multiple_functions()
     test_docstring_preserved()
+
+    # New three-stage transformation tests
+    test_stage1_yield_inserter_only()
+    test_stage2_marker_no_yields()
+    test_stage2_marker_direct_yields()
+    test_stage2_marker_transitive_yields()
+    test_stage2_marker_function_params()
+    test_stage2_marker_ttl_pipe_functions()
+    test_stage3_yield_from_nested_function()
+    test_stage3_yield_from_function_param()
+    test_stage3_yield_from_ttl_functions()
+    test_three_level_nesting()
+    test_four_level_nesting()
+    test_mixed_yielding_and_non_yielding()
+    test_multiple_nested_functions_same_level()
+    test_recursive_function_marking()
+    test_no_yields_no_transformation()
+    test_yield_from_not_inserted_for_non_yielding()
+
     print("All xformyield tests passed!")

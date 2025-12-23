@@ -29,20 +29,21 @@ def flatten_core_index(core_idx: CoreIndex) -> Index:
         >>> flatten_core_index((2, 3))
         19
     """
-    if isinstance(core_idx, int):
-        return core_idx
+    match core_idx:
+        case int():
+            return core_idx
+        case _:
+            # Convert to linear index using grid dimensions
+            grid = grid_size()
+            coords = list(core_idx)
 
-    # It's a tuple - convert to linear index using grid dimensions
-    grid = grid_size()
-    coords = list(core_idx)
+            # Calculate linear index: for (y, x) with grid (h, w), linear = y * w + x
+            # For 3D: (z, y, x) with grid (d, h, w), linear = z * h * w + y * w + x
+            linear = coords[0]
+            for i in range(1, len(coords)):
+                linear = linear * grid[i] + coords[i]
 
-    # Calculate linear index: for (y, x) with grid (h, w), linear = y * w + x
-    # For 3D: (z, y, x) with grid (d, h, w), linear = z * h * w + y * w + x
-    linear = coords[0]
-    for i in range(1, len(coords)):
-        linear = linear * grid[i] + coords[i]
-
-    return int(linear)
+            return int(linear)
 
 
 def grid_size() -> Tuple[int, ...]:
