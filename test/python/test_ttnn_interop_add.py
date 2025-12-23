@@ -21,7 +21,7 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], ttnn_interop=True)
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)

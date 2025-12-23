@@ -28,17 +28,6 @@ from ttmlir import ir
 from ttmlir.dialects import ttcore
 
 
-# Torch dtype to runtime DataType integer mapping (for C API compatibility)
-# TODO: Replace with runtime.DataType enum once C API is updated to accept enum values
-# These integer values correspond to:
-#   0 = Float32, 1 = Float16, 2 = BFloat16
-TORCH_TO_RUNTIME_DTYPE_INT = {
-    torch.float32: 0,
-    torch.float16: 1,
-    torch.bfloat16: 2,
-}
-
-
 def to_data_type(dtype):
     """
     Convert PyTorch dtype to runtime DataType.
@@ -355,38 +344,6 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
             raise ValueError(
                 f"Unsupported torch dtype for ttnn.DataType: {torch_dtype}"
             )
-
-
-def create_borrowed_tensors(torch_tensors):
-    """
-    Create runtime borrowed tensors from torch tensors.
-
-    Borrowed tensors share memory with the original torch tensors, enabling zero-copy I/O.
-
-    Args:
-        torch_tensors: List of torch.Tensor objects
-
-    Returns:
-        List of runtime.Tensor objects sharing memory with inputs
-
-    Raises:
-        ImportError: If runtime module is not available
-    """
-    if runtime is None:
-        raise ImportError("Runtime module not available")
-
-    result = []
-    for tensor in torch_tensors:
-        dtype_value = TORCH_TO_RUNTIME_DTYPE_INT.get(tensor.dtype, 0)
-        rt_tensor = runtime.create_borrowed_host_tensor(
-            tensor.data_ptr(),
-            list(tensor.shape),
-            list(tensor.stride()),
-            tensor.element_size(),
-            dtype_value,
-        )
-        result.append(rt_tensor)
-    return result
 
 
 def tile_bytes_from_dtype(dtype) -> int:

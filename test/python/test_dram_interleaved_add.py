@@ -24,7 +24,6 @@ except ImportError:
 @pykernel_gen(
     grid=(1, 1),
     block_factors=[(1, 1), (1, 1), (1, 1)],
-    ttnn_interop=True,
 )
 def add_dram_direct(lhs, rhs, out):
     """

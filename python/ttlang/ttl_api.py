@@ -10,7 +10,6 @@ import ast
 import inspect
 import functools
 import os
-import platform
 from typing import List, Optional, Callable, Dict, Union
 
 try:
@@ -24,16 +23,14 @@ except ModuleNotFoundError:
     ttnn = None
 
 try:
-    from _ttmlir_runtime import runtime, binary
+    from _ttmlir_runtime import runtime
 except ModuleNotFoundError:
     runtime = None
-    binary = None
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttcore, ttkernel
 from ttmlir.passes import (
-    ttmetal_to_flatbuffer_bin,
     ttkernel_to_cpp_by_name,
     get_ttkernel_names,
     get_ttkernel_arg_spec,
@@ -54,8 +51,6 @@ from .layouts import create_metal_layout
 from .dtype_utils import (
     to_data_type,
     from_data_type,
-    TORCH_TO_RUNTIME_DTYPE_INT,
-    create_borrowed_tensors,
     torch_dtype_to_ttnn_datatype,
     tile_bytes_from_dtype,
     is_ttnn_tensor,
@@ -68,35 +63,17 @@ class CompilerConfig:
     """
     Configuration for the compiler pipeline and runtime execution.
 
-    Two mutually exclusive compilation paths:
-    - Metal: Compiles to flatbuffer, executes on Metal runtime
-    - TTNN: Compiles to C++ for ttnn.generic_op
+    Compiles to C++ for ttnn.generic_op.
     """
 
-    def __init__(self, ttnn_interop: bool = False, compile_only: bool = False):
+    def __init__(self, compile_only: bool = False):
         self._compile_only = (
             compile_only or os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
         )
-        self._runtime_available = binary is not None and runtime is not None
-        self._is_macos = platform.system() == "Darwin"
-        self._ttnn_interop = ttnn_interop
-
-    @property
-    def is_ttnn(self) -> bool:
-        return self._ttnn_interop
-
-    @property
-    def ttnn_mode(self) -> int:
-        """Pass parameter for convert-d2m-to-ttkernel."""
-        return 1 if self._ttnn_interop else 0
 
     def should_execute(self) -> bool:
-        """Check if runtime execution should proceed for the selected path."""
-        if self._compile_only:
-            return False
-        if self._ttnn_interop:
-            return True
-        return not self._is_macos and self._runtime_available
+        """Check if runtime execution should proceed."""
+        return not self._compile_only
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -237,38 +214,6 @@ class CompiledTTNNKernel:
         )
 
         return ttnn.generic_op(list(args), program)
-
-
-def _execute_on_metal_runtime(flatbuffer_binary, args):
-    """
-    Execute compiled kernel on Metal runtime.
-
-    Args:
-        flatbuffer_binary: Compiled flatbuffer binary capsule
-        args: List of torch tensors as input arguments
-
-    Raises:
-        Exception: If runtime execution fails
-    """
-    binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
-    program_index = 0
-
-    runtime.set_compatible_device_runtime(binary_obj)
-
-    device_options = runtime.MeshDeviceOptions()
-    device_options.mesh_shape = binary_obj.get_program_mesh_shape(program_index)
-    device = runtime.open_mesh_device(device_options)
-
-    # Borrowed tensors share memory with torch tensors (zero-copy)
-    inputs = create_borrowed_tensors(args)
-    runtime_outputs = runtime.submit(device, binary_obj, program_index, inputs)
-    runtime.wait(runtime_outputs)
-
-    # Results are written directly to torch tensor memory via enqueue_read_buffer
-    for runtime_output_tensor in runtime_outputs:
-        runtime.deallocate_tensor(runtime_output_tensor, force=True)
-
-    runtime.close_mesh_device(device)
 
 
 def _write_kernel_to_tmp(name: str, source: str, args_per_tensor: int = 0) -> str:
@@ -604,7 +549,6 @@ def _compile_and_run_kernel(
     num_outs: int,
     memory_space: str,
     tiled: bool,
-    ttnn_interop: bool = False,
     compile_only: bool = False,
 ) -> Optional[CompiledTTNNKernel]:
     """
@@ -621,11 +565,10 @@ def _compile_and_run_kernel(
         num_outs: Number of output arguments
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
-        ttnn_interop: If True, compile to C++ for ttnn.generic_op instead of flatbuffer
-        compile_only: If True, return compiled kernel without executing (ttnn_interop only)
+        compile_only: If True, return compiled kernel without executing
 
     Returns:
-        CompiledTTNNKernel if ttnn_interop=True, None otherwise
+        CompiledTTNNKernel ready for execution
     """
     f_params = inspect.signature(f).parameters
 
@@ -695,10 +638,10 @@ def _compile_and_run_kernel(
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
-        config = CompilerConfig(ttnn_interop, compile_only)
+        config = CompilerConfig(compile_only)
 
         # fmt: off
-        ttl_pipeline_passes = [
+        pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-tile-and-assign-dst)",
             "func.func(ttl-insert-tile-regs-sync)",
@@ -710,12 +653,6 @@ def _compile_and_run_kernel(
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
-
-        if config.is_ttnn:
-            pipeline_passes = ttl_pipeline_passes
-        else:
-            # Metal path - not yet supported with TTL
-            raise NotImplementedError("Metal path not yet supported with TTL bindings")
 
         pipeline = ",".join(pipeline_passes)
 
@@ -754,32 +691,11 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED FINAL TO {final_mlir_path}")
 
-        if config.is_ttnn:
-            # TTNN interop path: compile to CompiledTTNNKernel
-            compiled_kernel = _compile_ttnn_kernel(module, args, grid, num_outs)
-            if compiled_kernel is not None and config.should_execute():
-                compiled_kernel(*args)
-            return compiled_kernel
-
-        # Metal path: convert to flatbuffer and optionally execute
-        flatbuffer_binary = ttmetal_to_flatbuffer_bin(module)
-
-        # Save flatbuffer to file for ttrt execution
-        flatbuffer_path = os.environ.get("TTLANG_FLATBUFFER_PATH")
-        if flatbuffer_path and binary is not None:
-            binary_obj = binary.load_binary_from_capsule(flatbuffer_binary)
-            binary_obj.store(flatbuffer_path)
-            print(f"SAVED FLATBUFFER TO {flatbuffer_path}")
-
-        if config.should_execute():
-            try:
-                _execute_on_metal_runtime(flatbuffer_binary, args)
-            except Exception as e:
-                print(f"Warning: Metal runtime execution failed: {e}")
-                print("(This is expected on macOS or if hardware is not available)")
-                import traceback
-
-                traceback.print_exc()
+        # Compile to CompiledTTNNKernel for ttnn.generic_op
+        compiled_kernel = _compile_ttnn_kernel(module, args, grid, num_outs)
+        if compiled_kernel is not None and config.should_execute():
+            compiled_kernel(*args)
+        return compiled_kernel
 
 
 def pykernel_gen(
@@ -790,13 +706,13 @@ def pykernel_gen(
     num_outs: int = 1,
     memory_space: str = "L1",
     tiled: bool = True,
-    ttnn_interop: bool = False,
 ) -> Callable:
     """
-    Decorator for generating D2M kernels from Python functions.
+    Decorator for generating TTL kernels from Python functions.
 
-    This decorator compiles Python functions into D2M dialect operations,
+    This decorator compiles Python functions into TTL dialect operations,
     handling thread compilation, stream creation, and pipeline execution.
+    Kernels are compiled to C++ for execution via ttnn.generic_op.
 
     Args:
         grid: Grid dimensions as tuple (e.g., (2, 2)) or callable
@@ -806,7 +722,6 @@ def pykernel_gen(
         num_outs: Number of output arguments
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
-        ttnn_interop: If True, compile to C++ for ttnn.generic_op instead of flatbuffer
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -875,7 +790,6 @@ def pykernel_gen(
                 num_outs,
                 memory_space,
                 tiled,
-                ttnn_interop,
             )
 
         def _compile(*args, **kwargs):
@@ -905,7 +819,6 @@ def pykernel_gen(
                 num_outs,
                 memory_space,
                 tiled,
-                ttnn_interop,
                 compile_only=True,
             )
 
