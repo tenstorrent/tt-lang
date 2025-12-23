@@ -281,20 +281,6 @@ def _write_kernel_to_tmp(name: str, source: str, args_per_tensor: int = 0) -> st
             source
         )
 
-    # HACK: Fix TensorAccessorArgs type. EmitC emits "TensorAccessorArgs v = ..."
-    # but TensorAccessorArgs is a class template, need "auto v = ..." instead.
-    source = re.sub(
-        r'TensorAccessorArgs (\w+) = (TensorAccessorArgs<[^>]+>\(\))',
-        r'auto \1 = \2',
-        source
-    )
-    # HACK: Fix TensorAccessor CTAD. Deduction guide expects exact types (size_t, uint32_t)
-    # but EmitC emits int32_t. Also need "auto v = ..." for class template.
-    source = re.sub(
-        r'TensorAccessor (\w+) = TensorAccessor\((\w+), (\w+), (\w+)\)',
-        r'auto \1 = TensorAccessor(\2, static_cast<size_t>(\3), static_cast<uint32_t>(\4))',
-        source
-    )
     path = f"/tmp/ttlang_kernel_{name}.cpp"
     with open(path, "w") as f:
         f.write(source)
