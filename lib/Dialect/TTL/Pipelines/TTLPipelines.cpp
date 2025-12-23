@@ -7,7 +7,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
