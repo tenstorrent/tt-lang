@@ -10,13 +10,11 @@ functions across multiple cores with proper context binding and error handling.
 
 import types
 import copy
-import threading
 import traceback
 import inspect
 import textwrap
 from typing import Any, Callable, Dict, List, Tuple, Protocol, Generator
 from types import CellType, FunctionType
-from enum import Enum
 
 import torch
 
@@ -24,13 +22,6 @@ from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .tensoraccessor import TensorAccessor
 from .xformyield import transform_wait_reserve_to_yield
-
-
-class ExecutionMode(Enum):
-    """Execution mode for Program."""
-
-    THREADED = "threaded"  # Original concurrent execution with threads
-    COOPERATIVE = "cooperative"  # Round-robin cooperative scheduling with yields
 
 
 # Protocol for templates that have a bind method
@@ -85,25 +76,20 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def Program(
-    *funcs: BindableTemplate, execution_mode: ExecutionMode = ExecutionMode.THREADED
-) -> Any:
+def Program(*funcs: BindableTemplate) -> Any:
     """Program class that combines compute and data movement functions.
 
     Args:
         *funcs: Compute and data movement function templates
-        execution_mode: Execution mode (THREADED or COOPERATIVE)
     """
 
     class ProgramImpl:
         def __init__(
             self,
             *functions: BindableTemplate,
-            execution_mode: ExecutionMode = ExecutionMode.THREADED,
         ):
             self.functions = functions
             self.context: Dict[str, Any] = {}
-            self.mode = execution_mode
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
@@ -127,13 +113,8 @@ def Program(
 
             compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
 
-            # Choose execution strategy based on mode
-            if self.mode == ExecutionMode.COOPERATIVE:
-                self._run_cooperative(
-                    total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl
-                )
-            else:
-                self._run_threaded(total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
+            # Run in cooperative mode
+            self._run_cooperative(total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
 
         def _build_core_context(self, core: int) -> Dict[str, Any]:
             """Build per-core context with copied circular buffers and other state.
@@ -167,76 +148,6 @@ def Program(
             core_context["_core"] = core
 
             return core_context
-
-        def _run_threaded(
-            self,
-            total_cores: int,
-            compute_func_tmpl: BindableTemplate,
-            dm0_tmpl: BindableTemplate,
-            dm1_tmpl: BindableTemplate,
-        ) -> None:
-            """Original threaded execution mode - all cores run in parallel."""
-            # collect user-facing errors here
-            thread_results: List[Tuple[str, Exception, str]] = []
-            all_threads: List[threading.Thread] = []
-
-            def run_func_in_thread(name: str, func_factory: Callable[[], Any]) -> None:
-                try:
-                    func_factory()  # Execute the function factory directly
-                except Exception as e:
-                    tb_str = traceback.format_exc()
-                    thread_results.append((name, e, tb_str))
-
-            # Create and start threads for all cores
-            for core in range(total_cores):
-                # build per-core context
-                core_context = self._build_core_context(core)
-
-                # bind per-core
-                core_dm0 = dm0_tmpl.bind(core_context)
-                core_compute = compute_func_tmpl.bind(core_context)
-                core_dm1 = dm1_tmpl.bind(core_context)
-
-                # Create threads for this core's functions
-                t_dm0 = threading.Thread(
-                    target=run_func_in_thread, args=(f"core{core}-dm0", core_dm0)
-                )
-                t_comp = threading.Thread(
-                    target=run_func_in_thread,
-                    args=(f"core{core}-compute", core_compute),
-                )
-                t_dm1 = threading.Thread(
-                    target=run_func_in_thread, args=(f"core{core}-dm1", core_dm1)
-                )
-
-                all_threads.extend([t_dm0, t_comp, t_dm1])
-
-            # Start all threads across all cores
-            for t in all_threads:
-                t.start()
-
-            # Wait for all threads to finish
-            for t in all_threads:
-                t.join()
-
-            # Check if any failed
-            if thread_results:
-                errors: List[str] = []
-                for name, e, tb_str in thread_results:
-                    # print a user-readable header
-                    print(f"\n❌ {name} failed")
-                    print(f"   error type   : {type(e).__name__}")
-                    print(f"   error message: {e}")
-                    print("   traceback:")
-                    print(tb_str)
-                    print("-" * 50)
-
-                    # add to final aggregation (short)
-                    errors.append(f"{name}: {type(e).__name__}: {e}")
-
-                raise RuntimeError("One or more threads failed:\n" + "\n".join(errors))
-
-            return None
 
         def _run_cooperative(
             self,
@@ -339,8 +250,45 @@ def Program(
             - If all generators are blocked, raise deadlock error
             """
 
+            def _advance_generator(
+                name: str,
+                gen: Generator[None, None, None],
+                allow_completion: bool = False,
+            ) -> Tuple[Any, bool]:
+                """Advance a generator one step.
+
+                Args:
+                    name: Generator name for error messages
+                    gen: Generator to advance
+                    allow_completion: If False, StopIteration is an error
+
+                Returns:
+                    (result, completed) where completed=True if generator finished
+                """
+                try:
+                    result: Any = next(gen)
+                    return (result, False)
+                except StopIteration:
+                    if allow_completion:
+                        return (None, True)
+                    else:
+                        raise RuntimeError(
+                            f"{name}: Generator completed without yielding any operation. "
+                            f"Transformed code should always yield before completing."
+                        )
+                except Exception as e:
+                    # Generator raised an error
+                    tb_str = traceback.format_exc()
+                    error_msg = f"{name}: {type(e).__name__}: {e}"
+                    print(f"\n❌ {error_msg}")
+                    print("   traceback:")
+                    print(tb_str)
+                    print("-" * 50)
+                    raise RuntimeError(error_msg)
+
             # First, compile and execute all sources to create generators
-            active: Dict[str, Generator[None, None, None]] = {}
+            # active[name] = (generator, cb_object, operation)
+            active: Dict[str, Tuple[Generator[None, None, None], Any, str]] = {}
 
             for name, func_name, transformed_source, namespace in sources:
                 # Compile transformed source to bytecode
@@ -366,78 +314,88 @@ def Program(
                 if gen is None:
                     continue
 
-                active[name] = gen
+                # Run generator once until it yields (must yield at least once)
+                result, _ = _advance_generator(name, gen, allow_completion=True)
 
-            # Track blocked generators: {name: (generator, cb_object, operation)}
-            blocked: Dict[str, Tuple[Generator[Any, None, None], Any, str]] = {}
+                # If generator completed immediately without yielding, skip it
+                if result is None:
+                    continue
 
-            while active or blocked:
-                # First, check if any blocked generators can now proceed
-                unblocked: List[str] = []
-                for name, (gen, cb_obj, operation) in list(blocked.items()):
-                    can_method = getattr(cb_obj, f"can_{operation}")
-                    if can_method():
-                        unblocked.append(name)
-                        active[name] = gen
+                # Generator yielded - check what it yielded
+                match result:
+                    case (cb_obj, operation):
+                        # Store (gen, cb_obj, operation) in active
+                        active[name] = (gen, cb_obj, operation)
+                    case _:
+                        # Unexpected yield value
+                        raise RuntimeError(
+                            f"{name}: Generator yielded unexpected value: {result!r}. "
+                            f"Expected (cb_object, operation) tuple."
+                        )
 
-                # Remove unblocked from blocked dict
-                for name in unblocked:
-                    del blocked[name]
+            while active:
+                # Track if any generator made progress in this iteration
+                any_progress: bool = False
+                # Track which generators have completed
+                to_remove: List[str] = []
 
-                # Check for deadlock: all generators blocked and none can proceed
-                if not active and blocked:
-                    blocked_info = [
-                        f"{name}: {op}()" for name, (_, _, op) in blocked.items()
+                # Try to advance each active generator
+                for name in list(active.keys()):
+                    gen, blocked_cb, blocked_op = active[name]
+
+                    # Check if operation can proceed
+                    can_method = getattr(blocked_cb, f"can_{blocked_op}")
+                    if not can_method():
+                        # Still blocked, skip for now
+                        continue
+
+                    # Unblocked! Mark progress and continue running
+                    any_progress = True
+
+                    # Run this generator until it blocks or completes
+                    while True:
+                        result, completed = _advance_generator(
+                            name, gen, allow_completion=True
+                        )
+
+                        if completed:
+                            # Generator completed successfully
+                            to_remove.append(name)
+                            break  # Exit inner while loop, try next generator
+
+                        any_progress = True
+
+                        # Check if generator yielded blocking operation info (cb, operation)
+                        match result:
+                            case (cb_obj, operation):
+                                # Check if operation can proceed
+                                can_method = getattr(cb_obj, f"can_{operation}", None)
+                                if can_method and not can_method():
+                                    # Operation would block - update state in active
+                                    active[name] = (gen, cb_obj, operation)
+                                    break  # Exit inner while loop, try next generator
+                                # else: operation can proceed, continue this generator
+                            case _:
+                                # Unexpected yield value
+                                raise RuntimeError(
+                                    f"{name}: Generator yielded unexpected value: {result!r}. "
+                                    f"Expected (cb_object, operation) tuple."
+                                )
+
+                        # If we get here, operation can proceed, continue this generator
+
+                # Remove completed generators
+                for name in to_remove:
+                    del active[name]
+
+                # Deadlock detection: no progress made and generators still active
+                if not any_progress and active:
+                    blocked_info: List[str] = [
+                        f"{k}: {op}()" for k, (_, _, op) in active.items()
                     ]
                     raise RuntimeError(
                         f"Deadlock detected: all generators blocked\n"
                         + "\n".join(blocked_info)
                     )
 
-                # Try to advance each active generator
-                # Run each generator until it blocks or completes
-                for name in list(active.keys()):
-                    gen = active[name]
-
-                    # Keep advancing this generator until it blocks or completes
-                    while True:
-                        try:
-                            # Try to advance the generator one step
-                            result: Any = next(gen)
-
-                            # Check if generator yielded blocking operation info (cb, operation)
-                            match result:
-                                case (cb_obj, operation):
-                                    # Check if operation can proceed
-                                    can_method = getattr(
-                                        cb_obj, f"can_{operation}", None
-                                    )
-                                    if can_method and not can_method():
-                                        # Operation would block - mark as blocked and move to next generator
-                                        blocked[name] = (gen, cb_obj, operation)
-                                        del active[name]
-                                        break  # Exit inner while loop, try next generator
-                                    # else: operation can proceed, continue this generator
-                                case _:
-                                    # Not a 2-tuple or None, treat as normal yield
-                                    pass
-
-                            # If we get here, either it didn't yield blocking info or it can proceed
-                            # Continue running this generator
-
-                        except StopIteration:
-                            # Generator completed successfully
-                            del active[name]
-                            break  # Exit inner while loop, try next generator
-
-                        except Exception as e:
-                            # Generator raised an error
-                            tb_str = traceback.format_exc()
-                            error_msg = f"{name}: {type(e).__name__}: {e}"
-                            print(f"\n❌ {error_msg}")
-                            print("   traceback:")
-                            print(tb_str)
-                            print("-" * 50)
-                            raise RuntimeError(error_msg)
-
-    return ProgramImpl(*funcs, execution_mode=execution_mode)
+    return ProgramImpl(*funcs)
