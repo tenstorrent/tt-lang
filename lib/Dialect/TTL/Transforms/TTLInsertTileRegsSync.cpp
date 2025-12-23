@@ -38,6 +38,8 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+#define DEBUG_TYPE "ttl-insert-tile-regs-sync"
+
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DEF_TTLINSERTTILEREGSSYNC
@@ -136,7 +138,7 @@ struct TTLInsertTileRegsSyncPass
 
       // NOTE: This pass requires ttl.compute to be non-IsolatedFromAbove (the
       // pass emits an error otherwise). We prefer existing views and only
-      // materialize a new reserve if none exists.
+      // materialize a new cb_reserve if none exists.
 
       // Helper: find a cb_reserve view for auto-inserted stores. Only
       // cb_reserve views are valid (verifier rejects cb_wait). Prefers the last
