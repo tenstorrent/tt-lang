@@ -29,7 +29,7 @@ except ModuleNotFoundError:
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
-from ttmlir.dialects import ttcore, ttkernel
+from ttmlir.dialects import ttkernel
 from ttmlir.passes import (
     ttkernel_to_cpp_by_name,
     get_ttkernel_names,
@@ -56,7 +56,6 @@ from .dtype_utils import (
     is_ttnn_tensor,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
-from ._src.codegen import create_generic_func, copy_symbol_table_globals
 
 
 class CompilerConfig:

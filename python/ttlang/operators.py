@@ -6,14 +6,13 @@
 
 from __future__ import annotations
 
-from typing import List, Callable, Optional, Tuple, Union
+from typing import List, Callable, Tuple, Union
 
 from ttmlir.ir import *
-from ttmlir.dialects import arith, linalg, d2m
+from ttmlir.dialects import linalg, d2m
 
 from .dialects import ttl
 from ._src.ttl_ast import syntax
-from pykernel._src.utils import _asindex
 
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
@@ -267,36 +266,6 @@ class MemTx:
     def wait(ast_self: MemTx):
         """Block until the copy operation completes."""
         return ttl.wait(ast_self)
-
-
-def _determine_transfer_direction(src, dst) -> str:
-    """Determine transfer direction based on src/dst tensor types."""
-    # If source has MetalLayoutAttr (device tensor), it's a read from device
-    # If dest has MetalLayoutAttr (device tensor), it's a write to device
-    src_type = src.type if hasattr(src, "type") else None
-    dst_type = dst.type if hasattr(dst, "type") else None
-
-    # Check if source has device layout (MetalLayoutAttr)
-    src_is_device = False
-    dst_is_device = False
-
-    if src_type and isinstance(src_type, RankedTensorType):
-        if src_type.encoding is not None:
-            src_is_device = True
-
-    if dst_type and isinstance(dst_type, RankedTensorType):
-        if dst_type.encoding is not None:
-            dst_is_device = True
-
-    # read = device -> CB, write = CB -> device
-    if src_is_device and not dst_is_device:
-        return "read"
-    elif not src_is_device and dst_is_device:
-        return "write"
-    else:
-        # Default to read for now
-        return "read"
-
 
 
 @syntax("copy")
