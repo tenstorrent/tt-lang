@@ -21,20 +21,24 @@
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[D:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 
 // 1. Copy A and B
-// CHECK-NEXT: %[[TOKA:.*]], %[[TA:.*]] = ttl.copy_tile %[[A]], %[[C0:.*]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT: %[[TOKB:.*]], %[[TB:.*]] = ttl.copy_tile %[[B]], %[[C0]], %[[C1:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT: %[[LIN_IDX_A:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT: %[[TOKA:.*]], %[[TA:.*]] = ttl.copy_tile %[[A]], %[[LIN_IDX_A]], %[[C0:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT: %[[LIN_IDX_B:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT: %[[TOKB:.*]], %[[TB:.*]] = ttl.copy_tile %[[B]], %[[LIN_IDX_B]], %[[C1:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 
 // 2. Compute SUM (result in 0). Regs for A (0) and B (1) can be freed after this (if not used elsewhere).
 // CHECK-NEXT: %[[SUM:.*]] = ttl.tile_add %[[TA]], %[[TB]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 
 // 3. Copy C into reg 1 which is now available
-// CHECK-NEXT: %[[TOKC:.*]], %[[TC:.*]] = ttl.copy_tile %[[C]], %[[C0]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT: %[[LIN_IDX_C:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT: %[[TOKC:.*]], %[[TC:.*]] = ttl.copy_tile %[[C]], %[[LIN_IDX_C]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 
 // 4. Compute DIFF (1) = SUM (0) - C (1). SUM must NOT be clobbered here (i.e. not in-place on SUM if SUM is needed later). C can be clobbered.
 // CHECK-NEXT: %[[DIFF:.*]] = ttl.tile_sub %[[SUM]], %[[TC]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 
 // 5. Copy D into reg 2 which is available
-// CHECK-NEXT: %[[TOKD:.*]], %[[TD:.*]] = ttl.copy_tile %[[D]], %[[C0]], %[[C2:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT: %[[LIN_IDX_D:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT: %[[TOKD:.*]], %[[TD:.*]] = ttl.copy_tile %[[D]], %[[LIN_IDX_D]], %[[C2:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 
 // 6. Compute PROD (0) = SUM (0) * D (2) . SUM is now last used so PROD can clobber its register.
 // CHECK-NEXT: %[[PROD:.*]] = ttl.tile_mul %[[SUM]], %[[TD]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
@@ -103,10 +107,13 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: ttl.compute
 // CHECK-NEXT: ^bb0(%[[ARG0:.*]]: !ttcore.tile<32x32, f32>, %[[ARG1:.*]]: !ttcore.tile<32x32, f32>, %[[ARG2:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK-NEXT:   %[[COPY0TOK:.*]], %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]], %[[C0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]], %[[C0]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[LIN_IDX_0:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT:   %[[COPY0TOK:.*]], %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]], %[[LIN_IDX_0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[LIN_IDX_1:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT:   %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]], %[[LIN_IDX_1]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[INTERMEDIATE:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[COPY2TOK:.*]], %[[COPY2:.*]] = ttl.copy_tile %[[ARG2]], %[[C0]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[LIN_IDX_2:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT:   %[[COPY2TOK:.*]], %[[COPY2:.*]] = ttl.copy_tile %[[ARG2]], %[[LIN_IDX_2]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[USE1:.*]] = ttl.tile_mul %[[INTERMEDIATE]], %[[COPY2]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[USE2:.*]] = ttl.tile_exp %[[INTERMEDIATE]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[USE3:.*]] = ttl.tile_add %[[INTERMEDIATE]], %[[USE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>

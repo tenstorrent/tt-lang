@@ -181,6 +181,23 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::LinearizedIndexOp::verify() {
+  AffineMap map = getIndexMap();
+
+  // Verify that the map has at least one dimension
+  if (map.getNumDims() == 0) {
+    return emitOpError() << "index_map must have at least one dimension";
+  }
+
+  // Verify that the map has exactly one result (the linearized index)
+  if (map.getNumResults() != 1) {
+    return emitOpError() << "index_map must have exactly one result, got "
+                         << map.getNumResults();
+  }
+
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
   auto srcTy = getSrc().getType();
 

@@ -50,6 +50,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include <algorithm>
 #include <cstdint>
@@ -188,8 +189,39 @@ struct TTLTileAndAssignDSTPass
 
           OpBuilder builder(&op);
           Location loc = op.getLoc();
-          // src_index is 0 (the tile index within the circular buffer)
-          Value srcIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
+
+          // Compute index_map for CB linearization from iteration dimensions.
+          // Find which input this block argument corresponds to.
+          AffineMapAttr indexMapAttr;
+          for (auto [idx, input] : llvm::enumerate(computeOp.getInputs())) {
+            if (arg == body->getArgument(idx)) {
+              auto tensorType = cast<RankedTensorType>(input.getType());
+              int64_t rank = tensorType.getRank();
+
+              // Build row-major linearization affine expression.
+              // TODO: Support dynamic shapes using symbols and getMixedSizes().
+              SmallVector<int64_t> staticShape(tensorType.getShape().begin(),
+                                               tensorType.getShape().end());
+              SmallVector<int64_t> strides = mlir::computeStrides(staticShape);
+
+              // Build linearization: sum of (dim_i * stride_i)
+              AffineExpr linearExpr = builder.getAffineConstantExpr(0);
+              for (int64_t i = 0; i < rank; ++i) {
+                linearExpr =
+                    linearExpr + builder.getAffineDimExpr(i) *
+                                     builder.getAffineConstantExpr(strides[i]);
+              }
+
+              AffineMap indexMap =
+                  AffineMap::get(rank, /*numSymbols=*/0, linearExpr);
+              indexMapAttr = AffineMapAttr::get(indexMap);
+              break;
+            }
+          }
+
+          // Create linearized_index op (will be materialized during loop
+          // lowering)
+          Value srcIndex = builder.create<LinearizedIndexOp>(loc, indexMapAttr);
           Value dstIndex =
               builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
           auto copy = builder.create<CopyTileOp>(

@@ -86,11 +86,11 @@ static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
 
 /// Generate loop body that processes tiles at given indices.
 /// Extracts tiles from inputs, clones compute body, inserts results back.
-static scf::ValueVector generateTileProcessing(OpBuilder &b, Location loc,
-                                               ComputeOp op,
-                                               ArrayRef<AffineMap> indexingMaps,
-                                               ValueRange ivs,
-                                               ValueRange iterArgs) {
+/// Returns failure if copy_tile encounters unsupported tensor rank/shape.
+static FailureOr<scf::ValueVector>
+generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
+                       ArrayRef<AffineMap> indexingMaps, ValueRange ivs,
+                       ValueRange iterArgs) {
   // Extract tiles from inputs at current mapped indices.
   SmallVector<Value> extractedInputs;
   for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
@@ -119,8 +119,43 @@ static scf::ValueVector generateTileProcessing(OpBuilder &b, Location loc,
   for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
     mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
   }
+
+  // Build map from block arguments to input tensor info for O(1) lookup.
+  DenseMap<Value, std::pair<size_t, RankedTensorType>> blockArgToInput;
+  for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
+    blockArgToInput[bodyBlock.getArgument(idx)] = {
+        idx, cast<RankedTensorType>(input.getType())};
+  }
+
+  // Pre-pass: materialize ttl.linearized_index ops as affine.apply
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    b.clone(bodyOp, mapping);
+    if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
+      AffineMap indexMap = linIdx.getIndexMap();
+
+      // Check rank matches
+      if (static_cast<int64_t>(ivs.size()) != indexMap.getNumDims()) {
+        return failure();
+      }
+
+      // Apply the index_map to IVs to get linear index
+      // TODO: Add symbol handling for dynamic dimensions using getMixedSizes()
+      // to query tensor dimensions and pass as affine map symbols
+      SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
+      OpFoldResult result =
+          affine::makeComposedFoldedAffineApply(b, loc, indexMap, operands);
+      Value linearIdx = getValueOrCreateConstantIndexOp(b, loc, result);
+
+      // Add to mapping so cloning will use the computed value
+      mapping.map(linIdx.getResult(), linearIdx);
+    }
+  }
+
+  // Clone body operations (skip linearized_index since it's already
+  // materialized)
+  for (Operation &bodyOp : bodyBlock.without_terminator()) {
+    if (!isa<LinearizedIndexOp>(&bodyOp)) {
+      b.clone(bodyOp, mapping);
+    }
   }
 
   // Get yielded values from terminator.
@@ -169,13 +204,26 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // Initial values for iter_args are the output tensors.
     SmallVector<Value> initValues(op.getOutputs());
 
+    // Track whether generateTileProcessing fails inside the lambda.
+    bool processingFailed = false;
     scf::LoopNest loopNest = scf::buildLoopNest(
         rewriter, loc, lowerBounds, upperBounds, steps, initValues,
         [&](OpBuilder &b, Location loc, ValueRange ivs,
             ValueRange iterArgs) -> scf::ValueVector {
-          return generateTileProcessing(b, loc, op, indexingMaps, ivs,
-                                        iterArgs);
+          auto result =
+              generateTileProcessing(b, loc, op, indexingMaps, ivs, iterArgs);
+          if (failed(result)) {
+            processingFailed = true;
+            return {};
+          }
+          return *result;
         });
+
+    if (processingFailed) {
+      return rewriter.notifyMatchFailure(
+          op, "copy_tile index computation failed (mismatched rank/IVs)");
+    }
+
     rewriter.replaceOp(op, loopNest.results);
     return success();
   }
