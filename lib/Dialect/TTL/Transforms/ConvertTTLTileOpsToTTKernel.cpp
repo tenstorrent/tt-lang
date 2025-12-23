@@ -110,14 +110,10 @@ struct TTLInitSFPUToTTKernel : OpConversionPattern<InitSFPUOp> {
 
     auto icb = utils::convertTTLCBToTTKernel(adaptor.getIcb(), rewriter, loc,
                                              getTypeConverter());
-    if (failed(icb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert icb type");
-    }
-
     auto ocb = utils::convertTTLCBToTTKernel(adaptor.getOcb(), rewriter, loc,
                                              getTypeConverter());
-    if (failed(ocb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert ocb type");
+    if (failed(icb) || failed(ocb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
     }
 
     rewriter.replaceOpWithNewOp<ttk::InitSFPUOp>(op, *icb, *ocb);
