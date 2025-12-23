@@ -36,18 +36,11 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   // Find the tensor with maximum rank (matches iterator domain per verifier).
   Value maxRankTensor;
   int64_t maxRank = 0;
-  for (Value input : op.getInputs()) {
-    int64_t rank = cast<RankedTensorType>(input.getType()).getRank();
+  for (Value operand : llvm::concat<Value>(op.getInputs(), op.getOutputs())) {
+    int64_t rank = cast<RankedTensorType>(operand.getType()).getRank();
     if (rank > maxRank) {
       maxRank = rank;
-      maxRankTensor = input;
-    }
-  }
-  for (Value output : op.getOutputs()) {
-    int64_t rank = cast<RankedTensorType>(output.getType()).getRank();
-    if (rank > maxRank) {
-      maxRank = rank;
-      maxRankTensor = output;
+      maxRankTensor = operand;
     }
   }
 

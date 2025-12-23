@@ -224,24 +224,8 @@ static CircularBufferType getTTLCBType(Value cb) {
   return nullptr;
 }
 
-static FailureOr<Value>
-convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
-  if (mlir::isa<ttk::CBType>(cb.getType())) {
-    return cb;
-  }
-  auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
-  if (!ttlCbTy) {
-    return failure();
-  }
-  Type tkCbTy =
-      ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
-                       ttlCbTy.getElementType());
-  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, tkCbTy, cb);
-  return cast.getResult(0);
-}
-
 // num_pages = product of CB shape dimensions (elements per block).
-// Used by CBOpLowering template; [[maybe_unused]] silences false positive.
+// Used by CBOpLowering template; [[maybe_unused]] silences linter warning.
 [[maybe_unused]] static Value
 computeNumPages(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
@@ -263,7 +247,8 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to get TTL CB type");
     }
 
-    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    auto convertedCb =
+        utils::convertTTLCBToTTKernel(adaptor.getCb(), rewriter, loc);
     if (failed(convertedCb)) {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
@@ -533,7 +518,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   }
 
   // Convert CB to TTKernel type and get write pointer.
-  auto cbConverted = convertCBOperand(dstCB, rewriter, loc);
+  auto cbConverted = utils::convertTTLCBToTTKernel(dstCB, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }
@@ -574,7 +559,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   }
 
   // Convert CB to TTKernel type and get read pointer.
-  auto cbConverted = convertCBOperand(srcCB, rewriter, loc);
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }
@@ -739,8 +724,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
   // tile ops lowering phase.
-  target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-                    TileRegsReleaseOp>();
+  target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
+                    TileRegsWaitOp, TileRegsReleaseOp>();
 
   // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
   // lowering phase.
@@ -815,7 +800,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
           return false;
         }
         // DST lifecycle ops are illegal.
-        if (isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+        if (isa<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                 TileRegsReleaseOp>(op)) {
           return false;
         }
