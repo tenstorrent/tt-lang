@@ -13,8 +13,16 @@ namespace mlir::tt::ttl {
 /// Trace through unrealized conversion casts to find the original value.
 /// This is useful during dialect conversion when values are wrapped in
 /// UnrealizedConversionCastOp to represent type conversions.
+///
+/// Includes cycle detection because buggy conversion patterns can create cast
+/// cycles (see MLIR's reconcileUnrealizedCastsImpl for similar checks).
 inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
+  llvm::SmallPtrSet<mlir::Operation *, 8> visited;
   while (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (!visited.insert(cast).second) {
+      // Cycle detected - return current value to avoid infinite loop
+      break;
+    }
     if (cast.getInputs().size() == 1) {
       value = cast.getInputs()[0];
     } else {

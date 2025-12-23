@@ -122,6 +122,9 @@ struct TTLInsertTileRegsSyncPass
         commitOp->moveBefore(waitOp);
       }
 
+      // NOTE: try_emplace ensures only the first store per output is tracked.
+      // The ComputeOp verifier already rejects duplicate stores per output,
+      // so at most one store exists per output index.
       llvm::DenseMap<size_t, StoreOp> storeForOutput;
       for (StoreOp store : storeOps) {
         auto it = llvm::find(yieldedValues, store.getTile());
@@ -135,11 +138,11 @@ struct TTLInsertTileRegsSyncPass
       // pass emits an error otherwise). We prefer existing views and only
       // materialize a new reserve if none exists.
 
-      // Helper: find a cb_reserve view for the given CB that dominates the
-      // store insertion point. Prefer the last in-body reserve before the
-      // insertion; otherwise use the nearest reserve in the parent block before
-      // the compute.
-      auto findViewForCB = [&](Value cb, Operation *insertAfter) -> Value {
+      // Helper: find a cb_reserve view for auto-inserted stores. Only cb_reserve
+      // views are valid (verifier rejects cb_wait). Prefers the last in-body
+      // reserve before the insertion point; otherwise uses the nearest reserve
+      // in the parent block before the compute.
+      auto findReserveViewForStore = [&](Value cb, Operation *insertAfter) -> Value {
         Value candidate;
 
         // Scan the compute body up to (but not including) insertAfter.
@@ -172,6 +175,8 @@ struct TTLInsertTileRegsSyncPass
 
       // Reorder existing cb_reserve, stores, and cb_push after wait in original
       // order. Order: commit → wait → [cb_reserve → store → cb_push] → yield
+      // NOTE: Relative ordering of stores across different outputs is preserved
+      // (moveAfter maintains order). Stores to different CBs are independent.
       Operation *tail = waitOp.getOperation();
       for (CBReserveOp reserve : reserveOps) {
         reserve.getOperation()->moveAfter(tail);
@@ -193,7 +198,7 @@ struct TTLInsertTileRegsSyncPass
         }
 
         Value cb = getAttachedCB(computeOp.getOutputs()[idx]);
-        Value view = findViewForCB(cb, tail->getNextNode());
+        Value view = findReserveViewForStore(cb, tail->getNextNode());
         if (!view) {
           builder.setInsertionPointAfter(tail);
           auto newReserve = builder.create<CBReserveOp>(

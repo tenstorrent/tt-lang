@@ -74,6 +74,9 @@ static std::uint32_t computeDefaultCapacity() { return kDefaultDSTCapacity; }
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
+// NOTE: isLastUse is block-local only. This is safe because ttl.compute bodies
+// are single-block (enforced by SizedRegion<1> in the op definition). If nested
+// regions are added to compute bodies, this analysis must be enhanced.
 static bool isLastUse(Operation &op, Value v) {
   for (Operation *user : v.getUsers()) {
     if (user != &op && op.isBeforeInBlock(user)) {
@@ -231,6 +234,9 @@ struct TTLTileAndAssignDSTPass
             }
             dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
             inUse.set(freeReg);
+            // NOTE: Sets single dst_idx on the operation. All tile ops currently
+            // produce exactly one tile result, so this is safe. If multi-result
+            // tile ops are added, this will need per-result attributes.
             OpBuilder attrBuilder(res.getContext());
             op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
                                             static_cast<int32_t>(freeReg)));
