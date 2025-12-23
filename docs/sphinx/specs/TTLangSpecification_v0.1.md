@@ -2,6 +2,12 @@
 
 # Language Specification
 
+## Versions
+
+| *Version* | *Date* | *Description of changes* |
+| :---- | :---- | :---- |
+| 0.1 | 12/15/2025 | Initial version |
+
 ## Introduction
 
 TT-Lang is a Python based *domain specific language (DSL)* designed to express kernel programs for TT hardware. While based on Python the language maintains a number of constraints to what parts of Python can be used in what context, hence the DSL nature of it. TT-Lang is tightly integrated with [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html) to provide seamless experience of mixing existing TT-NN operations and user-defined kernel programs.
@@ -108,25 +114,29 @@ There are two acquisition functions on a circular buffer object: wait and reserv
 ## Example
 
 ```py
-    x_cb = ttl.make_circular_buffer_like(x,
-        shape = (2, 2),
-        buffer_factor = 2)
+x_cb = ttl.make_circular_buffer_like(x,
+    shape = (2, 2),
+    buffer_factor = 2)
 
-    @ttl.datamovement()
-    def some_read():
-        with x_cb.reserve() as x_blk:
+@ttl.datamovement()
+def some_read():
+    # acquire x_blk from x_cb
+    with x_cb.reserve() as x_blk:
 
-            # produce data into x_blk ...
+        # produce data into x_blk
+        # ...
 
-            # implicit x_cb.push() at the end of the scope
+        # release x_blk implicitly by x_cb.push() at the end of the with scope
 
-    @ttl.compute()
-    def some_compute():
-        x_blk = x_cb.wait()
+@ttl.compute()
+def some_compute():
+    # acquire x_blk from x_cb
+    x_blk = x_cb.wait()
 
-        # consume data in x_blk ...
+    # consume data in x_blk
+    # ...
 
-        x_cb.pop() # explicit
+    x_cb.pop() # release x_blk explicitly
 ```
 
 ##
@@ -141,78 +151,148 @@ There are two acquisition functions on a circular buffer object: wait and reserv
 
 ## Block
 
-A *block* represents memory acquired from a circular buffer. Block size is determined by the shape of a circular buffer and its memory is allocated when a circular buffer is created. Inside of a compute thread a block can participate in a *block expression* as an input operand or as a storage for the result by using store function. Inside of data movement threads a block can also participate in ttl.copy as a source or a destination.
+A *block* represents memory acquired from a circular buffer. Block size is determined by the shape of a circular buffer and its memory is allocated when a circular buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the acc \= True parameter, TT-Lang will generate accumulation for all calls after the first one. When acc \= False, all stores simply store (no accumulation). It is illegal to have multiple store invocations  for the same block with different values of acc parameter.  Inside of data movement threads a block can participate in ttl.copy as a source or a destination.
 
 ## Element-wise example
 
 ```py
-    @ttl.datamovement()
-    def some_read():
-        for n in range(N):
-        # acquire a_blk and b_blk ...
+# ---------------------
+# Element-wise: Y = sqrt(A^2 + B^2)
 
-        # source is a tensor slice, destination is a block
-            a_xf = ttl.copy(a[n], a_blk)
-            b_xf = ttl.copy(b[n], b_blk)
-            a_xf.wait()
-            b_xf.wait()
+a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1))
+b_cb = ttl.make_circular_buffer_like(B, shape = (1, 1))
+y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1))
 
-    @ttl.compute()
-    def some_compute():
-            # acquire a_blk, b_blk and y_blk ...
+@ttl.datamovement()
+def elwise_read():
+    for n in range(N):
+        # acquire a_blk and b_blk from a_cb and b_cb
+        # ...
 
-            a_squared = a_blk ** 2
-            b_squared = b_blk ** 2
-            y = ttl.math.sqrt(a_squared + b_squared)
-            y_blk.store(y)
+        # then copy:
+        a_xf = ttl.copy(A[n], a_blk)
+        b_xf = ttl.copy(B[n], b_blk)
+        a_xf.wait()
+        b_xf.wait()
 
-    @ttl.datamovement()
-    def some_write():
-            # acquire y_blk ...
+        # release a_blk and b_blk
+        # ...
 
-            # source is a block, destination is a tensor slice
-        y_xf = ttl.copy(y_blk, y[0])
+@ttl.compute()
+def elwise_compute():
+    for n in range(N):
+        # acquire a_blk, b_blk and y_blk from a_cb, b_cb and y_cb
+        # ...
+
+        # then compute y = sqrt(a^2 + b^2):
+        a_squared = a_blk ** 2
+        b_squared = b_blk ** 2
+        y = ttl.math.sqrt(a_squared + b_squared)
+        y_blk.store(y)
+
+        # release a_blk, b_blk and y_blk
+        # ...
+
+
+@ttl.datamovement()
+def elwise_write():
+    for n in range(N):
+        # acquire y_blk from y_cb
+        # ...
+
+        # then copy:
+        y_xf = ttl.copy(y_blk, Y[n])
         y_xf.wait()
+
+        # release y_blk
+        # ...
 ```
 
 ## Matmul example
 
 ```py
-    @ttl.datamovement()
-    def some_read():
-        # acquire a_blk, b_blk and c_blk ...
+# ---------------------
+# Matmul with bias: Y = A @ B + C
 
-        # source is a tensor slice, destination is a block
-        a_xf = ttl.copy(a[0], a_blk)
-        b_xf = ttl.copy(b[0], b_blk)
-        c_xf = ttl.copy(c[0], c_blk)
-        a_xf.wait()
-        b_xf.wait()
-        c_xf.wait()
+a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1))
+b_cb = ttl.make_circular_buffer_like(B, shape = (1, 1))
+c_cb = ttl.make_circular_buffer_like(C, shape = (1, 1))
+y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1))
 
-    @ttl.compute()
-    def some_compute():
-        # acquire c_blk and y_blk ...
-        y_blk.store(c_blk, acc=True)
+@ttl.datamovement()
+def matmul_read():
+    for m in range(M):
+        for n in range(N):
+            # acquire c_blk from c_cb
+            # ...
 
-        # acquire a_blk and b_blk ...
+            # then copy:
+            c_xf = ttl.copy(C[m, n], c_blk)
+            c_xf.wait()
 
-        y_blk.store(a_blk @ b_blk)
+            # release c_blk
+            # ...
 
-    @ttl.datamovement()
-    def some_write():
-        # acquire y_blk ...
+            for k in range(K):
+                # acquire a_blk and b_blk from a_cb and b_cb
+                # ...
 
-        # source is a block, destination is a tensor slice
-        y_xf = ttl.copy(y_blk, y[0])
-        y_xf.wait()
+                # then copy:
+                a_xf = ttl.copy(A[m, k], a_blk)
+                b_xf = ttl.copy(B[k, n], b_blk)
+
+                a_xf.wait()
+                b_xf.wait()
+
+                # release a_blk and b_blk
+                # ...
+
+@ttl.compute()
+def matmul_compute():
+    for m in range(M):
+        for n in range(N):
+            # acquire c_blk and y_blk from c_cb and y_cb
+            # ...
+
+            # then compute: y = c
+            #y_blk.store(c_blk, acc=True)
+
+            # release c_blk
+            # ...
+
+            for k in range(K):
+                # acquire a_blk and b_blk from a_cb and b_cb
+                # ...
+
+                # then compute y += a @ b:
+                y_blk.store(a_blk @ b_blk, acc=True)
+
+                # release a_blk and b_blk
+                # ...
+
+            # release y_blk
+            # ...
+
+@ttl.datamovement()
+def matmul_write():
+    for m in range(M):
+        for n in range(N):
+            # acquire y_blk from y_cb
+            # ...
+
+            # then copy:
+            y_xf = ttl.copy(y_blk, Y[m, n])
+            y_xf.wait()
+
+            # release y_blk
+            # ...
 ```
 
 | Function | Description |
 | :---- | :---- |
-| ttl.Block.store(self, expr: ttl.BlockExpr) | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and ttl.math.xxx functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
-| ttl.math.sqrt(expr: ttl.BlockExpr) \-\> ttl.BlockExpr | Example of math function. |
-| ttl.BlockExpr.\_\_add\_\_(   self,   other: ttl.BlockExpr) \-\> ttl.BlockExpr | Example of math operator. |
+| ttl.Block.store(self, expr: ttl.BlockExpr, acc: Boolean \= False) | This function materializes the result of a *block expression* and stores it in the block. When acc is set to True store with accumulation is allowed. Block expression uses Python builtin math operators and ttl.math.xxx functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
+| ttl.math.sqrt(expr: ttl.BlockExpr) \-\> ttl.BlockExpr | Example of TT-Lang math function. |
+| ttl.BlockExpr.\_\_add\_\_(   self,   other: ttl.BlockExpr) \-\> ttl.BlockExpr | Example of Python built-in operator. |
 
 ##
 
@@ -274,30 +354,29 @@ net = ttl.PipeNet([ttl.Pipe(
 # (1, 1) -> (0, 1)               |
 # ...                            |
 
-    @ttl.datamovement()
-    def dm():
-        # reserve blk
+@ttl.datamovement()
+def dm():
+    # reserve blk
+    # ...
+
+    def pipe_src(pipe):
+        # write data into blk
         # ...
-        blk = ...
 
-        def pipe_src(pipe):
-            # write data into blk
-            # ...
+        # then copy blk to pipe:
+        xf = ttl.copy(blk, pipe)
+        xf.wait()
 
-            # then copy blk to pipe
-            xf = ttl.copy(blk, pipe)
-            xf.wait()
+    def pipe_dst(pipe):
+        # copy blk from pipe:
+        xf = ttl.copy(pipe, blk)
+        xf.wait()
 
-        def pipe_dst(pipe):
-            # copy blk from pipe
-            xf = ttl.copy(pipe, blk)
-            xf.wait()
+        # then read data from blk
+        # ...
 
-            # then read data from blk
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 ```
 
 ## Scatter example
@@ -316,30 +395,29 @@ net = ttl.PipeNet([ttl.Pipe(
 # (1, 0) => (1, 1) (1, 2) (1, 3) ... | concurrent
 # ...                                |
 
-    @ttl.datamovement()
-    def dm():
-        # reserve blk
+@ttl.datamovement()
+def dm():
+    # reserve blk
+    # ...
+
+    def pipe_src(pipe):
+        # write data into blk
         # ...
-        blk = ...
 
-        def pipe_src(pipe):
-            # write data into blk
-            # ...
+        # then copy blk to pipe:
+        xf = ttl.copy(blk, pipe)
+        xf.wait()
 
-            # then copy blk to pipe
-            xf = ttl.copy(blk, pipe)
-            xf.wait()
+    def pipe_dst(pipe):
+        # copy blk from pipe:
+        xf = ttl.copy(pipe, blk)
+        xf.wait()
 
-        def pipe_dst(pipe):
-            # copy blk from pipe
-            xf = ttl.copy(pipe, blk)
-            xf.wait()
+        # then read data from blk
+        # ...
 
-            # then read data from blk
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 ```
 
 ## Scatter-gather example
@@ -362,30 +440,29 @@ net = ttl.PipeNet([ttl.Pipe(
 # (1, 0) => (1, 0) (1, 1) (1, 2) ...              |
 # ...                                             |
 
-    @ttl.datamovement()
-    def dm():
-        # reserve blk
+@ttl.datamovement()
+def dm():
+    # reserve blk
+    # ...
+
+    def pipe_src(pipe):
+        # write data into blk
         # ...
-        blk = ...
 
-        def pipe_src(pipe):
-            # write data into blk
-            # ...
+        # then copy blk to pipe:
+        xf = ttl.copy(blk, pipe)
+        xf.wait()
 
-            # then copy blk to pipe
-            xf = ttl.copy(blk, pipe)
-            xf.wait()
+    def pipe_dst(pipe):
+        # copy blk from pipe:
+        xf = ttl.copy(pipe, blk)
+        xf.wait()
 
-        def pipe_dst(pipe):
-            # copy blk from pipe
-            xf = ttl.copy(pipe, blk)
-            xf.wait()
+        # then read data from blk
+        # ...
 
-            # then read data from blk
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 ```
 
 ## Forward to a \+1 neighbor example
@@ -411,32 +488,30 @@ net = ttl.PipeNet([ttl.Pipe(
 #
 # * - assuming (8, 8) grid
 
-    @ttl.datamovement()
-    def dm():
+@ttl.datamovement()
+def dm():
 
-        # reserve blk_to_send and blk_received
+    # reserve blk_to_send and blk_received
+    # ...
+
+    def pipe_src(pipe):
+        # write data into blk_to_send
         # ...
-        blk_to_send = ...
-        blk_received = ...
 
-        def pipe_src(pipe):
-            # write data into blk_to_send
-            # ...
+        # then copy blk to blk_to_send:
+        xf = ttl.copy(blk_to_send, pipe)
+        xf.wait()
 
-            # then copy blk to blk_to_send
-            xf = ttl.copy(blk_to_send, pipe)
-            xf.wait()
+    def pipe_dst(pipe):
+        # copy blk_received from pipe:
+        xf = ttl.copy(pipe, blk_received)
+        xf.wait()
 
-        def pipe_dst(pipe):
-            # copy blk_received from pipe
-            xf = ttl.copy(pipe, blk_received)
-            xf.wait()
+        # then read data from blk_received
+        # ...
 
-            # then read data from blk_received
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 ```
 
 ## Tensor slice
@@ -450,28 +525,29 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 ## Example
 
 ```py
-    g = 2 # granularity
+g = 2 # granularity
+a_cb = ttl.make_circular_buffer_like(A, shape = (g, 1))
 
-    row_tiles = a.shape[0] // ttl.TILE_SHAPE[0]
-    col_tiles = a.shape[1] // ttl.TILE_SHAPE[1]
-    cols_per_core = math.ceil(col_tiles / (grid_size(dim = 1)))
+row_tiles = A.shape[0] // ttl.TILE_SHAPE[0]
+col_tiles = A.shape[1] // ttl.TILE_SHAPE[1]
+cols_per_core = math.ceil(col_tiles / (grid_size(dim = 1)))
 
-    core_num = core(dims = 1)
-    start_ct = core_num * cols_per_core
-    end_ct = min(start_ct + cols_per_core, col_tiles)
+core_num = core(dims = 1)
+start_ct = core_num * cols_per_core
+end_ct = min(start_ct + cols_per_core, col_tiles)
 
-    @ttl.datamovement()
-    def dm():
-        for ct in range(start_ct, end_ct):
-            for rt in range(row_tiles // g):
-                # acquire a_blk
-                # ...
+@ttl.datamovement()
+def dm():
+    for ct in range(start_ct, end_ct):
+        for rt in range(row_tiles // g):
+            # acquire a_blk from a_cb
+            # ...
 
-                # then copy from a tensor slice of matching shape
-                a_xf = ttl.copy(
-                    a[(rt * g):((rt + 1) * g), ct],
-                    a_blk)
-                a_xf.wait()
+            # then copy from a tensor slice of matching shape:
+            a_xf = ttl.copy(
+                A[(rt * g):((rt + 1) * g), ct:ct + 1],
+                a_blk)
+            a_xf.wait()
 ```
 
 ## Copy
@@ -492,36 +568,36 @@ ttl.Semaphore class is constructed with its initial value that defaults to zero.
 ## One-to-many barrier example
 
 ```py
-    core_num = core(dims = 1)
-    my_barrier = ttl.Semaphore()
-    all_barrier = my_barrier.get_remote_multicast()
+core_num = core(dims = 1)
+my_barrier = ttl.Semaphore()
+all_barrier = my_barrier.get_remote_multicast()
 
-    @ttl.datamovement()
-    def dm():
-        if core_num == 0:
-            # do something on core 0 while non-0 cores wait...
-            all_barrier.set(1)
-        else:
-            my_barrier.wait_eq(1)
-            # core 0 is done
+@ttl.datamovement()
+def dm():
+    if core_num == 0:
+        # do something on core 0 while non-0 cores wait...
+        all_barrier.set(1)
+    else:
+        my_barrier.wait_eq(1)
+        # core 0 is done
 ```
 
 ## Many-to-one barrier example
 
 ```py
-    core_num = core(dims = 1)
-    my_barrier = ttl.Semaphore()
-    core_0_barrier = my_barrier.get_remote((0, 0))
-    non_0_core_count = grid_size(dim = 1) - 1
+core_num = core(dims = 1)
+my_barrier = ttl.Semaphore()
+core_0_barrier = my_barrier.get_remote((0, 0))
+non_0_core_count = grid_size(dim = 1) - 1
 
-    @ttl.datamovement()
-    def dm():
-        if core_num != 0:
-            # do something on non-0 cores while core 0 waits...
-            core_0_barrier.inc(1)
-        else:
-            my_barrier.wait_eq(non_0_core_count)
-            # non-0 cores are done
+@ttl.datamovement()
+def dm():
+    if core_num != 0:
+        # do something on non-0 cores while core 0 waits...
+        core_0_barrier.inc(1)
+    else:
+        my_barrier.wait_eq(non_0_core_count)
+        # non-0 cores are done
 ```
 
 | Function | Description |
@@ -563,6 +639,43 @@ ttl.Semaphore class is constructed with its initial value that defaults to zero.
 | *Transfer handle* | A handle to an asynchronous copy operation. A transfer handle is used as a barrier to ensure that operation is finished and the corresponding source or destination block is safe to use. |
 | *Semaphore* | A communication primitive for general synchronization between data movement threads on different Tensix cores. |
 | *Semaphore value* | A 32-bit unsigned integer value associated with a semaphore on each Tensix core. This value can be set or incremented by a data movement thread on the local or a remote Tensix core. |
+
+#
+
+# Schedule
+
+## Features to milestones/umbrella issues
+
+| *Feature* | *Compiler* | *Simulator* |
+| :---- | :---- | :---- |
+| Manual grid setting for 2D grids | M0 [\#101](https://github.com/tenstorrent/tt-lang/issues/101) | M0 [\#102](https://github.com/tenstorrent/tt-lang/issues/102) |
+| Tilized circular buffers | M0 [\#103](https://github.com/tenstorrent/tt-lang/issues/103) | M0 [\#104](https://github.com/tenstorrent/tt-lang/issues/104) |
+| Element-wise block expressions and non-accumulation ttl.store | M0 [\#105](https://github.com/tenstorrent/tt-lang/issues/105) | M0 [\#106](https://github.com/tenstorrent/tt-lang/issues/106) |
+| Tilized interleaved L1/DRAM tensor slices | M0 [\#107](https://github.com/tenstorrent/tt-lang/issues/107) | M0 [\#108](https://github.com/tenstorrent/tt-lang/issues/108) |
+| TT-NN integration | M0 [\#109](https://github.com/tenstorrent/tt-lang/issues/109) | M0 [\#110](https://github.com/tenstorrent/tt-lang/issues/110) |
+| TT-sim support | M0 [\#111](https://github.com/tenstorrent/tt-lang/issues/111) | N/A |
+| Docker container preview release | M0 [\#112](https://github.com/tenstorrent/tt-lang/issues/112) |  |
+| Element-wise, reductions, variants of matmuls and upsample in kernel zoo | M0 [\#116](https://github.com/tenstorrent/tt-lang/issues/116) |  |
+| Block expressions with dot product and accumulation store | M1 | M0 [\#113](https://github.com/tenstorrent/tt-lang/issues/113) |
+| 2D pipes (single-chip) | M1 | M0 [\#114](https://github.com/tenstorrent/tt-lang/issues/114) |
+| Row-major tensor slices | M1 | M0 [\#115](https://github.com/tenstorrent/tt-lang/issues/115) |
+| Row-major circular buffers | M1 | M0 [\#116](https://github.com/tenstorrent/tt-lang/issues/116) |
+| GenAI codegen demo | M1 |  |
+| Sharded tensor slices | M2 | N/A |
+| 2D semaphores (single-chip) | M2 | M1 |
+| Documentation and pip install | M2 |  |
+| 4D grids, pipes and semaphores (single host multi-chip) | M3 | M1 |
+| 4D tensor slices. (single host multi-chip) | M3 | M1 |
+| Roof line based performance modeling | N/A | M2 |
+
+## Milestones and deadline dates
+
+| *Milestone* | *Description* | *Date* |
+| :---- | :---- | :---- |
+| M0 [\#2](https://github.com/tenstorrent/tt-lang/milestone/2) | Release to models team | 02/01/2026 |
+| M1 | Wide internal release and demo | 03/01/2026 |
+| M2 | Public soft-launch | 04/01/2026 (end of Q1) |
+| M3 | Public launch | 05/01/2026 |
 
 #
 

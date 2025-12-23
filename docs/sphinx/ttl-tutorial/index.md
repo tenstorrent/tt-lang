@@ -25,4 +25,4 @@ circular-buffers
 
 ## Reference
 
-For the complete language specification, see [TT-Lang Specification](../specs/ttl-spec.md).
+For the complete language specification, see [TT-Lang Specification](../specs/TTLangSpecification_v0.1.md).
