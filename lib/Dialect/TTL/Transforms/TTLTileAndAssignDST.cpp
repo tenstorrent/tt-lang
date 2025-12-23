@@ -171,6 +171,11 @@ struct TTLTileAndAssignDSTPass
             continue;
           }
 
+          // Skip if already copied
+          if (dstIndexForValue.count(arg)) {
+            continue;
+          }
+
           // Allocate: find first free register
           int freeReg = inUse.find_first_unset();
           assert(freeReg >= 0 && "no free DST register (should have been "

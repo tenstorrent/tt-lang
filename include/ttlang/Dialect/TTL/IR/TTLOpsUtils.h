@@ -52,6 +52,36 @@ inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }
 
+/// Find the first operation of type OpTy in the block preceding the given
+/// operation. Scans backwards from the operation, stopping at block start or
+/// when stopAtOp returns true.
+///
+/// This is useful for finding control/sync operations that precede structured
+/// ops (e.g., finding init_sfpu before ttl.compute).
+template <typename OpTy, typename StopPredicate>
+inline OpTy findPrecedingOp(mlir::Operation *op, StopPredicate stopAtOp) {
+  mlir::Block *block = op->getBlock();
+  if (!block) {
+    return nullptr;
+  }
+
+  auto it = mlir::Block::iterator(op);
+  if (it == block->begin()) {
+    return nullptr;
+  }
+
+  for (auto revIt = mlir::Block::reverse_iterator(it); revIt != block->rend();
+       ++revIt) {
+    if (stopAtOp(&*revIt)) {
+      break;
+    }
+    if (auto match = mlir::dyn_cast<OpTy>(&*revIt)) {
+      return match;
+    }
+  }
+  return nullptr;
+}
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H

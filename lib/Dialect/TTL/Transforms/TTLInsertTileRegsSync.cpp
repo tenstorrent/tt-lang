@@ -69,20 +69,24 @@ struct TTLInsertTileRegsSyncPass
       Value ocb = getAttachedCB(computeOp.getOutputs().front());
       Location loc = computeOp.getLoc();
 
-      Operation *prev = computeOperation->getPrevNode();
-      bool hasAcquire = isa_and_nonnull<TileRegsAcquireOp>(prev);
-      Operation *initCheckPoint = hasAcquire ? prev->getPrevNode() : prev;
-      bool hasInitSfpu = isa_and_nonnull<InitSFPUOp>(initCheckPoint);
+      // Find existing sync ops preceding this compute. Stop at another compute
+      // op since each compute has its own lifecycle ops.
+      auto stopAtCompute = [](Operation *op) { return isa<ComputeOp>(op); };
+      TileRegsAcquireOp existingAcquire =
+          findPrecedingOp<TileRegsAcquireOp>(computeOperation, stopAtCompute);
+      InitSFPUOp existingInitSfpu =
+          findPrecedingOp<InitSFPUOp>(computeOperation, stopAtCompute);
 
       OpBuilder builder(computeOp);
 
-      if (!hasInitSfpu) {
-        Operation *insertBefore = hasAcquire ? prev : computeOperation;
+      if (!existingInitSfpu) {
+        Operation *insertBefore =
+            existingAcquire ? existingAcquire : computeOperation;
         builder.setInsertionPoint(insertBefore);
         builder.create<InitSFPUOp>(loc, icb, ocb);
       }
 
-      if (!hasAcquire) {
+      if (!existingAcquire) {
         builder.setInsertionPoint(computeOperation);
         builder.create<TileRegsAcquireOp>(loc);
       }
