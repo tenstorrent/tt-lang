@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0", "cmake", "nanobind", "wheel", "pip", "ninja"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ttlang"
+description = "Python Bindings and Package for TT-Lang Compiler Project"
+requires-python = ">=3.11"
+keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
+license = "Apache-2.0"
+license-files = ["../LICENSE*"]
+authors = [
+  {name = "Tenstorrent AI ULC"}
+]
+maintainers = [
+  {name = "Tenstorrent AI ULC"}
+]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: C++",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Compilers",
+  "Topic :: Software Development :: Code Generators"
+]
+
+# We will dynamically provide `version` and `dependencies` in setup.py
+dynamic = ["version", "dependencies", "readme"]
+
+[project.urls]
+Homepage = "https://github.com/tenstorrent/tt-lang"
+Repository = "https://github.com/tenstorrent/tt-lang"
+Issues = "https://github.com/tenstorrent/tt-lang/issues"
+
+[tool.cibuildwheel]
+build = "cp311-manylinux_x86_64*"
+skip = "*-musllinux_*"
+build-verbosity = 2
+
+[tool.pyright]
+typeCheckingMode = "strict"
+reportMissingParameterType = "error"
+reportMissingTypeStubs = "warning"
+reportMissingImports = "error"
+reportUnknownParameterType = "error"
+reportUnknownArgumentType = "error"
+reportUnknownVariableType = "error"
+reportUnknownMemberType = "error"
+reportUntypedFunctionDecorator = "error"
+reportPrivateUsage = "error"
+reportImportCycles = "error"
+reportUnnecessaryIsInstance = "warning"

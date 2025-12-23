@@ -8,13 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Initial public release
+- Initial prototype
 - Python DSL with `@pykernel_gen` decorator for authoring custom kernels
-- D2M (Data-to-Matmul) dialect Python bindings
-- TensorBlock and MemTx operations for data movement
-- CircularBuffer for inter-thread communication
-- Semaphore for multi-core synchronization
-- MetalLayoutAttr utilities for memory layout management
 - Integration with tt-mlir compiler infrastructure
 - LLVM lit-based testing framework
 - Pre-commit hooks for code formatting (Black for Python, clang-format for C++)

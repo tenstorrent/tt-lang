@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: %python %s
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 
@@ -12,7 +12,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_matmul(lhs, rhs, out):
     @compute()
     def mm_compute(
@@ -49,7 +49,7 @@ def test_matmul(lhs, rhs, out):
 
 lhs = torch.randn(32, 32)
 rhs = torch.randn(32, 32)
-out = torch.full((32, 32), -999.0)
+out = torch.zeros(32, 32)  # Pre-initialize with zeros (issue #31)
 
 print("=== BEFORE KERNEL ===")
 print(f"lhs[0:2, 0:2] =\n{lhs[0:2, 0:2]}")

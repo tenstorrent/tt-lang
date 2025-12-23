@@ -2,25 +2,30 @@ name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      run_macos:
+        description: "Run the macOS build."
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      run_macos:
+        description: "Run the macOS build."
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            timeout: 240
-            use-container: true
-          - os: macos-26
-            timeout: 360
-            use-container: false
+        include: ${{ fromJSON(inputs.run_macos && '[{"os":"ubuntu-latest","timeout":240,"use_container":true},{"os":"macos-26","timeout":360,"use_container":false}]' || '[{"os":"ubuntu-latest","timeout":240,"use_container":true}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
 
-    container: ${{ matrix.use-container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
+    container: ${{ matrix.use_container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
 
     defaults:
       run:
@@ -30,8 +35,13 @@ jobs:
       TT_LANG_HOME: ${{ github.workspace }}
       TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
       TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
+      TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
 
     steps:
+      - name: Maximize space
+        if: runner.os == 'Linux'
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - name: Checkout tt-lang
         uses: actions/checkout@v4
         with:
@@ -52,14 +62,28 @@ jobs:
           submodules: recursive
           fetch-depth: 0 # Fetch full history and tags
 
+      - name: Compute toolchain hash
+        if: runner.os == 'macOS'
+        id: toolchain-hash
+        run: |
+          HASH=$(shasum tt-mlir/env/CMakeLists.txt | awk '{print $1}')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
       # macOS-specific: Setup toolchain
       - name: Setup macOS toolchain
         if: runner.os == 'macOS'
         uses: ./.github/actions/setup-macos-toolchain
         with:
           tt-mlir-path: tt-mlir
+          toolchain-hash: ${{ steps.toolchain-hash.outputs.hash }}
 
       # Common steps (MacOS and Ubuntu) from here down
+      - name: Compute tt-mlir commit hash
+        id: ttmlir-commit-hash
+        run: |
+          HASH=$(shasum third-party/tt-mlir.commit | awk '{print $1}')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
       - name: Get LLVM version
         id: llvm-version
         uses: ./.github/actions/get-llvm-version
@@ -71,7 +95,7 @@ jobs:
           path: |
             ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ hashFiles('third-party/tt-mlir.commit') }}-llvm-${{ steps.llvm-version.outputs.version }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -90,7 +114,7 @@ jobs:
             -DTTMLIR_ENABLE_OPMODEL=OFF \
             -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
             -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DTTMLIR_ENABLE_DEBUG_STRINGS=ON \
+            -DTTMLIR_ENABLE_DEBUG_STRINGS=OFF \
             -DTTMLIR_ENABLE_EXPLORER=OFF \
             -DBUILD_TESTING=OFF \
             -S .
@@ -106,11 +130,11 @@ jobs:
 
       - name: Configure tt-lang
         run: |
-          source /opt/ttmlir-toolchain/venv/bin/activate
+          source ${{ env.TTMLIR_TOOLCHAIN_DIR }}/venv/bin/activate
           cmake -G Ninja \
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DTTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain \
+            -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
             -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
             -S .
@@ -125,11 +149,20 @@ jobs:
           source build/env/activate
           python test/python/smoketest.py
 
+      - name: Run ttlang Lit MLIR tests
+        run: |
+          source build/env/activate
+          cmake --build build --target check-ttlang-mlir
+
+      - name: Run ttlang Python bindings tests
+        run: |
+          source build/env/activate
+          cmake --build build --target check-ttlang-python-bindings
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
           path: |
             build/python_packages
-            sim/
           retention-days: 1

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: %python %s
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-LOWERED < %t.final.mlir
 
@@ -14,7 +14,7 @@ import torch
 from ttlang.d2m_api import *
 
 
-@pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
+@kernel(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_cb_ops(lhs, rhs, out):
     @compute()
     def compute_thread(
