@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
+// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,7 +10,7 @@ void kernel_main() {
   uint32_t Mt = get_arg_val<uint32_t>(1);
   uint32_t Nt = get_arg_val<uint32_t>(2);
 
-  constexpr uint32_t cb_id_out0 = 16;
+  constexpr uint32_t cb_id_out0 = tt::CBIndex::c_16;
 
   // Create the address generator for the output buffer. Due to us sharing
   // buffer and circular buffer configuration parameters (e.g. same data type

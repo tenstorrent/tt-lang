@@ -1,5 +1,5 @@
 
-// SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
+// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +16,8 @@ void kernel_main() {
   uint32_t Kt = get_arg_val<uint32_t>(3);
   uint32_t Nt = get_arg_val<uint32_t>(4);
 
-  constexpr uint32_t cb_id_in0 = 0;
-  constexpr uint32_t cb_id_in1 = 1;
+  constexpr uint32_t cb_id_in0 = tt::CBIndex::c_0;
+  constexpr uint32_t cb_id_in1 = tt::CBIndex::c_1;
 
   // Declare address in which we stored the source matrices. We have set the
   // exact same format between CBs and DRAM buffers in the host code, so we can
