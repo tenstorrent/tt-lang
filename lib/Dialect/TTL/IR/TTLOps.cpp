@@ -11,6 +11,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
 #include "llvm/ADT/TypeSwitch.h"            // IWYU pragma: keep
@@ -180,11 +181,36 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::LinearizedIndexOp::verify() {
+  AffineMap map = getIndexMap();
+
+  // Verify that the map has at least one dimension
+  if (map.getNumDims() == 0) {
+    return emitOpError() << "index_map must have at least one dimension";
+  }
+
+  // Verify that the map has exactly one result (the linearized index)
+  if (map.getNumResults() != 1) {
+    return emitOpError() << "index_map must have exactly one result, got "
+                         << map.getNumResults();
+  }
+
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
   auto srcTy = getSrc().getType();
 
   if (!mlir::isa<tt::ttcore::TileType>(srcTy)) {
     return emitOpError() << "expects src to be ttcore.tile";
+  }
+
+  // Verify that dst_tile type matches src type.
+  auto dstTileTy = getDstTile().getType();
+  if (dstTileTy != srcTy) {
+    return emitOpError()
+           << "dst_tile type must match src type, but got dst_tile: "
+           << dstTileTy << ", src: " << srcTy;
   }
 
   return mlir::success();
@@ -228,15 +254,6 @@ void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
 //===----------------------------------------------------------------------===//
 // ComputeOp - Helper functions
 //===----------------------------------------------------------------------===//
-
-/// Return the circular buffer attached to `tensor` via `ttl.attach_cb`, or null
-/// if none/ambiguous.
-mlir::Value getAttachedCB(mlir::Value tensor) {
-  if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
-    return attach.getCb();
-  }
-  return mlir::Value();
-}
 
 //===----------------------------------------------------------------------===//
 // ComputeOp - DestinationStyleOpInterface implementations
@@ -403,6 +420,16 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return emitOpError("body block must be terminated with ttl.yield");
   }
 
+  // Verify at least one input and one output (required for SFPU protocol).
+  if (getInputs().empty()) {
+    return emitOpError(
+        "requires at least one input for SFPU unpacker configuration");
+  }
+  if (getOutputs().empty()) {
+    return emitOpError(
+        "requires at least one output for SFPU packer configuration");
+  }
+
   // Verify indexing maps compatibility.
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
@@ -412,12 +439,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // The iteration domain is derived from the maximum tensor rank, which should
   // match iteratorCount.
   int64_t maxTensorRank = 0;
-  for (Value input : getInputs()) {
-    auto ty = cast<RankedTensorType>(input.getType());
-    maxTensorRank = std::max(maxTensorRank, ty.getRank());
-  }
-  for (Value output : getOutputs()) {
-    auto ty = cast<RankedTensorType>(output.getType());
+  for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
+    auto ty = cast<RankedTensorType>(operand.getType());
     maxTensorRank = std::max(maxTensorRank, ty.getRank());
   }
   if (static_cast<size_t>(maxTensorRank) != iteratorCount) {
@@ -446,9 +469,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
                                StringRef kind) -> LogicalResult {
     Value cb = getAttachedCB(tensor);
     if (!cb) {
-      return emitOpError()
-             << kind << " " << idx
-             << " must have a circular buffer attached via ttl.attach_cb";
+      return emitOpError() << kind << " " << idx
+                           << " must have a circular buffer attached via "
+                              "`ttl.attach_cb` or `ttl.cb_wait`";
     }
     return success();
   };
@@ -485,6 +508,45 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
+  // Validate any ttl.store ops in the body.
+  auto yieldOp = cast<YieldOp>(bodyBlock.getTerminator());
+  SmallVector<Value> yielded(yieldOp->operand_begin(), yieldOp->operand_end());
+  SmallVector<bool> storeSeen(numOutputs, false);
+
+  for (Operation &op : bodyBlock.without_terminator()) {
+    auto store = dyn_cast<StoreOp>(&op);
+    if (!store) {
+      continue;
+    }
+
+    auto it = llvm::find(yielded, store.getTile());
+    if (it == yielded.end()) {
+      return store.emitOpError()
+             << "tile operand must be yielded by the enclosing ttl.compute";
+    }
+    size_t outputIdx = static_cast<size_t>(it - yielded.begin());
+
+    Value attachedCb = getAttachedCB(getOutputs()[outputIdx]);
+    assert(attachedCb && "output CB verified by earlier check");
+
+    auto reserve = store.getView().getDefiningOp<CBReserveOp>();
+    if (!reserve) {
+      return store.emitOpError()
+             << "view must be produced by ttl.cb_reserve for the output CB";
+    }
+    if (reserve.getCb() != attachedCb) {
+      return store.emitOpError()
+             << "view CB does not match the circular buffer attached to output "
+             << outputIdx;
+    }
+
+    if (storeSeen[outputIdx]) {
+      return store.emitOpError()
+             << "duplicate ttl.store for output " << outputIdx;
+    }
+    storeSeen[outputIdx] = true;
+  }
+
   return mlir::success();
 }
 
@@ -505,6 +567,10 @@ mlir::LogicalResult mlir::tt::ttl::CBWaitOp::verify() {
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
+
+mlir::Value mlir::tt::ttl::CBReserveOp::getViewSource() { return getCb(); }
+
+mlir::Value mlir::tt::ttl::CBWaitOp::getViewSource() { return getCb(); }
 
 mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   // cb_pop has no result to verify; the CB type is already enforced by

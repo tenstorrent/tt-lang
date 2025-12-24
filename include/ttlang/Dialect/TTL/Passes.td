@@ -37,17 +37,38 @@ def TTLConvertTTLToCompute
   ];
 }
 
-def TTLAssignDSTRegisters
-    : Pass<"ttl-assign-dst-registers", "::mlir::func::FuncOp"> {
-  let summary = "Assign DST registers with a simple linear scan (MVP, no spill)";
+def TTLTileAndAssignDST
+    : Pass<"ttl-tile-and-assign-dst", "::mlir::func::FuncOp"> {
+  let summary = "Analyze DST usage, insert copy_tile, assign dst_idx, check capacity";
   let description = [{
-    Performs a lightweight linear scan over ttl.compute producers to annotate
-    expected DST usage. Errors if requested capacity exceeds a fixed budget.
-    This is an MVP placeholder for a fuller allocator.
+    Analyzes DST register pressure in ttl.compute bodies, inserts ttl.copy_tile
+    for block arguments, assigns dst_idx attributes to tile math operations, and
+    emits clear diagnostics on overflow. No loop tiling is performed yet.
+  }];
+
+  let options = [
+    Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
+           "Override DST register capacity (testing only, default auto-computed).">
+  ];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLInsertTileRegsSync
+    : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
+  let summary = "Insert tile_regs_* synchronization ops around ttl.compute";
+  let description = [{
+    Inserts DST register synchronization ops mirroring the TTKernel reg API:
+    - Inside ttl.compute: tile_regs_acquire at entry, tile_regs_commit before yield.
+    - Around ttl.compute: tile_regs_wait and tile_regs_release immediately after
+      the compute op in the parent block.
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect"
+    "::mlir::tt::ttl::TTLDialect"
   ];
 }
 
@@ -93,6 +114,27 @@ def TTLLowerToLoops
     "::mlir::scf::SCFDialect",
     "::mlir::tensor::TensorDialect"
   ];
+}
+
+def TTLAnnotateCBAssociations
+    : Pass<"ttl-annotate-cb-associations", "::mlir::func::FuncOp"> {
+  let summary = "Annotate ttl.compute block args with CB index associations";
+  let description = [{
+    Analysis pass that annotates ttl.compute block arguments with the CB index
+    (0-31) of their associated circular buffer. This enables subsequent conversion
+    passes to look up the correct CB without fragile state management.
+
+    For each ttl.compute input that is produced by ttl.attach_cb or ttl.cb_wait,
+    this pass:
+    1. Traces the input to find the associated CB via getAttachedCB()
+    2. Extracts the cb_index attribute from the CB
+    3. Annotates the corresponding block argument with ttl.cb_index = N
+
+    This annotation survives subsequent IR transformations and allows copy_tile
+    lowering to find the correct CB by cb_index lookup.
+  }];
+
+  let dependentDialects = [];
 }
 
 #endif // TTLANG_DIALECT_TTL_PASSES_TD
