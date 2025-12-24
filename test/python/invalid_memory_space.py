@@ -12,6 +12,7 @@ at decorator time.
 """
 
 import os
+
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
@@ -33,7 +34,9 @@ except ImportError:
 
 # CHECK: ValueError: Invalid memory_space: 'INVALID'
 # CHECK: Must be one of:
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], memory_space="INVALID")
+@pykernel_gen(
+    grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], memory_space="INVALID"
+)
 def invalid_memory_space_kernel(lhs, rhs, out):
     """This kernel should fail because memory_space='INVALID' is not supported."""
     lhs_accessor = TensorAccessor(lhs)
@@ -66,7 +69,9 @@ def invalid_memory_space_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @datamovement()
-    def dm_write(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()

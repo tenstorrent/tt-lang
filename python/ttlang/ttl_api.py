@@ -115,8 +115,13 @@ class CompiledTTNNKernel:
     """
 
     def __init__(
-        self, kernel_paths, kernel_configs, kernel_arg_specs, num_tensors, core_ranges,
-        args_per_tensor=0
+        self,
+        kernel_paths,
+        kernel_configs,
+        kernel_arg_specs,
+        num_tensors,
+        core_ranges,
+        args_per_tensor=0,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -222,16 +227,14 @@ def _write_kernel_to_tmp(name: str, source: str, args_per_tensor: int = 0) -> st
     # TODO(XX): Fix TensorAccessorArgs CTA offsets. C++ emits placeholder 42+idx,
     # replace with actual offset = idx * args_per_tensor.
     if args_per_tensor > 0:
+
         def replace_cta_offset(m):
             placeholder = int(m.group(1))
             tensor_idx = placeholder - 42
             actual_offset = tensor_idx * args_per_tensor
-            return f'TensorAccessorArgs<{actual_offset}, 0>()'
-        source = re.sub(
-            r'TensorAccessorArgs<(\d+), 0>\(\)',
-            replace_cta_offset,
-            source
-        )
+            return f"TensorAccessorArgs<{actual_offset}, 0>()"
+
+        source = re.sub(r"TensorAccessorArgs<(\d+), 0>\(\)", replace_cta_offset, source)
 
     path = f"/tmp/ttlang_kernel_{name}.cpp"
     with open(path, "w") as f:

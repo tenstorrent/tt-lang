@@ -37,6 +37,7 @@ import ttlang
 
 try:
     import ttnn
+
     TTNN_AVAILABLE = True
 except ImportError:
     TTNN_AVAILABLE = False
@@ -76,6 +77,7 @@ MEMORY_CONFIGS = ["L1", "DRAM"]
 # =============================================================================
 
 # TODO: doubt this will work in reality so we'll need to find another way to auto generate these.
+
 
 def make_binary_kernel(op_name: str):
     """Factory to create a binary elementwise kernel for the given op."""
@@ -163,6 +165,7 @@ UNARY_KERNELS = {name: make_unary_kernel(name) for name in UNARY_OPS}
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture(scope="module")
 def device():
     """Open device once per module."""
@@ -175,9 +178,12 @@ def device():
 # Helper Functions
 # =============================================================================
 
+
 def create_tensor(torch_tensor, device, memory_config: str):
     """Create a ttnn tensor with the specified memory config."""
-    mem_cfg = ttnn.L1_MEMORY_CONFIG if memory_config == "L1" else ttnn.DRAM_MEMORY_CONFIG
+    mem_cfg = (
+        ttnn.L1_MEMORY_CONFIG if memory_config == "L1" else ttnn.DRAM_MEMORY_CONFIG
+    )
 
     tensor = ttnn.from_torch(
         torch_tensor,
@@ -203,6 +209,7 @@ def generate_input(input_range: tuple, shape=(32, 32), dtype=torch.bfloat16):
 # =============================================================================
 # Binary Op Tests
 # =============================================================================
+
 
 @pytest.mark.parametrize("op_name", BINARY_OPS.keys())
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
@@ -238,6 +245,7 @@ def test_binary_op(device, op_name: str, memory_config: str):
 # =============================================================================
 # Unary Op Tests
 # =============================================================================
+
 
 @pytest.mark.parametrize("op_name", UNARY_OPS.keys())
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)

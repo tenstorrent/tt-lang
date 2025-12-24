@@ -44,9 +44,7 @@ def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
     )
 
     # Device shape: grid dims + shard dims (1x1 tiles per core for single-core)
-    shard_tiles = [
-        accessor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)
-    ]
+    shard_tiles = [accessor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)]
     device_shape = list(grid) + shard_tiles
 
     return RankedTensorType.get(device_shape, element_type, layout)
@@ -145,12 +143,14 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
                 )
 
-                self._cb_info.append({
-                    "name": arg.arg,
-                    "shard_shape": shard_shape,
-                    "element_type": element_type,
-                    "cb_index": self._next_cb_index,
-                })
+                self._cb_info.append(
+                    {
+                        "name": arg.arg,
+                        "shard_shape": shard_shape,
+                        "element_type": element_type,
+                        "cb_index": self._next_cb_index,
+                    }
+                )
                 self._next_cb_index += 1
             elif arg.annotation.id == "Semaphore":
                 raise NotImplementedError("Semaphore not yet supported in TTL mode")
@@ -165,8 +165,11 @@ class TTLGenericCompiler(TTCompilerBase):
         for name, val in self.captures.items():
             if isinstance(val, TensorAccessor):
                 tensor_type = _build_tensor_accessor_type(
-                    self.ctx, val, self.context.grid,
-                    self.context.tiled, self.context.memory_space
+                    self.ctx,
+                    val,
+                    self.context.grid,
+                    self.context.tiled,
+                    self.context.memory_space,
                 )
                 self._tensor_accessor_names.append(name)
                 func_arg_types.append(tensor_type)

@@ -12,6 +12,7 @@ The CB shape validation check comes before tensor validation in the code path.
 """
 
 import os
+
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
@@ -65,7 +66,9 @@ def invalid_3d_cb_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @datamovement()
-    def dm_write(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
@@ -87,12 +90,27 @@ if __name__ == "__main__":
         rhs_torch = torch.full((1, 32, 32), 3.0, dtype=torch.bfloat16)
         out_torch = torch.zeros((1, 32, 32), dtype=torch.bfloat16)
 
-        lhs = ttnn.from_torch(lhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        rhs = ttnn.from_torch(rhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        out = ttnn.from_torch(out_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        lhs = ttnn.from_torch(
+            lhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        rhs = ttnn.from_torch(
+            rhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            out_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)

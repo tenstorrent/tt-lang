@@ -10,7 +10,11 @@ from dataclasses import dataclass
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, ttnn, d2m
 
-from .constants import DEFAULT_TILE_SHAPE, DEFAULT_TENSOR_MEMORY_LAYOUT, DEFAULT_TILE_SIZE
+from .constants import (
+    DEFAULT_TILE_SHAPE,
+    DEFAULT_TENSOR_MEMORY_LAYOUT,
+    DEFAULT_TILE_SIZE,
+)
 from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
 
@@ -172,9 +176,7 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
         ValueError: If configuration is unsupported
     """
     if len(config.logical_shape) != 2:
-        raise ValueError(
-            f"Only 2D tensors supported, got shape {config.logical_shape}"
-        )
+        raise ValueError(f"Only 2D tensors supported, got shape {config.logical_shape}")
 
     if len(config.grid) != 2:
         raise ValueError(f"Only 2D grids supported, got grid {config.grid}")

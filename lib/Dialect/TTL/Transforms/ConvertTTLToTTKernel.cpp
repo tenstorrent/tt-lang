@@ -133,10 +133,8 @@ static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
                                  int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
-  auto ctaConst =
-      rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
-  auto crtaConst =
-      rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
+  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
   auto args =
       rewriter.create<ttk::TensorAccessorArgsOp>(loc, ctaConst, crtaConst);
   auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
@@ -440,7 +438,8 @@ materializeTensorAccessor(Value tensor, Value bankBase,
   // TODO(XX): Placeholder CTA offsets - Python regex replaces 42+argIdx
   // with actual offsets from ttnn.TensorAccessorArgs.get_compile_time_args().
   auto argIdx = getTensorFuncArgIndex(tensor);
-  int32_t ctaPlaceholder = 42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
+  int32_t ctaPlaceholder =
+      42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
   constexpr int32_t crtaPlaceholder = 0;
 
   auto pageSize =

@@ -12,6 +12,7 @@ raises the expected ValueError.
 """
 
 import os
+
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
@@ -65,7 +66,9 @@ def invalid_sharded_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @datamovement()
-    def dm_write(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
@@ -88,7 +91,9 @@ if __name__ == "__main__":
 
         # Create sharded memory config (non-interleaved)
         shard_spec = ttnn.ShardSpec(
-            ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
+            ttnn.CoreRangeSet(
+                {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}
+            ),
             (32, 32),  # shard shape
             ttnn.ShardOrientation.ROW_MAJOR,
         )
@@ -98,12 +103,27 @@ if __name__ == "__main__":
             shard_spec,
         )
 
-        lhs = ttnn.from_torch(lhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        rhs = ttnn.from_torch(rhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        out = ttnn.from_torch(out_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        lhs = ttnn.from_torch(
+            lhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        rhs = ttnn.from_torch(
+            rhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            out_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
         # Convert to sharded memory layout (non-interleaved)
         lhs = ttnn.to_memory_config(lhs, memory_config=sharded_mem_config)

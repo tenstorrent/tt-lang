@@ -14,6 +14,7 @@ and verifies the data movement kernels can read/write directly from/to DRAM.
 """
 
 import os
+
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
@@ -67,7 +68,9 @@ def add_dram_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @datamovement()
-    def dm_write(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         # Wait for data, write directly from CB to DRAM, pop
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
@@ -224,12 +227,27 @@ if __name__ == "__main__":
         out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
         # Keep tensors in DRAM - do NOT move to L1
-        lhs = ttnn.from_torch(lhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        rhs = ttnn.from_torch(rhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        out = ttnn.from_torch(out_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        lhs = ttnn.from_torch(
+            lhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        rhs = ttnn.from_torch(
+            rhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            out_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
         print("Compiling add kernel with DRAM tensors...")
         add_dram_kernel(lhs, rhs, out)

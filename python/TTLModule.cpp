@@ -46,9 +46,8 @@ void populateTTLModule(nb::module_ &m) {
           "get",
           [](MlirContext ctx, std::vector<int64_t> shape, MlirType elementType,
              int64_t bufferFactor) {
-            return wrap(CircularBufferType::get(unwrap(ctx), shape,
-                                                unwrap(elementType),
-                                                bufferFactor));
+            return wrap(CircularBufferType::get(
+                unwrap(ctx), shape, unwrap(elementType), bufferFactor));
           },
           nb::arg("context"), nb::arg("shape"), nb::arg("element_type"),
           nb::arg("buffer_factor"))
@@ -57,9 +56,8 @@ void populateTTLModule(nb::module_ &m) {
                      return std::vector<int64_t>(self.getShape().begin(),
                                                  self.getShape().end());
                    })
-      .def_prop_ro("element_type",
-                   [](CircularBufferType &self) {
-                     return wrap(self.getElementType());
-                   })
+      .def_prop_ro(
+          "element_type",
+          [](CircularBufferType &self) { return wrap(self.getElementType()); })
       .def_prop_ro("buffer_factor", &CircularBufferType::getBufferFactor);
 }

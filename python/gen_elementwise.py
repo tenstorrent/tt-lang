@@ -56,11 +56,11 @@ def {name}(input: "TensorBlock") -> "TensorBlock":
 
 '''
 
-ALL_TEMPLATE = '''\
+ALL_TEMPLATE = """\
 __all__ = [
 {entries}
 ]
-'''
+"""
 
 
 def parse_def_file(def_path: Path) -> tuple[list[str], list[str]]:
@@ -71,17 +71,17 @@ def parse_def_file(def_path: Path) -> tuple[list[str], list[str]]:
     unary_ops = []
 
     # Match TTL_BINARY_TILE_OP(Name, TileOp) but skip #define lines
-    for match in re.finditer(r'^TTL_BINARY_TILE_OP\((\w+),', content, re.MULTILINE):
+    for match in re.finditer(r"^TTL_BINARY_TILE_OP\((\w+),", content, re.MULTILINE):
         name = match.group(1).lower()
         # Skip macro parameter names (lowercase indicates it's a parameter)
-        if name[0].isupper() or name not in ('ttl_op', 'tile_op'):
+        if name[0].isupper() or name not in ("ttl_op", "tile_op"):
             binary_ops.append(name)
 
     # Match TTL_UNARY_TILE_OP(Name, TileOp) but skip #define lines
-    for match in re.finditer(r'^TTL_UNARY_TILE_OP\((\w+),', content, re.MULTILINE):
+    for match in re.finditer(r"^TTL_UNARY_TILE_OP\((\w+),", content, re.MULTILINE):
         name = match.group(1).lower()
         # Skip macro parameter names
-        if name[0].isupper() or name not in ('ttl_op', 'tile_op'):
+        if name[0].isupper() or name not in ("ttl_op", "tile_op"):
             unary_ops.append(name)
 
     return binary_ops, unary_ops
@@ -116,7 +116,9 @@ def main():
         description="Generate Python elementwise op wrappers from TTLElementwiseOps.def"
     )
     parser.add_argument("def_file", type=Path, help="Path to TTLElementwiseOps.def")
-    parser.add_argument("-o", "--output", type=Path, required=True, help="Output Python file")
+    parser.add_argument(
+        "-o", "--output", type=Path, required=True, help="Output Python file"
+    )
 
     args = parser.parse_args()
 

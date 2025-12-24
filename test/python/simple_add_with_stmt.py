@@ -17,6 +17,7 @@ The 'with' statement automatically handles:
 """
 
 import os
+
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
@@ -67,7 +68,9 @@ def add_with_kernel(lhs, rhs, out):
         # Automatic: rhs_cb.push()
 
     @datamovement()
-    def dm_write(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
         # 'with' for wait/pop pattern
         with out_cb.wait() as out_block:
             tx = copy(out_cb, out_accessor[0, 0])
@@ -188,12 +191,27 @@ if __name__ == "__main__":
         rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
         out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
-        lhs = ttnn.from_torch(lhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        rhs = ttnn.from_torch(rhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        out = ttnn.from_torch(out_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                              device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        lhs = ttnn.from_torch(
+            lhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        rhs = ttnn.from_torch(
+            rhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            out_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
