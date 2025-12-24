@@ -18,6 +18,7 @@ option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" ON)
 option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_PERF_TRACE "Enable performance trace" OFF)
+option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
 
 if(CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage")
@@ -75,6 +76,10 @@ if(MLIR_ENABLE_BINDINGS_PYTHON AND TTLANG_ENABLE_BINDINGS_PYTHON)
 endif()
 
 add_subdirectory(test)
+
+if(TTLANG_ENABLE_DOCS)
+  add_subdirectory(docs/sphinx)
+endif()
 
 # Install wheel files to prefix/wheels
 file(GLOB_RECURSE WHEEL_FILES "${CMAKE_BINARY_DIR}/*.whl")

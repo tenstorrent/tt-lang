@@ -7,10 +7,19 @@ on:
         description: "Run the macOS build."
         type: boolean
         default: false
+      build_docs:
+        description: "Build and deploy documentation."
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       run_macos:
         description: "Run the macOS build."
+        type: boolean
+        required: false
+        default: false
+      build_docs:
+        description: "Build and deploy documentation."
         type: boolean
         required: false
         default: false
@@ -137,6 +146,7 @@ jobs:
             -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
             -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
+            -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }} \
             -S .
 
       - name: Build tt-lang
@@ -158,6 +168,18 @@ jobs:
         run: |
           source build/env/activate
           cmake --build build --target check-ttlang-python-bindings
+
+      - name: Build documentation
+        if: inputs.build_docs && runner.os == 'Linux'
+        run: |
+          source build/env/activate
+          cmake --build build --target ttlang-docs
+
+      - name: Upload documentation artifact
+        if: inputs.build_docs && runner.os == 'Linux'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./build/docs/sphinx/_build/html
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
