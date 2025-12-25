@@ -39,170 +39,158 @@ class TTLGoldenException(Exception):
 
 
 # =============================================================================
-# PCC-based Golden Comparison
+# ULP (Units of Least Precision) Utilities
 # =============================================================================
 
 
-def mask_inf_nan(tensor: torch.Tensor) -> torch.Tensor:
+def ulp(x: torch.Tensor) -> torch.Tensor:
     """
-    Mask inf and nan values with zeros.
+    Return Unit of Least Precision for each element of a given tensor.
+
+    Based on Goldberg's definition:
+    "What every computer scientist should know about floating-point arithmetic"
+    https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
 
     Args:
-        tensor: Input tensor.
+        x: Input tensor.
 
     Returns:
-        Tensor with inf/nan values replaced by 0.
+        Tensor of ULP values for each element.
     """
-    tensor = tensor.clone()
-    mask = torch.logical_or(
-        torch.isnan(tensor),
-        torch.logical_or(torch.isinf(tensor), torch.isneginf(tensor)),
+    import math
+
+    # Use torch.abs(x) to ensure symmetry ULP(-x) == ULP(x)
+    abs_x = torch.abs(x)
+    next_val = torch.nextafter(abs_x, torch.tensor(math.inf, dtype=x.dtype))
+    ulp_value = next_val - abs_x
+
+    # Special case: if abs_x == dtype.max, then next == inf, leading to ULP(x) == inf
+    # Fix by manually calculating ULP at max value
+    dtype_max = torch.finfo(x.dtype).max
+    max_epsilon = dtype_max - torch.nextafter(
+        torch.tensor(dtype_max, dtype=x.dtype),
+        torch.tensor(-math.inf, dtype=x.dtype),
     )
-    tensor[mask] = 0
-    return tensor
+    ulp_value = torch.where(abs_x == dtype_max, max_epsilon, ulp_value)
+
+    return ulp_value
 
 
-def compute_pcc(
-    golden: torch.Tensor,
-    calculated: torch.Tensor,
-    atol: float = 1e-08,
-    rtol: float = 1e-05,
-) -> float:
+def get_default_ulp_threshold(dtype: torch.dtype) -> float:
     """
-    Compute Pearson correlation coefficient between two tensors.
+    Get default ULP threshold for a given dtype.
 
     Args:
-        golden: Expected tensor.
-        calculated: Actual tensor.
-        atol: Absolute tolerance for edge cases.
-        rtol: Relative tolerance for edge cases.
+        dtype: PyTorch dtype.
 
     Returns:
-        PCC value in range [0, 1].
+        Maximum acceptable ULP difference.
     """
-    if golden.numel() == 0 and calculated.numel() == 0:
-        return 1.0 if golden.shape == calculated.shape else 0.0
-    elif golden.numel() == 0 or calculated.numel() == 0:
-        return 0.0
+    if dtype in (torch.int32, torch.int16, torch.int8, torch.uint8, torch.bool):
+        return 0.0  # Exact comparison for integer types
 
-    if torch.all(torch.isnan(golden)) and torch.all(torch.isnan(calculated)):
-        return 1.0
-    elif torch.any(golden.bool()) != torch.any(calculated.bool()):
-        return 0.0
-    elif torch.all(torch.isnan(golden)) or torch.all(torch.isnan(calculated)):
-        return 0.0
+    # ULP thresholds based on dtype precision
+    if dtype == torch.bfloat16:
+        return 2.0  # BF16: 7-8 bits mantissa, allow 2 ULP
+    elif dtype == torch.float16:
+        return 2.0  # FP16: 10-11 bits mantissa, allow 2 ULP
+    elif dtype == torch.float32:
+        return 1.0  # FP32: 23-24 bits mantissa, allow 1 ULP
+    elif dtype == torch.float64:
+        return 1.0  # FP64: 52-53 bits mantissa, allow 1 ULP
+    else:
+        return 2.0  # Default: allow 2 ULP
 
-    golden = mask_inf_nan(golden)
-    calculated = mask_inf_nan(calculated)
 
-    if torch.equal(golden, calculated):
-        return 1.0
+# =============================================================================
+# Dtype-specific Tolerances
+# =============================================================================
 
-    if golden.dtype == torch.bfloat16:
-        golden = golden.float()
-    if calculated.dtype == torch.bfloat16:
-        calculated = calculated.float()
 
-    if golden.numel() == 1:
-        return float(torch.isclose(golden, calculated, atol=atol, rtol=rtol))
-
-    if torch.max(golden) == torch.min(golden) and torch.max(calculated) == torch.min(
-        calculated
-    ):
-        return float(
-            torch.isclose(
-                torch.max(golden), torch.max(calculated), atol=atol, rtol=rtol
-            ).item()
-        )
-
-    # Compute correlation coefficient.
-    cal_pcc = np.ma.corrcoef(
-        np.ma.masked_invalid(torch.squeeze(golden).detach().numpy()).flatten(),
-        np.ma.masked_invalid(torch.squeeze(calculated).detach().numpy()).flatten(),
-    )
-    mask = np.ones(cal_pcc.shape, dtype=bool)
-    np.fill_diagonal(mask, 0)
-    cal_pcc = np.min(cal_pcc[mask])
-
-    if isinstance(cal_pcc, np.ma.core.MaskedConstant):
-        return 1.0
-
-    return float(cal_pcc)
+# =============================================================================
+# Comparison Result
+# =============================================================================
 
 
 @dataclass
 class ComparisonResult:
-    """Result of a golden comparison."""
+    """Result of ULP-based tensor comparison."""
 
     passed: bool
-    pcc: float
-    max_abs_diff: float
-    mean_abs_error: float
-    cosine_sim: float
+    max_ulp: float
+    mean_ulp: float
     message: str = ""
 
 
 def compare_tensors(
     golden: torch.Tensor,
     calculated: torch.Tensor,
-    pcc_threshold: float = 0.99,
-    atol: float = 1e-1,
-    rtol: float = 5e-2,
-    check_pcc: bool = True,
-    error_tol: Optional[float] = None,
+    ulp_threshold: Optional[float] = None,
 ) -> ComparisonResult:
     """
-    Compare two tensors with multiple metrics.
+    Compare two tensors using ULP (Units of Least Precision).
+
+    Measures error in representable floating-point values. Hardware-accurate
+    and scale-independent.
 
     Args:
         golden: Expected tensor.
         calculated: Actual tensor.
-        pcc_threshold: Minimum acceptable PCC.
-        atol: Absolute tolerance threshold.
-        rtol: Relative tolerance threshold.
-        check_pcc: Whether to check PCC.
-        error_tol: If provided, overrides atol/rtol checks with single tolerance.
+        ulp_threshold: Max ULP difference (auto-computed from dtype if None).
 
     Returns:
-        ComparisonResult with pass/fail status and metrics.
+        ComparisonResult with pass/fail status and ULP metrics.
     """
-    golden_f32 = golden.float()
-    calculated_f32 = calculated.float()
+    ulp_threshold = ulp_threshold or get_default_ulp_threshold(golden.dtype)
 
-    cal_pcc = compute_pcc(golden_f32, calculated_f32)
+    # Handle empty tensors
+    if golden.numel() == 0 and calculated.numel() == 0:
+        return ComparisonResult(True, 0.0, 0.0, "Both tensors empty")
 
-    max_abs_diff = torch.max(torch.abs(golden_f32 - calculated_f32)).item()
-    mean_abs_error = torch.mean(torch.abs(golden_f32 - calculated_f32)).item()
-    cosine_sim = torch.nn.functional.cosine_similarity(
-        golden_f32.flatten().unsqueeze(0),
-        calculated_f32.flatten().unsqueeze(0),
-    ).item()
+    # Compute ULP error
+    # ULP is measured according to the golden tensor
+    ulp_value = ulp(golden.type(calculated.dtype))
 
-    passed = True
-    message = ""
+    if golden.dtype != calculated.dtype:
+        calculated = calculated.type(golden.dtype)
+        ulp_value = ulp_value.type(golden.dtype)
 
-    if error_tol is not None:
-        # Use single error tolerance
-        if max_abs_diff > error_tol:
-            passed = False
-            message = f"Max abs diff {max_abs_diff:.4f} > tolerance {error_tol}"
-    else:
-        # Use PCC/atol/rtol checks
-        if check_pcc and cal_pcc < pcc_threshold:
-            passed = False
-            message = f"PCC {cal_pcc:.4f} < threshold {pcc_threshold}"
+    # Handle non-finite values
+    mask_finite = torch.isfinite(golden) & torch.isfinite(calculated)
+    if not torch.all(mask_finite):
+        # Check if non-finite values match
+        both_nan = torch.isnan(golden) & torch.isnan(calculated)
+        both_inf = (
+            torch.isinf(golden)
+            & torch.isinf(calculated)
+            & (torch.sign(golden) == torch.sign(calculated))
+        )
+        nonfinite_match = both_nan | both_inf
+        if not torch.all(mask_finite | nonfinite_match):
+            return ComparisonResult(
+                False, float("inf"), float("inf"), "Non-finite values mismatch"
+            )
 
-        # Default to allclose check
-        if not torch.allclose(calculated_f32, golden_f32, rtol=rtol, atol=atol):
-            passed = False
-            if not message:
-                message = f"allclose failed: max_diff={max_abs_diff:.4f}"
-
-    return ComparisonResult(
-        passed=passed,
-        pcc=cal_pcc,
-        max_abs_diff=max_abs_diff,
-        mean_abs_error=mean_abs_error,
-        cosine_sim=cosine_sim,
-        message=message,
+    # Compute ULP differences (only for finite values)
+    ulp_tensor = torch.abs(calculated - golden) / ulp_value
+    ulp_tensor = torch.where(
+        mask_finite, ulp_tensor, torch.tensor(0.0, dtype=ulp_tensor.dtype)
     )
+
+    max_ulp = torch.max(ulp_tensor).item()
+    mean_ulp = (
+        torch.mean(ulp_tensor[mask_finite]).item() if torch.any(mask_finite) else 0.0
+    )
+
+    # Check threshold
+    if max_ulp <= ulp_threshold:
+        return ComparisonResult(True, max_ulp, mean_ulp, "")
+
+    # Failed: build detailed error message
+    idx = torch.argmax(ulp_tensor)
+    pos = tuple(int(i) for i in torch.unravel_index(idx, golden.shape))
+    msg = (
+        f"ULP {max_ulp:.2f} > {ulp_threshold:.2f} @ {list(pos)}: "
+        f"|{calculated[pos]:.6f} - {golden[pos]:.6f}| / {ulp_value[pos]:.6e}"
+    )
+    return ComparisonResult(False, max_ulp, mean_ulp, msg)

@@ -73,8 +73,13 @@ Override class attributes to customize:
 class TestSqrt(UnaryOpTestBase):
     OP_STR = "sqrt"
     INPUT_RANGE = (0.01, 10.0)  # Domain constraint
-    ERROR_TOL = 1e-3            # Tighter tolerance
+    ULP_THRESHOLD = 1.0         # Stricter ULP threshold
 ```
+
+**Note**: ULP thresholds are auto-computed from dtype:
+- `torch.bfloat16` / `torch.float16`: 2.0 ULP
+- `torch.float32` / `torch.float64`: 1.0 ULP
+- Integer types: 0.0 ULP (exact)
 
 ### 2. MLIR File Tests
 
@@ -297,19 +302,18 @@ class TestCustomValidation(OpTestBase):
 ```python
 from test.e2e.utils import compare_tensors
 
-comparison = compare_tensors(
-    golden,
-    calculated,
-    pcc_threshold=0.99,  # Pearson correlation coefficient
-    atol=1e-1,           # Absolute tolerance
-    rtol=5e-2,           # Relative tolerance
-    error_tol=1e-2,      # Single tolerance (overrides atol/rtol)
-)
+# Auto-computed ULP threshold
+comparison = compare_tensors(golden, calculated)
+
+# Override threshold
+comparison = compare_tensors(golden, calculated, ulp_threshold=1.0)
 
 assert comparison.passed, comparison.message
-print(f"PCC: {comparison.pcc:.4f}")
-print(f"Max abs diff: {comparison.max_abs_diff:.6f}")
+print(f"Max ULP: {comparison.max_ulp:.2f}")
+print(f"Mean ULP: {comparison.mean_ulp:.2f}")
 ```
+
+**ULP (Units of Least Precision)**: Measures error in representable floating-point values. Hardware-accurate, scale-independent, and dtype-aware. Based on Goldberg's "What Every Computer Scientist Should Know About Floating-Point Arithmetic".
 
 ## Kernel Model
 

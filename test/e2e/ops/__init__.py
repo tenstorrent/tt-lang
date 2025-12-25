@@ -32,7 +32,11 @@ class OpTestBase(E2ETestBase):
     ARITY: int  # 1 or 2 (set by UnaryOpTestBase/BinaryOpTestBase)
     INPUT_SHAPE = (2, 2)  # Grid shape in tiles
     INPUT_DTYPE = torch.bfloat16
-    ERROR_TOL = 1e-2
+    
+    # Comparison tolerance (auto-computed from dtype if None)
+    ULP_THRESHOLD: Optional[float] = None
+    
+    # Input value range
     MIN_VALUE = -1.0
     MAX_VALUE = 1.0
 
@@ -86,7 +90,7 @@ class OpTestBase(E2ETestBase):
         self._check_cache_dependencies(["torch_inputs", "result"])
         golden = torch_op(*self.CACHE["torch_inputs"])
         result = self.CACHE["result"]
-        comparison = compare_tensors(golden, result, error_tol=self.ERROR_TOL)
+        comparison = compare_tensors(golden, result, self.ULP_THRESHOLD)
         assert comparison.passed, comparison.message
 
 
@@ -100,3 +104,4 @@ class BinaryOpTestBase(OpTestBase):
     """Base for binary operations (2 inputs, 1 output)."""
 
     ARITY = 2
+
