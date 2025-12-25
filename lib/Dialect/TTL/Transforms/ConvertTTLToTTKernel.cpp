@@ -128,16 +128,16 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
 /// Runtime args are indexed by the tensor's function argument position.
-static FailureOr<Value>
-getBufferAddressFromRuntimeArg(Value tensor, Location loc,
-                               ConversionPatternRewriter &rewriter) {
+static FailureOr<Value> getBufferAddressFromRuntimeArg(Value tensor,
+                                                       Location loc,
+                                                       OpBuilder &builder) {
   auto argIdx = getTensorFuncArgIndex(tensor);
   if (failed(argIdx)) {
     return failure();
   }
-  auto idxConst = rewriter.create<arith::ConstantIndexOp>(loc, *argIdx);
-  return rewriter
-      .create<ttk::GetCommonArgValOp>(loc, rewriter.getI32Type(), idxConst)
+  auto idxConst = builder.create<arith::ConstantIndexOp>(loc, *argIdx);
+  return builder
+      .create<ttk::GetCommonArgValOp>(loc, builder.getI32Type(), idxConst)
       .getResult();
 }
 
@@ -145,14 +145,13 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
-static Value buildTensorAccessor(Location loc,
-                                 ConversionPatternRewriter &rewriter,
+static Value buildTensorAccessor(Location loc, OpBuilder &builder,
                                  Value rowStride, Value colStride,
                                  Value bankBase, Value pageSize) {
   auto args =
-      rewriter.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
-                                                         bankBase, pageSize);
+      builder.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
+  auto accessor = builder.create<ttk::TensorAccessorOp>(loc, args.getResult(),
+                                                        bankBase, pageSize);
   return accessor.getResult();
 }
 
@@ -423,8 +422,8 @@ static CopyDestKind classifyDst(Value v) {
   return CopyDestKind::Unknown;
 }
 
-static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
-  return rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+static Value makeZeroI32(Location loc, OpBuilder &builder) {
+  return builder.create<arith::ConstantIntOp>(loc, 0, 32);
 }
 
 static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
@@ -438,9 +437,8 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 /// Create a TensorAccessor from a tensor type and bank base address.
 /// The bankBase should come from runtime args via
 /// getBufferAddressFromRuntimeArg.
-static FailureOr<Value>
-materializeTensorAccessor(Value tensor, Value bankBase,
-                          ConversionPatternRewriter &rewriter) {
+static FailureOr<Value> materializeTensorAccessor(Value tensor, Value bankBase,
+                                                  OpBuilder &builder) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
     return failure();
@@ -450,13 +448,13 @@ materializeTensorAccessor(Value tensor, Value bankBase,
   utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
 
   auto rowStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
+      builder.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
   auto colStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
+      builder.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
   auto pageSize =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
+      builder.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, rowStride, colStride, bankBase,
+  return buildTensorAccessor(loc, builder, rowStride, colStride, bankBase,
                              pageSize);
 }
 
@@ -488,18 +486,17 @@ static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
 // Generated loops are marked with kTileLoopMarker attribute for downstream
 // passes to identify.
 static void
-emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
-             int64_t tilesX,
+emitTileLoop(OpBuilder &builder, Location loc, int64_t tilesY, int64_t tilesX,
              llvm::function_ref<void(OpBuilder &, Location, Value)> emitBody) {
   if (tilesY > 1 || tilesX > 1) {
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto yBound = rewriter.create<arith::ConstantIndexOp>(loc, tilesY);
-    auto xBound = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
-    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto tilesXVal = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
+    auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    auto yBound = builder.create<arith::ConstantIndexOp>(loc, tilesY);
+    auto xBound = builder.create<arith::ConstantIndexOp>(loc, tilesX);
+    auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
+    auto tilesXVal = builder.create<arith::ConstantIndexOp>(loc, tilesX);
 
     scf::LoopNest loopNest = scf::buildLoopNest(
-        rewriter, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
+        builder, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
         ValueRange{one, one},
         [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
           // Compute linear tile offset: offset = iy * tilesX + ix
@@ -516,15 +513,200 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
         });
 
     // Mark all generated loops with the tile loop marker attribute.
-    auto marker = rewriter.getUnitAttr();
+    auto marker = builder.getUnitAttr();
     for (scf::ForOp loop : loopNest.loops) {
       loop->setAttr(kTileLoopMarker, marker);
     }
   } else {
     // Single tile: offset is always 0
-    Value zero32 = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
-    emitBody(rewriter, loc, zero32);
+    Value zero32 = builder.create<arith::ConstantIntOp>(loc, 0, 32);
+    emitBody(builder, loc, zero32);
   }
+}
+
+//===----------------------------------------------------------------------===//
+// DMA Copy Grouping for Fused Loop Emission
+//===----------------------------------------------------------------------===//
+
+/// Information about a copy operation for grouping.
+struct CopyInfo {
+  CopyOp op;
+  int64_t tilesY;
+  int64_t tilesX;
+  bool isRead; // tensor->CB (read) vs CB->tensor (write)
+};
+
+/// Emit fused loops for copies with matching bounds.
+/// Copies in the same group share a single tile loop.
+static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
+                              DenseSet<Operation *> &handledOps,
+                              OpBuilder &builder) {
+  if (copies.empty()) {
+    return;
+  }
+
+  // Group by (tilesY, tilesX, isRead). Only copies with matching bounds
+  // and direction can share a loop.
+  // Use int instead of bool for isRead to avoid DenseMap issues with bool keys.
+  using GroupKey = std::tuple<int64_t, int64_t, int>;
+  DenseMap<GroupKey, SmallVector<CopyInfo>> groups;
+  for (const CopyInfo &info : copies) {
+    groups[{info.tilesY, info.tilesX, info.isRead ? 1 : 0}].push_back(info);
+  }
+
+  for (auto &entry : groups) {
+    int64_t tilesY = std::get<0>(entry.first);
+    int64_t tilesX = std::get<1>(entry.first);
+    bool isRead = std::get<2>(entry.first) != 0;
+    SmallVector<CopyInfo> &group = entry.second;
+
+    // Single copy: skip, let CopyLowering pattern handle it.
+    if (group.size() < 2) {
+      continue;
+    }
+
+    // Use insertion point before first copy in group.
+    builder.setInsertionPoint(group[0].op);
+    Location loc = group[0].op.getLoc();
+
+    // Phase 1: Emit all setup ops (accessors, CB pointers).
+    SmallVector<Value> accessors;
+    SmallVector<Value> cbPtrs;
+    accessors.reserve(group.size());
+    cbPtrs.reserve(group.size());
+
+    bool setupFailed = false;
+    for (CopyInfo &info : group) {
+      Value tensor = isRead ? info.op.getSrc() : info.op.getDst();
+      Value cb = isRead ? info.op.getDst() : info.op.getSrc();
+
+      // Get buffer address from runtime args.
+      auto bankBase = getBufferAddressFromRuntimeArg(tensor, loc, builder);
+      if (failed(bankBase)) {
+        setupFailed = true;
+        break;
+      }
+
+      // Create tensor accessor.
+      auto accessor = materializeTensorAccessor(tensor, *bankBase, builder);
+      if (failed(accessor)) {
+        setupFailed = true;
+        break;
+      }
+      accessors.push_back(*accessor);
+
+      // Convert CB and get pointer.
+      auto cbConverted = utils::convertTTLCBToTTKernel(cb, builder, loc);
+      if (failed(cbConverted)) {
+        setupFailed = true;
+        break;
+      }
+
+      Value cbPtr;
+      if (isRead) {
+        cbPtr = builder.create<ttk::GetWritePtrOp>(loc, *cbConverted);
+      } else {
+        cbPtr = builder.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+      }
+      cbPtrs.push_back(cbPtr);
+    }
+
+    // If setup failed for any copy, skip this group entirely.
+    if (setupFailed || accessors.size() != group.size() ||
+        cbPtrs.size() != group.size()) {
+      continue;
+    }
+
+    // Phase 2: Emit single fused tile loop.
+    emitTileLoop(builder, loc, tilesY, tilesX,
+                 [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                   for (size_t i = 0; i < group.size(); ++i) {
+                     if (isRead) {
+                       b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
+                                                         accessors[i],
+                                                         cbPtrs[i]);
+                     } else {
+                       b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
+                                                          accessors[i],
+                                                          cbPtrs[i]);
+                     }
+                   }
+                 });
+
+    // Phase 3: Replace original copy ops with dummy handle and mark handled.
+    // Use UnrealizedConversionCastOp to preserve the TransferHandleType so that
+    // WaitOp lowering can determine if it's a read or write barrier.
+    Value dummyI32 = makeZeroI32(loc, builder);
+    for (CopyInfo &info : group) {
+      Type handleType = info.op.getResult().getType();
+      auto cast = builder.create<UnrealizedConversionCastOp>(loc, handleType,
+                                                              dummyI32);
+      info.op.getResult().replaceAllUsesWith(cast.getResult(0));
+      handledOps.insert(info.op);
+    }
+  }
+}
+
+/// Process a block for copy grouping. Collects adjacent copy ops and emits
+/// fused loops at synchronization boundaries (WaitOp) or end of block.
+static void processBlockForCopyGrouping(Block &block,
+                                        DenseSet<Operation *> &handledOps,
+                                        OpBuilder &builder);
+
+/// Recursively process an operation's regions for copy grouping.
+static void processRegionsForCopyGrouping(Operation *op,
+                                          DenseSet<Operation *> &handledOps,
+                                          OpBuilder &builder) {
+  for (Region &region : op->getRegions()) {
+    for (Block &block : region) {
+      processBlockForCopyGrouping(block, handledOps, builder);
+    }
+  }
+}
+
+static void processBlockForCopyGrouping(Block &block,
+                                        DenseSet<Operation *> &handledOps,
+                                        OpBuilder &builder) {
+  SmallVector<CopyInfo> copies;
+
+  for (Operation &op : block) {
+    if (auto copyOp = dyn_cast<CopyOp>(&op)) {
+      // Determine tile grid shape and direction.
+      Value src = copyOp.getSrc();
+      auto srcKind = classifySrc(src);
+      bool isRead = (srcKind == CopySourceKind::TensorAccessor);
+
+      Value tensor = isRead ? src : copyOp.getDst();
+      auto [tilesY, tilesX] = getTileGridShapeFromValue(tensor);
+
+      copies.push_back({copyOp, tilesY, tilesX, isRead});
+    } else if (isa<WaitOp>(&op)) {
+      // Process accumulated copies at synchronization boundary.
+      emitGroupedCopies(copies, handledOps, builder);
+      copies.clear();
+    } else {
+      // Recurse into nested regions (e.g., scf.for bodies).
+      processRegionsForCopyGrouping(&op, handledOps, builder);
+    }
+  }
+
+  // Process remaining copies at end of block.
+  emitGroupedCopies(copies, handledOps, builder);
+}
+
+/// Group adjacent copy ops by tile grid bounds and emit fused loops.
+/// Returns the set of copy ops that were handled (to skip in pattern phase).
+/// Recursively processes nested regions (e.g., scf.for loop bodies).
+static DenseSet<Operation *> lowerGroupedCopyOps(func::FuncOp func,
+                                                  MLIRContext *ctx) {
+  DenseSet<Operation *> handledOps;
+  OpBuilder builder(ctx);
+
+  for (Block &block : func.getBody()) {
+    processBlockForCopyGrouping(block, handledOps, builder);
+  }
+
+  return handledOps;
 }
 
 /// Lower tensor->CB copy: read from DRAM/L1 tensor into circular buffer.
@@ -742,6 +924,21 @@ static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
                       StringRef passName) {
+  // Pre-conversion: group DMA copies with matching tile grids and emit
+  // fused loops. This avoids creating separate loops that need fusion.
+  DenseSet<Operation *> handledCopies;
+  mod.walk([&](func::FuncOp func) {
+    if (isNocKernel(func.getOperation())) {
+      DenseSet<Operation *> handled = lowerGroupedCopyOps(func, &ctx);
+      handledCopies.insert(handled.begin(), handled.end());
+    }
+  });
+
+  // Erase handled copy ops before pattern conversion.
+  for (Operation *op : handledCopies) {
+    op->erase();
+  }
+
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,

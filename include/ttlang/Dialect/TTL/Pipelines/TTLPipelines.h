@@ -18,10 +18,6 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
-  Option<bool> fuseTileLoops{
-      *this, "fuse-tile-loops",
-      llvm::cl::desc("Fuse adjacent tile loops with identical bounds."),
-      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

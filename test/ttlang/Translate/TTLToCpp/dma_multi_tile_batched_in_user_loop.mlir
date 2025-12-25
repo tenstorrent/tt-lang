@@ -10,19 +10,17 @@
 // Both tensors: 64x64xf32 (2x2 tiles) - SAME tile grid
 // Both copies issued before barriers
 //
-// Current behavior (generates separate tile loops):
+// Pre-conversion grouping emits setup then fused loop:
 //   for user_iter in 0..3:
+//     accessor1 = TensorAccessor(...)
+//     ptr1 = get_write_ptr(...)
+//     accessor2 = TensorAccessor(...)
+//     ptr2 = get_write_ptr(...)
 //     for tile_y in 0..2:
 //       for tile_x in 0..2:
-//         noc_async_read_tile(offset, accessor1, ...)
-//     for tile_y in 0..2:
-//       for tile_x in 0..2:
-//         noc_async_read_tile(offset, accessor2, ...)
+//         noc_async_read_tile(offset, accessor1, ptr1)
+//         noc_async_read_tile(offset, accessor2, ptr2)
 //     noc_async_read_barrier()
-//     noc_async_read_barrier()
-//
-// Note: The -ttkernel-fuse-sibling-tile-loops pass fuses adjacent loops with identical bounds
-// such as the above and has its own separate tests.
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
@@ -33,7 +31,6 @@
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
-// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 3;
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
@@ -41,42 +38,24 @@
 // User loop from input MLIR (0..3)
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
 
-// First copy: 64x64 (2x2 tiles) → CB1
-// CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// CHECK:     TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
-// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
-// CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// Tile loops: for tile_y in 0..2, for tile_x in 0..2
-// CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[STEP]]) {
-// CHECK:       for (size_t [[TILE1_X:[a-z][0-9]+]] = [[LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[STEP]]) {
-// CHECK:         size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
-// CHECK:         size_t [[TILE1_OFFSET_X:v[0-9]+]] = [[TILE1_OFFSET_Y]] + [[TILE1_X]];
-// CHECK:         ptrdiff_t [[TILE1_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE1_OFFSET_X]];
-// CHECK:         int32_t [[TILE1_OFFSET:v[0-9]+]] = (int32_t) [[TILE1_OFFSET_PTR]];
-// CHECK:         noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_PTR1]]);
-// CHECK:       }
-// CHECK:     }
+// Setup: all tensor accessors and CB pointers created before tile loop
+// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor(
+// CHECK:     int32_t [[PTR1:v[0-9]+]] = get_write_ptr(
+// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor(
+// CHECK:     int32_t [[PTR2:v[0-9]+]] = get_write_ptr(
 
-// Second copy: 64x64 (2x2 tiles) → CB2
-// CHECK:     int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
-// CHECK:     TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
-// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
-// CHECK:     int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
-// Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
-// CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[STEP]]) {
-// CHECK:       for (size_t [[TILE2_X:[a-z][0-9]+]] = [[LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[STEP]]) {
-// CHECK:         size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
-// CHECK:         size_t [[TILE2_OFFSET_X:v[0-9]+]] = [[TILE2_OFFSET_Y]] + [[TILE2_X]];
-// CHECK:         ptrdiff_t [[TILE2_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE2_OFFSET_X]];
-// CHECK:         int32_t [[TILE2_OFFSET:v[0-9]+]] = (int32_t) [[TILE2_OFFSET_PTR]];
-// CHECK:         noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_PTR2]]);
-// CHECK:       }
-// CHECK:     }
+// Fused tile loops: single nested loop with both DMAs
+// CHECK:     for (size_t [[TILE_Y:[a-z][0-9]+]] = [[LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[STEP]]) {
+// CHECK-NEXT:      for (size_t [[TILE_X:[a-z][0-9]+]] = [[LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[STEP]]) {
+// CHECK:             noc_async_read_tile({{.*}}, [[ACC1]], [[PTR1]]);
+// CHECK-NEXT:        noc_async_read_tile({{.*}}, [[ACC2]], [[PTR2]]);
+// CHECK:           }
+// CHECK-NEXT:    }
 
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:     noc_async_read_barrier();
-// CHECK:   }
-// CHECK:   return;
+// CHECK:         noc_async_read_barrier();
+// CHECK:       }
+// CHECK:       return;
 // CHECK-NEXT: }
 
 module {
