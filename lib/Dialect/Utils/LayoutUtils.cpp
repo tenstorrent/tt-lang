@@ -6,6 +6,8 @@
 
 #include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h"
 
+#include <climits>
+
 namespace mlir::tt::ttl::utils {
 
 LayoutContiguityInfo analyzeLayoutContiguity(RankedTensorType tensorTy) {
@@ -14,7 +16,7 @@ LayoutContiguityInfo analyzeLayoutContiguity(RankedTensorType tensorTy) {
 
   // Compute basic size info.
   int64_t elemBits = tensorTy.getElementType().getIntOrFloatBitWidth();
-  result.elemByteWidth = elemBits / 8;
+  result.elemByteWidth = elemBits / CHAR_BIT;
   result.totalElements = 1;
   for (int64_t dim : shape) {
     result.totalElements *= dim;

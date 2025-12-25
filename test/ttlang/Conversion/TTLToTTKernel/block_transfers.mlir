@@ -22,6 +22,7 @@
 // CHECK:           ttkernel.noc_async_read_tile({{.*}}, %[[ACCESSOR]], %[[CB_PTR]])
 // CHECK:       ttkernel.noc_async_read_barrier
 // CHECK-NOT:   ttkernel.noc_async_read_barrier
+// CHECK-NOT:   ttkernel.noc_async_write_barrier
 module {
   func.func @tiled_layout_uses_tile_transfers(%arg0: tensor<64x64xf32, #layout_tiled>)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -51,6 +52,7 @@ module {
 // CHECK-NOT:   scf.for
 // CHECK-NOT:   ttkernel.noc_async_read_tile
 // CHECK-NOT:   ttkernel.noc_async_read_barrier
+// CHECK-NOT:   ttkernel.noc_async_write_barrier
 module {
   func.func @row_major_uses_single_block_transfer(%arg0: tensor<64x64xf32, #layout_row_major>)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -80,6 +82,7 @@ module {
 // CHECK-NOT:   scf.for
 // CHECK-NOT:   ttkernel.noc_async_write_tile
 // CHECK-NOT:   ttkernel.noc_async_write_barrier
+// CHECK-NOT:   ttkernel.noc_async_read_barrier
 module {
   func.func @row_major_write_uses_single_block_transfer(%arg0: tensor<64x64xf32, #layout_row_major>)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

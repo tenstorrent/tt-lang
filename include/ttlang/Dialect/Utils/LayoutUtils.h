@@ -67,8 +67,7 @@ inline ContiguousLayoutInfo computeContiguousLayout(RankedTensorType tensorTy) {
   int64_t elemBits = tensorTy.getElementType().getIntOrFloatBitWidth();
   int64_t elemByteWidth = elemBits / 8;
 
-  // TODO(ttl): Derive page size from actual tiling/sharding when available.
-  // Issue: #83.
+  // TODO(#83): Derive page size from actual tiling/sharding when available.
   int64_t pageSizeBytes = elemByteWidth * rowStrideElems;
 
   return {rowStrideElems, colStrideElems, elemByteWidth, pageSizeBytes};

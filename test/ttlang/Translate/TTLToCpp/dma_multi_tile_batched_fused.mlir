@@ -29,41 +29,42 @@
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // CHECK-LABEL: // batched_multi_tile_fused
-// CHECK-NEXT: #include <cstdint>
-// CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
-// CHECK-NEXT: #include "dataflow_api.h"
-// CHECK-NEXT: void kernel_main() {
-// CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
-// CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 3;
-// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
-// CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
+// CHECK-NEXT:  #include <cstdint>
+// CHECK-NEXT:  #include "tools/profiler/kernel_profiler.hpp"
+// CHECK-NEXT:  #include "dataflow_api.h"
+// CHECK-NEXT:  void kernel_main() {
+// CHECK-DAG:     size_t [[TILES_BOUND:v[0-9]+]] = 2;
+// CHECK-DAG:     size_t [[USER_UB:v[0-9]+]] = 3;
+// CHECK-DAG:     size_t [[STEP:v[0-9]+]] = 1;
+// CHECK-DAG:     size_t [[LB:v[0-9]+]] = 0;
 
 // User loop from input MLIR (0..3)
-// CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
+// CHECK:         for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
 
 // Setup: all tensor accessors and CB pointers created before tile loop
-// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor(
-// CHECK:     int32_t [[PTR1:v[0-9]+]] = get_write_ptr(
-// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor(
-// CHECK:     int32_t [[PTR2:v[0-9]+]] = get_write_ptr(
-// CHECK:     TensorAccessor [[ACC3:v[0-9]+]] = TensorAccessor(
-// CHECK:     int32_t [[PTR3:v[0-9]+]] = get_write_ptr(
+// CHECK:           TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor(
+// CHECK:           int32_t [[PTR1:v[0-9]+]] = get_write_ptr(
+// CHECK:           TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor(
+// CHECK:           int32_t [[PTR2:v[0-9]+]] = get_write_ptr(
+// CHECK:           TensorAccessor [[ACC3:v[0-9]+]] = TensorAccessor(
+// CHECK:           int32_t [[PTR3:v[0-9]+]] = get_write_ptr(
 
 // Fused tile loops: single nested loop with all three DMAs
-// CHECK:     for (size_t [[TILE_Y:[a-z][0-9]+]] = [[LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[STEP]]) {
-// CHECK-NEXT:      for (size_t [[TILE_X:[a-z][0-9]+]] = [[LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[STEP]]) {
-// CHECK:             noc_async_read_tile({{.*}}, [[ACC1]], [[PTR1]]);
-// CHECK-NEXT:        noc_async_read_tile({{.*}}, [[ACC2]], [[PTR2]]);
-// CHECK-NEXT:        noc_async_read_tile({{.*}}, [[ACC3]], [[PTR3]]);
-// CHECK:           }
-// CHECK-NEXT:    }
+// CHECK:           for (size_t [[TILE_Y:[a-z][0-9]+]] = [[LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[STEP]]) {
+// CHECK-NEXT:        for (size_t [[TILE_X:[a-z][0-9]+]] = [[LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[STEP]]) {
+// CHECK:               noc_async_read_tile({{.*}}, [[ACC1]], [[PTR1]]);
+// CHECK-NEXT:          noc_async_read_tile({{.*}}, [[ACC2]], [[PTR2]]);
+// CHECK-NEXT:          noc_async_read_tile({{.*}}, [[ACC3]], [[PTR3]]);
+// CHECK:             }
+// CHECK-NEXT:      }
 
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:         noc_async_read_barrier();
-// CHECK-NOT: noc_async_read_barrier
-// CHECK:       }
-// CHECK:       return;
-// CHECK-NEXT: }
+// CHECK:           noc_async_read_barrier();
+// CHECK-NOT:       noc_async_read_barrier
+// CHECK-NOT:       noc_async_write_barrier
+// CHECK:         }
+// CHECK:         return;
+// CHECK-NEXT:  }
 
 module {
   func.func @batched_multi_tile_fused(%arg0: tensor<64x64xf32, #layout>, %arg1: tensor<64x64xf32, #layout>, %arg2: tensor<64x64xf32, #layout>)
