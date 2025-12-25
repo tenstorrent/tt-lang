@@ -482,8 +482,6 @@ static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
 // Emit a tile loop (or single tile body) with proper offset computation.
 // The emitBody callback receives (builder, location, tileOffset) where
 // tileOffset is an i32 linear tile index computed from loop indices.
-// Generated loops are marked with kTileLoopMarker attribute for downstream
-// passes to identify.
 static void
 emitTileLoop(OpBuilder &builder, Location loc, int64_t tilesY, int64_t tilesX,
              llvm::function_ref<void(OpBuilder &, Location, Value)> emitBody) {

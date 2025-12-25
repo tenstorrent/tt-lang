@@ -46,9 +46,11 @@
 // CHECK:     }
 
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:   noc_async_read_barrier();
-// CHECK:   return;
-// CHECK-NEXT: }
+// CHECK:       noc_async_read_barrier();
+// CHECK-NOT:   noc_async_read_barrier();
+// CHECK-NOT:   noc_async_write_barrier();
+// CHECK:       return;
+// CHECK-NEXT:  }
 
 module {
   func.func @multi_tile_1d_fused(%arg0: tensor<32x64xf32, #layout>, %arg1: tensor<32x64xf32, #layout>)

@@ -5,12 +5,12 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTL_H
 #define TTLANG_DIALECT_TTL_IR_TTL_H
 
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
-#include <mlir/IR/Builders.h>
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsDialect.h.inc"
 
