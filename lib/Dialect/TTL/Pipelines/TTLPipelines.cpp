@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassManager.h"
@@ -19,20 +20,28 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addPass(createTTLConvertTTLToCompute());
+  // DST register assignment and synchronization (strict ordering required):
+  // 1. ttl-tile-and-assign-dst: Assigns DST indices via copy_tile insertion
+  // 2. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops
+  // (acquire/commit/wait/release) These must run before TTKernel lowering and
+  // in this specific order.
+  pm.addPass(createTTLTileAndAssignDST());
+  pm.addPass(createTTLInsertTileRegsSync());
+  pm.addPass(createTTLLowerToLoops());
+  pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
   if (options.fuseTileLoops) {
     pm.addNestedPass<func::FuncOp>(
         ttkernel::createTTKernelFuseSiblingTileLoops());
   }
   pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
   if (options.lowerToEmitC) {
-    // EmitC does not tolerate SSA aliasing introduced by CSE; keep expressions
-    // unique to avoid region arg reuse errors in emitc.expression.
+    pm.addPass(createLowerAffinePass());
     pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
-  } else {
-    pm.addPass(createCSEPass());
   }
 }
 

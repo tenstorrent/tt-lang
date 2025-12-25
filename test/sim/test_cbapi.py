@@ -86,14 +86,14 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI, CBID]):
 
 def test_per_instance_timeout_effect():
     # consumer should timeout based on instance timeout
-    api = CBAPI(timeout=0.01)
+    api = CBAPI(timeout=0.2)
     cb = 3
     api.host_configure_cb(cb, 4)
-    start = time.time()
-    with pytest.raises(CBTimeoutError, match="timed out after 0.01s"):
+    start = time.perf_counter()
+    with pytest.raises(CBTimeoutError, match="timed out after 0.2s"):
         api.cb_wait_front(cb, 1)
-    elapsed = time.time() - start
-    assert elapsed < 0.1
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.4
 
 
 def test_threaded_produce_consume(configured_cb: Tuple[CBAPI, CBID]):
@@ -332,13 +332,17 @@ def test_heterogeneous_cbs_in_same_api():
 
 
 def test_default_api_heterogeneous():
-    """Test that the default API can handle heterogeneous circular buffers."""
-    # Create circular buffers using default API (different element types)
-    int_cb = CircularBuffer[int](shape=(1, 1), buffer_factor=2)
-    tensor_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2)
+    """Test that an explicit API can handle heterogeneous circular buffers."""
+    # Create an explicit API instance
+    api = CBAPI()
 
-    # Both should use the same default API instance
+    # Create circular buffers using explicit API (different element types)
+    int_cb = CircularBuffer[int](shape=(1, 1), buffer_factor=2, api=api)
+    tensor_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+
+    # Both should use the same API instance
     assert int_cb._api is tensor_cb._api  # type: ignore
+    assert int_cb._api is api  # type: ignore
 
     # Test that both work correctly
     int_write = int_cb.reserve()

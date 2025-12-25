@@ -19,28 +19,28 @@
 // CHECK-NEXT: void kernel_main() {
 // CHECK-DAG:   size_t [[TILE_STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
-// CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
-// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 64;
-// CHECK-DAG:   int32_t [[V1:v[0-9]+]] = 1;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
-// CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
+// CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // CHECK:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<64, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:   for (size_t [[TILE_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[TILE_STEP]]) {
+// CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
+// CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
+// CHECK:   for (size_t [[TILE_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[TILE_STEP]]) {
 // CHECK:     for (size_t [[TILE_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[TILE_STEP]]) {
-// CHECK-NEXT:       size_t [[TILE_OFFSET_Y:v[0-9]+]] = [[TILE_Y]] * [[TILES_BOUND]];
-// CHECK-NEXT:       size_t [[TILE_OFFSET_X:v[0-9]+]] = [[TILE_OFFSET_Y]] + [[TILE_X]];
-// CHECK-NEXT:       ptrdiff_t [[TILE_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFFSET_X]];
-// CHECK-NEXT:       int32_t [[TILE_OFFSET:v[0-9]+]] = (int32_t) [[TILE_OFFSET_PTR]];
-// CHECK-NEXT:       noc_async_read_tile([[TILE_OFFSET]], [[ACCESSOR]], [[ZERO]]);
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-NEXT:   noc_async_read_barrier();
-// CHECK-NEXT:   return;
+// CHECK:       size_t [[TILE_OFFSET_Y:v[0-9]+]] = [[TILE_Y]] * [[TILES_BOUND]];
+// CHECK:       size_t [[TILE_OFFSET_X:v[0-9]+]] = [[TILE_OFFSET_Y]] + [[TILE_X]];
+// CHECK:       ptrdiff_t [[TILE_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFFSET_X]];
+// CHECK:       int32_t [[TILE_OFFSET:v[0-9]+]] = (int32_t) [[TILE_OFFSET_PTR]];
+// CHECK:       noc_async_read_tile([[TILE_OFFSET]], [[ACCESSOR]], [[CB_PTR]]);
+// CHECK:     }
+// CHECK:   }
+// CHECK:   noc_async_read_barrier();
+// CHECK:   return;
 // CHECK-NEXT: }
 module {
   func.func @dma_multi_tile_read(%arg0: tensor<64x64xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %xf = ttl.copy %arg0, %cb : (tensor<64x64xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return

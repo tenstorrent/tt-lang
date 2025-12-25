@@ -13,4 +13,4 @@ add_mlir_dialect_library(MLIRTTLDialect
 
     LINK_LIBS PUBLIC
     MLIRTTCoreDialect
-    )
+)

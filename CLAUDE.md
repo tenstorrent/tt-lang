@@ -13,7 +13,7 @@ Proactively check the GitHub issues once the user wants to start writing tests o
 ## Required Reading
 
 **You MUST read these before working on tt-lang**:
-- `docs/HITCHHIKERS_GUIDE.md` - Complete DSL guide, pipeline architecture, shapes, passes, examples
+- `AGENTS.md`
 - `docs/BUILD_SYSTEM.md` - Build system architecture and integration with tt-mlir
 - `test/TESTING.md` - Python lit testing guide for D2M dialect
 

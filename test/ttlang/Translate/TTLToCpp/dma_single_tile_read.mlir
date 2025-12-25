@@ -14,19 +14,20 @@
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
-// CHECK-DAG:   int32_t [[SIZE:v[0-9]+]] = 32;
-// CHECK-DAG:   int32_t [[V1:v[0-9]+]] = 1;
-// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
+// CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[RT_ARG_IDX:v[0-9]+]]);
 // CHECK:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<32, 1>();
-// CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[ZERO]], [[ADDR]]);
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[ZERO]]);
-// CHECK-NEXT:   noc_async_read_barrier();
-// CHECK-NEXT:   return;
+// CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
+// CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);
+// CHECK:   noc_async_read_barrier();
+// CHECK:   return;
 // CHECK-NEXT: }
 module {
   func.func @dma_single(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.create_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+    %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return

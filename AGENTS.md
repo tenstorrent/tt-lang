@@ -21,6 +21,7 @@
   behavior)
 
 ## Code Style Guidelines
+- Be precise and concise. Avoid replicating code, refactor redundant implementations.
 - **C++ Style**: LLVM style (see .clang-format, .clang-tidy)
 - **Naming**: UpperCamelCase for types, lowerCamelCase for variables/functions
 - **Includes**: Absolute paths from tt-lang root, sorted: main header → local →
@@ -28,7 +29,6 @@
 - **Comments**: Full sentences, explain why not what, TODO with alias and issue
   link
 - **Python**: PEP 8 with black formatter (v23.x), Python 3.10+ only
-- **Functions**: Bottom-up order, helpers before callers, static/anonymous
   namespace for .cpp
 - **Namespaces**: Lowercase, avoid `using namespace`, no aliases in headers
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
@@ -72,10 +72,7 @@
   test. Add a concise summary on top of the test file about what is being
   tested.
 - Use `--split-input-file` for multiple lit tests in the same file.
-<<<<<<< Updated upstream
 - Use "// PREFIX-NEXT:" (for FileCheck prefix PREFIX) whenever possible instead of just "// PREFIX:"
-- Always include negative/invalid tests, which should be in a file named *_invalid.<suffix>. For invalid tests, use `--verify-diagnostics` and `expected-error @below` as well as `--split-input-file` if file contains multiple tests.
-=======
 - **Negative/invalid tests**: should be in a file named *_invalid.<suffix>. For
   invalid tests, use `--verify-diagnostics` and `expected-error @below` as well
   as `--split-input-file` if file contains multiple tests.
@@ -84,27 +81,24 @@
 - **Capture variables**: `%[[VAR:.*]]` for reuse in subsequent checks
 - **Verify data flow**: Check that operations consume correct SSA values
 - **CHECK-NOT**: Ensure unwanted operations/attributes are not present
->>>>>>> Stashed changes
 
 ## When Uncertain
 - Ask clarifying questions rather than assuming
 - If multiple valid MLIR patterns exist, present tradeoffs before implementing
 - Flag when a request conflicts with these standards
 
+## Documentation Style
+- **Tone**: Formal and technical; avoid second person ("you/your")
+- **Voice**: Use present tense descriptive style ("provides", "enables", "includes")
+- **Structure**: Keep sentences clear and concise; end with periods
+- **Content**: Explain what and why; avoid unnecessary fluff
+- **Code examples**: Include complete, runnable examples where appropriate
+- **References**: Follow LLVM documentation style: https://llvm.org/docs/
+
 ## Additional Notes
 - **Agent Design Principle**: Implement only the minimum necessary
   functionality; avoid feature creep and arbitrary expansions
-- **PR Descriptions**: Use this template:
-  ```
-  ### Problem description
-  [Explain the issue and why this change is needed]
-
-  ### What's changed
-  [Describe what was actually modified, focusing on rationale and design decisions]
-
-  ### Checklist
-  - [ ] New/Existing tests provide coverage for changes
-  ```
+- **PR Descriptions**: Use this template: .github/pull_request_template.md
 - Use `pre-commit run --all-files` before commits
 - Prefer `git mv` to deleting and adding files that are in git. Stop and ask
   user to do if you can't do it.

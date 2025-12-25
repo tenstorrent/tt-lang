@@ -18,15 +18,6 @@ Tenstorrent developers today face a choice between TT-NN which provides high-lev
 
 TT-Lang bridges this gap through progressive disclosure: simple kernels require minimal specification where the compiler infers compute API operations, NOC addressing, DST register allocation and more from high-level abstractions, while complex kernels allow developers to open the hood and craft pipelining and synchronization details directly. The primary use case is kernel fusion for model deployment. Engineers porting models through TT-NN quickly encounter operations that need to be fused for performance or patterns that TT-NN cannot express, and today this requires rewriting in TT-Metalium which takes weeks and demands undivided attention and hardware debugging expertise. TT-Lang makes this transition fast and correct: a developer can take a sequence of TT-NN operations, express the fused equivalent with explicit control over intermediate results and memory layout, validate correctness through simulation, and integrate the result as a drop-in replacement in their TT-NN graph.
 
-## Features
-
-- **Python-native DSL** - Write kernels in Python with the `@pykernel_gen` decorator
-- **Tile-level operations** - Direct control over data movement and compute at the tile level
-- **Hardware abstraction** - D2M (Data-to-Matmul) dialect for explicit DMA and compute operations
-- **MLIR-based compilation** - Leverages LLVM/MLIR infrastructure for optimization and code generation
-- **Flexible memory management** - Control over L1, DRAM, and circular buffer allocation
-- **Multi-core synchronization** - Semaphores and barriers for coordinating across cores
-
 ## Prerequisites
 
 * [CMake](https://cmake.org/) 3.28+
@@ -65,30 +56,23 @@ cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
 cmake -GNinja -Bbuild . -DCODE_COVERAGE=ON
 ```
 
+To generate the Sphinx documentation, configure with `-DTTLANG_ENABLE_DOCS`.
+
 **Note:** The `third-party/tt-mlir.commit` file contains the reference tt-mlir version. The build system ensures version compatibility automatically.
 
 ## Example
 
-Here's a simple example of using tt-lang to write a custom kernel:
+See the `examples/` and `tests/` directory for complete working examples, including:
+- `test/python/test_runtime_add.py`
+- `test/python/test_dram_interleaved_flash_attention_large.py`
 
-```python
-from ttlang import pykernel_gen, TensorBlock
-
-@pykernel_gen
-def my_kernel(input_tensor: TensorBlock, output_tensor: TensorBlock):
-    # Custom kernel implementation with tile-level operations
-    pass
-```
-
-See the `examples/` directory for complete working examples, including:
-- `custom_dm_matmul.py` - Custom data movement with matrix multiplication
-- Additional examples demonstrating DMA operations, circular buffers, and multi-core patterns
+Note: this project is currently in early prototype phase, examples are not final and may change significantly as we finalize the initial language spec and implement features.
 
 ## Documentation
 
-- [Hitchhiker's Guide](docs/HITCHHIKERS_GUIDE.md) - Complete DSL guide with examples and pipeline architecture
 - [Build System](docs/BUILD_SYSTEM.md) - Detailed build configuration options and integration scenarios
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
+- [Sphinx docs](docs/README.md) - How to build, view, and extend the documentation (docs are disabled by default; enable with `-DTTLANG_ENABLE_DOCS=ON` and build with `cmake --build build --target ttlang-docs`)
 
 ## Testing
 
@@ -140,8 +124,6 @@ python/ttlang/
     ├── utils.py          # Utility functions
     └── codegen.py        # D2M generic function creation and code generation
 ```
-
-See [docs/HITCHHIKERS_GUIDE.md](docs/HITCHHIKERS_GUIDE.md) for comprehensive DSL documentation and examples.
 
 ## Developer Guidelines
 

@@ -233,19 +233,3 @@ class CBAPI:
     def get_timeout(self) -> Optional[float]:
         """Return this simulator instance's timeout."""
         return self._timeout
-
-
-# Default global API instance and module-level aliases
-_default_api = CBAPI()
-
-host_configure_cb = _default_api.host_configure_cb
-host_reset_cb = _default_api.host_reset_cb
-cb_stats = _default_api.cb_stats
-cb_pages_available_at_front = _default_api.cb_pages_available_at_front
-cb_pages_reservable_at_back = _default_api.cb_pages_reservable_at_back
-cb_wait_front = _default_api.cb_wait_front
-cb_reserve_back = _default_api.cb_reserve_back
-cb_push_back = _default_api.cb_push_back
-cb_pop_front = _default_api.cb_pop_front
-get_read_ptr = _default_api.get_read_ptr
-get_write_ptr = _default_api.get_write_ptr
