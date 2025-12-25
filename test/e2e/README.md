@@ -1,6 +1,7 @@
 # E2E Test Framework
 
-End-to-end test framework for TTL compilation and hardware execution.
+End-to-end test framework for TTL compilation and hardware execution. It requires the tt-lang python
+environment to be activated before running the tests (e.g., `source build/env/activate`).
 
 ## Overview
 

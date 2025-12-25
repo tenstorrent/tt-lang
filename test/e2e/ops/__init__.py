@@ -32,10 +32,10 @@ class OpTestBase(E2ETestBase):
     ARITY: int  # 1 or 2 (set by UnaryOpTestBase/BinaryOpTestBase)
     INPUT_SHAPE = (2, 2)  # Grid shape in tiles
     INPUT_DTYPE = torch.bfloat16
-    
+
     # Comparison tolerance (auto-computed from dtype if None)
     ULP_THRESHOLD: Optional[float] = None
-    
+
     # Input value range
     MIN_VALUE = -1.0
     MAX_VALUE = 1.0
@@ -104,4 +104,3 @@ class BinaryOpTestBase(OpTestBase):
     """Base for binary operations (2 inputs, 1 output)."""
 
     ARITY = 2
-
