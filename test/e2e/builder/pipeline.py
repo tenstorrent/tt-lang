@@ -14,22 +14,7 @@ from typing import Optional
 from ttmlir.ir import Module
 from ttmlir.passmanager import PassManager
 
-
-def get_system_desc_path() -> str:
-    """Get the system descriptor path, generating if needed."""
-    path = os.environ.get("SYSTEM_DESC_PATH")
-    if path and os.path.exists(path):
-        return path
-
-    try:
-        from _ttmlir_runtime import runtime
-
-        system_desc = runtime.get_current_system_desc()
-        generated_path = "/tmp/ttlang_e2e_system.ttsys"
-        system_desc.store(generated_path)
-        return generated_path
-    except (ImportError, Exception) as e:
-        raise RuntimeError(f"Cannot get system descriptor: {e}")
+from .system_desc import get_system_desc_path
 
 
 def compile_ttl_to_ttkernel(

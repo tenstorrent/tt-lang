@@ -18,17 +18,7 @@ from typing import Tuple
 
 import torch
 
-
-def _torch_dtype_to_mlir_str(dtype: torch.dtype) -> str:
-    """Convert torch dtype to MLIR type string."""
-    if dtype == torch.float32:
-        return "f32"
-    elif dtype == torch.bfloat16:
-        return "bf16"
-    elif dtype == torch.float16:
-        return "f16"
-    else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
+from .dtype_utils import torch_dtype_to_mlir_str
 
 
 def _get_tensor_size(grid_shape: Tuple[int, int]) -> int:
@@ -57,7 +47,7 @@ def generate_binary_reader_mlir(
     """
     rows, cols = grid_shape
     tensor_size = _get_tensor_size(grid_shape)
-    dtype_str = _torch_dtype_to_mlir_str(dtype)
+    dtype_str = torch_dtype_to_mlir_str(dtype)
 
     return f"""
 // Reader data movement thread for binary ops: reads A and B from DRAM into CB0 and CB1.
@@ -100,7 +90,7 @@ def generate_unary_reader_mlir(
     """
     rows, cols = grid_shape
     tensor_size = _get_tensor_size(grid_shape)
-    dtype_str = _torch_dtype_to_mlir_str(dtype)
+    dtype_str = torch_dtype_to_mlir_str(dtype)
 
     return f"""
 // Reader data movement thread for unary ops: reads A from DRAM into CB0.
@@ -139,7 +129,7 @@ def generate_writer_mlir(
     """
     rows, cols = grid_shape
     tensor_size = _get_tensor_size(grid_shape)
-    dtype_str = _torch_dtype_to_mlir_str(dtype)
+    dtype_str = torch_dtype_to_mlir_str(dtype)
 
     return f"""
 // Writer data movement thread: writes output from CB{output_cb_index} to DRAM.
@@ -174,7 +164,7 @@ def generate_layout_attrs(
         MLIR string with layout attribute definitions.
     """
     rows, cols = grid_shape
-    dtype_str = _torch_dtype_to_mlir_str(dtype)
+    dtype_str = torch_dtype_to_mlir_str(dtype)
 
     return f"""
 #dram = #ttnn.buffer_type<dram>

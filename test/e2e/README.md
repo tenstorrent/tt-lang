@@ -275,13 +275,15 @@ test/e2e/
 │   ├── dm_threads.py        # Data movement thread templates
 │   ├── pipeline.py          # Pass pipeline execution
 │   ├── kernels.py           # Kernel translation utilities
-│   └── ttnn_runner.py       # TTNN device execution
+│   ├── ttnn_runner.py       # TTNN device execution
+│   ├── dtype_utils.py       # Shared dtype conversion utilities
+│   └── system_desc.py       # System descriptor utilities
 ├── ops/                     # Op tests (uses builder/)
 │   ├── __init__.py          # Auto-generation logic, base classes
 │   ├── test_simple.py       # MLIR builder validation (8 tests)
 │   ├── test_binary.py       # Auto-generated binary op tests
 │   ├── test_unary.py        # Auto-generated unary op tests
-│   └── test_fused.py        # Custom fused op examples (non-generated)
+│   └── test_fused.py        # Custom fused/MLIR op examples
 ├── examples/
 │   └── test_add_demo.py     # Full workflow demonstration (5 tests)
 ├── dsl/                     # DSL-based tests (future, uses @ttl.kernel)

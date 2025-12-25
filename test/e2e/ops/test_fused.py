@@ -28,18 +28,9 @@ from ttmlir.ir import Context, Module
 
 from ..base import E2ETestBase
 from ..config import E2EConfig
+from ..builder.dtype_utils import torch_dtype_to_mlir_str
 
 import ttlang.dialects.ttl as ttl
-
-
-def _dtype_to_mlir(dtype: torch.dtype) -> str:
-    """Convert torch dtype to MLIR type string."""
-    if dtype == torch.float32:
-        return "f32"
-    elif dtype == torch.bfloat16:
-        return "bf16"
-    else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
 
 
 class FusedOpTestBase(E2ETestBase):
@@ -142,7 +133,7 @@ class TestExpAddFused(FusedOpTestBase):
         Pattern: reader → CB0, CB1 → compute(add, exp) → CB2 → writer
         """
         rows, cols = config.grid_shape
-        dtype = _dtype_to_mlir(config.dtype)
+        dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
         return f"""
@@ -203,7 +194,7 @@ class TestReluMulFused(FusedOpTestBase):
     def get_mlir_template(self, config: E2EConfig) -> str:
         """Build MLIR with ttl.compute region containing tile_mul + tile_relu."""
         rows, cols = config.grid_shape
-        dtype = _dtype_to_mlir(config.dtype)
+        dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
         return f"""
@@ -265,7 +256,7 @@ class TestSqrtAbsFused(FusedOpTestBase):
     def get_mlir_template(self, config: E2EConfig) -> str:
         """Build MLIR with ttl.compute region containing tile_abs + tile_sqrt."""
         rows, cols = config.grid_shape
-        dtype = _dtype_to_mlir(config.dtype)
+        dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
         return f"""

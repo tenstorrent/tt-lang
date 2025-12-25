@@ -13,8 +13,6 @@ from typing import Optional
 
 import pytest
 
-from .utils import TTLCompileException, TTLRuntimeException, TTLGoldenException
-
 # Check for ttnn availability.
 try:
     import ttnn
@@ -158,26 +156,13 @@ def system_desc_path(request):
     Uses --sys-desc option if provided, SYSTEM_DESC_PATH env var,
     or generates one from the current device.
     """
-    # Check command line option first.
+    from .builder.system_desc import get_system_desc_path
+
     cli_path = request.config.getoption("--sys-desc")
-    if cli_path and os.path.exists(cli_path):
-        return cli_path
-
-    # Check environment variable.
-    env_path = os.environ.get("SYSTEM_DESC_PATH")
-    if env_path and os.path.exists(env_path):
-        return env_path
-
-    # Generate system descriptor if not provided.
     try:
-        from _ttmlir_runtime import runtime
-
-        system_desc = runtime.get_current_system_desc()
-        generated_path = "/tmp/ttlang_e2e_system.ttsys"
-        system_desc.store(generated_path)
-        return generated_path
-    except (ImportError, Exception) as e:
-        pytest.skip(f"Cannot get system descriptor: {e}")
+        return get_system_desc_path(cli_path)
+    except RuntimeError as e:
+        pytest.skip(str(e))
 
 
 @pytest.fixture

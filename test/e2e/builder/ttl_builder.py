@@ -37,35 +37,12 @@ from .dm_threads import (
     generate_writer_mlir,
     generate_layout_attrs,
 )
-
-
-def _torch_dtype_to_ttcore_datatype(dtype: torch.dtype) -> int:
-    """Convert torch dtype to ttcore DataType integer value."""
-    if dtype == torch.float32:
-        return int(ttcore.DataType.Float32)
-    elif dtype == torch.bfloat16:
-        return int(ttcore.DataType.BFloat16)
-    elif dtype == torch.float16:
-        return int(ttcore.DataType.Float16)
-    else:
-        raise ValueError(f"Unsupported dtype for tile: {dtype}")
-
-
-def _torch_dtype_to_mlir_str(dtype: torch.dtype) -> str:
-    """Convert torch dtype to MLIR type string."""
-    if dtype == torch.float32:
-        return "f32"
-    elif dtype == torch.bfloat16:
-        return "bf16"
-    elif dtype == torch.float16:
-        return "f16"
-    else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
+from .dtype_utils import torch_dtype_to_mlir_str, torch_dtype_to_ttcore_datatype
 
 
 def _get_tile_type(ctx: Context, dtype: torch.dtype):
     """Get the ttcore.tile type for the given dtype."""
-    dtype_int = _torch_dtype_to_ttcore_datatype(dtype)
+    dtype_int = torch_dtype_to_ttcore_datatype(dtype)
     return ttcore.ir.TileType.get(ctx, 32, 32, dtype_int)
 
 
@@ -79,7 +56,7 @@ def _get_tile_tensor_type(ctx: Context, config: E2EConfig):
 def _get_cb_type_str(config: E2EConfig) -> str:
     """Get the !ttl.cb type as a string for parsing."""
     rows, cols = config.grid_shape
-    dtype_str = _torch_dtype_to_mlir_str(config.dtype)
+    dtype_str = torch_dtype_to_mlir_str(config.dtype)
     return f"!ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {config.buffer_factor}>"
 
 
@@ -213,7 +190,7 @@ def build_e2e_module_mlir(
 
     # Generate compute (using string template for now since we need kernel_thread attr).
     rows, cols = grid_shape
-    dtype_str = _torch_dtype_to_mlir_str(dtype)
+    dtype_str = torch_dtype_to_mlir_str(dtype)
 
     # Get the tile op name - map from high-level op to tile op.
     tile_op_name = f"tile_{op_str}"

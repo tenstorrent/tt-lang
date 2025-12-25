@@ -8,11 +8,10 @@ Kernel specification and execution for E2E tests.
 Supports N data movement (NOC) threads and single compute thread.
 """
 
-import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import List, Tuple, Any, Optional
+from typing import List, Tuple
 
 from ttmlir.ir import Module
 from ttmlir.passes import ttkernel_to_cpp_by_name, get_ttkernel_names
@@ -107,31 +106,3 @@ def write_kernels(
         paths[kernel.name] = str(path)
 
     return paths
-
-
-def execute_kernels(
-    noc_kernels: List[KernelSpec],
-    compute_kernel: KernelSpec,
-    device_inputs: List[Any],
-    output_tensor: Any,
-    device: Any,
-) -> Any:
-    """
-    Execute kernels on device.
-
-    Args:
-        noc_kernels: List of NOC kernel specs.
-        compute_kernel: Compute kernel spec.
-        device_inputs: Input tensors on device.
-        output_tensor: Output tensor on device.
-        device: TTNN device.
-
-    Returns:
-        Result tensor.
-    """
-    # This is a placeholder - actual execution requires integration
-    # with ttnn.generic_op which will be implemented when we port
-    # the runner.py functionality.
-    raise NotImplementedError(
-        "Kernel execution not yet implemented - requires ttnn.generic_op integration"
-    )

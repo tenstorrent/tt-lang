@@ -14,13 +14,17 @@ Components:
 - dm_threads: Data movement thread templates (reader/writer).
 - pipeline: Pass pipeline execution.
 - kernels: Kernel translation utilities.
-- executor: Device execution harness.
+- ttnn_runner: Device execution harness.
+- dtype_utils: Shared dtype conversion utilities.
+- system_desc: System descriptor utilities.
 """
 
 from .ttl_builder import build_ttl_module, build_e2e_module, build_e2e_module_mlir
 from .pipeline import compile_ttl_to_ttkernel
 from .kernels import translate_module_to_kernels, write_kernels
 from .ttnn_runner import run_binary_op, run_unary_op
+from .dtype_utils import torch_dtype_to_mlir_str, torch_dtype_to_ttcore_datatype
+from .system_desc import get_system_desc_path
 
 __all__ = [
     "build_ttl_module",
@@ -31,4 +35,7 @@ __all__ = [
     "write_kernels",
     "run_binary_op",
     "run_unary_op",
+    "torch_dtype_to_mlir_str",
+    "torch_dtype_to_ttcore_datatype",
+    "get_system_desc_path",
 ]
