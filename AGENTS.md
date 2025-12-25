@@ -10,6 +10,8 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   copyright checks)
 - **Compiler tests**: `cmake --build build --target check-ttlang`
 - **Single MLIR test**: `llvm-lit test/ttlang/path/to/test.mlir`
+- **E2E tests**: `pytest test/e2e/` (end-to-end TTL compilation and execution,
+  requires `SYSTEM_DESC_PATH`)
 - **Python tests**: `pytest test/python` (requires `ttrt query --save-artifacts`
   and `SYSTEM_DESC_PATH`)
 - **Runtime tests**: `llvm-lit test/python/` (hardware execution tests, require
