@@ -1,4 +1,4 @@
-# Test configuration
+# Lit Test configuration
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
@@ -60,3 +60,17 @@ add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding te
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
 )
 set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")
+
+
+# -----------------------------------------------------------------------------
+# Pytest E2E tests configuration
+
+add_custom_target(check-ttlang-e2e
+  COMMAND ${Python_EXECUTABLE} -m pytest -v ${PYTEST_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/
+  DEPENDS TTLangPythonModules
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Running E2E pytest tests"
+  USES_TERMINAL
+  VERBATIM
+)
+set_target_properties(check-ttlang-e2e PROPERTIES FOLDER "Tests")

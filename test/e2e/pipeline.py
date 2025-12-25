@@ -71,7 +71,7 @@ def compile_ttl_to_ttkernel(
 
     pipeline_str = f"builtin.module({','.join(pipeline_passes)})"
 
-    pm = PassManager.parse(pipeline_str)
+    pm = PassManager.parse(pipeline_str, context=module.context)
     pm.enable_verifier(True)
 
     # Enable verbose output if requested.

@@ -5,7 +5,8 @@
 """
 TTL MLIR module builder for E2E tests.
 
-Generates complete TTL modules with reader, compute, and writer kernels.
+Generates TTL modules using high-level ops (ttl.add, ttl.exp, etc.) that
+can be lowered through the compiler pipeline to executable kernels.
 """
 
 from typing import List, Tuple
@@ -18,86 +19,82 @@ from ttmlir.ir import (
     InsertionPoint,
     FunctionType,
     RankedTensorType,
-    AffineMap,
-    AffineMapAttr,
-    ArrayAttr,
-    Attribute,
-    IntegerAttr,
-    IntegerType,
-    IndexType,
-    F32Type,
-    BF16Type,
+    Type as MLIRType,
 )
-from ttmlir.dialects import func, tensor
+from ttmlir.dialects import func
 from ttmlir.dialects import ttcore
 
 import ttlang.dialects.ttl as ttl
 
-from .config import TestConfig, BufferType
+from .config import E2EConfig
 
 
-def _get_mlir_element_type(ctx: Context, dtype: torch.dtype):
-    """Convert torch dtype to MLIR element type."""
+def _torch_dtype_to_ttcore_datatype(dtype: torch.dtype) -> int:
+    """Convert torch dtype to ttcore DataType integer value."""
     if dtype == torch.float32:
-        return F32Type.get(ctx)
+        return int(ttcore.DataType.Float32)
     elif dtype == torch.bfloat16:
-        return BF16Type.get(ctx)
+        return int(ttcore.DataType.BFloat16)
+    elif dtype == torch.float16:
+        return int(ttcore.DataType.Float16)
+    else:
+        raise ValueError(f"Unsupported dtype for tile: {dtype}")
+
+
+def _torch_dtype_to_mlir_str(dtype: torch.dtype) -> str:
+    """Convert torch dtype to MLIR type string."""
+    if dtype == torch.float32:
+        return "f32"
+    elif dtype == torch.bfloat16:
+        return "bf16"
+    elif dtype == torch.float16:
+        return "f16"
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
 
 def _get_tile_type(ctx: Context, dtype: torch.dtype):
     """Get the ttcore.tile type for the given dtype."""
-    elem_type = _get_mlir_element_type(ctx, dtype)
-    return ttcore.TileType.get(ctx, 32, 32, elem_type)
+    dtype_int = _torch_dtype_to_ttcore_datatype(dtype)
+    return ttcore.ir.TileType.get(ctx, 32, 32, dtype_int)
 
 
-def _get_cb_type(
-    ctx: Context, grid_shape: Tuple[int, int], dtype: torch.dtype, buffer_factor: int
-):
-    """Get the ttl.cb type for the given configuration."""
-    tile_type = _get_tile_type(ctx, dtype)
-    return ttl.ir.CBType.get(ctx, list(grid_shape), tile_type, buffer_factor)
-
-
-def _get_layout_attr(ctx: Context, config: TestConfig):
-    """Create the ttnn layout attribute for tensor types."""
-    rows, cols = config.grid_shape
-    buffer_type = "dram" if config.buffer_type == BufferType.DRAM else "l1"
-    elem_type = "f32" if config.dtype == torch.float32 else "bf16"
-
-    layout_str = (
-        f"#ttnn.ttnn_layout<"
-        f"(d0, d1) -> (d0, d1), <1x1>, "
-        f"memref<{rows}x{cols}x!ttcore.tile<32x32, {elem_type}>, #ttnn.buffer_type<{buffer_type}>>, "
-        f"<interleaved>>"
-    )
-    return Attribute.parse(layout_str, ctx)
-
-
-def _get_tensor_type_with_layout(ctx: Context, config: TestConfig):
-    """Get tensor type with TTNN layout encoding."""
-    h, w = config.tensor_shape
-    elem_type = _get_mlir_element_type(ctx, config.dtype)
-    layout = _get_layout_attr(ctx, config)
-    return RankedTensorType.get([h, w], elem_type, layout)
-
-
-def _get_tile_tensor_type(ctx: Context, config: TestConfig):
-    """Get tensor of tiles type (used in compute kernel)."""
+def _get_tile_tensor_type(ctx: Context, config: E2EConfig):
+    """Get tensor of tiles type."""
     rows, cols = config.grid_shape
     tile_type = _get_tile_type(ctx, config.dtype)
     return RankedTensorType.get([rows, cols], tile_type)
 
 
+def _get_cb_type_str(config: E2EConfig) -> str:
+    """Get the !ttl.cb type as a string for parsing."""
+    rows, cols = config.grid_shape
+    dtype_str = _torch_dtype_to_mlir_str(config.dtype)
+    return f"!ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {config.buffer_factor}>"
+
+
 def build_ttl_module(
     op_str: str,
     arity: int,
-    config: TestConfig,
+    config: E2EConfig,
     torch_inputs: List[torch.Tensor],
 ) -> Module:
     """
-    Build a complete TTL module for the given operation.
+    Build a TTL module for the given operation using high-level TTL ops.
+
+    Generates MLIR like:
+    ```mlir
+    func.func @compute_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>,
+                           %arg1: tensor<4x4x!ttcore.tile<32x32, f32>>)
+        -> tensor<4x4x!ttcore.tile<32x32, f32>> {
+      %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<...>
+      %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<...>
+      %a = ttl.attach_cb %arg0, %cb0 : ...
+      %b = ttl.attach_cb %arg1, %cb1 : ...
+      %result = ttl.add %a, %b : ...
+      func.return %result : ...
+    }
+    ```
 
     Args:
         op_str: Operation name (e.g., "add", "exp").
@@ -106,7 +103,7 @@ def build_ttl_module(
         torch_inputs: Input tensors (for shape/dtype).
 
     Returns:
-        MLIR Module containing reader, compute, and writer kernels.
+        MLIR Module containing the TTL function.
     """
     ctx = Context()
     ttl.ensure_dialects_registered(ctx)
@@ -115,215 +112,94 @@ def build_ttl_module(
 
     with ctx, loc:
         module = Module.create(loc)
+        tile_tensor_type = _get_tile_tensor_type(ctx, config)
 
         with InsertionPoint(module.body):
-            # Build reader kernel
-            _build_reader_kernel(module, arity, config, loc)
+            # Create function signature.
+            input_types = [tile_tensor_type] * arity
+            result_types = [tile_tensor_type]
+            func_type = FunctionType.get(input_types, result_types)
+            func_name = f"compute_{op_str}"
+            compute_func = func.FuncOp(func_name, func_type, loc=loc)
 
-            # Build compute kernel
-            _build_compute_kernel(module, op_str, arity, config, loc)
+            entry_block = compute_func.add_entry_block()
 
-            # Build writer kernel
-            _build_writer_kernel(module, config, loc)
+            with InsertionPoint(entry_block):
+                # Parse CB type string for bind_cb result type.
+                cb_type_str = _get_cb_type_str(config)
+                cb_type = MLIRType.parse(cb_type_str, ctx)
+
+                # Create CBs and attach to inputs.
+                attached_inputs = []
+                for i in range(arity):
+                    cb = ttl.bind_cb(
+                        cb_type,
+                        cb_index=i,
+                        buffer_factor=config.buffer_factor,
+                        loc=loc,
+                    )
+                    attached = ttl.attach_cb(
+                        tile_tensor_type,
+                        entry_block.arguments[i],
+                        cb,
+                        loc=loc,
+                    )
+                    attached_inputs.append(attached)
+
+                # Create output CB (required for convert-ttl-to-compute pass).
+                output_cb = ttl.bind_cb(
+                    cb_type,
+                    cb_index=arity,  # Next index after inputs.
+                    buffer_factor=config.buffer_factor,
+                    loc=loc,
+                )
+
+                # Apply the operation.
+                op_func = getattr(ttl, op_str, None)
+                if op_func is None:
+                    raise ValueError(f"Unknown TTL op: ttl.{op_str}")
+
+                if arity == 1:
+                    result = op_func(
+                        tile_tensor_type,
+                        attached_inputs[0],
+                        loc=loc,
+                    )
+                elif arity == 2:
+                    result = op_func(
+                        tile_tensor_type,
+                        attached_inputs[0],
+                        attached_inputs[1],
+                        loc=loc,
+                    )
+                else:
+                    raise ValueError(f"Unsupported arity: {arity}")
+
+                func.ReturnOp([result], loc=loc)
 
         module.operation.verify()
 
     return module
 
 
-def _build_reader_kernel(module, arity, config, loc):
-    """Build the reader kernel (NOC thread)."""
-    ctx = module.context
-    tensor_type = _get_tensor_type_with_layout(ctx, config)
-    input_types = [tensor_type] * arity
+def build_ttl_module_from_mlir(mlir_str: str) -> Module:
+    """
+    Build a TTL module from an MLIR string.
 
-    func_type = FunctionType.get(input_types, [])
-    reader_name = f"reader_{'binary' if arity == 2 else 'unary'}"
-    reader_func = func.FuncOp(reader_name, func_type, loc=loc)
+    This allows tests to provide custom MLIR for edge cases that are
+    difficult to generate programmatically.
 
-    thread_attr = Attribute.parse("#ttkernel.thread<noc>", ctx)
-    reader_func.attributes["ttl.kernel_thread"] = thread_attr
+    Args:
+        mlir_str: The MLIR source code as a string.
 
-    entry_block = reader_func.add_entry_block()
+    Returns:
+        MLIR Module parsed from the string.
+    """
+    ctx = Context()
+    ttl.ensure_dialects_registered(ctx)
 
-    with InsertionPoint(entry_block):
-        cb_type = _get_cb_type(
-            ctx, config.grid_shape, config.dtype, config.buffer_factor
-        )
+    with ctx:
+        module = Module.parse(mlir_str, ctx)
+        module.operation.verify()
 
-        for i in range(arity):
-            cb_index = IntegerAttr.get(IndexType.get(ctx), i)
-            buffer_factor = IntegerAttr.get(
-                IntegerType.get_signless(64, ctx), config.buffer_factor
-            )
-
-            cb = ttl.bind_cb(
-                cb_type, cb_index=cb_index, buffer_factor=buffer_factor, loc=loc
-            )
-
-            tensor_arg = entry_block.arguments[i]
-            xf_type = ttl.ir.TransferHandleType.get(ctx, read=True)
-            xf = ttl.copy(xf_type, tensor_arg, cb, loc=loc)
-            ttl.wait(xf, loc=loc)
-
-        func.ReturnOp([], loc=loc)
-
-
-def _build_compute_kernel(module, op_str, arity, config, loc):
-    """Build the compute kernel (compute thread) with tile operation."""
-    ctx = module.context
-    tile_tensor_type = _get_tile_tensor_type(ctx, config)
-    input_types = [tile_tensor_type] * arity
-    result_types = [tile_tensor_type]
-
-    func_type = FunctionType.get(input_types, result_types)
-    compute_name = f"compute_{op_str}"
-    compute_func = func.FuncOp(compute_name, func_type, loc=loc)
-
-    thread_attr = Attribute.parse("#ttkernel.thread<compute>", ctx)
-    compute_func.attributes["ttl.kernel_thread"] = thread_attr
-
-    entry_block = compute_func.add_entry_block()
-
-    with InsertionPoint(entry_block):
-        output = tensor.EmptyOp(tile_tensor_type, [], loc=loc).result
-
-        cb_type_compute = _get_cb_type(ctx, config.grid_shape, config.dtype, 1)
-
-        cbs = []
-        for i in range(arity + 1):
-            cb_index = IntegerAttr.get(IndexType.get(ctx), i)
-            buffer_factor = IntegerAttr.get(IntegerType.get_signless(64, ctx), 1)
-            cb = ttl.bind_cb(
-                cb_type_compute,
-                cb_index=cb_index,
-                buffer_factor=buffer_factor,
-                loc=loc,
-            )
-            cbs.append(cb)
-
-        input_ready = []
-        for i in range(arity):
-            ready = ttl.cb_wait(tile_tensor_type, cbs[i], loc=loc)
-            input_ready.append(ready)
-
-        output_cb_idx = arity
-        output_attached = ttl.attach_cb(
-            tile_tensor_type, output, cbs[output_cb_idx], loc=loc
-        )
-
-        result = _build_compute_region(
-            ctx,
-            op_str,
-            arity,
-            input_ready,
-            output_attached,
-            cbs[output_cb_idx],
-            config,
-            loc,
-        )
-
-        func.ReturnOp([result], loc=loc)
-
-
-def _build_compute_region(ctx, op_str, arity, inputs, output, output_cb, config, loc):
-    """Build the ttl.compute region with the tile operation."""
-    tile_tensor_type = _get_tile_tensor_type(ctx, config)
-    tile_type = _get_tile_type(ctx, config.dtype)
-
-    rows, cols = config.grid_shape
-    identity_map = AffineMap.get_identity(2, context=ctx)
-
-    num_operands = arity + 1
-    indexing_maps = ArrayAttr.get(
-        [AffineMapAttr.get(identity_map) for _ in range(num_operands)], ctx
-    )
-
-    iterator_types = ArrayAttr.get(
-        [Attribute.parse("#linalg.iterator_type<parallel>", ctx) for _ in range(2)],
-        ctx,
-    )
-
-    compute_op = ttl.ComputeOp(
-        result=[tile_tensor_type],
-        inputs=inputs,
-        outputs=[output],
-        indexing_maps=indexing_maps,
-        iterator_types=iterator_types,
-        loc=loc,
-    )
-
-    body_arg_types = [tile_type] * (arity + 1)
-    body_block = compute_op.body.blocks.append(*body_arg_types)
-
-    with InsertionPoint(body_block):
-        input_tiles = [body_block.arguments[i] for i in range(arity)]
-
-        # Apply tile operation
-        tile_op_name = f"tile_{op_str}"
-        if not hasattr(ttl, tile_op_name):
-            raise ValueError(f"Unknown tile op: {tile_op_name}")
-
-        tile_op_func = getattr(ttl, tile_op_name)
-
-        if arity == 1:
-            result_tile = tile_op_func(input_tiles[0], loc=loc)
-        elif arity == 2:
-            result_tile = tile_op_func(input_tiles[0], input_tiles[1], loc=loc)
-        else:
-            raise ValueError(f"Unsupported arity: {arity}")
-
-        result_view = ttl.cb_reserve(tile_tensor_type, output_cb, loc=loc)
-        ttl.store(result_tile, result_view, loc=loc)
-        ttl.cb_push(output_cb, loc=loc)
-
-        ttl.YieldOp([result_tile], loc=loc)
-
-    return compute_op.results[0]
-
-
-def _build_writer_kernel(module, config, loc):
-    """Build the writer kernel (NOC thread)."""
-    ctx = module.context
-    tensor_type = _get_tensor_type_with_layout(ctx, config)
-    func_type = FunctionType.get([tensor_type], [])
-
-    writer_name = "writer_unary"
-    writer_func = func.FuncOp(writer_name, func_type, loc=loc)
-
-    thread_attr = Attribute.parse("#ttkernel.thread<noc>", ctx)
-    writer_func.attributes["ttl.kernel_thread"] = thread_attr
-
-    entry_block = writer_func.add_entry_block()
-
-    with InsertionPoint(entry_block):
-        # Output CB is at index = arity (but we don't know arity here, assume index from compute)
-        # For simplicity, use a fixed index
-        output_cb_index = 2  # Assuming binary op (0, 1 for inputs, 2 for output)
-
-        cb_type = _get_cb_type(
-            ctx, config.grid_shape, config.dtype, config.buffer_factor
-        )
-
-        cb_index_attr = IntegerAttr.get(IndexType.get(ctx), output_cb_index)
-        buffer_factor_attr = IntegerAttr.get(
-            IntegerType.get_signless(64, ctx), config.buffer_factor
-        )
-
-        cb = ttl.bind_cb(
-            cb_type,
-            cb_index=cb_index_attr,
-            buffer_factor=buffer_factor_attr,
-            loc=loc,
-        )
-
-        tile_tensor_type = _get_tile_tensor_type(ctx, config)
-        view = ttl.cb_wait(tile_tensor_type, cb, loc=loc)
-
-        out_tensor = entry_block.arguments[0]
-        xf_type = ttl.ir.TransferHandleType.get(ctx, read=False)
-        xf = ttl.copy(xf_type, cb, out_tensor, loc=loc)
-
-        ttl.wait(xf, loc=loc)
-
-        func.ReturnOp([], loc=loc)
+    return module

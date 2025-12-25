@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from ..base import E2ETestBase
-from ..config import TestConfig, SMOKE_CONFIGS
+from ..config import E2EConfig, SMOKE_CONFIGS
 from ..ops_gen import OP_TORCH_MAP
 
 
@@ -51,9 +51,9 @@ class OpTestBase(E2ETestBase):
         return OP_TORCH_MAP[self.OP_STR]
 
     @pytest.fixture(scope="class")
-    def config(self) -> TestConfig:
+    def config(self) -> E2EConfig:
         """Get test configuration."""
-        return TestConfig(
+        return E2EConfig(
             grid_shape=self.INPUT_SHAPE,
             dtype=self.INPUT_DTYPE,
         )
@@ -63,6 +63,7 @@ class OpTestBase(E2ETestBase):
         """Get input value range."""
         return self.INPUT_RANGE or (self.MIN_VALUE, self.MAX_VALUE)
 
+    @pytest.mark.order(1)
     def test_build_module(self, config, input_range):
         """Build TTL module from OP_STR."""
         from ..ttl_builder import build_ttl_module
@@ -82,7 +83,7 @@ class OpTestBase(E2ETestBase):
             self.OP_STR, self.ARITY, config, torch_inputs
         )
 
-    @pytest.mark.order(after=["test_execute", "test_build_module"])
+    @pytest.mark.order(5)
     def test_validate_golden(self, torch_op):
         """Validate result against torch golden."""
         from ..utils import compare_tensors

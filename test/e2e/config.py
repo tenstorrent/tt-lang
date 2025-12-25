@@ -33,8 +33,8 @@ class BufferType(Enum):
 
 
 @dataclass(frozen=True)
-class TestConfig:
-    """Complete test configuration."""
+class E2EConfig:
+    """Complete test configuration for E2E tests."""
 
     # Tile dimensions (fixed for Tenstorrent hardware).
     tile_h: int = 32
@@ -88,9 +88,9 @@ def make_config(
     buffer_factor: int = 1,
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED,
     buffer_type: BufferType = BufferType.DRAM,
-) -> TestConfig:
-    """Helper to create TestConfig with defaults."""
-    return TestConfig(
+) -> E2EConfig:
+    """Helper to create E2EConfig with defaults."""
+    return E2EConfig(
         grid_shape=grid_shape,
         dtype=dtype,
         buffer_factor=buffer_factor,

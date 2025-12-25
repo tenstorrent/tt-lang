@@ -42,6 +42,10 @@ def pytest_configure(config):
         "markers",
         "only_target(*targets): run test only on specific hardware targets",
     )
+    config.addinivalue_line(
+        "markers",
+        "order(after=...): specify test execution order (requires pytest-order)",
+    )
 
 
 def pytest_addoption(parser):
@@ -121,27 +125,6 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(
                     pytest.mark.skip(reason=f"Only runs on {targets}. {reason}")
                 )
-
-
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_call(item: pytest.Item):
-    """
-    Classify failure stage during test execution.
-
-    Distinguishes between compile, runtime, and golden failures.
-    """
-    outcome = yield
-    try:
-        outcome.get_result()
-    except TTLCompileException:
-        # Compilation failure
-        raise
-    except TTLRuntimeException:
-        # Runtime execution failure
-        raise
-    except TTLGoldenException:
-        # Golden comparison failure
-        raise
 
 
 @pytest.fixture(scope="session")
