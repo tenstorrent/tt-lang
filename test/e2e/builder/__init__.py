@@ -13,13 +13,22 @@ Components:
 - ttl_builder: Build TTL modules programmatically.
 - dm_threads: Data movement thread templates (reader/writer).
 - pipeline: Pass pipeline execution.
-- kernels: Kernel execution utilities.
+- kernels: Kernel translation utilities.
+- executor: Device execution harness.
 """
 
-from .ttl_builder import build_ttl_module
+from .ttl_builder import build_ttl_module, build_e2e_module, build_e2e_module_mlir
 from .pipeline import compile_ttl_to_ttkernel
+from .kernels import translate_module_to_kernels, write_kernels
+from .ttnn_runner import run_binary_op, run_unary_op
 
 __all__ = [
     "build_ttl_module",
+    "build_e2e_module",
+    "build_e2e_module_mlir",
     "compile_ttl_to_ttkernel",
+    "translate_module_to_kernels",
+    "write_kernels",
+    "run_binary_op",
+    "run_unary_op",
 ]

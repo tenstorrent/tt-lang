@@ -274,7 +274,8 @@ test/e2e/
 │   ├── ttl_builder.py       # Build TTL modules via Python bindings
 │   ├── dm_threads.py        # Data movement thread templates
 │   ├── pipeline.py          # Pass pipeline execution
-│   └── kernels.py           # Kernel execution utilities
+│   ├── kernels.py           # Kernel translation utilities
+│   └── ttnn_runner.py       # TTNN device execution
 ├── ops/                     # Op tests (uses builder/)
 │   ├── __init__.py          # Auto-generation logic, base classes
 │   ├── test_simple.py       # MLIR builder validation (8 tests)
@@ -337,10 +338,9 @@ TTL_BINARY_TILE_OP(Add, AddTileOp)
 # 5. test_validate_golden  - Compare with torch golden
 ```
 
-But execution requires:
-- Kernel compilation infrastructure
-- Hardware execution via ttnn
-- Result extraction and comparison
+But execution is blocked by:
+- **TensorAccessorArgs template issues**: Generated C++ dataflow kernels use incorrect TensorAccessorArgs constructor
+- Once fixed, execution via `ttnn.generic_op` and golden comparison will work
 
 ### Test Result Caching (Optional Optimization)
 

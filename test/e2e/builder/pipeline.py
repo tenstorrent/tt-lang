@@ -38,6 +38,8 @@ def compile_ttl_to_ttkernel(
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
 
+    Mirrors the pipeline from TTLPipelines.cpp but with proper nesting.
+
     Args:
         module: TTL MLIR module to compile.
         system_desc_path: Path to system descriptor (auto-detected if not provided).
@@ -48,28 +50,27 @@ def compile_ttl_to_ttkernel(
     if system_desc_path is None:
         system_desc_path = get_system_desc_path()
 
-    # Build the pass pipeline.
-    pipeline_passes = [
-        # Register device.
-        f"ttcore-register-device{{system-desc-path={system_desc_path}}}",
-        # TTL to compute conversion.
-        "func.func(convert-ttl-to-compute)",
-        "func.func(ttl-tile-and-assign-dst)",
-        "func.func(ttl-insert-tile-regs-sync)",
-        "func.func(ttl-lower-to-loops)",
-        "func.func(ttl-annotate-cb-associations)",
-        # TTL to TTKernel conversion.
-        "convert-ttl-to-ttkernel",
-        # Cleanup.
-        "canonicalize",
-        "cse",
-        # Lower affine and convert to EmitC.
-        "lower-affine",
-        "convert-ttkernel-to-emitc",
-        "canonicalize",
-    ]
-
-    pipeline_str = f"builtin.module({','.join(pipeline_passes)})"
+    # Build the pass pipeline matching TTLPipelines.cpp.
+    # func.func passes run on each function, module passes run on module.
+    pipeline_str = (
+        f"builtin.module("
+        f"ttcore-register-device{{system-desc-path={system_desc_path}}},"
+        # TTL to compute conversion (runs on each function).
+        f"func.func(convert-ttl-to-compute,"
+        f"ttl-tile-and-assign-dst,"
+        f"ttl-insert-tile-regs-sync,"
+        f"ttl-lower-to-loops,"
+        f"ttl-annotate-cb-associations),"
+        # TTL to TTKernel conversion (module-level pass).
+        f"convert-ttl-to-ttkernel,"
+        f"canonicalize,"
+        f"cse,"
+        # Lower to EmitC.
+        f"lower-affine,"
+        f"convert-ttkernel-to-emitc,"
+        f"canonicalize"
+        f")"
+    )
 
     pm = PassManager.parse(pipeline_str, context=module.context)
     pm.enable_verifier(True)

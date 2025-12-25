@@ -13,6 +13,10 @@ TTLElementwiseOps.def. Use this pattern for:
 
 These tests use MLIR string templates to build ttl.compute regions with
 multiple tile operations fused together.
+
+NOTE: Currently, fused ops only test the compute lowering (stages 1-2).
+Full E2E execution (stages 3-5) requires generating reader/writer threads,
+which is not yet implemented for fused ops.
 """
 
 from typing import Tuple
@@ -75,6 +79,14 @@ class FusedOpTestBase(E2ETestBase):
         """
         raise NotImplementedError("Subclasses must implement get_mlir_template()")
 
+    @pytest.mark.order(3)
+    @pytest.mark.skip(
+        reason="Fused ops don't generate reader/writer threads - compute only"
+    )
+    def test_translate_to_cpp(self) -> None:
+        """Skip translation for fused ops - they don't have reader/writer threads."""
+        pass
+
     @pytest.mark.order(1)
     def test_build_module(self, config: E2EConfig) -> None:
         """Build TTL module for fused op from MLIR template."""
@@ -133,7 +145,7 @@ class TestExpAddFused(FusedOpTestBase):
         dtype = _dtype_to_mlir(config.dtype)
         bf = config.buffer_factor
 
-        return f'''
+        return f"""
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 module {{
@@ -171,7 +183,7 @@ module {{
     func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
   }}
 }}
-'''
+"""
 
 
 class TestReluMulFused(FusedOpTestBase):
@@ -194,7 +206,7 @@ class TestReluMulFused(FusedOpTestBase):
         dtype = _dtype_to_mlir(config.dtype)
         bf = config.buffer_factor
 
-        return f'''
+        return f"""
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 module {{
@@ -232,7 +244,7 @@ module {{
     func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
   }}
 }}
-'''
+"""
 
 
 class TestSqrtAbsFused(FusedOpTestBase):
@@ -256,7 +268,7 @@ class TestSqrtAbsFused(FusedOpTestBase):
         dtype = _dtype_to_mlir(config.dtype)
         bf = config.buffer_factor
 
-        return f'''
+        return f"""
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 module {{
@@ -289,4 +301,4 @@ module {{
     func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
   }}
 }}
-'''
+"""

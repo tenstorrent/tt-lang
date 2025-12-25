@@ -194,3 +194,23 @@ def compare_tensors(
         f"|{calculated[pos]:.6f} - {golden[pos]:.6f}| / {ulp_value[pos]:.6e}"
     )
     return ComparisonResult(False, max_ulp, mean_ulp, msg)
+
+
+def compare_tensors_ulp(
+    result: torch.Tensor,
+    golden: torch.Tensor,
+) -> tuple[float, float]:
+    """
+    Compute ULP statistics for tensor comparison.
+
+    Simple utility that returns (max_ulp, mean_ulp) for use in assertions.
+
+    Args:
+        result: Actual tensor.
+        golden: Expected tensor.
+
+    Returns:
+        Tuple of (max_ulp, mean_ulp).
+    """
+    comparison = compare_tensors(golden, result)
+    return comparison.max_ulp, comparison.mean_ulp

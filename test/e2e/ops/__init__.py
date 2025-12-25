@@ -126,10 +126,13 @@ class OpTestBase(E2ETestBase):
 
     @pytest.mark.order(1)
     def test_build_module(
-        self, config: E2EConfig, input_range: Tuple[float, float]
+        self,
+        config: E2EConfig,
+        input_range: Tuple[float, float],
+        torch_op: Callable[..., Tensor],
     ) -> None:
-        """Build TTL module from OP_STR."""
-        from ..builder.ttl_builder import build_ttl_module
+        """Build full E2E TTL module (reader, compute, writer) from OP_STR."""
+        from ..builder.ttl_builder import build_e2e_module_mlir
 
         # Generate random inputs.
         lo, hi = input_range
@@ -138,24 +141,31 @@ class OpTestBase(E2ETestBase):
             t = torch.rand(config.tensor_shape, dtype=config.dtype) * (hi - lo) + lo
             torch_inputs.append(t)
 
-        # Build module.
-        module = build_ttl_module(self.OP_STR, self.ARITY, config, torch_inputs)
-        assert module is not None
+        # Compute golden using torch.
+        if self.ARITY == 1:
+            golden = torch_op(torch_inputs[0])
+        else:
+            golden = torch_op(torch_inputs[0], torch_inputs[1])
+
+        # Build full E2E module with reader, compute, and writer threads.
+        mlir_str = build_e2e_module_mlir(self.OP_STR, self.ARITY, config)
+        assert mlir_str is not None
 
         # Save module to file for subsequent stages.
         module_file = self.output_file("module.mlir")
         with open(module_file, "w") as f:
-            f.write(str(module))
+            f.write(mlir_str)
 
-        # Save inputs for golden comparison.
+        # Save inputs and golden for execution and validation.
         torch.save(torch_inputs, self.output_file("inputs.pt"))
+        torch.save(golden, self.output_file("golden.pt"))
 
-        # Verify MLIR contains expected operation.
-        mlir_str = str(module)
-        assert (
-            f"ttl.{self.OP_STR}" in mlir_str
-            or f"func.func @compute_{self.OP_STR}" in mlir_str
-        )
+        # Verify MLIR contains expected threads.
+        assert f"@compute_{self.OP_STR}" in mlir_str
+        assert "@reader" in mlir_str
+        assert "@writer" in mlir_str
+        assert "ttl.kernel_thread = #ttkernel.thread<compute>" in mlir_str
+        assert "ttl.kernel_thread = #ttkernel.thread<noc>" in mlir_str
 
 
 class UnaryOpTestBase(OpTestBase):

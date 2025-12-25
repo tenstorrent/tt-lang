@@ -7,9 +7,13 @@ TTL MLIR module builder for E2E tests.
 
 Generates TTL modules using high-level ops (ttl.add, ttl.exp, etc.) that
 can be lowered through the compiler pipeline to executable kernels.
+
+Two modes:
+1. Compute-only: Just the compute function (for unit testing compiler passes).
+2. Full E2E: Reader, compute, and writer functions (for device execution).
 """
 
-from typing import List, Tuple
+from typing import List
 
 import torch
 from ttmlir.ir import (
@@ -27,6 +31,12 @@ from ttmlir.dialects import ttcore
 import ttlang.dialects.ttl as ttl
 
 from ..config import E2EConfig
+from .dm_threads import (
+    generate_binary_reader_mlir,
+    generate_unary_reader_mlir,
+    generate_writer_mlir,
+    generate_layout_attrs,
+)
 
 
 def _torch_dtype_to_ttcore_datatype(dtype: torch.dtype) -> int:
@@ -80,21 +90,9 @@ def build_ttl_module(
     torch_inputs: List[torch.Tensor],
 ) -> Module:
     """
-    Build a TTL module for the given operation using high-level TTL ops.
+    Build a compute-only TTL module for the given operation.
 
-    Generates MLIR like:
-    ```mlir
-    func.func @compute_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>,
-                           %arg1: tensor<4x4x!ttcore.tile<32x32, f32>>)
-        -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-      %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<...>
-      %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<...>
-      %a = ttl.attach_cb %arg0, %cb0 : ...
-      %b = ttl.attach_cb %arg1, %cb1 : ...
-      %result = ttl.add %a, %b : ...
-      func.return %result : ...
-    }
-    ```
+    This generates just the compute function without reader/writer threads.
 
     Args:
         op_str: Operation name (e.g., "add", "exp").
@@ -103,7 +101,7 @@ def build_ttl_module(
         torch_inputs: Input tensors (for shape/dtype).
 
     Returns:
-        MLIR Module containing the TTL function.
+        MLIR Module containing the TTL compute function.
     """
     ctx = Context()
     ttl.ensure_dialects_registered(ctx)
@@ -180,6 +178,159 @@ def build_ttl_module(
         module.operation.verify()
 
     return module
+
+
+def build_e2e_module_mlir(
+    op_str: str,
+    arity: int,
+    config: E2EConfig,
+) -> str:
+    """
+    Build complete E2E MLIR module string with reader, compute, and writer threads.
+
+    This generates a full module suitable for device execution.
+
+    Args:
+        op_str: Operation name (e.g., "add", "exp").
+        arity: Number of inputs (1 or 2).
+        config: Test configuration.
+
+    Returns:
+        MLIR source string with all three thread functions.
+    """
+    grid_shape = config.grid_shape
+    dtype = config.dtype
+    buffer_factor = config.buffer_factor
+
+    # Generate layout attributes.
+    layout_attrs = generate_layout_attrs(grid_shape, dtype)
+
+    # Generate reader.
+    if arity == 2:
+        reader_mlir = generate_binary_reader_mlir(grid_shape, dtype, buffer_factor)
+    else:
+        reader_mlir = generate_unary_reader_mlir(grid_shape, dtype, buffer_factor)
+
+    # Generate compute (using string template for now since we need kernel_thread attr).
+    rows, cols = grid_shape
+    dtype_str = _torch_dtype_to_mlir_str(dtype)
+
+    # Get the tile op name - map from high-level op to tile op.
+    tile_op_name = f"tile_{op_str}"
+
+    if arity == 2:
+        compute_mlir = f"""
+// Compute thread for {op_str} binary operation.
+func.func @compute_{op_str}(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>,
+                            %arg1: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
+    -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+    attributes {{ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+  %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+
+  // Wait for data from reader.
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+  %output_cb = ttl.attach_cb %output, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+
+  // Compute using ttl.compute with tile op.
+  %result = ttl.compute
+      ins(%a, %b : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>,
+                   tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
+      outs(%output_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
+      {{indexing_maps = [#map, #map, #map],
+       iterator_types = ["parallel", "parallel"]}} {{
+  ^bb0(%a_tile: !ttcore.tile<32x32, {dtype_str}>,
+       %b_tile: !ttcore.tile<32x32, {dtype_str}>,
+       %out_tile: !ttcore.tile<32x32, {dtype_str}>):
+    %sum = ttl.{tile_op_name} %a_tile, %b_tile : !ttcore.tile<32x32, {dtype_str}>
+    %result_view = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+    ttl.store %sum, %result_view : !ttcore.tile<32x32, {dtype_str}>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+    ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+    ttl.yield %sum : !ttcore.tile<32x32, {dtype_str}>
+  }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+
+  func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+}}
+"""
+        output_cb_index = 2
+    else:
+        compute_mlir = f"""
+// Compute thread for {op_str} unary operation.
+func.func @compute_{op_str}(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
+    -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+    attributes {{ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+  %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+  %cb_out = ttl.bind_cb {{cb_index = 1, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+
+  // Wait for data from reader.
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+  %output_cb = ttl.attach_cb %output, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+
+  // Compute using ttl.compute with tile op.
+  %result = ttl.compute
+      ins(%a : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
+      outs(%output_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
+      {{indexing_maps = [#map, #map],
+       iterator_types = ["parallel", "parallel"]}} {{
+  ^bb0(%a_tile: !ttcore.tile<32x32, {dtype_str}>,
+       %out_tile: !ttcore.tile<32x32, {dtype_str}>):
+    %res = ttl.{tile_op_name} %a_tile : !ttcore.tile<32x32, {dtype_str}>
+    %result_view = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+    ttl.store %res, %result_view : !ttcore.tile<32x32, {dtype_str}>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+    ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+    ttl.yield %res : !ttcore.tile<32x32, {dtype_str}>
+  }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+
+  func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
+}}
+"""
+        output_cb_index = 1
+
+    # Generate writer.
+    writer_mlir = generate_writer_mlir(
+        grid_shape, dtype, buffer_factor, output_cb_index
+    )
+
+    # Combine into full module.
+    return f"""// Auto-generated E2E MLIR module for {op_str} operation.
+// Arity: {arity}, Grid: {grid_shape}, Dtype: {dtype}
+
+{layout_attrs}
+
+module {{
+{reader_mlir}
+{compute_mlir}
+{writer_mlir}
+}}
+"""
+
+
+def build_e2e_module(
+    op_str: str,
+    arity: int,
+    config: E2EConfig,
+) -> Module:
+    """
+    Build complete E2E TTL module with reader, compute, and writer threads.
+
+    This generates a full module suitable for device execution.
+
+    Args:
+        op_str: Operation name (e.g., "add", "exp").
+        arity: Number of inputs (1 or 2).
+        config: Test configuration.
+
+    Returns:
+        MLIR Module with all three thread functions.
+    """
+    mlir_str = build_e2e_module_mlir(op_str, arity, config)
+    return build_ttl_module_from_mlir(mlir_str)
 
 
 def build_ttl_module_from_mlir(mlir_str: str) -> Module:
