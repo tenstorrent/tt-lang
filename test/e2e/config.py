@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Configuration specifications for middle-end tests.
+Configuration specifications for E2E tests.
 
 Defines test configurations including tile shapes, data types,
 memory layouts, and buffering options.
@@ -69,64 +69,17 @@ class TestConfig:
         return f"{self.grid_shape[0]}x{self.grid_shape[1]}_{dtype_str}_{layout}"
 
 
-# =============================================================================
-# Grid Shapes by Size Category
-# =============================================================================
-
 # Minimal grid shapes (fast tests).
-MINIMAL_GRIDS = [
-    (1, 1),  # Single tile.
-]
+MINIMAL_GRIDS = [(1, 1)]
 
 # Small grid shapes (typical unit tests).
-SMALL_GRIDS = [
-    (1, 1),
-    (2, 2),
-    (1, 4),
-    (4, 1),
-]
+SMALL_GRIDS = [(1, 1), (2, 2), (1, 4), (4, 1)]
 
 # Medium grid shapes (integration tests).
-MEDIUM_GRIDS = [
-    (4, 4),
-    (2, 8),
-    (8, 2),
-]
+MEDIUM_GRIDS = [(4, 4), (2, 8), (8, 2)]
 
 # Large grid shapes (stress tests).
-LARGE_GRIDS = [
-    (8, 8),
-    (4, 16),
-    (16, 4),
-]
-
-# =============================================================================
-# Shape + Layout Combinations (for sharded configs)
-# =============================================================================
-
-# Block-sharded configurations: (grid_shape, core_grid).
-BLOCK_SHARDED_CONFIGS = [
-    ((2, 2), (1, 1)),
-    ((4, 4), (1, 1)),
-    ((8, 8), (3, 3)),
-]
-
-# Height-sharded configurations: (grid_shape, core_grid).
-HEIGHT_SHARDED_CONFIGS = [
-    ((4, 1), (3, 0)),
-    ((8, 2), (7, 0)),
-]
-
-# Width-sharded configurations: (grid_shape, core_grid).
-WIDTH_SHARDED_CONFIGS = [
-    ((1, 4), (0, 3)),
-    ((2, 8), (0, 7)),
-]
-
-
-# =============================================================================
-# Standard Configuration Sets
-# =============================================================================
+LARGE_GRIDS = [(8, 8), (4, 16), (16, 4)]
 
 
 def make_config(
@@ -147,40 +100,13 @@ def make_config(
 
 
 # Minimal configuration for quick smoke tests.
-SMOKE_CONFIGS = [
-    make_config((1, 1)),
-]
+SMOKE_CONFIGS = [make_config((1, 1))]
 
 # Standard test configurations.
 CONFIGS = [
-    # Basic single-buffer configurations.
     make_config((1, 1)),  # Single tile.
     make_config((2, 2)),  # 2x2 grid.
-    # Double-buffered configurations.
-    make_config((2, 2), buffer_factor=2),
-    # Different data types.
-    make_config((2, 2), dtype=torch.float32),
-    # Larger grids.
-    make_config((4, 4)),
-]
-
-# Extended configurations for thorough testing.
-EXTENDED_CONFIGS = CONFIGS + [
-    make_config((8, 8)),
-    make_config((2, 2), memory_layout=MemoryLayout.HEIGHT_SHARDED),
-]
-
-# DRAM interleaved configurations (various shapes).
-DRAM_INTERLEAVED_CONFIGS = [make_config(grid) for grid in SMALL_GRIDS + MEDIUM_GRIDS]
-
-# L1 configurations (for performance testing).
-L1_CONFIGS = [make_config(grid, buffer_type=BufferType.L1) for grid in SMALL_GRIDS]
-
-# Double-buffer configurations.
-DOUBLE_BUFFER_CONFIGS = [make_config(grid, buffer_factor=2) for grid in SMALL_GRIDS]
-
-# All data types.
-DTYPE_CONFIGS = [
-    make_config((2, 2), dtype=torch.bfloat16),
-    make_config((2, 2), dtype=torch.float32),
+    make_config((2, 2), buffer_factor=2),  # Double-buffered.
+    make_config((2, 2), dtype=torch.float32),  # Different dtype.
+    make_config((4, 4)),  # Larger grid.
 ]

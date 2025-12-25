@@ -1,5 +1,6 @@
 # Development dependencies
-pytest
+pytest>=7.0
+pytest-order>=1.0.0
 black
 sphinx
 myst-parser
