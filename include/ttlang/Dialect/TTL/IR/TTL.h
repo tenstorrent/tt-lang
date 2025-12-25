@@ -32,9 +32,6 @@ class TTLTileOpTrait : public OpTrait::TraitBase<ConcreteType, TTLTileOpTrait> {
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 
-/// Marker for the tile loops generated during TTL to TTKernel lowering.
-inline constexpr llvm::StringLiteral kTileLoopMarker = "ttkernel.tile_loop";
-
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait
@@ -71,9 +68,6 @@ inline std::optional<int64_t> getCBIndexAttr(Operation *compute,
   }
   return std::nullopt;
 }
-
-/// Check if an operation is marked as a tile loop from TTL lowering.
-inline bool isTileLoop(Operation *op) { return op->hasAttr(kTileLoopMarker); }
 
 } // namespace mlir::tt::ttl
 

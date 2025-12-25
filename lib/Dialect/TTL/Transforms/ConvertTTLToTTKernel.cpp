@@ -510,12 +510,6 @@ emitTileLoop(OpBuilder &builder, Location loc, int64_t tilesY, int64_t tilesX,
 
           emitBody(b, bodyLoc, offset32);
         });
-
-    // Mark all generated loops with the tile loop marker attribute.
-    auto marker = builder.getUnitAttr();
-    for (scf::ForOp loop : loopNest.loops) {
-      loop->setAttr(kTileLoopMarker, marker);
-    }
   } else {
     // Single tile: offset is always 0
     Value zero32 = builder.create<arith::ConstantIntOp>(loc, 0, 32);
@@ -583,98 +577,116 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
       continue;
     }
 
-    // Check that all operands for all copies in the group dominate the
-    // insertion point (first copy). If any operand is defined between copies,
-    // skip fusion to avoid use-before-def.
-    Operation *insertionPoint = group[0].op;
-    bool allDominate = true;
+    // Split into subgroups where all copies in each subgroup have operands
+    // that dominate the subgroup's insertion point. This enables partial
+    // fusion when some operands are defined between copies.
+    SmallVector<SmallVector<CopyInfo>> subgroups;
+    SmallVector<CopyInfo> currentSubgroup;
+    Operation *currentInsertionPoint = nullptr;
+
     for (const CopyInfo &info : group) {
-      if (!allOperandsDominateInsertionPoint(info.op, insertionPoint)) {
-        allDominate = false;
-        break;
-      }
-    }
-    if (!allDominate) {
-      // Skip this group; let CopyLowering handle each copy individually.
-      continue;
-    }
-
-    // Use insertion point before first copy in group.
-    builder.setInsertionPoint(insertionPoint);
-    Location loc = group[0].op.getLoc();
-
-    // Phase 1: Emit all setup ops (accessors, CB pointers).
-    SmallVector<Value> accessors;
-    SmallVector<Value> cbPtrs;
-    accessors.reserve(group.size());
-    cbPtrs.reserve(group.size());
-
-    bool setupFailed = false;
-    for (CopyInfo &info : group) {
-      Value tensor = isRead ? info.op.getSrc() : info.op.getDst();
-      Value cb = isRead ? info.op.getDst() : info.op.getSrc();
-
-      // Get buffer address from runtime args.
-      auto bankBase = getBufferAddressFromRuntimeArg(tensor, loc, builder);
-      if (failed(bankBase)) {
-        setupFailed = true;
-        break;
-      }
-
-      // Create tensor accessor.
-      auto accessor = materializeTensorAccessor(tensor, *bankBase, builder);
-      if (failed(accessor)) {
-        setupFailed = true;
-        break;
-      }
-      accessors.push_back(*accessor);
-
-      // Convert CB and get pointer.
-      auto cbConverted = utils::convertTTLCBToTTKernel(cb, builder, loc);
-      if (failed(cbConverted)) {
-        setupFailed = true;
-        break;
-      }
-
-      Value cbPtr;
-      if (isRead) {
-        cbPtr = builder.create<ttk::GetWritePtrOp>(loc, *cbConverted);
+      if (currentSubgroup.empty()) {
+        // Start new subgroup with this copy as insertion point.
+        currentInsertionPoint = info.op;
+        currentSubgroup.push_back(info);
+      } else if (allOperandsDominateInsertionPoint(info.op,
+                                                   currentInsertionPoint)) {
+        // Operands dominate current insertion point: add to current subgroup.
+        currentSubgroup.push_back(info);
       } else {
-        cbPtr = builder.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+        // Dominance fails: finalize current subgroup and start a new one.
+        if (currentSubgroup.size() >= 2) {
+          subgroups.push_back(std::move(currentSubgroup));
+        }
+        currentSubgroup.clear();
+        currentInsertionPoint = info.op;
+        currentSubgroup.push_back(info);
       }
-      cbPtrs.push_back(cbPtr);
+    }
+    // Finalize last subgroup.
+    if (currentSubgroup.size() >= 2) {
+      subgroups.push_back(std::move(currentSubgroup));
     }
 
-    // If setup failed for any copy, skip this group entirely.
-    if (setupFailed || accessors.size() != group.size() ||
-        cbPtrs.size() != group.size()) {
-      continue;
-    }
+    // Process each subgroup with 2+ copies.
+    for (SmallVector<CopyInfo> &subgroup : subgroups) {
+      // Use insertion point before first copy in subgroup.
+      builder.setInsertionPoint(subgroup[0].op);
+      Location loc = subgroup[0].op.getLoc();
 
-    // Phase 2: Emit single fused tile loop.
-    emitTileLoop(builder, loc, tilesY, tilesX,
-                 [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                   for (size_t i = 0; i < group.size(); ++i) {
-                     if (isRead) {
-                       b.create<ttk::NocAsyncReadTileOp>(
-                           bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
-                     } else {
-                       b.create<ttk::NocAsyncWriteTileOp>(
-                           bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
+      // Phase 1: Emit all setup ops (accessors, CB pointers).
+      SmallVector<Value> accessors;
+      SmallVector<Value> cbPtrs;
+      accessors.reserve(subgroup.size());
+      cbPtrs.reserve(subgroup.size());
+
+      bool setupFailed = false;
+      for (CopyInfo &info : subgroup) {
+        Value tensor = isRead ? info.op.getSrc() : info.op.getDst();
+        Value cb = isRead ? info.op.getDst() : info.op.getSrc();
+
+        // Get buffer address from runtime args.
+        auto bankBase = getBufferAddressFromRuntimeArg(tensor, loc, builder);
+        if (failed(bankBase)) {
+          setupFailed = true;
+          break;
+        }
+
+        // Create tensor accessor.
+        auto accessor = materializeTensorAccessor(tensor, *bankBase, builder);
+        if (failed(accessor)) {
+          setupFailed = true;
+          break;
+        }
+        accessors.push_back(*accessor);
+
+        // Convert CB and get pointer.
+        auto cbConverted = utils::convertTTLCBToTTKernel(cb, builder, loc);
+        if (failed(cbConverted)) {
+          setupFailed = true;
+          break;
+        }
+
+        Value cbPtr;
+        if (isRead) {
+          cbPtr = builder.create<ttk::GetWritePtrOp>(loc, *cbConverted);
+        } else {
+          cbPtr = builder.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+        }
+        cbPtrs.push_back(cbPtr);
+      }
+
+      // If setup failed for any copy, skip this subgroup entirely.
+      if (setupFailed || accessors.size() != subgroup.size() ||
+          cbPtrs.size() != subgroup.size()) {
+        continue;
+      }
+
+      // Phase 2: Emit single fused tile loop.
+      emitTileLoop(builder, loc, tilesY, tilesX,
+                   [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                     for (size_t i = 0; i < subgroup.size(); ++i) {
+                       if (isRead) {
+                         b.create<ttk::NocAsyncReadTileOp>(
+                             bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
+                       } else {
+                         b.create<ttk::NocAsyncWriteTileOp>(
+                             bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
+                       }
                      }
-                   }
-                 });
+                   });
 
-    // Phase 3: Replace original copy ops with dummy handle and mark handled.
-    // Use UnrealizedConversionCastOp to preserve the TransferHandleType so that
-    // WaitOp lowering can determine if it's a read or write barrier.
-    Value dummyI32 = makeZeroI32(loc, builder);
-    for (CopyInfo &info : group) {
-      Type handleType = info.op.getResult().getType();
-      auto cast =
-          builder.create<UnrealizedConversionCastOp>(loc, handleType, dummyI32);
-      info.op.getResult().replaceAllUsesWith(cast.getResult(0));
-      handledOps.insert(info.op);
+      // Phase 3: Replace original copy ops with dummy handle and mark handled.
+      // Use UnrealizedConversionCastOp to preserve TransferHandleType so that
+      // WaitOp lowering can determine if it's a read or write barrier.
+      Value dummyI32 = makeZeroI32(loc, builder);
+      for (CopyInfo &info : subgroup) {
+        Type handleType = info.op.getResult().getType();
+        auto cast = builder.create<UnrealizedConversionCastOp>(loc, handleType,
+                                                               dummyI32);
+        info.op.getResult().replaceAllUsesWith(cast.getResult(0));
+        handledOps.insert(info.op);
+      }
     }
   }
 }

@@ -392,8 +392,8 @@ module {
 // CHECK-NEXT:     %[[OFF_I32:.*]] = arith.index_cast %[[OFF]] : index to i32
 // CHECK-NEXT:     ttkernel.noc_async_read_tile(%[[OFF_I32]], %[[ACC1]], %[[PTR1]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // CHECK-NEXT:     ttkernel.noc_async_read_tile(%[[OFF_I32]], %[[ACC2]], %[[PTR2]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// CHECK-NEXT:   } {ttkernel.tile_loop}
-// CHECK-NEXT: } {ttkernel.tile_loop}
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 // CHECK: ttkernel.noc_async_read_barrier
 module {
   func.func @dma_batched_multi_tile_read(%arg0: tensor<64x64xf32, #layout>, %arg1: tensor<64x64xf32, #layout>)
