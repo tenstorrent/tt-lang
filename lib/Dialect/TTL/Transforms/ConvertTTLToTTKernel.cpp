@@ -781,11 +781,11 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
         continue;
       }
       // Phase 2: Emit transfers based on layout contiguity.
-      // Check if all copies in group have TileContiguous layout (benefit from
-      // loop fusion). For FullyContiguous/RowContiguous, emit separate
+      // Check if all copies in subgroup have TileContiguous layout (benefit
+      // from loop fusion). For FullyContiguous/RowContiguous, emit separate
       // optimized transfers since they don't benefit from fusion.
       bool allTileContiguous = true;
-      for (const CopyInfo &info : group) {
+      for (const CopyInfo &info : subgroup) {
         auto layoutInfo = utils::analyzeLayoutContiguity(info.tensorTy);
         if (layoutInfo.level != utils::ContiguityLevel::TileContiguous &&
             layoutInfo.level != utils::ContiguityLevel::NonContiguous) {
@@ -798,7 +798,7 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
         // All copies are tile-contiguous: emit single fused tile loop.
         emitTileLoop(builder, loc, tilesY, tilesX,
                      [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                       for (size_t i = 0; i < group.size(); ++i) {
+                       for (size_t i = 0; i < subgroup.size(); ++i) {
                          if (isRead) {
                            b.create<ttk::NocAsyncReadTileOp>(
                                bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
@@ -811,9 +811,9 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
       } else {
         // Some copies are fully/row contiguous: emit separate optimized
         // transfers (block transfers don't benefit from loop fusion).
-        for (size_t i = 0; i < group.size(); ++i) {
+        for (size_t i = 0; i < subgroup.size(); ++i) {
           emitOptimizedTransfer(builder, loc, accessors[i], cbPtrs[i], isRead,
-                                group[i].tensorTy, tilesY, tilesX);
+                                subgroup[i].tensorTy, tilesY, tilesX);
         }
       }
 
