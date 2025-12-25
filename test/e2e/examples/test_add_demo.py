@@ -16,7 +16,7 @@ import os
 import torch
 
 from ..config import E2EConfig
-from ..ttl_builder import build_ttl_module
+from ..builder.ttl_builder import build_ttl_module
 from ..ops import OP_TORCH_MAP
 
 

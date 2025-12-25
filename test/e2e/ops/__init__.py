@@ -129,7 +129,7 @@ class OpTestBase(E2ETestBase):
         self, config: E2EConfig, input_range: Tuple[float, float]
     ) -> None:
         """Build TTL module from OP_STR."""
-        from ..ttl_builder import build_ttl_module
+        from ..builder.ttl_builder import build_ttl_module
 
         # Generate random inputs.
         lo, hi = input_range

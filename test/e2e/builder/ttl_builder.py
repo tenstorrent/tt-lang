@@ -26,7 +26,7 @@ from ttmlir.dialects import ttcore
 
 import ttlang.dialects.ttl as ttl
 
-from .config import E2EConfig
+from ..config import E2EConfig
 
 
 def _torch_dtype_to_ttcore_datatype(dtype: torch.dtype) -> int:

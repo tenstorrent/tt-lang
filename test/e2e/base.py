@@ -45,7 +45,7 @@ class E2ETestBase:
     @pytest.mark.order(2)
     def test_compile_to_ttkernel(self):
         """Run TTL-to-TTKernel pass pipeline on the generated module."""
-        from .pipeline import compile_ttl_to_ttkernel
+        from .builder.pipeline import compile_ttl_to_ttkernel
         from ttmlir.ir import Context, Module
 
         # Load module from file saved by test_build_module
@@ -73,7 +73,7 @@ class E2ETestBase:
     )
     def test_translate_to_cpp(self):
         """Translate TTKernel ops to C++ kernel sources."""
-        from .kernels import translate_module_to_kernels, write_kernels
+        from .builder.kernels import translate_module_to_kernels, write_kernels
         from ttmlir.ir import Context, Module
 
         compiled_file = self.output_file("compiled_module.mlir")

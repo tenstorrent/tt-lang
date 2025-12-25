@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from ..config import E2EConfig
-from ..ttl_builder import build_ttl_module
+from ..builder.ttl_builder import build_ttl_module
 
 
 class TestMLIRGeneration:

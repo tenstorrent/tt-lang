@@ -5,10 +5,12 @@
 """
 DSL test base for E2E tests.
 
-Provides infrastructure for testing Python DSL kernels (migrated from test/python/).
+Provides infrastructure for testing Python DSL kernels using @ttl.kernel decorator.
 """
 
 from typing import Callable
+
+import pytest
 
 from ..base import E2ETestBase
 
@@ -17,19 +19,17 @@ class DSLTestBase(E2ETestBase):
     """
     Base for Python DSL tests.
 
-    Subclasses define DSL_FUNC to specify the @kernel decorated function.
-    Override test_validate_golden() for custom validation logic.
+    Subclasses define DSL_FUNC to specify the @ttl.kernel decorated function.
     """
 
-    DSL_FUNC: Callable  # The @kernel decorated function
+    DSL_FUNC: Callable  # The @ttl.kernel decorated function
 
-    def test_build_module(self):
+    @pytest.mark.order(1)
+    def test_build_module(self) -> None:
         """
         Trace DSL function to MLIR.
 
         Note: Actual tracing implementation depends on d2m_api integration.
-        For now, this is a placeholder that will be implemented when
-        migrating specific DSL tests.
         """
         raise NotImplementedError(
             "DSL tracing not yet implemented - requires d2m_api integration"

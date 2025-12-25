@@ -191,6 +191,46 @@ class TestSpecialOp(UnaryOpTestBase):
         return custom_golden
 ```
 
+### Custom Fused Operations
+
+For operations that combine multiple tile ops (not in the `.def` file), use
+`FusedOpTestBase` in `test_fused.py`. These use MLIR string templates to build
+`ttl.compute` regions with multiple fused tile operations:
+
+```python
+class TestExpAddFused(FusedOpTestBase):
+    """Test exp(a + b) - fuses add and exp into single compute region."""
+
+    OP_NAME = "exp_add"
+    ARITY = 2
+    INPUT_RANGE = (-2.0, 2.0)  # Limit to avoid exp overflow
+
+    def torch_reference(self, a, b):
+        return torch.exp(a + b)
+
+    def get_mlir_template(self, config):
+        # Returns MLIR with ttl.compute containing tile_add + tile_exp
+        return f'''
+        %result = ttl.compute ins(%a, %b) outs(%out) {{
+        ^bb0(%a_tile, %b_tile, %out_tile):
+          %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<...>
+          %exp = ttl.tile_exp %sum : !ttcore.tile<...>
+          ttl.yield %exp : !ttcore.tile<...>
+        }}
+        '''
+```
+
+The generated MLIR is compiled through passes, producing fused ttkernel ops:
+```
+ttkernel.add_binary_tile(%c0, %c1, %c0)
+ttkernel.exp_tile(%c0)
+```
+
+See `test/e2e/ops/test_fused.py` for complete examples of:
+- `TestExpAddFused`: exp(a + b)
+- `TestReluMulFused`: relu(a * b)
+- `TestSqrtAbsFused`: sqrt(abs(a))
+
 ## Test Artifacts
 
 Test stages save intermediate artifacts to `build/test/e2e/<TestClassName>/`:
@@ -229,21 +269,33 @@ These artifacts are useful for debugging and can be processed manually with
 
 ```
 test/e2e/
-├── ops/
+├── builder/                 # Python bindings-based MLIR construction
+│   ├── __init__.py          # Module exports
+│   ├── ttl_builder.py       # Build TTL modules via Python bindings
+│   ├── dm_threads.py        # Data movement thread templates
+│   ├── pipeline.py          # Pass pipeline execution
+│   └── kernels.py           # Kernel execution utilities
+├── ops/                     # Op tests (uses builder/)
 │   ├── __init__.py          # Auto-generation logic, base classes
 │   ├── test_simple.py       # MLIR builder validation (8 tests)
 │   ├── test_binary.py       # Auto-generated binary op tests
-│   └── test_unary.py        # Auto-generated unary op tests
+│   ├── test_unary.py        # Auto-generated unary op tests
+│   └── test_fused.py        # Custom fused op examples (non-generated)
 ├── examples/
 │   └── test_add_demo.py     # Full workflow demonstration (5 tests)
+├── dsl/                     # DSL-based tests (future, uses @ttl.kernel)
+│   └── __init__.py
+├── base.py                  # E2ETestBase with pipeline stages
+├── config.py                # E2EConfig dataclass
 ├── utils.py                 # ULP comparison utilities
 ├── test_utils.py            # Comparison unit tests (11 tests)
-├── ttl_builder.py           # MLIR module builder
-├── config.py                # E2EConfig dataclass
-├── base.py                  # E2ETestBase with pipeline stages
 ├── conftest.py              # Pytest fixtures
 └── README.md                # This file
 ```
+
+**Key distinction**:
+- `builder/` - Tests that construct MLIR directly via Python bindings (bypasses DSL)
+- `dsl/` - Tests that use the `@ttl.kernel` Python DSL (future)
 
 ## Configuration
 

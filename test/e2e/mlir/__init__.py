@@ -10,7 +10,8 @@ Provides infrastructure for testing manually written MLIR files.
 
 from pathlib import Path
 
-from ttmlir.ir import Module
+import pytest
+from ttmlir.ir import Context, Module
 
 from ..base import E2ETestBase
 
@@ -20,13 +21,19 @@ class MLIRFileTestBase(E2ETestBase):
     Base for tests using manually written MLIR files.
 
     Subclasses define MLIR_PATH to specify the input file.
-    Override test_validate_golden() for custom validation logic.
     """
 
     MLIR_PATH: Path  # Override in subclass
 
-    def test_build_module(self):
+    @pytest.mark.order(1)
+    def test_build_module(self) -> None:
         """Load MLIR module from file."""
-        with open(self.MLIR_PATH) as f:
-            mlir_str = f.read()
-        self.CACHE["module"] = Module.parse(mlir_str)
+        with Context() as ctx:
+            with open(self.MLIR_PATH) as f:
+                mlir_str = f.read()
+            module = Module.parse(mlir_str, ctx)
+
+            # Save to output directory for subsequent stages.
+            module_file = self.output_file("module.mlir")
+            with open(module_file, "w") as f:
+                f.write(str(module))
