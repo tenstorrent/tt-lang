@@ -51,7 +51,9 @@ config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
 config.excludes = [
     "Inputs",
     "lit.cfg.py",
+    "lit.site.cfg.py",
     "sim",
+    "e2e",  # E2E tests are run via pytest, not lit.
 ]
 
 # Exclude pytest-style tests (test_*.py) from lit collection.
