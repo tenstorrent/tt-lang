@@ -5,46 +5,14 @@
 """
 Unary operation tests.
 
-Each test class defines OP_STR and optionally INPUT_RANGE for domain constraints.
+Test classes are auto-generated from TTLElementwiseOps.def.
+Import them into module namespace so pytest discovers them.
 """
 
-from . import UnaryOpTestBase
+from . import ELEMENTWISE_OPS, GENERATED_OP_TESTS
 
-
-class TestExp(UnaryOpTestBase):
-    OP_STR = "exp"
-
-
-class TestLog(UnaryOpTestBase):
-    OP_STR = "log"
-    INPUT_RANGE = (0.01, 10.0)  # Domain constraint: log requires positive inputs
-
-
-class TestSqrt(UnaryOpTestBase):
-    OP_STR = "sqrt"
-    INPUT_RANGE = (0.01, 10.0)  # Domain constraint: sqrt requires positive inputs
-
-
-class TestRsqrt(UnaryOpTestBase):
-    OP_STR = "rsqrt"
-    INPUT_RANGE = (0.01, 10.0)  # Domain constraint: rsqrt requires positive inputs
-
-
-class TestTanh(UnaryOpTestBase):
-    OP_STR = "tanh"
-
-
-class TestAbs(UnaryOpTestBase):
-    OP_STR = "abs"
-
-
-class TestNeg(UnaryOpTestBase):
-    OP_STR = "neg"
-
-
-class TestRelu(UnaryOpTestBase):
-    OP_STR = "relu"
-
-
-class TestSigmoid(UnaryOpTestBase):
-    OP_STR = "sigmoid"
+# Import auto-generated unary op test classes into this module.
+# This makes pytest discover them as test classes.
+for name, cls in GENERATED_OP_TESTS.items():
+    if ELEMENTWISE_OPS.get(cls.OP_STR) == 1:  # Unary ops have arity 1
+        globals()[name] = cls

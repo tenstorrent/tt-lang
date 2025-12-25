@@ -59,15 +59,23 @@ assert result.passed, result.message
 - Hardware-accurate (ULP-based, not epsilon-based)
 - Scale-independent and dtype-aware
 
-### 3. Builder Validation Tests (`ops/test_simple.py`)
+### 3. Auto-Generated Op Tests (`ops/test_binary.py`, `ops/test_unary.py`)
 
-8 tests verifying MLIR generation:
+Test classes are **auto-generated** from `TTLElementwiseOps.def`:
+- **4 binary ops**: add, sub, mul, max
+- **9 unary ops**: exp, log, sqrt, rsqrt, tanh, abs, neg, relu, sigmoid
+
+Adding a new op to the `.def` file automatically creates its test class.
+
+### 4. Builder Validation Tests (`ops/test_simple.py`)
+
+8 tests verifying MLIR generation edge cases:
 - Binary ops (add, sub, mul)
 - Unary ops (exp, sqrt, neg)
 - Different grid shapes (1x1, 2x2, 4x4)
 - Different dtypes (bf16, f32)
 
-### 4. Example/Demonstration Tests (`examples/test_add_demo.py`)
+### 5. Example/Demonstration Tests (`examples/test_add_demo.py`)
 
 Complete workflow demonstration for the `add` operation:
 - MLIR generation
@@ -98,23 +106,141 @@ pytest test/e2e/ops/test_simple.py
 pytest test/e2e/examples/ -v -s
 ```
 
+## Auto-Generated Op Tests
+
+Test classes for all elementwise operations are **automatically generated** from
+`include/ttlang/Dialect/TTL/TTLElementwiseOps.def`. This ensures tests stay in
+sync with the compiler dialect definitions.
+
+When the `.def` file contains:
+```cpp
+TTL_BINARY_TILE_OP(Add, AddTileOp)
+TTL_UNARY_TILE_OP(Exp, ExpTileOp)
+```
+
+The framework automatically creates `TestAdd` and `TestExp` classes.
+
+### Adding a New Op
+
+To add tests for a new op:
+
+1. Add the op to `TTLElementwiseOps.def` (compiler side)
+2. Add the torch reference to `OP_TORCH_MAP` in `ops/__init__.py`
+3. Done! Test classes are generated automatically.
+
+### Custom Torch Reference Functions
+
+For ops without a direct torch equivalent, use a lambda or custom function:
+
+```python
+# In ops/__init__.py
+OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
+    # Standard mappings
+    "add": torch.add,
+    "exp": torch.exp,
+
+    # Custom mapping for op with different semantics
+    "custom_add_one": lambda x: x + 1.0,
+
+    # Op that requires multiple torch ops
+    "fused_mul_add": lambda a, b, c: a * b + c,
+
+    # Op with special handling
+    "safe_div": lambda a, b: torch.where(b != 0, a / b, torch.zeros_like(a)),
+}
+```
+
+### Domain Constraints
+
+Some ops require specific input ranges (e.g., log requires positive inputs).
+Specify these in `OP_INPUT_RANGES`:
+
+```python
+# In ops/__init__.py
+OP_INPUT_RANGES: Dict[str, Tuple[float, float]] = {
+    "log": (0.01, 10.0),    # log requires positive inputs
+    "sqrt": (0.01, 10.0),   # sqrt requires positive inputs
+    "rsqrt": (0.01, 10.0),  # rsqrt requires positive inputs
+    "acos": (-1.0, 1.0),    # acos domain is [-1, 1]
+}
+```
+
+### Overriding Generated Test Classes
+
+For special cases, override the generated class:
+
+```python
+# In test_unary.py or test_binary.py
+from . import UnaryOpTestBase, GENERATED_OP_TESTS
+
+# Import auto-generated tests
+for name, cls in GENERATED_OP_TESTS.items():
+    globals()[name] = cls
+
+# Override specific op with custom behavior
+class TestSpecialOp(UnaryOpTestBase):
+    OP_STR = "special_op"
+    INPUT_RANGE = (0.0, 100.0)
+    ULP_THRESHOLD = 10.0  # Looser tolerance for this op
+
+    # Custom golden computation
+    @pytest.fixture(scope="class")
+    def torch_op(self):
+        def custom_golden(x):
+            return torch.special.some_function(x)
+        return custom_golden
+```
+
+## Test Artifacts
+
+Test stages save intermediate artifacts to `build/test/e2e/<TestClassName>/`:
+
+```
+build/test/e2e/TestAdd/
+├── module.mlir           # High-level TTL ops (from test_build_module)
+├── compiled_module.mlir  # Lowered to TTKernel ops (from test_compile_to_ttkernel)
+└── inputs.pt             # PyTorch input tensors for golden comparison
+```
+
+**Example `module.mlir`** (before passes):
+```mlir
+func.func @compute_add(...) {
+  %0 = ttl.bind_cb {cb_index = 0, ...}
+  %1 = ttl.attach_cb %arg0, %0 : ...
+  %2 = ttl.add %1, %3 : ...
+  return %2 : ...
+}
+```
+
+**Example `compiled_module.mlir`** (after passes):
+```mlir
+func.func @compute_add(...) {
+  ttkernel.copy_tile(%cb0, %idx, %c0)
+  ttkernel.add_binary_tile(%c0, %c1, %c0)
+  ttkernel.pack_tile(%c0, %cb_out, %c0, false)
+  ...
+}
+```
+
+These artifacts are useful for debugging and can be processed manually with
+`ttlang-opt` or other tools.
+
 ## Directory Structure
 
 ```
 test/e2e/
 ├── ops/
-│   ├── __init__.py          # Base classes (for future execution tests)
+│   ├── __init__.py          # Auto-generation logic, base classes
 │   ├── test_simple.py       # MLIR builder validation (8 tests)
-│   ├── test_binary.py       # Binary ops (add, sub, mul, max) - minimal syntax
-│   └── test_unary.py        # Unary ops (exp, log, sqrt, etc.) - minimal syntax
+│   ├── test_binary.py       # Auto-generated binary op tests
+│   └── test_unary.py        # Auto-generated unary op tests
 ├── examples/
 │   └── test_add_demo.py     # Full workflow demonstration (5 tests)
 ├── utils.py                 # ULP comparison utilities
 ├── test_utils.py            # Comparison unit tests (11 tests)
 ├── ttl_builder.py           # MLIR module builder
 ├── config.py                # E2EConfig dataclass
-├── ops_gen.py               # Parse TTLElementwiseOps.def
-├── base.py                  # Base classes for future execution tests
+├── base.py                  # E2ETestBase with pipeline stages
 ├── conftest.py              # Pytest fixtures
 └── README.md                # This file
 ```
@@ -144,18 +270,19 @@ class E2EConfig:
 
 ### End-to-End Execution Tests
 
-The framework is structured to support full execution tests:
+The framework is structured to support full execution tests. Test classes are
+auto-generated from `TTLElementwiseOps.def`:
 
 ```python
-class TestAdd(BinaryOpTestBase):
-    OP_STR = "add"  # 2 lines = full test
+# In TTLElementwiseOps.def:
+TTL_BINARY_TILE_OP(Add, AddTileOp)
 
-# Base class will handle:
-# 1. Generate inputs
-# 2. Build MLIR module
-# 3. Compile through passes
-# 4. Execute on hardware
-# 5. Compare with torch golden
+# Automatically generates TestAdd with ordered test stages:
+# 1. test_build_module     - Generate MLIR
+# 2. test_compile_to_ttkernel - Compile through passes
+# 3. test_translate_to_cpp - Generate kernel sources
+# 4. test_execute          - Run on hardware
+# 5. test_validate_golden  - Compare with torch golden
 ```
 
 But execution requires:

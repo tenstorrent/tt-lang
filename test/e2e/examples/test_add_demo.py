@@ -17,7 +17,7 @@ import torch
 
 from ..config import E2EConfig
 from ..ttl_builder import build_ttl_module
-from ..ops_gen import OP_TORCH_MAP
+from ..ops import OP_TORCH_MAP
 
 
 class TestAddOperation:

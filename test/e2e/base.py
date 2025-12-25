@@ -5,15 +5,12 @@
 """
 Base classes for E2E tests.
 
-Provides E2ETestBase with ordered pipeline stages and cache management.
+Provides E2ETestBase with ordered pipeline stages.
 """
 
 from pathlib import Path
-from typing import Any, List, TypedDict
 
 import pytest
-from ttmlir.ir import Module
-from ttmlir.passmanager import PassManager
 
 
 class E2ETestBase:
@@ -34,19 +31,14 @@ class E2ETestBase:
         request.cls.OUTPUT_DIR = Path(f"build/test/e2e/{request.cls.__name__}")
         request.cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Ordered test stages - to be implemented/overridden by subclasses
-    @pytest.mark.order(1)
-    def test_build_module(self):
-        """Build or load the TTL MLIR module. Must be implemented by subclasses."""
-        raise NotImplementedError("Subclasses must implement test_build_module()")
-
     def output_file(self, name: str) -> Path:
         """Get path for intermediate file."""
         return self.OUTPUT_DIR / name
 
     # Ordered test stages - to be implemented/overridden by subclasses
+    # Note: Subclasses may add fixture parameters to test_build_module signature.
     @pytest.mark.order(1)
-    def test_build_module(self):
+    def test_build_module(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
         """Build or load the TTL MLIR module. Must be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement test_build_module()")
 
