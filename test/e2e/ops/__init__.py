@@ -32,10 +32,10 @@ class OpTestBase(E2ETestBase):
     ARITY: int  # 1 or 2 (set by UnaryOpTestBase/BinaryOpTestBase)
     INPUT_SHAPE = (2, 2)  # Grid shape in tiles
     INPUT_DTYPE = torch.bfloat16
-
+    
     # Comparison tolerance (auto-computed from dtype if None)
     ULP_THRESHOLD: Optional[float] = None
-
+    
     # Input value range
     MIN_VALUE = -1.0
     MAX_VALUE = 1.0
@@ -75,24 +75,24 @@ class OpTestBase(E2ETestBase):
             t = torch.rand(config.tensor_shape, dtype=config.dtype) * (hi - lo) + lo
             torch_inputs.append(t)
 
-        self.CACHE["torch_inputs"] = torch_inputs
-        self.CACHE["config"] = config
-
         # Build module
-        self.CACHE["module"] = build_ttl_module(
-            self.OP_STR, self.ARITY, config, torch_inputs
+        module = build_ttl_module(self.OP_STR, self.ARITY, config, torch_inputs)
+        assert module is not None
+
+        # Save module to file for subsequent stages
+        module_file = self.output_file("module.mlir")
+        with open(module_file, "w") as f:
+            f.write(str(module))
+
+        # Save inputs for golden comparison
+        torch.save(torch_inputs, self.output_file("inputs.pt"))
+
+        # Verify MLIR contains expected operation
+        mlir_str = str(module)
+        assert (
+            f"ttl.{self.OP_STR}" in mlir_str
+            or f"func.func @compute_{self.OP_STR}" in mlir_str
         )
-
-    @pytest.mark.order(5)
-    def test_validate_golden(self, torch_op):
-        """Validate result against torch golden."""
-        from ..utils import compare_tensors
-
-        self._check_cache_dependencies(["torch_inputs", "result"])
-        golden = torch_op(*self.CACHE["torch_inputs"])
-        result = self.CACHE["result"]
-        comparison = compare_tensors(golden, result, self.ULP_THRESHOLD)
-        assert comparison.passed, comparison.message
 
 
 class UnaryOpTestBase(OpTestBase):
@@ -105,3 +105,4 @@ class BinaryOpTestBase(OpTestBase):
     """Base for binary operations (2 inputs, 1 output)."""
 
     ARITY = 2
+

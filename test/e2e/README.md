@@ -142,7 +142,9 @@ class E2EConfig:
 
 ## Future Work
 
-The framework is structured to support end-to-end execution tests:
+### End-to-End Execution Tests
+
+The framework is structured to support full execution tests:
 
 ```python
 class TestAdd(BinaryOpTestBase):
@@ -160,6 +162,17 @@ But execution requires:
 - Kernel compilation infrastructure
 - Hardware execution via ttnn
 - Result extraction and comparison
+
+### Test Result Caching (Optional Optimization)
+
+A caching mechanism can be added to avoid recomputing intermediate results:
+- Cache MLIR modules, compiled modules, execution results between test stages
+- Allow running later stages (e.g., `test_compile`) without re-running earlier stages
+- Class-scoped cache shared across test methods within each test class
+- Improves iteration speed during development
+
+**Design Note**: Caching is optional. Tests should work independently first,
+then caching can be added as a performance optimization.
 
 ## Relationship to Other Tests
 
