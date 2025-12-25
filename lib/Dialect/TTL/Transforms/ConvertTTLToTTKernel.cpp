@@ -535,6 +535,25 @@ struct CopyInfo {
   bool isRead; // tensor->CB (read) vs CB->tensor (write)
 };
 
+/// Check if all operands of a copy operation properly dominate the given
+/// insertion point. Returns false if any operand is defined after the
+/// insertion point, which would cause use-before-def if we insert there.
+static bool allOperandsDominateInsertionPoint(CopyOp copyOp,
+                                              Operation *insertionPoint) {
+  for (Value operand : copyOp->getOperands()) {
+    if (Operation *defOp = operand.getDefiningOp()) {
+      // Check if the defining op is in the same block and comes after
+      // the insertion point.
+      if (defOp->getBlock() == insertionPoint->getBlock() &&
+          insertionPoint->isBeforeInBlock(defOp)) {
+        return false;
+      }
+    }
+    // Block arguments always dominate everything in the block.
+  }
+  return true;
+}
+
 /// Emit fused loops for copies with matching bounds.
 /// Copies in the same group share a single tile loop.
 static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
@@ -564,8 +583,24 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
       continue;
     }
 
+    // Check that all operands for all copies in the group dominate the
+    // insertion point (first copy). If any operand is defined between copies,
+    // skip fusion to avoid use-before-def.
+    Operation *insertionPoint = group[0].op;
+    bool allDominate = true;
+    for (const CopyInfo &info : group) {
+      if (!allOperandsDominateInsertionPoint(info.op, insertionPoint)) {
+        allDominate = false;
+        break;
+      }
+    }
+    if (!allDominate) {
+      // Skip this group; let CopyLowering handle each copy individually.
+      continue;
+    }
+
     // Use insertion point before first copy in group.
-    builder.setInsertionPoint(group[0].op);
+    builder.setInsertionPoint(insertionPoint);
     Location loc = group[0].op.getLoc();
 
     // Phase 1: Emit all setup ops (accessors, CB pointers).
