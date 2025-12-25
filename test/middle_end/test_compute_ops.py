@@ -46,4 +46,3 @@ def test_unary_ops(op, config, device):
 def test_fused_ops(op, config, device):
     """Test fused multi-op kernels across configurations."""
     run_compute_test(op, config, device)
-

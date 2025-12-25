@@ -3,4 +3,3 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Middle-end test framework for TTL dialect compilation and execution."""
-

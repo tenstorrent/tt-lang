@@ -14,8 +14,8 @@ Supports both single operations (ComputeOpSpec) and fused multi-op
 kernels (FusedOpSpec) where operations are applied in sequence.
 """
 
-from dataclasses import dataclass, field
-from typing import Callable, Dict, Any, List, Tuple, Union
+from dataclasses import dataclass
+from typing import Callable, Dict, Any, List, Tuple, Union, Optional
 
 import torch
 
@@ -29,6 +29,9 @@ class ComputeOpSpec:
     arity: int  # Number of inputs: 1=unary, 2=binary
     golden: Callable[..., torch.Tensor]  # Torch reference function
     reader_type: str  # Reader pattern: "unary", "binary", "ternary"
+    # Input constraints: (min, max) range for generating test inputs.
+    # Useful for ops like sqrt/rsqrt that require positive inputs.
+    input_range: Optional[Tuple[float, float]] = None
 
     @property
     def ttl_ops(self) -> List[str]:
@@ -66,6 +69,8 @@ class FusedOpSpec:
     arity: int  # Number of tensor inputs (from first op)
     golden: Callable[..., torch.Tensor]  # Composed torch reference function
     reader_type: str  # Reader pattern: "unary", "binary", "ternary"
+    # Input constraints: (min, max) range for generating test inputs.
+    input_range: Optional[Tuple[float, float]] = None
 
     @property
     def ttl_op(self) -> str:
@@ -95,11 +100,17 @@ BINARY_OPS = [
 # Unary operations - one input, one output.
 UNARY_OPS = [
     ComputeOpSpec("exp", "tile_exp", 1, torch.exp, "unary"),
-    ComputeOpSpec("sqrt", "tile_sqrt", 1, torch.sqrt, "unary"),
+    # sqrt requires positive inputs to avoid NaN.
+    ComputeOpSpec(
+        "sqrt", "tile_sqrt", 1, torch.sqrt, "unary", input_range=(0.01, 10.0)
+    ),
     ComputeOpSpec("relu", "tile_relu", 1, torch.relu, "unary"),
     ComputeOpSpec("neg", "tile_neg", 1, torch.neg, "unary"),
     ComputeOpSpec("abs", "tile_abs", 1, torch.abs, "unary"),
-    ComputeOpSpec("rsqrt", "tile_rsqrt", 1, torch.rsqrt, "unary"),
+    # rsqrt requires positive inputs to avoid NaN/Inf.
+    ComputeOpSpec(
+        "rsqrt", "tile_rsqrt", 1, torch.rsqrt, "unary", input_range=(0.01, 10.0)
+    ),
     ComputeOpSpec("tanh", "tile_tanh", 1, torch.tanh, "unary"),
     ComputeOpSpec("sigmoid", "tile_sigmoid", 1, torch.sigmoid, "unary"),
 ]
@@ -168,8 +179,8 @@ FUSED_OPS: List[FusedOpSpec] = [
 ]
 
 # All compute operations (single + fused).
-COMPUTE_OPS: List[AnyOpSpec] = BINARY_OPS + UNARY_OPS
-ALL_OPS: List[AnyOpSpec] = COMPUTE_OPS + FUSED_OPS
+COMPUTE_OPS: List[AnyOpSpec] = list(BINARY_OPS) + list(UNARY_OPS)
+ALL_OPS: List[AnyOpSpec] = list(COMPUTE_OPS) + list(FUSED_OPS)
 
 
 def get_op_by_name(name: str) -> AnyOpSpec:
