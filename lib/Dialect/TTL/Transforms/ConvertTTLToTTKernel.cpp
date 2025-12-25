@@ -516,6 +516,126 @@ emitTileLoop(OpBuilder &builder, Location loc, int64_t tilesY, int64_t tilesX,
 }
 
 //===----------------------------------------------------------------------===//
+// Block Transfer Optimization
+//===----------------------------------------------------------------------===//
+
+/// Emit a single block transfer for fully contiguous tensors.
+/// Replaces entire tile loop with one noc_async_read/write operation.
+static void
+emitSingleBlockTransfer(OpBuilder &builder, Location loc, Value tensorAccessor,
+                        Value cbPtr, bool isRead,
+                        const utils::LayoutContiguityInfo &layoutInfo) {
+  // Get NOC address for tile 0 (start of tensor).
+  auto zero = builder.create<arith::ConstantIntOp>(loc, 0, 32);
+  auto nocAddr = builder.create<ttk::TensorAccessorGetNocAddrOp>(
+      loc, tensorAccessor, zero, zero, /*offset=*/nullptr);
+
+  // Total size in bytes.
+  auto size =
+      builder.create<arith::ConstantIntOp>(loc, layoutInfo.totalSizeBytes, 32);
+
+  if (isRead) {
+    // Tensor -> CB: read(srcNocAddr, dstL1Addr, size)
+    builder.create<ttk::NocAsyncReadOp>(loc, nocAddr, cbPtr, size);
+  } else {
+    // CB -> Tensor: write(srcL1Addr, dstNocAddr, size)
+    builder.create<ttk::NocAsyncWriteOp>(loc, cbPtr, nocAddr, size);
+  }
+}
+
+/// Emit row-by-row block transfers for row-contiguous tensors with padding.
+/// Generates loop over rows, one noc_async_read/write per row.
+static void emitRowBlockTransfers(OpBuilder &builder, Location loc,
+                                  Value tensorAccessor, Value cbPtr,
+                                  bool isRead,
+                                  const utils::LayoutContiguityInfo &layoutInfo,
+                                  int64_t tilesPerRow) {
+  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
+  auto numRows =
+      builder.create<arith::ConstantIndexOp>(loc, layoutInfo.numRows);
+  auto rowSizeBytes =
+      builder.create<arith::ConstantIntOp>(loc, layoutInfo.rowSizeBytes, 32);
+  auto tilesPerRowVal =
+      builder.create<arith::ConstantIndexOp>(loc, tilesPerRow);
+  auto tileSize = builder.create<arith::ConstantIndexOp>(loc, 32);
+
+  scf::buildLoopNest(
+      builder, loc, ValueRange{zero}, ValueRange{numRows}, ValueRange{one},
+      [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
+        Value rowIdx = ivs[0];
+
+        // Compute tile ID for start of row: tileId = (rowIdx / 32) *
+        // tilesPerRow
+        Value tileRow = b.create<arith::DivUIOp>(bodyLoc, rowIdx, tileSize);
+        Value tileId =
+            b.create<arith::MulIOp>(bodyLoc, tileRow, tilesPerRowVal);
+        Value tileId32 =
+            b.create<arith::IndexCastOp>(bodyLoc, b.getI32Type(), tileId);
+        auto offset = b.create<arith::ConstantIntOp>(bodyLoc, 0, 32);
+
+        // Get NOC address for this row.
+        auto nocAddr = b.create<ttk::TensorAccessorGetNocAddrOp>(
+            bodyLoc, tensorAccessor, tileId32, offset, /*offset=*/nullptr);
+
+        // Compute CB address for this row: cbPtr + (rowIdx * rowSizeBytes)
+        Value rowIdxI32 =
+            b.create<arith::IndexCastOp>(bodyLoc, b.getI32Type(), rowIdx);
+        Value cbRowOffset =
+            b.create<arith::MulIOp>(bodyLoc, rowIdxI32, rowSizeBytes);
+        Value cbAddrForRow =
+            b.create<arith::AddIOp>(bodyLoc, cbPtr, cbRowOffset);
+
+        if (isRead) {
+          b.create<ttk::NocAsyncReadOp>(bodyLoc, nocAddr, cbAddrForRow,
+                                        rowSizeBytes);
+        } else {
+          b.create<ttk::NocAsyncWriteOp>(bodyLoc, cbAddrForRow, nocAddr,
+                                         rowSizeBytes);
+        }
+      });
+}
+
+/// Emit optimized data transfer based on layout contiguity analysis.
+/// Implements three-level optimization hierarchy:
+///   1. FullyContiguous -> single block transfer
+///   2. RowContiguous -> per-row block transfers
+///   3. TileContiguous/NonContiguous -> per-tile transfers
+static void emitOptimizedTransfer(OpBuilder &builder, Location loc,
+                                  Value tensorAccessor, Value cbPtr,
+                                  bool isRead, RankedTensorType tensorTy,
+                                  int64_t tilesY, int64_t tilesX) {
+  auto layoutInfo = utils::analyzeLayoutContiguity(tensorTy);
+
+  switch (layoutInfo.level) {
+  case utils::ContiguityLevel::FullyContiguous:
+    emitSingleBlockTransfer(builder, loc, tensorAccessor, cbPtr, isRead,
+                            layoutInfo);
+    break;
+
+  case utils::ContiguityLevel::RowContiguous:
+    emitRowBlockTransfers(builder, loc, tensorAccessor, cbPtr, isRead,
+                          layoutInfo, tilesX);
+    break;
+
+  case utils::ContiguityLevel::TileContiguous:
+  case utils::ContiguityLevel::NonContiguous:
+    // Existing tile loop fallback.
+    emitTileLoop(builder, loc, tilesY, tilesX,
+                 [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                   if (isRead) {
+                     b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
+                                                       tensorAccessor, cbPtr);
+                   } else {
+                     b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
+                                                        tensorAccessor, cbPtr);
+                   }
+                 });
+    break;
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // DMA Copy Grouping for Fused Loop Emission
 //===----------------------------------------------------------------------===//
 
@@ -524,7 +644,8 @@ struct CopyInfo {
   CopyOp op;
   int64_t tilesY;
   int64_t tilesX;
-  bool isRead; // tensor->CB (read) vs CB->tensor (write)
+  bool isRead;               // tensor->CB (read) vs CB->tensor (write)
+  RankedTensorType tensorTy; // Tensor type for layout analysis
 };
 
 /// Check if all operands of a copy operation properly dominate the given
@@ -659,20 +780,42 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
           cbPtrs.size() != subgroup.size()) {
         continue;
       }
+      // Phase 2: Emit transfers based on layout contiguity.
+      // Check if all copies in subgroup have TileContiguous layout (benefit
+      // from loop fusion). For FullyContiguous/RowContiguous, emit separate
+      // optimized transfers since they don't benefit from fusion.
+      bool allTileContiguous = true;
+      for (const CopyInfo &info : subgroup) {
+        auto layoutInfo = utils::analyzeLayoutContiguity(info.tensorTy);
+        if (layoutInfo.level != utils::ContiguityLevel::TileContiguous &&
+            layoutInfo.level != utils::ContiguityLevel::NonContiguous) {
+          allTileContiguous = false;
+          break;
+        }
+      }
 
-      // Phase 2: Emit single fused tile loop.
-      emitTileLoop(builder, loc, tilesY, tilesX,
-                   [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                     for (size_t i = 0; i < subgroup.size(); ++i) {
-                       if (isRead) {
-                         b.create<ttk::NocAsyncReadTileOp>(
-                             bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
-                       } else {
-                         b.create<ttk::NocAsyncWriteTileOp>(
-                             bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
+      if (allTileContiguous) {
+        // All copies are tile-contiguous: emit single fused tile loop.
+        emitTileLoop(builder, loc, tilesY, tilesX,
+                     [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                       for (size_t i = 0; i < subgroup.size(); ++i) {
+                         if (isRead) {
+                           b.create<ttk::NocAsyncReadTileOp>(
+                               bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
+                         } else {
+                           b.create<ttk::NocAsyncWriteTileOp>(
+                               bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
+                         }
                        }
-                     }
-                   });
+                     });
+      } else {
+        // Some copies are fully/row contiguous: emit separate optimized
+        // transfers (block transfers don't benefit from loop fusion).
+        for (size_t i = 0; i < subgroup.size(); ++i) {
+          emitOptimizedTransfer(builder, loc, accessors[i], cbPtrs[i], isRead,
+                                subgroup[i].tensorTy, tilesY, tilesX);
+        }
+      }
 
       // Phase 3: Replace original copy ops with dummy handle and mark handled.
       // Use UnrealizedConversionCastOp to preserve TransferHandleType so that
@@ -720,8 +863,9 @@ static void processBlockForCopyGrouping(Block &block,
 
       Value tensor = isRead ? src : copyOp.getDst();
       auto [tilesY, tilesX] = getTileGridShapeFromValue(tensor);
+      auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
 
-      copies.push_back({copyOp, tilesY, tilesX, isRead});
+      copies.push_back({copyOp, tilesY, tilesX, isRead, tensorTy});
     } else if (isa<WaitOp>(&op)) {
       // Process accumulated copies at synchronization boundary.
       emitGroupedCopies(copies, handledOps, builder);
@@ -779,13 +923,11 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
 
-  // TODO(#138): Emit single block transfer for contiguous layouts instead of
-  // tile loop.
-  emitTileLoop(rewriter, loc, tilesY, tilesX,
-               [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
-                                                   *srcAccessor, cbWritePtr);
-               });
+  // Emit optimized transfer based on layout contiguity (single block, row
+  // blocks, or tile fallback).
+  auto tensorTy = mlir::cast<RankedTensorType>(srcTensor.getType());
+  emitOptimizedTransfer(rewriter, loc, *srcAccessor, cbWritePtr,
+                        /*isRead=*/true, tensorTy, tilesY, tilesX);
 
   auto handle = makeZeroI32(loc, rewriter);
   rewriter.replaceOp(op, handle);
@@ -820,13 +962,11 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
 
-  // TODO(#138): Emit single block transfer for contiguous layouts instead of
-  // tile loop.
-  emitTileLoop(rewriter, loc, tilesY, tilesX,
-               [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
-                                                    *dstAccessor, cbReadPtr);
-               });
+  // Emit optimized transfer based on layout contiguity (single block, row
+  // blocks, or tile fallback).
+  auto tensorTy = mlir::cast<RankedTensorType>(dstTensor.getType());
+  emitOptimizedTransfer(rewriter, loc, *dstAccessor, cbReadPtr,
+                        /*isRead=*/false, tensorTy, tilesY, tilesX);
 
   auto handle = makeZeroI32(loc, rewriter);
   rewriter.replaceOp(op, handle);
