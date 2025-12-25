@@ -33,6 +33,7 @@
 // CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
 // Consecutive barriers deduplicated to single barrier.
 // CHECK:   noc_async_read_barrier();
+// CHECK-NOT: noc_async_read_barrier
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

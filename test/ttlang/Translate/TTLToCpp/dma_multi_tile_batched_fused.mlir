@@ -60,6 +60,7 @@
 
 // Consecutive barriers deduplicated to single barrier.
 // CHECK:         noc_async_read_barrier();
+// CHECK-NOT: noc_async_read_barrier
 // CHECK:       }
 // CHECK:       return;
 // CHECK-NEXT: }
