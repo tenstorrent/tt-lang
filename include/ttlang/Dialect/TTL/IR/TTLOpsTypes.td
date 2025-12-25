@@ -17,7 +17,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
   let summary = "Circular buffer in L1 for TT-Lang kernels";
   let parameters = (ins
     ArrayRefParameter<"int64_t">:$shape,
-    "mlir::Type":$elementType,
+    "::mlir::Type":$elementType,
     "int64_t":$bufferFactor
   );
   let assemblyFormat = "`<` `[` $shape `]` `,` $elementType `,` $bufferFactor `>`";
@@ -37,7 +37,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
 def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let summary = "Handle for asynchronous TTL memory transfers";
   let parameters = (ins
-    OptionalParameter<"std::optional<mlir::tt::ttl::TransferKind>">:$kind
+    OptionalParameter<"std::optional<::mlir::tt::ttl::TransferKind>">:$kind
   );
   let assemblyFormat = "(`<` $kind^ `>`)?";
 }

@@ -12,8 +12,9 @@
 #include <cstdint>
 #include <mlir/IR/Builders.h>
 
-namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/IR/TTLOpsDialect.h.inc"
+
+namespace mlir::tt::ttl {
 
 /// Default tile dimensions used for TTL tensors.
 inline constexpr int32_t kDefaultTileHeight = 32;
