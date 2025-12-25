@@ -128,9 +128,8 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
 /// Runtime args are indexed by the tensor's function argument position.
-static FailureOr<Value> getBufferAddressFromRuntimeArg(Value tensor,
-                                                       Location loc,
-                                                       OpBuilder &builder) {
+static FailureOr<Value>
+getBufferAddressFromRuntimeArg(Value tensor, Location loc, OpBuilder &builder) {
   auto argIdx = getTensorFuncArgIndex(tensor);
   if (failed(argIdx)) {
     return failure();
@@ -622,13 +621,11 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
                  [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                    for (size_t i = 0; i < group.size(); ++i) {
                      if (isRead) {
-                       b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
-                                                         accessors[i],
-                                                         cbPtrs[i]);
+                       b.create<ttk::NocAsyncReadTileOp>(
+                           bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
                      } else {
-                       b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
-                                                          accessors[i],
-                                                          cbPtrs[i]);
+                       b.create<ttk::NocAsyncWriteTileOp>(
+                           bodyLoc, tileOffset, accessors[i], cbPtrs[i]);
                      }
                    }
                  });
@@ -639,8 +636,8 @@ static void emitGroupedCopies(ArrayRef<CopyInfo> copies,
     Value dummyI32 = makeZeroI32(loc, builder);
     for (CopyInfo &info : group) {
       Type handleType = info.op.getResult().getType();
-      auto cast = builder.create<UnrealizedConversionCastOp>(loc, handleType,
-                                                              dummyI32);
+      auto cast =
+          builder.create<UnrealizedConversionCastOp>(loc, handleType, dummyI32);
       info.op.getResult().replaceAllUsesWith(cast.getResult(0));
       handledOps.insert(info.op);
     }
@@ -698,7 +695,7 @@ static void processBlockForCopyGrouping(Block &block,
 /// Returns the set of copy ops that were handled (to skip in pattern phase).
 /// Recursively processes nested regions (e.g., scf.for loop bodies).
 static DenseSet<Operation *> lowerGroupedCopyOps(func::FuncOp func,
-                                                  MLIRContext *ctx) {
+                                                 MLIRContext *ctx) {
   DenseSet<Operation *> handledOps;
   OpBuilder builder(ctx);
 
