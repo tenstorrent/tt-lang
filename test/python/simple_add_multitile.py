@@ -4,7 +4,7 @@
 
 # XFAIL: *
 # https://github.com/tenstorrent/tt-lang/issues/163
-# RUN: %run-test %s > %t.output 2>&1
+# RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 

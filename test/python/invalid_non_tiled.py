@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: not %run-test %s 2>&1 | FileCheck %s
+# RUN: not %python %s 2>&1 | FileCheck %s
 
 """
 Validation test: non-tiled CBs are not supported.
