@@ -460,7 +460,7 @@ getTileGridShape(const RankedTensorType &tensorTy) {
   auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
   int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
   int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
-  return std::pair{tilesY, tilesX};
+  return std::pair<int64_t, int64_t>{tilesY, tilesX};
 }
 
 /// Extract tile grid shape from a Value if it's a static rank-2 tensor.
@@ -471,7 +471,7 @@ getTileGridShapeFromValue(Value v) {
   if (tensorTy && tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
     return getTileGridShape(tensorTy);
   }
-  return std::pair{1LL, 1LL};
+  return std::pair<int64_t, int64_t>{1, 1};
 }
 
 // Emit a tile loop (or single tile body) with proper offset computation.
