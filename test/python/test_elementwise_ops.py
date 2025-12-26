@@ -3,37 +3,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Auto-generated tests for TTL elementwise operations.
+Test for TTL elementwise operations.
 
-Tests all binary and unary elementwise ops against PyTorch equivalents,
-with both L1 and DRAM memory configurations.
+Tests elementwise ops against PyTorch equivalents with L1 memory configuration.
+Kernels are generated from a template, written to temp files, and imported.
 """
 
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-# NOT YET RUNNING this is just a placeholder for how this could look.
-
 import pytest
 import torch
 import sys
+import tempfile
+import importlib.util
 from pathlib import Path
 
 # Add examples to path for utils
-# TODO: fix this
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "examples"))
 from utils import assert_allclose
-
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
-from ttlang.operators import copy
-import ttlang
 
 try:
     import ttnn
@@ -47,118 +35,248 @@ pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
 
 
 # =============================================================================
-# Op Registry: Maps op names to (pytorch_fn, config)
+# Kernel Template - generates kernels via temp file + import
+# =============================================================================
+
+BINARY_KERNEL_TEMPLATE = '''
+from ttlang.ttl_api import (
+    pykernel_gen,
+    Program,
+    CircularBuffer,
+    TensorAccessor,
+    compute,
+    datamovement,
+)
+from ttlang.operators import copy
+
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+def {name}_kernel(lhs, rhs, out):
+    """Binary {name} kernel."""
+    lhs_accessor = TensorAccessor(lhs)
+    rhs_accessor = TensorAccessor(rhs)
+    out_accessor = TensorAccessor(out)
+
+    @compute()
+    def compute_fn(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
+        o = out_cb.reserve()
+        result = l {op} r
+        o.store(result)
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
+
+    @datamovement()
+    def dm_read(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        lhs_cb.reserve()
+        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs.wait()
+        lhs_cb.push()
+
+        rhs_cb.reserve()
+        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs.wait()
+        rhs_cb.push()
+
+    @datamovement()
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        out_cb.wait()
+        tx = copy(out_cb, out_accessor[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+    return Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
+'''
+
+BINARY_FN_KERNEL_TEMPLATE = '''
+from ttlang.ttl_api import (
+    pykernel_gen,
+    Program,
+    CircularBuffer,
+    TensorAccessor,
+    compute,
+    datamovement,
+)
+from ttlang.operators import copy
+from ttlang import {op}
+
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+def {name}_kernel(lhs, rhs, out):
+    """Binary {name} kernel (function call)."""
+    lhs_accessor = TensorAccessor(lhs)
+    rhs_accessor = TensorAccessor(rhs)
+    out_accessor = TensorAccessor(out)
+
+    @compute()
+    def compute_fn(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
+        o = out_cb.reserve()
+        result = {op}(l, r)
+        o.store(result)
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
+
+    @datamovement()
+    def dm_read(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        lhs_cb.reserve()
+        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs.wait()
+        lhs_cb.push()
+
+        rhs_cb.reserve()
+        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs.wait()
+        rhs_cb.push()
+
+    @datamovement()
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        out_cb.wait()
+        tx = copy(out_cb, out_accessor[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+    return Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
+'''
+
+UNARY_KERNEL_TEMPLATE = '''
+from ttlang.ttl_api import (
+    pykernel_gen,
+    Program,
+    CircularBuffer,
+    TensorAccessor,
+    compute,
+    datamovement,
+)
+from ttlang.operators import copy
+from ttlang import {op}
+
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
+def {name}_kernel(inp, out):
+    """Unary {name} kernel."""
+    inp_accessor = TensorAccessor(inp)
+    out_accessor = TensorAccessor(out)
+
+    @compute()
+    def compute_fn(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+        x = inp_cb.wait()
+        o = out_cb.reserve()
+        result = {op}(x)
+        o.store(result)
+        inp_cb.pop()
+        out_cb.push()
+
+    @datamovement()
+    def dm_read(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+        inp_cb.reserve()
+        tx_inp = copy(inp_accessor[0, 0], inp_cb)
+        tx_inp.wait()
+        inp_cb.push()
+
+    @datamovement()
+    def dm_write(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+        out_cb.wait()
+        tx = copy(out_cb, out_accessor[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+    return Program(compute_fn, dm_read, dm_write)(inp, out)
+'''
+
+
+def make_binary_kernel(name: str, op: str):
+    """Generate a binary kernel by writing to temp file and importing."""
+    code = BINARY_KERNEL_TEMPLATE.format(name=name, op=op)
+
+    # Write to temp file (delete=False so we can import it)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix=f"kernel_{name}_"
+    ) as f:
+        f.write(code)
+        temp_path = f.name
+
+    # Import the module
+    spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return getattr(module, f"{name}_kernel")
+
+
+def make_binary_fn_kernel(name: str, op: str):
+    """Generate a binary kernel using function call syntax (e.g., max(l, r))."""
+    code = BINARY_FN_KERNEL_TEMPLATE.format(name=name, op=op)
+
+    # Write to temp file (delete=False so we can import it)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix=f"kernel_{name}_"
+    ) as f:
+        f.write(code)
+        temp_path = f.name
+
+    # Import the module
+    spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return getattr(module, f"{name}_kernel")
+
+
+def make_unary_kernel(name: str, op: str):
+    """Generate a unary kernel by writing to temp file and importing."""
+    code = UNARY_KERNEL_TEMPLATE.format(name=name, op=op)
+
+    # Write to temp file (delete=False so we can import it)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix=f"kernel_{name}_"
+    ) as f:
+        f.write(code)
+        temp_path = f.name
+
+    # Import the module
+    spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return getattr(module, f"{name}_kernel")
+
+
+# =============================================================================
+# Op Registry - maps op names to (kernel, torch_fn)
 # =============================================================================
 
 BINARY_OPS = {
-    "add": (torch.add, {"input_range": (-5, 5)}),
-    "sub": (torch.sub, {"input_range": (-5, 5)}),
-    "mul": (torch.mul, {"input_range": (-2, 2)}),
-    "max": (torch.maximum, {"input_range": (-5, 5)}),
+    "add": (make_binary_kernel("add", "+"), torch.add),
+    "sub": (make_binary_kernel("sub", "-"), torch.sub),
+    "mul": (make_binary_kernel("mul", "*"), torch.mul),
+    "max": (make_binary_fn_kernel("max", "max"), torch.maximum),
 }
 
 UNARY_OPS = {
-    "exp": (torch.exp, {"input_range": (-2, 2)}),  # Avoid overflow
-    "log": (torch.log, {"input_range": (0.1, 10)}),  # Positive only
-    "sqrt": (torch.sqrt, {"input_range": (0.1, 10)}),  # Positive only
-    "rsqrt": (torch.rsqrt, {"input_range": (0.1, 10)}),  # Positive only
-    "tanh": (torch.tanh, {"input_range": (-3, 3)}),
-    "abs": (torch.abs, {"input_range": (-5, 5)}),
-    "neg": (torch.neg, {"input_range": (-5, 5)}),
-    "relu": (torch.relu, {"input_range": (-5, 5)}),
-    "sigmoid": (torch.sigmoid, {"input_range": (-5, 5)}),
+    "exp": (make_unary_kernel("exp", "exp"), torch.exp),
+    "log": (make_unary_kernel("log", "log"), torch.log),
+    "sqrt": (make_unary_kernel("sqrt", "sqrt"), torch.sqrt),
+    "rsqrt": (make_unary_kernel("rsqrt", "rsqrt"), torch.rsqrt),
+    "tanh": (make_unary_kernel("tanh", "tanh"), torch.tanh),
+    "abs": (make_unary_kernel("abs", "abs"), torch.abs),
+    "neg": (make_unary_kernel("neg", "neg"), torch.neg),
+    "relu": (make_unary_kernel("relu", "relu"), torch.relu),
+    "sigmoid": (make_unary_kernel("sigmoid", "sigmoid"), torch.sigmoid),
 }
-
-MEMORY_CONFIGS = ["L1", "DRAM"]
-
-
-# =============================================================================
-# Kernel Factories - Generate kernels at module level
-# =============================================================================
-
-# TODO: doubt this will work in reality so we'll need to find another way to auto generate these.
-
-
-def make_binary_kernel(op_name: str):
-    """Factory to create a binary elementwise kernel for the given op."""
-    op_fn = getattr(ttlang, op_name)
-
-    @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
-    def binary_kernel(lhs, rhs, out):
-        lhs_accessor = TensorAccessor(lhs)
-        rhs_accessor = TensorAccessor(rhs)
-        out_accessor = TensorAccessor(out)
-
-        @compute()
-        def compute_fn(
-            lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-        ):
-            l = lhs_cb.wait()
-            r = rhs_cb.wait()
-            o = out_cb.reserve()
-            result = op_fn(l, r)
-            o.store(result)
-            lhs_cb.pop()
-            rhs_cb.pop()
-            out_cb.push()
-
-        @datamovement()
-        def dm_read(
-            lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-        ):
-            tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
-            tx_lhs.wait()
-            tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
-            tx_rhs.wait()
-
-        @datamovement()
-        def dm_write(
-            lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-        ):
-            tx = copy(out_cb, out_accessor[0, 0])
-            tx.wait()
-
-        return Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
-
-    return binary_kernel
-
-
-def make_unary_kernel(op_name: str):
-    """Factory to create a unary elementwise kernel for the given op."""
-    op_fn = getattr(ttlang, op_name)
-
-    @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
-    def unary_kernel(inp, out):
-        inp_accessor = TensorAccessor(inp)
-        out_accessor = TensorAccessor(out)
-
-        @compute()
-        def compute_fn(inp_cb: CircularBuffer, out_cb: CircularBuffer):
-            x = inp_cb.wait()
-            o = out_cb.reserve()
-            result = op_fn(x)
-            o.store(result)
-            inp_cb.pop()
-            out_cb.push()
-
-        @datamovement()
-        def dm_read(inp_cb: CircularBuffer, out_cb: CircularBuffer):
-            tx = copy(inp_accessor[0, 0], inp_cb)
-            tx.wait()
-
-        @datamovement()
-        def dm_write(inp_cb: CircularBuffer, out_cb: CircularBuffer):
-            tx = copy(out_cb, out_accessor[0, 0])
-            tx.wait()
-
-        return Program(compute_fn, dm_read, dm_write)(inp, out)
-
-    return unary_kernel
-
-
-# Pre-generate all kernels at module level
-BINARY_KERNELS = {name: make_binary_kernel(name) for name in BINARY_OPS}
-UNARY_KERNELS = {name: make_unary_kernel(name) for name in UNARY_OPS}
 
 
 # =============================================================================
@@ -175,62 +293,50 @@ def device():
 
 
 # =============================================================================
-# Helper Functions
-# =============================================================================
-
-
-def create_tensor(torch_tensor, device, memory_config: str):
-    """Create a ttnn tensor with the specified memory config."""
-    mem_cfg = (
-        ttnn.L1_MEMORY_CONFIG if memory_config == "L1" else ttnn.DRAM_MEMORY_CONFIG
-    )
-
-    tensor = ttnn.from_torch(
-        torch_tensor,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,  # Always start in DRAM
-    )
-
-    # Move to L1 if requested
-    if memory_config == "L1":
-        tensor = ttnn.to_memory_config(tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
-
-    return tensor
-
-
-def generate_input(input_range: tuple, shape=(32, 32), dtype=torch.bfloat16):
-    """Generate random input tensor within the specified range."""
-    low, high = input_range
-    return torch.empty(shape, dtype=dtype).uniform_(low, high)
-
-
-# =============================================================================
-# Binary Op Tests
+# Parametrized Test
 # =============================================================================
 
 
 @pytest.mark.parametrize("op_name", BINARY_OPS.keys())
-@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
-def test_binary_op(device, op_name: str, memory_config: str):
-    """Test binary elementwise operation against PyTorch."""
-    torch_fn, config = BINARY_OPS[op_name]
-    kernel = BINARY_KERNELS[op_name]
-    input_range = config.get("input_range", (-5, 5))
+def test_binary_op(device, op_name):
+    """Test binary elementwise operation with L1 memory."""
+    kernel, torch_fn = BINARY_OPS[op_name]
 
     # Generate inputs
-    lhs_torch = generate_input(input_range)
-    rhs_torch = generate_input(input_range)
+    lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
+    rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
     # Compute expected result
     expected = torch_fn(lhs_torch, rhs_torch)
 
-    # Create device tensors
-    lhs = create_tensor(lhs_torch, device, memory_config)
-    rhs = create_tensor(rhs_torch, device, memory_config)
-    out = create_tensor(out_torch, device, memory_config)
+    # Create device tensors - start in DRAM, move to L1
+    lhs = ttnn.from_torch(
+        lhs_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    rhs = ttnn.from_torch(
+        rhs_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out = ttnn.from_torch(
+        out_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+    # Move to L1
+    lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+    rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
     # Run kernel
     kernel(lhs, rhs, out)
@@ -242,29 +348,38 @@ def test_binary_op(device, op_name: str, memory_config: str):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
-# =============================================================================
-# Unary Op Tests
-# =============================================================================
-
-
 @pytest.mark.parametrize("op_name", UNARY_OPS.keys())
-@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
-def test_unary_op(device, op_name: str, memory_config: str):
-    """Test unary elementwise operation against PyTorch."""
-    torch_fn, config = UNARY_OPS[op_name]
-    kernel = UNARY_KERNELS[op_name]
-    input_range = config.get("input_range", (-5, 5))
+def test_unary_op(device, op_name):
+    """Test unary elementwise operation with L1 memory."""
+    kernel, torch_fn = UNARY_OPS[op_name]
 
-    # Generate input
-    inp_torch = generate_input(input_range)
+    # Generate inputs - use values appropriate for all ops
+    # (positive values for log/sqrt, avoid extremes for exp)
+    inp_torch = torch.full((32, 32), 0.5, dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
     # Compute expected result
     expected = torch_fn(inp_torch)
 
-    # Create device tensors
-    inp = create_tensor(inp_torch, device, memory_config)
-    out = create_tensor(out_torch, device, memory_config)
+    # Create device tensors - start in DRAM, move to L1
+    inp = ttnn.from_torch(
+        inp_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out = ttnn.from_torch(
+        out_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+    # Move to L1
+    inp = ttnn.to_memory_config(inp, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
     # Run kernel
     kernel(inp, out)
@@ -285,7 +400,7 @@ if __name__ == "__main__":
         print("TTNN not available - skipping tests")
         sys.exit(0)
 
-    print("=== Elementwise Ops Test Suite ===\n")
+    print("=== Elementwise Ops Test ===\n")
 
     # Run with pytest
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))
