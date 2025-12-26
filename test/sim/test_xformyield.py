@@ -759,6 +759,101 @@ def main():
     print("Yield from not inserted for non-yielding test passed!")
 
 
+def test_transform_copy_wait() -> None:
+    """Test transformation of copy().wait() calls in assignment.
+
+    Verifies that CopyTransaction.wait() calls get yields inserted,
+    confirming that copy operations participate in cooperative scheduling.
+    """
+    source = """
+def dm_func():
+    # Create copy transaction
+    tx = ttl.copy(src_tensor, dst_block)
+    # Wait for copy to complete
+    tx.wait()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Verify yield was inserted before copy().wait()
+    assert "yield (tx, 'wait')" in result
+    assert "tx.wait()" in result
+
+    # Verify the yield comes before the wait
+    yield_pos = result.index("yield (tx, 'wait')")
+    wait_pos = result.index("tx.wait()")
+    assert yield_pos < wait_pos
+
+    print("copy().wait() transformation test passed!")
+
+
+def test_transform_multiple_copy_waits() -> None:
+    """Test transformation of multiple copy().wait() calls.
+
+    Verifies yields are inserted for all copy transactions,
+    enabling proper scheduling of multiple concurrent copy operations.
+    """
+    source = """
+def dm_func():
+    a_tx = ttl.copy(a_src, a_block)
+    b_tx = ttl.copy(b_src, b_block)
+    a_tx.wait()
+    b_tx.wait()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Verify yields were inserted for both copy operations
+    assert "yield (a_tx, 'wait')" in result
+    assert "yield (b_tx, 'wait')" in result
+    assert "a_tx.wait()" in result
+    assert "b_tx.wait()" in result
+
+    # Verify yields come before their respective waits
+    a_yield_pos = result.index("yield (a_tx, 'wait')")
+    a_wait_pos = result.index("a_tx.wait()")
+    assert a_yield_pos < a_wait_pos
+
+    b_yield_pos = result.index("yield (b_tx, 'wait')")
+    b_wait_pos = result.index("b_tx.wait()")
+    assert b_yield_pos < b_wait_pos
+
+    print("multiple copy().wait() transformation test passed!")
+
+
+def test_transform_mixed_cb_and_copy_waits() -> None:
+    """Test transformation mixing CircularBuffer and CopyTransaction operations.
+
+    Verifies that both CB.wait()/reserve() and copy().wait() get yields,
+    confirming both types participate in cooperative scheduling.
+    """
+    source = """
+def mixed_func():
+    block = cb.reserve()
+    tx = ttl.copy(tensor, block)
+    tx.wait()
+    out_block = cb.wait()
+    out_tx = ttl.copy(out_block, tensor_out)
+    out_tx.wait()
+    cb.pop()
+"""
+    result = transform_wait_reserve_to_yield(source)
+
+    # Verify yields for CB operations
+    assert "yield (cb, 'reserve')" in result
+    assert "yield (cb, 'wait')" in result
+
+    # Verify yields for copy operations
+    assert "yield (tx, 'wait')" in result
+    assert "yield (out_tx, 'wait')" in result
+
+    # Verify all wait/reserve calls are present
+    assert "block = cb.reserve()" in result
+    assert "out_block = cb.wait()" in result
+    assert "tx.wait()" in result
+    assert "out_tx.wait()" in result
+
+    print("mixed CB and copy wait transformation test passed!")
+
+
 if __name__ == "__main__":
     # Run original tests
     test_transform_wait_assignment()
@@ -798,5 +893,10 @@ if __name__ == "__main__":
     test_recursive_function_marking()
     test_no_yields_no_transformation()
     test_yield_from_not_inserted_for_non_yielding()
+
+    # Copy operation transformation tests
+    test_transform_copy_wait()
+    test_transform_multiple_copy_waits()
+    test_transform_mixed_cb_and_copy_waits()
 
     print("All xformyield tests passed!")
