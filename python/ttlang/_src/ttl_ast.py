@@ -161,6 +161,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Collect TensorAccessor captures for function arguments
         self._tensor_accessor_names = []
+        self._tensor_accessor_global_indices = []
         func_arg_types = []
         for name, val in self.captures.items():
             if isinstance(val, TensorAccessor):
@@ -172,6 +173,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.context.memory_space,
                 )
                 self._tensor_accessor_names.append(name)
+                self._tensor_accessor_global_indices.append(val.global_index)
                 func_arg_types.append(tensor_type)
 
         self.func_entry = func.FuncOp(name=node.name, type=(func_arg_types, []))

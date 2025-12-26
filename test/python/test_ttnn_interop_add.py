@@ -47,10 +47,12 @@ def test_ttnn_interop_add(lhs, rhs, out):
         lhs_cb.reserve()
         tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
         tx_lhs.wait()
+        lhs_cb.push()
 
         rhs_cb.reserve()
         tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
         tx_rhs.wait()
+        rhs_cb.push()
 
     @datamovement()
     def dm_out(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
