@@ -287,7 +287,8 @@ def Program(*funcs: BindableTemplate) -> Any:
                     raise RuntimeError(error_msg)
 
             # First, compile and execute all sources to create generators
-            # active[name] = (generator, cb_object, operation)
+            # active[name] = (generator, blocking_object, operation)
+            # blocking_object can be CircularBuffer or CopyTransaction - both support can_wait()/can_reserve()
             active: Dict[str, Tuple[Generator[None, None, None], Any, str]] = {}
 
             for name, func_name, transformed_source, namespace in sources:
@@ -323,14 +324,15 @@ def Program(*funcs: BindableTemplate) -> Any:
 
                 # Generator yielded - check what it yielded
                 match result:
-                    case (cb_obj, operation):
-                        # Store (gen, cb_obj, operation) in active
-                        active[name] = (gen, cb_obj, operation)
+                    case (blocking_obj, operation):
+                        # Store (gen, blocking_obj, operation) in active
+                        # blocking_obj can be CircularBuffer or CopyTransaction
+                        active[name] = (gen, blocking_obj, operation)
                     case _:
                         # Unexpected yield value
                         raise RuntimeError(
                             f"{name}: Generator yielded unexpected value: {result!r}. "
-                            f"Expected (cb_object, operation) tuple."
+                            f"Expected (blocking_object, operation) tuple."
                         )
 
             while active:
@@ -341,10 +343,11 @@ def Program(*funcs: BindableTemplate) -> Any:
 
                 # Try to advance each active generator
                 for name in list(active.keys()):
-                    gen, blocked_cb, blocked_op = active[name]
+                    gen, blocking_obj, blocked_op = active[name]
 
                     # Check if operation can proceed
-                    can_method = getattr(blocked_cb, f"can_{blocked_op}")
+                    # blocking_obj supports can_wait() or can_reserve() depending on blocked_op
+                    can_method = getattr(blocking_obj, f"can_{blocked_op}")
                     if not can_method():
                         # Still blocked, skip for now
                         continue
@@ -365,21 +368,24 @@ def Program(*funcs: BindableTemplate) -> Any:
 
                         any_progress = True
 
-                        # Check if generator yielded blocking operation info (cb, operation)
+                        # Check if generator yielded blocking operation info (blocking_obj, operation)
                         match result:
-                            case (cb_obj, operation):
+                            case (blocking_obj, operation):
                                 # Check if operation can proceed
-                                can_method = getattr(cb_obj, f"can_{operation}", None)
+                                # blocking_obj can be CircularBuffer or CopyTransaction
+                                can_method = getattr(
+                                    blocking_obj, f"can_{operation}", None
+                                )
                                 if can_method and not can_method():
                                     # Operation would block - update state in active
-                                    active[name] = (gen, cb_obj, operation)
+                                    active[name] = (gen, blocking_obj, operation)
                                     break  # Exit inner while loop, try next generator
                                 # else: operation can proceed, continue this generator
                             case _:
                                 # Unexpected yield value
                                 raise RuntimeError(
                                     f"{name}: Generator yielded unexpected value: {result!r}. "
-                                    f"Expected (cb_object, operation) tuple."
+                                    f"Expected (blocking_object, operation) tuple."
                                 )
 
                         # If we get here, operation can proceed, continue this generator
