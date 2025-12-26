@@ -10,6 +10,7 @@ add_mlir_dialect_library(TTLangTTLPipelines
   MLIRFuncDialect
   MLIRArithDialect
   MLIREmitCTransforms
+  TTLangTTKernelTransforms
   TTLangTTLTransforms
   TTMLIRTTKernelToEmitC
 )

@@ -52,6 +52,30 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
   return cast.getResult(0);
 }
 
+/// Overload for generic OpBuilder (used by pre-conversion grouping).
+inline FailureOr<Value> convertTTLCBToTTKernel(Value cb, OpBuilder &builder,
+                                               Location loc) {
+  namespace ttk = mlir::tt::ttkernel;
+
+  // Already converted.
+  if (mlir::isa<ttk::CBType>(cb.getType())) {
+    return cb;
+  }
+
+  // Convert TTL CB to TTKernel CB.
+  auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
+  if (!ttlCbTy) {
+    return failure();
+  }
+
+  Type ttkCbTy =
+      ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
+                       ttlCbTy.getElementType());
+
+  auto cast = builder.create<UnrealizedConversionCastOp>(loc, ttkCbTy, cb);
+  return cast.getResult(0);
+}
+
 /// Runs applyPartialConversion while capturing the first diagnostic emitted
 /// during conversion. Returns true on failure and populates `capturedDiag`
 /// with either the captured diagnostic or a generic message that includes the

@@ -4,7 +4,9 @@
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // Test: Batched DMA operations
-// Validates multiple async operations with proper barrier placement
+// Validates multiple async operations with proper barrier placement.
+// Pre-conversion grouping emits all setup ops before reads for copies
+// with matching tile grids.
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
@@ -16,18 +18,19 @@
 // CHECK-NEXT: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
-// Tensor 0: get runtime arg, create accessor, get CB write ptr, async read
+// Setup for tensor 0: get runtime arg, create accessor, get CB write ptr
 // CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // CHECK:   TensorAccessorArgs [[ARGS0:v[0-9]+]] = TensorAccessorArgs<32, 1>();
 // CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
-// Tensor 1: get runtime arg, create accessor, get CB write ptr, async read
+// Setup for tensor 1: get runtime arg, create accessor, get CB write ptr
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // CHECK:   TensorAccessorArgs [[ARGS1:v[0-9]+]] = TensorAccessorArgs<32, 1>();
 // CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
-// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
+// Grouped reads: both reads emitted together
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
 // Consecutive barriers deduplicated to single barrier.
 // CHECK:   noc_async_read_barrier();
 // CHECK:   return;
