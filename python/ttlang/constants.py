@@ -4,9 +4,5 @@
 
 """Constants used throughout the DSL."""
 
-from ttmlir.dialects import ttcore
-
 DEFAULT_TILE_SIZE = 32
-DEFAULT_TILE_SHAPE = [32, 32]
-DEFAULT_TENSOR_MEMORY_LAYOUT = ttcore.TensorMemoryLayout.Sharded
 SUPPORTED_MEMORY_SPACES = frozenset(["L1", "DRAM"])

@@ -47,10 +47,7 @@ from ._src.ttl_ast import TTLGenericCompiler
 from .operators import TensorBlock, CopyTransferHandler, copy
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
-from .layouts import create_metal_layout
 from .dtype_utils import (
-    to_data_type,
-    from_data_type,
     torch_dtype_to_ttnn_datatype,
     tile_bytes_from_dtype,
     is_ttnn_tensor,
@@ -847,7 +844,4 @@ __all__ = [
     "copy",
     "TensorAccessor",
     "CompiledTTNNKernel",
-    "create_metal_layout",
-    "to_data_type",
-    "from_data_type",
 ]

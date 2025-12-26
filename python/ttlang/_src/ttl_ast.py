@@ -16,7 +16,7 @@ from .tensor_accessor import TensorAccessor
 
 from ..dialects import ttl
 from ..layouts import create_ttnn_layout, TTNNLayoutConfig
-from ..dtype_utils import tensor_dtype_to_mlir_type, tensor_dtype_to_ttcore_datatype
+from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
 
 

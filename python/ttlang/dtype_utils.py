@@ -2,19 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Data type conversion utilities between PyTorch and runtime types."""
+"""Data type conversion utilities between PyTorch, TTNN, and MLIR types."""
 
 import torch
-
-try:
-    from _ttmlir_runtime import runtime
-except ModuleNotFoundError:
-    runtime = None
 
 try:
     import ttnn
 except ModuleNotFoundError:
     ttnn = None
+
+from ttmlir.dialects import ttcore
 
 
 def is_ttnn_tensor(tensor) -> bool:
@@ -22,201 +19,6 @@ def is_ttnn_tensor(tensor) -> bool:
     if ttnn is None:
         return False
     return isinstance(tensor, ttnn.Tensor)
-
-
-from ttmlir import ir
-from ttmlir.dialects import ttcore
-
-
-def to_data_type(dtype):
-    """
-    Convert PyTorch dtype to runtime DataType.
-
-    Args:
-        dtype: PyTorch dtype (torch.float32, torch.int32, etc.)
-
-    Returns:
-        runtime.DataType enum value
-
-    Raises:
-        ValueError: If dtype has no runtime equivalent
-    """
-    match dtype:
-        case torch.float32:
-            return runtime.DataType.Float32
-        case torch.float16:
-            return runtime.DataType.Float16
-        case torch.bfloat16:
-            return runtime.DataType.BFloat16
-        case torch.uint32:
-            return runtime.DataType.UInt32
-        case torch.uint16:
-            return runtime.DataType.UInt16
-        case torch.uint8:
-            return runtime.DataType.UInt8
-        case torch.int32:
-            return runtime.DataType.Int32
-        case torch.float64:
-            return runtime.DataType.Float64
-        case torch.int64:
-            return runtime.DataType.Int64
-        case torch.uint64:
-            return runtime.DataType.UInt64
-        case torch.int16:
-            return runtime.DataType.Int16
-        case torch.int8:
-            return runtime.DataType.Int8
-        case torch.bool:
-            return runtime.DataType.Bool
-        case _:
-            raise ValueError(f"Torch dtype: {dtype} has no runtime DataType equivalent")
-
-
-def from_data_type(dtype):
-    """
-    Convert runtime DataType string to PyTorch dtype.
-
-    Args:
-        dtype: String representation of runtime DataType ("Float32", "Int32", etc.)
-
-    Returns:
-        PyTorch dtype
-
-    Raises:
-        ValueError: If dtype string is not supported
-    """
-    match dtype:
-        case "Float32":
-            return torch.float32
-        case "Float16":
-            return torch.float16
-        case "BFloat16":
-            return torch.bfloat16
-        case "UInt32":
-            return torch.uint32
-        case "UInt16":
-            return torch.uint16
-        case "UInt8":
-            return torch.uint8
-        case "Int32":
-            return torch.int32
-        case "Float64":
-            return torch.float64
-        case "Int64":
-            return torch.int64
-        case "UInt64":
-            return torch.uint64
-        case "Int16":
-            return torch.int16
-        case "Int8":
-            return torch.int8
-        case "Bool":
-            return torch.bool
-        case _:
-            raise ValueError(f"Unsupported dtype: {dtype}")
-
-
-def torch_dtype_to_mlir_type(torch_dtype, ctx):
-    """
-    Convert PyTorch dtype to MLIR type.
-
-    Args:
-        torch_dtype: PyTorch dtype (torch.float32, torch.int32, etc.)
-        ctx: MLIR context
-
-    Returns:
-        MLIR Type object
-
-    Raises:
-        ValueError: If dtype is not supported
-    """
-    if torch_dtype == torch.float32:
-        return ir.F32Type.get(ctx)
-    if torch_dtype == torch.float16:
-        return ir.F16Type.get(ctx)
-    if torch_dtype == torch.bfloat16:
-        return ir.BF16Type.get(ctx)
-    if torch_dtype == torch.float64:
-        return ir.F64Type.get(ctx)
-    if torch_dtype == torch.int32:
-        return ir.IntegerType.get_signless(32, ctx)
-    if torch_dtype == torch.int16:
-        return ir.IntegerType.get_signless(16, ctx)
-    if torch_dtype == torch.int8:
-        return ir.IntegerType.get_signless(8, ctx)
-    if torch_dtype == torch.int64:
-        return ir.IntegerType.get_signless(64, ctx)
-    if torch_dtype == torch.uint32:
-        return ir.IntegerType.get_unsigned(32, ctx)
-    if torch_dtype == torch.uint16:
-        return ir.IntegerType.get_unsigned(16, ctx)
-    if torch_dtype == torch.uint8:
-        return ir.IntegerType.get_unsigned(8, ctx)
-    if torch_dtype == torch.uint64:
-        return ir.IntegerType.get_unsigned(64, ctx)
-    if torch_dtype == torch.bool:
-        return ir.IntegerType.get_signless(1, ctx)
-
-    raise ValueError(f"Unsupported torch dtype: {torch_dtype}")
-
-
-def ttnn_dtype_to_mlir_type(ttnn_dtype, ctx):
-    """
-    Convert ttnn.DataType to MLIR type.
-
-    Args:
-        ttnn_dtype: ttnn.DataType enum value
-        ctx: MLIR context
-
-    Returns:
-        MLIR Type object
-
-    Raises:
-        ValueError: If dtype is not supported
-    """
-    try:
-        import ttnn
-    except ModuleNotFoundError:
-        raise ImportError("ttnn module not available")
-
-    match ttnn_dtype:
-        case ttnn.DataType.FLOAT32:
-            return ir.F32Type.get(ctx)
-        case ttnn.DataType.BFLOAT16:
-            return ir.BF16Type.get(ctx)
-        case ttnn.DataType.BFLOAT8_B:
-            return ir.BF16Type.get(ctx)  # Approximate as BF16
-        case ttnn.DataType.BFLOAT4_B:
-            return ir.BF16Type.get(ctx)  # Approximate as BF16
-        case ttnn.DataType.INT32:
-            return ir.IntegerType.get_signless(32, ctx)
-        case ttnn.DataType.UINT32:
-            return ir.IntegerType.get_unsigned(32, ctx)
-        case ttnn.DataType.UINT16:
-            return ir.IntegerType.get_unsigned(16, ctx)
-        case ttnn.DataType.UINT8:
-            return ir.IntegerType.get_unsigned(8, ctx)
-        case _:
-            raise ValueError(f"Unsupported ttnn dtype: {ttnn_dtype}")
-
-
-def tensor_dtype_to_mlir_type(dtype, ctx):
-    """
-    Convert tensor dtype to MLIR type, supporting both torch and ttnn dtypes.
-
-    Args:
-        dtype: Either torch dtype or ttnn.DataType
-        ctx: MLIR context
-
-    Returns:
-        MLIR Type object
-    """
-    # Check if it's a ttnn DataType by checking for the enum name pattern
-    dtype_str = str(dtype)
-    if "DataType." in dtype_str:
-        return ttnn_dtype_to_mlir_type(dtype, ctx)
-    else:
-        return torch_dtype_to_mlir_type(dtype, ctx)
 
 
 def torch_dtype_to_ttcore_datatype(torch_dtype):
