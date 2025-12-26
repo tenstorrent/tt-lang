@@ -18,7 +18,6 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRMathDialect
   MLIRSCFDialect
   MLIRPass
-  MLIRSCFDialect
   MLIRTensorDialect
   MLIRTTKernelDialect
   MLIRTTLDialect

@@ -86,24 +86,6 @@ public:
 // Helper utilities.
 //===----------------------------------------------------------------------===//
 
-/// Assert that the tensor layout is supported for tile loop emission.
-/// Currently only interleaved (non-sharded) layouts are supported.
-/// Issue #118: Implement sharded layout support for emitTileLoop.
-static void assertSupportedLayoutForTileLoop(RankedTensorType tensorTy,
-                                             Location loc) {
-  if (auto enc = tensorTy.getEncoding()) {
-    if (auto layout = mlir::dyn_cast<tt::ttnn::TTNNLayoutAttr>(enc)) {
-      if (layout.getMemLayout()) {
-        assert(!tt::ttnn::isShardedMemoryLayout(
-                   layout.getMemLayout().getValue()) &&
-               "Sharded tensor layouts (HeightSharded, WidthSharded, "
-               "BlockSharded) are not yet supported in emitTileLoop. "
-               "See issue #118.");
-      }
-    }
-  }
-}
-
 static std::optional<ttk::ThreadType> getKernelThreadType(Operation *op) {
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
     return a.getValue();
@@ -457,26 +439,39 @@ static FailureOr<Value> materializeTensorAccessor(Value tensor, Value bankBase,
                              pageSize);
 }
 
-static std::pair<int64_t, int64_t>
-getTileGridShape(const RankedTensorType &tensorTy, Location loc) {
+/// Compute tile grid shape for a rank-2 tensor.
+/// Currently only interleaved (non-sharded) layouts are supported.
+/// Issue #118: Implement sharded layout support for emitTileLoop.
+static FailureOr<std::pair<int64_t, int64_t>>
+getTileGridShape(const RankedTensorType &tensorTy) {
   auto dims = tensorTy.getShape();
   assert(dims.size() == 2 && "only rank-2 tensors supported currently");
-  assertSupportedLayoutForTileLoop(tensorTy, loc);
+
+  // Check for unsupported sharded layouts.
+  if (auto enc = tensorTy.getEncoding()) {
+    if (auto layout = mlir::dyn_cast<tt::ttnn::TTNNLayoutAttr>(enc)) {
+      if (layout.getMemLayout() &&
+          tt::ttnn::isShardedMemoryLayout(layout.getMemLayout().getValue())) {
+        return failure();
+      }
+    }
+  }
 
   auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
   int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
   int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
-  return {tilesY, tilesX};
+  return std::pair{tilesY, tilesX};
 }
 
 /// Extract tile grid shape from a Value if it's a static rank-2 tensor.
-/// Returns {1, 1} for non-tensor types or dynamic shapes.
-static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
+/// Returns failure for unsupported layouts, {1, 1} for non-tensor types.
+static FailureOr<std::pair<int64_t, int64_t>>
+getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
   if (tensorTy && tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
-    return getTileGridShape(tensorTy, v.getLoc());
+    return getTileGridShape(tensorTy);
   }
-  return {1, 1};
+  return std::pair{1LL, 1LL};
 }
 
 // Emit a tile loop (or single tile body) with proper offset computation.
@@ -492,7 +487,7 @@ emitTileLoop(OpBuilder &builder, Location loc, int64_t tilesY, int64_t tilesX,
     auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
     auto tilesXVal = builder.create<arith::ConstantIndexOp>(loc, tilesX);
 
-    scf::LoopNest loopNest = scf::buildLoopNest(
+    std::ignore = scf::buildLoopNest(
         builder, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
         ValueRange{one, one},
         [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
@@ -528,8 +523,7 @@ struct CopyInfo {
 };
 
 /// Check if all operands of a copy operation properly dominate the given
-/// insertion point. Returns false if any operand is defined after the
-/// insertion point, which would cause use-before-def if we insert there.
+/// insertion point.
 static bool allOperandsDominateInsertionPoint(CopyOp copyOp,
                                               Operation *insertionPoint) {
   for (Value operand : copyOp->getOperands()) {
@@ -719,9 +713,14 @@ static void processBlockForCopyGrouping(Block &block,
       bool isRead = (srcKind == CopySourceKind::TensorAccessor);
 
       Value tensor = isRead ? src : copyOp.getDst();
-      auto [tilesY, tilesX] = getTileGridShapeFromValue(tensor);
+      auto tileGrid = getTileGridShapeFromValue(tensor);
+      // Skip copies with unsupported layouts (e.g., sharded). They will be
+      // handled by the pattern phase which can emit proper diagnostics.
+      if (failed(tileGrid)) {
+        continue;
+      }
 
-      copies.push_back({copyOp, tilesY, tilesX, isRead});
+      copies.push_back({copyOp, tileGrid->first, tileGrid->second, isRead});
     } else if (isa<WaitOp>(&op)) {
       // Process accumulated copies at synchronization boundary.
       emitGroupedCopies(copies, handledOps, builder);
@@ -777,11 +776,15 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   }
   auto cbWritePtr = rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted);
 
-  auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
+  auto tileGrid = getTileGridShapeFromValue(srcTensor);
+  if (failed(tileGrid)) {
+    return rewriter.notifyMatchFailure(
+        op, "sharded tensor layouts not yet supported (see issue #118)");
+  }
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
-  emitTileLoop(rewriter, loc, tilesY, tilesX,
+  emitTileLoop(rewriter, loc, tileGrid->first, tileGrid->second,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
                                                    *srcAccessor, cbWritePtr);
@@ -818,11 +821,15 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   }
   auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
 
-  auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
+  auto tileGrid = getTileGridShapeFromValue(dstTensor);
+  if (failed(tileGrid)) {
+    return rewriter.notifyMatchFailure(
+        op, "sharded tensor layouts not yet supported (see issue #118)");
+  }
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
-  emitTileLoop(rewriter, loc, tilesY, tilesX,
+  emitTileLoop(rewriter, loc, tileGrid->first, tileGrid->second,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
                                                     *dstAccessor, cbReadPtr);

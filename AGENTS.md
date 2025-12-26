@@ -29,6 +29,7 @@
 - **Comments**: Full sentences, explain why not what, TODO with alias and issue
   link
 - **Python**: PEP 8 with black formatter (v23.x), Python 3.10+ only
+- **Functions**: Bottom-up order, helpers before callers, static/anonymous
   namespace for .cpp
 - **Namespaces**: Lowercase, avoid `using namespace`, no aliases in headers
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
