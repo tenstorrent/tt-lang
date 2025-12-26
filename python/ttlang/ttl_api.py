@@ -238,7 +238,11 @@ def _write_kernel_to_tmp(
             placeholder = int(m.group(1))
             local_idx = placeholder - 42
             # Map local accessor index to global tensor index
-            global_idx = tensor_indices[local_idx] if local_idx < len(tensor_indices) else local_idx
+            global_idx = (
+                tensor_indices[local_idx]
+                if local_idx < len(tensor_indices)
+                else local_idx
+            )
             actual_offset = global_idx + num_tensors
             return f"TensorAccessorArgs<{actual_offset}, 0>()"
 
@@ -351,7 +355,11 @@ def _compile_ttnn_kernel(
     # Write all kernels to /tmp for debugging
     for kernel_idx, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = thread_tensor_indices[kernel_idx] if kernel_idx < len(thread_tensor_indices) else []
+        tensor_indices = (
+            thread_tensor_indices[kernel_idx]
+            if kernel_idx < len(thread_tensor_indices)
+            else []
+        )
         _write_kernel_to_tmp(name, cpp_source, num_tensors, tensor_indices)
 
     kernel_paths = []
@@ -361,8 +369,14 @@ def _compile_ttnn_kernel(
 
     for kernel_idx, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = thread_tensor_indices[kernel_idx] if kernel_idx < len(thread_tensor_indices) else []
-        kernel_path = _write_kernel_to_tmp(name, cpp_source, num_tensors, tensor_indices)
+        tensor_indices = (
+            thread_tensor_indices[kernel_idx]
+            if kernel_idx < len(thread_tensor_indices)
+            else []
+        )
+        kernel_path = _write_kernel_to_tmp(
+            name, cpp_source, num_tensors, tensor_indices
+        )
         kernel_paths.append((kernel_path, thread_type))
 
         if thread_type == "compute":
