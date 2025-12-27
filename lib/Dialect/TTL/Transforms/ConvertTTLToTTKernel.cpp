@@ -135,8 +135,9 @@ static Value buildTensorAccessor(Location loc,
                                  Value bankBase, Value pageSize) {
   auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
   auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
-  auto args =
-      rewriter.create<ttk::TensorAccessorArgsOp>(loc, ctaConst, crtaConst);
+  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
+      loc, /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr,
+      ctaConst, crtaConst);
   auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
                                                          bankBase, pageSize);
   return accessor.getResult();
