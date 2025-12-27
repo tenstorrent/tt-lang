@@ -8,7 +8,7 @@ Simple add test with data writeback verification.
 Tests the complete data path: host → L1 → compute → L1 → host
 """
 
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 import torch
 
 

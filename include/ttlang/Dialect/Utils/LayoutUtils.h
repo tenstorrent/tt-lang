@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_UTILS_LAYOUTUTILS_H
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 namespace mlir::tt::ttl::utils {
 
@@ -21,16 +22,19 @@ struct ContiguousLayoutInfo {
 inline ContiguousLayoutInfo computeContiguousLayout(RankedTensorType tensorTy) {
   ArrayRef<int64_t> shape = tensorTy.getShape();
   // TODO(ttl): Replace this contiguous fallback with stride/page derivation
-  // from the tensor's layout encoding (e.g., TTNNLayoutAttr).
-  // Issue: #82.
+  // from the tensor's layout encoding (e.g., TTNNLayoutAttr). Issue: #82.
   int64_t rowStrideElems = shape.size() >= 2 ? shape.back() : 1;
   int64_t colStrideElems = 1;
 
-  int64_t elemBits = tensorTy.getElementType().getIntOrFloatBitWidth();
-  int64_t elemByteWidth = elemBits / 8;
+  Type elemType = tensorTy.getElementType();
+  int64_t elemByteWidth;
+  if (auto tileType = mlir::dyn_cast<ttcore::TileType>(elemType)) {
+    elemByteWidth = tileType.getSizeBytes();
+  } else {
+    elemByteWidth = elemType.getIntOrFloatBitWidth() / 8;
+  }
 
-  // TODO(ttl): Derive page size from actual tiling/sharding when available.
-  // Issue: #83.
+  // TODO(ttl): Derive page size from actual tiling/sharding. Issue: #83.
   int64_t pageSizeBytes = elemByteWidth * rowStrideElems;
 
   return {rowStrideElems, colStrideElems, elemByteWidth, pageSizeBytes};

@@ -6,7 +6,7 @@
 
 from typing import Optional, Any
 
-from ttlang._src.tensor_registry import get_tensor_global_name
+from ttlang._src.tensor_registry import get_tensor_global_name, get_tensor_global_index
 
 
 class TensorAccessor:
@@ -32,7 +32,7 @@ class TensorAccessor:
         >>>     @datamovement()
         >>>     def dm_reader(...):
         >>>         shard = lhs_cb.reserve()
-        >>>         dma(lhs_accessor[idx, 0], shard).wait()
+        >>>         copy(lhs_accessor[idx, 0], shard).wait()
     """
 
     def __init__(self, tensor: Any):
@@ -47,6 +47,7 @@ class TensorAccessor:
         """
         try:
             self.name = get_tensor_global_name(tensor)
+            self.global_index = get_tensor_global_index(tensor)
         except ValueError:
             raise ValueError(
                 "TensorAccessor must be created from a top level tensor argument"

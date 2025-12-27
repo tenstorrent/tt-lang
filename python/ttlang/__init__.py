@@ -6,52 +6,33 @@
 
 __version__ = "0.1.0"
 
-# Export D2M DSL API
-from ttlang.d2m_api import (
+# Export TTL DSL API
+from ttlang.ttl_api import (
     pykernel_gen,
     Program,
     CircularBuffer,
     TensorAccessor,
-    dma,
     compute,
     datamovement,
     TensorBlock,
     Semaphore,
-    MemTx,
+    CopyTransferHandler,
 )
 
-# Export operators
-from ttlang.operators import (
-    bcast,
-    exp,
-    maximum,
-    recip,
-    reduce_max,
-    reduce_sum,
-    rsqrt,
-    sqrt,
-    transpose,
-)
+# Export generated elementwise operators (auto-generated from TTLElementwiseOps.def)
+from ttlang._generated_elementwise import *  # noqa: F401,F403
+from ttlang._generated_elementwise import __all__ as _elementwise_all
 
 __all__ = [
     "pykernel_gen",
     "Program",
     "CircularBuffer",
     "TensorAccessor",
-    "dma",
     "compute",
     "datamovement",
     "TensorBlock",
     "Semaphore",
-    "MemTx",
-    # Operators
-    "bcast",
-    "exp",
-    "maximum",
-    "recip",
-    "reduce_max",
-    "reduce_sum",
-    "rsqrt",
-    "sqrt",
-    "transpose",
+    "CopyTransferHandler",
+    # Elementwise operators are automatically included from generated file
+    *_elementwise_all,
 ]
