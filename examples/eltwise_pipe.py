@@ -22,7 +22,6 @@ def eltwise_pipe(
     b_in: torch.Tensor,
     c_in: torch.Tensor,
     out: torch.Tensor,
-    mode=None,  # Optional execution mode
 ) -> None:
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
@@ -175,7 +174,4 @@ def eltwise_pipe(
                 out_cb.pop()
 
     # Execute the program across all cores
-    if mode is not None:
-        ttl.Program(compute_func, dm0, dm1, execution_mode=mode)(a_in, b_in, out)
-    else:
-        ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
+    ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)

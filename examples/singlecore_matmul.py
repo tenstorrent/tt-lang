@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# type: ignore
+
 import torch
 
 from sim import ttl
@@ -14,7 +14,6 @@ def tt_lang_singlecore_matmul(
     a_in: torch.Tensor,
     b_in: torch.Tensor,
     out: torch.Tensor,
-    mode=None,  # Optional execution mode
 ) -> None:
     # Validate shapes at a high level.
     assert a_in.ndim == 2 and b_in.ndim == 2 and out.ndim == 2
@@ -53,8 +52,8 @@ def tt_lang_singlecore_matmul(
     @ttl.compute()
     def mm_compute():
         # Compute each output tile (m, n).
-        for m in range(Mt):
-            for n in range(Nt):
+        for _ in range(Mt):
+            for _ in range(Nt):
                 # Reserve output tile once and accumulate K contributions.
                 out_block = out_cb.reserve()  # blocking
                 for k in range(Kt):
@@ -104,16 +103,10 @@ def tt_lang_singlecore_matmul(
                 out_cb.pop()
 
     # Execute the program on the single core.
-    if mode is not None:
-        ttl.Program(mm_compute, mm_reader, mm_writer, execution_mode=mode)(
-            a_in, b_in, out
-        )
-    else:
-        ttl.Program(mm_compute, mm_reader, mm_writer)(a_in, b_in, out)
+    ttl.Program(mm_compute, mm_reader, mm_writer)(a_in, b_in, out)
 
 
 if __name__ == "__main__":
-    from sim.program import ExecutionMode
     from sim.testing import assert_pcc
 
     # Use parameters that match the singlecore_matmul requirements
@@ -122,13 +115,10 @@ if __name__ == "__main__":
     dim_n = 64
     a_in = torch.randn(dim_m, dim_k)
     b_in = torch.randn(dim_k, dim_n)
-    out_cooperative = torch.zeros(dim_m, dim_n)
+    out = torch.zeros(dim_m, dim_n)
 
-    # Test cooperative mode
-    tt_lang_singlecore_matmul(
-        a_in, b_in, out_cooperative, mode=ExecutionMode.COOPERATIVE
-    )
+    tt_lang_singlecore_matmul(a_in, b_in, out)
 
     golden = torch.matmul(a_in, b_in)
-    assert_pcc(golden, out_cooperative, rtol=1e-4, atol=1e-4)
-    print("Single-core matmul cooperative mode test passed!")
+    assert_pcc(golden, out, rtol=1e-4, atol=1e-4)
+    print("Single-core matmul test passed!")
