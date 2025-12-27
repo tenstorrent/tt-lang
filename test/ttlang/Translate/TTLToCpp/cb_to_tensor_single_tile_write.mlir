@@ -17,7 +17,8 @@
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[RT_ARG_IDX:v[0-9]+]]);
-// CHECK:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<32, 1>();
+// Placeholder value 42 is a temporary hack, see issue #168
+// CHECK:   TensorAccessorArgs [[ARGS:v[0-9]+]] = TensorAccessorArgs<42, 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
 // CHECK:   noc_async_write_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);

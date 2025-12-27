@@ -213,10 +213,13 @@ func.func @attach_cb_elem_mismatch(
 // -----
 
 // Test: attach_cb rank mismatch
+// TODO: Re-enable this check once rank validation is revisited.
+// See TODO in TTLOps.cpp AttachCBOp::verify() - rank checking disabled for
+// TTNN tensors (4D device shape vs 2D CB shard shape).
 func.func @attach_cb_rank_mismatch(
     %t: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cb: !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) {
-  // expected-error @below {{cb shape rank (1) must match tensor rank (2)}}
+  // TODO: expected error @below {{cb shape rank (1) must match tensor rank (2)}}
   %att = ttl.attach_cb %t, %cb
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>

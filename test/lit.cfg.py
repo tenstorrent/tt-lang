@@ -14,7 +14,7 @@ from lit.llvm import llvm_config
 
 config.name = "TTLang"
 
-# Use lit internal shell for better error reporting
+# Use lit internal shell for better error reporting and built-in commands (like `not`)
 use_lit_shell = True
 lit_shell_env = os.environ.get("LIT_USE_INTERNAL_SHELL")
 if lit_shell_env:
@@ -122,6 +122,20 @@ config.environment["PYTHONPATH"] = os.path.pathsep.join([p for p in python_paths
 
 # Enable FileCheck variable scoping (MLIR default)
 config.environment["FILECHECK_OPTS"] = "-enable-var-scope --allow-unused-prefixes=false"
+
+# Pass through TT Metal/MLIR environment variables if set
+for env_var in [
+    "HOME",
+    "TT_METAL_SIMULATOR",
+    "TT_METAL_SLOW_DISPATCH_MODE",
+    "TT_METAL_HOME",
+    "TT_METAL_BUILD_HOME",
+    "TT_METAL_RUNTIME_ROOT",
+    "TT_MLIR_HOME",
+    "SYSTEM_DESC_PATH",
+]:
+    if env_var in os.environ:
+        config.environment[env_var] = os.environ[env_var]
 
 # Add system platform feature for UNSUPPORTED directives
 if platform.system() == "Darwin":

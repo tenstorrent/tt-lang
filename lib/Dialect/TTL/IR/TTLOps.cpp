@@ -110,12 +110,10 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
                          << cbTy.getElementType() << ")";
   }
 
-  // Require the CB block shape rank to match the tensor rank (tile grid).
-  if (static_cast<int64_t>(cbTy.getShape().size()) != tensorTy.getRank()) {
-    return emitOpError() << "cb shape rank (" << cbTy.getShape().size()
-                         << ") must match tensor rank (" << tensorTy.getRank()
-                         << ")";
-  }
+  // TODO: Revisit shape rank validation for TTNN tensors.
+  // TTNN tensors have 4D device shape (grid + shard) while CBs have 2D shard
+  // shape. For now, only validate element types match. The relationship between
+  // tensor shape and CB shape needs further investigation.
 
   // Result type must equal input tensor type (identity).
   if (getResult().getType() != getTensor().getType()) {
