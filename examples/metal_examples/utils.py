@@ -6,114 +6,7 @@
 
 import torch
 import math
-
-
-def assert_pcc(golden, actual, threshold=0.99):
-    """
-    Assert Pearson correlation coefficient is above threshold.
-
-    Args:
-        golden: Expected tensor
-        actual: Actual output tensor
-        threshold: Minimum acceptable PCC (default 0.99)
-
-    Raises:
-        AssertionError: If PCC < threshold
-    """
-    combined = torch.stack([golden.flatten(), actual.flatten()])
-    pcc = torch.corrcoef(combined)[0, 1].item()
-    assert (
-        pcc >= threshold
-    ), f"Expected pcc {pcc} >= {threshold}\ngolden:\n{golden}\nactual:\n{actual}"
-
-
-def assert_allclose(
-    actual,
-    expected,
-    rtol=1e-5,
-    atol=1e-8,
-    verbose=True,
-):
-    """
-    Assert tensors are close with detailed error reporting.
-
-    Computes both absolute and relative errors with informative failure messages
-    showing error statistics and worst-case locations.
-
-
-    Args:
-        actual: Actual output tensor
-        expected: Expected tensor
-        rtol: Relative tolerance (default 1e-5)
-        atol: Absolute tolerance (default 1e-8)
-        verbose: Show detailed error statistics on failure (default True)
-
-    Raises:
-        AssertionError: If tensors don't match within tolerance
-
-    Examples:
-        >>> out = model(input)
-        >>> assert_allclose(out, expected, rtol=1e-4, atol=1e-6)
-    """
-    if actual.shape != expected.shape:
-        raise AssertionError(
-            f"Shape mismatch: actual {actual.shape} vs expected {expected.shape}"
-        )
-
-    # Compute element-wise absolute error
-    abs_diff = torch.abs(actual - expected)
-    max_abs_error = abs_diff.max().item()
-    mean_abs_error = abs_diff.mean().item()
-
-    # Compute element-wise relative error with epsilon for numerical stability
-    eps = 1e-10
-    rel_error = abs_diff / (torch.abs(expected) + eps)
-    max_rel_error = rel_error.max().item()
-    mean_rel_error = rel_error.mean().item()
-
-    # Check if within tolerance
-    is_close = torch.allclose(actual, expected, rtol=rtol, atol=atol)
-
-    if not is_close and verbose:
-        # Find locations of worst errors
-        abs_error_flat = abs_diff.flatten()
-        rel_error_flat = rel_error.flatten()
-
-        worst_abs_idx = abs_error_flat.argmax()
-        worst_rel_idx = rel_error_flat.argmax()
-
-        # Convert flat indices to coordinates
-        worst_abs_coord = torch.unravel_index(worst_abs_idx, actual.shape)
-        worst_rel_coord = torch.unravel_index(worst_rel_idx, actual.shape)
-
-        error_msg = f"""
-Tensor comparison failed!
-
-Error Statistics:
-  Absolute Error:
-    Mean: {mean_abs_error:.6e}
-    Max:  {max_abs_error:.6e} at {tuple(c.item() for c in worst_abs_coord)}
-          actual={actual[worst_abs_coord].item():.6f}, expected={expected[worst_abs_coord].item():.6f}
-
-  Relative Error:
-    Mean: {mean_rel_error:.6e}
-    Max:  {max_rel_error:.6e} at {tuple(c.item() for c in worst_rel_coord)}
-          actual={actual[worst_rel_coord].item():.6f}, expected={expected[worst_rel_coord].item():.6f}
-
-Thresholds:
-  rtol: {rtol}
-  atol: {atol}
-
-Shape: {actual.shape}
-Mismatched elements: {(abs_diff > atol + rtol * torch.abs(expected)).sum().item()} / {actual.numel()}
-"""
-        raise AssertionError(error_msg)
-
-    if not is_close:
-        raise AssertionError(
-            f"Tensors not close: max_abs_error={max_abs_error:.6e}, "
-            f"max_rel_error={max_rel_error:.6e}, rtol={rtol}, atol={atol}"
-        )
+from typing import List, Tuple
 
 
 def ulp(x: torch.Tensor) -> torch.Tensor:
@@ -269,3 +162,217 @@ def assert_with_ulp(
     )
     assert ulp_passed, ulp_message
     return ulp_passed, ulp_message
+
+
+def get_prime_factors(n: int) -> List[int]:
+    i = 2
+    prime_factors = []
+
+    while i * i <= n:
+        if n % i != 0:
+            i += 1
+        else:
+            n //= i
+            prime_factors.append(i)
+
+    if n > 1:
+        prime_factors.append(n)
+
+    return prime_factors
+
+
+def get_possible_products(factors: List[int]) -> List[int]:
+    """
+    Generate all possible products from a list of factors.
+    This function computes all unique products that can be formed by taking
+    subsets of the factors (including taking factors multiple times if they
+    appear multiple times in the input).
+    Args:
+        factors: A list of prime factors
+    Returns:
+        A sorted list of all unique products that can be formed from the factors
+    """
+    if not factors:
+        return [1]
+
+    products = []
+
+    for fac in factors:
+        new_products = []
+
+        # Add the factor itself if not already in products
+        if fac not in products:
+            new_products.append(fac)
+
+        # Multiply factor with all existing products
+        for prod in products:
+            new_prod = fac * prod
+            if new_prod not in products:
+                new_products.append(new_prod)
+
+        # Add all new products to the products list
+        products.extend(new_products)
+
+    # Sort products
+    products.sort()
+
+    return products
+
+
+def get_maximum_block_dim(block_dim: int, in0_block_w: int) -> int:
+    other_dim = (400 - 2 * in0_block_w * block_dim) // (2 * in0_block_w + block_dim)
+
+    if other_dim > 0:
+        return other_dim
+
+    return 0
+
+
+# Subblock choices in priority order
+SUBBLOCK_HW_CHOICES = [
+    (4, 2),
+    (2, 4),
+    (8, 1),
+    (1, 8),
+    (7, 1),
+    (1, 7),
+    (3, 2),
+    (2, 3),
+    (6, 1),
+    (1, 6),
+    (5, 1),
+    (1, 5),
+    (2, 2),
+    (4, 1),
+    (1, 4),
+    (3, 1),
+    (1, 3),
+    (2, 1),
+    (1, 2),
+    (1, 1),
+]
+
+
+def get_large_matmul_params(
+    Mt: int, Nt: int, num_cores_y: int, num_cores_x: int, in0_block_w: int
+) -> Tuple[int, int, int, int]:
+    """
+    Compute optimal matrix multiplication parameters for multi-core execution.
+    This function determines the per-core block sizes (Mpc, Npc) and subblock
+    dimensions (subblock_h, subblock_w) for distributing a matrix multiplication
+    across multiple cores while respecting memory and compute constraints.
+    Args:
+        Mt: Total number of tiles in M dimension (output rows)
+        Nt: Total number of tiles in N dimension (output columns)
+        num_cores_y: Number of available cores in Y dimension
+        num_cores_x: Number of available cores in X dimension
+        in0_block_w: Inner dimension block width (K dimension in tiles)
+    Returns:
+        A tuple (Mpc, Npc, subblock_h, subblock_w) where:
+        - Mpc: Number of M tiles per core
+        - Npc: Number of N tiles per core
+        - subblock_h: Subblock height for compute kernel
+        - subblock_w: Subblock width for compute kernel
+        Returns (0, 0, 0, 0) if no valid configuration is found.
+    """
+    # Get prime factorizations
+    Nt_fac = get_prime_factors(Nt)
+    Mt_fac = get_prime_factors(Mt)
+
+    Npc_min = 1
+    Mpc_min = 1
+
+    # Remove factors larger than available cores from Nt_fac
+    # These must be handled per-core (Npc_min)
+    i = 0
+    while i < len(Nt_fac):
+        if Nt_fac[i] > num_cores_x:
+            Npc_min *= Nt_fac[i]
+            Nt_fac.pop(i)
+        else:
+            i += 1
+
+    # Remove factors larger than available cores from Mt_fac
+    # These must be handled per-core (Mpc_min)
+    i = 0
+    while i < len(Mt_fac):
+        if Mt_fac[i] > num_cores_y:
+            Mpc_min *= Mt_fac[i]
+            Mt_fac.pop(i)
+        else:
+            i += 1
+
+    # Check if minimum Npc violates memory constraints
+    if Npc_min > get_maximum_block_dim(Mpc_min, in0_block_w):
+        return (0, 0, 0, 0)
+
+    Mpc = Mpc_min
+    Npc = Npc_min
+
+    # Case 1: Mpc_min > 1 (M dimension has large prime factors)
+    if Mpc_min > 1:
+        Npc_choices = get_possible_products(Nt_fac)
+        Npc_max = get_maximum_block_dim(Mpc_min, in0_block_w)
+
+        # Maximize Npc within memory constraints
+        for ele in Npc_choices:
+            if ele * Npc_min <= Npc_max:
+                Npc = ele * Npc_min
+            else:
+                break
+
+        # Check if this fits within the core grid
+        if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
+            return (0, 0, 0, 0)
+
+        # Find compatible subblock dimensions
+        for subblock_h, subblock_w in SUBBLOCK_HW_CHOICES:
+            if Mpc % subblock_h == 0 and Npc % subblock_w == 0:
+                return (Mpc, Npc, subblock_h, subblock_w)
+
+    # Case 2: Npc_min > 1 (N dimension has large prime factors)
+    elif Npc_min > 1:
+        Mpc_choices = get_possible_products(Mt_fac)
+        Mpc_max = get_maximum_block_dim(Npc_min, in0_block_w)
+
+        # Maximize Mpc within memory constraints
+        for ele in Mpc_choices:
+            if ele * Mpc_min <= Mpc_max:
+                Mpc = ele * Mpc_min
+            else:
+                break
+
+        # Check if this fits within the core grid
+        if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
+            return (0, 0, 0, 0)
+
+        # Find compatible subblock dimensions
+        for subblock_h, subblock_w in SUBBLOCK_HW_CHOICES:
+            if Mpc % subblock_h == 0 and Npc % subblock_w == 0:
+                return (Mpc, Npc, subblock_h, subblock_w)
+
+    # Case 3: Both Mpc_min == 1 and Npc_min == 1
+    else:
+        Mpc_choices = get_possible_products(Mt_fac)
+        Npc_choices = get_possible_products(Nt_fac)
+
+        # Try different Npc values and find the largest compatible Mpc
+        for Npc in Npc_choices:
+            Mpc_max = get_maximum_block_dim(Npc, in0_block_w)
+
+            # Find largest Mpc that fits in memory
+            for ele in Mpc_choices:
+                if ele <= Mpc_max:
+                    Mpc = ele
+
+            # Check if this configuration fits within the core grid
+            if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
+                continue
+
+            # Find compatible subblock dimensions
+            for subblock_h, subblock_w in SUBBLOCK_HW_CHOICES:
+                if Mpc % subblock_h == 0 and Npc % subblock_w == 0:
+                    return (Mpc, Npc, subblock_h, subblock_w)
+
+    # No valid configuration found
+    return (0, 0, 0, 0)
