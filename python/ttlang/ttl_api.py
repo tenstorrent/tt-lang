@@ -412,16 +412,6 @@ def _compile_ttnn_kernel(
 
     num_tensors = len(args)
 
-    # Write all kernels to /tmp for debugging
-    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
-        cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = (
-            thread_tensor_indices[kernel_idx]
-            if kernel_idx < len(thread_tensor_indices)
-            else []
-        )
-        _write_kernel_to_tmp(name, cpp_source, num_tensors, tensor_indices)
-
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []

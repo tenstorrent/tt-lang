@@ -28,10 +28,13 @@ if(TARGET TTLangPythonModules)
   list(APPEND TTLANG_PYTHON_TEST_DEPENDS TTLangPythonModules)
 endif()
 
-# All tests
+# All tests (run sequentially to avoid TLB resource contention when
+# Python tests open Tenstorrent devices). Use check-ttlang-mlir for
+# parallel MLIR-only test execution.
 add_lit_testsuite(check-ttlang "Running all ttlang tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   ${TTLANG_LIT_COMMON_ARGS}
+  --threads=1
   --xunit-xml-output report.xml
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
 )
@@ -45,10 +48,12 @@ add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
 )
 set_target_properties(check-ttlang-mlir PROPERTIES FOLDER "Tests")
 
-# Python tests only
+# Python tests only (run sequentially to avoid TLB resource contention
+# when multiple tests open Tenstorrent devices)
 add_lit_testsuite(check-ttlang-python "Running ttlang Python tests"
   ${CMAKE_CURRENT_BINARY_DIR}/python
   ${TTLANG_LIT_COMMON_ARGS}
+  --threads=1
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
 )
 set_target_properties(check-ttlang-python PROPERTIES FOLDER "Tests")
