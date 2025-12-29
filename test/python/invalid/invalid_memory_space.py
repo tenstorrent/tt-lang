@@ -34,9 +34,7 @@ except ImportError:
 
 # CHECK: ValueError: Invalid memory_space: 'INVALID'
 # CHECK: Must be one of:
-@pykernel_gen(
-    grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], memory_space="INVALID"
-)
+@pykernel_gen(grid=(1, 1), memory_space="INVALID")
 def invalid_memory_space_kernel(lhs, rhs, out):
     """This kernel should fail because memory_space='INVALID' is not supported."""
     lhs_accessor = TensorAccessor(lhs)

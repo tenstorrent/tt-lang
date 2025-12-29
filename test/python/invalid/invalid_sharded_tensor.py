@@ -33,7 +33,7 @@ except ImportError:
 
 
 # CHECK: ValueError: TTNN interop requires interleaved tensors
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def invalid_sharded_kernel(lhs, rhs, out):
     """This kernel should fail because sharded tensors are not supported."""
     lhs_accessor = TensorAccessor(lhs)

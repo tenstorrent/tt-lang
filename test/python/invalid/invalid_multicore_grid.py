@@ -33,7 +33,7 @@ except ImportError:
 
 
 # CHECK: TTNN interop only supports single-core grid (1, 1)
-@pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(2, 2))
 def invalid_multicore_kernel(lhs, rhs, out):
     """This kernel should fail because multi-core grids are not supported."""
     lhs_accessor = TensorAccessor(lhs)
