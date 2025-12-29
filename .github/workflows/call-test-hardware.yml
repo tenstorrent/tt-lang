@@ -54,7 +54,7 @@ jobs:
   test-n150:
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
-    timeout-minutes: ${{ inputs.timeout }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
 
     container:
       image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
