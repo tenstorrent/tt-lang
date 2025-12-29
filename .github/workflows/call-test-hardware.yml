@@ -118,14 +118,16 @@ jobs:
       - name: Run lit tests
         env:
           TTLANG_VERBOSE_PASSES: 0
-        run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }} || true
+        run: |
+          source build/env/activate
+          ninja -C build check-ttlang-python-lit
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}
-          path: test_reports
+          path: build/python-lit-report.xml
           retention-days: 7
 
       - name: Upload system descriptor artifacts
