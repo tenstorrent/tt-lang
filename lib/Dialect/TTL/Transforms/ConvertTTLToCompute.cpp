@@ -282,12 +282,12 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
 
 // Generate type aliases for binary operations using tile ops
 // (TTK_INIT and TTK_COMPUTE are unused here, only needed for TTKernel lowering)
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   using Lower##TTL_OP = LowerBinaryToCompute<TTL_OP##Op, TILE_OP>;
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   using Lower##TTL_OP = LowerBinaryToCompute<TTL_OP##Op, TILE_OP>;
 // Generate type aliases for unary operations using tile ops
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   using Lower##TTL_OP = LowerUnaryToCompute<TTL_OP##Op, TILE_OP>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -322,12 +322,13 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 
   // Register patterns for lowering to ttl.compute with tile ops.
   // These are generated from TTLElementwiseOps.def using tile-based mappings.
-  // (TTK_INIT and TTK_COMPUTE are unused here, only needed for TTKernel lowering)
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+  // (TTK_INIT and TTK_COMPUTE are unused here, only needed for TTKernel
+  // lowering)
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   patterns.add<Lower##TTL_OP>(ctx);
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   patterns.add<Lower##TTL_OP>(ctx);
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 }
