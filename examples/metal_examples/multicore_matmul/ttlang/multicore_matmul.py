@@ -2,26 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # up to tt-lang spec, not intended to compile or run currently
-import sys
-from pathlib import Path
 import ttnn
 import pytest
 import torch
 
 from ttl import Program, make_circular_buffer_like, copy
 
-# Add the python directory to path and import directly from correctness module
-sys.path.insert(
-    0,
-    str(
-        Path(__file__).parent.parent.parent.parent.parent
-        / "python"
-        / "ttlang"
-        / "utils"
-    ),
-)
-from correctness import assert_with_ulp
-from block_allocation import split_work_to_cores
+from ttlang.utils.correctness import assert_with_ulp
+from ttlang.utils.block_allocation import split_work_to_cores
 
 
 def get_number_of_cores(grid_range):

@@ -97,6 +97,15 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
     _src/tensor_registry.py
 )
 
+declare_mlir_python_sources(TTLangPythonCommon.Utils
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    utils/__init__.py
+    utils/block_allocation.py
+    utils/correctness.py
+)
+
 # ###############################################################################
 # Generate packages and shared library
 # ###############################################################################

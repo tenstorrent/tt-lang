@@ -10,17 +10,7 @@ import torch
 
 from ttl import Program, make_circular_buffer_like, copy
 
-# Add the python directory to path and import directly from correctness module
-sys.path.insert(
-    0,
-    str(
-        Path(__file__).parent.parent.parent.parent.parent
-        / "python"
-        / "ttlang"
-        / "utils"
-    ),
-)
-from correctness import assert_with_ulp
+from ttlang.utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))

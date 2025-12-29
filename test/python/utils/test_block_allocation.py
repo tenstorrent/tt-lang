@@ -6,18 +6,9 @@
 """
 Test comparing new_split_work_to_cores with ttnn.split_work_to_cores
 """
-
-import sys
-from pathlib import Path
 import pytest
 
-# Add the python module to path - import directly from the file to avoid ttlang package dependencies
-block_alloc_path = (
-    Path(__file__).parent.parent.parent.parent / "python" / "ttlang" / "utils"
-)
-sys.path.insert(0, str(block_alloc_path))
-
-from block_allocation import new_split_work_to_cores
+from ttlang.utils.block_allocation import new_split_work_to_cores
 import ttnn
 
 

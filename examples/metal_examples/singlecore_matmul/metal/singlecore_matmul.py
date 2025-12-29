@@ -1,23 +1,11 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-import sys
-from pathlib import Path
 import ttnn
 import pytest
 import torch
 
-# Add the python directory to path and import directly from correctness module
-sys.path.insert(
-    0,
-    str(
-        Path(__file__).parent.parent.parent.parent.parent
-        / "python"
-        / "ttlang"
-        / "utils"
-    ),
-)
-from correctness import assert_with_ulp
+from ttlang.utils.correctness import assert_with_ulp
 
 
 @pytest.mark.parametrize(
