@@ -7,12 +7,14 @@
 
 // TTKERNEL-LABEL: func.func @dma_single_tile_single_copy
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, f32>
 // TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
-// TTKERNEL: %[[SRC_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL: %[[SRC_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC_ARGS]], %[[BANK_BASE]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: %[[SRC_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C0_I32]], %[[C0_I32]]) cta_expr = "num_cbs"
+// TTKERNEL: %[[SRC_ACC:.*]] = ttkernel.TensorAccessor(%[[SRC_ARGS]], %[[BANK_BASE]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_write_ptr(%[[CB]]) : (!ttkernel.cb<2, f32>) -> i32
-// TTKERNEL: ttkernel.noc_async_read_tile({{.*}}, %[[SRC_ACC]], %[[CB_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_read_tile(%[[C0_I32]], %[[SRC_ACC]], %[[CB_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL: ttkernel.noc_async_read_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
@@ -32,12 +34,14 @@ module {
 
 // TTKERNEL-LABEL: func.func @cb_to_tensor
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, f32>
 // TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
-// TTKERNEL: %[[DST_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL: %[[DST_ACC:.*]] = ttkernel.TensorAccessor(%[[DST_ARGS]], %[[BANK_BASE]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: %[[DST_ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C0_I32]], %[[C0_I32]]) cta_expr = "num_cbs"
+// TTKERNEL: %[[DST_ACC:.*]] = ttkernel.TensorAccessor(%[[DST_ARGS]], %[[BANK_BASE]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_read_ptr(%[[CB]]) : (!ttkernel.cb<2, f32>) -> i32
-// TTKERNEL: ttkernel.noc_async_write_tile({{.*}}, %[[DST_ACC]], %[[CB_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL: ttkernel.noc_async_write_tile(%[[C0_I32]], %[[DST_ACC]], %[[CB_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL: ttkernel.noc_async_write_barrier() : () -> ()
 // TTKERNEL-NOT: ttkernel.noc_async_read_barrier
 module {
@@ -233,10 +237,12 @@ module {
 // TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
-// TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<{{.*}}>) -> i32
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
+// TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[TILE_LB]]) : (index) -> i32
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C0_I32]], %[[C0_I32]]) cta_expr = "num_cbs"
+// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[BANK_BASE]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_write_ptr(%{{.*}}) : (!ttkernel.cb<2, f32>) -> i32
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
@@ -269,10 +275,12 @@ module {
 // TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
-// TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_read_ptr({{.*}}) : (!ttkernel.cb<{{.*}}>) -> i32
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
+// TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[TILE_LB]]) : (index) -> i32
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C0_I32]], %[[C0_I32]]) cta_expr = "num_cbs"
+// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[BANK_BASE]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_read_ptr(%{{.*}}) : (!ttkernel.cb<2, f32>) -> i32
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
@@ -305,10 +313,12 @@ module {
 // TTKERNEL-DAG: %[[TILE_LB:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[TILES_BOUND:.*]] = arith.constant 2 : index
-// TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<{{.*}}>) -> i32
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
+// TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[TILE_LB]]) : (index) -> i32
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C0_I32]], %[[C0_I32]]) cta_expr = "num_cbs"
+// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[BANK_BASE]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_write_ptr(%{{.*}}) : (!ttkernel.cb<{{.*}}>) -> i32
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_BOUND]] : index
@@ -342,10 +352,12 @@ module {
 // TTKERNEL-DAG: %[[TILE_STEP:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[TILES_Y_BOUND:.*]] = arith.constant 3 : index
 // TTKERNEL-DAG: %[[TILES_X_BOUND:.*]] = arith.constant 2 : index
-// TTKERNEL: ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}}) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], {{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_read_ptr({{.*}}) : (!ttkernel.cb<{{.*}}>) -> i32
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
+// TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[TILE_LB]]) : (index) -> i32
+// TTKERNEL: %[[ARGS:.*]] = ttkernel.TensorAccessorArgs(%[[C0_I32]], %[[C0_I32]]) cta_expr = "num_cbs"
+// TTKERNEL: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ARGS]], %[[BANK_BASE]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_read_ptr(%{{.*}}) : (!ttkernel.cb<2, f32>) -> i32
 // TTKERNEL: scf.for %[[TILE_Y:.*]] = %[[TILE_LB]] to %[[TILES_Y_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:   scf.for %[[TILE_X:.*]] = %[[TILE_LB]] to %[[TILES_X_BOUND]] step %[[TILE_STEP]]
 // TTKERNEL:     %[[TILE_OFFSET_Y:.*]] = arith.muli %[[TILE_Y]], %[[TILES_X_BOUND]] : index

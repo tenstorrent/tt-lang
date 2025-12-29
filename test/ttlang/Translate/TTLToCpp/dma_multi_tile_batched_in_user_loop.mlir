@@ -32,6 +32,7 @@
 // CHECK-LABEL: // batched_multi_tile_user_loop
 // CHECK-NEXT: #include <cstdint>
 // CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
+// CHECK-NEXT: #include "firmware_common.h"
 // CHECK-NEXT: #include "dataflow_api.h"
 // CHECK-NEXT: void kernel_main() {
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
@@ -45,8 +46,7 @@
 
 // First copy: 64x64 (2x2 tiles) → CB1
 // CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// Placeholder value 42 is a temporary hack, see issue #168
-// CHECK:     TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<42, 0>();
+// CHECK:     auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<num_cbs, 0>();
 // CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
 // CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Tile loops: for tile_y in 0..2, for tile_x in 0..2
@@ -62,8 +62,7 @@
 
 // Second copy: 64x64 (2x2 tiles) → CB2
 // CHECK:     int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
-// Placeholder value 43 is a temporary hack, see issue #168
-// CHECK:     TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<43, 0>();
+// CHECK:     auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<num_cbs, 0>();
 // CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
 // CHECK:     int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
