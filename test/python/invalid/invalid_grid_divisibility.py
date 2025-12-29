@@ -33,7 +33,7 @@ except ImportError:
 
 
 # CHECK: must be divisible by grid dim
-@pykernel_gen(grid=(2, 3), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(2, 3))
 def invalid_divisibility_kernel(lhs, rhs, out):
     """This kernel should fail because 32 is not divisible by 3."""
     lhs_accessor = TensorAccessor(lhs)

@@ -33,7 +33,7 @@ except ImportError:
 
 
 # CHECK: ValueError: copy() requires exactly one CB argument
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def invalid_copy_no_cb_kernel(lhs, rhs, out):
     """This kernel should fail because copy() needs exactly one CB."""
     lhs_accessor = TensorAccessor(lhs)

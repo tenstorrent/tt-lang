@@ -153,15 +153,9 @@ def _is_interleaved_tensor(tensor) -> bool:
     return False
 
 
-def _resolve_grid_params(grid, block_factors, args, kwargs):
-    """Resolve grid and block_factors, evaluating callables if needed."""
-    resolved_grid = grid(*args, **kwargs) if callable(grid) else grid
-    resolved_block_factors = (
-        block_factors(*args, **kwargs) if callable(block_factors) else block_factors
-    )
-    if resolved_block_factors is None:
-        resolved_block_factors = [1] * len(resolved_grid)
-    return resolved_grid, resolved_block_factors
+def _resolve_grid(grid, args, kwargs):
+    """Resolve grid, evaluating callable if needed."""
+    return grid(*args, **kwargs) if callable(grid) else grid
 
 
 class CompiledTTNNKernel:
@@ -627,7 +621,6 @@ def _compile_and_run_kernel(
     args: tuple,
     kwargs: dict,
     grid: Union[tuple, List[int]],
-    block_factors: Union[List, List[int]],
     indexing_maps: List[Callable],
     iterator_types: List[str],
     num_outs: int,
@@ -643,7 +636,6 @@ def _compile_and_run_kernel(
         args: Positional arguments for the kernel
         kwargs: Keyword arguments for the kernel
         grid: Grid dimensions
-        block_factors: Block factors for each argument
         indexing_maps: List of lambda functions for indexing
         iterator_types: List of iterator type strings
         num_outs: Number of output arguments
@@ -673,7 +665,6 @@ def _compile_and_run_kernel(
         register_tensor_name(arg, param_name, index=idx)
 
     inject_kwargs = [
-        ("block_factors", block_factors),
         ("grid", grid),
         ("memory_space", memory_space),
         ("tiled", tiled),
@@ -790,7 +781,6 @@ def _compile_and_run_kernel(
 
 def pykernel_gen(
     grid: Optional[Union[tuple, Callable]] = None,
-    block_factors: Optional[Union[List, Callable]] = None,
     indexing_maps: Optional[List[Callable]] = None,
     iterator_types: Optional[List[str]] = None,
     num_outs: int = 1,
@@ -806,7 +796,6 @@ def pykernel_gen(
 
     Args:
         grid: Grid dimensions as tuple (e.g., (2, 2)) or callable
-        block_factors: Block factors for each argument or callable
         indexing_maps: List of lambda functions for indexing (optional)
         iterator_types: List of iterator types ("parallel", "reduction")
         num_outs: Number of output arguments
@@ -852,12 +841,6 @@ def pykernel_gen(
                     raise ValueError(
                         f"Number of dimensions ({num_dims}) must match iterator_types length ({len(iterator_types)})"
                     )
-            if block_factors is None:
-                block_factors = [1] * len(num_dims)
-            if len(block_factors) != num_dims:
-                raise ValueError(
-                    f"block_factors length ({len(block_factors)}) must match number of dimensions ({num_dims})"
-                )
 
     if iterator_types is None:
         iterator_types = []
@@ -865,16 +848,13 @@ def pykernel_gen(
     def _decorator(f):
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
-            resolved_grid, resolved_block_factors = _resolve_grid_params(
-                grid, block_factors, args, kwargs
-            )
+            resolved_grid = _resolve_grid(grid, args, kwargs)
 
             _compile_and_run_kernel(
                 f,
                 args,
                 kwargs,
                 resolved_grid,
-                resolved_block_factors,
                 indexing_maps,
                 iterator_types,
                 num_outs,
@@ -894,16 +874,13 @@ def pykernel_gen(
             Returns:
                 CompiledTTNNKernel that can be called multiple times
             """
-            resolved_grid, resolved_block_factors = _resolve_grid_params(
-                grid, block_factors, args, kwargs
-            )
+            resolved_grid = _resolve_grid(grid, args, kwargs)
 
             return _compile_and_run_kernel(
                 f,
                 args,
                 kwargs,
                 resolved_grid,
-                resolved_block_factors,
                 indexing_maps,
                 iterator_types,
                 num_outs,

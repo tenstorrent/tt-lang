@@ -30,7 +30,7 @@ from ttlang.ttl_api import (
 from ttlang.operators import copy
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(2, 2), (2, 2), (2, 2)])
+@pykernel_gen(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
     """Add kernel processing 2x2 tile grid (4 tiles total)."""
     lhs_accessor = TensorAccessor(lhs)

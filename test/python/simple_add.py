@@ -27,7 +27,7 @@ from ttlang.ttl_api import (
 from ttlang.operators import copy
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)

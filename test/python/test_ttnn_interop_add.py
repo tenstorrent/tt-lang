@@ -17,7 +17,7 @@ skip_without_hardware("=== TTNN Interop Test Complete (no hardware) ===")
 from ttlang.ttl_api import *
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def ttnn_interop_add_kernel(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)
