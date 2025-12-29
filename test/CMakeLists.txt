@@ -64,6 +64,7 @@ if(TTLANG_HAS_TTNN)
   set_target_properties(check-ttlang-python-lit PROPERTIES FOLDER "Tests")
 else()
   add_custom_target(check-ttlang-python-lit
+    COMMAND ${CMAKE_COMMAND} -E echo "TTNN not available - skipping Python lit tests"
     COMMENT "Skipping ttlang Python lit tests (TTNN not available)"
   )
 endif()

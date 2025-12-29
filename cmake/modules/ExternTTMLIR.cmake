@@ -9,6 +9,27 @@
 # 2. Pre-installed tt-mlir: TTMLIR_DIR pointing to TTMLIRConfig.cmake, or TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir.
 # 3. FetchContent fallback: Build locally when neither is found.
 
+# Create alias targets for installed tt-mlir exported targets.
+# When tt-mlir is installed, targets are exported with the TTMLIR:: namespace prefix
+# (e.g., TTMLIR::MLIRTTKernelDialect). tt-lang's CMakeLists files reference these
+# targets without the prefix (e.g., MLIRTTKernelDialect) for consistency with
+# tt-mlir build tree usage. This function creates non-namespaced aliases.
+function(ttlang_create_ttmlir_aliases)
+  if(NOT DEFINED TTMLIR_EXPORTED_TARGETS)
+    message(WARNING "TTMLIR_EXPORTED_TARGETS not defined, skipping alias creation")
+    return()
+  endif()
+
+  set(_alias_count 0)
+  foreach(target IN LISTS TTMLIR_EXPORTED_TARGETS)
+    if(TARGET TTMLIR::${target} AND NOT TARGET ${target})
+      add_library(${target} ALIAS TTMLIR::${target})
+      math(EXPR _alias_count "${_alias_count} + 1")
+    endif()
+  endforeach()
+  message(STATUS "Created ${_alias_count} aliases for installed tt-mlir targets")
+endfunction()
+
 # Scenario 1: Pre-built tt-mlir (build tree)
 if(DEFINED TTMLIR_BUILD_DIR)
   set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
@@ -97,6 +118,9 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
         message(FATAL_ERROR "Required TTMLIR::TTMLIRCompilerStatic target not found in installed tt-mlir at: ${TTMLIR_CMAKE_DIR}, and library file not found in ${TTMLIR_PATH}/lib")
       endif()
     endif()
+
+    # Create aliases for namespaced targets so tt-lang can use unprefixed names.
+    ttlang_create_ttmlir_aliases()
   endif()
 
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")
@@ -260,6 +284,8 @@ else()
   message(STATUS "Installing tt-mlir...")
   ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} --target install"
+      # Install the tests since that's the only way currently to have ttmlir-opt and other tools installed.
+      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --install ${_TTMLIR_BUILD_DIR} --component Test"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
       WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
@@ -277,6 +303,9 @@ else()
   message(STATUS "Searching for TTMLIRConfig.cmake in: ${_TTMLIR_INSTALL_PREFIX}/lib/cmake/ttmlir")
   find_package(TTMLIR REQUIRED CONFIG PATHS "${_TTMLIR_INSTALL_PREFIX}/lib/cmake/ttmlir")
   message(STATUS "Built and using private tt-mlir installation from: ${TTMLIR_CMAKE_DIR}")
+
+  # Create aliases for namespaced targets so tt-lang can use unprefixed names.
+  ttlang_create_ttmlir_aliases()
 
   if(EXISTS "${_TTMLIR_SOURCE_DIR}/cmake/modules")
     list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_SOURCE_DIR}/cmake/modules")
