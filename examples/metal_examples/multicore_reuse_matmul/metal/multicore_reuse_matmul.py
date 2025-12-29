@@ -7,7 +7,8 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-from metal_examples.utils import assert_with_ulp, get_large_matmul_params
+from ttlang.utils.correctness import assert_with_ulp
+from ttlang.utils.block_allocation import get_large_matmul_params
 
 
 @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
