@@ -8,7 +8,7 @@ This test exercises the early accessor creation feature where TensorAccessors
 defined in the DSL are materialized as stream_layout ops immediately
 in the Python-generated IR, rather than being added later by a pass.
 """
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 from ttlang.utils.correctness import assert_allclose
 import torch
 

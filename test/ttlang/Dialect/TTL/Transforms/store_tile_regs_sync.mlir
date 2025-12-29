@@ -10,7 +10,8 @@
 // CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
 // CHECK-NEXT:    %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
 // CHECK-NEXT:    %[[OUT_VIEW_PRE:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK:         ttl.tile_regs_acquire
+// CHECK:         ttl.init_sfpu(%[[CB]], %[[CB]])
+// CHECK-NEXT:    ttl.tile_regs_acquire
 // CHECK:         %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
 // CHECK-NEXT:      %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN]]
@@ -50,7 +51,8 @@ func.func @store_reorder_after_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>
 // CHECK:         %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
 // CHECK:         %[[OUTPUT:.*]] = tensor.empty
 // CHECK:         %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
-// CHECK:         ttl.tile_regs_acquire
+// CHECK:         ttl.init_sfpu(%[[CB]], %[[CB]])
+// CHECK-NEXT:    ttl.tile_regs_acquire
 // CHECK:         %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
 // CHECK-NEXT:      %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN]]
@@ -93,7 +95,8 @@ func.func @store_auto_in_body_chooses_last_reserve(%arg0: tensor<1x1x!ttcore.til
 // CHECK:         %[[OUTPUT:.*]] = tensor.empty
 // CHECK:         %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
 // CHECK:         %[[OUT_PARENT_VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK:         ttl.tile_regs_acquire
+// CHECK:         ttl.init_sfpu(%[[CB]], %[[CB]])
+// CHECK-NEXT:    ttl.tile_regs_acquire
 // CHECK:         %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
 // CHECK-NEXT:      %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN]]
@@ -137,6 +140,7 @@ func.func @store_auto_prefers_body_over_parent(%arg0: tensor<1x1x!ttcore.tile<32
 // CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
 // CHECK-NEXT:    %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
 // CHECK-NEXT:    %[[OUT_VIEW_PARENT:.*]] = ttl.cb_reserve %[[CB]]
+// CHECK-NEXT:    ttl.init_sfpu(%[[CB]], %[[CB]])
 // CHECK-NEXT:    ttl.tile_regs_acquire
 // CHECK-NEXT:    %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
@@ -175,6 +179,7 @@ func.func @store_auto_insert_reuses_parent_reserve(%arg0: tensor<1x1x!ttcore.til
 // CHECK-NEXT:    %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
 // CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
 // CHECK-NEXT:    %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
+// CHECK-NEXT:    ttl.init_sfpu(%[[CB]], %[[CB]])
 // CHECK-NEXT:    ttl.tile_regs_acquire
 // CHECK-NEXT:    %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
@@ -214,6 +219,7 @@ func.func @store_with_reserve_inside_compute(%arg0: tensor<1x1x!ttcore.tile<32x3
 // CHECK-NEXT:    %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
 // CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
 // CHECK-NEXT:    %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
+// CHECK-NEXT:    ttl.init_sfpu(%[[CB]], %[[CB]])
 // CHECK-NEXT:    ttl.tile_regs_acquire
 // CHECK-NEXT:    %[[RES:.*]] = ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):

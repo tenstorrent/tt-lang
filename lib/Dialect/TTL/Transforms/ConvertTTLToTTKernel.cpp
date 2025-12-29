@@ -126,12 +126,17 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
+/// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
+/// ctaIndex: Index into compile-time args where tensor config starts.
+/// crtaIndex: Index into compile-runtime args (typically 0).
 static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
-                                 Value rowStride, Value colStride,
+                                 int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
+  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
   auto args =
-      rewriter.create<ttk::TensorAccessorArgsOp>(loc, rowStride, colStride);
+      rewriter.create<ttk::TensorAccessorArgsOp>(loc, ctaConst, crtaConst);
   auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
                                                          bankBase, pageSize);
   return accessor.getResult();
@@ -224,24 +229,8 @@ static CircularBufferType getTTLCBType(Value cb) {
   return nullptr;
 }
 
-static FailureOr<Value>
-convertCBOperand(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
-  if (mlir::isa<ttk::CBType>(cb.getType())) {
-    return cb;
-  }
-  auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType());
-  if (!ttlCbTy) {
-    return failure();
-  }
-  Type tkCbTy =
-      ttk::CBType::get(ttlCbTy.getContext(), ttlCbTy.getTotalElements(),
-                       ttlCbTy.getElementType());
-  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, tkCbTy, cb);
-  return cast.getResult(0);
-}
-
 // num_pages = product of CB shape dimensions (elements per block).
-// Used by CBOpLowering template; [[maybe_unused]] silences false positive.
+// Used by CBOpLowering template; [[maybe_unused]] silences linter warning.
 [[maybe_unused]] static Value
 computeNumPages(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
@@ -263,7 +252,8 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to get TTL CB type");
     }
 
-    auto convertedCb = convertCBOperand(adaptor.getCb(), rewriter, loc);
+    auto convertedCb =
+        utils::convertTTLCBToTTKernel(adaptor.getCb(), rewriter, loc);
     if (failed(convertedCb)) {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
@@ -445,15 +435,18 @@ materializeTensorAccessor(Value tensor, Value bankBase,
   auto loc = tensor.getLoc();
   utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
 
-  auto rowStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.rowStrideElems, 32);
-  auto colStride =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.colStrideElems, 32);
+  // TODO(XX): Placeholder CTA offsets - Python regex replaces 42+argIdx
+  // with actual offsets from ttnn.TensorAccessorArgs.get_compile_time_args().
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  int32_t ctaPlaceholder =
+      42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
+  constexpr int32_t crtaPlaceholder = 0;
+
   auto pageSize =
       rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, rowStride, colStride, bankBase,
-                             pageSize);
+  return buildTensorAccessor(loc, rewriter, ctaPlaceholder, crtaPlaceholder,
+                             bankBase, pageSize);
 }
 
 static std::pair<int64_t, int64_t>
@@ -533,7 +526,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   }
 
   // Convert CB to TTKernel type and get write pointer.
-  auto cbConverted = convertCBOperand(dstCB, rewriter, loc);
+  auto cbConverted = utils::convertTTLCBToTTKernel(dstCB, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }
@@ -574,7 +567,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   }
 
   // Convert CB to TTKernel type and get read pointer.
-  auto cbConverted = convertCBOperand(srcCB, rewriter, loc);
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }
@@ -739,8 +732,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
   // tile ops lowering phase.
-  target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-                    TileRegsReleaseOp>();
+  target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
+                    TileRegsWaitOp, TileRegsReleaseOp>();
 
   // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
   // lowering phase.
@@ -815,7 +808,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
           return false;
         }
         // DST lifecycle ops are illegal.
-        if (isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+        if (isa<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                 TileRegsReleaseOp>(op)) {
           return false;
         }

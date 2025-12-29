@@ -57,7 +57,6 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
     TTLangCAPI
   PRIVATE_LINK_LIBS
     TTLangCAPI
-    TTLangD2MTransforms
     TTLangTTLTransforms
     ${TTMLIR_PYTHON_CAPI_LIB}
   PYTHON_BINDINGS_LIBRARY nanobind
@@ -65,6 +64,24 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
 
 # Use the same domain as tt-mlir so we can share its _mlir extension types.
 set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttmlir")
+
+# ###############################################################################
+# Generate elementwise operations from TTLElementwiseOps.def
+# ###############################################################################
+set(TTL_ELEMENTWISE_DEF "${CMAKE_SOURCE_DIR}/include/ttlang/Dialect/TTL/TTLElementwiseOps.def")
+set(GEN_ELEMENTWISE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/gen_elementwise.py")
+set(GENERATED_ELEMENTWISE_PY "${CMAKE_CURRENT_BINARY_DIR}/ttlang/_generated_elementwise.py")
+
+add_custom_command(
+  OUTPUT ${GENERATED_ELEMENTWISE_PY}
+  COMMAND ${Python3_EXECUTABLE} ${GEN_ELEMENTWISE_SCRIPT}
+          ${TTL_ELEMENTWISE_DEF} -o ${GENERATED_ELEMENTWISE_PY}
+  DEPENDS ${TTL_ELEMENTWISE_DEF} ${GEN_ELEMENTWISE_SCRIPT}
+  COMMENT "Generating elementwise ops Python bindings from TTLElementwiseOps.def"
+  VERBATIM
+)
+
+add_custom_target(TTLangGeneratedElementwise DEPENDS ${GENERATED_ELEMENTWISE_PY})
 
 # ###############################################################################
 # Additional custom python code we want to bundle in the package
@@ -78,7 +95,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     __init__.py
     circular_buffer.py
     constants.py
-    d2m_api.py
+    ttl_api.py
     dtype_utils.py
     ir.py
     layouts.py
@@ -86,13 +103,20 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     semaphore.py
 )
 
+# Add generated elementwise ops file
+declare_mlir_python_sources(TTLangPythonCommon.Generated
+  ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ttlang"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    _generated_elementwise.py
+)
+
 declare_mlir_python_sources(TTLangPythonCommon.Src
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
-    _src/codegen.py
-    _src/d2m_ast.py
+    _src/ttl_ast.py
     _src/tensor_accessor.py
     _src/tensor_registry.py
 )
@@ -155,6 +179,9 @@ add_mlir_python_modules(TTLangPythonModules
   COMMON_CAPI_LINK_LIBS
     TTLangPythonCAPI
 )
+
+# Ensure generated elementwise ops are created before Python modules are built
+add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
 
 # Link ttmlir's CAPI library for registry sharing
 target_link_libraries(TTLangPythonModules.extension._ttlang.dso PRIVATE

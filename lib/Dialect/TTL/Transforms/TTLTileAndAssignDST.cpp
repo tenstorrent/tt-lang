@@ -50,6 +50,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include <algorithm>
 #include <cstdint>
@@ -74,6 +75,9 @@ static std::uint32_t computeDefaultCapacity() { return kDefaultDSTCapacity; }
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
+// NOTE: isLastUse is block-local only. This is safe because ttl.compute bodies
+// are single-block (enforced by SizedRegion<1> in the op definition). If nested
+// regions are added to compute bodies, this analysis must be enhanced.
 static bool isLastUse(Operation &op, Value v) {
   for (Operation *user : v.getUsers()) {
     if (user != &op && op.isBeforeInBlock(user)) {
@@ -87,7 +91,7 @@ static bool isLastUse(Operation &op, Value v) {
 static std::uint32_t estimatePeakDSTUsage(Block *body) {
   llvm::SmallPtrSet<Value, 16> live;
   for (BlockArgument arg : body->getArguments()) {
-    if (isTileValue(arg)) {
+    if (isTileValue(arg) && !arg.use_empty()) {
       live.insert(arg);
     }
   }
@@ -171,6 +175,11 @@ struct TTLTileAndAssignDSTPass
             continue;
           }
 
+          // Skip if already copied
+          if (dstIndexForValue.count(arg)) {
+            continue;
+          }
+
           // Allocate: find first free register
           int freeReg = inUse.find_first_unset();
           assert(freeReg >= 0 && "no free DST register (should have been "
@@ -180,8 +189,39 @@ struct TTLTileAndAssignDSTPass
 
           OpBuilder builder(&op);
           Location loc = op.getLoc();
-          // src_index is 0 (the tile index within the circular buffer)
-          Value srcIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
+
+          // Compute index_map for CB linearization from iteration dimensions.
+          // Find which input this block argument corresponds to.
+          AffineMapAttr indexMapAttr;
+          for (auto [idx, input] : llvm::enumerate(computeOp.getInputs())) {
+            if (arg == body->getArgument(idx)) {
+              auto tensorType = cast<RankedTensorType>(input.getType());
+              int64_t rank = tensorType.getRank();
+
+              // Build row-major linearization affine expression.
+              // TODO: Support dynamic shapes using symbols and getMixedSizes().
+              SmallVector<int64_t> staticShape(tensorType.getShape().begin(),
+                                               tensorType.getShape().end());
+              SmallVector<int64_t> strides = mlir::computeStrides(staticShape);
+
+              // Build linearization: sum of (dim_i * stride_i)
+              AffineExpr linearExpr = builder.getAffineConstantExpr(0);
+              for (int64_t i = 0; i < rank; ++i) {
+                linearExpr =
+                    linearExpr + builder.getAffineDimExpr(i) *
+                                     builder.getAffineConstantExpr(strides[i]);
+              }
+
+              AffineMap indexMap =
+                  AffineMap::get(rank, /*numSymbols=*/0, linearExpr);
+              indexMapAttr = AffineMapAttr::get(indexMap);
+              break;
+            }
+          }
+
+          // Create linearized_index op (will be materialized during loop
+          // lowering)
+          Value srcIndex = builder.create<LinearizedIndexOp>(loc, indexMapAttr);
           Value dstIndex =
               builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
           auto copy = builder.create<CopyTileOp>(
@@ -226,6 +266,10 @@ struct TTLTileAndAssignDSTPass
             }
             dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
             inUse.set(freeReg);
+            // NOTE: Sets single dst_idx on the operation. All tile ops
+            // currently produce exactly one tile result, so this is safe. If
+            // multi-result tile ops are added, this will need per-result
+            // attributes.
             OpBuilder attrBuilder(res.getContext());
             op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
                                             static_cast<int32_t>(freeReg)));

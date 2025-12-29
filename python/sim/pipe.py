@@ -5,7 +5,7 @@
 Pipe utilities for conditional execution based on pipe roles.
 """
 
-from typing import Callable, Union, List
+from typing import Callable, Union, List, Optional, Iterator, Generator, Any
 from .typedefs import Pipe, CoreIndex
 from .kernel import core, flatten_core_index
 
@@ -55,13 +55,17 @@ def _core_in_dst_range(
             return False
 
 
-def if_pipe_src(pipes: Union[Pipe, List[Pipe]], func: Callable[[Pipe], None]) -> None:
+def if_pipe_src(
+    pipes: Union[Pipe, List[Pipe]],
+    func: Callable[[Pipe], Optional[Iterator[Any]]],
+) -> Generator[Any, None, None]:
     """Execute a function for each pipe if the current core is the source.
 
     Args:
         pipes: A single Pipe or list of Pipes to check
         func: Function to call with each pipe where current core is the source.
               The function receives the pipe as its argument.
+              If func is a generator, yields from it to propagate cooperative scheduling.
     """
     match pipes:
         case Pipe():
@@ -73,16 +77,23 @@ def if_pipe_src(pipes: Union[Pipe, List[Pipe]], func: Callable[[Pipe], None]) ->
     for pipe in pipe_list:
         pipe_src_linear = flatten_core_index(pipe.src_core)
         if current_core_linear == pipe_src_linear:
-            func(pipe)
+            result = func(pipe)
+            # If callback returned an iterator/generator, yield from it
+            if result is not None:
+                yield from result
 
 
-def if_pipe_dst(pipes: Union[Pipe, List[Pipe]], func: Callable[[Pipe], None]) -> None:
+def if_pipe_dst(
+    pipes: Union[Pipe, List[Pipe]],
+    func: Callable[[Pipe], Optional[Iterator[Any]]],
+) -> Generator[Any, None, None]:
     """Execute a function for each pipe if the current core is a destination.
 
     Args:
         pipes: A single Pipe or list of Pipes to check
         func: Function to call with each pipe where current core is a destination.
               The function receives the pipe as its argument.
+              If func is a generator, yields from it to propagate cooperative scheduling.
     """
     match pipes:
         case Pipe():
@@ -92,7 +103,10 @@ def if_pipe_dst(pipes: Union[Pipe, List[Pipe]], func: Callable[[Pipe], None]) ->
 
     for pipe in pipe_list:
         if _core_in_dst_range(pipe.dst_core_range):
-            func(pipe)
+            result = func(pipe)
+            # If callback returned an iterator/generator, yield from it
+            if result is not None:
+                yield from result
 
 
 def core_in_pipe(pipe: Pipe) -> bool:

@@ -72,6 +72,14 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - **Verify data flow**: Check that operations consume correct SSA values
 - **CHECK-NOT**: Ensure unwanted operations/attributes are not present
 
+## Documentation Style
+- **Tone**: Formal and technical; avoid second person ("you/your")
+- **Voice**: Use present tense descriptive style ("provides", "enables", "includes")
+- **Structure**: Keep sentences clear and concise; end with periods
+- **Content**: Explain what and why; avoid unnecessary fluff
+- **Code examples**: Include complete, runnable examples where appropriate
+- **References**: Follow LLVM documentation style: https://llvm.org/docs/
+
 ## Additional Notes
 - **Agent Design Principle**: Implement only the minimum necessary
   functionality; avoid feature creep and arbitrary expansions

@@ -110,12 +110,10 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
                          << cbTy.getElementType() << ")";
   }
 
-  // Require the CB block shape rank to match the tensor rank (tile grid).
-  if (static_cast<int64_t>(cbTy.getShape().size()) != tensorTy.getRank()) {
-    return emitOpError() << "cb shape rank (" << cbTy.getShape().size()
-                         << ") must match tensor rank (" << tensorTy.getRank()
-                         << ")";
-  }
+  // TODO: Revisit shape rank validation for TTNN tensors.
+  // TTNN tensors have 4D device shape (grid + shard) while CBs have 2D shard
+  // shape. For now, only validate element types match. The relationship between
+  // tensor shape and CB shape needs further investigation.
 
   // Result type must equal input tensor type (identity).
   if (getResult().getType() != getTensor().getType()) {
@@ -179,6 +177,23 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
     return failure();
   }
   return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::LinearizedIndexOp::verify() {
+  AffineMap map = getIndexMap();
+
+  // Verify that the map has at least one dimension
+  if (map.getNumDims() == 0) {
+    return emitOpError() << "index_map must have at least one dimension";
+  }
+
+  // Verify that the map has exactly one result (the linearized index)
+  if (map.getNumResults() != 1) {
+    return emitOpError() << "index_map must have exactly one result, got "
+                         << map.getNumResults();
+  }
+
+  return mlir::success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
@@ -403,6 +418,16 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return emitOpError("body block must be terminated with ttl.yield");
   }
 
+  // Verify at least one input and one output (required for SFPU protocol).
+  if (getInputs().empty()) {
+    return emitOpError(
+        "requires at least one input for SFPU unpacker configuration");
+  }
+  if (getOutputs().empty()) {
+    return emitOpError(
+        "requires at least one output for SFPU packer configuration");
+  }
+
   // Verify indexing maps compatibility.
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
@@ -412,12 +437,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // The iteration domain is derived from the maximum tensor rank, which should
   // match iteratorCount.
   int64_t maxTensorRank = 0;
-  for (Value input : getInputs()) {
-    auto ty = cast<RankedTensorType>(input.getType());
-    maxTensorRank = std::max(maxTensorRank, ty.getRank());
-  }
-  for (Value output : getOutputs()) {
-    auto ty = cast<RankedTensorType>(output.getType());
+  for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
+    auto ty = cast<RankedTensorType>(operand.getType());
     maxTensorRank = std::max(maxTensorRank, ty.getRank());
   }
   if (static_cast<size_t>(maxTensorRank) != iteratorCount) {

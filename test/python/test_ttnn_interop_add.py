@@ -11,7 +11,7 @@
 import os
 import platform
 import torch
-from ttlang.d2m_api import *
+from ttlang.ttl_api import *
 
 try:
     import ttnn
@@ -21,7 +21,7 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], ttnn_interop=True)
+@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
 def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)
@@ -43,20 +43,22 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
     @datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Read both inputs
-        lhs_shard = lhs_cb.reserve()
-        tx_lhs = dma(lhs_accessor[0, 0], lhs_shard)
+        # Read both inputs - reserve CB and copy directly from accessor to CB
+        lhs_cb.reserve()
+        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
         tx_lhs.wait()
+        lhs_cb.push()
 
-        rhs_shard = rhs_cb.reserve()
-        tx_rhs = dma(rhs_accessor[0, 0], rhs_shard)
+        rhs_cb.reserve()
+        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
         tx_rhs.wait()
+        rhs_cb.push()
 
     @datamovement()
     def dm_out(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        # Write output
-        out_shard = out_cb.wait()
-        tx = dma(out_shard, out_accessor[0, 0])
+        # Write output - wait for data in CB and copy directly from CB to device
+        out_cb.wait()
+        tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
         out_cb.pop()
 
@@ -103,22 +105,11 @@ try:
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
-    # Move to L1 with SHARDED layout on a single core
-    # This ensures we know exactly which core has the data
-    print("\nMoving tensors from DRAM to L1 (sharded on single core)...")
-    shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]),
-        (32, 32),  # shard shape = full tensor
-        ttnn.ShardOrientation.ROW_MAJOR,
-    )
-    l1_sharded_config = ttnn.MemoryConfig(
-        memory_layout=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
-        buffer_type=ttnn.BufferType.L1,
-        shard_spec=shard_spec,
-    )
-    lhs = ttnn.to_memory_config(lhs_dram, memory_config=l1_sharded_config)
-    rhs = ttnn.to_memory_config(rhs_dram, memory_config=l1_sharded_config)
-    out = ttnn.to_memory_config(out_dram, memory_config=l1_sharded_config)
+    # Move to L1 with interleaved layout
+    print("\nMoving tensors from DRAM to L1 (interleaved)...")
+    lhs = ttnn.to_memory_config(lhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
+    rhs = ttnn.to_memory_config(rhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
 
     print(f"\nttnn.Tensors in L1:")
     print(f"  lhs: {lhs.shape}, dtype={lhs.dtype}, memory_config={lhs.memory_config()}")

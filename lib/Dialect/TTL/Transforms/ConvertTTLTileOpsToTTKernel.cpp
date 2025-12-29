@@ -30,6 +30,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
@@ -43,6 +44,8 @@ namespace {
 /// Look up a CB for a copy_tile source.
 /// After loop lowering, src is typically a tensor.extract result.
 /// We trace back to find the tensor, then use getAttachedCB to find the CB.
+// TODO(#161): Cache cb_index → BindCBOp mapping to avoid O(n×m) complexity
+// where n = copy_tile ops, m = bind_cb ops.
 static Value lookupCBByIndex(Value src, Operation *funcOp) {
   // Check if src is a block argument (before loop lowering).
   if (auto barg = llvm::dyn_cast<BlockArgument>(src)) {
@@ -96,6 +99,27 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
 //===----------------------------------------------------------------------===//
 // DST lifecycle ops
 //===----------------------------------------------------------------------===//
+
+struct TTLInitSFPUToTTKernel : OpConversionPattern<InitSFPUOp> {
+  using OpConversionPattern<InitSFPUOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(InitSFPUOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto icb = utils::convertTTLCBToTTKernel(adaptor.getIcb(), rewriter, loc,
+                                             getTypeConverter());
+    auto ocb = utils::convertTTLCBToTTKernel(adaptor.getOcb(), rewriter, loc,
+                                             getTypeConverter());
+    if (failed(icb) || failed(ocb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
+    }
+
+    rewriter.replaceOpWithNewOp<ttk::InitSFPUOp>(op, *icb, *ocb);
+    return success();
+  }
+};
 
 struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
   using OpConversionPattern<TileRegsAcquireOp>::OpConversionPattern;
@@ -379,7 +403,8 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
-  // Control ops.
+  // Control ops (init_sfpu needs type converter for CB conversion).
+  patterns.add<TTLInitSFPUToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileRegsAcquireToTTKernel, TTLTileRegsCommitToTTKernel,
                TTLTileRegsWaitToTTKernel, TTLTileRegsReleaseToTTKernel>(ctx);
 

@@ -18,14 +18,17 @@
 // CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB0_TTK]], %[[C4]])
 // CHECK-NEXT:  %[[CAST0:.*]] = builtin.unrealized_conversion_cast %[[CB0_TTK]]
 // CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB1_TTK]], %[[C4]])
+// CHECK-NEXT:  ttkernel.init_sfpu(%[[CB0_TTK]], %[[CB2_TTK]])
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
 // CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT]])
 // CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
 // CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[CAST0]][%[[I]], %[[J]]]
+// Compute linear tile index: i * cols + j (via affine map)
+// CHECK-NEXT:      %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
-// CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[C0]], %[[DST0:.*]])
+// CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]], %[[C0]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
-// CHECK-NEXT:      ttkernel.copy_tile(%[[CB1_TTK]], %[[C0]], %[[DST1:.*]])
+// CHECK-NEXT:      ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]], %[[C1]])
 // CHECK-NEXT:      ttkernel.add_binary_tile_init()
 // CHECK-NEXT:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.mul_binary_tile_init()
