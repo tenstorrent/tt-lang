@@ -15,9 +15,9 @@ Uses 64x64 tensors (2x2 tiles of 32x32) to test that linearized_index
 correctly computes tile offsets in loops.
 """
 
-import os
+from test_utils import ttnn, require_ttnn, skip_without_hardware
 
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
+require_ttnn()
 
 from ttlang.ttl_api import (
     pykernel_gen,
@@ -28,12 +28,6 @@ from ttlang.ttl_api import (
     datamovement,
 )
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
 
 
 @pykernel_gen(grid=(1, 1), block_factors=[(2, 2), (2, 2), (2, 2)])
@@ -135,6 +129,8 @@ def add_multitile_kernel(lhs, rhs, out):
 
 
 if __name__ == "__main__":
+    skip_without_hardware("=== Multi-tile Add Kernel Test Complete (no hardware) ===")
+
     import torch
 
     print("=== Multi-tile Add Kernel Test ===")

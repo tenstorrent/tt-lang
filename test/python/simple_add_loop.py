@@ -13,9 +13,9 @@ Uses a for loop to add the same values multiple times (accumulate pattern).
 This tests loop support without requiring dynamic indices in data movement.
 """
 
-import os
+from test_utils import ttnn, require_ttnn, skip_without_hardware
 
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
+require_ttnn()
 
 from ttlang.ttl_api import (
     pykernel_gen,
@@ -26,12 +26,6 @@ from ttlang.ttl_api import (
     datamovement,
 )
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
 
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
@@ -151,6 +145,8 @@ def add_loop_kernel(lhs, rhs, out):
 
 
 if __name__ == "__main__":
+    skip_without_hardware("=== Loop Add Kernel Test Complete (no hardware) ===")
+
     import torch
 
     print("=== Loop Add Kernel Test ===")

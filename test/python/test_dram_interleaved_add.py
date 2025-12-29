@@ -11,14 +11,12 @@
 # directly from DRAM into CBs.
 
 import torch
-from ttlang.ttl_api import *
+from test_utils import ttnn, require_ttnn, skip_without_hardware
 
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - this test requires ttnn")
-    print("=== DRAM Interleaved Test Complete ===")
-    exit(0)
+require_ttnn()
+skip_without_hardware("=== DRAM Interleaved Test Complete (no hardware) ===")
+
+from ttlang.ttl_api import *
 
 
 @pykernel_gen(
