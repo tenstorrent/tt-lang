@@ -20,6 +20,20 @@ from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
 
 
+def _get_annotation_name(annotation):
+    """Extract the type name from an annotation node.
+
+    Handles both simple names (CircularBuffer) and qualified names (ttl.CircularBuffer).
+    Returns the simple type name (e.g., 'CircularBuffer') in both cases.
+    """
+    if isinstance(annotation, ast.Name):
+        return annotation.id
+    elif isinstance(annotation, ast.Attribute):
+        return annotation.attr
+    else:
+        raise TypeError(f"Unsupported annotation type: {type(annotation)}")
+
+
 def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
     """Build MLIR tensor type for a TensorAccessor with TTNNLayoutAttr."""
     if not tiled:
@@ -123,9 +137,12 @@ class TTLGenericCompiler(TTCompilerBase):
 
             if not arg.annotation:
                 raise TypeError("All kernel arguments must have a type annotation")
-            elif arg.annotation.id == "TensorBlock":
+
+            annotation_name = _get_annotation_name(arg.annotation)
+
+            if annotation_name == "TensorBlock":
                 raise NotImplementedError("TensorBlock not yet supported in TTL mode")
-            elif arg.annotation.id == "CircularBuffer":
+            elif annotation_name == "CircularBuffer":
                 if not self.context.tiled:
                     raise ValueError("Only tiled CBs supported")
                 shape = list(self.args[i].shape)
@@ -152,11 +169,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     }
                 )
                 self._next_cb_index += 1
-            elif arg.annotation.id == "Semaphore":
+            elif annotation_name == "Semaphore":
                 raise NotImplementedError("Semaphore not yet supported in TTL mode")
             else:
                 raise TypeError(
-                    f"Unknown kernel arguments type annotation {arg.annotation.id}"
+                    f"Unknown kernel arguments type annotation {annotation_name}"
                 )
 
         # Collect TensorAccessor captures for function arguments

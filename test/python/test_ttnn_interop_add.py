@@ -11,7 +11,9 @@
 import os
 import platform
 import torch
-from ttlang.ttl_api import *
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang.operators import copy
 
 try:
     import ttnn
@@ -21,14 +23,14 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -41,7 +43,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         # Read both inputs - reserve CB and copy directly from accessor to CB
         lhs_cb.reserve()
@@ -54,7 +56,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_out(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         # Write output - wait for data in CB and copy directly from CB to device
         out_cb.wait()
