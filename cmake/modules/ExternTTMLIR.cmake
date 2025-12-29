@@ -284,7 +284,21 @@ else()
   message(STATUS "Installing tt-mlir...")
   ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} --target install"
-      # Install the tests since that's the only way currently to have ttmlir-opt and other tools installed.
+      ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
+      WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
+  )
+
+  # Install the SharedLib component (includes CMake config files)
+  message(STATUS "Installing tt-mlir SharedLib component...")
+  ttlang_execute_with_env(
+      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --install ${_TTMLIR_BUILD_DIR} --component SharedLib"
+      ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
+      WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
+  )
+
+  # Install the Test component to get ttmlir-opt and other tools installed.
+  message(STATUS "Installing tt-mlir Test component...")
+  ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --install ${_TTMLIR_BUILD_DIR} --component Test"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
       WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
