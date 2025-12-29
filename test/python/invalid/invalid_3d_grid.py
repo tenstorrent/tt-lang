@@ -32,7 +32,7 @@ except ImportError:
 
 
 # CHECK: ValueError: Only 2D grids supported, got grid
-@pykernel_gen(grid=(1, 1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1, 1))
 def invalid_3d_grid_kernel(lhs, rhs, out):
     """This kernel should fail because 3D grids are not supported."""
     lhs_accessor = TensorAccessor(lhs)

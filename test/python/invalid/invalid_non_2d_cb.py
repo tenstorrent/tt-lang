@@ -33,7 +33,7 @@ except ImportError:
 
 
 # CHECK: ValueError: Only 2D CBs supported, got shape
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1, 1), (1, 1, 1), (1, 1, 1)])
+@pykernel_gen(grid=(1, 1))
 def invalid_3d_cb_kernel(lhs, rhs, out):
     """This kernel should fail because 3D tensors create 3D CBs which are not supported."""
     lhs_accessor = TensorAccessor(lhs)

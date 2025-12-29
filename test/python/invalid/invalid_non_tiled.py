@@ -33,7 +33,7 @@ except ImportError:
 
 
 # CHECK: ValueError: Only tiled CBs supported
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)], tiled=False)
+@pykernel_gen(grid=(1, 1), tiled=False)
 def invalid_non_tiled_kernel(lhs, rhs, out):
     """This kernel should fail because tiled=False is not supported."""
     lhs_accessor = TensorAccessor(lhs)
