@@ -230,14 +230,10 @@ class CompiledTTNNKernel:
             else:
                 kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
 
-            # Pass num_cbs as a define for TensorAccessorArgs template parameter
-            kernel_defines = [("num_cbs", str(len(args)))]
-
             kernel_desc = ttnn.KernelDescriptor(
                 kernel_source=kernel_path,
                 core_ranges=self.core_ranges,
                 compile_time_args=kernel_compile_time_args,
-                defines=kernel_defines,
                 runtime_args=runtime_args,
                 common_runtime_args=common_runtime_args,
                 config=config,
@@ -410,6 +406,16 @@ def _compile_ttnn_kernel(
         print(f"\nCore range: {core_ranges}")
 
     num_tensors = len(args)
+
+    # Write all kernels to /tmp for debugging
+    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
+        cpp_source = ttkernel_to_cpp_by_name(module, name)
+        tensor_indices = (
+            thread_tensor_indices[kernel_idx]
+            if kernel_idx < len(thread_tensor_indices)
+            else []
+        )
+        _write_kernel_to_tmp(name, cpp_source, num_tensors, tensor_indices)
 
     kernel_paths = []
     kernel_configs = []

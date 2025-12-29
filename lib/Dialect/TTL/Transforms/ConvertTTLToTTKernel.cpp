@@ -126,24 +126,17 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
-/// Build a TensorAccessor with the cta_expr attribute set to "num_cbs".
-/// This is a simple implementation that doesn't use chaining - all accessors
-/// use the same base expression. Chaining support can be added in a future PR.
+/// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
+/// ctaIndex: Index into compile-time args where tensor config starts.
+/// crtaIndex: Index into compile-runtime args (typically 0).
 static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
+                                 int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
-  auto ctaExpr = StringAttr::get(rewriter.getContext(), "num_cbs");
-
-  // TensorAccessorArgsOp requires cta_base and crta_base when prev_args is not
-  // present. Since we're using cta_expr, these values won't be used for CTA,
-  // but we still need to provide them. Use 0 as dummy values.
-  auto c0 = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/32);
-
-  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
-      loc, /*cta_base=*/c0.getResult(), /*crta_base=*/c0.getResult(),
-      /*prev_args=*/Value(), /*cta_expr=*/ctaExpr,
-      /*crta_expr=*/nullptr);
-
+  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
+  auto args =
+      rewriter.create<ttk::TensorAccessorArgsOp>(loc, ctaConst, crtaConst);
   auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
                                                          bankBase, pageSize);
   return accessor.getResult();
@@ -429,6 +422,8 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 }
 
 /// Create a TensorAccessor from a tensor type and bank base address.
+/// The bankBase should come from runtime args via
+/// getBufferAddressFromRuntimeArg.
 static FailureOr<Value>
 materializeTensorAccessor(Value tensor, Value bankBase,
                           ConversionPatternRewriter &rewriter) {
@@ -440,10 +435,18 @@ materializeTensorAccessor(Value tensor, Value bankBase,
   auto loc = tensor.getLoc();
   utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
 
+  // TODO(XX): Placeholder CTA offsets - Python regex replaces 42+argIdx
+  // with actual offsets from ttnn.TensorAccessorArgs.get_compile_time_args().
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  int32_t ctaPlaceholder =
+      42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
+  constexpr int32_t crtaPlaceholder = 0;
+
   auto pageSize =
       rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, bankBase, pageSize);
+  return buildTensorAccessor(loc, rewriter, ctaPlaceholder, crtaPlaceholder,
+                             bankBase, pageSize);
 }
 
 static std::pair<int64_t, int64_t>
@@ -516,7 +519,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
         op, "tensor must be a function argument for runtime arg mapping");
   }
 
-  // Create tensor accessor.
+  // Create tensor accessor with actual buffer address.
   auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter);
   if (failed(srcAccessor)) {
     return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
@@ -557,7 +560,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
         op, "tensor must be a function argument for runtime arg mapping");
   }
 
-  // Create tensor accessor.
+  // Create tensor accessor with actual buffer address.
   auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter);
   if (failed(dstAccessor)) {
     return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
