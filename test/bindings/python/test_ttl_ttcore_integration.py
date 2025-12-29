@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# RUN: %python -m pytest %s -v
+
 # Pytest for the ttlang python bindings and the ability to use
 # ttmlir and ttlang bindings together.
 
