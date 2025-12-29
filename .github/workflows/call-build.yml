@@ -181,10 +181,19 @@ jobs:
         with:
           path: ./build/docs/sphinx/_build/html
 
+      - name: Create build artifacts archive
+        run: |
+          ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
+          tar -I 'zstd --long=31 -T0' -cf "${ARTIFACT_FILE}" \
+            tt-mlir-install \
+            build/python_packages \
+            build/env
+          echo "Created artifact archive: ${ARTIFACT_FILE}"
+          ls -lh "${ARTIFACT_FILE}"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
-          path: |
-            build/python_packages
+          name: ttlang-ttmlir-install-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          path: ttlang-*.tar.zst
           retention-days: 1
