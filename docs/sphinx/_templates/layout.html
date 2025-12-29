@@ -1,0 +1,10 @@
+{% extends "!layout.html" %}
+
+{% block document %}
+<div class="admonition warning global-development-warning">
+    <p class="admonition-title">(⚠️ in early development ⚠️)</p>
+    <p><strong>The language implementation has not yet been finalized and programs are not yet expected to run.</strong>
+    </p>
+</div>
+{{ super() }}
+{% endblock %}

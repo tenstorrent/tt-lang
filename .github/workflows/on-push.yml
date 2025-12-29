@@ -2,12 +2,19 @@ name: On Push
 
 on:
   workflow_dispatch:
+    inputs:
+      run_macos:
+        description: "Run the macOS build (disabled by default)."
+        type: boolean
+        default: false
   push:
     branches: ["main"]
 
 permissions:
   checks: write
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,10 +28,26 @@ jobs:
   build:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
+    with:
+      # macOS is disabled by default for pushes. Enable via workflow_dispatch.
+      run_macos: ${{ github.event_name == 'workflow_dispatch' && inputs.run_macos }}
+      build_docs: ${{ github.ref == 'refs/heads/main' || github.ref_name == 'bnorris/docs-sphinx' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
+
+  deploy-docs:
+    if: github.ref == 'refs/heads/main' || github.ref_name == 'bnorris/docs-sphinx'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   check-all-green:
     if: always()

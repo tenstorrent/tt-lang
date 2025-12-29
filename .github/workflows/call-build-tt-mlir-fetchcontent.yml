@@ -16,6 +16,10 @@ on:
     schedule:
         - cron: "0 12 * * *" # 4am PST
 
+permissions:
+    checks: write
+    contents: read
+
 jobs:
     build-tt-lang-tt-mlir:
         runs-on: ubuntu-latest
@@ -30,6 +34,7 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
+            TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
@@ -45,44 +50,107 @@ jobs:
               id: ttmlir-commit
               shell: bash
               run: |
-                  df -H
+                  df -h
                   bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
 
             - name: Get LLVM version
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
-            - name: Cache tt-mlir installation
+            - name: Cache tt-mlir installation only
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
-                  path: |
-                      build/tt-mlir-install
-                      build/_deps
-                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
+                  path: tt-mlir-install
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
                   key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
-                  max-size: 200M
+                  max-size: 100M
 
             - name: Build tt-lang
               run: |
                   echo "Building tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
-                  df -H
+                  df -h
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
+                      -DTTMLIR_INSTALL_PREFIX=`pwd`/tt-mlir-install \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_ENABLE_RUNTIME=OFF \
+                      -DTTMLIR_ENABLE_RUNTIME=ON \
                       -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
+                      -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
                   cmake --build build
-                  df -H
 
-            - name: Test the build
+
+            - name: Test the tt-lang build
               run: |
                   source build/env/activate
                   python test/python/smoketest.py
+
+            - name: Run ttlang Lit MLIR tests
+              run: |
+                source build/env/activate
+                cmake --build build --target check-ttlang-mlir
+
+            - name: Run ttlang Python bindings tests
+              run: |
+                source build/env/activate
+                cmake --build build --target check-ttlang-python-bindings
+
+            - name: Move ttrt runtime to tt-mlir-install
+              run: |
+                  set -x
+                  cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
+
+            - name: Clean up tt-mlir build directory
+              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              run: |
+                  # We only need tt-mlir-install for caching and artifacts
+                  rm -rf build/tt-mlir-build
+                  rm -rf build/_deps/tt-mlir-src
+
+            - name: Archive build artifacts
+              run: |
+                  set -x
+                  ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
+                  echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
+
+                  # Archive both tt-mlir-install and build directories from workspace root
+                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
+                    tt-mlir-install build/python_packages build/test build/env
+
+            - name: Upload build artifacts for hardware tests
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ttlang-fetchcontent-ttmlir-install-ubuntu
+                  path: ${{ env.ARTIFACT_NAME }}
+                  if-no-files-found: error
+                  retention-days: 1
+
+
+    test-hardware:
+        needs: build-tt-lang-tt-mlir
+        uses: ./.github/workflows/call-test-hardware.yml
+        secrets: inherit
+        with:
+            runs-on: n150
+            build-os: ubuntu
+            timeout: 60
+            artifact-prefix: ttlang-fetchcontent
+
+    check-all-green:
+        if: always()
+        needs:
+            - build-tt-lang-tt-mlir
+            - test-hardware
+        runs-on: ubuntu-latest
+        steps:
+            - name: Decide whether all needed jobs succeeded or failed
+              uses: re-actors/alls-green@release/v1
+              with:
+                  jobs: ${{ toJSON(needs) }}

@@ -1,9 +1,62 @@
 # Test configuration
-# Will be populated with lit tests and unit tests
 
-# Example lit configuration:
-# configure_file(lit.site.cfg.py.in lit.site.cfg.py @ONLY)
-# add_custom_target(check-ttlang
-#   COMMAND ${LLVM_TOOLS_DIR}/llvm-lit -v ${CMAKE_CURRENT_BINARY_DIR}
-#   DEPENDS ttlang-opt ttlang-translate
-# )
+configure_lit_site_cfg(
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
+  MAIN_CONFIG
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
+)
+
+set(TTLANG_TEST_DEPENDS
+  ttlang-opt
+)
+
+# Common llvm-lit options for consistent output across tt-lang test suites.
+set(TTLANG_LIT_COMMON_ARGS
+  --verbose
+  --show-pass
+  --show-skipped
+  --show-unsupported
+  --no-progress-bar
+)
+
+# Python binding tests require the ttlang Python extension module. Ensure it is
+# built before running the full suite (and python-only suites), so imports of
+# `ttlang._mlir_libs._ttlang` do not spuriously fail.
+set(TTLANG_PYTHON_TEST_DEPENDS ${TTLANG_TEST_DEPENDS})
+if(TARGET TTLangPythonModules)
+  list(APPEND TTLANG_PYTHON_TEST_DEPENDS TTLangPythonModules)
+endif()
+
+# All tests
+add_lit_testsuite(check-ttlang "Running all ttlang tests"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ${TTLANG_LIT_COMMON_ARGS}
+  --xunit-xml-output report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+)
+set_target_properties(check-ttlang PROPERTIES FOLDER "Tests")
+
+# MLIR tests only
+add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
+  ${CMAKE_CURRENT_BINARY_DIR}/ttlang
+  ${TTLANG_LIT_COMMON_ARGS}
+  DEPENDS ${TTLANG_TEST_DEPENDS}
+)
+set_target_properties(check-ttlang-mlir PROPERTIES FOLDER "Tests")
+
+# Python tests only
+add_lit_testsuite(check-ttlang-python "Running ttlang Python tests"
+  ${CMAKE_CURRENT_BINARY_DIR}/python
+  ${TTLANG_LIT_COMMON_ARGS}
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+)
+set_target_properties(check-ttlang-python PROPERTIES FOLDER "Tests")
+
+# Python bindings tests only
+add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding tests"
+  ${CMAKE_CURRENT_BINARY_DIR}/bindings/python
+  ${TTLANG_LIT_COMMON_ARGS}
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+)
+set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")

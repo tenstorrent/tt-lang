@@ -6,6 +6,8 @@
 
 from typing import Optional, Any
 
+from ttlang._src.tensor_registry import get_tensor_global_name, get_tensor_global_index
+
 
 class TensorAccessor:
     """
@@ -30,7 +32,7 @@ class TensorAccessor:
         >>>     @datamovement()
         >>>     def dm_reader(...):
         >>>         shard = lhs_cb.reserve()
-        >>>         dma(lhs_accessor[idx, 0], shard).wait()
+        >>>         copy(lhs_accessor[idx, 0], shard).wait()
     """
 
     def __init__(self, tensor: Any):
@@ -38,15 +40,17 @@ class TensorAccessor:
         Create a TensorAccessor from a tensor argument.
 
         Args:
-            tensor: PyTorch tensor that must have a _global_name attribute
+            tensor: Tensor that must be a registered top-level argument
 
         Raises:
             ValueError: If tensor is not a top-level argument
         """
-        if not hasattr(tensor, "_global_name"):
+        try:
+            self.name = get_tensor_global_name(tensor)
+            self.global_index = get_tensor_global_index(tensor)
+        except ValueError:
             raise ValueError(
                 "TensorAccessor must be created from a top level tensor argument"
             )
-        self.name = tensor._global_name
         self.shape = tensor.shape
         self.dtype = tensor.dtype

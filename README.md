@@ -6,22 +6,17 @@
 
 A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. **This project is currently in early development stages, the language spec has not yet been finalized and programs are not yet expected to run.**
 
-## Overview
+## Vision
 
-tt-lang provides Python decorators and APIs that allow developers to write data movement and compute kernels using familiar Python syntax, which are then compiled to efficient hardware operations through the tt-mlir compiler infrastructure. The DSL enables direct control over tile-level operations, DMA transfers, and hardware resources while maintaining the expressiveness of Python.
+TT-Lang joins the Tenstorrent software ecosystem as an expressive yet ergonomic middle ground between [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html) and [TT-Metalium](https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/index.html), aiming to provide a unified entrypoint with integrated simulation, performance analysis, and AI-assisted development tooling.
 
-See [RFC document](https://docs.google.com/document/d/1T8Htv9nfdufebajJidzYHfDfsSnru_9xn_whdyxn6Po/edit?usp=sharing) for design details.
+![ecosystem graph](docs/ecosystem-diagram.png)
 
-> **Note:** tt-lang is under active development. APIs may change as the project evolves.
+The language is designed to support generative AI workflows and a robust tooling ecosystem: Python as the host language enables AI tools to translate GPU DSL kernels (Triton, CUDA, cuTile, TileLang) to Tenstorrent hardware more reliably than direct TT-Metalium translation, while tight integration with functional simulation will allow AI agents to propose kernel implementations, validate correctness, and iterate on configurations autonomously. Developers should be able to catch errors and performance issues in their IDE rather than on hardware, with a functional simulator to surface bugs early. Line-by-line performance metrics and data flow graphs can guide both programmers and AI agents to easily spot bottle necks and optimization opportunities.
 
-## Features
+Tenstorrent developers today face a choice between TT-NN which provides high-level operations that are straightforward to use but lack the expressivity needed for custom kernels and TT-Metalium which provides full hardware control through explicit low-level management of memory and compute. This is not a shortcoming of TT-Metalium; it is designed to be low-level and expressive, providing direct access to hardware primitives without abstraction overhead, and it serves its purpose well for developers who need that level of control. The problem is that there is no middle ground where the compiler handles what it does best—resource management, validation, optimization—while maintaining high expressivity for application-level concerns.
 
-- **Python-native DSL** - Write kernels in Python with the `@pykernel_gen` decorator
-- **Tile-level operations** - Direct control over data movement and compute at the tile level
-- **Hardware abstraction** - D2M (Data-to-Matmul) dialect for explicit DMA and compute operations
-- **MLIR-based compilation** - Leverages LLVM/MLIR infrastructure for optimization and code generation
-- **Flexible memory management** - Control over L1, DRAM, and circular buffer allocation
-- **Multi-core synchronization** - Semaphores and barriers for coordinating across cores
+TT-Lang bridges this gap through progressive disclosure: simple kernels require minimal specification where the compiler infers compute API operations, NOC addressing, DST register allocation and more from high-level abstractions, while complex kernels allow developers to open the hood and craft pipelining and synchronization details directly. The primary use case is kernel fusion for model deployment. Engineers porting models through TT-NN quickly encounter operations that need to be fused for performance or patterns that TT-NN cannot express, and today this requires rewriting in TT-Metalium which takes weeks and demands undivided attention and hardware debugging expertise. TT-Lang makes this transition fast and correct: a developer can take a sequence of TT-NN operations, express the fused equivalent with explicit control over intermediate results and memory layout, validate correctness through simulation, and integrate the result as a drop-in replacement in their TT-NN graph.
 
 ## Prerequisites
 
@@ -61,38 +56,47 @@ cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
 cmake -GNinja -Bbuild . -DCODE_COVERAGE=ON
 ```
 
+To generate the Sphinx documentation, configure with `-DTTLANG_ENABLE_DOCS`.
+
 **Note:** The `third-party/tt-mlir.commit` file contains the reference tt-mlir version. The build system ensures version compatibility automatically.
 
 ## Example
 
-Here's a simple example of using tt-lang to write a custom kernel:
+See the `examples/` and `tests/` directory for complete working examples, including:
+- `test/python/test_runtime_add.py`
+- `test/python/test_dram_interleaved_flash_attention_large.py`
 
-```python
-from ttlang import pykernel_gen, TensorBlock
-
-@pykernel_gen
-def my_kernel(input_tensor: TensorBlock, output_tensor: TensorBlock):
-    # Custom kernel implementation with tile-level operations
-    pass
-```
-
-See the `examples/` directory for complete working examples, including:
-- `custom_dm_matmul.py` - Custom data movement with matrix multiplication
-- Additional examples demonstrating DMA operations, circular buffers, and multi-core patterns
+Note: this project is currently in early prototype phase, examples are not final and may change significantly as we finalize the initial language spec and implement features.
 
 ## Documentation
 
-- [Hitchhiker's Guide](docs/HITCHHIKERS_GUIDE.md) - Complete DSL guide with examples and pipeline architecture
 - [Build System](docs/BUILD_SYSTEM.md) - Detailed build configuration options and integration scenarios
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
+- [Sphinx docs](docs/README.md) - How to build, view, and extend the documentation (docs are disabled by default; enable with `-DTTLANG_ENABLE_DOCS=ON` and build with `cmake --build build --target ttlang-docs`)
 
 ## Testing
 
-Run the test suite using LLVM's lit framework:
+Run tests using CMake targets:
 
 ```bash
 source build/env/activate
-llvm-lit -sv test/python/
+
+# All tests (MLIR + Python)
+cmake --build build --target check-ttlang
+
+# MLIR dialect tests only
+cmake --build build --target check-ttlang-mlir
+
+# Python runtime tests only
+cmake --build build --target check-ttlang-python
+```
+
+Or run specific test suites using lit directly:
+
+```bash
+source build/env/activate
+llvm-lit -sv test/ttlang/     # MLIR dialect tests
+llvm-lit -sv test/python/     # Python runtime tests
 ```
 
 For more information on testing, including how to write new tests and interpret results, see [test/TESTING.md](test/TESTING.md).
@@ -120,8 +124,6 @@ python/ttlang/
     ├── utils.py          # Utility functions
     └── codegen.py        # D2M generic function creation and code generation
 ```
-
-See [docs/HITCHHIKERS_GUIDE.md](docs/HITCHHIKERS_GUIDE.md) for comprehensive DSL documentation and examples.
 
 ## Developer Guidelines
 
