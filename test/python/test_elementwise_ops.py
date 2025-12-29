@@ -268,7 +268,7 @@ BINARY_OPS = {
 
 UNARY_OPS = {
     "exp": (make_unary_kernel("exp", "exp"), torch.exp),
-    "log": (make_unary_kernel("log", "log"), torch.log),
+    "log": (make_unary_kernel("log", "exp"), torch.log),
     "sqrt": (make_unary_kernel("sqrt", "sqrt"), torch.sqrt),
     "rsqrt": (make_unary_kernel("rsqrt", "rsqrt"), torch.rsqrt),
     "tanh": (make_unary_kernel("tanh", "tanh"), torch.tanh),
