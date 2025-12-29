@@ -353,46 +353,26 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Unary Tile Op Lowerings (LLVM-style type aliases)
+// Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
 
-using ExpTileLowering =
-    TTLTileUnaryToTTKernel<ExpTileOp, ttk::ExpTileInitOp, ttk::ExpTileOp>;
-using LogTileLowering =
-    TTLTileUnaryToTTKernel<LogTileOp, ttk::LogTileInitOp, ttk::LogTileOp>;
-using SqrtTileLowering =
-    TTLTileUnaryToTTKernel<SqrtTileOp, ttk::SqrtTileInitOp, ttk::SqrtTileOp>;
-using RsqrtTileLowering =
-    TTLTileUnaryToTTKernel<RsqrtTileOp, ttk::RsqrtTileInitOp, ttk::RsqrtTileOp>;
-using TanhTileLowering =
-    TTLTileUnaryToTTKernel<TanhTileOp, ttk::TanhTileInitOp, ttk::TanhTileOp>;
-using SigmoidTileLowering =
-    TTLTileUnaryToTTKernel<SigmoidTileOp, ttk::SigmoidTileInitOp,
-                           ttk::SigmoidTileOp>;
-using AbsTileLowering =
-    TTLTileUnaryToTTKernel<AbsTileOp, ttk::AbsTileInitOp, ttk::AbsTileOp>;
-using NegTileLowering =
-    TTLTileUnaryToTTKernel<NegTileOp, ttk::NegativeTileInitOp,
-                           ttk::NegativeTileOp>;
-using ReluTileLowering =
-    TTLTileUnaryToTTKernel<ReluTileOp, ttk::ReluTileInitOp, ttk::ReluTileOp>;
+// Generate type aliases for unary tile op lowerings
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+  using TTL_OP##TileLowering =                                                  \
+      TTLTileUnaryToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-//===----------------------------------------------------------------------===//
-// Binary Tile Op Lowerings
-//===----------------------------------------------------------------------===//
+// Generate type aliases for binary tile op lowerings (standard 3-arg form)
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+  using TTL_OP##TileLowering =                                                  \
+      TTLTileBinaryToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-using AddTileLowering =
-    TTLTileBinaryToTTKernel<AddTileOp, ttk::AddBinaryTilesInitOp,
-                            ttk::AddBinaryTilesOp>;
-using SubTileLowering =
-    TTLTileBinaryToTTKernel<SubTileOp, ttk::SubBinaryTilesInitOp,
-                            ttk::SubBinaryTilesOp>;
-using MulTileLowering =
-    TTLTileBinaryToTTKernel<MulTileOp, ttk::MulBinaryTilesInitOp,
-                            ttk::MulBinaryTilesOp>;
-using MaxTileLowering =
-    TTLTileMaxToTTKernel<MaxTileOp, ttk::BinaryMaxTileInitOp,
-                         ttk::BinaryMaxTileOp>;
+// Generate type aliases for special binary tile op lowerings (2-arg in-place)
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+  using TTL_OP##TileLowering =                                                  \
+      TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
 } // namespace
 
@@ -409,14 +389,21 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileRegsAcquireToTTKernel, TTLTileRegsCommitToTTKernel,
                TTLTileRegsWaitToTTKernel, TTLTileRegsReleaseToTTKernel>(ctx);
 
-  // Tile op lowerings (ttl.tile_* → ttkernel.*_tile)
-  patterns.add<
-      // Unary ops
-      ExpTileLowering, LogTileLowering, SqrtTileLowering, RsqrtTileLowering,
-      TanhTileLowering, SigmoidTileLowering, AbsTileLowering, NegTileLowering,
-      ReluTileLowering,
-      // Binary ops
-      AddTileLowering, SubTileLowering, MulTileLowering, MaxTileLowering>(ctx);
+  // Tile op lowerings - generated from TTLElementwiseOps.def
+  // Unary ops (ttl.tile_* → ttkernel.*_tile)
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+  patterns.add<TTL_OP##TileLowering>(ctx);
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // Binary ops (ttl.tile_* → ttkernel.*_tiles)
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+  patterns.add<TTL_OP##TileLowering>(ctx);
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // Special binary ops (non-standard lowering template)
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+  patterns.add<TTL_OP##TileLowering>(ctx);
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // Copy op needs the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
