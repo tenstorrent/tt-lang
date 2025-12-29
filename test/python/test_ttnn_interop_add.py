@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# UNSUPPORTED: system-darwin
+# REQUIRES: ttnn
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
@@ -66,7 +66,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
 
 # CHECK: TTNN INTEROP
-# CHECK: Created ProgramDescriptor
+# CHECK: Compiled kernel ready
 
 print("=== Testing TTNN Interop Path ===")
 print("Opening device and creating ttnn.Tensors...")

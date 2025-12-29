@@ -118,7 +118,7 @@ jobs:
       - name: Run lit tests
         env:
           TTLANG_VERBOSE_PASSES: 0
-        run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }} || true
+        run: .github/scripts/run_lit_tests.sh ${{ inputs.runs-on }}
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4

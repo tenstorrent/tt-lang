@@ -23,7 +23,6 @@ if lit_shell_env:
 config.test_format = lit.formats.ShTest(execute_external=not use_lit_shell)
 
 # suffixes: A list of file extensions to treat as test files.
-# Keep .py for lit, pytest tests are excluded via excludes below.
 config.suffixes = [".mlir", ".py"]
 
 # test_source_root: The root path where tests are located.
@@ -53,14 +52,6 @@ config.excludes = [
     "lit.cfg.py",
     "sim",
 ]
-
-# Exclude pytest-style tests (test_*.py) from lit collection.
-import os
-
-for _root, _dirs, _files in os.walk(config.test_source_root):
-    for _f in _files:
-        if _f.startswith("test_") and _f.endswith(".py"):
-            config.excludes.append(_f)
 
 if llvm_config is not None:
     llvm_config.with_system_environment(
@@ -109,9 +100,15 @@ if build_python is None or not build_python:
     # Fallback to default build location if not set by site config.
     build_python = os.path.join(config.ttlang_obj_root, "python_packages")
 
+# Get tt-mlir python packages for ttnn access.
+ttmlir_python_packages = None
+if hasattr(config, "ttmlir_path") and config.ttmlir_path:
+    ttmlir_python_packages = os.path.join(config.ttmlir_path, "python_packages")
+
 python_paths = [
     build_python,
     os.path.join(config.ttlang_source_dir, "python"),
+    ttmlir_python_packages,
     os.environ.get("PYTHONPATH", ""),
 ]
 
@@ -135,6 +132,15 @@ for env_var in [
     if env_var in os.environ:
         config.environment[env_var] = os.environ[env_var]
 
-# Add system platform feature for UNSUPPORTED directives
+# Add system platform feature for reference.
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
+
+# Detect ttnn availability for hardware tests.
+# Tests requiring ttnn/hardware use "REQUIRES: ttnn" directive.
+try:
+    import ttnn
+
+    config.available_features.add("ttnn")
+except ImportError:
+    pass
