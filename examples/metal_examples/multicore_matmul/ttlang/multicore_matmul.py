@@ -1,24 +1,27 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+# up to tt-lang spec, not intended to compile or run currently
 import ttnn
 import pytest
 import torch
 
 from ttl import Program, make_circular_buffer_like, copy
-from metal_examples.utils import assert_with_ulp
+
+from ttlang.utils.correctness import assert_with_ulp
+from ttlang.utils.block_allocation import split_work_to_cores
 
 
-def get_number_of_cores(core_grid):
+def get_number_of_cores(grid_range):
     total_cores = 0
-    for core_range in core_grid.ranges():
-        x_range = core_range.end.x - core_range.start.x + 1
-        y_range = core_range.end.y - core_range.start.y + 1
+    for start, end in grid_range:
+        x_range = end[0] - start[0] + 1
+        y_range = end[1] - start[1] + 1
         total_cores += x_range * y_range
     return total_cores
 
 
-@ttl.kernel(grid=(8, 8))
+@ttl.kernel(grid=(13, 10))
 def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -36,26 +39,12 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out, shape=(1, 1), buffer_factor=buffering_factor
     )
 
-    x_size, y_size = ttl.grid_size(dims=2)
-    upper_bound_core = ttnn.CoreCoord(x_size - 1, y_size - 1)
-    core_grid = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)]
+    print(f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}")
+    (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+        split_work_to_cores(
+            ttl.grid_size(dims=2), num_output_tiles_total, row_wise=True
+        )
     )
-    print(
-        f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}",
-        flush=True,
-    )
-    try:
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-            ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
-        )
-    except Exception as e:
-        print(
-            f"Error splitting work to cores: {e}, trying again with row wise splitting"
-        )
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-            ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
-        )
     print(
         f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
     )
@@ -89,7 +78,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             with out_cb.reserve() as out_blk:
                 for _ in range(Kt):
                     with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                        out_blk.store(out_blk + a_blk @ b_blk)
+                        out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
     def mm_reader():

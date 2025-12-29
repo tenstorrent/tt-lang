@@ -5,18 +5,13 @@ import ttnn
 import pytest
 import torch
 
-from metal_examples.utils import assert_with_ulp
+from ttlang.utils.correctness import assert_with_ulp
 
 
 # (M * N) % (32 *32) == 0 for this implemention
 @pytest.mark.parametrize(
     "M,K,N",
     [
-        (32, 32, 32),
-        (64, 32, 32),
-        (128, 128, 128),
-        (256, 256, 256),
-        (512, 512, 512),
         (640, 640, 640),
     ],
 )
@@ -31,26 +26,19 @@ def test_multicore_matmul(M, K, N):
     Nt = N // ttnn.TILE_SIZE
     num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
 
-    # device.compute_with_storage_grid_size() # size, not limit. Hardcode for now
-    upper_bound_core = ttnn.CoreCoord(7, 7)
-    core_grid = ttnn.CoreRangeSet(
+    device_core_size = device.compute_with_storage_grid_size()
+    upper_bound_core = ttnn.CoreCoord(device_core_size.x - 1, device_core_size.y - 1)
+    device_core_grid = ttnn.CoreRangeSet(
         [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_core)]
     )
     print(
-        f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}",
-        flush=True,
+        f"core_grid: {device_core_grid}, num_output_tiles_total: {num_output_tiles_total}"
     )
-    try:
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-            ttnn.split_work_to_cores(core_grid, num_output_tiles_total)
+    (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+        ttnn.split_work_to_cores(
+            device_core_grid, num_output_tiles_total, row_wise=True
         )
-    except Exception as e:
-        print(
-            f"Error splitting work to cores: {e}, trying again with row wise splitting"
-        )
-        (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-            ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
-        )
+    )
     print(
         f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
     )

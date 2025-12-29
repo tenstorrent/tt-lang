@@ -1,12 +1,16 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+# up to tt-lang spec, not intended to compile or run currently
+import sys
+from pathlib import Path
 import ttnn
 import pytest
 import torch
 
 from ttl import Program, make_circular_buffer_like, copy
-from metal_examples.utils import assert_with_ulp
+
+from ttlang.utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))
@@ -33,7 +37,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                 with out_cb.reserve() as out_blk:
                     for _ in range(Kt):
                         with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                            out_blk.store(out_blk + a_blk @ b_blk)
+                            out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
     def mm_reader():

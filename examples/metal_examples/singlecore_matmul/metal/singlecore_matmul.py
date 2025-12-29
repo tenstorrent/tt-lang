@@ -5,7 +5,7 @@ import ttnn
 import pytest
 import torch
 
-from metal_examples.utils import assert_with_ulp
+from ttlang.utils.correctness import assert_with_ulp
 
 
 @pytest.mark.parametrize(

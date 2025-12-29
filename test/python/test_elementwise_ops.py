@@ -49,7 +49,7 @@ from ttlang.ttl_api import (
 )
 from ttlang.operators import copy
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel."""
     lhs_accessor = TensorAccessor(lhs)
@@ -107,7 +107,7 @@ from ttlang.ttl_api import (
 from ttlang.operators import copy
 from ttlang import {op}
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call)."""
     lhs_accessor = TensorAccessor(lhs)
@@ -165,7 +165,7 @@ from ttlang.ttl_api import (
 from ttlang.operators import copy
 from ttlang import {op}
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel."""
     inp_accessor = TensorAccessor(inp)

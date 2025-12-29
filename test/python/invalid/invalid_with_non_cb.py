@@ -33,7 +33,7 @@ except ImportError:
 
 
 # CHECK: Expected CircularBufferType, got
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def invalid_with_non_cb_kernel(lhs, rhs, out):
     """This kernel should fail because 'with' is used on a TensorBlock, not a CB."""
     lhs_accessor = TensorAccessor(lhs)

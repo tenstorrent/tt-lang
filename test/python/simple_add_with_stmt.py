@@ -37,7 +37,7 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def add_with_kernel(lhs, rhs, out):
     """Add kernel using 'with' pattern for automatic CB lifecycle."""
     lhs_accessor = TensorAccessor(lhs)

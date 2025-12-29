@@ -1,12 +1,10 @@
 
-// SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
+// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
 #include "dataflow_api.h"
 #include <stdint.h>
-
-#include "debug/dprint.h"
 
 void kernel_main() {
   // same arg indices as in reader_binary_diff_lengths for compat
@@ -16,8 +14,8 @@ void kernel_main() {
   uint32_t Kt = get_arg_val<uint32_t>(3);
   uint32_t Nt = get_arg_val<uint32_t>(4);
 
-  constexpr uint32_t cb_id_in0 = 0;
-  constexpr uint32_t cb_id_in1 = 1;
+  constexpr uint32_t cb_id_in0 = tt::CBIndex::c_0;
+  constexpr uint32_t cb_id_in1 = tt::CBIndex::c_1;
 
   // Declare address in which we stored the source matrices. We have set the
   // exact same format between CBs and DRAM buffers in the host code, so we can
@@ -32,7 +30,6 @@ void kernel_main() {
   // circular buffers. Dimension names are called M, N and K. `t` in `mt` means
   // tile.
   for (uint32_t mt = 0; mt < Mt; mt++) {
-    uint32_t itileB = 0;
     for (uint32_t nt = 0; nt < Nt; nt++) {
       for (uint32_t kt = 0; kt < Kt; kt++) {
         {                                       // Read A's tile at (mt, kt)

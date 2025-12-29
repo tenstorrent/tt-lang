@@ -21,10 +21,7 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(
-    grid=(1, 1),
-    block_factors=[(1, 1), (1, 1), (1, 1)],
-)
+@pykernel_gen(grid=(1, 1))
 def add_dram_direct(lhs, rhs, out):
     """
     Add kernel that reads directly from DRAM interleaved tensors.

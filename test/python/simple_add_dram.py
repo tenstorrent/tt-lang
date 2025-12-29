@@ -34,7 +34,7 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@pykernel_gen(grid=(1, 1))
 def add_dram_kernel(lhs, rhs, out):
     """Add kernel that reads/writes directly from/to DRAM."""
     lhs_accessor = TensorAccessor(lhs)
