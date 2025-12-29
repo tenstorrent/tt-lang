@@ -517,8 +517,7 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   }
 
   // Create tensor accessor.
-  auto srcAccessor =
-      materializeTensorAccessor(srcTensor, *bankBase, rewriter);
+  auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter);
   if (failed(srcAccessor)) {
     return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
   }
@@ -559,8 +558,7 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   }
 
   // Create tensor accessor.
-  auto dstAccessor =
-      materializeTensorAccessor(dstTensor, *bankBase, rewriter);
+  auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter);
   if (failed(dstAccessor)) {
     return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
   }

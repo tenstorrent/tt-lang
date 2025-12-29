@@ -33,18 +33,16 @@ endif()
 # parallel MLIR-only test execution.
 add_lit_testsuite(check-ttlang "Running all ttlang tests"
   ${CMAKE_CURRENT_BINARY_DIR}
-  ${TTLANG_LIT_COMMON_ARGS}
-  --threads=1
-  --xunit-xml-output report.xml
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  ARGS ${TTLANG_LIT_COMMON_ARGS} --threads=1 --xunit-xml-output report.xml
 )
 set_target_properties(check-ttlang PROPERTIES FOLDER "Tests")
 
 # MLIR tests only
 add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
   ${CMAKE_CURRENT_BINARY_DIR}/ttlang
-  ${TTLANG_LIT_COMMON_ARGS}
   DEPENDS ${TTLANG_TEST_DEPENDS}
+  ARGS ${TTLANG_LIT_COMMON_ARGS}
 )
 set_target_properties(check-ttlang-mlir PROPERTIES FOLDER "Tests")
 
@@ -52,16 +50,15 @@ set_target_properties(check-ttlang-mlir PROPERTIES FOLDER "Tests")
 # when multiple tests open Tenstorrent devices)
 add_lit_testsuite(check-ttlang-python "Running ttlang Python tests"
   ${CMAKE_CURRENT_BINARY_DIR}/python
-  ${TTLANG_LIT_COMMON_ARGS}
-  --threads=1
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  ARGS ${TTLANG_LIT_COMMON_ARGS} --threads=1
 )
 set_target_properties(check-ttlang-python PROPERTIES FOLDER "Tests")
 
 # Python bindings tests only
 add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding tests"
   ${CMAKE_CURRENT_BINARY_DIR}/bindings/python
-  ${TTLANG_LIT_COMMON_ARGS}
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  ARGS ${TTLANG_LIT_COMMON_ARGS}
 )
 set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")

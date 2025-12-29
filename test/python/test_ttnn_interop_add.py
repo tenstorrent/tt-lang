@@ -22,7 +22,7 @@ except ImportError:
 
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
-def test_ttnn_interop_add(lhs, rhs, out):
+def ttnn_interop_add_kernel(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
@@ -117,7 +117,7 @@ try:
     print(f"  out: {out.shape}, dtype={out.dtype}, memory_config={out.memory_config()}")
 
     print("\n=== Running tt-lang kernel with ttnn.Tensors ===")
-    test_ttnn_interop_add(lhs, rhs, out)
+    ttnn_interop_add_kernel(lhs, rhs, out)
 
     # Copy result back to host for verification
     out_result = ttnn.to_torch(out)

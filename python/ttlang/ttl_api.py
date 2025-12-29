@@ -98,6 +98,7 @@ def ttkernel_to_cpp_by_name(module, name: str) -> str:
     full_cpp = ttkernel_to_cpp(module)
     return _extract_kernel_cpp(full_cpp, name)
 
+
 from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
 from ._src.tensor_registry import register_tensor_name
@@ -235,10 +236,14 @@ class CompiledTTNNKernel:
             else:
                 kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
 
+            # Pass num_cbs as a define for TensorAccessorArgs template parameter
+            kernel_defines = [("num_cbs", str(len(args)))]
+
             kernel_desc = ttnn.KernelDescriptor(
                 kernel_source=kernel_path,
                 core_ranges=self.core_ranges,
                 compile_time_args=kernel_compile_time_args,
+                defines=kernel_defines,
                 runtime_args=runtime_args,
                 common_runtime_args=common_runtime_args,
                 config=config,
