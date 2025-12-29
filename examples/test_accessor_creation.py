@@ -9,7 +9,7 @@ defined in the DSL are materialized as stream_layout ops immediately
 in the Python-generated IR, rather than being added later by a pass.
 """
 from ttlang.ttl_api import *
-from utils import assert_allclose
+from ttlang.utils.correctness import assert_allclose
 import torch
 
 
