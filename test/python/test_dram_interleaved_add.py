@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # UNSUPPORTED: system-darwin
-# RUN: %python %s > %t.output.txt 2>&1
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
 # Verify: DRAM interleaved tensors can be passed directly to tt-lang kernel
