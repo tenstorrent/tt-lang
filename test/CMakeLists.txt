@@ -7,15 +7,14 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
 )
 
-# Check for Tenstorrent device at configure time by looking for /dev/tenstorrent*
-# This avoids the slow ttnn.GetNumAvailableDevices() call at test runtime
-file(GLOB TT_DEVICE_FILES "/dev/tenstorrent*")
-if(TT_DEVICE_FILES)
+# Check for TTNN Python package and Tenstorrent device at configure time
+ttlang_check_ttnn_available(TTLANG_HAS_TTNN)
+ttlang_check_device_available(TTLANG_HAS_DEVICE)
+
+if(TTLANG_HAS_DEVICE)
   set(TTLANG_HAS_DEVICE_INT 1)
-  message(STATUS "Tenstorrent device detected - tests will run on hardware")
 else()
   set(TTLANG_HAS_DEVICE_INT 0)
-  message(STATUS "No Tenstorrent device detected - tests will run in compile-only mode")
 endif()
 
 # Generate test config file with device availability
@@ -54,15 +53,20 @@ add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
 )
 set_target_properties(check-ttlang-mlir PROPERTIES FOLDER "Tests")
 
-# Python tests only (run sequentially to avoid TLB resource contention
-# when multiple tests open Tenstorrent devices). TT device is required for
-# semantics verification (when not available, the tests are run in compile-only mode).
-add_lit_testsuite(check-ttlang-python-lit "Running ttlang Python lit tests"
-  ${CMAKE_CURRENT_BINARY_DIR}/python
-  -j1 ${TTLANG_LIT_COMMON_ARGS} --xunit-xml-output python-lit-report.xml
-  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
-)
-set_target_properties(check-ttlang-python-lit PROPERTIES FOLDER "Tests")
+# Python lit tests require TTNN. Run sequentially to avoid TLB resource contention
+# when multiple tests open Tenstorrent devices.
+if(TTLANG_HAS_TTNN)
+  add_lit_testsuite(check-ttlang-python-lit "Running ttlang Python lit tests"
+    ${CMAKE_CURRENT_BINARY_DIR}/python
+    -j1 ${TTLANG_LIT_COMMON_ARGS} --xunit-xml-output python-lit-report.xml
+    DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  )
+  set_target_properties(check-ttlang-python-lit PROPERTIES FOLDER "Tests")
+else()
+  add_custom_target(check-ttlang-python-lit
+    COMMENT "Skipping ttlang Python lit tests (TTNN not available)"
+  )
+endif()
 
 # Python bindings tests only (no TT device required).
 add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding tests"

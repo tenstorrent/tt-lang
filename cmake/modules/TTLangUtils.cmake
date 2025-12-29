@@ -199,3 +199,37 @@ macro(ttlang_setup_ttmlir_build_tree BUILD_DIR)
     endif()
   endif()
 endmacro()
+
+# ttlang_check_ttnn_available(OUTPUT_VAR)
+# Checks if the TTNN Python package is available at configure time.
+# Sets the variable named by OUTPUT_VAR to TRUE if available, FALSE otherwise.
+function(ttlang_check_ttnn_available OUTPUT_VAR)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import ttnn"
+    RESULT_VARIABLE _ttnn_import_result
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  if(_ttnn_import_result EQUAL 0)
+    set(${OUTPUT_VAR} TRUE PARENT_SCOPE)
+    message(STATUS "TTNN Python package available")
+  else()
+    set(${OUTPUT_VAR} FALSE PARENT_SCOPE)
+    message(STATUS "TTNN Python package not available")
+  endif()
+endfunction()
+
+# ttlang_check_device_available(OUTPUT_VAR)
+# Checks if a Tenstorrent device is available at configure time by looking for
+# /dev/tenstorrent* files. This is faster than calling ttnn.GetNumAvailableDevices().
+# Sets the variable named by OUTPUT_VAR to TRUE if available, FALSE otherwise.
+function(ttlang_check_device_available OUTPUT_VAR)
+  file(GLOB _tt_device_files "/dev/tenstorrent*")
+  if(_tt_device_files)
+    set(${OUTPUT_VAR} TRUE PARENT_SCOPE)
+    message(STATUS "Tenstorrent device detected")
+  else()
+    set(${OUTPUT_VAR} FALSE PARENT_SCOPE)
+    message(STATUS "No Tenstorrent device detected")
+  endif()
+endfunction()
