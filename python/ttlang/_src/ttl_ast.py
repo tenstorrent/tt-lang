@@ -20,6 +20,13 @@ from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
 
 
+def _make_file_loc(ctx, source_file: str, node) -> Location:
+    """Create an MLIR file location from an AST node."""
+    if not hasattr(node, "lineno"):
+        raise ValueError(f"AST node {type(node).__name__} has no line number")
+    return Location.file(source_file, node.lineno, node.col_offset + 1, ctx)
+
+
 def _get_annotation_name(annotation):
     """Extract the type name from an annotation node.
 
@@ -92,6 +99,11 @@ class TTLGenericCompiler(TTCompilerBase):
             tiled=kwargs.get("tiled", True),
         )
 
+        # Debug location support
+        self.debug_locations = kwargs.get("debug_locations", False)
+        self.source_file = kwargs.get("_source_file", "<unknown>")
+        self.source_lines = kwargs.get("_source_lines", [])
+
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
         self._next_cb_index = 0
@@ -99,6 +111,22 @@ class TTLGenericCompiler(TTCompilerBase):
         self._fn_map = {}
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
+
+    def _loc_for_node(self, node):
+        """Return file location for node if debug_locations enabled, else name location."""
+        if self.debug_locations and hasattr(node, "lineno"):
+            return _make_file_loc(self.ctx, self.source_file, node)
+        return self.loc
+
+    def visit_Call(self, node):
+        """Override to set location context for each call expression."""
+        with self._loc_for_node(node):
+            return super().visit_Call(node)
+
+    def visit_Attribute(self, node, func_args=[], kwargs={}):
+        """Override to set location context for method calls."""
+        with self._loc_for_node(node):
+            return super().visit_Attribute(node, func_args, kwargs)
 
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline
@@ -256,11 +284,11 @@ class TTLGenericCompiler(TTCompilerBase):
         self.symbol_tables.pop()
 
     def visit_FunctionDef(self, node):
-        with self.loc:
+        with self._loc_for_node(node):
             return self._emit_entry(node)
 
     def visit_AsyncFunctionDef(self, node):
-        with self.loc:
+        with self._loc_for_node(node):
             return self._emit_entry(node)
 
     def _get_cb_tensor_type(self, cb_val):
@@ -282,7 +310,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 ...
                 # releases in reverse order: push(out), pop(rhs), pop(lhs)
         """
-        with self.loc:
+        with self._loc_for_node(node):
             # Process each with-item: acquire resources and track for release
             releases = []  # [(release_op, cb_val), ...] in acquisition order
 
