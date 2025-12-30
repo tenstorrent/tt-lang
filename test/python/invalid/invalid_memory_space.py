@@ -15,14 +15,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
 try:
@@ -34,14 +28,14 @@ except ImportError:
 
 # CHECK: ValueError: Invalid memory_space: 'INVALID'
 # CHECK: Must be one of:
-@pykernel_gen(grid=(1, 1), memory_space="INVALID")
+@ttl.kernel(grid=(1, 1), memory_space="INVALID")
 def invalid_memory_space_kernel(lhs, rhs, out):
     """This kernel should fail because memory_space='INVALID' is not supported."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -54,7 +48,7 @@ def invalid_memory_space_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         lhs_cb.reserve()
         tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
@@ -66,7 +60,7 @@ def invalid_memory_space_kernel(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):

@@ -16,14 +16,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
 try:
@@ -33,13 +27,13 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -52,7 +46,7 @@ def add_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         # Reserve CB space before reading into it
         lhs_cb.reserve()
@@ -65,7 +59,7 @@ def add_kernel(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):

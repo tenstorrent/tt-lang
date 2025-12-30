@@ -6,14 +6,14 @@
 
 __version__ = "0.1.0"
 
+# Export TTL DSL API module (decorators)
+from ttlang import ttl
+
 # Export TTL DSL API
 from ttlang.ttl_api import (
-    pykernel_gen,
     Program,
     CircularBuffer,
     TensorAccessor,
-    compute,
-    datamovement,
     TensorBlock,
     Semaphore,
     CopyTransferHandler,
@@ -24,12 +24,10 @@ from ttlang._generated_elementwise import *  # noqa: F401,F403
 from ttlang._generated_elementwise import __all__ as _elementwise_all
 
 __all__ = [
-    "pykernel_gen",
+    "ttl",
     "Program",
     "CircularBuffer",
     "TensorAccessor",
-    "compute",
-    "datamovement",
     "TensorBlock",
     "Semaphore",
     "CopyTransferHandler",

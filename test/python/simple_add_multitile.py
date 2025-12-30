@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# XFAIL: *
-# https://github.com/tenstorrent/tt-lang/issues/163
 # RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -19,14 +17,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
 try:
@@ -36,14 +28,14 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
     """Add kernel processing 2x2 tile grid (4 tiles total)."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -56,7 +48,7 @@ def add_multitile_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         lhs_cb.reserve()
         tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
@@ -68,7 +60,7 @@ def add_multitile_kernel(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -116,14 +108,26 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
 
-# Nested loops for 2x2 tile grid
-# CHECK-CPP: for (size_t {{.*}} = 0; {{.*}} < 2;
-# CHECK-CPP: for (size_t {{.*}} = 0; {{.*}} < 2;
+# Loop bound constant for 2x2 tile grid
+# CHECK-CPP: size_t [[BOUND:v[0-9]+]] = 2;
 
-# CB operations inside loop
+# CB operations before loops
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
+
+# Nested loops for 2x2 tile grid
+# CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[BOUND]]; [[I]] += {{.*}}) {
+# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
+
+# Linearized index calculation: i * 2 + j
+# CHECK-CPP: size_t [[COLS:v[0-9]+]] = 2;
+# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
+# CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
+
+# Copy tiles using linearized index
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[LIN_IDX]],
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[LIN_IDX]],
 
 # Add operation
 # CHECK-CPP: add_binary_tile_init();

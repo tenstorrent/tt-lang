@@ -724,6 +724,7 @@ def _compile_and_run_kernel(
             "convert-ttl-to-ttkernel",
             "canonicalize",
             "cse",
+            "lower-affine",
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
