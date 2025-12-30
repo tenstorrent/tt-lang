@@ -19,13 +19,16 @@ from ..layouts import create_ttnn_layout, TTNNLayoutConfig
 from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
 from ..ttl_utils import get_thread_type_string
+from ..diagnostics import TTLangCompileError
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
     """Create an MLIR file location from an AST node."""
     if not hasattr(node, "lineno"):
         raise ValueError(f"AST node {type(node).__name__} has no line number")
-    return Location.file(source_file, node.lineno + line_offset, node.col_offset + 1, ctx)
+    return Location.file(
+        source_file, node.lineno + line_offset, node.col_offset + 1, ctx
+    )
 
 
 def _get_annotation_name(annotation):
@@ -118,6 +121,17 @@ class TTLGenericCompiler(TTCompilerBase):
         if self.debug_locations and hasattr(node, "lineno"):
             return _make_file_loc(self.ctx, self.source_file, node, self.line_offset)
         return self.loc
+
+    def _raise_error(self, node, message: str):
+        """Raise a TTLangCompileError with source location from AST node."""
+        line = node.lineno + self.line_offset if hasattr(node, "lineno") else None
+        col = node.col_offset + 1 if hasattr(node, "col_offset") else None
+        raise TTLangCompileError(
+            message,
+            source_file=self.source_file,
+            line=line,
+            col=col,
+        )
 
     def visit_Call(self, node):
         """Override to set location context for each call expression."""
@@ -245,11 +259,14 @@ class TTLGenericCompiler(TTCompilerBase):
         with self._loc_for_node(node):
             return self._emit_entry(node)
 
-    def _get_cb_tensor_type(self, cb_val):
+    def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""
         cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
         if cb_type is None:
-            raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
+            msg = f"Expected CircularBufferType, got {cb_val.type}"
+            if node is not None:
+                self._raise_error(node, msg)
+            raise ValueError(msg)
         return RankedTensorType.get(cb_type.shape, cb_type.element_type)
 
     def visit_With(self, node):
@@ -273,35 +290,36 @@ class TTLGenericCompiler(TTCompilerBase):
                 optional_vars = item.optional_vars
 
                 if not isinstance(context_expr, ast.Call):
-                    raise NotImplementedError(
-                        "'with' requires a method call (e.g., cb.reserve())"
+                    self._raise_error(
+                        context_expr, "'with' requires a method call (e.g., cb.reserve())"
                     )
 
                 if not isinstance(context_expr.func, ast.Attribute):
-                    raise NotImplementedError(
-                        "'with' requires a method call on an object"
+                    self._raise_error(
+                        context_expr, "'with' requires a method call on an object"
                     )
 
                 method_name = context_expr.func.attr
                 cb_node = context_expr.func.value
 
                 if method_name not in ("reserve", "wait"):
-                    raise NotImplementedError(
-                        f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'"
+                    self._raise_error(
+                        context_expr,
+                        f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'",
                     )
 
                 if not isinstance(cb_node, ast.Name):
-                    raise NotImplementedError(
-                        "'with' requires a simple variable (e.g., cb.reserve())"
+                    self._raise_error(
+                        context_expr, "'with' requires a simple variable (e.g., cb.reserve())"
                     )
 
                 cb_table = self._var_exists(cb_node.id)
                 if not cb_table:
-                    raise NameError(f"'{cb_node.id}' not found in scope")
+                    self._raise_error(cb_node, f"'{cb_node.id}' not found in scope")
                 cb_val = cb_table[cb_node.id]
 
                 # Get tensor type from CB for reserve/wait result
-                tensor_type = self._get_cb_tensor_type(cb_val)
+                tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
                 if method_name == "reserve":
                     tensor = ttl.cb_reserve(tensor_type, cb_val)
                     releases.append((ttl.cb_push, cb_val))
@@ -314,8 +332,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
                 if optional_vars is not None:
                     if not isinstance(optional_vars, ast.Name):
-                        raise NotImplementedError(
-                            "'with ... as var' requires a simple variable name"
+                        self._raise_error(
+                            optional_vars,
+                            "'with ... as var' requires a simple variable name",
                         )
                     self.symbol_tables[-1][optional_vars.id] = acquire_result
 

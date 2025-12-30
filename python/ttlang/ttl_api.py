@@ -45,7 +45,7 @@ from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_registry import register_tensor_name, get_tensor_global_index
 
 from ._src.ttl_ast import TTLGenericCompiler
-from .diagnostics import format_mlir_error
+from .diagnostics import format_mlir_error, format_python_error, TTLangCompileError
 
 from .operators import TensorBlock, CopyTransferHandler, copy
 from .circular_buffer import CircularBuffer
@@ -104,9 +104,14 @@ def _get_source_line_offset(f) -> int:
     """Get the line offset to convert parsed AST line numbers to actual file lines."""
     try:
         raw_lines, start_lineno = inspect.getsourcelines(f)
-        num_decorator_lines = sum(
-            1 for line in raw_lines if line.strip().startswith("@")
-        )
+        # Count only leading decorator lines (before the def)
+        num_decorator_lines = 0
+        for line in raw_lines:
+            stripped = line.strip()
+            if stripped.startswith("@"):
+                num_decorator_lines += 1
+            elif stripped.startswith("def ") or stripped.startswith("async def "):
+                break
         return start_lineno + num_decorator_lines - 1
     except (TypeError, OSError):
         return 0
@@ -496,6 +501,8 @@ def _compile(
             kwargs["debug_locations"] = True
 
             m = ast.parse(source_code)
+            line_offset = kwargs.get("_line_offset", 0)
+
             b = TTLGenericCompiler(
                 f.__name__,
                 kernel_type,
@@ -630,6 +637,14 @@ def _compile_and_run_kernel(
     """
     f_params = inspect.signature(f).parameters
 
+    # Get kernel source location for error reporting
+    try:
+        kernel_source_file = inspect.getfile(f)
+        kernel_line_offset = _get_source_line_offset(f)
+    except (TypeError, OSError):
+        kernel_source_file = "<unknown>"
+        kernel_line_offset = 0
+
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
     # For TTNN tensors, detect memory space from tensor's buffer type.
@@ -691,7 +706,17 @@ def _compile_and_run_kernel(
         all_source_files = {}
 
         for compile_thread in program.threads:
-            ct = compile_thread(*program.args, **program.kwargs)
+            try:
+                ct = compile_thread(*program.args, **program.kwargs)
+            except TTLangCompileError as e:
+                # Thread-level error with embedded source location - use it
+                raise type(e)(e.format()) from None
+            except (ValueError, TypeError) as e:
+                # Kernel-level error (no embedded location) - use kernel decorator
+                formatted = format_python_error(
+                    e, kernel_source_file, kernel_line_offset
+                )
+                raise type(e)(formatted) from None
             compiled_threads.append(ct)
             thread_tensor_indices.append(ct._tensor_accessor_global_indices)
 

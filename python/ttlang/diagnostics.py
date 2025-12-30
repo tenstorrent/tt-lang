@@ -106,7 +106,9 @@ class SourceDiagnostic:
         results = []
         for i, (line, col, message, note) in enumerate(errors):
             label = "error" if i == 0 else "note"
-            results.append(self.format_error(line, col, message, label=label, note=note))
+            results.append(
+                self.format_error(line, col, message, label=label, note=note)
+            )
         return "\n\n".join(results)
 
 
@@ -245,9 +247,75 @@ def _extract_note(error_msg: str) -> Optional[str]:
     return None
 
 
-class TTLangCompileError(Exception):
-    """Exception for tt-lang compilation errors with source context."""
+def format_python_error(
+    error: Exception,
+    source_file: str,
+    line: int,
+    source_lines: Optional[List[str]] = None,
+) -> str:
+    """Format a Python error with source context.
 
-    def __init__(self, message: str, source_location: Optional[Tuple[str, int, int]] = None):
+    Args:
+        error: The Python exception
+        source_file: Source file path
+        line: Line number in source file
+        source_lines: Source lines (will read from file if not provided)
+
+    Returns:
+        Formatted error message with source context
+    """
+    if source_lines is None:
+        source_lines = _read_file_lines(source_file)
+
+    if source_lines is None:
+        return f"{type(error).__name__}: {error}"
+
+    diag = SourceDiagnostic(source_lines, source_file)
+    return diag.format_error(
+        line=line,
+        col=1,
+        message=str(error),
+        label=type(error).__name__,
+    )
+
+
+class TTLangCompileError(Exception):
+    """Exception for tt-lang compilation errors with source context.
+
+    This exception carries enough information to produce pretty error messages
+    pointing to the exact source location where the error occurred.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        source_file: Optional[str] = None,
+        line: Optional[int] = None,
+        col: Optional[int] = None,
+        source_lines: Optional[List[str]] = None,
+    ):
         super().__init__(message)
-        self.source_location = source_location
+        self.source_file = source_file
+        self.line = line
+        self.col = col
+        self.source_lines = source_lines
+
+    def format(self) -> str:
+        """Format error with source context if available."""
+        if self.source_file is None or self.line is None:
+            return str(self)
+
+        # Read source lines if not provided
+        lines = self.source_lines
+        if lines is None:
+            lines = _read_file_lines(self.source_file)
+
+        if lines is None:
+            return f"error: {self}\n  --> {self.source_file}:{self.line}:{self.col or 1}"
+
+        diag = SourceDiagnostic(lines, self.source_file)
+        return diag.format_error(
+            line=self.line,
+            col=self.col or 1,
+            message=str(self),
+        )
