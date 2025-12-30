@@ -35,11 +35,10 @@ fi
 export PATH="${TTMLIR_TOOLCHAIN_DIR}/bin:@CMAKE_BINARY_DIR@/bin:@TTMLIR_PATH@/bin:$PATH"
 
 export PYTHONPATH="\
-@CMAKE_BINARY_DIR@/python_packages:\
 ${TT_LANG_HOME}/python:\
+@CMAKE_BINARY_DIR@/python_packages:\
 @TTMLIR_PATH@/python_packages:\
-@TTMLIR_PATH@/ttrt:\
-@TTMLIR_PATH@/ttrt/python_packages:\
+@TTMLIR_PATH@/ttrt/runtime/ttnn:\
 $PYTHONPATH"
 
 # Mark environment as activated.
