@@ -27,7 +27,7 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+@ttl.kernel(grid=(1, 1))
 def add_kernel_f32(lhs, rhs, out):
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
