@@ -4,7 +4,7 @@
 
 # XFAIL: *
 # https://github.com/tenstorrent/tt-lang/issues/163
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output 2>&1
+# RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -15,9 +15,9 @@ Uses 64x64 tensors (2x2 tiles of 32x32) to test that linearized_index
 correctly computes tile offsets in loops.
 """
 
-from test_utils import ttnn, require_ttnn, skip_without_hardware
+import os
 
-require_ttnn()
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
     pykernel_gen,
@@ -28,6 +28,12 @@ from ttlang.ttl_api import (
     datamovement,
 )
 from ttlang.operators import copy
+
+try:
+    import ttnn
+except ImportError:
+    print("TTNN not available - exiting")
+    exit(0)
 
 
 @pykernel_gen(grid=(1, 1))
@@ -129,8 +135,6 @@ def add_multitile_kernel(lhs, rhs, out):
 
 
 if __name__ == "__main__":
-    skip_without_hardware("=== Multi-tile Add Kernel Test Complete (no hardware) ===")
-
     import torch
 
     print("=== Multi-tile Add Kernel Test ===")

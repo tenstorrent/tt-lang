@@ -3,22 +3,26 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # UNSUPPORTED: system-darwin
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output.txt 2>&1
+# RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
 # Verify: TTNN interop path with ttnn.Tensors on device.
 
+import os
+import platform
 import torch
-from test_utils import ttnn, require_ttnn, skip_without_hardware
-
-require_ttnn()
-skip_without_hardware("=== TTNN Interop Test Complete (no hardware) ===")
-
 from ttlang.ttl_api import *
+
+try:
+    import ttnn
+except ImportError:
+    print("TTNN not available - this test requires ttnn")
+    print("=== TTNN Interop Test Complete ===")
+    exit(0)
 
 
 @pykernel_gen(grid=(1, 1))
-def ttnn_interop_add_kernel(lhs, rhs, out):
+def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
@@ -113,7 +117,7 @@ try:
     print(f"  out: {out.shape}, dtype={out.dtype}, memory_config={out.memory_config()}")
 
     print("\n=== Running tt-lang kernel with ttnn.Tensors ===")
-    ttnn_interop_add_kernel(lhs, rhs, out)
+    test_ttnn_interop_add(lhs, rhs, out)
 
     # Copy result back to host for verification
     out_result = ttnn.to_torch(out)

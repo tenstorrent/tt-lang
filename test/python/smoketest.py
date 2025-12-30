@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s | FileCheck %s
+# RUN: %python %s | FileCheck %s
 
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, ttir

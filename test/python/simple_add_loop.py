@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output 2>&1
+# RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -13,9 +13,9 @@ Uses a for loop to add the same values multiple times (accumulate pattern).
 This tests loop support without requiring dynamic indices in data movement.
 """
 
-from test_utils import ttnn, require_ttnn, skip_without_hardware
+import os
 
-require_ttnn()
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
     pykernel_gen,
@@ -26,6 +26,12 @@ from ttlang.ttl_api import (
     datamovement,
 )
 from ttlang.operators import copy
+
+try:
+    import ttnn
+except ImportError:
+    print("TTNN not available - exiting")
+    exit(0)
 
 
 @pykernel_gen(grid=(1, 1))
@@ -145,8 +151,6 @@ def add_loop_kernel(lhs, rhs, out):
 
 
 if __name__ == "__main__":
-    skip_without_hardware("=== Loop Add Kernel Test Complete (no hardware) ===")
-
     import torch
 
     print("=== Loop Add Kernel Test ===")

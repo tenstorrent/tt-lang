@@ -25,7 +25,8 @@
 
 // Read tensor A into CB0
 // CHECK:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
-// CHECK-NEXT:   auto [[ARGS_A:.*]] = TensorAccessorArgs<num_cbs, 0>();
+// Placeholder value 42 is a temporary hack, see issue #168
+// CHECK-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
 // CHECK:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
@@ -37,7 +38,8 @@
 
 // Read tensor B into CB1
 // CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
-// CHECK-NEXT:   auto [[ARGS_B:.*]] = TensorAccessorArgs<num_cbs, 0>();
+// Placeholder value 43 is a temporary hack, see issue #168
+// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<43, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
 // CHECK:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
 // CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
@@ -178,7 +180,8 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Write output to DRAM from CB2
 // CHECK:   int32_t [[RT_ARG_OUT:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
-// CHECK-NEXT:   auto [[ARGS_OUT:.*]] = TensorAccessorArgs<num_cbs, 0>();
+// Placeholder value 42 is a temporary hack, see issue #168
+// CHECK-NEXT:   auto [[ARGS_OUT:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_OUT:.*]] = TensorAccessor([[ARGS_OUT]], [[RT_ARG_OUT]],
 // CHECK:   int32_t [[CB2_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
 // CHECK-NEXT:   for (size_t [[I_OUT:.*]] = [[ZERO]]; [[I_OUT]] < [[BOUND]]; [[I_OUT]] += [[ONE]]) {

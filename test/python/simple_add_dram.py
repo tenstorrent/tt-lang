@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output 2>&1
+# RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -13,9 +13,9 @@ Unlike simple_add.py which uses L1 tensors, this test keeps tensors in DRAM
 and verifies the data movement kernels can read/write directly from/to DRAM.
 """
 
-from test_utils import ttnn, require_ttnn, skip_without_hardware
+import os
 
-require_ttnn()
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang.ttl_api import (
     pykernel_gen,
@@ -26,6 +26,12 @@ from ttlang.ttl_api import (
     datamovement,
 )
 from ttlang.operators import copy
+
+try:
+    import ttnn
+except ImportError:
+    print("TTNN not available - exiting")
+    exit(0)
 
 
 @pykernel_gen(grid=(1, 1))
@@ -175,8 +181,8 @@ def add_dram_kernel(lhs, rhs, out):
 
 # First input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
-# CHECK-CPP: auto [[TA_ARGS1:.*]] = TensorAccessorArgs<num_cbs, 0>();
-# CHECK-CPP: TensorAccessor [[TA1:.*]] = TensorAccessor(
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(0))
 # CHECK-CPP: noc_async_read_tile(
 # CHECK-CPP: noc_async_read_barrier();
@@ -184,8 +190,8 @@ def add_dram_kernel(lhs, rhs, out):
 
 # Second input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
-# CHECK-CPP: auto [[TA_ARGS2:.*]] = TensorAccessorArgs<num_cbs, 0>();
-# CHECK-CPP: TensorAccessor [[TA2:.*]] = TensorAccessor(
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<4, 0>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(1))
 # CHECK-CPP: noc_async_read_tile(
 # CHECK-CPP: noc_async_read_barrier();
@@ -200,8 +206,8 @@ def add_dram_kernel(lhs, rhs, out):
 
 # Wait for output CB, write tile, pop CB
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
-# CHECK-CPP: auto [[TA_ARGS3:.*]] = TensorAccessorArgs<num_cbs, 0>();
-# CHECK-CPP: TensorAccessor [[TA3:.*]] = TensorAccessor(
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_read_ptr(get_compile_time_arg_val(2))
 # CHECK-CPP: noc_async_write_tile(
 # CHECK-CPP: noc_async_write_barrier();
@@ -209,8 +215,6 @@ def add_dram_kernel(lhs, rhs, out):
 
 
 if __name__ == "__main__":
-    skip_without_hardware("=== Add DRAM Kernel Test Complete (no hardware) ===")
-
     import torch
 
     print("=== Add DRAM Kernel Test ===")
