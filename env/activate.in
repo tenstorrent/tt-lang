@@ -35,11 +35,20 @@ fi
 export PATH="${TTMLIR_TOOLCHAIN_DIR}/bin:@CMAKE_BINARY_DIR@/bin:@TTMLIR_PATH@/bin:$PATH"
 
 export PYTHONPATH="\
-${TT_LANG_HOME}/python:\
 @CMAKE_BINARY_DIR@/python_packages:\
+${TT_LANG_HOME}/python:\
 @TTMLIR_PATH@/python_packages:\
 @TTMLIR_PATH@/ttrt/runtime/ttnn:\
+@TTMLIR_PATH@/python_packages/ttrt/runtime/tt_metal:\
 $PYTHONPATH"
+
+# TODO(#200): Fix this hack to not require tt-mlir source directory to be present
+if [ -z "${TT_METAL_RUNTIME_ROOT}" ] && [ -d "@TTMLIR_PATH@/../third_party/tt-metal/src/tt-metal" ]; then
+  export TT_METAL_RUNTIME_ROOT="@TTMLIR_PATH@/../third_party/tt-metal/src/tt-metal"
+  export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
+elif [ -z "${TT_METAL_RUNTIME_ROOT}" ]; then
+  echo "WARNING: You need to set TT_METAL_RUNTIME_ROOT to run on TT hardware"
+fi
 
 # Mark environment as activated.
 export TTLANG_ENV_ACTIVATED=1
