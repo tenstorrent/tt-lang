@@ -39,8 +39,8 @@ pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
 # =============================================================================
 
 BINARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program, TensorAccessor
 from ttlang.operators import copy
 
 @ttl.kernel(grid=(1, 1))
@@ -50,10 +50,12 @@ def {name}_kernel(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
     @ttl.compute()
-    def compute_fn(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def compute_fn():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -64,9 +66,7 @@ def {name}_kernel(lhs, rhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_read():
         lhs_cb.reserve()
         tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
         tx_lhs.wait()
@@ -78,9 +78,7 @@ def {name}_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
@@ -90,8 +88,8 @@ def {name}_kernel(lhs, rhs, out):
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program, TensorAccessor
 from ttlang.operators import copy
 from ttlang import {op}
 
@@ -102,10 +100,12 @@ def {name}_kernel(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
     @ttl.compute()
-    def compute_fn(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def compute_fn():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -116,9 +116,7 @@ def {name}_kernel(lhs, rhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_read():
         lhs_cb.reserve()
         tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
         tx_lhs.wait()
@@ -130,9 +128,7 @@ def {name}_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
@@ -142,8 +138,8 @@ def {name}_kernel(lhs, rhs, out):
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program, TensorAccessor
 from ttlang.operators import copy
 from ttlang import {op}
 
@@ -153,8 +149,11 @@ def {name}_kernel(inp, out):
     inp_accessor = TensorAccessor(inp)
     out_accessor = TensorAccessor(out)
 
+    inp_cb = make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
     @ttl.compute()
-    def compute_fn(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+    def compute_fn():
         x = inp_cb.wait()
         o = out_cb.reserve()
         result = {op}(x)
@@ -163,14 +162,14 @@ def {name}_kernel(inp, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         inp_cb.reserve()
         tx_inp = copy(inp_accessor[0, 0], inp_cb)
         tx_inp.wait()
         inp_cb.push()
 
     @ttl.datamovement()
-    def dm_write(inp_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write():
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()

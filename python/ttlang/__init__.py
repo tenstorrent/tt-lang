@@ -18,6 +18,7 @@ from ttlang.ttl_api import (
     Semaphore,
     CopyTransferHandler,
 )
+from ttlang.circular_buffer import make_circular_buffer_like
 
 # Export generated elementwise operators (auto-generated from TTLElementwiseOps.def)
 from ttlang._generated_elementwise import *  # noqa: F401,F403
@@ -31,6 +32,7 @@ __all__ = [
     "TensorBlock",
     "Semaphore",
     "CopyTransferHandler",
+    "make_circular_buffer_like",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,
 ]

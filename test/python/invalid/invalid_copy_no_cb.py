@@ -15,8 +15,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program, TensorAccessor
 from ttlang.operators import copy
 
 try:
@@ -34,10 +34,12 @@ def invalid_copy_no_cb_kernel(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
     @ttl.compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -48,15 +50,13 @@ def invalid_copy_no_cb_kernel(lhs, rhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         # INVALID: copy() between two tensor accessors (no CB)
         tx = copy(lhs_accessor[0, 0], rhs_accessor[0, 0])
         tx.wait()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()

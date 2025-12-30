@@ -5,10 +5,10 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: TTNN interop only supports single-core grid (1, 1).
+Validation test: CB shape must be a 2-tuple.
 
-This test verifies that using a multi-core grid raises ValueError.
-Uses grid=(2, 2) with shape=(64, 64) which is divisible, but grid != (1,1).
+This test verifies that using a non-2D shape for make_circular_buffer_like()
+raises the expected ValueError.
 """
 
 import os
@@ -26,15 +26,16 @@ except ImportError:
     exit(0)
 
 
-# CHECK: TTNN interop only supports single-core grid (1, 1)
-@ttl.kernel(grid=(2, 2))
-def invalid_multicore_kernel(lhs, rhs, out):
-    """This kernel should fail because multi-core grids are not supported."""
+# CHECK: shape must be a 2-tuple
+@ttl.kernel(grid=(1, 1))
+def invalid_cb_shape_kernel(lhs, rhs, out):
+    """This kernel should fail because CB shape is not a 2-tuple."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    # INVALID: shape must be a 2-tuple, not 3-tuple
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1, 1), buffer_factor=2)
     rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
@@ -74,15 +75,14 @@ def invalid_multicore_kernel(lhs, rhs, out):
 if __name__ == "__main__":
     import torch
 
-    print("=== Multi-core Grid Validation Test ===")
+    print("=== CB Shape Not 2-Tuple Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 
     try:
-        # 64x64 tensor with grid (2, 2) - shapes are divisible but grid != (1,1)
-        lhs_torch = torch.full((64, 64), 2.0, dtype=torch.bfloat16)
-        rhs_torch = torch.full((64, 64), 3.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
+        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
         lhs = ttnn.from_torch(
             lhs_torch,
@@ -111,7 +111,7 @@ if __name__ == "__main__":
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         # This should raise ValueError
-        invalid_multicore_kernel(lhs, rhs, out)
+        invalid_cb_shape_kernel(lhs, rhs, out)
 
         print("ERROR: Expected ValueError was not raised!")
         exit(1)
