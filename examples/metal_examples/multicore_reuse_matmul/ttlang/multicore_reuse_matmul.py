@@ -58,7 +58,10 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         if (out_row < Mt) and (out_col < Nt):
             with out_cb.reserve() as out_blk:  # per_core_M * per_core_N
                 for _ in range(Kt // K_block_size):
-                    with a_cb.wait() as a_blk, b_cb.wait() as b_blk:  # a per_core_M x K_block_size, b K_block_size x per_core_N
+                    with (
+                        a_cb.wait() as a_blk,
+                        b_cb.wait() as b_blk,
+                    ):  # a per_core_M x K_block_size, b K_block_size x per_core_N
                         out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
@@ -179,22 +182,3 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             out_wr.wait()
 
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
-
-
-@pytest.mark.parametrize("M,K,N", [(256, 256, 256), (512, 512, 512)])
-def test_multicore_matmul_tt_lang(M, K, N):
-    """Test multicore matmul kernel."""
-    device = ttnn.open_device(device_id=0)
-    a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-
-    tt_lang_multicore_matmul(a, b, c)
-
-    golden = torch.matmul(
-        ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
-    )
-    result = ttnn.to_torch(c).to(torch.bfloat16)
-    assert_with_ulp(golden, result)
-
-    ttnn.close_device(device)

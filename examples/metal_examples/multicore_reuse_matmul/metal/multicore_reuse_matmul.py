@@ -25,9 +25,6 @@ def test_metal_matmul(M, K, N):
     )
     num_cores_x = device_core_size.x
     num_cores_y = device_core_size.y
-    device_core_grid = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), device_core_size)]
-    )
 
     (per_core_M, per_core_N, out_subblock_h, out_subblock_w) = get_large_matmul_params(
         Mt, Nt, num_cores_y, num_cores_x, K_block_size
@@ -44,10 +41,13 @@ def test_metal_matmul(M, K, N):
     assert (
         num_blocks_x <= num_cores_x and num_blocks_y <= num_cores_y
     ), "number of total blocks must be less than or equal to num cores in each dimension"
-    all_cores = ttnn.num_cores_to_corerangeset(
-        num_blocks_total, device_core_grid.ranges()[0].end, row_wise=True
+    all_cores = ttnn.CoreRangeSet(
+        [
+            ttnn.CoreRange(
+                ttnn.CoreCoord(0, 0), ttnn.CoreCoord(num_blocks_x - 1, num_blocks_y - 1)
+            )
+        ]
     )
-
     # allocate a, b and output tensors for matmul on device dram
     dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
     a_tensor = ttnn.rand(
