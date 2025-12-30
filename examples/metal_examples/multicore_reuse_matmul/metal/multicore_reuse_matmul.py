@@ -196,7 +196,6 @@ def test_metal_matmul(M, K, N):
                 per_core_N * K_block_size,  # b_block_num_tiles
                 Kt // K_block_size,  # num_blocks
             ]
-            # print(f"reader_rt_args[{core_x}][{core_y}]: {reader_rt_args[core_x][core_y]}")
             writer_rt_args[core_x][core_y] = [
                 output_tensor.buffer_address(),  # out_buffer_addr
                 (output_idx_x * per_core_N)
