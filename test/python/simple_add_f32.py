@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# RUN: %python %s > %t.output 2>&1
+# RUN: FileCheck %s < %t.initial.mlir
+
+"""
+Simple add kernel with float32 data type.
+
+Tests that float32 tensors are properly handled through the layout derivation
+path (TTNNLayoutAttr -> page size calculation).
+"""
+
+import os
+
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang.operators import copy
+
+try:
+    import ttnn
+except ImportError:
+    print("TTNN not available - exiting")
+    exit(0)
+
+
+@ttl.kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+def add_kernel_f32(lhs, rhs, out):
+    lhs_accessor = TensorAccessor(lhs)
+    rhs_accessor = TensorAccessor(rhs)
+    out_accessor = TensorAccessor(out)
+
+    @ttl.compute()
+    def add_compute(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        l = lhs_cb.wait()
+        r = rhs_cb.wait()
+        o = out_cb.reserve()
+        result = l + r
+        o.store(result)
+        lhs_cb.pop()
+        rhs_cb.pop()
+        out_cb.push()
+
+    @ttl.datamovement()
+    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+        lhs_cb.reserve()
+        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs.wait()
+        lhs_cb.push()
+
+        rhs_cb.reserve()
+        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs.wait()
+        rhs_cb.push()
+
+    @ttl.datamovement()
+    def dm_write(
+        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+    ):
+        out_cb.wait()
+        tx = copy(out_cb, out_accessor[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+
+
+# =============================================================================
+# Initial IR Checks - Verify float32 layout attributes
+# =============================================================================
+
+# CHECK: #ttnn.buffer_type<l1>
+# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x1x!ttcore.tile<32x32, f32>{{.*}}>
+
+# CHECK-LABEL: func.func @add_compute
+# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+
+# CHECK-LABEL: func.func @dm_read
+# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+
+# CHECK-LABEL: func.func @dm_write
+# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+
+
+if __name__ == "__main__":
+    import torch
+
+    print("=== Float32 Add Kernel Test ===")
+
+    device = ttnn.open_device(device_id=0)
+
+    try:
+        lhs_torch = torch.full((32, 32), 2.0, dtype=torch.float32)
+        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.float32)
+        out_torch = torch.zeros((32, 32), dtype=torch.float32)
+
+        lhs = ttnn.from_torch(
+            lhs_torch,
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        rhs = ttnn.from_torch(
+            rhs_torch,
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            out_torch,
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+
+        lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+        rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+        out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
+
+        print("Compiling float32 add kernel...")
+        add_kernel_f32(lhs, rhs, out)
+
+        print("=== Float32 Add Kernel Test Complete ===")
+
+    finally:
+        ttnn.close_device(device)
