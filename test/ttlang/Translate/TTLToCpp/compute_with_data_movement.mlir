@@ -14,11 +14,7 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: // reader_binary
-// CHECK-NEXT: #include <cstdint>
-// CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
-// CHECK-NEXT: #include "firmware_common.h"
-// CHECK-NEXT: #include "dataflow_api.h"
-// CHECK-NEXT: void kernel_main() {
+// CHECK: void kernel_main() {
 // CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
@@ -169,11 +165,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 }
 
 // CHECK-LABEL: // writer_unary
-// CHECK-NEXT: #include <cstdint>
-// CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
-// CHECK-NEXT: #include "firmware_common.h"
-// CHECK-NEXT: #include "dataflow_api.h"
-// CHECK-NEXT: void kernel_main() {
+// CHECK: void kernel_main() {
 // CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;

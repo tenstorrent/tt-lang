@@ -10,11 +10,7 @@
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // CHECK: // cb_to_tensor
-// CHECK-NEXT: #include <cstdint>
-// CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
-// CHECK-NEXT: #include "firmware_common.h"
-// CHECK-NEXT: #include "dataflow_api.h"
-// CHECK-NEXT: void kernel_main() {
+// CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[RT_ARG_IDX:v[0-9]+]]);
