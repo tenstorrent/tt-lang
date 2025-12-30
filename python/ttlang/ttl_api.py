@@ -45,6 +45,7 @@ from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_registry import register_tensor_name, get_tensor_global_index
 
 from ._src.ttl_ast import TTLGenericCompiler
+from .diagnostics import format_mlir_error
 
 from .operators import TensorBlock, CopyTransferHandler, copy
 from .circular_buffer import CircularBuffer
@@ -461,13 +462,25 @@ def _compile(
     """
 
     def _decorator(f):
+        # Capture source file at decoration time
+        try:
+            source_file = inspect.getfile(f)
+        except (TypeError, OSError):
+            source_file = "<unknown>"
+
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             source_code = _cleanup_source_code(f)
+            source_lines = source_code.splitlines()
 
             if verbose:
-                kwargs["_source_code"] = source_code.splitlines()
+                kwargs["_source_code"] = source_lines
                 kwargs["_verbose"] = True
+
+            # Pass source info for debug locations (always enabled for error messages)
+            kwargs["_source_file"] = source_file
+            kwargs["_source_lines"] = source_lines
+            kwargs["debug_locations"] = True
 
             m = ast.parse(source_code)
             b = TTLGenericCompiler(
@@ -486,11 +499,16 @@ def _compile(
             if verbose:
                 print(b.module)
 
-            b.module.operation.verify()
+            try:
+                b.module.operation.verify()
+            except Exception as e:
+                formatted = format_mlir_error(str(e), source_lines, source_file)
+                raise RuntimeError(formatted) from None
 
             return b
 
         _wrapper._decorator_name = kernel_type + "_thread"
+        _wrapper._source_file = source_file
         if inspect.ismethod(f):
             return staticmethod(_wrapper)
         return _wrapper
@@ -637,6 +655,7 @@ def _compile_and_run_kernel(
         "grid": grid,
         "memory_space": memory_space,
         "tiled": tiled,
+        "debug_locations": True,  # Always generate locations for error messages
     }
     program = Program(
         *program.threads,
@@ -644,16 +663,29 @@ def _compile_and_run_kernel(
         kwargs={**injected_program_kwargs, **program.kwargs},
     )
 
+    # Always generate source locations for error messages
+    # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
+    print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
+
     ctx = Context()
     loc = Location.unknown(ctx)
     with ctx, loc:
         compiled_threads = []
         # Track which global tensor indices each thread uses (for building common_runtime_args)
         thread_tensor_indices = []
+        # Collect source info for error formatting
+        all_source_lines = {}
+        all_source_files = {}
+
         for compile_thread in program.threads:
             ct = compile_thread(*program.args, **program.kwargs)
             compiled_threads.append(ct)
             thread_tensor_indices.append(ct._tensor_accessor_global_indices)
+
+            # Collect source info for error reporting
+            if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
+                all_source_files[ct.name] = ct.source_file
+                all_source_lines[ct.name] = ct.source_lines
 
         module = Module.create(loc)
 
@@ -666,7 +698,11 @@ def _compile_and_run_kernel(
         initial_mlir_path = os.environ.get("TTLANG_INITIAL_MLIR")
         if initial_mlir_path:
             with open(initial_mlir_path, "w") as fd:
-                print(module, file=fd)
+                module.operation.print(
+                    file=fd,
+                    enable_debug_info=print_debug_locations,
+                    print_generic_op_form=False,
+                )
             print(f"SAVED INITIAL TO {initial_mlir_path}")
 
         device_register_options = f"system-desc-path={_g_current_system_desc}"
@@ -717,12 +753,30 @@ def _compile_and_run_kernel(
                 enable_debug_info=True,
             )
 
-        pm.run(module.operation)
+        # Run the pass manager with error handling for source-aware diagnostics
+        try:
+            pm.run(module.operation)
+        except Exception as e:
+            error_msg = str(e)
+            # Try to format error with source context
+            # Use the first thread's source as fallback
+            source_lines = None
+            source_file = None
+            if all_source_lines:
+                first_thread = next(iter(all_source_lines.keys()))
+                source_lines = all_source_lines[first_thread]
+                source_file = all_source_files.get(first_thread)
+            formatted = format_mlir_error(error_msg, source_lines, source_file)
+            raise RuntimeError(formatted) from None
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
         if final_mlir_path:
             with open(final_mlir_path, "w") as fd:
-                print(module, file=fd)
+                module.operation.print(
+                    file=fd,
+                    enable_debug_info=print_debug_locations,
+                    print_generic_op_form=False,
+                )
             print(f"SAVED FINAL TO {final_mlir_path}")
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
