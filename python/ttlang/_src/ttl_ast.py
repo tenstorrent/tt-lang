@@ -134,14 +134,24 @@ class TTLGenericCompiler(TTCompilerBase):
         )
 
     def visit_Call(self, node):
-        """Override to set location context for each call expression."""
+        """Override to set location context and catch errors for call expressions."""
         with self._loc_for_node(node):
-            return super().visit_Call(node)
+            try:
+                return super().visit_Call(node)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
 
     def visit_Attribute(self, node, func_args=[], kwargs={}):
-        """Override to set location context for method calls."""
+        """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
-            return super().visit_Attribute(node, func_args, kwargs)
+            try:
+                return super().visit_Attribute(node, func_args, kwargs)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
 
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline
@@ -155,8 +165,8 @@ class TTLGenericCompiler(TTCompilerBase):
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
         else:
-            raise NotImplementedError(
-                f"constant type {type(node.value).__name__} not implemented"
+            self._raise_error(
+                node, f"constant type {type(node.value).__name__} not implemented"
             )
 
     def _get_ttkernel_thread_type(self) -> str:
@@ -179,18 +189,21 @@ class TTLGenericCompiler(TTCompilerBase):
             arg = node.args.args[i]
 
             if not arg.annotation:
-                raise TypeError("All kernel arguments must have a type annotation")
+                self._raise_error(arg, "All kernel arguments must have a type annotation")
 
-            annotation_name = _get_annotation_name(arg.annotation)
+            try:
+                annotation_name = _get_annotation_name(arg.annotation)
+            except TypeError as e:
+                self._raise_error(arg.annotation, str(e))
 
             if annotation_name == "TensorBlock":
-                raise NotImplementedError("TensorBlock not yet supported in TTL mode")
+                self._raise_error(arg, "TensorBlock not yet supported in TTL mode")
             elif annotation_name == "CircularBuffer":
                 if not self.context.tiled:
-                    raise ValueError("Only tiled CBs supported")
+                    self._raise_error(arg, "Only tiled CBs supported")
                 shape = list(self.args[i].shape)
                 if len(shape) != 2:
-                    raise ValueError(f"Only 2D CBs supported, got shape {shape}")
+                    self._raise_error(arg, f"Only 2D CBs supported, got shape {shape}")
 
                 # Compute shard shape: tiles per core
                 shard_shape = [
@@ -213,10 +226,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 )
                 self._next_cb_index += 1
             elif annotation_name == "Semaphore":
-                raise NotImplementedError("Semaphore not yet supported in TTL mode")
+                self._raise_error(arg, "Semaphore not yet supported in TTL mode")
             else:
-                raise TypeError(
-                    f"Unknown kernel arguments type annotation {annotation_name}"
+                self._raise_error(
+                    arg, f"Unknown kernel arguments type annotation {annotation_name}"
                 )
 
         # Collect TensorAccessor captures for function arguments
@@ -289,7 +302,9 @@ class TTLGenericCompiler(TTCompilerBase):
                         IndexType.get(self.ctx), val
                     )
                 else:
-                    raise TypeError(f"Invalid capture type for var {name}: {type(val)}")
+                    self._raise_error(
+                        node, f"Invalid capture type for var {name}: {type(val)}"
+                    )
 
             for target in node.body:
                 self.visit(target)
