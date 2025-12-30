@@ -134,14 +134,24 @@ class TTLGenericCompiler(TTCompilerBase):
         )
 
     def visit_Call(self, node):
-        """Override to set location context for each call expression."""
+        """Override to set location context and catch errors for call expressions."""
         with self._loc_for_node(node):
-            return super().visit_Call(node)
+            try:
+                return super().visit_Call(node)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
 
     def visit_Attribute(self, node, func_args=[], kwargs={}):
-        """Override to set location context for method calls."""
+        """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
-            return super().visit_Attribute(node, func_args, kwargs)
+            try:
+                return super().visit_Attribute(node, func_args, kwargs)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
 
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline
@@ -155,8 +165,8 @@ class TTLGenericCompiler(TTCompilerBase):
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
         else:
-            raise NotImplementedError(
-                f"constant type {type(node.value).__name__} not implemented"
+            self._raise_error(
+                node, f"constant type {type(node.value).__name__} not implemented"
             )
 
     def _emit_cb_from_capture(self, cb):
@@ -242,7 +252,9 @@ class TTLGenericCompiler(TTCompilerBase):
                     cb_val = self._emit_cb_from_capture(val)
                     self.symbol_tables[-1][name] = cb_val
                 else:
-                    raise TypeError(f"Invalid capture type for var {name}: {type(val)}")
+                    self._raise_error(
+                        node, f"Invalid capture type for var {name}: {type(val)}"
+                    )
 
             for target in node.body:
                 self.visit(target)

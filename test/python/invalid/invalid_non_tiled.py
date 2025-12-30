@@ -26,7 +26,12 @@ except ImportError:
     exit(0)
 
 
-# CHECK: Only tiled tensors supported for TTNN interop
+# CHECK: error: Only tiled CBs supported
+# CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:44:5
+# CHECK-NEXT:    |
+# CHECK-NEXT: 44 |     lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+# CHECK-NEXT:    |     ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1), tiled=False)
 def invalid_non_tiled_kernel(lhs, rhs, out):
     """This kernel should fail because tiled=False is not supported."""

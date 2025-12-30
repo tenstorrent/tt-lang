@@ -26,7 +26,12 @@ except ImportError:
     exit(0)
 
 
-# CHECK: Only 2D tensors supported, got shape
+# CHECK: error: Only 2D CBs supported, got shape
+# CHECK-NEXT:   --> {{.*}}invalid_non_2d_cb.py:44:5
+# CHECK-NEXT:    |
+# CHECK-NEXT: 44 |     lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
+# CHECK-NEXT:    |     ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
 def invalid_3d_cb_kernel(lhs, rhs, out):
     """This kernel should fail because 3D tensors create 3D CBs which are not supported."""
