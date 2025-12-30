@@ -2,12 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: not %python %s 2>&1 | FileCheck %s
+# RUN: %python %s > %t.output 2>&1
+# RUN: FileCheck %s < %t.initial.mlir
 
 """
-Validation test: only 2D grids are supported.
+Simple add kernel with float32 data type.
 
-This test verifies that using a 3D grid raises the expected ValueError.
+Tests that float32 tensors are properly handled through the layout derivation
+path (TTNNLayoutAttr -> page size calculation).
 """
 
 import os
@@ -25,10 +27,8 @@ except ImportError:
     exit(0)
 
 
-# CHECK: TTNN interop only supports single-core grid (1, 1), got (1, 1, 1)
-@ttl.kernel(grid=(1, 1, 1))
-def invalid_3d_grid_kernel(lhs, rhs, out):
-    """This kernel should fail because 3D grids are not supported."""
+@ttl.kernel(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+def add_kernel_f32(lhs, rhs, out):
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
@@ -70,35 +70,55 @@ def invalid_3d_grid_kernel(lhs, rhs, out):
     return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
+# =============================================================================
+# Initial IR Checks - Verify float32 layout attributes
+# =============================================================================
+
+# CHECK: #ttnn.buffer_type<l1>
+# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x1x!ttcore.tile<32x32, f32>{{.*}}>
+
+# CHECK-LABEL: func.func @add_compute
+# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+
+# CHECK-LABEL: func.func @dm_read
+# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+
+# CHECK-LABEL: func.func @dm_write
+# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+
+
 if __name__ == "__main__":
     import torch
 
-    print("=== 3D Grid Validation Test ===")
+    print("=== Float32 Add Kernel Test ===")
 
     device = ttnn.open_device(device_id=0)
 
     try:
-        lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
-        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+        lhs_torch = torch.full((32, 32), 2.0, dtype=torch.float32)
+        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.float32)
+        out_torch = torch.zeros((32, 32), dtype=torch.float32)
 
         lhs = ttnn.from_torch(
             lhs_torch,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.float32,
             layout=ttnn.TILE_LAYOUT,
             device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         rhs = ttnn.from_torch(
             rhs_torch,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.float32,
             layout=ttnn.TILE_LAYOUT,
             device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         out = ttnn.from_torch(
             out_torch,
-            dtype=ttnn.bfloat16,
+            dtype=ttnn.float32,
             layout=ttnn.TILE_LAYOUT,
             device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -108,11 +128,10 @@ if __name__ == "__main__":
         rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        # This should raise ValueError
-        invalid_3d_grid_kernel(lhs, rhs, out)
+        print("Compiling float32 add kernel...")
+        add_kernel_f32(lhs, rhs, out)
 
-        print("ERROR: Expected ValueError was not raised!")
-        exit(1)
+        print("=== Float32 Add Kernel Test Complete ===")
 
     finally:
         ttnn.close_device(device)
