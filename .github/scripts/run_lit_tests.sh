@@ -9,7 +9,14 @@ HARDWARE_TYPE="${1:-n150}"
 
 source build/env/activate
 echo "Activated virtual environment"
-env
+
+# Set SYSTEM_DESC_PATH to the generated system descriptor
+if [ -f "ttrt-artifacts/system_desc.ttsys" ]; then
+  export SYSTEM_DESC_PATH="$(pwd)/ttrt-artifacts/system_desc.ttsys"
+  echo "Using system descriptor: ${SYSTEM_DESC_PATH}"
+else
+  echo "Warning: system_desc.ttsys not found in ttrt-artifacts/"
+fi
 
 mkdir -p test_reports
 

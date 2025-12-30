@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # XFAIL: *
 # https://github.com/tenstorrent/tt-lang/issues/163
 # RUN: %python %s > %t.output 2>&1

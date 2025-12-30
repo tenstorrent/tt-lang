@@ -39,12 +39,18 @@ jobs:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
+  test-hardware:
+    needs: build
+    uses: ./.github/workflows/call-test-hardware.yml
+    secrets: inherit
+
   check-all-green:
     if: always()
     needs:
       - pre-commit
       - build
       - test-sim
+      - test-hardware
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed

@@ -9,7 +9,7 @@ Tests elementwise ops against PyTorch equivalents with L1 memory configuration.
 Kernels are generated from a template, written to temp files, and imported.
 """
 
-# UNSUPPORTED: system-darwin
+# REQUIRES: ttnn
 # RUN: %python -m pytest %s -v
 
 import pytest
