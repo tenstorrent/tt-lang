@@ -100,6 +100,18 @@ def _resolve_grid(grid, args, kwargs):
     return grid(*args, **kwargs) if callable(grid) else grid
 
 
+def _get_source_line_offset(f) -> int:
+    """Get the line offset to convert parsed AST line numbers to actual file lines."""
+    try:
+        raw_lines, start_lineno = inspect.getsourcelines(f)
+        num_decorator_lines = sum(
+            1 for line in raw_lines if line.strip().startswith("@")
+        )
+        return start_lineno + num_decorator_lines - 1
+    except (TypeError, OSError):
+        return 0
+
+
 class CompiledTTNNKernel:
     """
     A compiled tt-lang kernel ready for execution via ttnn.generic_op.
@@ -480,6 +492,7 @@ def _compile(
             # Pass source info for debug locations (always enabled for error messages)
             kwargs["_source_file"] = source_file
             kwargs["_source_lines"] = source_lines
+            kwargs["_line_offset"] = _get_source_line_offset(f)
             kwargs["debug_locations"] = True
 
             m = ast.parse(source_code)

@@ -165,6 +165,15 @@ def extract_location_from_mlir_error(error_msg: str) -> Optional[Tuple[str, int,
     return None
 
 
+def _read_file_lines(filepath: str) -> Optional[List[str]]:
+    """Read source lines from a file if it exists."""
+    try:
+        with open(filepath, "r") as f:
+            return f.read().splitlines()
+    except (IOError, OSError):
+        return None
+
+
 def format_mlir_error(
     error_msg: str,
     source_lines: Optional[List[str]] = None,
@@ -174,7 +183,7 @@ def format_mlir_error(
 
     Args:
         error_msg: The MLIR error message
-        source_lines: Original Python source lines (optional)
+        source_lines: Original Python source lines (optional, will read from file if needed)
         source_file: Source filename (optional, extracted from error if not provided)
 
     Returns:
@@ -182,11 +191,18 @@ def format_mlir_error(
     """
     loc_info = extract_location_from_mlir_error(error_msg)
 
-    if loc_info is None or source_lines is None:
+    if loc_info is None:
         return error_msg
 
     filename, line, col = loc_info
     display_file = source_file if source_file else filename
+
+    # Read source from file if not provided or if line number exceeds provided lines
+    if source_lines is None or line > len(source_lines):
+        source_lines = _read_file_lines(filename)
+
+    if source_lines is None:
+        return error_msg
 
     diag = SourceDiagnostic(source_lines, display_file)
     core_msg = _extract_core_message(error_msg)

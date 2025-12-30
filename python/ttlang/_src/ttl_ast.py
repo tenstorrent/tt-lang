@@ -21,11 +21,11 @@ from ..constants import DEFAULT_TILE_SIZE
 from ..ttl_utils import get_thread_type_string
 
 
-def _make_file_loc(ctx, source_file: str, node) -> Location:
+def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
     """Create an MLIR file location from an AST node."""
     if not hasattr(node, "lineno"):
         raise ValueError(f"AST node {type(node).__name__} has no line number")
-    return Location.file(source_file, node.lineno, node.col_offset + 1, ctx)
+    return Location.file(source_file, node.lineno + line_offset, node.col_offset + 1, ctx)
 
 
 def _get_annotation_name(annotation):
@@ -104,6 +104,7 @@ class TTLGenericCompiler(TTCompilerBase):
         self.debug_locations = kwargs.get("debug_locations", False)
         self.source_file = kwargs.get("_source_file", "<unknown>")
         self.source_lines = kwargs.get("_source_lines", [])
+        self.line_offset = kwargs.get("_line_offset", 0)
 
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
@@ -115,7 +116,7 @@ class TTLGenericCompiler(TTCompilerBase):
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
         if self.debug_locations and hasattr(node, "lineno"):
-            return _make_file_loc(self.ctx, self.source_file, node)
+            return _make_file_loc(self.ctx, self.source_file, node, self.line_offset)
         return self.loc
 
     def visit_Call(self, node):
