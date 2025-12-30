@@ -59,25 +59,23 @@ def debug_loc_kernel(lhs, out):
     return Program(compute_thread, dm_read, dm_write)(lhs, out)
 
 
-# Verify location alias is defined at the top with function def location (line 1:1)
-# CHECK: #loc1 = loc("{{.*}}debug_locations.py":1:1)
-
 # Verify function definitions exist
 # CHECK: func.func @compute_thread
 
-# Verify operations have source locations (line 2 = wait, line 3 = reserve)
+# Verify operations have source locations
 # CHECK: ttl.cb_wait %{{.*}} loc(#loc2)
 # CHECK: ttl.cb_reserve %{{.*}} loc(#loc3)
 
 # Verify function closing brace has location
 # CHECK: } loc(#loc1)
 
-# Verify location aliases are defined with correct file and line numbers
-# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":2:9)
-# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":3:9)
-# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":4:5)
-# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":5:5)
-# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":6:5)
+# Verify location aliases are defined with actual file line numbers (at end of MLIR)
+# CHECK-DAG: #loc1 = loc("{{.*}}debug_locations.py":38:1)
+# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":39:9)
+# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":40:9)
+# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":41:5)
+# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":42:5)
+# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":43:5)
 
 
 if __name__ == "__main__":
