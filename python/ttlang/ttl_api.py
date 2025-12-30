@@ -34,18 +34,7 @@ from ttmlir.passes import ttkernel_to_cpp
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
-
-def _get_thread_type_string(thread_attr) -> str:
-    """Extract thread type string from ttkernel.thread attribute."""
-    # ThreadTypeAttr prints as #ttkernel.thread<compute> or #ttkernel.thread<noc>
-    attr_str = str(thread_attr)
-    if "compute" in attr_str:
-        return "compute"
-    elif "noc" in attr_str:
-        return "noc"
-    elif "ethernet" in attr_str:
-        return "ethernet"
-    return "unknown"
+from ._src.ttl_utils import get_thread_type_string
 
 
 def get_ttkernel_names(module):
@@ -56,7 +45,7 @@ def get_ttkernel_names(module):
         if op.operation.name == "func.func":
             if "ttkernel.thread" in op.attributes:
                 thread_attr = op.attributes["ttkernel.thread"]
-                thread_type = _get_thread_type_string(thread_attr)
+                thread_type = str(thread_attr)
                 name = op.attributes["sym_name"].value
                 kernels.append((name, thread_type))
     return kernels

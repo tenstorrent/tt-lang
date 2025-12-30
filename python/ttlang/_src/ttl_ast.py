@@ -18,6 +18,7 @@ from ..dialects import ttl
 from ..layouts import create_ttnn_layout, TTNNLayoutConfig
 from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
+from .ttl_utils import get_thread_type_string
 
 
 def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
@@ -102,15 +103,6 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"constant type {type(node.value).__name__} not implemented"
             )
 
-    def _get_ttkernel_thread_type(self) -> str:
-        """Map kernel_type to ttkernel thread type string."""
-        if self.kernel_type == "compute":
-            return "compute"
-        elif self.kernel_type == "datamovement":
-            return "noc"
-        else:
-            raise ValueError(f"Unknown kernel type: {self.kernel_type}")
-
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"
 
@@ -179,7 +171,7 @@ class TTLGenericCompiler(TTCompilerBase):
         self.func_entry = func.FuncOp(name=node.name, type=(func_arg_types, []))
 
         # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
-        thread_type = self._get_ttkernel_thread_type()
+        thread_type = get_thread_type_string(self.kernel_type)
         thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
         self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
 
