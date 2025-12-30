@@ -303,7 +303,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
                 if not isinstance(context_expr, ast.Call):
                     self._raise_error(
-                        context_expr, "'with' requires a method call (e.g., cb.reserve())"
+                        context_expr,
+                        "'with' requires a method call (e.g., cb.reserve())",
                     )
 
                 if not isinstance(context_expr.func, ast.Attribute):
@@ -322,7 +323,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
                 if not isinstance(cb_node, ast.Name):
                     self._raise_error(
-                        context_expr, "'with' requires a simple variable (e.g., cb.reserve())"
+                        context_expr,
+                        "'with' requires a simple variable (e.g., cb.reserve())",
                     )
 
                 cb_table = self._var_exists(cb_node.id)
