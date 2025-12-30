@@ -311,7 +311,9 @@ class TTLangCompileError(Exception):
             lines = _read_file_lines(self.source_file)
 
         if lines is None:
-            return f"error: {self}\n  --> {self.source_file}:{self.line}:{self.col or 1}"
+            return (
+                f"error: {self}\n  --> {self.source_file}:{self.line}:{self.col or 1}"
+            )
 
         diag = SourceDiagnostic(lines, self.source_file)
         return diag.format_error(
