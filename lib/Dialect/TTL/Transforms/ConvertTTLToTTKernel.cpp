@@ -479,8 +479,7 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
       42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
   constexpr int32_t crtaPlaceholder = 0;
 
-  auto pageSize =
-      rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
+  auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
   return buildTensorAccessor(loc, rewriter, ctaPlaceholder, crtaPlaceholder,
                              bankBase, pageSize);
