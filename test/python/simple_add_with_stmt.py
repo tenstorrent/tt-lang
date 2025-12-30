@@ -21,7 +21,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program, TensorAccessor
+from ttlang.ttl_api import Program
 from ttlang.operators import copy
 
 try:
@@ -34,10 +34,6 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def add_with_kernel(lhs, rhs, out):
     """Add kernel using 'with' pattern for automatic CB lifecycle."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
-
     lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -54,12 +50,12 @@ def add_with_kernel(lhs, rhs, out):
     def dm_read():
         # 'with' for reserve/push pattern
         with lhs_cb.reserve() as lhs_block:
-            tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+            tx_lhs = copy(lhs[0, 0], lhs_cb)
             tx_lhs.wait()
         # Automatic: lhs_cb.push()
 
         with rhs_cb.reserve() as rhs_block:
-            tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+            tx_rhs = copy(rhs[0, 0], rhs_cb)
             tx_rhs.wait()
         # Automatic: rhs_cb.push()
 
@@ -67,7 +63,7 @@ def add_with_kernel(lhs, rhs, out):
     def dm_write():
         # 'with' for wait/pop pattern
         with out_cb.wait() as out_block:
-            tx = copy(out_cb, out_accessor[0, 0])
+            tx = copy(out_cb, out[0, 0])
             tx.wait()
         # Automatic: out_cb.pop()
 

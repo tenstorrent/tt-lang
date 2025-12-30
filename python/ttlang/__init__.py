@@ -13,7 +13,6 @@ from ttlang import ttl
 from ttlang.ttl_api import (
     Program,
     CircularBuffer,
-    TensorAccessor,
     TensorBlock,
     Semaphore,
     CopyTransferHandler,
@@ -28,7 +27,6 @@ __all__ = [
     "ttl",
     "Program",
     "CircularBuffer",
-    "TensorAccessor",
     "TensorBlock",
     "Semaphore",
     "CopyTransferHandler",
