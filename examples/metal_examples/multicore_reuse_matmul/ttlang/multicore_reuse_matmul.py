@@ -179,6 +179,6 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                     out_blk,
                     out[out_row, out_col],
                 )
-            out_wr.wait()
+                out_wr.wait()
 
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)

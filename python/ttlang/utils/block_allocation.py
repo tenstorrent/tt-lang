@@ -341,6 +341,21 @@ def get_possible_products(factors: List[int]) -> List[int]:
 
 
 def get_maximum_block_dim(block_dim: int, in0_block_w: int) -> int:
+    """
+    Compute maximum size for the other block dimension given circular buffer (CB) capacity constraints.
+
+    Args:
+        block_dim: M or N dimension block size in tiles
+        in0_block_w: K dimension block width in tiles
+
+    Returns:
+        Maximum value for the other block dimension that fits in L1 memory.
+        Returns 0 if constraints cannot be satisfied.
+
+    Notes:
+        Uses a heuristic of 400 tiles for CB budget in L1 memory (double-buffered A and  B + C).
+        Constraint: DB*in0_block_w*block_dim + DB*in0_block_w*other_dim + block_dim*other_dim ≤ 400
+    """
     other_dim = (400 - 2 * in0_block_w * block_dim) // (2 * in0_block_w + block_dim)
 
     if other_dim > 0:

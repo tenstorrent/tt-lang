@@ -9,28 +9,28 @@
 
 namespace NAMESPACE {
 void MAIN {
-  uint32_t K_block_size =
-      get_compile_time_arg_val(0); // inner block size in tiles
-  uint32_t a_num_subblocks =
-      get_compile_time_arg_val(1); // outer row block size (in inner row blocks)
-  uint32_t a_block_num_tiles = get_compile_time_arg_val(
-      2); // out_subblock_h*K_block_size*a_num_subblocks;
-  uint32_t a_subblock_num_tiles =
-      get_compile_time_arg_val(3); // out_subblock_h*K_block_size
-  uint32_t b_num_subblocks = get_compile_time_arg_val(
-      4); // outer column block size (in inner column blocks)
-  uint32_t b_block_num_tiles = get_compile_time_arg_val(
-      5); // out_subblock_w*K_block_size* b_num_subblocks;
-  uint32_t b_per_core_w =
-      get_compile_time_arg_val(6); // out_subblock_w*b_num_subblocks
-  uint32_t num_blocks =
-      get_compile_time_arg_val(7); // outer inner dim (in inner dim blocks)
-  uint32_t out_subblock_h =
-      get_compile_time_arg_val(8); // inner row block size in tiles
-  uint32_t out_subblock_w =
-      get_compile_time_arg_val(9); // inner column block size in tiles
-  uint32_t out_subblock_num_tiles =
-      get_compile_time_arg_val(10); // out_subblock_h * out_subblock_w;
+  // inner block size in tiles
+  uint32_t K_block_size = get_compile_time_arg_val(0);
+  // outer row block size (in inner row blocks)
+  uint32_t a_num_subblocks = get_compile_time_arg_val(1);
+  // out_subblock_h*K_block_size*a_num_subblocks;
+  uint32_t a_block_num_tiles = get_compile_time_arg_val(2);
+  // out_subblock_h*K_block_size
+  uint32_t a_subblock_num_tiles = get_compile_time_arg_val(3);
+  // outer column block size (in inner column blocks)
+  uint32_t b_num_subblocks = get_compile_time_arg_val(4);
+  // out_subblock_w*K_block_size* b_num_subblocks;
+  uint32_t b_block_num_tiles = get_compile_time_arg_val(5);
+  // out_subblock_w*b_num_subblocks
+  uint32_t b_per_core_w = get_compile_time_arg_val(6);
+  // outer inner dim (in inner dim blocks)
+  uint32_t num_blocks = get_compile_time_arg_val(7);
+  // inner row block size in tiles
+  uint32_t out_subblock_h = get_compile_time_arg_val(8);
+  // inner column block size in tiles
+  uint32_t out_subblock_w = get_compile_time_arg_val(9);
+  // out_subblock_h * out_subblock_w;
+  uint32_t out_subblock_num_tiles = get_compile_time_arg_val(10);
 
   mm_init(tt::CBIndex::c_0, tt::CBIndex::c_1, tt::CBIndex::c_16);
 

@@ -153,7 +153,6 @@ def test_metal_matmul(M, K, N):
         out_subblock_w,
         out_subblock_num_tiles,
     ]
-    print(f"compute_compile_time_args: {compute_compile_time_args}")
     reader_compile_time_args = ttnn.TensorAccessorArgs(a_tensor).get_compile_time_args()
     reader_compile_time_args.extend(
         ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args()
@@ -212,7 +211,6 @@ def test_metal_matmul(M, K, N):
                 per_core_N // out_subblock_w,  # out_num_subblocks_w
                 per_core_M // out_subblock_h,  # out_num_subblocks_h
             ]
-            # print(f"writer_rt_args[{core_x}][{core_y}]: {writer_rt_args[core_x][core_y]}")
             print(
                 f"core {core_x},{core_y} assigned start out block slice [{output_idx_x * per_core_N}:{(output_idx_x + 1) * per_core_N}]x[{output_idx_y * per_core_M}:{(output_idx_y + 1) * per_core_M}]"
             )

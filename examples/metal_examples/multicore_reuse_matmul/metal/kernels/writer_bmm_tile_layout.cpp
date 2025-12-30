@@ -53,13 +53,12 @@ void kernel_main() {
         out_tensor_sb_row_start_tile_id += out_tensor_stride_h;
       }
 
-      noc_async_write_barrier(); // This will wait until the write is done. As
-                                 // an alternative, noc_async_write_flushed()
-                                 // can be faster because it waits until the
-                                 // write request is sent. In that case, you
-                                 // have to use noc_async_write_barrier() at
-                                 // least once at the end of data movement
-                                 // kernel to make sure all writes are done.
+      // This will wait until the write is done. As an alternative,
+      // noc_async_write_flushed() can be faster because it waits until the
+      // write request is sent. In that case, you have to use
+      // noc_async_write_barrier() at least once at the end of data movement
+      // kernel to make sure all writes are done.
+      noc_async_write_barrier();
       cb_pop_front(cb_id_out0, out_subblock_tile_count);
       out_tensor_sbw_start_tile_id += out_tensor_next_subblock_stride_w;
     }
