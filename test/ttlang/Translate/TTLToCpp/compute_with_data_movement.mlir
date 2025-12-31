@@ -33,21 +33,22 @@
 // CHECK:   int32_t {{.*}} = get_common_arg_val<uint32_t>([[ZERO]]);
 // CHECK:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
+// CHECK-NOT:     TensorAccessorArgs
+// CHECK-NOT:     TensorAccessor
 // CHECK-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
 // CHECK:       noc_async_read_tile({{.*}}, [[ACC_A]], [[CB0_PTR]]);
 // CHECK:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   noc_async_read_barrier();
 
-// Read tensor B into CB1
-// CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
-// Placeholder value 43 is a temporary hack, see issue #168
-// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<43, 0>();
-// CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
-// CHECK:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
-// CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
-// CHECK-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
-// CHECK:       noc_async_read_tile({{.*}}, [[ACC_B]], [[CB1_PTR]]);
+// Read tensor B into CB1 (reuses ACC_B materialized at function entry)
+// CHECK:   int32_t [[RT_ARG_B_LOOP:v[0-9]+]] = get_common_arg_val<uint32_t>([[ONE]]);
+// CHECK:   int32_t [[CB1_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
+// CHECK-NEXT:   for (size_t [[I_B:i[0-9]+]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
+// CHECK-NOT:     TensorAccessorArgs
+// CHECK-NOT:     TensorAccessor
+// CHECK-NEXT:     for (size_t [[J_B:j[0-9]+]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
+// CHECK:       noc_async_read_tile([[TILE_OFFSET:v[0-9]+]], [[ACC_B]], [[CB1_PTR]]);
 // CHECK:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   noc_async_read_barrier();

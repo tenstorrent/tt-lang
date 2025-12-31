@@ -22,19 +22,20 @@
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ARGS0]].next_compile_time_args_offset(), [[ARGS0]].next_common_runtime_args_offset()>();
 // CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
-// Tensor 0: get CB write ptr, async read
+// No more accessor creation after function entry
+// CHECK-NOT:   TensorAccessorArgs
+// CHECK-NOT:   TensorAccessor
+// Tensor 0: get CB write ptr, async read using pre-materialized accessor
 // CHECK:   int32_t {{v[0-9]+}} = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
-// Tensor 1: get runtime arg, create accessor, get CB write ptr, async read
-// CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
-// Placeholder value 43 is a temporary hack, see issue #168
-// CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<43, 0>();
-// CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
+// Tensor 1: get CB write ptr, async read using pre-materialized accessor
 // CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
 // Consecutive barriers deduplicated to single barrier.
 // CHECK:   noc_async_read_barrier();
+// CHECK-NOT: noc_async_read_barrier
+// CHECK-NOT: noc_async_write_barrier
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

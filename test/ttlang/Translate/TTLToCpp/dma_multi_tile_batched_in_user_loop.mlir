@@ -50,11 +50,9 @@
 // User loop from input MLIR (0..3)
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
 
-// First copy: 64x64 (2x2 tiles) → CB1
-// CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// Placeholder value 42 is a temporary hack, see issue #168
-// CHECK:     auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
-// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
+// First copy: 64x64 (2x2 tiles) → CB1, uses pre-materialized accessor ACC1
+// CHECK-NOT:     TensorAccessorArgs
+// CHECK-NOT:     TensorAccessor
 // CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Tile loops: for tile_y in 0..2, for tile_x in 0..2
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[STEP]]) {
@@ -67,11 +65,9 @@
 // CHECK:       }
 // CHECK:     }
 
-// Second copy: 64x64 (2x2 tiles) → CB2
-// CHECK:     int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
-// Placeholder value 43 is a temporary hack, see issue #168
-// CHECK:     auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<43, 0>();
-// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
+// Second copy: 64x64 (2x2 tiles) → CB2, uses pre-materialized accessor ACC2
+// CHECK-NOT:     TensorAccessorArgs
+// CHECK-NOT:     TensorAccessor
 // CHECK:     int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[STEP]]) {
