@@ -131,14 +131,13 @@ static bool isNocKernel(Operation *op) {
 static Value buildTensorAccessor(Location loc, OpBuilder &builder,
                                  int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
-  auto ctaConst = builder.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
-  auto crtaConst = builder.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
-  auto args = builder.create<ttk::TensorAccessorArgsOp>(
+  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
+  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
       loc, ctaConst.getResult(), crtaConst.getResult(),
-      /*prev_args=*/Value(), /*cta_expr=*/StringAttr(),
-      /*crta_expr=*/StringAttr());
-  auto accessor = builder.create<ttk::TensorAccessorOp>(loc, args.getResult(),
-                                                        bankBase, pageSize);
+      /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr);
+  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
+                                                         bankBase, pageSize);
   return accessor.getResult();
 }
 
