@@ -80,6 +80,75 @@ def translate_module_to_kernels(
     return noc_kernels, compute_kernel
 
 
+def _shim_tensor_accessor_args(source: str, kernel_name: str) -> str:
+    """
+    Shim TensorAccessorArgs and CB indices to use correct pattern.
+    
+    Temporary workaround until compiler emits correct CTA offsets and CB indices.
+    
+    1. Replaces TensorAccessorArgs<42, 0>() and TensorAccessorArgs<43, 0>()
+       with TensorAccessorArgs<0>() and proper chaining for interleaved tensors.
+    2. Rewrites get_compile_time_arg_val indices to be per-kernel (not global).
+    
+    Args:
+        source: C++ kernel source.
+        kernel_name: Kernel function name.
+        
+    Returns:
+        Shimmed source with correct TensorAccessorArgs and CB index pattern.
+    """
+    import re
+    
+    # For interleaved tensors, TensorAccessorArgs should use single template param
+    # (the CTA offset), not <row_stride, col_stride>.
+    # Pattern: TensorAccessorArgs<42, 0>() or TensorAccessorArgs<43, 0>()
+    
+    # Binary reader: two tensors
+    if "reader_binary" in kernel_name.lower():
+        # First tensor: TensorAccessorArgs<42, 0>() -> TensorAccessorArgs<0>()
+        source = re.sub(
+            r'TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<42,\s*0>\(\);',
+            r'TensorAccessorArgs \1 = TensorAccessorArgs<0>();',
+            source
+        )
+        # Second tensor: TensorAccessorArgs<43, 0>() -> TensorAccessorArgs<1>()
+        # Note: For interleaved, offset is just tensor index since each uses 1 CTA slot
+        source = re.sub(
+            r'TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<43,\s*0>\(\);',
+            r'TensorAccessorArgs \1 = TensorAccessorArgs<1>();',
+            source
+        )
+        # CB indices: no change needed (uses 0, 1)
+    
+    # Unary reader: single tensor
+    elif "reader_unary" in kernel_name.lower():
+        # Single tensor: TensorAccessorArgs<42, 0>() -> TensorAccessorArgs<0>()
+        source = re.sub(
+            r'TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<42,\s*0>\(\);',
+            r'TensorAccessorArgs \1 = TensorAccessorArgs<0>();',
+            source
+        )
+        # CB index: no change needed (uses 0)
+    
+    # Writer: single tensor, but CB index needs adjustment
+    elif "writer" in kernel_name.lower():
+        # Single tensor: TensorAccessorArgs<42, 0>() -> TensorAccessorArgs<0>()
+        source = re.sub(
+            r'TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<42,\s*0>\(\);',
+            r'TensorAccessorArgs \1 = TensorAccessorArgs<0>();',
+            source
+        )
+        # CB index: rewrite get_compile_time_arg_val(1) -> get_compile_time_arg_val(0) for unary
+        # or get_compile_time_arg_val(2) -> get_compile_time_arg_val(0) for binary
+        source = re.sub(
+            r'get_compile_time_arg_val\(([12])\)',
+            r'get_compile_time_arg_val(0)',
+            source
+        )
+    
+    return source
+
+
 def write_kernels(
     noc_kernels: List[KernelSpec],
     compute_kernel: KernelSpec,
@@ -100,9 +169,15 @@ def write_kernels(
     paths = {}
 
     for kernel in noc_kernels + [compute_kernel]:
+        # Apply TensorAccessorArgs shim for NOC kernels (reader/writer).
+        # TODO: Remove this shim once compiler emits correct CTA offsets.
+        source = kernel.source
+        if kernel.thread_type == ThreadType.NOC:
+            source = _shim_tensor_accessor_args(source, kernel.name)
+        
         path = output_dir / f"{kernel.name}.cpp"
         with open(path, "w") as f:
-            f.write(kernel.source)
+            f.write(source)
         paths[kernel.name] = str(path)
 
     return paths

@@ -78,6 +78,22 @@ class FusedOpTestBase(E2ETestBase):
         """Skip translation for fused ops - they don't have reader/writer threads."""
         pass
 
+    @pytest.mark.order(4)
+    @pytest.mark.skip(
+        reason="Fused ops don't generate reader/writer threads - compute only"
+    )
+    def test_execute(self, device) -> None:
+        """Skip execution for fused ops - they don't have reader/writer threads."""
+        pass
+
+    @pytest.mark.order(5)
+    @pytest.mark.skip(
+        reason="Fused ops don't generate reader/writer threads - compute only"
+    )
+    def test_validate_golden(self) -> None:
+        """Skip validation for fused ops - they don't have reader/writer threads."""
+        pass
+
     @pytest.mark.order(1)
     def test_build_module(self, config: E2EConfig) -> None:
         """Build TTL module for fused op from MLIR template."""

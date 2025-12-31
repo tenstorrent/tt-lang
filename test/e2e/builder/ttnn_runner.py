@@ -247,11 +247,15 @@ def _run_op(
         ]
     ]
 
+    # Compile-time args for reader: CB indices for each input.
+    # For binary: [CB_IN0, CB_IN1], for unary: [CB_IN0]
+    reader_ct_args = [CB_IN0] if num_inputs == 1 else [CB_IN0, CB_IN1]
+
     reader_descriptor = ttnn.KernelDescriptor(
         kernel_source=str(kernel_dir / f"{reader_kernel.name}.cpp"),
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
         core_ranges=core_grid,
-        compile_time_args=_get_tensor_accessor_args(device_inputs),
+        compile_time_args=reader_ct_args,
         runtime_args=reader_rt_args,
         config=ttnn.ReaderConfigDescriptor(),
     )
@@ -268,11 +272,14 @@ def _run_op(
         ]
     ]
 
+    # Compile-time args for writer: CB index for output.
+    writer_ct_args = [CB_OUT]
+
     writer_descriptor = ttnn.KernelDescriptor(
         kernel_source=str(kernel_dir / f"{writer_kernel.name}.cpp"),
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
         core_ranges=core_grid,
-        compile_time_args=_get_tensor_accessor_args([output_tensor]),
+        compile_time_args=writer_ct_args,
         runtime_args=writer_rt_args,
         config=ttnn.WriterConfigDescriptor(),
     )

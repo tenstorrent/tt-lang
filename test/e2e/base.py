@@ -112,9 +112,6 @@ class E2ETestBase:
             write_kernels(noc_kernels, compute_kernel, kernel_dir)
 
     @pytest.mark.order(4)
-    @pytest.mark.skip(
-        reason="Generated C++ has TensorAccessorArgs template issues - needs compiler fix"
-    )
     def test_execute(self, device):
         """Execute kernels on device."""
         from .builder.kernels import KernelSpec, ThreadType
@@ -184,7 +181,6 @@ class E2ETestBase:
         torch.save(result, self.output_file("result.pt"))
 
     @pytest.mark.order(5)
-    @pytest.mark.skip(reason="Depends on test_execute")
     def test_validate_golden(self):
         """
         Validate result against golden.
