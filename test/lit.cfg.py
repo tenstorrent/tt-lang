@@ -89,8 +89,8 @@ if llvm_config is not None:
     for dirs in tool_dirs:
         llvm_config.with_environment("PATH", dirs, append_path=True)
 
-# Add ttlang-opt, ttlang-translate, ttmlir-opt, and ttmlir-translate tools
-tools = ["ttlang-opt", "ttlang-translate", "ttmlir-opt", "ttmlir-translate"]
+# Add ttlang-opt, and ttlang-translate tools
+tools = ["ttlang-opt", "ttlang-translate"]
 
 if llvm_config is not None:
     llvm_config.add_tool_substitutions(tools, tool_dirs)

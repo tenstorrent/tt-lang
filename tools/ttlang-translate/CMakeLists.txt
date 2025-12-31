@@ -13,6 +13,5 @@ mlir_check_link_libraries(ttlang-translate)
 
 install(TARGETS ttlang-translate
   DESTINATION ${CMAKE_INSTALL_BINDIR}
-  COMPONENT Test
-  EXCLUDE_FROM_ALL
+  COMPONENT Tools
 )
