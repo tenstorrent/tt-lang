@@ -30,62 +30,15 @@ except ModuleNotFoundError:
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttkernel
-from ttmlir.passes import ttkernel_to_cpp
+from ttmlir.passes import (
+    ttkernel_to_cpp_by_name,
+    get_ttkernel_names,
+    get_ttkernel_arg_spec,
+)
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
-from ._src.ttl_utils import get_thread_type_string
-
-
-def get_ttkernel_names(module):
-    """Walk module and return list of (kernel_name, thread_type) tuples."""
-    kernels = []
-    for op in module.operation.regions[0].blocks[0].operations:
-        # op.operation.name is the MLIR op name, op.name is symbol name for funcs
-        if op.operation.name == "func.func":
-            if "ttkernel.thread" in op.attributes:
-                thread_attr = op.attributes["ttkernel.thread"]
-                thread_type = str(thread_attr)
-                name = op.attributes["sym_name"].value
-                kernels.append((name, thread_type))
-    return kernels
-
-
-def get_ttkernel_arg_spec(module, kernel_name):
-    """Return the ttkernel.arg_spec attribute for a named kernel."""
-    for op in module.operation.regions[0].blocks[0].operations:
-        if op.operation.name == "func.func":
-            if "sym_name" in op.attributes:
-                if op.attributes["sym_name"].value == kernel_name:
-                    if "ttkernel.arg_spec" in op.attributes:
-                        return op.attributes["ttkernel.arg_spec"]
-    return None
-
-
-def _extract_kernel_cpp(full_cpp: str, kernel_name: str) -> str:
-    """Extract a single kernel's C++ code from the concatenated output.
-
-    The ttkernel_to_cpp output format has `// kernel_name` markers at
-    the start of each kernel section.
-    """
-    import re
-
-    # Split by kernel markers
-    pattern = r"^// (\w+)\n"
-    parts = re.split(pattern, full_cpp, flags=re.MULTILINE)
-
-    # parts[0] is empty or preamble, then alternating name, code pairs
-    for i in range(1, len(parts), 2):
-        if parts[i] == kernel_name and i + 1 < len(parts):
-            return f"// {kernel_name}\n{parts[i + 1]}"
-
-    raise RuntimeError(f"Kernel '{kernel_name}' not found in generated C++")
-
-
-def ttkernel_to_cpp_by_name(module, name: str) -> str:
-    """Translate a single kernel to C++ by name."""
-    full_cpp = ttkernel_to_cpp(module)
-    return _extract_kernel_cpp(full_cpp, name)
+from .ttl_utils import get_thread_type_string
 
 
 from pykernel._src.utils import _cleanup_source_code
