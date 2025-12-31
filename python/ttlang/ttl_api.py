@@ -30,7 +30,11 @@ except ModuleNotFoundError:
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttkernel
-from ttmlir.passes import ttkernel_to_cpp
+from ttmlir.passes import (
+    ttkernel_to_cpp_by_name,
+    get_ttkernel_names,
+    get_ttkernel_arg_spec,
+)
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
