@@ -16,28 +16,27 @@
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[UB:v[0-9]+]] = 3;
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
-// Pre-loop copy: create accessor with runtime arg, get CB write ptr
+// Accessor materialized at function entry
 // CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// Placeholder value 42 is a temporary hack, see issue #168
-// CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
+// TensorAccessorArgs uses base CTA index = num_cbs = 1
+// CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
+// Pre-loop copy: uses pre-materialized accessor
+// CHECK:   int32_t {{v[0-9]+}} = get_common_arg_val<uint32_t>([[LB]]);
 // CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
 // CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
-// In-loop copy: create accessor with runtime arg, get CB write ptr
-// CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// Placeholder value 42 is a temporary hack, see issue #168
-// CHECK:     auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
-// CHECK:     TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
+// In-loop copy: uses same pre-materialized accessor
+// CHECK:     int32_t {{v[0-9]+}} = get_common_arg_val<uint32_t>([[LB]]);
 // CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK:     noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
+// CHECK:     noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR1]]);
 // CHECK:     noc_async_read_barrier();
 // CHECK:   }
 // CHECK:   noc_async_read_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
-  func.func @dma_pipelined_loop(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @dma_pipelined_loop(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 1 : i32} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c3 = arith.constant 3 : index

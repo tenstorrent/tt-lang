@@ -173,10 +173,14 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
+# Accessors materialized at function entry with chaining
+# CHECK-CPP: auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 0>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC1_ARGS]],
+# CHECK-CPP: auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ACC1_ARGS]].next_compile_time_args_offset(), [[ACC1_ARGS]].next_common_runtime_args_offset()>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC2_ARGS]],
+
 # First input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(0))
 # CHECK-CPP: noc_async_read_tile(
 # CHECK-CPP: noc_async_read_barrier();
@@ -184,8 +188,6 @@ def add_dram_kernel(lhs, rhs, out):
 
 # Second input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<4, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(1))
 # CHECK-CPP: noc_async_read_tile(
 # CHECK-CPP: noc_async_read_barrier();
@@ -198,10 +200,12 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 
+# Accessor materialized at function entry (dm_write has 1 CB, 1 tensor)
+# CHECK-CPP: auto [[ACC_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC_ARGS]],
+
 # Wait for output CB, write tile, pop CB
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_read_ptr(get_compile_time_arg_val(2))
 # CHECK-CPP: noc_async_write_tile(
 # CHECK-CPP: noc_async_write_barrier();

@@ -109,9 +109,8 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
 /// Runtime args are indexed by the tensor's function argument position.
-static FailureOr<Value> getBufferAddressFromRuntimeArg(Value tensor,
-                                                       Location loc,
-                                                       OpBuilder &builder) {
+static FailureOr<Value>
+getBufferAddressFromRuntimeArg(Value tensor, Location loc, OpBuilder &builder) {
   auto argIdx = getTensorFuncArgIndex(tensor);
   if (failed(argIdx)) {
     return failure();
@@ -132,13 +131,14 @@ static bool isNocKernel(Operation *op) {
 static Value buildTensorAccessor(Location loc, OpBuilder &builder,
                                  int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
-  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
-  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
-  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
+  auto ctaConst = builder.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  auto crtaConst = builder.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
+  auto args = builder.create<ttk::TensorAccessorArgsOp>(
       loc, ctaConst.getResult(), crtaConst.getResult(),
-      /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr);
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
-                                                         bankBase, pageSize);
+      /*prev_args=*/Value(), /*cta_expr=*/StringAttr(),
+      /*crta_expr=*/StringAttr());
+  auto accessor = builder.create<ttk::TensorAccessorOp>(loc, args.getResult(),
+                                                        bankBase, pageSize);
   return accessor.getResult();
 }
 
@@ -440,7 +440,8 @@ buildTensorAccessorChained(Location loc, OpBuilder &builder,
         /*cta_expr=*/StringAttr(), /*crta_expr=*/StringAttr());
   } else {
     // First accessor: use literal base offsets.
-    Value ctaConst = builder.create<arith::ConstantIntOp>(loc, baseCTAIndex, 32);
+    Value ctaConst =
+        builder.create<arith::ConstantIntOp>(loc, baseCTAIndex, 32);
     Value crtaConst = builder.create<arith::ConstantIntOp>(loc, 0, 32);
     argsOp = builder.create<ttk::TensorAccessorArgsOp>(
         loc, ctaConst, crtaConst, /*prev_args=*/Value(),
@@ -643,8 +644,8 @@ lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   }
 
   // Look up or create tensor accessor.
-  auto srcAccessor =
-      materializeTensorAccessor(srcTensor, *bankBase, rewriter, tensorToAccessor);
+  auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter,
+                                               tensorToAccessor);
   if (failed(srcAccessor)) {
     return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
   }
@@ -687,8 +688,8 @@ lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   }
 
   // Look up or create tensor accessor.
-  auto dstAccessor =
-      materializeTensorAccessor(dstTensor, *bankBase, rewriter, tensorToAccessor);
+  auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter,
+                                               tensorToAccessor);
   if (failed(dstAccessor)) {
     return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
   }
@@ -718,8 +719,7 @@ lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
 /// Map from function to its pre-materialized tensor accessor map.
 /// Used to pass accessor lookup tables from pre-materialization phase to
 /// CopyLowering pattern.
-using FuncAccessorMaps =
-    DenseMap<func::FuncOp, DenseMap<unsigned, Value>>;
+using FuncAccessorMaps = DenseMap<func::FuncOp, DenseMap<unsigned, Value>>;
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
   CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
@@ -912,9 +912,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   });
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<BindCBLowering, WaitLowering, CBReserveLowering,
-               CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
-      typeConverter, &ctx);
+  patterns.add<BindCBLowering, WaitLowering, CBReserveLowering, CBPushLowering,
+               CBWaitLowering, CBPopLowering, StoreLowering>(typeConverter,
+                                                             &ctx);
   // CopyLowering needs the accessor maps for proper chaining.
   patterns.add<CopyLowering>(typeConverter, &ctx, funcAccessorMaps);
   populateFunctionOpInterfaceTypeConversionPattern(

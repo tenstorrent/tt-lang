@@ -220,30 +220,9 @@ class CompiledTTNNKernel:
         return ttnn.generic_op(list(args), program)
 
 
-def _write_kernel_to_tmp(
-    name: str, source: str, num_tensors: int = 0, tensor_indices: list = None
-) -> str:
+def _write_kernel_to_tmp(name: str, source: str) -> str:
     """Write kernel source to /tmp and return the file path."""
-    import re
     import hashlib
-
-    # TODO(XX): Fix TensorAccessorArgs CTA offsets. C++ emits placeholder 42+idx,
-    # replace with actual offset = global_idx + num_tensors (CB indices occupy 0..num_tensors-1).
-    if num_tensors > 0 and tensor_indices:
-
-        def replace_cta_offset(m):
-            placeholder = int(m.group(1))
-            local_idx = placeholder - 42
-            # Map local accessor index to global tensor index
-            global_idx = (
-                tensor_indices[local_idx]
-                if local_idx < len(tensor_indices)
-                else local_idx
-            )
-            actual_offset = global_idx + num_tensors
-            return f"TensorAccessorArgs<{actual_offset}, 0>()"
-
-        source = re.sub(r"TensorAccessorArgs<(\d+), 0>\(\)", replace_cta_offset, source)
 
     # Use content hash in path to avoid JIT cache collisions between different kernels
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
@@ -350,30 +329,18 @@ def _compile_ttnn_kernel(
     num_tensors = len(args)
 
     # Write all kernels to /tmp for debugging
-    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
+    for _, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = (
-            thread_tensor_indices[kernel_idx]
-            if kernel_idx < len(thread_tensor_indices)
-            else []
-        )
-        _write_kernel_to_tmp(name, cpp_source, num_tensors, tensor_indices)
+        _write_kernel_to_tmp(name, cpp_source)
 
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
 
-    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
+    for _, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = (
-            thread_tensor_indices[kernel_idx]
-            if kernel_idx < len(thread_tensor_indices)
-            else []
-        )
-        kernel_path = _write_kernel_to_tmp(
-            name, cpp_source, num_tensors, tensor_indices
-        )
+        kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
 
         if thread_type == "compute":
