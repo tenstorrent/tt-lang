@@ -62,9 +62,7 @@ def add_dram_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write(out_cb: CircularBuffer):
         # Wait for data, write directly from CB to DRAM, pop
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
@@ -205,11 +203,11 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC_ARGS]],
 
 # Wait for output CB, write tile, pop CB
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
-# CHECK-CPP: get_read_ptr(get_compile_time_arg_val(2))
+# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP: get_read_ptr(get_compile_time_arg_val(0))
 # CHECK-CPP: noc_async_write_tile(
 # CHECK-CPP: noc_async_write_barrier();
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(2),
+# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
 
 
 if __name__ == "__main__":
