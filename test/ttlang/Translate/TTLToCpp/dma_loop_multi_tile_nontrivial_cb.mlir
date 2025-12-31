@@ -1,6 +1,6 @@
 // RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
-// RUN: ttmlir-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
-// RUN: ttmlir-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // Test: User-written loop with multiple multi-tile DMA operations and nontrivial CB shape.
@@ -31,10 +31,7 @@
 #layout_3x2 = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<3x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // CHECK-LABEL: // dma_loop_multi_tile
-// CHECK-NEXT: #include <cstdint>
-// CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
-// CHECK-NEXT: #include "dataflow_api.h"
-// CHECK-NEXT: void kernel_main() {
+// CHECK: void kernel_main() {
 // CHECK-DAG:   size_t [[TILES_3:v[0-9]+]] = 3;
 // CHECK-DAG:   size_t [[TILES_2:v[0-9]+]] = 2;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
@@ -45,7 +42,7 @@
 // First copy: arg0 (64x64) → CB0, accessor with runtime arg index 0
 // CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // Placeholder value 42 is a temporary hack, see issue #168
-// CHECK:     TensorAccessorArgs [[ACC1_ARGS:v[0-9]+]] = TensorAccessorArgs<42, 0>();
+// CHECK:     auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
 // CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
 // CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_2]]; [[TILE1_Y]] += [[TILE_STEP]]) {
@@ -61,7 +58,7 @@
 // Second copy: arg1 (96x64) → CB1, accessor with runtime arg index 1
 // CHECK:     int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
 // Placeholder value 43 is a temporary hack, see issue #168
-// CHECK:     TensorAccessorArgs [[ACC2_ARGS:v[0-9]+]] = TensorAccessorArgs<43, 0>();
+// CHECK:     auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<43, 0>();
 // CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
 // CHECK:     int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_3]]; [[TILE2_Y]] += [[TILE_STEP]]) {

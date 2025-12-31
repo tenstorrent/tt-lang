@@ -39,24 +39,18 @@ pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
 # =============================================================================
 
 BINARY_KERNEL_TEMPLATE = '''
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def compute_fn(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -69,7 +63,7 @@ def {name}_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -83,7 +77,7 @@ def {name}_kernel(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -96,25 +90,19 @@ def {name}_kernel(lhs, rhs, out):
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 from ttlang import {op}
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call)."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def compute_fn(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -127,7 +115,7 @@ def {name}_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -141,7 +129,7 @@ def {name}_kernel(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -154,24 +142,18 @@ def {name}_kernel(lhs, rhs, out):
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 from ttlang import {op}
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel."""
     inp_accessor = TensorAccessor(inp)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def compute_fn(inp_cb: CircularBuffer, out_cb: CircularBuffer):
         x = inp_cb.wait()
         o = out_cb.reserve()
@@ -180,14 +162,14 @@ def {name}_kernel(inp, out):
         inp_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(inp_cb: CircularBuffer, out_cb: CircularBuffer):
         inp_cb.reserve()
         tx_inp = copy(inp_accessor[0, 0], inp_cb)
         tx_inp.wait()
         inp_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(inp_cb: CircularBuffer, out_cb: CircularBuffer):
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])

@@ -89,19 +89,17 @@ if llvm_config is not None:
     for dirs in tool_dirs:
         llvm_config.with_environment("PATH", dirs, append_path=True)
 
-# Add ttlang-opt, ttmlir-opt, and ttmlir-translate tools
-tools = ["ttlang-opt", "ttmlir-opt", "ttmlir-translate"]
+# Add ttlang-opt, and ttlang-translate tools
+tools = ["ttlang-opt", "ttlang-translate"]
 
 if llvm_config is not None:
     llvm_config.add_tool_substitutions(tools, tool_dirs)
 
 # Python test configuration
-config.substitutions.append(
-    (
-        "%python",
-        f"env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir {sys.executable}",
-    )
-)
+# Note: We cannot use %t directly in env var values because lit doesn't expand
+# substitutions recursively. Instead, tests should use %t explicitly:
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s
+config.substitutions.append(("%python", sys.executable))
 
 # Get Python packages directory from site config, or fall back to default build location.
 build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)
@@ -112,8 +110,16 @@ if build_python is None or not build_python:
 python_paths = [
     build_python,
     os.path.join(config.ttlang_source_dir, "python"),
-    os.environ.get("PYTHONPATH", ""),
 ]
+
+# Add tt-mlir Python packages if available
+if hasattr(config, "ttmlir_path") and config.ttmlir_path:
+    ttmlir_python = os.path.join(config.ttmlir_path, "python_packages")
+    if os.path.exists(ttmlir_python):
+        python_paths.append(ttmlir_python)
+
+# Include existing PYTHONPATH last
+python_paths.append(os.environ.get("PYTHONPATH", ""))
 
 # Prefer built bindings so ttlang._mlir_libs is found.
 config.environment["PYTHONPATH"] = os.path.pathsep.join([p for p in python_paths if p])

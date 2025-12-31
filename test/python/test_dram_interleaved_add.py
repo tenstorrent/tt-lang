@@ -11,7 +11,9 @@
 # directly from DRAM into CBs.
 
 import torch
-from ttlang.ttl_api import *
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang.operators import copy
 
 try:
     import ttnn
@@ -21,7 +23,7 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def add_dram_direct(lhs, rhs, out):
     """
     Add kernel that reads directly from DRAM interleaved tensors.
@@ -31,7 +33,7 @@ def add_dram_direct(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -44,7 +46,7 @@ def add_dram_direct(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         # Read from DRAM directly (no L1 intermediate!)
         lhs_cb.reserve()
@@ -57,7 +59,7 @@ def add_dram_direct(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):

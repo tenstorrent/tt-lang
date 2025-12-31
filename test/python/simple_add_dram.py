@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: %python %s > %t.output 2>&1
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -17,14 +17,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl
+from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
 try:
@@ -34,14 +28,14 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def add_dram_kernel(lhs, rhs, out):
     """Add kernel that reads/writes directly from/to DRAM."""
     lhs_accessor = TensorAccessor(lhs)
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
-    @compute()
+    @ttl.compute()
     def add_compute(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -54,7 +48,7 @@ def add_dram_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
         # Reserve CB space, read directly from DRAM into CBs, push
         lhs_cb.reserve()
@@ -67,7 +61,7 @@ def add_dram_kernel(lhs, rhs, out):
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
+    @ttl.datamovement()
     def dm_write(
         lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
     ):
@@ -181,7 +175,7 @@ def add_dram_kernel(lhs, rhs, out):
 
 # First input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
-# CHECK-CPP: TensorAccessorArgs{{.*}}= TensorAccessorArgs<3, 0>();
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(0))
 # CHECK-CPP: noc_async_read_tile(
@@ -190,7 +184,7 @@ def add_dram_kernel(lhs, rhs, out):
 
 # Second input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
-# CHECK-CPP: TensorAccessorArgs{{.*}}= TensorAccessorArgs<4, 0>();
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<4, 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(1))
 # CHECK-CPP: noc_async_read_tile(
@@ -206,7 +200,7 @@ def add_dram_kernel(lhs, rhs, out):
 
 # Wait for output CB, write tile, pop CB
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
-# CHECK-CPP: TensorAccessorArgs{{.*}}= TensorAccessorArgs<5, 0>();
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_read_ptr(get_compile_time_arg_val(2))
 # CHECK-CPP: noc_async_write_tile(
