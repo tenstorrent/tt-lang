@@ -97,6 +97,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     constants.py
     ttl.py
     ttl_api.py
+    ttl_utils.py
     dtype_utils.py
     ir.py
     layouts.py

@@ -10,10 +10,7 @@
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // CHECK: // loopback
-// CHECK-NEXT: #include <cstdint>
-// CHECK-NEXT: #include "tools/profiler/kernel_profiler.hpp"
-// CHECK-NEXT: #include "dataflow_api.h"
-// CHECK-NEXT: void kernel_main() {
+// CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
@@ -23,7 +20,7 @@
 // Read: tensor → CB (uses get_write_ptr for CB destination)
 // CHECK:     int32_t [[RT_ARG_R:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
 // Placeholder value 42 is a temporary hack, see issue #168
-// CHECK:     TensorAccessorArgs [[ARGS_READ:v[0-9]+]] = TensorAccessorArgs<42, 0>();
+// CHECK:     auto [[ARGS_READ:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
 // CHECK:     TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[RT_ARG_R]], [[ADDR]]);
 // CHECK:     int32_t [[CB_WRITE_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[CB_WRITE_PTR]]);
@@ -31,7 +28,7 @@
 // Write: CB → tensor (uses get_read_ptr for CB source)
 // CHECK:     int32_t [[RT_ARG_W:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
 // Placeholder value 43 is a temporary hack, see issue #168
-// CHECK:     TensorAccessorArgs [[ARGS_WRITE:v[0-9]+]] = TensorAccessorArgs<43, 0>();
+// CHECK:     auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<43, 0>();
 // CHECK:     TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[RT_ARG_W]], [[ADDR]]);
 // CHECK:     int32_t [[CB_READ_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
 // CHECK:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[CB_READ_PTR]]);

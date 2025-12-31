@@ -278,7 +278,7 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
 
     rewriter.create<InitOp>(loc);
-    rewriter.create<TTKernelComputeOp>(loc, dst0, dst1);
+    rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -391,7 +391,8 @@ using MulTileLowering =
     TTLTileBinaryToTTKernel<MulTileOp, ttk::MulBinaryTilesInitOp,
                             ttk::MulBinaryTilesOp>;
 using MaxTileLowering =
-    TTLTileMaxToTTKernel<MaxTileOp, ttk::MaxTilesInitOp, ttk::MaxTilesOp>;
+    TTLTileMaxToTTKernel<MaxTileOp, ttk::BinaryMaxTileInitOp,
+                         ttk::BinaryMaxTileOp>;
 
 } // namespace
 

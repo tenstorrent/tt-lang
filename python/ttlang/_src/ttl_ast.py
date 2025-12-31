@@ -18,20 +18,7 @@ from ..dialects import ttl
 from ..layouts import create_ttnn_layout, TTNNLayoutConfig
 from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
-
-
-def _get_annotation_name(annotation):
-    """Extract the type name from an annotation node.
-
-    Handles both simple names (CircularBuffer) and qualified names (ttl.CircularBuffer).
-    Returns the simple type name (e.g., 'CircularBuffer') in both cases.
-    """
-    if isinstance(annotation, ast.Name):
-        return annotation.id
-    elif isinstance(annotation, ast.Attribute):
-        return annotation.attr
-    else:
-        raise TypeError(f"Unsupported annotation type: {type(annotation)}")
+from ..ttl_utils import get_thread_type_string
 
 
 def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
@@ -116,15 +103,6 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"constant type {type(node.value).__name__} not implemented"
             )
 
-    def _get_ttkernel_thread_type(self) -> str:
-        """Map kernel_type to ttkernel thread type string."""
-        if self.kernel_type == "compute":
-            return "compute"
-        elif self.kernel_type == "datamovement":
-            return "noc"
-        else:
-            raise ValueError(f"Unknown kernel type: {self.kernel_type}")
-
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"
 
@@ -137,12 +115,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
             if not arg.annotation:
                 raise TypeError("All kernel arguments must have a type annotation")
-
-            annotation_name = _get_annotation_name(arg.annotation)
-
-            if annotation_name == "TensorBlock":
+            elif arg.annotation.id == "TensorBlock":
                 raise NotImplementedError("TensorBlock not yet supported in TTL mode")
-            elif annotation_name == "CircularBuffer":
+            elif arg.annotation.id == "CircularBuffer":
                 if not self.context.tiled:
                     raise ValueError("Only tiled CBs supported")
                 shape = list(self.args[i].shape)
@@ -169,11 +144,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     }
                 )
                 self._next_cb_index += 1
-            elif annotation_name == "Semaphore":
+            elif arg.annotation.id == "Semaphore":
                 raise NotImplementedError("Semaphore not yet supported in TTL mode")
             else:
                 raise TypeError(
-                    f"Unknown kernel arguments type annotation {annotation_name}"
+                    f"Unknown kernel arguments type annotation {arg.annotation.id}"
                 )
 
         # Collect TensorAccessor captures for function arguments
@@ -196,7 +171,7 @@ class TTLGenericCompiler(TTCompilerBase):
         self.func_entry = func.FuncOp(name=node.name, type=(func_arg_types, []))
 
         # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
-        thread_type = self._get_ttkernel_thread_type()
+        thread_type = get_thread_type_string(self.kernel_type)
         thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
         self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
 

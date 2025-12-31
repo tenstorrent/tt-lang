@@ -38,6 +38,9 @@ from ttmlir.passes import (
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
+from .ttl_utils import get_thread_type_string
+
+
 from pykernel._src.utils import _cleanup_source_code
 from ._src.tensor_accessor import TensorAccessor
 from ._src.tensor_registry import register_tensor_name
