@@ -164,7 +164,17 @@ def tile_bytes_from_dtype(dtype) -> int:
     Raises:
         ValueError: If dtype is not supported
     """
-    dtype_int = int(dtype)
+    # ttnn.DataType is not guaranteed to be directly `int()`-convertible in the
+    # Python bindings. Prefer `.value` (enum int payload) when available.
+    if isinstance(dtype, int):
+        dtype_int = dtype
+    elif hasattr(dtype, "value") and isinstance(getattr(dtype, "value"), int):
+        dtype_int = int(getattr(dtype, "value"))
+    else:
+        raise TypeError(
+            f"Expected dtype to be an int or an enum-like value with an integer "
+            f"`.value` (e.g., ttnn.DataType). Got {type(dtype).__name__}: {dtype!r}."
+        )
     # Map ttnn DataType enum values to tile sizes
     # Reference: tt-metal/tt_metal/common/constants.hpp
     if dtype_int in (0, 6):  # BFloat16, UInt16

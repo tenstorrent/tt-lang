@@ -61,8 +61,12 @@ def _get_global_registry() -> DialectRegistry:
     if _GLOBAL_DIALECT_REGISTRY is None:
         import ttmlir._mlir_libs._ttmlir as _ttmlir
         import ttlang._mlir_libs._ttlang as _ttlang_lib
+        from ttmlir._mlir_libs import get_dialect_registry
 
-        registry = DialectRegistry()
+        # Always register into the shared global registry that backs
+        # `ttmlir.ir.Context()` site initialization. Avoid creating a new
+        # DialectRegistry, which can drift from the one used by Context.
+        registry = get_dialect_registry()
         _ttmlir.register_dialects(registry)
         _ttlang_lib.register_dialects(registry)
 
@@ -626,8 +630,11 @@ def _compile_and_run_kernel(
     ctx = Context()
     ctx.append_dialect_registry(registry)
     ctx.load_all_available_dialects()
-    # _ttmlir.register_dialect(ctx, load=True)
-    # _ttlang_lib.register_ttl_dialect(ctx)
+
+    # Make sure key dialects are loaded before running pipelines that materialize
+    # their operations inside C++ passes.
+    _ = ctx.dialects["ttkernel"]
+    _ = ctx.dialects["ttl"]
     loc = Location.unknown(ctx)
     with ctx, loc:
         compiled_threads = []
