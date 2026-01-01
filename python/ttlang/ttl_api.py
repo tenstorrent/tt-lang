@@ -107,30 +107,30 @@ from .dtype_utils import (
 )
 from .constants import SUPPORTED_MEMORY_SPACES
 
-_GLOBAL_DIALECT_REGISTRY = None
+_TTLANG_DIALECTS_REGISTERED = False
 
 
 def _get_global_registry() -> DialectRegistry:
-    """Return a shared DialectRegistry with tt-mlir and tt-lang dialects."""
-    global _GLOBAL_DIALECT_REGISTRY
-    if _GLOBAL_DIALECT_REGISTRY is None:
-        import ttmlir._mlir_libs._ttmlir as _ttmlir
+    """Return the shared DialectRegistry with ttlang dialects registered.
+
+    ttmlir dialects are registered via site initialization (_site_initialize_0)
+    when Context is created. However, ttlang's site init is in a different
+    namespace (ttlang._mlir_libs) and is not discovered by MLIR's site init.
+    We explicitly register ttlang dialects here.
+    """
+    global _TTLANG_DIALECTS_REGISTERED
+    from ttmlir._mlir_libs import get_dialect_registry
+
+    registry = get_dialect_registry()
+
+    # Register ttlang dialects once (ttmlir dialects already registered via site init)
+    if not _TTLANG_DIALECTS_REGISTERED:
         import ttlang._mlir_libs._ttlang as _ttlang_lib
-        from ttmlir._mlir_libs import get_dialect_registry
 
-        # Always register into the shared global registry that backs
-        # `ttmlir.ir.Context()` site initialization. Avoid creating a new
-        # DialectRegistry, which can drift from the one used by Context.
-        registry = get_dialect_registry()
-        _ttmlir.register_dialects(registry)
         _ttlang_lib.register_dialects(registry)
+        _TTLANG_DIALECTS_REGISTERED = True
 
-        if hasattr(_ttmlir, "register_all_passes"):
-            _ttmlir.register_all_passes()
-        if hasattr(_ttlang_lib, "register_all_passes"):
-            _ttlang_lib.register_all_passes()
-        _GLOBAL_DIALECT_REGISTRY = registry
-    return _GLOBAL_DIALECT_REGISTRY
+    return registry
 
 
 class CompilerConfig:

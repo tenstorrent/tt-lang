@@ -7,7 +7,7 @@
 # Verifies a single MLIR Context can load both tt-lang TTL and tt-mlir TTKernel
 # dialects and successfully run convert-ttl-to-ttkernel from Python.
 
-from ttmlir.ir import Context, DialectRegistry, Location, Module
+from ttmlir.ir import Context, Location, Module
 from ttmlir.passmanager import PassManager
 from ttlang.dialects import ttl
 
@@ -29,19 +29,13 @@ module {
 
 def main():
     with Context() as ctx, Location.unknown(ctx):
-        # Mirror ttl_api.py behavior: build an explicit registry, register both
-        # upstream (ttmlir) and downstream (ttlang) dialects/passes, and append
-        # it to the context before running any pipelines.
-        import ttmlir._mlir_libs._ttmlir as _ttmlir
+        # ttmlir dialects/passes are registered via site initialization when
+        # Context() is created. We only need to register ttlang dialects.
+        from ttmlir._mlir_libs import get_dialect_registry
         import ttlang._mlir_libs._ttlang as _ttlang
 
-        registry = DialectRegistry()
-        _ttmlir.register_dialects(registry)
+        registry = get_dialect_registry()
         _ttlang.register_dialects(registry)
-        if hasattr(_ttmlir, "register_all_passes"):
-            _ttmlir.register_all_passes()
-        if hasattr(_ttlang, "register_all_passes"):
-            _ttlang.register_all_passes()
 
         ctx.append_dialect_registry(registry)
         ctx.load_all_available_dialects()
