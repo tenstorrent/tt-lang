@@ -14,8 +14,6 @@ Tests CB operations, add compute, and data movement patterns.
 
 import os
 
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
 from ttlang import ttl
 from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
@@ -241,9 +239,6 @@ def add_kernel(lhs, rhs, out):
 
 
 if __name__ == "__main__":
-    if os.environ.get("TTLANG_COMPILE_ONLY") == "1":
-        exit(0)
-
     import torch
 
     print("=== Add Kernel Test ===")

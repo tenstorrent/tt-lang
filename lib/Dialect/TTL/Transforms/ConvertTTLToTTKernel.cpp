@@ -872,6 +872,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       StringRef passName) {
   // Pre-materialize tensor accessors for all NOC kernel functions.
   // This creates chained TensorAccessorArgs at function entry.
+  // TTKernel dialect must be available since we create TTKernel ops.
+  // It should be loaded automatically by dependentDialects, but explicitly ensure it.
+  if (!ctx.getLoadedDialect<ttkernel::TTKernelDialect>()) {
+    ctx.getOrLoadDialect<ttkernel::TTKernelDialect>();
+  }
+
   FuncAccessorMaps funcAccessorMaps;
   OpBuilder builder(&ctx);
   mod.walk([&](func::FuncOp funcOp) {
@@ -1154,6 +1160,8 @@ struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
+    // Ensure TTKernel dialect is loaded before materializing TTKernel ops.
+    (void)ctx.getOrLoadDialect<ttk::TTKernelDialect>();
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 

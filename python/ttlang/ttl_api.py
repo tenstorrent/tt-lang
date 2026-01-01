@@ -22,10 +22,6 @@ try:
 except ModuleNotFoundError:
     ttnn = None
 
-try:
-    from _ttmlir_runtime import runtime
-except ModuleNotFoundError:
-    runtime = None
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
@@ -36,7 +32,6 @@ from ttmlir.passes import (
     get_ttkernel_arg_spec,
 )
 
-import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
 from .ttl_utils import get_thread_type_string
 
@@ -56,6 +51,27 @@ from .dtype_utils import (
     is_ttnn_tensor,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
+
+_GLOBAL_DIALECT_REGISTRY = None
+
+
+def _get_global_registry() -> DialectRegistry:
+    """Return a shared DialectRegistry with tt-mlir and tt-lang dialects."""
+    global _GLOBAL_DIALECT_REGISTRY
+    if _GLOBAL_DIALECT_REGISTRY is None:
+        import ttmlir._mlir_libs._ttmlir as _ttmlir
+        import ttlang._mlir_libs._ttlang as _ttlang_lib
+
+        registry = DialectRegistry()
+        _ttmlir.register_dialects(registry)
+        _ttlang_lib.register_dialects(registry)
+
+        if hasattr(_ttmlir, "register_all_passes"):
+            _ttmlir.register_all_passes()
+        if hasattr(_ttlang_lib, "register_all_passes"):
+            _ttlang_lib.register_all_passes()
+        _GLOBAL_DIALECT_REGISTRY = registry
+    return _GLOBAL_DIALECT_REGISTRY
 
 
 class CompilerConfig:
@@ -605,7 +621,13 @@ def _compile_and_run_kernel(
         kwargs={**injected_program_kwargs, **program.kwargs},
     )
 
+    registry = _get_global_registry()
+
     ctx = Context()
+    ctx.append_dialect_registry(registry)
+    ctx.load_all_available_dialects()
+    # _ttmlir.register_dialect(ctx, load=True)
+    # _ttlang_lib.register_ttl_dialect(ctx)
     loc = Location.unknown(ctx)
     with ctx, loc:
         compiled_threads = []
@@ -630,7 +652,6 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED INITIAL TO {initial_mlir_path}")
 
-        device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
         config = CompilerConfig(compile_only)
 
@@ -649,15 +670,10 @@ def _compile_and_run_kernel(
             "symbol-dce",
         ]
 
-        pipeline = ",".join(pipeline_passes)
 
-        register_device = "ttcore-register-device"
-        if device_register_options:
-            register_device = f"{register_device}{{{device_register_options}}}"
-
-        pipeline_str = f"builtin.module({','.join([register_device, pipeline])})"
+        pipeline_str = f"builtin.module({','.join(pipeline_passes)})"
         # fmt: on
-        pm = PassManager.parse(pipeline_str)
+        pm = PassManager.parse(pipeline_str, context=ctx)
         pm.enable_verifier(verify)
 
         try:
