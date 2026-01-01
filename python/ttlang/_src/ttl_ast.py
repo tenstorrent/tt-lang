@@ -81,7 +81,13 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
-        self._next_cb_index = 0
+
+        # Kernel-level CB symbol table maps CB names to global indices.
+        # This table is required for proper CB index assignment across all threads
+        # in a kernel. All threads share the same CB numbering (e.g., if the kernel
+        # has 3 CBs named lhs_cb, rhs_cb, out_cb, they get indices 0, 1, 2 respectively
+        # across all threads).
+        self._kernel_cb_symbol_table: dict = kwargs.get("kernel_cb_symbol_table", {})
 
         self._fn_map = {}
         for name, val in TTLGenericCompiler._syntax.items():
@@ -106,10 +112,17 @@ class TTLGenericCompiler(TTCompilerBase):
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"
 
-        # Collect CB info for binding inside function body
+        # _cb_info contains ALL CBs from the kernel-level symbol table.
+        # This ensures correct compile-time arg indexing (TensorAccessorArgs
+        # start at total_num_cbs). However, we only emit ttl.bind_cb for CBs
+        # that are actually declared in this thread's function signature.
         self._cb_info = []
-        self._next_cb_index = 0
 
+        # Track which CBs are declared in this thread's signature (to bind later)
+        self._signature_cb_names: Set[str] = set()
+
+        # First, collect CB info from the function signature to get shape/dtype
+        signature_cb_info = {}
         for i in range(len(node.args.args)):
             arg = node.args.args[i]
 
@@ -126,8 +139,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
                 # Compute shard shape: tiles per core
                 shard_shape = [
-                    shape[i] // self.context.grid[i] // DEFAULT_TILE_SIZE
-                    for i in range(2)
+                    shape[d] // self.context.grid[d] // DEFAULT_TILE_SIZE
+                    for d in range(2)
                 ]
 
                 ttcore_dtype = tensor_dtype_to_ttcore_datatype(self.args[i].dtype)
@@ -135,21 +148,54 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
                 )
 
-                self._cb_info.append(
-                    {
-                        "name": arg.arg,
-                        "shard_shape": shard_shape,
-                        "element_type": element_type,
-                        "cb_index": self._next_cb_index,
-                    }
-                )
-                self._next_cb_index += 1
+                cb_name = arg.arg
+                if cb_name not in self._kernel_cb_symbol_table:
+                    raise ValueError(
+                        f"CircularBuffer '{cb_name}' not found in kernel-level symbol table. "
+                        f"Available CBs: {list(self._kernel_cb_symbol_table.keys())}"
+                    )
+
+                signature_cb_info[cb_name] = {
+                    "shard_shape": shard_shape,
+                    "element_type": element_type,
+                }
+                self._signature_cb_names.add(cb_name)
             elif arg.annotation.id == "Semaphore":
                 raise NotImplementedError("Semaphore not yet supported in TTL mode")
             else:
                 raise TypeError(
                     f"Unknown kernel arguments type annotation {arg.annotation.id}"
                 )
+
+        # Now build _cb_info for ALL CBs in the kernel (sorted by index).
+        # For CBs not in this thread's signature, use info from the first CB as template.
+        # All CBs in a kernel typically have the same shape/dtype in simple cases.
+        template_cb = (
+            next(iter(signature_cb_info.values())) if signature_cb_info else None
+        )
+
+        for cb_name, cb_index in sorted(
+            self._kernel_cb_symbol_table.items(), key=lambda x: x[1]
+        ):
+            if cb_name in signature_cb_info:
+                info = signature_cb_info[cb_name]
+            elif template_cb is not None:
+                # Use template CB info for CBs not in this thread's signature
+                info = template_cb
+            else:
+                raise ValueError(
+                    f"Thread has no CB parameters but kernel has CBs: "
+                    f"{list(self._kernel_cb_symbol_table.keys())}"
+                )
+
+            self._cb_info.append(
+                {
+                    "name": cb_name,
+                    "shard_shape": info["shard_shape"],
+                    "element_type": info["element_type"],
+                    "cb_index": cb_index,
+                }
+            )
 
         # Collect TensorAccessor captures for function arguments
         self._tensor_accessor_names = []
@@ -177,7 +223,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Set base CTA index for TensorAccessorArgs chaining.
         # CB indices occupy [0, num_cbs-1], so TensorAccessorArgs start at num_cbs.
-        base_cta_index = len(self._cb_info)
+        # Use the kernel-level CB count from the symbol table.
+        base_cta_index = len(self._kernel_cb_symbol_table)
         self.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
             IntegerType.get_signless(32), base_cta_index
         )
@@ -195,8 +242,13 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Emit function body
         with InsertionPoint(func_bb):
-            # Emit ttl.bind_cb ops at function entry for each CB argument
+            # Emit ttl.bind_cb ops only for CBs declared in the function signature.
+            # _cb_info contains ALL kernel CBs (for compile-time arg indexing),
+            # but we only bind the ones this thread actually uses.
             for cb_info in self._cb_info:
+                if cb_info["name"] not in self._signature_cb_names:
+                    continue  # Skip CBs not used by this thread
+
                 buffer_factor = 2  # Default buffer factor
                 cb_type = ttl.CircularBufferType.get(
                     self.ctx,
