@@ -16,7 +16,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program, TensorAccessor
+from ttlang.ttl_api import Program
 from ttlang.operators import copy
 
 try:
@@ -30,10 +30,6 @@ except ImportError:
 @ttl.kernel(grid=(2, 3))
 def invalid_divisibility_kernel(lhs, rhs, out):
     """This kernel should fail because 32 is not divisible by 3."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
-
     lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -52,19 +48,19 @@ def invalid_divisibility_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs = copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs = copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 

@@ -12,40 +12,41 @@ from ttmlir.dialects import ttcore, func, arith, ttkernel
 
 from pykernel._src.kernel_types import *
 from pykernel._src.kernel_ast import TTCompilerBase
-from .tensor_accessor import TensorAccessor
+from .tensor_registry import get_tensor_global_index
 
 from ..dialects import ttl
+from ..dtype_utils import is_ttnn_tensor
 from ..layouts import create_ttnn_layout, TTNNLayoutConfig
 from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
 from ..ttl_utils import get_thread_type_string
 
 
-def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
-    """Build MLIR tensor type for a TensorAccessor with TTNNLayoutAttr."""
+def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
+    """Build MLIR tensor type for a ttnn tensor with TTNNLayoutAttr."""
     if not tiled:
         raise ValueError("Only tiled tensors supported for TTNN interop")
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
-    if len(accessor.shape) != 2:
-        raise ValueError(f"Only 2D tensors supported, got shape {accessor.shape}")
+    if len(tensor.shape) != 2:
+        raise ValueError(f"Only 2D tensors supported, got shape {tensor.shape}")
 
     layout = create_ttnn_layout(
         ctx,
         TTNNLayoutConfig(
-            logical_shape=accessor.shape,
+            logical_shape=tensor.shape,
             grid=grid,
-            dtype=accessor.dtype,
+            dtype=tensor.dtype,
         ),
     )
 
-    ttcore_dtype = tensor_dtype_to_ttcore_datatype(accessor.dtype)
+    ttcore_dtype = tensor_dtype_to_ttcore_datatype(tensor.dtype)
     element_type = ttcore.ir.TileType.get(
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
     # Device shape: grid dims + shard dims (1x1 tiles per core for single-core)
-    shard_tiles = [accessor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)]
+    shard_tiles = [tensor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)]
     device_shape = list(grid) + shard_tiles
 
     return RankedTensorType.get(device_shape, element_type, layout)
@@ -126,13 +127,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 "Use make_circular_buffer_like() in kernel body and capture CBs in closures."
             )
 
-        # Collect TensorAccessor captures for function arguments
+        # Collect tensor captures for function arguments
         self._tensor_accessor_names = []
         self._tensor_accessor_global_indices = []
         func_arg_types = []
         for name, val in self.captures.items():
-            if isinstance(val, TensorAccessor):
-                tensor_type = _build_tensor_accessor_type(
+            if is_ttnn_tensor(val):
+                tensor_type = _build_tensor_type(
                     self.ctx,
                     val,
                     self.context.grid,
@@ -140,7 +141,9 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.context.memory_space,
                 )
                 self._tensor_accessor_names.append(name)
-                self._tensor_accessor_global_indices.append(val.global_index)
+                self._tensor_accessor_global_indices.append(
+                    get_tensor_global_index(val)
+                )
                 func_arg_types.append(tensor_type)
 
         self.func_entry = func.FuncOp(name=node.name, type=(func_arg_types, []))
@@ -168,11 +171,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 self.symbol_tables[-1][name] = func_bb.arguments[i]
                 self.streams.add(name)
 
-            # Prepopulate other captures (non-TensorAccessor)
+            # Prepopulate other captures (non-tensor)
             from ..circular_buffer import CircularBuffer
 
             for name, val in self.captures.items():
-                if isinstance(val, TensorAccessor):
+                if is_ttnn_tensor(val):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
                 if isinstance(val, int):

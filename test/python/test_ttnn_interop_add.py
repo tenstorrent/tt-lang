@@ -12,7 +12,7 @@ import os
 import platform
 import torch
 from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program, TensorAccessor
+from ttlang.ttl_api import Program
 from ttlang.operators import copy
 
 try:
@@ -26,10 +26,6 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
-
     lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -47,14 +43,14 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # Read both inputs - reserve CB and copy directly from accessor to CB
+        # Read both inputs - reserve CB and copy directly from tensor to CB
         lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs = copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs = copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
@@ -62,7 +58,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
     def dm_out():
         # Write output - wait for data in CB and copy directly from CB to device
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 

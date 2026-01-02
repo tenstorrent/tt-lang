@@ -42,8 +42,7 @@ from .ttl_utils import get_thread_type_string
 
 
 from pykernel._src.utils import _cleanup_source_code
-from ._src.tensor_accessor import TensorAccessor
-from ._src.tensor_registry import register_tensor_name
+from ._src.tensor_registry import register_tensor_name, get_tensor_global_index
 
 from ._src.ttl_ast import TTLGenericCompiler
 
@@ -414,7 +413,7 @@ def _compile_ttnn_kernel(
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, TensorAccessor, CircularBuffer]]:
+) -> Dict[str, Union[int, CircularBuffer]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -433,7 +432,7 @@ def _collect_captures(
     def convert(name, val):
         if isinstance(val, int):
             return val
-        elif isinstance(val, TensorAccessor):
+        elif is_ttnn_tensor(val):
             return val
         elif isinstance(val, CircularBuffer):
             return val
@@ -866,6 +865,5 @@ __all__ = [
     "CopyTransferHandler",
     "Semaphore",
     "copy",
-    "TensorAccessor",
     "CompiledTTNNKernel",
 ]
