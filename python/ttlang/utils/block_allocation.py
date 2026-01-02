@@ -4,6 +4,8 @@
 from typing import Tuple, List
 import itertools
 import math
+import sympy
+from collections import namedtuple
 
 
 def remove_leading_ones(grid: Tuple[int, ...]) -> Tuple[int, ...]:
@@ -285,21 +287,14 @@ def split_work_to_cores(
                 )
 
 
-def get_prime_factors(n: int) -> List[int]:
-    i = 2
-    prime_factors = []
-
-    while i * i <= n:
-        if n % i != 0:
-            i += 1
-        else:
-            n //= i
-            prime_factors.append(i)
-
-    if n > 1:
-        prime_factors.append(n)
-
-    return prime_factors
+def get_prime_factors_with_multiplicity(n: int) -> List[int]:
+    factors_with_multiplicity = []
+    factor_dict = sympy.factorint(n)
+    # Extend the list for each factor according to its count
+    for prime, count in factor_dict.items():
+        factors_with_multiplicity.extend([prime] * count)
+    # Sort the list for a standard representation
+    return sorted(factors_with_multiplicity)
 
 
 def get_possible_products(factors: List[int]) -> List[int]:
@@ -313,31 +308,12 @@ def get_possible_products(factors: List[int]) -> List[int]:
     Returns:
         A sorted list of all unique products that can be formed from the factors
     """
-    if not factors:
-        return [1]
-
-    products = []
-
-    for fac in factors:
-        new_products = []
-
-        # Add the factor itself if not already in products
-        if fac not in products:
-            new_products.append(fac)
-
-        # Multiply factor with all existing products
-        for prod in products:
-            new_prod = fac * prod
-            if new_prod not in products:
-                new_products.append(new_prod)
-
-        # Add all new products to the products list
-        products.extend(new_products)
-
-    # Sort products
-    products.sort()
-
-    return products
+    unique_products = {1}
+    for p in factors:
+        new_products = {prod * p for prod in unique_products}
+        unique_products.update(new_products)
+    sorted_products = sorted(list(unique_products))
+    return sorted_products
 
 
 def get_maximum_block_dim(block_dim: int, in0_block_w: int) -> int:
@@ -389,9 +365,15 @@ SUBBLOCK_HW_CHOICES = [
 ]
 
 
+# Named tuple for matmul parameters
+MatmulParams = namedtuple(
+    "MatmulParams", ["block_h", "block_w", "subblock_h", "subblock_w"]
+)
+
+
 def get_large_matmul_params(
     Mt: int, Nt: int, num_cores_y: int, num_cores_x: int, in0_block_w: int
-) -> Tuple[int, int, int, int]:
+) -> MatmulParams:
     """
     Compute optimal matrix multiplication parameters for multi-core execution.
     This function determines the per-core block sizes (Mpc, Npc) and subblock
@@ -404,43 +386,35 @@ def get_large_matmul_params(
         num_cores_x: Number of available cores in X dimension
         in0_block_w: Inner dimension block width (K dimension in tiles)
     Returns:
-        A tuple (Mpc, Npc, subblock_h, subblock_w) where:
-        - Mpc: Number of M tiles per core
-        - Npc: Number of N tiles per core
+        MatmulParams named tuple with fields:
+        - block_h: Number of M tiles per core
+        - block_w: Number of N tiles per core
         - subblock_h: Subblock height for compute kernel
         - subblock_w: Subblock width for compute kernel
-        Returns (0, 0, 0, 0) if no valid configuration is found.
+        Returns MatmulParams(0, 0, 0, 0) if no valid configuration is found.
     """
     # Get prime factorizations
-    Nt_fac = get_prime_factors(Nt)
-    Mt_fac = get_prime_factors(Mt)
+    Nt_fac = get_prime_factors_with_multiplicity(Nt)
+    Mt_fac = get_prime_factors_with_multiplicity(Mt)
 
     Npc_min = 1
     Mpc_min = 1
 
     # Remove factors larger than available cores from Nt_fac
     # These must be handled per-core (Npc_min)
-    i = 0
-    while i < len(Nt_fac):
-        if Nt_fac[i] > num_cores_x:
-            Npc_min *= Nt_fac[i]
-            Nt_fac.pop(i)
-        else:
-            i += 1
+    large_factors_N = [f for f in Nt_fac if f > num_cores_x]
+    Nt_fac = [f for f in Nt_fac if f <= num_cores_x]
+    Npc_min = prod(large_factors_N) if large_factors_N else 1
 
     # Remove factors larger than available cores from Mt_fac
     # These must be handled per-core (Mpc_min)
-    i = 0
-    while i < len(Mt_fac):
-        if Mt_fac[i] > num_cores_y:
-            Mpc_min *= Mt_fac[i]
-            Mt_fac.pop(i)
-        else:
-            i += 1
+    large_factors_M = [f for f in Mt_fac if f > num_cores_y]
+    Mt_fac = [f for f in Mt_fac if f <= num_cores_y]
+    Mpc_min = prod(large_factors_M) if large_factors_M else 1
 
     # Check if minimum Npc violates memory constraints
     if Npc_min > get_maximum_block_dim(Mpc_min, in0_block_w):
-        return (0, 0, 0, 0)
+        return MatmulParams(0, 0, 0, 0)
 
     Mpc = Mpc_min
     Npc = Npc_min
@@ -459,12 +433,12 @@ def get_large_matmul_params(
 
         # Check if this fits within the core grid
         if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
-            return (0, 0, 0, 0)
+            return MatmulParams(0, 0, 0, 0)
 
         # Find compatible subblock dimensions
         for subblock_h, subblock_w in SUBBLOCK_HW_CHOICES:
             if Mpc % subblock_h == 0 and Npc % subblock_w == 0:
-                return (Mpc, Npc, subblock_h, subblock_w)
+                return MatmulParams(Mpc, Npc, subblock_h, subblock_w)
 
     # Case 2: Npc_min > 1 (N dimension has large prime factors)
     elif Npc_min > 1:
@@ -480,12 +454,12 @@ def get_large_matmul_params(
 
         # Check if this fits within the core grid
         if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
-            return (0, 0, 0, 0)
+            return MatmulParams(0, 0, 0, 0)
 
         # Find compatible subblock dimensions
         for subblock_h, subblock_w in SUBBLOCK_HW_CHOICES:
             if Mpc % subblock_h == 0 and Npc % subblock_w == 0:
-                return (Mpc, Npc, subblock_h, subblock_w)
+                return MatmulParams(Mpc, Npc, subblock_h, subblock_w)
 
     # Case 3: Both Mpc_min == 1 and Npc_min == 1
     else:
@@ -508,7 +482,7 @@ def get_large_matmul_params(
             # Find compatible subblock dimensions
             for subblock_h, subblock_w in SUBBLOCK_HW_CHOICES:
                 if Mpc % subblock_h == 0 and Npc % subblock_w == 0:
-                    return (Mpc, Npc, subblock_h, subblock_w)
+                    return MatmulParams(Mpc, Npc, subblock_h, subblock_w)
 
     # No valid configuration found
-    return (0, 0, 0, 0)
+    return MatmulParams(0, 0, 0, 0)

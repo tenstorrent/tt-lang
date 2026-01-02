@@ -26,9 +26,13 @@ def test_metal_matmul(M, K, N):
     num_cores_x = device_core_size.x
     num_cores_y = device_core_size.y
 
-    (per_core_M, per_core_N, out_subblock_h, out_subblock_w) = get_large_matmul_params(
+    block_params = get_large_matmul_params(
         Mt, Nt, num_cores_y, num_cores_x, K_block_size
     )
+    per_core_M = block_params.block_h
+    per_core_N = block_params.block_w
+    out_subblock_h = block_params.subblock_h
+    out_subblock_w = block_params.subblock_w
     assert per_core_M != 0, "get_large_matmul_params was not able to find a solution"
     print(
         f"per_core_M: {per_core_M}, per_core_N: {per_core_N}, out_subblock_h: {out_subblock_h}, out_subblock_w: {out_subblock_w}"

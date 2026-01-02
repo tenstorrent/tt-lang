@@ -24,9 +24,11 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
 
     num_cores_x, num_cores_y = ttl.grid_size(dims=2)
     # unused subblock sizes, to be determined by compiler, but using helper function to get better simultaneous comparisons
-    (per_core_M, per_core_N, _, _) = get_large_matmul_params(
+    block_params = get_large_matmul_params(
         Mt, Nt, num_cores_y, num_cores_x, K_block_size
     )
+    per_core_M = block_params.block_h
+    per_core_N = block_params.block_w
     assert per_core_M != 0, "get_large_matmul_params was not able to find a solution"
     print(f"per_core_M: {per_core_M}, per_core_N: {per_core_N}")
     assert Mt % per_core_M == 0, "per_core_M must divide Mt"
@@ -165,7 +167,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                     a_wr = copy(a[out_row, k], a_blk)
                     b_wr = copy(b[k, out_col], b_blk)
                     a_wr.wait()
-                b_wr.wait()
+                    b_wr.wait()
 
     # blocking only occurs on the k dim, so each core writes its entire output block at once
     @ttl.datamovement()
