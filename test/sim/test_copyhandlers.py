@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-import torch
-from typing import List, Optional
+from typing import List
 from python.sim.copyhandlers import (
     handler_registry,
     TensorToBlockHandler,
@@ -13,9 +12,18 @@ from python.sim.copyhandlers import (
     PipeToBlockHandler,
 )
 from python.sim.block import Block, Span
+from python.sim.cbstate import CBSlot
 from python.sim.typedefs import Pipe
-from python.sim import torch_utils as tu
+from python.sim import ttnn
 from python.sim.constants import TILE_SHAPE
+from test_utils import (
+    make_ones_tile,
+    make_zeros_tile,
+    make_full_tile,
+    make_rand_tensor,
+    make_arange_tensor,
+    tensors_equal,
+)
 
 
 class TestHandlerRegistry:
@@ -23,15 +31,15 @@ class TestHandlerRegistry:
 
     def test_registry_populated(self):
         """Test that all handlers are registered."""
-        assert (torch.Tensor, Block) in handler_registry
-        assert (Block, torch.Tensor) in handler_registry
+        assert (ttnn.Tensor, Block) in handler_registry
+        assert (Block, ttnn.Tensor) in handler_registry
         assert (Block, Pipe) in handler_registry
         assert (Pipe, Block) in handler_registry
 
     def test_registry_handlers_correct_type(self):
         """Test that registered handlers are the correct instances."""
-        assert isinstance(handler_registry[(torch.Tensor, Block)], TensorToBlockHandler)
-        assert isinstance(handler_registry[(Block, torch.Tensor)], BlockToTensorHandler)
+        assert isinstance(handler_registry[(ttnn.Tensor, Block)], TensorToBlockHandler)
+        assert isinstance(handler_registry[(Block, ttnn.Tensor)], BlockToTensorHandler)
         assert isinstance(handler_registry[(Block, Pipe)], BlockToPipeHandler)
         assert isinstance(handler_registry[(Pipe, Block)], PipeToBlockHandler)
 
@@ -42,8 +50,8 @@ class TestTensorToBlockHandler:
     def test_validate_success(self):
         """Test validation succeeds for matching shapes."""
         handler = TensorToBlockHandler()
-        tensor = tu.ones(64, 32)  # 2 tiles
-        buf: List[Optional[torch.Tensor]] = [None, None]
+        tensor = make_rand_tensor(64, 32)  # 2 tiles
+        buf: List[CBSlot] = [None, None]
         block = Block(buf, 2, Span(0, 2))
 
         # Should not raise
@@ -51,9 +59,13 @@ class TestTensorToBlockHandler:
 
     def test_validate_non_2d_tensor(self):
         """Test validation fails for non-2D tensors."""
+        import torch
+
         handler = TensorToBlockHandler()
-        tensor = torch.ones(32, 32, 32)  # 3D tensor
-        buf: List[Optional[torch.Tensor]] = [None]
+        # Create a 3D torch tensor and wrap it
+        torch_3d = torch.ones(32, 32, 32)
+        tensor = ttnn.Tensor(torch_3d)
+        buf: List[CBSlot] = [None]
         block = Block(buf, 1, Span(0, 1))
 
         with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
@@ -62,8 +74,8 @@ class TestTensorToBlockHandler:
     def test_validate_tile_count_mismatch(self):
         """Test validation fails when tile counts don't match."""
         handler = TensorToBlockHandler()
-        tensor = tu.ones(96, 32)  # 3 tiles
-        buf: List[Optional[torch.Tensor]] = [None, None]
+        tensor = make_rand_tensor(96, 32)  # 3 tiles
+        buf: List[CBSlot] = [None, None]
         block = Block(buf, 2, Span(0, 2))
 
         with pytest.raises(
@@ -74,28 +86,29 @@ class TestTensorToBlockHandler:
     def test_transfer_single_tile(self):
         """Test transferring a single tile."""
         handler = TensorToBlockHandler()
-        tensor = tu.full((32, 32), 42.0)
-        buf: List[Optional[torch.Tensor]] = [None]
+        tensor = make_full_tile(42.0)
+        buf: List[CBSlot] = [None]
         block = Block(buf, 1, Span(0, 1))
 
         handler.transfer(tensor, block)
 
         assert block[0] is not None
-        assert tu.allclose(block[0], tensor)
+        assert tensors_equal(block[0], tensor)
 
     def test_transfer_multiple_tiles(self):
         """Test transferring multiple tiles."""
         handler = TensorToBlockHandler()
         # Create a 2x2 tile tensor (64x64)
-        tensor = torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64)
-        buf: List[Optional[torch.Tensor]] = [None, None, None, None]
+        tensor = make_arange_tensor(64, 64)
+        buf: List[CBSlot] = [None, None, None, None]
         block = Block(buf, 4, Span(0, 4))
 
         handler.transfer(tensor, block)
 
-        # Verify all tiles are populated
+        # Verify all tiles are populated and have correct tile shape (1x1 in tile coords)
         for i in range(4):
             assert block[i] is not None
+            # Each tile is a ttnn.Tensor with shape (32, 32) in elements
             assert block[i].shape == TILE_SHAPE
 
 
@@ -105,22 +118,26 @@ class TestBlockToTensorHandler:
     def test_validate_success(self):
         """Test validation succeeds for matching shapes."""
         handler = BlockToTensorHandler()
-        tile1 = tu.ones(32, 32)
-        tile2 = tu.zeros(32, 32)
-        buf: List[Optional[torch.Tensor]] = [tile1, tile2]
+        tile1 = make_ones_tile()
+        tile2 = make_zeros_tile()
+        buf: List[CBSlot] = [tile1, tile2]
         block = Block(buf, 2, Span(0, 2))
-        tensor = tu.zeros(64, 32)
+        tensor = make_rand_tensor(64, 32)
 
         # Should not raise
         handler.validate(block, tensor)
 
     def test_validate_non_2d_tensor(self):
         """Test validation fails for non-2D tensors."""
+        import torch
+
         handler = BlockToTensorHandler()
-        tile1 = tu.ones(32, 32)
-        buf: List[Optional[torch.Tensor]] = [tile1]
+        tile1 = make_ones_tile()
+        buf: List[CBSlot] = [tile1]
         block = Block(buf, 1, Span(0, 1))
-        tensor = torch.zeros(32, 32, 32)  # 3D tensor
+        # Create a 3D torch tensor and wrap it
+        torch_3d = torch.zeros(32, 32, 32)
+        tensor = ttnn.Tensor(torch_3d)
 
         with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
             handler.validate(block, tensor)
@@ -128,11 +145,11 @@ class TestBlockToTensorHandler:
     def test_validate_tile_count_mismatch(self):
         """Test validation fails when tile counts don't match."""
         handler = BlockToTensorHandler()
-        tile1 = tu.ones(32, 32)
-        tile2 = tu.zeros(32, 32)
-        buf: List[Optional[torch.Tensor]] = [tile1, tile2]
+        tile1 = make_ones_tile()
+        tile2 = make_zeros_tile()
+        buf: List[CBSlot] = [tile1, tile2]
         block = Block(buf, 2, Span(0, 2))
-        tensor = tu.zeros(96, 32)  # 3 tiles
+        tensor = make_rand_tensor(96, 32)  # 3 tiles
 
         with pytest.raises(ValueError, match="Expected 2 tiles but found 3"):
             handler.validate(block, tensor)
@@ -140,29 +157,31 @@ class TestBlockToTensorHandler:
     def test_transfer_single_tile(self):
         """Test transferring a single tile."""
         handler = BlockToTensorHandler()
-        tile = tu.full((32, 32), 3.14)
-        buf: List[Optional[torch.Tensor]] = [tile]
+        tile = make_full_tile(3.14)
+        buf: List[CBSlot] = [tile]
         block = Block(buf, 1, Span(0, 1))
-        tensor = tu.zeros(32, 32)
+        tensor = make_zeros_tile()
 
         handler.transfer(block, tensor)
 
-        assert tu.allclose(tensor, tile)
+        assert tensors_equal(tensor, tile)
 
     def test_transfer_multiple_tiles(self):
         """Test transferring multiple tiles."""
         handler = BlockToTensorHandler()
-        tile1 = tu.full((32, 32), 1.0)
-        tile2 = tu.full((32, 32), 2.0)
-        buf: List[Optional[torch.Tensor]] = [tile1, tile2]
+        tile1 = make_full_tile(1.0)
+        tile2 = make_full_tile(2.0)
+        buf: List[CBSlot] = [tile1, tile2]
         block = Block(buf, 2, Span(0, 2))
-        tensor = tu.zeros(64, 32)
+        tensor = make_rand_tensor(64, 32)
 
         handler.transfer(block, tensor)
 
-        # Verify tiles are combined correctly
-        assert tu.allclose(tensor[0:32, :], tile1)
-        assert tu.allclose(tensor[32:64, :], tile2)
+        # Verify tiles are combined correctly using tile-level indexing
+        dest_tile1 = tensor[0:1, 0:1]
+        dest_tile2 = tensor[1:2, 0:1]
+        assert tensors_equal(dest_tile1, tile1)
+        assert tensors_equal(dest_tile2, tile2)
 
 
 class TestBlockToPipeHandler:
@@ -171,8 +190,8 @@ class TestBlockToPipeHandler:
     def test_validate_always_succeeds(self):
         """Test that validation always succeeds (no-op)."""
         handler = BlockToPipeHandler()
-        tile = tu.ones(32, 32)
-        buf: List[Optional[torch.Tensor]] = [tile]
+        tile = make_ones_tile()
+        buf: List[CBSlot] = [tile]
         block = Block(buf, 1, Span(0, 1))
         pipe = Pipe(0, (1, 2))
 
@@ -185,8 +204,8 @@ class TestBlockToPipeHandler:
         recv_handler = PipeToBlockHandler()
 
         # Sender prepares data
-        tile = tu.full((32, 32), 42.0)
-        src_buf: List[Optional[torch.Tensor]] = [tile]
+        tile = make_full_tile(42.0)
+        src_buf: List[CBSlot] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
         pipe = Pipe(0, 1)
 
@@ -194,13 +213,13 @@ class TestBlockToPipeHandler:
         send_handler.transfer(src_block, pipe)
 
         # Receiver retrieves data
-        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_buf: List[CBSlot] = [None]
         dst_block = Block(dst_buf, 1, Span(0, 1))
         recv_handler.transfer(pipe, dst_block)
 
         # Verify data was received correctly
         assert dst_block[0] is not None
-        assert tu.allclose(dst_block[0], tile)
+        assert tensors_equal(dst_block[0], tile)
 
     def test_transfer_multiple_tiles(self):
         """Test transferring multiple tiles via pipe."""
@@ -208,9 +227,9 @@ class TestBlockToPipeHandler:
         recv_handler = PipeToBlockHandler()
 
         # Sender prepares data
-        tile1 = tu.full((32, 32), 1.0)
-        tile2 = tu.full((32, 32), 2.0)
-        src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
+        tile1 = make_full_tile(1.0)
+        tile2 = make_full_tile(2.0)
+        src_buf: List[CBSlot] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
         pipe = Pipe(0, 1)
 
@@ -218,13 +237,15 @@ class TestBlockToPipeHandler:
         send_handler.transfer(src_block, pipe)
 
         # Receiver retrieves data
-        dst_buf: List[Optional[torch.Tensor]] = [None, None]
+        dst_buf: List[CBSlot] = [None, None]
         dst_block = Block(dst_buf, 2, Span(0, 2))
         recv_handler.transfer(pipe, dst_block)
 
         # Verify data was received correctly
-        assert tu.allclose(dst_block[0], tile1)
-        assert tu.allclose(dst_block[1], tile2)
+        assert dst_block[0] is not None
+        assert dst_block[1] is not None
+        assert tensors_equal(dst_block[0], tile1)
+        assert tensors_equal(dst_block[1], tile2)
 
 
 class TestPipeToBlockHandler:
@@ -234,7 +255,7 @@ class TestPipeToBlockHandler:
         """Test that validation always succeeds (no-op)."""
         handler = PipeToBlockHandler()
         pipe = Pipe(0, 1)
-        buf: List[Optional[torch.Tensor]] = [None]
+        buf: List[CBSlot] = [None]
         block = Block(buf, 1, Span(0, 1))
 
         # Should not raise
@@ -245,7 +266,7 @@ class TestPipeToBlockHandler:
         recv_handler = PipeToBlockHandler()
         # Use a unique address to avoid interference from other tests
         pipe = Pipe(99, 100)
-        buf: List[Optional[torch.Tensor]] = [None]
+        buf: List[CBSlot] = [None]
         block = Block(buf, 1, Span(0, 1))
 
         with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
@@ -258,19 +279,19 @@ class TestPipeToBlockHandler:
         pipe = Pipe(0, 1)
 
         # Sender: send data
-        tile = tu.full((32, 32), 99.0)
-        src_buf: List[Optional[torch.Tensor]] = [tile]
+        tile = make_full_tile(99.0)
+        src_buf: List[CBSlot] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
         send_handler.transfer(src_block, pipe)
 
         # Receiver: consume from pipe buffer
-        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_buf: List[CBSlot] = [None]
         dst_block = Block(dst_buf, 1, Span(0, 1))
         recv_handler.transfer(pipe, dst_block)
 
         # Verify data was transferred
         assert dst_block[0] is not None
-        assert tu.allclose(dst_block[0], tile)
+        assert tensors_equal(dst_block[0], tile)
 
     def test_transfer_success_multiple_receivers(self):
         """Test successful transfer with multiple receivers."""
@@ -280,22 +301,24 @@ class TestPipeToBlockHandler:
         pipe = Pipe((0, 0), ((0, 1), (0, 2)))
 
         # Sender: send data for 2 receivers
-        tile = tu.full((32, 32), 77.0)
-        src_buf: List[Optional[torch.Tensor]] = [tile]
+        tile = make_full_tile(77.0)
+        src_buf: List[CBSlot] = [tile]
         src_block = Block(src_buf, 1, Span(0, 1))
         send_handler.transfer(src_block, pipe)
 
         # First receiver
-        buf1: List[Optional[torch.Tensor]] = [None]
+        buf1: List[CBSlot] = [None]
         block1 = Block(buf1, 1, Span(0, 1))
         recv_handler.transfer(pipe, block1)
-        assert tu.allclose(block1[0], tile)
+        assert block1[0] is not None
+        assert tensors_equal(block1[0], tile)
 
         # Second receiver
-        buf2: List[Optional[torch.Tensor]] = [None]
+        buf2: List[CBSlot] = [None]
         block2 = Block(buf2, 1, Span(0, 1))
         recv_handler.transfer(pipe, block2)
-        assert tu.allclose(block2[0], tile)
+        assert block2[0] is not None
+        assert tensors_equal(block2[0], tile)
 
     def test_transfer_length_mismatch(self):
         """Test that transfer fails when Block length doesn't match data."""
@@ -305,14 +328,14 @@ class TestPipeToBlockHandler:
         pipe = Pipe((0, 0), (0, 1))
 
         # Sender: send 2 tiles
-        tile1 = tu.ones(32, 32)
-        tile2 = tu.zeros(32, 32)
-        src_buf: List[Optional[torch.Tensor]] = [tile1, tile2]
+        tile1 = make_ones_tile()
+        tile2 = make_zeros_tile()
+        src_buf: List[CBSlot] = [tile1, tile2]
         src_block = Block(src_buf, 2, Span(0, 2))
         send_handler.transfer(src_block, pipe)
 
         # Receiver: try to receive into 1-tile Block
-        dst_buf: List[Optional[torch.Tensor]] = [None]
+        dst_buf: List[CBSlot] = [None]
         dst_block = Block(dst_buf, 1, Span(0, 1))
 
         with pytest.raises(

@@ -13,6 +13,39 @@ import inspect
 from .typedefs import Shape, Size, CoreIndex, Index
 
 
+def _get_from_frame(var_name: str, error_msg: str) -> Any:
+    """Helper to walk up the call stack and find a variable.
+
+    Searches through the call stack (locals first, then globals) to find
+    a variable by name. This is used by functions like grid_size(), core(),
+    and flatten_core_index() to access context variables like 'grid' and '_core'.
+
+    Args:
+        var_name: Name of the variable to search for
+        error_msg: Error message to raise if not found
+
+    Returns:
+        The value of the variable if found
+
+    Raises:
+        RuntimeError: If the variable is not found in any frame
+    """
+    frame = inspect.currentframe()
+    # Start from the caller's caller frame (skip _get_from_frame and the immediate caller)
+    current_frame = frame.f_back.f_back if frame and frame.f_back else None
+
+    while current_frame:
+        # Check locals first (takes precedence)
+        if var_name in current_frame.f_locals:
+            return current_frame.f_locals[var_name]
+        # Then check globals
+        if var_name in current_frame.f_globals:
+            return current_frame.f_globals[var_name]
+        current_frame = current_frame.f_back
+
+    raise RuntimeError(error_msg)
+
+
 def flatten_core_index(core_idx: CoreIndex) -> Index:
     """Flatten a CoreIndex to a linear Index.
 
@@ -34,7 +67,11 @@ def flatten_core_index(core_idx: CoreIndex) -> Index:
             return core_idx
         case _:
             # Convert to linear index using grid dimensions
-            grid = grid_size()
+            grid = _get_from_frame(
+                "grid",
+                "grid not available - function must be called within a kernel context",
+            )
+
             coords = list(core_idx)
 
             # Calculate linear index: for (y, x) with grid (h, w), linear = y * w + x
@@ -46,32 +83,70 @@ def flatten_core_index(core_idx: CoreIndex) -> Index:
             return int(linear)
 
 
-def grid_size() -> Tuple[int, ...]:
+def grid_size(dims: Size = 2) -> Union[Size, Shape]:
     """Get the grid size from the execution context.
 
+    Returns the size of the grid in the specified dimensionality.
+    - If requested dims < actual grid dims: highest rank dimensions are flattened
+    - If requested dims > actual grid dims: lowest rank dimensions are padded with 1s
+
+    Args:
+        dims: Number of dimensions to return (must be positive). Defaults to 2.
+
     Returns:
-        Tuple of grid dimensions (e.g., (height, width) for 2D grid)
+        Size if dims == 1, otherwise Tuple[Size, ...] of length dims
 
     Raises:
+        ValueError: If dims is not positive
         RuntimeError: If called outside of a kernel function context
 
     Example:
-        grid_h, grid_w = ttl.grid_size()
+        # For grid=(8, 8):
+        grid_size(dims=1) -> 64 (flattened)
+        grid_size(dims=2) -> (8, 8)
+        grid_size(dims=3) -> (8, 8, 1) (padded)
+        grid_size(dims=3) -> (8, 8, 1) (padded)
     """
-    frame = inspect.currentframe()
+    if dims <= 0:
+        raise ValueError(f"dims must be positive, got {dims}")
 
-    # Walk up the stack to find the frame with 'grid' variable
-    current_frame = frame
-    while current_frame:
-        if "grid" in current_frame.f_globals:
-            return current_frame.f_globals["grid"]
-        if "grid" in current_frame.f_locals:
-            return current_frame.f_locals["grid"]
-        current_frame = current_frame.f_back
-
-    raise RuntimeError(
-        "grid not available - function must be called within a kernel context"
+    grid = _get_from_frame(
+        "grid", "grid not available - function must be called within a kernel context"
     )
+
+    grid_dims = len(grid)
+
+    if dims == grid_dims:
+        # Requested dims matches grid dims
+        result = tuple(grid)
+    elif dims < grid_dims:
+        # Flatten: keep first (dims-1) dimensions, multiply the rest into the last dimension
+        # For grid=(8, 8, 8) and dims=2: keep first 1, flatten rest -> (8, 8*8) = (8, 64)
+        # For grid=(8, 8) and dims=1: keep first 0, flatten all -> (8*8,) = (64,)
+        if dims == 1:
+            # Flatten all dimensions
+            flattened = 1
+            for d in grid:
+                flattened *= d
+            result = (flattened,)
+        else:
+            # Keep first (dims-1) dimensions, flatten the rest
+            kept = tuple(grid[: dims - 1])
+            flattened = 1
+            for i in range(dims - 1, grid_dims):
+                flattened *= grid[i]
+            result = kept + (flattened,)
+    else:  # dims > grid_dims
+        # Pad at the end with 1s
+        # For grid=(8, 8) and dims=3: return (8, 8, 1)
+        padding = (1,) * (dims - grid_dims)
+        result = tuple(grid) + padding
+
+    # Return int if dims=1, otherwise tuple
+    if dims == 1:
+        return result[0]
+    else:
+        return result
 
 
 def core(dims: Size = 2) -> CoreIndex:
@@ -87,23 +162,13 @@ def core(dims: Size = 2) -> CoreIndex:
         RuntimeError: If called outside of a Program context
     """
 
-    frame = inspect.currentframe()
+    cid = _get_from_frame(
+        "_core", "core not available - function must be called within Program context"
+    )
 
-    # Walk up the call stack to find the frame with '_core'
-    cid = None
-    while frame:
-        if "_core" in frame.f_locals:
-            cid = frame.f_locals["_core"]
-        if "_core" in frame.f_globals:
-            cid = frame.f_globals["_core"]
-        frame = frame.f_back
-
-    if cid is None:
-        raise RuntimeError(
-            "core not available - function must be called within Program context"
-        )
-
-    grid = grid_size()
+    grid = _get_from_frame(
+        "grid", "grid not available - function must be called within a kernel context"
+    )
 
     coords: List[Index] = []
 

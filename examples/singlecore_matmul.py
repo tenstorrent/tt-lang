@@ -1,49 +1,33 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+from typing import TYPE_CHECKING
 
-import torch
+from sim import ttl, ttnn
+from sim.testing import assert_pcc
 
-from sim import ttl
+if TYPE_CHECKING:
+    pass
 
 
-@ttl.kernel(
-    grid=(1, 1),  # single-core
-)
-def tt_lang_singlecore_matmul(
-    a_in: torch.Tensor,
-    b_in: torch.Tensor,
-    out: torch.Tensor,
-) -> None:
-    # Validate shapes at a high level.
-    assert a_in.ndim == 2 and b_in.ndim == 2 and out.ndim == 2
-    assert (
-        a_in.shape[1] == b_in.shape[0]
-    ), "Incompatible matrix shapes for multiplication."
-    assert (a_in.shape[0], b_in.shape[1]) == out.shape, "Output shape must be (M, N)."
-    # Validate tiling.
-    assert all(ttl.is_tiled(t, ttl.TILE_SHAPE) for t in [a_in, b_in, out])
+@ttl.kernel(grid=(1, 1))
+def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
+    assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
+    assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
 
-    # Tile counts.
-    Mt = a_in.shape[0] // ttl.TILE_SHAPE[0]
-    Kt_a = a_in.shape[1] // ttl.TILE_SHAPE[1]
-    Kt_b = b_in.shape[0] // ttl.TILE_SHAPE[0]
-    Nt = b_in.shape[1] // ttl.TILE_SHAPE[1]
-    assert Kt_a == Kt_b, "K tile counts across A (cols) and B (rows) must match."
-    Kt = Kt_a
+    M = a.shape[0]
+    N = b.shape[1]
+    K = a.shape[1]
+    Mt = M // ttnn.TILE_SIZE
+    Kt = K // ttnn.TILE_SIZE
+    Nt = N // ttnn.TILE_SIZE
 
-    # Accessors in tile index space.
-    a_accessor = ttl.TensorAccessor(a_in, index_type=ttl.IndexType.TILE)
-    b_accessor = ttl.TensorAccessor(b_in, index_type=ttl.IndexType.TILE)
-    out_accessor = ttl.TensorAccessor(out, index_type=ttl.IndexType.TILE)
-
-    # Circular buffers (single-tile, double-buffered).
     buffering_factor = 2
     a_cb = ttl.make_circular_buffer_like(
-        a_in, shape=(1, 1), buffer_factor=buffering_factor
+        a, shape=(1, 1), buffer_factor=buffering_factor
     )
     b_cb = ttl.make_circular_buffer_like(
-        b_in, shape=(1, 1), buffer_factor=buffering_factor
+        b, shape=(1, 1), buffer_factor=buffering_factor
     )
     out_cb = ttl.make_circular_buffer_like(
         out, shape=(1, 1), buffer_factor=buffering_factor
@@ -51,74 +35,87 @@ def tt_lang_singlecore_matmul(
 
     @ttl.compute()
     def mm_compute():
-        # Compute each output tile (m, n).
         for _ in range(Mt):
             for _ in range(Nt):
-                # Reserve output tile once and accumulate K contributions.
-                out_block = out_cb.reserve()  # blocking
-                for k in range(Kt):
-                    a_block = a_cb.wait()  # blocking
-                    b_block = b_cb.wait()  # blocking
+                # Reserve output block once for the entire K accumulation
+                out_blk = out_cb.reserve()
+                # Initialize output block to zero for first iteration
+                # For subsequent iterations, we accumulate
+                for k_idx in range(Kt):
+                    a_blk = a_cb.wait()
+                    b_blk = b_cb.wait()
 
-                    if k == 0:
-                        # Initialize output tile.
-                        out_block.store(a_block @ b_block)
+                    # Perform matmul and accumulate
+                    if k_idx == 0:
+                        result = a_blk @ b_blk
                     else:
-                        # Accumulate into the output tile.
-                        out_block.store(out_block + (a_block @ b_block))
+                        result = out_blk + (a_blk @ b_blk)
 
-                    # Free input tiles.
+                    out_blk.store(result)
+
                     a_cb.pop()
                     b_cb.pop()
 
-                # Finalize the output tile.
+                # Push the accumulated result
                 out_cb.push()
 
     @ttl.datamovement()
     def mm_reader():
-        # Feed input tiles for each (m, n, k) triple.
         for m in range(Mt):
             for n in range(Nt):
                 for k in range(Kt):
+                    # Reserve blocks for A and B tiles
                     a_blk = a_cb.reserve()
                     b_blk = b_cb.reserve()
-                    # Tile indices in tile space.
-                    a_wr = ttl.copy(a_accessor[slice(m, m + 1), slice(k, k + 1)], a_blk)
-                    b_wr = ttl.copy(b_accessor[slice(k, k + 1), slice(n, n + 1)], b_blk)
+
+                    # Copy tiles using tile coordinates
+                    a_wr = ttl.copy(a[m : m + 1, k : k + 1], a_blk)
+                    b_wr = ttl.copy(b[k : k + 1, n : n + 1], b_blk)
+
                     a_wr.wait()
                     b_wr.wait()
+
+                    # Push the tiles to make them visible
                     a_cb.push()
                     b_cb.push()
 
     @ttl.datamovement()
     def mm_writer():
-        # Write each completed output tile.
         for m in range(Mt):
             for n in range(Nt):
+                # Wait for computed output tile
                 out_blk = out_cb.wait()
-                out_wr = ttl.copy(
-                    out_blk, out_accessor[slice(m, m + 1), slice(n, n + 1)]
-                )
+
+                # Copy output tile to result tensor
+                out_wr = ttl.copy(out_blk, out[m : m + 1, n : n + 1])
                 out_wr.wait()
+
+                # Pop the consumed tile
                 out_cb.pop()
 
-    # Execute the program on the single core.
-    ttl.Program(mm_compute, mm_reader, mm_writer)(a_in, b_in, out)
+    # Execute the program
+    ttl.Program(mm_compute, mm_reader, mm_writer)(a, b, out)
+
+
+def main() -> None:
+    # Test with reasonably sized matrices that are multiples of tile size
+    M, K, N = 128, 256, 64
+    a = ttnn.rand((M, K), dtype=ttnn.float32)
+    b = ttnn.rand((K, N), dtype=ttnn.float32)
+    out = ttnn.empty((M, N), dtype=ttnn.float32)
+
+    print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
+    print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
+
+    tt_lang_singlecore_matmul(a, b, out)
+
+    # Compute golden result
+    golden = a @ b
+
+    # Verify correctness with relaxed tolerance for matmul
+    assert_pcc(golden, out, rtol=1e-4, atol=1e-4)
+    print("tt_lang_singlecore_matmul: success")
 
 
 if __name__ == "__main__":
-    from sim.testing import assert_pcc
-
-    # Use parameters that match the singlecore_matmul requirements
-    dim_m = 128
-    dim_k = 256
-    dim_n = 64
-    a_in = torch.randn(dim_m, dim_k)
-    b_in = torch.randn(dim_k, dim_n)
-    out = torch.zeros(dim_m, dim_n)
-
-    tt_lang_singlecore_matmul(a_in, b_in, out)
-
-    golden = torch.matmul(a_in, b_in)
-    assert_pcc(golden, out, rtol=1e-4, atol=1e-4)
-    print("Single-core matmul test passed!")
+    main()

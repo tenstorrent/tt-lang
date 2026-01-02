@@ -10,15 +10,16 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from typing import Tuple, Optional, Generic
+from typing import Tuple, Optional
 
 from .cbapi import CBAPI
 from .block import Block
-from .typedefs import CBID, Size, Shape, CBElemTypeVar
+from .typedefs import CBID, Size, Shape
+from .ttnnsim import Tensor
 
 
 # TODO: Should this class now be private?
-class CircularBuffer(Generic[CBElemTypeVar]):
+class CircularBuffer:
     """
     High-level circular buffer interface for tensor operations.
 
@@ -99,7 +100,7 @@ class CircularBuffer(Generic[CBElemTypeVar]):
             )
         return self._api, self._cb_id
 
-    def wait(self) -> Block[CBElemTypeVar]:
+    def wait(self) -> Block:
         """Wait for data to be available and return a read view.
 
         This method blocks until the required number of tiles (as specified by
@@ -132,7 +133,7 @@ class CircularBuffer(Generic[CBElemTypeVar]):
         stats = api.cb_stats(cb_id)
         return stats.visible >= self._tiles_per_operation
 
-    def reserve(self) -> Block[CBElemTypeVar]:
+    def reserve(self) -> Block:
         """
         Reserve space for writing and return a write view.
 
@@ -247,16 +248,16 @@ class CircularBuffer(Generic[CBElemTypeVar]):
 
 
 def make_circular_buffer_like(
-    element: CBElemTypeVar,
+    element: Tensor,
     shape: Shape,
     buffer_factor: Size = 2,
     api: Optional[CBAPI] = None,
-) -> CircularBuffer[CBElemTypeVar]:
+) -> CircularBuffer:
     """
     Create a CircularBuffer with the same element type as the element.
 
     Args:
-        element: An instance used to determine the CircularBuffer's element type
+        element: An instance used to determine the CircularBuffer's element type, currently unused
         shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
         buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
         api: Optional CBAPI instance to use. If None, uses the shared default instance.
@@ -268,6 +269,5 @@ def make_circular_buffer_like(
         x = torch.zeros(32, 32)
         x_cb = make_circular_buffer_like(x, shape=(2, 2), buffer_factor=2)
     """
-    return CircularBuffer[type(element)](
-        shape=shape, buffer_factor=buffer_factor, api=api
-    )
+    _ = element
+    return CircularBuffer(shape=shape, buffer_factor=buffer_factor, api=api)
