@@ -276,12 +276,6 @@ def _compile_ttnn_kernel(
     # Get kernel info from module
     kernel_info = get_ttkernel_names(module)
 
-    # Validate grid is single core
-    if grid != (1, 1) and grid != [1, 1]:
-        raise ValueError(
-            f"TTNN interop only supports single-core grid (1, 1), got {grid}"
-        )
-
     # Validate tensor types: must be all TTNN or all torch, not mixed.
     # Mixed tensors would generate ToLayoutOps for host tensors, creating extra
     # bounce kernels that exceed the expected kernel count for core assignment.
@@ -605,6 +599,13 @@ def _compile_and_run_kernel(
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
     if has_ttnn_tensors:
+        # Validate grid is single core - multi-core requires sharded layout support
+        # (see GH issue #118)
+        if grid != (1, 1) and grid != [1, 1]:
+            raise ValueError(
+                f"TTNN interop only supports single-core grid (1, 1), got {grid}"
+            )
+
         first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
         if first_ttnn_tensor is not None:
             memory_space = _detect_memory_space_from_tensor(
