@@ -25,7 +25,7 @@ except ImportError:
     exit(0)
 
 
-# CHECK: ValueError: Only 2D grids supported, got grid
+# CHECK: TTNN interop only supports single-core grid (1, 1), got (1, 1, 1)
 @ttl.kernel(grid=(1, 1, 1))
 def invalid_3d_grid_kernel(lhs, rhs, out):
     """This kernel should fail because 3D grids are not supported."""

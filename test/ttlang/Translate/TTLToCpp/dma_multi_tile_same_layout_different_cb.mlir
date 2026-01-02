@@ -20,7 +20,7 @@
 // CHECK: void kernel_main() {
 // CHECK-DAG:   size_t [[TILE_STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
-// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 256;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
 
 // First copy: 64x64 (2x2 tiles) → CB [2,2]

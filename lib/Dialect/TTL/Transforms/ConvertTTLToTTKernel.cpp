@@ -24,11 +24,11 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
-#include "ttlang/Dialect/Utils/LayoutUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"      // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -425,16 +425,52 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 /// Create a TensorAccessor from a tensor type and bank base address.
 /// The bankBase should come from runtime args via
 /// getBufferAddressFromRuntimeArg.
+///
+/// This function derives page size from TTNNLayoutAttr encoding on the tensor.
+/// Supported layouts:
+///   - L1 interleaved (tiled)
+///   - DRAM interleaved (tiled)
+///
+/// Unsupported layouts will emit errors referencing the appropriate GH issues:
+///   - Sharded layouts: See GH issue #118
+///   - Row-major (non-tiled): See GH issue #173
 static FailureOr<Value>
-materializeTensorAccessor(Value tensor, Value bankBase,
+materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
                           ConversionPatternRewriter &rewriter) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
-    return failure();
+    return op->emitError("expected RankedTensorType for tensor accessor");
+  }
+
+  // Require TTNNLayoutAttr encoding - no fallback to contiguous layout.
+  auto layoutAttr =
+      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+  if (!layoutAttr) {
+    return op->emitError(
+        "tensor must have TTNNLayoutAttr encoding for accessor "
+        "materialization; Python layer should reject tensors without TTNN "
+        "layout");
+  }
+
+  // Reject sharded layouts - not yet supported (see GH issue #118).
+  // Python error: "TTNN interop requires interleaved tensors"
+  if (layoutAttr.hasShardedTensorMemoryLayout()) {
+    return op->emitError("sharded memory layout not yet supported for tensor "
+                         "accessor; see GH issue #118");
+  }
+
+  // Reject row-major (non-tiled) layouts - not yet supported (see GH #173).
+  // Python error: "Only tiled CBs supported"
+  if (!layoutAttr.isTiled()) {
+    return op->emitError("row-major (non-tiled) layout not yet supported for "
+                         "tensor accessor; see GH issue #173");
   }
 
   auto loc = tensor.getLoc();
-  utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
+
+  // Derive page size from the actual layout encoding.
+  // For tiled interleaved layouts, page size = tile size in bytes.
+  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
 
   // TODO(XX): Placeholder CTA offsets - Python regex replaces 42+argIdx
   // with actual offsets from ttnn.TensorAccessorArgs.get_compile_time_args().
@@ -443,8 +479,7 @@ materializeTensorAccessor(Value tensor, Value bankBase,
       42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
   constexpr int32_t crtaPlaceholder = 0;
 
-  auto pageSize =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
+  auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
   return buildTensorAccessor(loc, rewriter, ctaPlaceholder, crtaPlaceholder,
                              bankBase, pageSize);
@@ -521,9 +556,11 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   }
 
   // Create tensor accessor with actual buffer address.
-  auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter);
+  // This derives page size from TTNNLayoutAttr encoding.
+  auto srcAccessor =
+      materializeTensorAccessor(srcTensor, *bankBase, op, rewriter);
   if (failed(srcAccessor)) {
-    return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
+    return failure(); // Error already emitted by materializeTensorAccessor
   }
 
   // Convert CB to TTKernel type and get write pointer.
@@ -562,9 +599,11 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   }
 
   // Create tensor accessor with actual buffer address.
-  auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter);
+  // This derives page size from TTNNLayoutAttr encoding.
+  auto dstAccessor =
+      materializeTensorAccessor(dstTensor, *bankBase, op, rewriter);
   if (failed(dstAccessor)) {
-    return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
+    return failure(); // Error already emitted by materializeTensorAccessor
   }
 
   // Convert CB to TTKernel type and get read pointer.
