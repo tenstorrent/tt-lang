@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
@@ -15,12 +16,7 @@ from ttlang import ttl
 from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - this test requires ttnn")
-    print("=== DRAM Interleaved Test Complete ===")
-    exit(0)
+import ttnn
 
 
 @ttl.kernel(grid=(1, 1))

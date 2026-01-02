@@ -52,6 +52,8 @@ config.excludes = [
     "Inputs",
     "lit.cfg.py",
     "sim",
+    "conftest.py",  # pytest configuration, not a lit test
+    "utils.py",  # helper module, not a lit test
 ]
 
 # Exclude pytest-style tests (test_*.py) from lit collection.
@@ -144,3 +146,11 @@ for env_var in [
 # Add system platform feature for UNSUPPORTED directives
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
+
+# Add TTNN feature if available
+try:
+    import ttnn
+
+    config.available_features.add("ttnn")
+except ImportError:
+    pass

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
@@ -19,11 +20,7 @@ from ttlang import ttl
 from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
 
 
 # CHECK: ValueError: Only tiled CBs supported
