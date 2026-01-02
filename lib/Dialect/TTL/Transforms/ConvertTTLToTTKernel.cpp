@@ -718,8 +718,10 @@ lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
 
 /// Map from function to its pre-materialized tensor accessor map.
 /// Used to pass accessor lookup tables from pre-materialization phase to
-/// CopyLowering pattern.
-using FuncAccessorMaps = DenseMap<func::FuncOp, DenseMap<unsigned, Value>>;
+/// CopyLowering pattern. Functions are keyed by their Operation* to avoid the
+/// need for a DenseMapInfo specialization on FuncOp.
+using FuncAccessorMaps =
+    DenseMap<Operation *, DenseMap<unsigned, Value>>;
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
   CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
@@ -739,7 +741,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto parentFunc = op->getParentOfType<func::FuncOp>();
     DenseMap<unsigned, Value> tensorToAccessor;
     if (parentFunc) {
-      auto it = funcAccessorMaps.find(parentFunc);
+      auto it = funcAccessorMaps.find(parentFunc.getOperation());
       if (it != funcAccessorMaps.end()) {
         tensorToAccessor = it->second;
       }
@@ -874,11 +876,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // This creates chained TensorAccessorArgs at function entry.
 
   FuncAccessorMaps funcAccessorMaps;
-  OpBuilder builder(&ctx);
   mod.walk([&](func::FuncOp funcOp) {
+    OpBuilder builder(&ctx);
     auto accessorMap = materializeFunctionTensorAccessors(funcOp, builder);
     if (!accessorMap.empty()) {
-      funcAccessorMaps[funcOp] = std::move(accessorMap);
+      funcAccessorMaps[funcOp.getOperation()] = std::move(accessorMap);
     }
   });
 
