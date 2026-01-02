@@ -20,8 +20,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program, TensorAccessor
 from ttlang.operators import copy
 
 try:
@@ -38,10 +38,12 @@ def add_with_kernel(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
     @ttl.compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def add_compute():
         # 'with' handles wait/reserve at entry, pop/push at exit
         with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
             result = l + r
@@ -49,7 +51,7 @@ def add_with_kernel(lhs, rhs, out):
         # Automatic: out_cb.push(), rhs_cb.pop(), lhs_cb.pop() (reverse order)
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         # 'with' for reserve/push pattern
         with lhs_cb.reserve() as lhs_block:
             tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
@@ -62,9 +64,7 @@ def add_with_kernel(lhs, rhs, out):
         # Automatic: rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         # 'with' for wait/pop pattern
         with out_cb.wait() as out_block:
             tx = copy(out_cb, out_accessor[0, 0])

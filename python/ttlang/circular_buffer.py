@@ -4,10 +4,29 @@
 
 """Circular buffer operations for inter-thread communication."""
 
+from typing import Tuple, Any
+
 from ttmlir.ir import *
 
 from .dialects import ttl
 from ._src.ttl_ast import syntax
+
+# Module-level counter for CB index assignment in creation order
+_cb_index_counter = 0
+
+
+def _reset_cb_counter():
+    """Reset the CB index counter. Called at kernel start."""
+    global _cb_index_counter
+    _cb_index_counter = 0
+
+
+def _next_cb_index():
+    """Get next CB index and increment counter."""
+    global _cb_index_counter
+    idx = _cb_index_counter
+    _cb_index_counter += 1
+    return idx
 
 
 def _get_cb_tensor_type(cb_val):
@@ -25,7 +44,34 @@ class CircularBuffer:
 
     Circular buffers provide producer-consumer synchronization between
     compute and data movement threads.
+
+    Can be instantiated via make_circular_buffer_like() in kernel body,
+    then captured by thread closures. Methods generate TTL ops during compilation.
     """
+
+    def __init__(
+        self,
+        tensor: Any,
+        shape: Tuple[int, int],
+        buffer_factor: int,
+    ):
+        if len(shape) != 2:
+            raise ValueError(f"shape must be a 2-tuple, got {shape}")
+        if buffer_factor < 1 or buffer_factor > 32:
+            raise ValueError(
+                f"buffer_factor must be in range [1, 32], got {buffer_factor}"
+            )
+
+        self.tensor = tensor
+        self.shape = shape
+        self.buffer_factor = buffer_factor
+        self._cb_index = _next_cb_index()
+
+    @property
+    def dtype(self):
+        if hasattr(self.tensor, "dtype"):
+            return self.tensor.dtype
+        raise ValueError("tensor has no dtype attribute")
 
     def wait(ast_self: "CircularBuffer") -> "TensorBlock":
         """
@@ -92,3 +138,22 @@ class CircularBuffer:
             cb.push()  # Signal data ready
         """
         ttl.cb_push(ast_self)
+
+
+def make_circular_buffer_like(
+    tensor: Any,
+    shape: Tuple[int, int],
+    buffer_factor: int = 2,
+) -> CircularBuffer:
+    """
+    Create a circular buffer with properties derived from a tensor.
+
+    Args:
+        tensor: Tensor that determines the CB's data type
+        shape: (rows, cols) in tiles for wait/reserve operations
+        buffer_factor: Capacity multiplier (default 2 for double-buffering)
+
+    Returns:
+        CircularBuffer for use in thread function closures
+    """
+    return CircularBuffer(tensor, shape, buffer_factor)

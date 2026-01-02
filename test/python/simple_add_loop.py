@@ -17,8 +17,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program, TensorAccessor
 from ttlang.operators import copy
 
 try:
@@ -35,10 +35,12 @@ def add_loop_kernel(lhs, rhs, out):
     rhs_accessor = TensorAccessor(rhs)
     out_accessor = TensorAccessor(out)
 
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
     @ttl.compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
 
@@ -61,7 +63,7 @@ def add_loop_kernel(lhs, rhs, out):
         # Final value already pushed, DM will handle it
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         lhs_cb.reserve()
         tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
         tx_lhs.wait()
@@ -73,9 +75,7 @@ def add_loop_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
         tx.wait()
@@ -94,10 +94,10 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB binding
+# CB binding (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
 # Initial: wait for inputs, reserve output, store, push
 # CHECK: ttl.cb_wait %[[CB0]]

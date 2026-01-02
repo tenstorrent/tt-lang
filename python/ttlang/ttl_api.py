@@ -412,7 +412,9 @@ def _compile_ttnn_kernel(
     return compiled_kernel
 
 
-def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
+def _collect_captures(
+    f: Callable,
+) -> Dict[str, Union[int, TensorAccessor, CircularBuffer]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -432,6 +434,8 @@ def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
         if isinstance(val, int):
             return val
         elif isinstance(val, TensorAccessor):
+            return val
+        elif isinstance(val, CircularBuffer):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
@@ -621,6 +625,9 @@ def _compile_and_run_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
+    from .circular_buffer import _reset_cb_counter
+
+    _reset_cb_counter()
     program = f(*args, **kwargs)
     if not isinstance(program, Program):
         raise TypeError(
