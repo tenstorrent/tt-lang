@@ -148,6 +148,40 @@ class TensorAccessor:
 
         self.tensor[slice(row_start, row_stop), slice(col_start, col_stop)] = value
 
+    def get_tiles(self, row_slice: slice, col_slice: slice) -> torch.Tensor:
+        """Return the element tensor corresponding to the provided tile slices.
+
+        This is a small helper to let callers request tiles using two explicit
+        slice arguments rather than constructing a tuple `key`. It performs the
+        same validation and conversion to element indices used by
+        `__getitem__`.
+        """
+        self._validate_slice_format(row_slice, "row")
+        self._validate_slice_format(col_slice, "col")
+
+        row_start = row_slice.start * TILE_SHAPE[0]
+        row_stop = row_slice.stop * TILE_SHAPE[0]
+
+        col_start = col_slice.start * TILE_SHAPE[1]
+        col_stop = col_slice.stop * TILE_SHAPE[1]
+
+        return self.tensor[slice(row_start, row_stop), slice(col_start, col_stop)]
+
+    def set_tiles(
+        self, row_slice: slice, col_slice: slice, value: torch.Tensor
+    ) -> None:
+        """Set the element tensor corresponding to the provided tile slices."""
+        self._validate_slice_format(row_slice, "row")
+        self._validate_slice_format(col_slice, "col")
+
+        row_start = row_slice.start * TILE_SHAPE[0]
+        row_stop = row_slice.stop * TILE_SHAPE[0]
+
+        col_start = col_slice.start * TILE_SHAPE[1]
+        col_stop = col_slice.stop * TILE_SHAPE[1]
+
+        self.tensor[slice(row_start, row_stop), slice(col_start, col_stop)] = value
+
     def get_tile_shape(self) -> Tuple[int, int]:
         """Get the tensor shape in tiles rather than elements."""
         return (self.shape[0] // TILE_SHAPE[0], self.shape[1] // TILE_SHAPE[1])
