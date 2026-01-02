@@ -16,6 +16,7 @@ from ttlang.ttl_api import (
     TensorBlock,
     Semaphore,
     CopyTransferHandler,
+    matmul,
 )
 from ttlang.circular_buffer import make_circular_buffer_like
 
@@ -31,6 +32,7 @@ __all__ = [
     "Semaphore",
     "CopyTransferHandler",
     "make_circular_buffer_like",
+    "matmul",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,
 ]

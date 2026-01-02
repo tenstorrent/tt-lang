@@ -46,7 +46,7 @@ from ._src.tensor_registry import register_tensor_name, get_tensor_global_index
 
 from ._src.ttl_ast import TTLGenericCompiler
 
-from .operators import TensorBlock, CopyTransferHandler, copy
+from .operators import TensorBlock, CopyTransferHandler, copy, matmul
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
 from .dtype_utils import (

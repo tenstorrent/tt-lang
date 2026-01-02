@@ -180,6 +180,16 @@ struct TTLTileAndAssignDSTPass
             continue;
           }
 
+          // Special case: tile_matmul reads a and b directly from CBs, not DST.
+          // The c operand is the accumulator output (starts at zero in DST).
+          // Skip copy_tile for ALL operands of tile_matmul.
+          if (isa<TileMatmulOp>(&op)) {
+            // a, b: read from CB directly - no copy_tile needed.
+            // c: accumulator output, starts at zero - no copy_tile needed.
+            // The result DST index is assigned in the result allocation below.
+            continue;
+          }
+
           // Allocate: find first free register
           int freeReg = inUse.find_first_unset();
           assert(freeReg >= 0 && "no free DST register (should have been "

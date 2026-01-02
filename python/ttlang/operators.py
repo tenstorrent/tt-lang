@@ -57,8 +57,11 @@ class TensorBlock:
         return ttl.mul(ast_self.type, ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Matrix multiplication is not yet supported in TTL mode."""
-        raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
+        """Matrix multiplication via @ operator is not supported. Use matmul(a, b, c) instead."""
+        raise NotImplementedError(
+            "Matrix multiplication via @ operator is not supported. "
+            "Use matmul(a, b, c) function instead for accumulating matmul: c += a @ b"
+        )
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to CB by propagating CB association from output view."""
@@ -127,9 +130,32 @@ def copy(src, dst) -> CopyTransferHandler:
         )
 
 
+@syntax("matmul")
+def matmul(a: TensorBlock, b: TensorBlock, c: TensorBlock) -> TensorBlock:
+    """
+    Matrix multiplication with accumulation: result = a @ b + c.
+
+    This is a fused multiply-add operation where 'c' is the accumulator.
+    The result is written back, modeling the hardware behavior where
+    matmul accumulates into the DST register.
+
+    Args:
+        a: Left operand matrix tile
+        b: Right operand matrix tile
+        c: Accumulator tile (read and accumulated into)
+
+    Returns:
+        Result tile containing a @ b + c
+    """
+    # Use high-level matmul op (like binary ops use ttl.add, not ttl.tile_add).
+    # This gets lowered to ttl.compute with ttl.tile_matmul in the body.
+    return ttl.matmul(c.type, a, b, c)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
     "copy",
+    "matmul",
     *_generated_all,
 ]
