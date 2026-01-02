@@ -616,9 +616,6 @@ class Program:
         return Program(*self.threads, args=args, kwargs={**self.kwargs, **kwargs})
 
 
-_g_current_system_desc = None
-
-
 def _compile_and_run_kernel(
     f: Callable,
     args: tuple,
@@ -846,14 +843,6 @@ def pykernel_gen(
         raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
     if iterator_types is not None and indexing_maps is None:
         raise ValueError("indexing_maps must be set when iterator_types is set")
-
-    global _g_current_system_desc
-    if _g_current_system_desc is None:
-        _g_current_system_desc = os.environ.get("SYSTEM_DESC_PATH", None)
-    if _g_current_system_desc is None:
-        system_desc = runtime.get_current_system_desc()
-        _g_current_system_desc = "current.ttsys"
-        system_desc.store(_g_current_system_desc)
 
     if indexing_maps is None:
         indexing_maps = []
