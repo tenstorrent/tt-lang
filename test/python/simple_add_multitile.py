@@ -97,6 +97,8 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_pop %[[CB1]]
 # CHECK: ttl.cb_push %[[CB2]]
 
+# CHECK-LABEL: func.func @dm_read
+
 # =============================================================================
 # C++ Kernel Checks - Verify loops are generated for multi-tile
 # =============================================================================
