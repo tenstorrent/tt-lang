@@ -543,6 +543,51 @@ defm TTL_Neg : TTL_UnaryElementwisePair<"neg", "neg_tile">;
 defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile">;
 defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
 
+//===----------------------------------------------------------------------===//
+// Matrix Multiplication Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_MatmulOp : TTL_Op<"matmul", [Pure]> {
+  let summary = "Matrix multiplication with accumulation";
+  let description = [{
+    High-level matrix multiplication: result = a @ b + c.
+
+    This is a fused multiply-add operation where 'c' is the accumulator.
+    Lowered to ttl.compute with ttl.tile_matmul in the body.
+
+    Unlike binary elementwise ops, matmul reads directly from circular buffers
+    (not DST registers) and accumulates into DST.
+
+    Example:
+    ```mlir
+    %result = ttl.matmul %a, %b, %c : tensor<Mt x Kt>, tensor<Kt x Nt>, tensor<Mt x Nt> -> tensor<Mt x Nt>
+    ```
+  }];
+  let arguments = (ins AnyType:$a, AnyType:$b, AnyType:$c);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
+}
+
+def TTL_TileMatmulOp : TTL_TileOp<"tile_matmul", [SameOperandsAndResultType]> {
+  let summary = "Tile-level matrix multiplication with accumulation";
+  let description = [{
+    Computes: result = a @ b + c (fused matrix multiply-add).
+    Maps to ttkernel.matmul_tiles.
+
+    The 'c' operand is the accumulator - it is read from and the result
+    is written back. This models the hardware behavior where matmul
+    accumulates into the DST register.
+
+    Example:
+    ```mlir
+    %result = ttl.tile_matmul %a, %b, %c : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ```
+  }];
+  let arguments = (ins AnyType:$a, AnyType:$b, AnyType:$c);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($result)";
+}
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 

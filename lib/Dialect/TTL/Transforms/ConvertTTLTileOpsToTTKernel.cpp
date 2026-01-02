@@ -453,6 +453,92 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
       TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+//===----------------------------------------------------------------------===//
+// Matmul Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_matmul to TTKernel mm_init + matmul_tiles.
+/// Matmul reads from CBs (not DST) and accumulates into DST.
+struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
+  using OpConversionPattern<TileMatmulOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileMatmulOp op, TileMatmulOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "tile_matmul not in function");
+    }
+
+    // Look up CBs for a and b operands.
+    Value aCB = lookupCBByIndex(op.getA(), funcOp);
+    Value bCB = lookupCBByIndex(op.getB(), funcOp);
+    if (!aCB || !bCB) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CBs for matmul operands");
+    }
+
+    // Convert CBs to ttkernel.cb type.
+    auto *typeConverter = this->getTypeConverter();
+    if (!typeConverter) {
+      return rewriter.notifyMatchFailure(op, "no type converter available");
+    }
+
+    auto convertCB = [&](Value cb) -> FailureOr<Value> {
+      Type targetCbTy;
+      if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
+        targetCbTy = ttkCb;
+      } else if (auto ttlCb =
+                     mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+        targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
+                                      ttlCb.getElementType());
+      }
+      if (!targetCbTy) {
+        return failure();
+      }
+      Value converted = typeConverter->materializeTargetConversion(
+          rewriter, loc, targetCbTy, cb);
+      if (!converted || converted.getType() != targetCbTy) {
+        return failure();
+      }
+      return converted;
+    };
+
+    auto aCBConverted = convertCB(aCB);
+    auto bCBConverted = convertCB(bCB);
+    if (failed(aCBConverted) || failed(bCBConverted)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
+    }
+
+    // Get DST index for accumulator (from c operand or dst_idx attribute).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    int64_t dstIdx = dstIdxAttr ? dstIdxAttr.getInt()
+                                : getDstIndexFromValue(adaptor.getC()).value_or(0);
+
+    // Tile indices within CBs (currently always 0 for single-tile CBs).
+    // TODO: Support multi-tile CBs with proper index tracking.
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+
+    // Transpose flag (false for now).
+    Value transpose = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(0));
+
+    // Use mm_init_short which can be called multiple times (safe in loops).
+    // TODO: Hoist mm_init to kernel entry for better performance.
+    rewriter.create<ttk::MatmulInitShortOp>(loc, *aCBConverted, *bCBConverted,
+                                            transpose);
+    rewriter.create<ttk::MatmulTilesOp>(loc, *aCBConverted, *bCBConverted, zero,
+                                        zero, dstIdxVal);
+
+    // Replace with the c operand (result stays in same DST location).
+    rewriter.replaceOp(op, adaptor.getC());
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -483,6 +569,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 #define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // Matmul needs type converter for CB conversion.
+  patterns.add<TTLTileMatmulToTTKernel>(*typeConverter, ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

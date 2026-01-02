@@ -28,6 +28,7 @@ from ttl.ttl_api import (
     CircularBuffer,
     CopyTransferHandler,
     TensorBlock,
+    matmul
 )
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "core",
     "grid_size",
     "math",
+    "matmul",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,
 ]

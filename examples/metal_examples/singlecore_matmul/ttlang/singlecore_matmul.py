@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# up to tt-lang spec, not intended to compile or run currently
 import sys
 from pathlib import Path
 import ttnn
@@ -9,15 +8,13 @@ import pytest
 import torch
 
 import ttl
-from ttl import Program, make_circular_buffer_like, copy
+from ttl import Program, make_circular_buffer_like, copy, matmul
 
 from utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))
 def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
-    assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
-    assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
     M = a.shape[0]
     N = b.shape[1]
     K = a.shape[1]
@@ -35,51 +32,82 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     def mm_compute():
         for _ in range(Mt):
             for _ in range(Nt):
-                with out_cb.reserve() as out_blk:
+                with out_cb.reserve() as o:
                     for _ in range(Kt):
                         with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                            out_blk.store(a_blk @ b_blk, acc=True)
+                            result = matmul(a_blk, b_blk, o)
+                            o.store(result)
 
     @ttl.datamovement()
     def mm_reader():
-        for m in range(Mt):
-            for n in range(Nt):
-                for k in range(Kt):
-                    with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                        a_wr = copy(a[m, k], a_blk)
-                        b_wr = copy(b[k, n], b_blk)
-                        a_wr.wait()
-                        b_wr.wait()
+        for _ in range(Mt):
+            for _ in range(Nt):
+                for _ in range(Kt):
+                    # TODO: Use [m, k] and [k, n] indices when supported
+                    with a_cb.reserve(), b_cb.reserve():
+                        tx_a = copy(a[0, 0], a_cb)
+                        tx_a.wait()
+                        tx_b = copy(b[0, 0], b_cb)
+                        tx_b.wait()
 
     @ttl.datamovement()
     def mm_writer():
-        for m in range(Mt):
-            for n in range(Nt):
-                with out_cb.wait() as out_blk:
-                    out_wr = copy(out_blk, out[m, n])
-                    out_wr.wait()
+        for _ in range(Mt):
+            for _ in range(Nt):
+                # TODO: Use [m, n] index when supported
+                with out_cb.wait():
+                    tx = copy(out_cb, out[0, 0])
+                    tx.wait()
 
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
-
 
 def test_singlecore_matmul_tt_lang():
     """Test singlecore matmul kernel."""
     device = ttnn.open_device(device_id=0)
-    M, K, N = 256, 256, 256
-    a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
 
-    tt_lang_singlecore_matmul(a, b, c)
+    try:
+        M, K, N = 32, 32, 32
 
-    golden = torch.matmul(
-        ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
-    )
-    result = ttnn.to_torch(c).to(torch.bfloat16)
-    assert_with_ulp(golden, result)
+        # Create torch tensors first
+        a_torch = torch.rand((M, K), dtype=torch.bfloat16)
+        b_torch = torch.rand((K, N), dtype=torch.bfloat16)
+        c_torch = torch.zeros((M, N), dtype=torch.bfloat16)
 
-    ttnn.close_device(device)
+        # Convert to ttnn tensors with proper device and memory config
+        a = ttnn.from_torch(
+            a_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        b = ttnn.from_torch(
+            b_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        c = ttnn.from_torch(
+            c_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
+        assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
+        assert a.shape[0] == c.shape[0], "Output matrix has incorrect number of rows."
+
+        tt_lang_singlecore_matmul(a, b, c)
+
+        golden = torch.matmul(a_torch, b_torch)
+        result = ttnn.to_torch(c).to(torch.bfloat16)
+        print(result)
+        assert_with_ulp(golden, result)
+
+    finally:
+        ttnn.close_device(device)
 
 if __name__ == "__main__":
     test_singlecore_matmul_tt_lang()

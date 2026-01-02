@@ -382,6 +382,88 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   return success();
 }
 
+/// Build a ttl.compute op with tile_matmul in the body.
+/// Matmul is different from binary ops: it reads a,b from CBs directly (not DST)
+/// and accumulates into DST. The c operand is the accumulator/output.
+static LogicalResult buildMatmulCompute(Operation *op, PatternRewriter &rewriter,
+                                        Value a, Value b, Value c) {
+  auto type = getTensorType(op->getResult(0));
+  if (!type) {
+    return failure();
+  }
+
+  // All inputs must be attached to CBs.
+  Value aCb = getAttachedCB(a);
+  Value bCb = getAttachedCB(b);
+  Value cCb = getAttachedCB(c);
+  if (!aCb || !bCb) {
+    return op->emitError(
+        "matmul inputs a and b must be attached to circular buffers via "
+        "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
+  }
+
+  // Find the output CB. First check c's CB, then look for attach_cb on result,
+  // finally fall back to unused bind_cb.
+  Value outCb = cCb;
+  if (!outCb) {
+    outCb = findOutputCB(op);
+  }
+  if (!outCb) {
+    auto unusedCBs = findUnusedBindCBs(op);
+    if (unusedCBs.empty()) {
+      return op->emitError("no circular buffer found for matmul output; ensure "
+                           "c operand is attached to a CB or a ttl.bind_cb "
+                           "exists for output");
+    }
+    outCb = unusedCBs.front().getResult();
+  }
+
+  Location loc = op->getLoc();
+  MLIRContext *ctx = rewriter.getContext();
+
+  // Build identity indexing maps for all inputs and output.
+  SmallVector<Attribute> maps;
+  AffineMap identityMap =
+      AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+  maps.push_back(AffineMapAttr::get(identityMap)); // a
+  maps.push_back(AffineMapAttr::get(identityMap)); // b
+  maps.push_back(AffineMapAttr::get(identityMap)); // c (output)
+
+  // Build iterator types: all parallel.
+  SmallVector<Attribute> iterTypes;
+  for (int64_t i = 0; i < type.getRank(); ++i) {
+    iterTypes.push_back(rewriter.getStringAttr("parallel"));
+  }
+
+  // Create init tensor and attach to output CB.
+  Value init = buildInitTensor(rewriter, loc, type, a);
+  Value initAttached =
+      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+  // Create ttl.compute op with a, b as inputs and c (init) as output.
+  auto computeOp = rewriter.create<ComputeOp>(
+      loc, TypeRange{type}, ValueRange{a, b}, ValueRange{initAttached},
+      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+  // Build the body region with tile type block arguments.
+  Block *body = rewriter.createBlock(&computeOp.getBody());
+  Type scalarType = type.getElementType();
+  Type tileType = ttcore::TileType::get(scalarType);
+  body->addArgument(tileType, loc); // a tile
+  body->addArgument(tileType, loc); // b tile
+  body->addArgument(tileType, loc); // c tile (accumulator)
+
+  rewriter.setInsertionPointToStart(body);
+  // tile_matmul(a, b, c) -> result (same type as c, accumulated)
+  Value result = rewriter.create<TileMatmulOp>(
+      loc, tileType, body->getArgument(0), body->getArgument(1),
+      body->getArgument(2));
+  rewriter.create<YieldOp>(loc, ValueRange{result});
+
+  rewriter.replaceOp(op, computeOp.getResult(0));
+  return success();
+}
+
 namespace {
 //===----------------------------------------------------------------------===//
 // Templated Elementwise Lowering Patterns
@@ -428,6 +510,17 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
   using Lower##TTL_OP = LowerUnaryToCompute<TTL_OP##Op, TILE_OP>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+/// Pattern for matmul: TTL matmul op -> ttl.compute with tile_matmul.
+struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
+  using OpRewritePattern<MatmulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MatmulOp op,
+                                PatternRewriter &rewriter) const override {
+    return buildMatmulCompute(op.getOperation(), rewriter, op.getA(), op.getB(),
+                              op.getC());
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Pass Implementations
 //===----------------------------------------------------------------------===//
@@ -468,6 +561,9 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // Matmul pattern (not generated from .def file).
+  patterns.add<LowerMatmulToCompute>(ctx);
 }
 
 } // namespace mlir::tt::ttl
