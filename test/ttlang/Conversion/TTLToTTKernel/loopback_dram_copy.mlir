@@ -8,24 +8,35 @@
 
 // TTKERNEL-LABEL: func.func @loopback_dram_copy
 // Verify runtime args and CB pointers are used for both read and write operations.
+// Tensor accessors are now created at function entry with chaining, not inside loops.
+// TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// TTKERNEL-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 128 : i32
+// TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : index
+// First tensor accessor (src) at function entry - CTA starts at 1 (after 1 bind_cb).
+// TTKERNEL: %[[BANK0:.*]] = ttkernel.get_common_arg_val(%[[C0]]) : (index) -> i32
+// TTKERNEL: %[[ARGS0:.*]] = ttkernel.TensorAccessorArgs(%[[C1_I32]], %[[C0_I32]])
+// TTKERNEL: %[[ACC_R:.*]] = ttkernel.TensorAccessor(%[[ARGS0]], %[[BANK0]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// Second tensor accessor (dst) chains from first.
+// TTKERNEL: %[[BANK1:.*]] = ttkernel.get_common_arg_val(%[[C1]]) : (index) -> i32
+// TTKERNEL: %[[ARGS1:.*]] = ttkernel.TensorAccessorArgs(prev = %[[ARGS0]])
+// TTKERNEL: %[[ACC_W:.*]] = ttkernel.TensorAccessor(%[[ARGS1]], %[[BANK1]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// Loop uses pre-materialized accessors.
 // TTKERNEL: scf.for
-// Read: runtime arg for src tensor, accessor, write ptr for CB
-// TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL:   %[[ACC_R:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// Read: write ptr for CB, then tile read using pre-materialized accessor.
 // TTKERNEL:   %[[CB_W_PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
-// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[ACC_R]], %[[CB_W_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL:   ttkernel.noc_async_read_tile(%[[C0_I32]], %[[ACC_R]], %[[CB_W_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
-// Write: runtime arg for dst tensor, accessor, read ptr for CB
-// TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL:   %[[ACC_W:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// Write: read ptr for CB, then tile write using pre-materialized accessor.
 // TTKERNEL:   %[[CB_R_PTR:.*]] = ttkernel.get_read_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
-// TTKERNEL:   ttkernel.noc_async_write_tile({{.*}}, %[[ACC_W]], %[[CB_R_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL:   ttkernel.noc_async_write_tile(%[[C0_I32]], %[[ACC_W]], %[[CB_R_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL:   ttkernel.noc_async_write_barrier() : () -> ()
 
 module {
   func.func @loopback_dram_copy(%src: tensor<32x32xf32, #layout>,
                                 %dst: tensor<32x32xf32, #layout>)
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 1 : i32} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c4 = arith.constant 4 : index
