@@ -4,12 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test comparing new_split_work_to_cores with ttnn.split_work_to_cores
+Test comparing split_work_to_cores with ttnn.split_work_to_cores
 """
 import pytest
 
 from ttlang.utils.block_allocation import split_work_to_cores
-import ttnn
+
+ttnn = pytest.importorskip("ttnn")
 
 
 def extract_coords_from_ttnn_corerangeset(core_range_set):
