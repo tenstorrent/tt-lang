@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# XFAIL: *
-# https://github.com/tenstorrent/tt-lang/issues/164
 # RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -85,13 +83,19 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 
-# 'with' entry: wait for inputs, reserve output
-# CHECK: ttl.cb_wait %[[CB0]]
-# CHECK: ttl.cb_wait %[[CB1]]
-# CHECK: ttl.cb_reserve %[[CB2]]
+# 'with' entry: wait for inputs, reserve output (with CB association)
+# CHECK: %[[L:.+]] = ttl.cb_wait %[[CB0]]
+# CHECK: ttl.attach_cb %[[L]], %[[CB0]]
+# CHECK: %[[R:.+]] = ttl.cb_wait %[[CB1]]
+# CHECK: ttl.attach_cb %[[R]], %[[CB1]]
+# CHECK: %[[O:.+]] = ttl.cb_reserve %[[CB2]]
+# CHECK: ttl.attach_cb %[[O]], %[[CB2]]
 
 # Add operation
 # CHECK: ttl.add
+
+# store() attaches result to output CB
+# CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # 'with' exit: push output, pop inputs (reverse order)
 # CHECK: ttl.cb_push %[[CB2]]
@@ -105,14 +109,16 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# First CB: reserve, copy, push
+# First CB: reserve (with CB association), copy, push
 # CHECK: ttl.cb_reserve
+# CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
 
-# Second CB: reserve, copy, push
+# Second CB: reserve (with CB association), copy, push
 # CHECK: ttl.cb_reserve
+# CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
@@ -120,8 +126,9 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Output CB: wait, copy, pop
+# Output CB: wait (with CB association), copy, pop
 # CHECK: ttl.cb_wait
+# CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_pop

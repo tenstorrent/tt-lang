@@ -261,11 +261,14 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Get tensor type from CB for reserve/wait result
                 tensor_type = self._get_cb_tensor_type(cb_val)
                 if method_name == "reserve":
-                    acquire_result = ttl.cb_reserve(tensor_type, cb_val)
+                    tensor = ttl.cb_reserve(tensor_type, cb_val)
                     releases.append((ttl.cb_push, cb_val))
                 else:  # wait
-                    acquire_result = ttl.cb_wait(tensor_type, cb_val)
+                    tensor = ttl.cb_wait(tensor_type, cb_val)
                     releases.append((ttl.cb_pop, cb_val))
+
+                # Attach CB to tensor so store() can find the CB association
+                acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
 
                 if optional_vars is not None:
                     if not isinstance(optional_vars, ast.Name):
