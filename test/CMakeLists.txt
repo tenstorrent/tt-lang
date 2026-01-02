@@ -7,8 +7,7 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
 )
 
-# Check for TTNN Python package and Tenstorrent device at configure time
-ttlang_check_ttnn_available(TTLANG_HAS_TTNN)
+# Check for Tenstorrent device at configure time
 ttlang_check_device_available(TTLANG_HAS_DEVICE)
 
 if(TTLANG_HAS_DEVICE)
@@ -53,21 +52,14 @@ add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
 )
 set_target_properties(check-ttlang-mlir PROPERTIES FOLDER "Tests")
 
-# Python lit tests require TTNN. Run sequentially to avoid TLB resource contention
+# Python lit tests. Run sequentially to avoid TLB resource contention
 # when multiple tests open Tenstorrent devices.
-if(TTLANG_HAS_TTNN)
-  add_lit_testsuite(check-ttlang-python-lit "Running ttlang Python lit tests"
-    ${CMAKE_CURRENT_BINARY_DIR}/python
-    -j1 ${TTLANG_LIT_COMMON_ARGS} --xunit-xml-output python-lit-report.xml
-    DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
-  )
-  set_target_properties(check-ttlang-python-lit PROPERTIES FOLDER "Tests")
-else()
-  add_custom_target(check-ttlang-python-lit
-    COMMAND ${CMAKE_COMMAND} -E echo "TTNN not available - skipping Python lit tests"
-    COMMENT "Skipping ttlang Python lit tests (TTNN not available)"
-  )
-endif()
+add_lit_testsuite(check-ttlang-python-lit "Running ttlang Python lit tests"
+  ${CMAKE_CURRENT_BINARY_DIR}/python
+  -j1 ${TTLANG_LIT_COMMON_ARGS} --xunit-xml-output python-lit-report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+)
+set_target_properties(check-ttlang-python-lit PROPERTIES FOLDER "Tests")
 
 # Python bindings tests only (no TT device required).
 add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding tests"
@@ -83,8 +75,20 @@ add_custom_target(check-ttlang
   COMMENT "Running ttlang lit tests that never require a TT device"
 )
 
+# Pytest tests (test_*.py files).
+add_custom_target(check-ttlang-pytest
+  COMMAND ${Python3_EXECUTABLE} -m pytest
+    ${CMAKE_CURRENT_SOURCE_DIR}/python
+    -v --tb=short
+    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  COMMENT "Running ttlang pytest tests"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
+)
+set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
+
 # All lit tests (including Python tests that require a TT device).
 add_custom_target(check-ttlang-all
-  DEPENDS check-ttlang-mlir check-ttlang-python-bindings check-ttlang-python-lit
-  COMMENT "Running all ttlang lit tests (including Python tests that require a TT device)"
+  DEPENDS check-ttlang-mlir check-ttlang-python-bindings check-ttlang-python-lit check-ttlang-pytest
+  COMMENT "Running all ttlang tests (lit and pytest)"
 )

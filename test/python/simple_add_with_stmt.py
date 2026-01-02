@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # XFAIL: *
 # https://github.com/tenstorrent/tt-lang/issues/164
 # RUN: %python %s > %t.output 2>&1
@@ -24,11 +25,7 @@ from ttlang import ttl
 from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
 
 
 @ttl.kernel(grid=(1, 1))

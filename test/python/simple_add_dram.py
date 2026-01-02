@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# REQUIRES: ttnn
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -21,11 +22,7 @@ from ttlang import ttl
 from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
 from ttlang.operators import copy
 
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
 
 
 @ttl.kernel(grid=(1, 1))
@@ -62,9 +59,7 @@ def add_dram_kernel(lhs, rhs, out):
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write(out_cb: CircularBuffer):
         # Wait for data, write directly from CB to DRAM, pop
         out_cb.wait()
         tx = copy(out_cb, out_accessor[0, 0])
@@ -86,7 +81,7 @@ def add_dram_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = [[COMPUTE_BASE_CTA:[0-9]+]] : i32, ttl.kernel_thread = #ttkernel.thread<compute>}
 
 # CB operations
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
@@ -111,7 +106,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = [[DM_READ_BASE_CTA:[0-9]+]] : i32, ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Bind CBs
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
@@ -131,7 +126,7 @@ def add_dram_kernel(lhs, rhs, out):
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = [[DM_WRITE_BASE_CTA:[0-9]+]] : i32, ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Wait for output CB, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
@@ -173,10 +168,14 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
+# Accessors materialized at function entry with chaining
+# CHECK-CPP: auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 0>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC1_ARGS]],
+# CHECK-CPP: auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ACC1_ARGS]].next_compile_time_args_offset(), [[ACC1_ARGS]].next_common_runtime_args_offset()>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC2_ARGS]],
+
 # First input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(0))
 # CHECK-CPP: noc_async_read_tile(
 # CHECK-CPP: noc_async_read_barrier();
@@ -184,8 +183,6 @@ def add_dram_kernel(lhs, rhs, out):
 
 # Second input: reserve CB, read tile, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<4, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_write_ptr(get_compile_time_arg_val(1))
 # CHECK-CPP: noc_async_read_tile(
 # CHECK-CPP: noc_async_read_barrier();
@@ -198,10 +195,13 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 
-# Wait for output CB, write tile, pop CB
+# Accessor materialized at function entry
+# Base CTA index is 3 (total number of CBs in the kernel)
+# CHECK-CPP: auto [[ACC_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 0>();
+# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC_ARGS]],
+
+# Wait for output CB (cb_index = 2), write tile, pop CB
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
 # CHECK-CPP: get_read_ptr(get_compile_time_arg_val(2))
 # CHECK-CPP: noc_async_write_tile(
 # CHECK-CPP: noc_async_write_barrier();

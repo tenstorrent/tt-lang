@@ -73,6 +73,7 @@ if(MLIR_ENABLE_BINDINGS_PYTHON AND TTLANG_ENABLE_BINDINGS_PYTHON)
   message(STATUS "Enabling Python API")
   set(TTLANG_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
   add_subdirectory(python)
+  include(CopyTTNNPythonPackage)
 endif()
 
 add_subdirectory(test)

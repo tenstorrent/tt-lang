@@ -22,10 +22,6 @@ try:
 except ModuleNotFoundError:
     ttnn = None
 
-try:
-    from _ttmlir_runtime import runtime
-except ModuleNotFoundError:
-    runtime = None
 
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
@@ -36,7 +32,6 @@ from ttmlir.passes import (
     get_ttkernel_arg_spec,
 )
 
-import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
 from .ttl_utils import get_thread_type_string
 
@@ -47,6 +42,61 @@ from ._src.tensor_registry import register_tensor_name
 
 from ._src.ttl_ast import TTLGenericCompiler
 
+
+def _extract_cb_param_names(f: Callable) -> List[str]:
+    """
+    Extract CircularBuffer parameter names from a thread function.
+
+    Args:
+        f: Thread function (decorated with @ttl.compute or @ttl.datamovement)
+
+    Returns:
+        List of parameter names annotated as CircularBuffer
+    """
+    source_code = _cleanup_source_code(f)
+    m = ast.parse(source_code)
+
+    cb_names = []
+    for node in ast.walk(m):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for arg in node.args.args:
+                if arg.annotation and isinstance(arg.annotation, ast.Name):
+                    if arg.annotation.id == "CircularBuffer":
+                        cb_names.append(arg.arg)
+            break  # Only process the first function definition
+
+    return cb_names
+
+
+def _build_kernel_cb_symbol_table(threads: tuple) -> Dict[str, int]:
+    """
+    Build a kernel-level CB symbol table mapping CB names to global indices.
+
+    Iterates through all threads and collects unique CB names, assigning
+    global indices in order of first appearance.
+
+    Args:
+        threads: Tuple of thread functions (decorated with @ttl.compute or @ttl.datamovement)
+
+    Returns:
+        Dictionary mapping CB parameter names to global CB indices
+    """
+    cb_symbol_table = {}
+    next_cb_index = 0
+
+    for thread in threads:
+        # Get the original function from the wrapper
+        original_fn = thread.__wrapped__
+        cb_names = _extract_cb_param_names(original_fn)
+
+        for cb_name in cb_names:
+            if cb_name not in cb_symbol_table:
+                cb_symbol_table[cb_name] = next_cb_index
+                next_cb_index += 1
+
+    return cb_symbol_table
+
+
 from .operators import TensorBlock, CopyTransferHandler, copy
 from .circular_buffer import CircularBuffer
 from .semaphore import Semaphore
@@ -56,6 +106,31 @@ from .dtype_utils import (
     is_ttnn_tensor,
 )
 from .constants import SUPPORTED_MEMORY_SPACES
+
+_TTLANG_DIALECTS_REGISTERED = False
+
+
+def _get_global_registry() -> DialectRegistry:
+    """Return the shared DialectRegistry with ttlang dialects registered.
+
+    ttmlir dialects are registered via site initialization (_site_initialize_0)
+    when Context is created. However, ttlang's site init is in a different
+    namespace (ttlang._mlir_libs) and is not discovered by MLIR's site init.
+    We explicitly register ttlang dialects here.
+    """
+    global _TTLANG_DIALECTS_REGISTERED
+    from ttmlir._mlir_libs import get_dialect_registry
+
+    registry = get_dialect_registry()
+
+    # Register ttlang dialects once (ttmlir dialects already registered via site init)
+    if not _TTLANG_DIALECTS_REGISTERED:
+        import ttlang._mlir_libs._ttlang as _ttlang_lib
+
+        _ttlang_lib.register_dialects(registry)
+        _TTLANG_DIALECTS_REGISTERED = True
+
+    return registry
 
 
 class CompilerConfig:
@@ -116,6 +191,7 @@ class CompiledTTNNKernel:
         num_tensors,
         core_ranges,
         kernel_tensor_indices,
+        kernel_cb_indices,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -127,6 +203,7 @@ class CompiledTTNNKernel:
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
             kernel_tensor_indices: List of global tensor indices used by each kernel
+            kernel_cb_indices: List of CB indices used by each kernel
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -134,17 +211,19 @@ class CompiledTTNNKernel:
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
         self.kernel_tensor_indices = kernel_tensor_indices
+        self.kernel_cb_indices = kernel_cb_indices
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
-        # Build TensorAccessorArgs config for each tensor
-        tensor_accessor_args = []
-        for tensor in args:
-            tensor_args = ttnn.TensorAccessorArgs(tensor).get_compile_time_args()
-            tensor_accessor_args.extend(tensor_args)
+        # Build TensorAccessorArgs config for each tensor (indexed by global tensor index)
+        all_tensor_accessor_args = {}
+        for idx, tensor in enumerate(args):
+            all_tensor_accessor_args[idx] = ttnn.TensorAccessorArgs(
+                tensor
+            ).get_compile_time_args()
 
         # Build kernel descriptors with current tensor addresses
         kernel_descriptors = []
@@ -162,15 +241,21 @@ class CompiledTTNNKernel:
             tensor_indices = self.kernel_tensor_indices[kernel_idx]
             common_runtime_args = [args[idx].buffer_address() for idx in tensor_indices]
 
-            # CB indices are 0, 1, 2, ... for each tensor
-            cb_indices = list(range(len(args)))
+            # CB indices for THIS kernel (not all tensors)
+            cb_indices = self.kernel_cb_indices[kernel_idx]
 
             # Compute kernels only need CB indices
-            # DM kernels need CB indices + TensorAccessorArgs config
+            # DM kernels need CB indices + TensorAccessorArgs for tensors THIS kernel accesses
             if thread_type == "compute":
                 kernel_compile_time_args = cb_indices
             else:
-                kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
+                # Build TensorAccessorArgs for only the tensors this kernel uses
+                kernel_tensor_accessor_args = []
+                for global_idx in tensor_indices:
+                    kernel_tensor_accessor_args.extend(
+                        all_tensor_accessor_args[global_idx]
+                    )
+                kernel_compile_time_args = cb_indices + kernel_tensor_accessor_args
 
             kernel_desc = ttnn.KernelDescriptor(
                 kernel_source=kernel_path,
@@ -220,30 +305,9 @@ class CompiledTTNNKernel:
         return ttnn.generic_op(list(args), program)
 
 
-def _write_kernel_to_tmp(
-    name: str, source: str, num_tensors: int = 0, tensor_indices: list = None
-) -> str:
+def _write_kernel_to_tmp(name: str, source: str) -> str:
     """Write kernel source to /tmp and return the file path."""
-    import re
     import hashlib
-
-    # TODO(XX): Fix TensorAccessorArgs CTA offsets. C++ emits placeholder 42+idx,
-    # replace with actual offset = global_idx + num_tensors (CB indices occupy 0..num_tensors-1).
-    if num_tensors > 0 and tensor_indices:
-
-        def replace_cta_offset(m):
-            placeholder = int(m.group(1))
-            local_idx = placeholder - 42
-            # Map local accessor index to global tensor index
-            global_idx = (
-                tensor_indices[local_idx]
-                if local_idx < len(tensor_indices)
-                else local_idx
-            )
-            actual_offset = global_idx + num_tensors
-            return f"TensorAccessorArgs<{actual_offset}, 0>()"
-
-        source = re.sub(r"TensorAccessorArgs<(\d+), 0>\(\)", replace_cta_offset, source)
 
     # Use content hash in path to avoid JIT cache collisions between different kernels
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
@@ -257,7 +321,7 @@ def _write_kernel_to_tmp(
 
 
 def _compile_ttnn_kernel(
-    module, args, grid, num_outs, thread_tensor_indices, verbose=True
+    module, args, grid, num_outs, thread_tensor_indices, thread_cb_indices, verbose=True
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -269,6 +333,8 @@ def _compile_ttnn_kernel(
         args: Input/output tensors (used for shape/dtype info)
         grid: Grid dimensions tuple
         num_outs: Number of output tensors
+        thread_tensor_indices: List of global tensor indices used by each thread
+        thread_cb_indices: List of CB indices used by each thread
         verbose: Print compilation info
 
     Returns:
@@ -350,30 +416,18 @@ def _compile_ttnn_kernel(
     num_tensors = len(args)
 
     # Write all kernels to /tmp for debugging
-    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
+    for _, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = (
-            thread_tensor_indices[kernel_idx]
-            if kernel_idx < len(thread_tensor_indices)
-            else []
-        )
-        _write_kernel_to_tmp(name, cpp_source, num_tensors, tensor_indices)
+        _write_kernel_to_tmp(name, cpp_source)
 
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
 
-    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
+    for _, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = (
-            thread_tensor_indices[kernel_idx]
-            if kernel_idx < len(thread_tensor_indices)
-            else []
-        )
-        kernel_path = _write_kernel_to_tmp(
-            name, cpp_source, num_tensors, tensor_indices
-        )
+        kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
 
         if thread_type == "compute":
@@ -403,6 +457,7 @@ def _compile_ttnn_kernel(
         num_tensors=len(args),
         core_ranges=core_ranges,
         kernel_tensor_indices=thread_tensor_indices,
+        kernel_cb_indices=thread_cb_indices,
     )
 
     if verbose:
@@ -561,9 +616,6 @@ class Program:
         return Program(*self.threads, args=args, kwargs={**self.kwargs, **kwargs})
 
 
-_g_current_system_desc = None
-
-
 def _compile_and_run_kernel(
     f: Callable,
     args: tuple,
@@ -638,16 +690,43 @@ def _compile_and_run_kernel(
         kwargs={**injected_program_kwargs, **program.kwargs},
     )
 
+    registry = _get_global_registry()
+
     ctx = Context()
+    ctx.append_dialect_registry(registry)
+    ctx.load_all_available_dialects()
+
+    # Make sure key dialects are loaded before running pipelines that materialize
+    # their operations inside C++ passes.
+    _ = ctx.dialects["ttkernel"]
+    _ = ctx.dialects["ttl"]
     loc = Location.unknown(ctx)
     with ctx, loc:
+        # Build kernel-level CB symbol table before compiling any threads.
+        # This ensures all threads share the same CB index numbering.
+        kernel_cb_symbol_table = _build_kernel_cb_symbol_table(program.threads)
+
         compiled_threads = []
         # Track which global tensor indices each thread uses (for building common_runtime_args)
         thread_tensor_indices = []
+        # Track which CB indices each thread uses (for compile-time args)
+        thread_cb_indices = []
+
+        # Add kernel_cb_symbol_table to kwargs for thread compilation
+        program_kwargs_with_cb_table = {
+            **program.kwargs,
+            "kernel_cb_symbol_table": kernel_cb_symbol_table,
+        }
+
+        # Total number of CBs in the kernel (used for TensorAccessorArgs offset)
+        total_num_cbs = len(kernel_cb_symbol_table)
+
         for compile_thread in program.threads:
-            ct = compile_thread(*program.args, **program.kwargs)
+            ct = compile_thread(*program.args, **program_kwargs_with_cb_table)
             compiled_threads.append(ct)
             thread_tensor_indices.append(ct._tensor_accessor_global_indices)
+            # Extract CB indices from _cb_info
+            thread_cb_indices.append([cb["cb_index"] for cb in ct._cb_info])
 
         module = Module.create(loc)
 
@@ -663,7 +742,6 @@ def _compile_and_run_kernel(
                 print(module, file=fd)
             print(f"SAVED INITIAL TO {initial_mlir_path}")
 
-        device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
         config = CompilerConfig(compile_only)
 
@@ -682,15 +760,10 @@ def _compile_and_run_kernel(
             "symbol-dce",
         ]
 
-        pipeline = ",".join(pipeline_passes)
 
-        register_device = "ttcore-register-device"
-        if device_register_options:
-            register_device = f"{register_device}{{{device_register_options}}}"
-
-        pipeline_str = f"builtin.module({','.join([register_device, pipeline])})"
+        pipeline_str = f"builtin.module({','.join(pipeline_passes)})"
         # fmt: on
-        pm = PassManager.parse(pipeline_str)
+        pm = PassManager.parse(pipeline_str, context=ctx)
         pm.enable_verifier(verify)
 
         try:
@@ -721,7 +794,7 @@ def _compile_and_run_kernel(
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(
-            module, args, grid, num_outs, thread_tensor_indices
+            module, args, grid, num_outs, thread_tensor_indices, thread_cb_indices
         )
         if compiled_kernel is not None and config.should_execute():
             compiled_kernel(*args)
@@ -770,14 +843,6 @@ def pykernel_gen(
         raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
     if iterator_types is not None and indexing_maps is None:
         raise ValueError("indexing_maps must be set when iterator_types is set")
-
-    global _g_current_system_desc
-    if _g_current_system_desc is None:
-        _g_current_system_desc = os.environ.get("SYSTEM_DESC_PATH", None)
-    if _g_current_system_desc is None:
-        system_desc = runtime.get_current_system_desc()
-        _g_current_system_desc = "current.ttsys"
-        system_desc.store(_g_current_system_desc)
 
     if indexing_maps is None:
         indexing_maps = []
