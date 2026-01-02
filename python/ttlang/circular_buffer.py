@@ -57,8 +57,10 @@ class CircularBuffer:
     ):
         if len(shape) != 2:
             raise ValueError(f"shape must be a 2-tuple, got {shape}")
-        if buffer_factor < 1:
-            raise ValueError(f"buffer_factor must be >= 1, got {buffer_factor}")
+        if buffer_factor < 1 or buffer_factor > 32:
+            raise ValueError(
+                f"buffer_factor must be in range [1, 32], got {buffer_factor}"
+            )
 
         self.tensor = tensor
         self.shape = shape
