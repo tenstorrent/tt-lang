@@ -75,8 +75,20 @@ add_custom_target(check-ttlang
   COMMENT "Running ttlang lit tests that never require a TT device"
 )
 
+# Pytest tests (test_*.py files).
+add_custom_target(check-ttlang-pytest
+  COMMAND ${Python3_EXECUTABLE} -m pytest
+    ${CMAKE_CURRENT_SOURCE_DIR}/python
+    -v --tb=short
+    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  COMMENT "Running ttlang pytest tests"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
+)
+set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
+
 # All lit tests (including Python tests that require a TT device).
 add_custom_target(check-ttlang-all
-  DEPENDS check-ttlang-mlir check-ttlang-python-bindings check-ttlang-python-lit
-  COMMENT "Running all ttlang lit tests (including Python tests that require a TT device)"
+  DEPENDS check-ttlang-mlir check-ttlang-python-bindings check-ttlang-python-lit check-ttlang-pytest
+  COMMENT "Running all ttlang tests (lit and pytest)"
 )

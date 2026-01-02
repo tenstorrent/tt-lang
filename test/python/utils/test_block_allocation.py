@@ -8,7 +8,7 @@ Test comparing new_split_work_to_cores with ttnn.split_work_to_cores
 """
 import pytest
 
-from ttlang.utils.block_allocation import new_split_work_to_cores
+from ttlang.utils.block_allocation import split_work_to_cores
 import ttnn
 
 
@@ -49,7 +49,7 @@ def extract_coords_from_ttnn_corerangeset(core_range_set):
 def test_split_work_to_cores(grid_size_tuple, units, row_wise):
     """Compare results from new_split_work_to_cores and ttnn.split_work_to_cores"""
     # Call new function
-    new_result = new_split_work_to_cores(grid_size_tuple, units, row_wise)
+    new_result = split_work_to_cores(grid_size_tuple, units, row_wise)
     new_total, new_g1, new_g2, new_w1, new_w2 = new_result
 
     # Call ttnn function

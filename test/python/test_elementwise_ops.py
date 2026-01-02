@@ -17,10 +17,7 @@ import torch
 import sys
 import tempfile
 import importlib.util
-from pathlib import Path
 
-# Add examples to path for utils
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "examples"))
 from utils import assert_allclose
 
 try:
