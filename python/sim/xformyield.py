@@ -64,6 +64,48 @@ class YieldInserter(ast.NodeTransformer):
             case _:
                 return node
 
+    def visit_With(self, node: ast.With) -> ast.AST | list[ast.AST]:
+        """Visit with statements and check for wait/reserve calls in context expressions.
+
+        Transforms:
+            with cb.wait() as blk:
+                ...
+
+        Into:
+            yield (cb, 'wait')
+            with cb.wait() as blk:
+                ...
+        """
+        # First, recursively visit child nodes (body and nested withs)
+        self.generic_visit(node)
+
+        # Check each context manager (withitem) for wait/reserve calls
+        yields_to_insert: list[ast.stmt] = []
+        for item in node.items:
+            match item.context_expr:
+                case ast.Call() as call if self._is_wait_or_reserve_call(call):
+                    # Extract operation info
+                    match call.func:
+                        case ast.Attribute(value=obj, attr=operation):
+                            # Create: yield (cb, 'wait') or yield (cb, 'reserve')
+                            yield_value = ast.Tuple(
+                                elts=[obj, ast.Constant(value=operation)],
+                                ctx=ast.Load(),
+                            )
+                            yield_stmt = ast.Expr(value=ast.Yield(value=yield_value))
+                            yields_to_insert.append(yield_stmt)
+                        case _:
+                            # Non-attribute call, skip
+                            pass
+                case _:
+                    # Non-call expression, skip
+                    pass
+
+        # If we found any wait/reserve calls, insert yields before the with statement
+        if yields_to_insert:
+            return yields_to_insert + [node]  # type: ignore[return-value]
+        return node
+
     def _is_wait_or_reserve_call(self, call_node: ast.Call) -> bool:
         """Check if a call node is a wait() or reserve() method call."""
         match call_node.func:

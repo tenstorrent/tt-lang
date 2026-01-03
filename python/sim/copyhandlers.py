@@ -9,7 +9,18 @@ New transfer types can be added by creating a new handler and decorating it with
 @register_copy_handler.
 """
 
-from typing import Any, Dict, Protocol, Tuple, Type, Deque, List, Union, TypedDict
+from typing import (
+    Any,
+    Dict,
+    Protocol,
+    Tuple,
+    Type,
+    Deque,
+    List,
+    Union,
+    TypedDict,
+    TYPE_CHECKING,
+)
 from collections import deque
 import threading
 import time
@@ -18,6 +29,9 @@ from .ttnnsim import Tensor
 from .block import Block
 from .constants import TILE_SHAPE, COPY_PIPE_TIMEOUT
 from .typedefs import Pipe, Count
+
+if TYPE_CHECKING:
+    from .cb import ReserveContext, WaitContext
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
@@ -31,11 +45,13 @@ from .typedefs import Pipe, Count
 
 # Copy endpoint types - these are the valid types for copy transfers
 # To add a new endpoint type, add it to the Unions and implement a handler for it
-CopyEndpoint = Union[Tensor, Block, Pipe]
+CopyEndpoint = Union[Tensor, Block, Pipe, "ReserveContext", "WaitContext"]
 CopyEndpointType = Union[
     Type[Tensor],
     Type[Block],
     Type[Pipe],
+    Type["ReserveContext"],
+    Type["WaitContext"],
 ]
 
 
@@ -384,3 +400,101 @@ class PipeToBlockHandler:
                     queue[0] = (src_data, remaining_receivers)
 
                 return
+
+
+# ===== Context Manager Wrapper Handlers =====
+# These handlers delegate to the underlying Block handlers for _ReserveContext and _WaitContext
+
+
+# Import here to avoid circular dependency
+from .cb import ReserveContext, WaitContext
+
+
+# Tensor → ReserveContext (delegates to Tensor → Block)
+@register_copy_handler(Tensor, ReserveContext)
+class TensorToReserveContextHandler:
+    """Handler for Tensor → ReserveContext (delegates to Tensor → Block)."""
+
+    def validate(self, src: Tensor, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        TensorToBlockHandler().validate(src, dst.block())
+
+    def transfer(self, src: Tensor, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        TensorToBlockHandler().transfer(src, dst.block())
+
+    def can_wait(self, src: Tensor, dst: "ReserveContext") -> bool:
+        # Delegate to the Block handler
+        return TensorToBlockHandler().can_wait(src, dst.block())
+
+
+# WaitContext → Tensor (delegates to Block → Tensor)
+@register_copy_handler(WaitContext, Tensor)
+class WaitContextToTensorHandler:
+    """Handler for WaitContext → Tensor (delegates to Block → Tensor)."""
+
+    def validate(self, src: "WaitContext", dst: Tensor) -> None:
+        # Delegate to the Block handler
+        BlockToTensorHandler().validate(src.block(), dst)
+
+    def transfer(self, src: "WaitContext", dst: Tensor) -> None:
+        # Delegate to the Block handler
+        BlockToTensorHandler().transfer(src.block(), dst)
+
+    def can_wait(self, src: "WaitContext", dst: Tensor) -> bool:
+        # Delegate to the Block handler
+        return BlockToTensorHandler().can_wait(src.block(), dst)
+
+
+# WaitContext → Pipe (delegates to Block → Pipe)
+@register_copy_handler(WaitContext, Pipe)
+class WaitContextToPipeHandler:
+    """Handler for WaitContext → Pipe (delegates to Block → Pipe)."""
+
+    def validate(self, src: "WaitContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().validate(src.block(), dst)
+
+    def transfer(self, src: "WaitContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().transfer(src.block(), dst)
+
+    def can_wait(self, src: "WaitContext", dst: Pipe) -> bool:
+        # Delegate to the Block handler
+        return BlockToPipeHandler().can_wait(src.block(), dst)
+
+
+# Pipe → ReserveContext (delegates to Pipe → Block)
+@register_copy_handler(Pipe, ReserveContext)
+class PipeToReserveContextHandler:
+    """Handler for Pipe → ReserveContext (delegates to Pipe → Block)."""
+
+    def validate(self, src: Pipe, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        PipeToBlockHandler().validate(src, dst.block())
+
+    def transfer(self, src: Pipe, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        PipeToBlockHandler().transfer(src, dst.block())
+
+    def can_wait(self, src: Pipe, dst: "ReserveContext") -> bool:
+        # Delegate to the Block handler
+        return PipeToBlockHandler().can_wait(src, dst.block())
+
+
+# ReserveContext → Pipe (delegates to Block → Pipe)
+@register_copy_handler(ReserveContext, Pipe)
+class ReserveContextToPipeHandler:
+    """Handler for ReserveContext → Pipe (delegates to Block → Pipe)."""
+
+    def validate(self, src: "ReserveContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().validate(src.block(), dst)
+
+    def transfer(self, src: "ReserveContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().transfer(src.block(), dst)
+
+    def can_wait(self, src: "ReserveContext", dst: Pipe) -> bool:
+        # Delegate to the Block handler
+        return BlockToPipeHandler().can_wait(src.block(), dst)

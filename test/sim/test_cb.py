@@ -456,6 +456,55 @@ def test_can_methods_uninitialized(api: CBAPI) -> None:
     print("can_wait() and can_reserve() uninitialized test passed!")
 
 
+def test_context_manager_syntax(api: CBAPI) -> None:
+    """Test the context manager (with statement) syntax for reserve and wait."""
+    # Create a circular buffer
+    cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+
+    # Test reserve with context manager
+    test_data = make_ones_tile()
+    with cb.reserve() as write_view:
+        write_view[0] = test_data
+        # push() is automatically called on exit
+
+    # Test wait with context manager
+    with cb.wait() as read_view:
+        read_data = read_view[0]
+        assert read_data is not None
+        # pop() is automatically called on exit
+
+    # Verify that we can still use the old style (backward compatibility)
+    write_view2 = cb.reserve()
+    write_view2[0] = make_zeros_tile()
+    cb.push()
+
+    read_view2 = cb.wait()
+    data2 = read_view2[0]
+    assert data2 is not None
+    cb.pop()
+
+    # Test with multiple context managers on same line
+    cb.reset()  # Reset to clean state
+
+    # Write data first
+    with cb.reserve() as w1:
+        w1[0] = make_ones_tile()
+
+    # Create another CB for multi-context test
+    cb2 = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+    with cb2.reserve() as w2:
+        w2[0] = make_zeros_tile()
+
+    # Test multiple wait contexts (simulating the matmul pattern)
+    with cb.wait() as r1, cb2.wait() as r2:
+        d1 = r1[0]
+        d2 = r2[0]
+        assert d1 is not None
+        assert d2 is not None
+
+    print("Context manager syntax test passed!")
+
+
 if __name__ == "__main__":
     test_api = CBAPI()
     test_circular_buffer_basic(test_api)
@@ -470,4 +519,5 @@ if __name__ == "__main__":
     test_can_wait_and_can_reserve(test_api)
     test_can_methods_multi_tile(test_api)
     test_can_methods_uninitialized(test_api)
+    test_context_manager_syntax(test_api)
     print("All CircularBuffer tests passed!")

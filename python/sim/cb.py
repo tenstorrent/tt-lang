@@ -10,12 +10,176 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union, List
+from types import TracebackType
 
 from .cbapi import CBAPI
 from .block import Block
 from .typedefs import CBID, Size, Shape
 from .ttnnsim import Tensor
+
+
+class ReserveContext:
+    """Context manager for reserve operations that automatically pushes on exit.
+
+    Can be used as a context manager:
+        with cb.reserve() as blk:
+            blk.store(data)  # auto-push on exit
+
+    Or without (for backward compatibility):
+        blk = cb.reserve()
+        blk.store(data)
+        cb.push()  # manual push required
+    """
+
+    def __init__(self, cb: "CircularBuffer", block: Block):
+        self._cb = cb
+        self._block = block
+
+    def block(self) -> Block:
+        """Return the underlying Block object."""
+        return self._block
+
+    def __enter__(self) -> Block:
+        return self._block
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        # Always push, even if an exception occurred
+        self._cb.push()
+
+    # Delegate Block operations for backward compatibility
+    def __len__(self) -> int:
+        return len(self._block)
+
+    def __getitem__(self, idx: int) -> Tensor:
+        return self._block[idx]
+
+    def __setitem__(self, idx: int, value: Tensor) -> None:
+        self._block[idx] = value
+
+    def store(self, items) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
+        self._block.store(items)  # type: ignore[reportUnknownArgumentType]
+
+    # Delegate arithmetic operations
+    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__add__(other)
+
+    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__sub__(other)
+
+    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__mul__(other)
+
+    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__truediv__(other)
+
+    def __matmul__(self, other: "Block") -> List[Tensor]:
+        return self._block.__matmul__(other)
+
+    # Reverse operators for when the left operand doesn't support the operation
+    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__radd__(other)
+
+    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rsub__(other)
+
+    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rmul__(other)
+
+    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rtruediv__(other)
+
+
+class WaitContext:
+    """Context manager for wait operations that automatically pops on exit.
+
+    Can be used as a context manager:
+        with cb.wait() as blk:
+            data = blk[0]  # auto-pop on exit
+
+    Or without (for backward compatibility):
+        blk = cb.wait()
+        data = blk[0]
+        cb.pop()  # manual pop required
+    """
+
+    def __init__(self, cb: "CircularBuffer", block: Block):
+        self._cb = cb
+        self._block = block
+
+    def block(self) -> Block:
+        """Return the underlying Block object."""
+        return self._block
+
+    def __enter__(self) -> Block:
+        return self._block
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        # Always pop, even if an exception occurred
+        self._cb.pop()
+
+    # Delegate Block operations for backward compatibility
+    def __len__(self) -> int:
+        return len(self._block)
+
+    def __getitem__(self, idx: int) -> Tensor:
+        return self._block[idx]
+
+    def __setitem__(self, idx: int, value: Tensor) -> None:
+        self._block[idx] = value
+
+    def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
+        """Store items into the block.
+
+        Args:
+            items: Sequence of tensors or a single tensor to store
+            acc: If True, accumulate with existing values (not fully implemented)
+        """
+        # TODO: Implement acc=True accumulation mode
+        if acc:
+            # For now, just delegate to regular store
+            # In the future, this should accumulate with existing block values
+            pass
+        self._block.store(items)  # type: ignore[reportUnknownArgumentType]
+
+    # Delegate arithmetic operations
+    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__add__(other)
+
+    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__sub__(other)
+
+    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__mul__(other)
+
+    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__truediv__(other)
+
+    def __matmul__(self, other: "Block") -> List[Tensor]:
+        return self._block.__matmul__(other)
+
+    # Reverse operators for when the left operand doesn't support the operation
+    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__radd__(other)
+
+    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rsub__(other)
+
+    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rmul__(other)
+
+    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rtruediv__(other)
 
 
 # TODO: Should this class now be private?
@@ -100,15 +264,24 @@ class CircularBuffer:
             )
         return self._api, self._cb_id
 
-    def wait(self) -> Block:
+    def wait(self) -> WaitContext:
         """Wait for data to be available and return a read view.
 
         This method blocks until the required number of tiles (as specified by
-        the shape parameter) are available for reading. It returns a Block
-        that provides access to the available data.
+        the shape parameter) are available for reading. It returns a context
+        manager that provides access to the available data.
+
+        Can be used as a context manager (recommended):
+            with cb.wait() as blk:
+                data = blk[0]  # auto-pop on exit
+
+        Or without (for backward compatibility):
+            blk = cb.wait()
+            data = blk[0]
+            cb.pop()  # manual pop required
 
         Returns:
-            Block object providing read access to the available tiles
+            Context manager providing read access to the available tiles
 
         Raises:
             CBTimeoutError: If the wait times out
@@ -117,7 +290,8 @@ class CircularBuffer:
         """
         api, cb_id = self._ensure_initialized()
         api.cb_wait_front(cb_id, self._tiles_per_operation)
-        return api.get_read_ptr(cb_id)
+        block = api.get_read_ptr(cb_id)
+        return WaitContext(self, block)
 
     def can_wait(self) -> bool:
         """
@@ -133,16 +307,25 @@ class CircularBuffer:
         stats = api.cb_stats(cb_id)
         return stats.visible >= self._tiles_per_operation
 
-    def reserve(self) -> Block:
+    def reserve(self) -> ReserveContext:
         """
         Reserve space for writing and return a write view.
 
         This method blocks until there is sufficient space to write the required
-        number of tiles (as specified by the shape parameter). It returns a Block
-        that provides access to the reserved space.
+        number of tiles (as specified by the shape parameter). It returns a context
+        manager that provides access to the reserved space.
+
+        Can be used as a context manager (recommended):
+            with cb.reserve() as blk:
+                blk.store(data)  # auto-push on exit
+
+        Or without (for backward compatibility):
+            blk = cb.reserve()
+            blk.store(data)
+            cb.push()  # manual push required
 
         Returns:
-            Block object providing write access to the reserved space
+            Context manager providing write access to the reserved space
 
         Raises:
             CBTimeoutError: If the reservation times out
@@ -151,7 +334,8 @@ class CircularBuffer:
         """
         api, cb_id = self._ensure_initialized()
         api.cb_reserve_back(cb_id, self._tiles_per_operation)
-        return api.get_write_ptr(cb_id)
+        block = api.get_write_ptr(cb_id)
+        return ReserveContext(self, block)
 
     def can_reserve(self) -> bool:
         """
