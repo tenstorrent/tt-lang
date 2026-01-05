@@ -81,10 +81,10 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB operations
+# CB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
 # CHECK: ttl.cb_wait %[[CB0]]
 # CHECK: ttl.cb_wait %[[CB1]]

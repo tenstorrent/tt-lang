@@ -26,7 +26,12 @@ except ImportError:
     exit(0)
 
 
-# CHECK: ValueError: copy() requires exactly one CB argument
+# CHECK: error: copy() requires exactly one CB argument
+# CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:56:10
+# CHECK-NEXT:    |
+# CHECK-NEXT: 56 |         tx = copy(lhs[0, 0], rhs[0, 0])
+# CHECK-NEXT:    |          ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
 def invalid_copy_no_cb_kernel(lhs, rhs, out):
     """This kernel should fail because copy() needs exactly one CB."""

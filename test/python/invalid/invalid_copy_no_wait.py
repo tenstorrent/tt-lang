@@ -2,13 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: not %python %s 2>&1 | FileCheck %s
+# Test 1: Pretty error output (default, no verbose errors)
+# RUN: not %python %s 2>&1 | FileCheck %s --check-prefix=PRETTY
+
+# Test 2: Verbose error output includes raw MLIR diagnostic
+# RUN: env TTLANG_VERBOSE_ERRORS=1 not %python %s 2>&1 | FileCheck %s --check-prefix=VERBOSE
 
 """
-Validation test: non-tiled tensors are not supported.
+Validation test: copy operations must be waited on.
 
-This test verifies that using tiled=False raises the expected ValueError.
-The validation happens when building the MLIR type for tensors.
+This test verifies that forgetting to call tx.wait() after ttl.copy raises
+an MLIR verification error with source location information.
 """
 
 import os
@@ -26,41 +30,26 @@ except ImportError:
     exit(0)
 
 
-# CHECK: ValueError: Only tiled tensors supported for TTNN interop
-# CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:35:1
-# CHECK-NEXT:    |
-# CHECK-NEXT: 35 | @ttl.kernel(grid=(1, 1), tiled=False)
-# CHECK-NEXT:    | ^
-# CHECK-NEXT:    |
-@ttl.kernel(grid=(1, 1), tiled=False)
-def invalid_non_tiled_kernel(lhs, rhs, out):
-    """This kernel should fail because tiled=False is not supported."""
+@ttl.kernel(grid=(1, 1))
+def copy_no_wait_kernel(lhs, out):
+    """Kernel that forgets to wait on a copy - should fail MLIR verification."""
     lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def add_compute():
+    def compute_thread():
         l = lhs_cb.wait()
-        r = rhs_cb.wait()
         o = out_cb.reserve()
-        result = l + r
-        o.store(result)
+        o.store(l)
         lhs_cb.pop()
-        rhs_cb.pop()
         out_cb.push()
 
     @ttl.datamovement()
     def dm_read():
         lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
-        tx_lhs.wait()
+        tx = copy(lhs[0, 0], lhs_cb)
+        # BUG: Forgot to call tx.wait() - this should be caught by MLIR verifier
         lhs_cb.push()
-
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
-        tx_rhs.wait()
-        rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -69,30 +58,32 @@ def invalid_non_tiled_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return Program(compute_thread, dm_read, dm_write)(lhs, out)
+
+
+# PRETTY: error: expects transfer handle to be synchronized with ttl.wait
+# PRETTY-NEXT:   --> {{.*}}invalid_copy_no_wait.py:50:10
+# PRETTY-NEXT:    |
+# PRETTY-NEXT: 50 |         tx = copy(lhs[0, 0], lhs_cb)
+# PRETTY-NEXT:    |          ^
+# PRETTY-NEXT:    |
+
+# VERBOSE: error: expects transfer handle to be synchronized with ttl.wait
+# VERBOSE: MLIR diagnostic:
+# VERBOSE: 'ttl.copy' op expects transfer handle to be synchronized with ttl.wait
 
 
 if __name__ == "__main__":
     import torch
 
-    print("=== Non-Tiled Validation Test ===")
-
     device = ttnn.open_device(device_id=0)
 
     try:
         lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
-        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
         out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
         lhs = ttnn.from_torch(
             lhs_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        rhs = ttnn.from_torch(
-            rhs_torch,
             dtype=ttnn.bfloat16,
             layout=ttnn.TILE_LAYOUT,
             device=device,
@@ -107,13 +98,12 @@ if __name__ == "__main__":
         )
 
         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
-        rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        # This should raise ValueError
-        invalid_non_tiled_kernel(lhs, rhs, out)
+        # This should raise an error because copy is not waited on
+        copy_no_wait_kernel(lhs, out)
 
-        print("ERROR: Expected ValueError was not raised!")
+        print("ERROR: Expected verification error was not raised!")
         exit(1)
 
     finally:

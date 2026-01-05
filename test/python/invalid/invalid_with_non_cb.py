@@ -26,7 +26,12 @@ except ImportError:
     exit(0)
 
 
-# CHECK: Expected CircularBufferType, got
+# CHECK: error: Expected CircularBufferType, got
+# CHECK-NEXT:   --> {{.*}}invalid_with_non_cb.py:49:10
+# CHECK-NEXT:    |
+# CHECK-NEXT: 49 |         with l.wait() as data:
+# CHECK-NEXT:    |          ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
 def invalid_with_non_cb_kernel(lhs, rhs, out):
     """This kernel should fail because 'with' is used on a TensorBlock, not a CB."""
