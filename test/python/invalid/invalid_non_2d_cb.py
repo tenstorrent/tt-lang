@@ -26,7 +26,12 @@ except ImportError:
     exit(0)
 
 
-# CHECK: Only 2D tensors supported, got shape
+# CHECK: error: Only 2D tensors supported, got shape
+# CHECK-NEXT:   --> {{.*}}invalid_non_2d_cb.py:110:1
+# CHECK-NEXT:    |
+# CHECK-NEXT: 110 |         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+# CHECK-NEXT:     |     ^
+# CHECK-NEXT:     |
 @ttl.kernel(grid=(1, 1))
 def invalid_3d_tensor_kernel(lhs, rhs, out):
     """This kernel should fail because 3D tensors are not supported."""

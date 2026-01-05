@@ -15,6 +15,25 @@ import re
 from typing import List, Optional, Tuple
 
 
+def find_variable_assignment(source_lines: List[str], var_name: str, before_line: int) -> Optional[int]:
+    """Find the line where a variable was assigned, searching backwards.
+
+    Args:
+        source_lines: List of source lines (0-indexed)
+        var_name: Variable name to search for
+        before_line: Search backwards from this 1-based line number
+
+    Returns:
+        1-based line number where assignment was found, or None
+    """
+    pattern = re.compile(rf'^\s*{re.escape(var_name)}\s*=')
+
+    for i in range(min(before_line - 1, len(source_lines) - 1), -1, -1):
+        if pattern.match(source_lines[i]):
+            return i + 1
+    return None
+
+
 def _verbose_errors_enabled() -> bool:
     """Check if verbose MLIR error output is enabled."""
     return os.environ.get("TTLANG_VERBOSE_ERRORS", "0") == "1"

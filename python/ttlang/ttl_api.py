@@ -42,7 +42,13 @@ from .ttl_utils import get_thread_type_string
 
 
 from pykernel._src.utils import _cleanup_source_code
-from ._src.tensor_registry import register_tensor_name, get_tensor_global_index
+from ._src.tensor_registry import (
+    register_tensor_name,
+    register_tensor_source,
+    get_tensor_global_index,
+    get_tensor_source,
+)
+from .diagnostics import find_variable_assignment
 
 from ._src.ttl_ast import TTLGenericCompiler
 from .diagnostics import format_mlir_error, format_python_error, TTLangCompileError
@@ -115,6 +121,38 @@ def _get_source_line_offset(f) -> int:
         return start_lineno + num_decorator_lines - 1
     except (TypeError, OSError):
         return 0
+
+
+def _track_tensor_sources(f_params, args, source_file: str) -> None:
+    """Track source locations for tensor arguments.
+
+    Searches backwards from the kernel call site to find where each
+    tensor variable was assigned, then registers that location.
+    """
+    if source_file == "<unknown>":
+        return
+
+    try:
+        with open(source_file, 'r') as sf:
+            source_lines = sf.read().splitlines()
+    except (IOError, OSError):
+        return
+
+    call_line = None
+    for frame_info in inspect.stack():
+        if frame_info.filename == source_file:
+            call_line = frame_info.lineno
+            break
+
+    if not call_line:
+        return
+
+    for param_name, arg in zip(f_params, args):
+        if not is_ttnn_tensor(arg):
+            continue
+        assign_line = find_variable_assignment(source_lines, param_name, call_line)
+        if assign_line:
+            register_tensor_source(arg, source_file, assign_line)
 
 
 class CompiledTTNNKernel:
@@ -660,6 +698,9 @@ def _compile_and_run_kernel(
 
     for idx, (param_name, arg) in enumerate(zip(f_params, args)):
         register_tensor_name(arg, param_name, index=idx)
+
+    # For pretty error printing only:
+    _track_tensor_sources(f_params, args, kernel_source_file)
 
     inject_kwargs = [
         ("grid", grid),

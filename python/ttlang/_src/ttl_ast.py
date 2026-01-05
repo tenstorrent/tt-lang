@@ -11,7 +11,7 @@ from ttmlir.ir import *
 from ttmlir.dialects import ttcore, func, arith, ttkernel
 
 from pykernel._src.kernel_ast import TTCompilerBase
-from .tensor_registry import get_tensor_global_index
+from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 from ..dialects import ttl
 from ..dtype_utils import is_ttnn_tensor
@@ -45,6 +45,15 @@ def _get_annotation_name(annotation):
         raise TypeError(f"Unsupported annotation type: {type(annotation)}")
 
 
+def _raise_tensor_error(tensor, message: str):
+    """Raise TTLangCompileError with tensor source location if available."""
+    source_info = get_tensor_source(tensor)
+    if source_info:
+        source_file, line = source_info
+        raise TTLangCompileError(message, source_file=source_file, line=line)
+    raise ValueError(message)
+
+
 def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     """Build MLIR tensor type for a ttnn tensor with TTNNLayoutAttr."""
     if not tiled:
@@ -52,7 +61,7 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(tensor.shape) != 2:
-        raise ValueError(f"Only 2D tensors supported, got shape {tensor.shape}")
+        _raise_tensor_error(tensor, f"Only 2D tensors supported, got shape {tensor.shape}")
 
     layout = create_ttnn_layout(
         ctx,
@@ -188,9 +197,10 @@ class TTLGenericCompiler(TTCompilerBase):
         assert not self.func_entry, "Cannot declare function within a function"
 
         if node.args.args:
-            raise ValueError(
+            self._raise_error(
+                node,
                 "Thread functions must have no parameters. "
-                "Use make_circular_buffer_like() in kernel body and capture CBs in closures."
+                "Use make_circular_buffer_like() in kernel body and capture CBs in closures.",
             )
 
         # Collect tensor captures for function arguments
