@@ -671,11 +671,14 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
 
-  // Get page size for CB pointer arithmetic.
+  // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
   auto tensorTy = llvm::cast<RankedTensorType>(srcTensor.getType());
-  utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
+  auto layoutAttr =
+      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+  assert(layoutAttr && "tensor must have TTNNLayoutAttr encoding");
+  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
   auto pageSizeVal =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
+      rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
@@ -725,11 +728,14 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
 
-  // Get page size for CB pointer arithmetic.
+  // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
   auto tensorTy = llvm::cast<RankedTensorType>(dstTensor.getType());
-  utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
+  auto layoutAttr =
+      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+  assert(layoutAttr && "tensor must have TTNNLayoutAttr encoding");
+  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
   auto pageSizeVal =
-      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
+      rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
