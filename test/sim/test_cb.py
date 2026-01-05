@@ -9,17 +9,17 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 """
 
 import pytest
-import torch
-from python.sim import (
-    CircularBuffer,
-    CBAPI,
-    TensorAccessor,
-    IndexType,
-    TILE_SHAPE,
-    copy,
-)
-from python.sim import torch_utils as tu
+from python.sim.cb import CircularBuffer
+from python.sim.cbapi import CBAPI
+from python.sim import ttnn, TILE_SHAPE, copy
 from python.sim.errors import CBContractError
+from test_utils import (
+    make_ones_tile,
+    make_zeros_tile,
+    make_rand_tensor,
+    make_zeros_tensor,
+    make_ones_tensor,
+)
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def api():
 def test_circular_buffer_basic(api: CBAPI) -> None:
     """Test basic CircularBuffer operations."""
     # Create a circular buffer for single tiles with buffer factor 2
-    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+    cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
 
     # Verify basic properties
     assert cb.shape == (1, 1)
@@ -44,7 +44,7 @@ def test_circular_buffer_basic(api: CBAPI) -> None:
     assert len(write_view) == 1  # Should have space for 1 tile
 
     # Simulate writing data
-    test_data = tu.ones(*TILE_SHAPE)
+    test_data = make_ones_tile()
     write_view[0] = test_data
     cb.push()
 
@@ -64,7 +64,7 @@ def test_circular_buffer_basic(api: CBAPI) -> None:
 def test_circular_buffer_multi_tile(api: CBAPI) -> None:
     """Test CircularBuffer with multiple tiles per operation."""
     # Create a circular buffer for 2x1 tiles (2 tiles per operation)
-    cb = CircularBuffer[torch.Tensor](shape=(2, 1), buffer_factor=3, api=api)
+    cb = CircularBuffer(shape=(2, 1), buffer_factor=3, api=api)
 
     # Verify properties
     assert cb.shape == (2, 1)
@@ -76,7 +76,9 @@ def test_circular_buffer_multi_tile(api: CBAPI) -> None:
 
     # Fill with test data
     for i in range(2):
-        write_view[i] = tu.ones(*TILE_SHAPE) * (i + 1)
+        tile = ttnn.rand(TILE_SHAPE)
+        tile.to_torch().fill_(float(i + 1))
+        write_view[i] = tile
 
     cb.push()
 
@@ -97,16 +99,16 @@ def test_circular_buffer_multi_tile(api: CBAPI) -> None:
 def test_copy_operations(api: CBAPI) -> None:
     """Test copy operations between TensorAccessor and CircularBuffer."""
     # Create test tensors
-    tensor_a = tu.randn(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
+    tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
 
-    accessor_a = TensorAccessor(tensor_a, index_type=IndexType.TILE)
+    accessor_a = tensor_a
 
     # Create circular buffer
-    cb_a = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+    cb_a = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
 
     # Test copy from tensor to circular buffer
     cb_view = cb_a.reserve()
-    tensor_slice = accessor_a[slice(0, 1), slice(0, 1)]  # Single tile
+    tensor_slice = accessor_a[0:1, 0:1]  # Single tile
 
     # Copy operation
     tx = copy(tensor_slice, cb_view)
@@ -115,7 +117,7 @@ def test_copy_operations(api: CBAPI) -> None:
 
     # Test copy from circular buffer to tensor
     cb_read_view = cb_a.wait()
-    output_tensor = tu.zeros(*TILE_SHAPE)  # Single tile output
+    output_tensor = make_zeros_tile()  # Single tile output
 
     # Copy operation
     tx2 = copy(cb_read_view, output_tensor)
@@ -133,17 +135,17 @@ def test_error_handling(api: CBAPI) -> None:
     """Test error conditions."""
     # Test invalid shape
     with pytest.raises(ValueError):
-        CircularBuffer[torch.Tensor](shape=(0, 1), api=api)  # Invalid shape
+        CircularBuffer(shape=(0, 1), api=api)  # Invalid shape
 
     with pytest.raises(ValueError):
-        CircularBuffer[torch.Tensor](shape=(1, 2, 3), api=api)  # type: ignore # Wrong shape dimensions
+        CircularBuffer(shape=(1, 2, 3), api=api)  # type: ignore # Wrong shape dimensions
 
     # Test invalid buffer factor
     with pytest.raises(ValueError):
-        CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=0, api=api)
+        CircularBuffer(shape=(1, 1), buffer_factor=0, api=api)
 
     # Test operations without proper setup
-    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+    cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
 
     # Can't push without reserve - CBAPI will catch this
     with pytest.raises(CBContractError):
@@ -166,22 +168,20 @@ def test_example_usage_pattern(api: CBAPI) -> None:
     rows, cols = 128, 128
     granularity = 4
 
-    a_in = tu.randn(rows, cols)
-    c_in = tu.randn(
+    a_in = make_rand_tensor(rows, cols)
+    c_in = make_rand_tensor(
         TILE_SHAPE[0], cols
     )  # Make c_in a full tile height for proper tiling
 
     # Create accessors
-    a_accessor = TensorAccessor(a_in, index_type=IndexType.TILE)
-    c_accessor = TensorAccessor(c_in, index_type=IndexType.TILE)
+    a_accessor = a_in
+    c_accessor = c_in
 
     # Create circular buffers like in the example
-    a_in_cb = CircularBuffer[torch.Tensor](
-        shape=(granularity, 1), buffer_factor=2, api=api
-    )
-    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2, api=api)
-    c_in_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
-    _ = CircularBuffer[torch.Tensor](shape=(granularity, 1), buffer_factor=2, api=api)
+    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=2, api=api)
+    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2, api=api)
+    c_in_cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2, api=api)
 
     # Verify the circular buffers were created correctly
     assert a_in_cb.shape == (granularity, 1)
@@ -192,14 +192,14 @@ def test_example_usage_pattern(api: CBAPI) -> None:
     # Test basic operations
     # Simulate data movement operations
     c_block = c_in_cb.reserve()
-    c_slice = c_accessor[slice(0, 1), slice(0, 1)]
+    c_slice = c_accessor[0:1, 0:1]
     tx = copy(c_slice, c_block)
     tx.wait()
     c_in_cb.push()
 
     # Simulate some compute pattern
     a_block = a_in_cb.reserve()
-    a_slice = a_accessor[slice(0, granularity), slice(0, 1)]
+    a_slice = a_accessor[0:granularity, 0:1]
     tx = copy(a_slice, a_block)
     tx.wait()
     a_in_cb.push()
@@ -224,7 +224,7 @@ def test_make_circular_buffer_like_basic(api: CBAPI) -> None:
     from python.sim import ttl
 
     # Create a tensor
-    x = tu.zeros(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
+    x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
     # Create a circular buffer like x
     x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
@@ -251,7 +251,7 @@ def test_make_circular_buffer_like_infers_type(api: CBAPI) -> None:
     from python.sim import ttl
 
     # Create a tensor
-    tensor = tu.randn(TILE_SHAPE[0], TILE_SHAPE[1])
+    tensor = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
     # Create a circular buffer like the tensor
     cb = ttl.make_circular_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
@@ -276,9 +276,9 @@ def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
     from python.sim import ttl
 
     # Create different tensors
-    a = tu.randn(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
-    b = tu.zeros(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
-    c = tu.ones(TILE_SHAPE[0], TILE_SHAPE[1])
+    a = make_rand_tensor(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
+    b = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
+    c = make_ones_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
     # Create circular buffers for each
     a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -309,9 +309,9 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
     from python.sim import ttl
 
     # Simulate example usage
-    a_in = tu.randn(128, 128)
-    b_in = tu.randn(128, 128)
-    out = tu.zeros(128, 128)
+    a_in = make_rand_tensor(128, 128)
+    b_in = make_rand_tensor(128, 128)
+    out = make_zeros_tensor(128, 128)
 
     granularity = 4
     buffer_factor = 2
@@ -344,7 +344,7 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
 def test_can_wait_and_can_reserve(api: CBAPI) -> None:
     """Test can_wait() and can_reserve() methods."""
     # Create a circular buffer with buffer factor 2 (capacity = 2 tiles)
-    cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+    cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
 
     # Initially, buffer is empty
     # can_reserve should return True (we have 2 free tiles)
@@ -354,7 +354,7 @@ def test_can_wait_and_can_reserve(api: CBAPI) -> None:
 
     # Reserve and push one tile
     block = cb.reserve()
-    block[0] = tu.ones(*TILE_SHAPE)
+    block[0] = make_ones_tile()
     cb.push()
 
     # Now we have 1 tile visible, 1 tile free
@@ -363,7 +363,9 @@ def test_can_wait_and_can_reserve(api: CBAPI) -> None:
 
     # Reserve and push another tile (buffer now full)
     block = cb.reserve()
-    block[0] = tu.ones(*TILE_SHAPE) * 2
+    tile = ttnn.rand(TILE_SHAPE)
+    tile.to_torch().fill_(2.0)
+    block[0] = tile
     cb.push()
 
     # Now we have 2 tiles visible, 0 tiles free
@@ -392,7 +394,7 @@ def test_can_wait_and_can_reserve(api: CBAPI) -> None:
 def test_can_methods_multi_tile(api: CBAPI) -> None:
     """Test can_wait() and can_reserve() with multi-tile operations."""
     # Create a buffer that handles 2 tiles per operation, capacity = 6 tiles
-    cb = CircularBuffer[torch.Tensor](shape=(2, 1), buffer_factor=3, api=api)
+    cb = CircularBuffer(shape=(2, 1), buffer_factor=3, api=api)
 
     # Initially empty
     assert cb.can_reserve() is True  # 6 free tiles, need 2
@@ -401,7 +403,9 @@ def test_can_methods_multi_tile(api: CBAPI) -> None:
     # Reserve and push 2 tiles
     block = cb.reserve()
     for i in range(2):
-        block[i] = tu.ones(*TILE_SHAPE) * (i + 1)
+        tile = ttnn.rand(TILE_SHAPE)
+        tile.to_torch().fill_(float(i + 1))
+        block[i] = tile
     cb.push()
 
     # 2 visible, 4 free
@@ -411,7 +415,9 @@ def test_can_methods_multi_tile(api: CBAPI) -> None:
     # Reserve and push 2 more tiles
     block = cb.reserve()
     for i in range(2):
-        block[i] = tu.ones(*TILE_SHAPE) * (i + 3)
+        tile = ttnn.rand(TILE_SHAPE)
+        tile.to_torch().fill_(float(i + 3))
+        block[i] = tile
     cb.push()
 
     # 4 visible, 2 free
@@ -421,7 +427,9 @@ def test_can_methods_multi_tile(api: CBAPI) -> None:
     # Reserve and push 2 more tiles (buffer full)
     block = cb.reserve()
     for i in range(2):
-        block[i] = tu.ones(*TILE_SHAPE) * (i + 5)
+        tile = ttnn.rand(TILE_SHAPE)
+        tile.to_torch().fill_(float(i + 5))
+        block[i] = tile
     cb.push()
 
     # 6 visible, 0 free
@@ -435,7 +443,7 @@ def test_can_methods_uninitialized(api: CBAPI) -> None:
     """Test that can_wait() and can_reserve() fail on uninitialized CBs."""
     from python.sim import ttl
 
-    x = tu.zeros(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
+    x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
     cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
 
     # Both methods should raise RuntimeError on uninitialized CB

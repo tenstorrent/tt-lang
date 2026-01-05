@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, func, arith, ttkernel
 
-from pykernel._src.kernel_types import *
 from pykernel._src.kernel_ast import TTCompilerBase
 from .tensor_registry import get_tensor_global_index
 
