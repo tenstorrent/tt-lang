@@ -7,13 +7,18 @@ Test case for element-wise addition using the simulation framework.
 Imports and tests the eltwise_add.py example.
 """
 
+import sys
+from pathlib import Path
+
+# Add examples/sim to path so we can import the moved example modules
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "examples" / "sim"))
 
 # Import the example functions
-from eltwise_add import eltwise_add
-from eltwise_pipe import eltwise_pipe
-from eltwise_pipe_core3 import eltwise_pipe_core3
-from singlecore_matmul import tt_lang_singlecore_matmul
-from multicore_matmul import tt_lang_multicore_matmul
+from eltwise_add import eltwise_add  # type: ignore[import-not-found]
+from eltwise_pipe import eltwise_pipe  # type: ignore[import-not-found]
+from eltwise_pipe_core3 import eltwise_pipe_core3  # type: ignore[import-not-found]
+from singlecore_matmul import tt_lang_singlecore_matmul  # type: ignore[import-not-found]
+from multicore_matmul import tt_lang_multicore_matmul  # type: ignore[import-not-found]
 
 from sim import ttnn
 from sim.testing import assert_pcc

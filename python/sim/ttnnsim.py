@@ -154,17 +154,35 @@ class Tensor:
         # If key looks like tile-style indexing (two slices), use TensorAccessor
         if isinstance(key, tuple):
             key_t = cast(Tuple[Any, ...], key)
-            if (
-                len(key_t) == 2
-                and isinstance(key_t[0], slice)
-                and isinstance(key_t[1], slice)
-            ):
-                # Assign to typed locals (now that we've cast the tuple)
-                row_slice: slice = cast(slice, key_t[0])
-                col_slice: slice = cast(slice, key_t[1])
-                self._ensure_accessor()
-                assert self._accessor is not None
-                return Tensor(self._accessor.get_tiles(row_slice, col_slice))
+            if len(key_t) == 2:
+                row_key = key_t[0]
+                col_key = key_t[1]
+
+                # Check if both are integers (tile indexing like a[m, k])
+                if isinstance(row_key, int) and isinstance(col_key, int):
+                    # Check if tensor is tile-aligned; if not, use regular indexing
+                    if (
+                        len(self._tensor.shape) != 2
+                        or self._tensor.shape[0] % TILE_SHAPE[0] != 0
+                        or self._tensor.shape[1] % TILE_SHAPE[1] != 0
+                    ):
+                        return Tensor(self._tensor.__getitem__(cast(Any, key)))
+                    # Use tile indexing for tile-aligned tensors
+                    row_slice: slice = slice(row_key, row_key + 1)
+                    col_slice: slice = slice(col_key, col_key + 1)
+                    self._ensure_accessor()
+                    assert self._accessor is not None
+                    return Tensor(self._accessor.get_tiles(row_slice, col_slice))
+
+                # Check if both are slices (slice indexing)
+                if isinstance(row_key, slice) and isinstance(col_key, slice):
+                    self._ensure_accessor()
+                    assert self._accessor is not None
+                    return Tensor(
+                        self._accessor.get_tiles(
+                            cast(slice, row_key), cast(slice, col_key)
+                        )
+                    )
 
         return Tensor(self._tensor.__getitem__(cast(Any, key)))
 
@@ -172,23 +190,58 @@ class Tensor:
         # If setting via tile-style indexing, route through accessor
         if isinstance(key, tuple):
             key_t = cast(Tuple[Any, ...], key)
-            if (
-                len(key_t) == 2
-                and isinstance(key_t[0], slice)
-                and isinstance(key_t[1], slice)
-            ):
-                row_slice: slice = cast(slice, key_t[0])
-                col_slice: slice = cast(slice, key_t[1])
-                self._ensure_accessor()
-                assert self._accessor is not None
-                match value:
-                    case Tensor() as tval:
-                        self._accessor.set_tiles(row_slice, col_slice, tval._tensor)
-                    case torch.Tensor() as tt:
-                        self._accessor.set_tiles(row_slice, col_slice, tt)
-                    case _:
-                        self._accessor.set_tiles(row_slice, col_slice, value)
-                return
+            if len(key_t) == 2:
+                row_key = key_t[0]
+                col_key = key_t[1]
+
+                # Check if both are integers (tile indexing like a[m, k])
+                if isinstance(row_key, int) and isinstance(col_key, int):
+                    # Check if tensor is tile-aligned; if not, use regular indexing
+                    if (
+                        len(self._tensor.shape) != 2
+                        or self._tensor.shape[0] % TILE_SHAPE[0] != 0
+                        or self._tensor.shape[1] % TILE_SHAPE[1] != 0
+                    ):
+                        match value:
+                            case Tensor() as tval:
+                                self._tensor.__setitem__(cast(Any, key), tval._tensor)
+                            case torch.Tensor() as tt:
+                                self._tensor.__setitem__(cast(Any, key), tt)
+                            case _:
+                                self._tensor.__setitem__(cast(Any, key), value)
+                        return
+                    # Use tile indexing for tile-aligned tensors
+                    row_slice: slice = slice(row_key, row_key + 1)
+                    col_slice: slice = slice(col_key, col_key + 1)
+                    self._ensure_accessor()
+                    assert self._accessor is not None
+                    match value:
+                        case Tensor() as tval:
+                            self._accessor.set_tiles(row_slice, col_slice, tval._tensor)
+                        case torch.Tensor() as tt:
+                            self._accessor.set_tiles(row_slice, col_slice, tt)
+                        case _:
+                            self._accessor.set_tiles(row_slice, col_slice, value)
+                    return
+
+                # Check if both are slices (slice indexing)
+                if isinstance(row_key, slice) and isinstance(col_key, slice):
+                    self._ensure_accessor()
+                    assert self._accessor is not None
+                    match value:
+                        case Tensor() as tval:
+                            self._accessor.set_tiles(
+                                cast(slice, row_key), cast(slice, col_key), tval._tensor
+                            )
+                        case torch.Tensor() as tt:
+                            self._accessor.set_tiles(
+                                cast(slice, row_key), cast(slice, col_key), tt
+                            )
+                        case _:
+                            self._accessor.set_tiles(
+                                cast(slice, row_key), cast(slice, col_key), value
+                            )
+                    return
 
         match value:
             case Tensor() as tval:
