@@ -13,14 +13,14 @@ import os
 from typing import List, Optional, Callable, Dict, Union
 
 try:
-    import torch
-except ModuleNotFoundError:
-    torch = None
-
-try:
     import ttnn
 except ModuleNotFoundError:
     ttnn = None
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 try:
     from _ttmlir_runtime import runtime
