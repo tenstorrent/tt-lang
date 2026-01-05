@@ -39,7 +39,6 @@ export PYTHONPATH="\
 ${TT_LANG_HOME}/python:\
 @TTMLIR_PATH@/python_packages:\
 @TTMLIR_PATH@/ttrt/runtime/ttnn:\
-@TTMLIR_PATH@/python_packages/ttrt/runtime/tt_metal:\
 $PYTHONPATH"
 
 # TODO(#200): Fix this hack to not require tt-mlir source directory to be present
