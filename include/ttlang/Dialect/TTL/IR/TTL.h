@@ -28,6 +28,7 @@ class TTLTileOpTrait
 
 /// Attribute names.
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
+inline constexpr llvm::StringRef kCBTileIdxAttrName = "cb_tile_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 
 /// Trait for tile compute operations (add, mul, exp, etc.).

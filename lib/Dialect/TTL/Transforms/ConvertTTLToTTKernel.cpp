@@ -134,6 +134,47 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
+/// Compute linearized CB tile index from enclosing scf.for loops.
+/// For nested loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
+/// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
+/// Returns constant 0 if not inside any loops (single-tile case).
+static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
+  Location loc = op->getLoc();
+
+  SmallVector<scf::ForOp> loops;
+  Operation *parent = op->getParentOp();
+  while (parent) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      loops.push_back(forOp);
+    }
+    parent = parent->getParentOp();
+  }
+
+  if (loops.empty()) {
+    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
+  // Reverse to get outermost-first order.
+  std::reverse(loops.begin(), loops.end());
+
+  Value linearIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
+  for (size_t i = 0; i < loops.size(); ++i) {
+    Value iv = loops[i].getInductionVar();
+
+    // Compute stride as product of remaining loop upper bounds.
+    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
+    for (size_t j = i + 1; j < loops.size(); ++j) {
+      stride = builder.create<arith::MulIOp>(loc, stride,
+                                             loops[j].getUpperBound());
+    }
+
+    Value term = builder.create<arith::MulIOp>(loc, iv, stride);
+    linearIdx = builder.create<arith::AddIOp>(loc, linearIdx, term);
+  }
+
+  return linearIdx;
+}
+
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
 /// ctaIndex: Index into compile-time args where tensor config starts.
 /// crtaIndex: Index into compile-runtime args (typically 0).
@@ -378,10 +419,8 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     }
 
-    // The CB tile index is always 0 because we pack one tile at a time into
-    // the reserved section of the CB. The index is relative to the current
-    // reserved section (from cb_reserve_back), not the absolute CB position.
-    auto cbTileIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    // Compute CB tile index from enclosing loops for multi-tile cases.
+    auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
@@ -545,14 +584,24 @@ getTileGridShape(const RankedTensorType &tensorTy) {
   return {tilesY, tilesX};
 }
 
-/// Extract tile grid shape from a Value if it's a static rank-2 tensor.
-/// Returns {1, 1} for non-tensor types or dynamic shapes.
+/// Extract tile grid shape from a Value if it's a static tensor.
+/// Handles both rank-2 tensors (logical shape) and rank-4 tensors
+/// (device shape: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]).
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
-  if (tensorTy && tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
+  assert(tensorTy && "expected RankedTensorType");
+  assert(tensorTy.hasStaticShape() && "expected static shape");
+
+  auto dims = tensorTy.getShape();
+  if (dims.size() == 2) {
     return getTileGridShape(tensorTy);
+  } else if (dims.size() == 4) {
+    // Rank-4 tensor: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
+    // The last two dimensions are already tile counts, not element counts.
+    return {dims[2], dims[3]};
   }
-  return {1, 1};
+
+  llvm_unreachable("expected rank-2 or rank-4 tensor");
 }
 
 // Emit a tile loop (or single tile body) with proper offset computation.
@@ -622,12 +671,23 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
 
+  // Get page size for CB pointer arithmetic.
+  auto tensorTy = llvm::cast<RankedTensorType>(srcTensor.getType());
+  utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
+  auto pageSizeVal =
+      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
+
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                 // Compute CB address: cbWritePtr + tileOffset * pageSize
+                 Value byteOffset =
+                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeVal);
+                 Value cbAddr =
+                     b.create<arith::AddIOp>(bodyLoc, cbWritePtr, byteOffset);
                  b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
-                                                   *srcAccessor, cbWritePtr);
+                                                   *srcAccessor, cbAddr);
                });
 
   auto handle = makeZeroI32(loc, rewriter);
@@ -665,12 +725,23 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
 
+  // Get page size for CB pointer arithmetic.
+  auto tensorTy = llvm::cast<RankedTensorType>(dstTensor.getType());
+  utils::ContiguousLayoutInfo layout = utils::computeContiguousLayout(tensorTy);
+  auto pageSizeVal =
+      rewriter.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
+
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
+                 // Compute CB address: cbReadPtr + tileOffset * pageSize
+                 Value byteOffset =
+                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeVal);
+                 Value cbAddr =
+                     b.create<arith::AddIOp>(bodyLoc, cbReadPtr, byteOffset);
                  b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
-                                                    *dstAccessor, cbReadPtr);
+                                                    *dstAccessor, cbAddr);
                });
 
   auto handle = makeZeroI32(loc, rewriter);
