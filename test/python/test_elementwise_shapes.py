@@ -19,22 +19,21 @@ Total test cases: 13 ops x 16 shapes = 208 tests
 # RUN: %python -m pytest %s -v
 
 import pytest
-import torch
 import sys
 import tempfile
 import importlib.util
 from pathlib import Path
 
-# Add examples to path for utils
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "examples"))
-from utils import assert_allclose
-
+# Import ttnn BEFORE torch to avoid nanobind initialization issues
 try:
     import ttnn
 
     TTNN_AVAILABLE = True
 except ImportError:
     TTNN_AVAILABLE = False
+
+import torch
+from utils import assert_allclose
 
 # Skip all tests if ttnn not available
 pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
