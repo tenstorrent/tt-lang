@@ -164,8 +164,8 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
     // Compute stride as product of remaining loop upper bounds.
     Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
     for (size_t j = i + 1; j < loops.size(); ++j) {
-      stride = builder.create<arith::MulIOp>(loc, stride,
-                                             loops[j].getUpperBound());
+      stride =
+          builder.create<arith::MulIOp>(loc, stride, loops[j].getUpperBound());
     }
 
     Value term = builder.create<arith::MulIOp>(loc, iv, stride);

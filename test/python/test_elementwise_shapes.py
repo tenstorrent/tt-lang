@@ -48,6 +48,7 @@ TILE_SIZE = 32
 # so limiting to max 3x1 or 1x3.
 TILE_SHAPES = [(r, c) for r in range(1, 4) for c in range(1, 4) if r == 1 or c == 1]
 
+
 def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
     """Convert tile grid dimensions to tensor shape."""
     return (tile_rows * TILE_SIZE, tile_cols * TILE_SIZE)
@@ -203,11 +204,18 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
 
     buffer_factor = tile_rows * tile_cols
     code = BINARY_KERNEL_TEMPLATE.format(
-        name=name, op=op, tile_rows=tile_rows, tile_cols=tile_cols, buffer_factor=buffer_factor
+        name=name,
+        op=op,
+        tile_rows=tile_rows,
+        tile_cols=tile_cols,
+        buffer_factor=buffer_factor,
     )
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix=f"kernel_{name}_{tile_rows}x{tile_cols}_"
+        mode="w",
+        suffix=".py",
+        delete=False,
+        prefix=f"kernel_{name}_{tile_rows}x{tile_cols}_",
     ) as f:
         f.write(code)
         temp_path = f.name
@@ -229,11 +237,18 @@ def make_binary_fn_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
 
     buffer_factor = tile_rows * tile_cols
     code = BINARY_FN_KERNEL_TEMPLATE.format(
-        name=name, op=op, tile_rows=tile_rows, tile_cols=tile_cols, buffer_factor=buffer_factor
+        name=name,
+        op=op,
+        tile_rows=tile_rows,
+        tile_cols=tile_cols,
+        buffer_factor=buffer_factor,
     )
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix=f"kernel_{name}_{tile_rows}x{tile_cols}_"
+        mode="w",
+        suffix=".py",
+        delete=False,
+        prefix=f"kernel_{name}_{tile_rows}x{tile_cols}_",
     ) as f:
         f.write(code)
         temp_path = f.name
@@ -255,11 +270,18 @@ def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
 
     buffer_factor = tile_rows * tile_cols
     code = UNARY_KERNEL_TEMPLATE.format(
-        name=name, op=op, tile_rows=tile_rows, tile_cols=tile_cols, buffer_factor=buffer_factor
+        name=name,
+        op=op,
+        tile_rows=tile_rows,
+        tile_cols=tile_cols,
+        buffer_factor=buffer_factor,
     )
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix=f"kernel_{name}_{tile_rows}x{tile_cols}_"
+        mode="w",
+        suffix=".py",
+        delete=False,
+        prefix=f"kernel_{name}_{tile_rows}x{tile_cols}_",
     ) as f:
         f.write(code)
         temp_path = f.name
@@ -470,7 +492,9 @@ if __name__ == "__main__":
     print(f"Shapes: {len(TILE_SHAPES)} configurations (1x1 to 4x4 tiles)")
     print(f"Binary ops: {list(BINARY_OPS.keys()) + list(BINARY_FN_OPS.keys())}")
     print(f"Unary ops: {list(UNARY_OPS.keys())}")
-    print(f"Total tests: {len(TILE_SHAPES) * (len(BINARY_OPS) + len(BINARY_FN_OPS) + len(UNARY_OPS))}")
+    print(
+        f"Total tests: {len(TILE_SHAPES) * (len(BINARY_OPS) + len(BINARY_FN_OPS) + len(UNARY_OPS))}"
+    )
     print()
 
     # Run with pytest
