@@ -52,6 +52,8 @@ config.excludes = [
     "Inputs",
     "lit.cfg.py",
     "sim",
+    "conftest.py",
+    "utils.py",
 ]
 
 # Exclude pytest-style tests (test_*.py) from lit collection.
