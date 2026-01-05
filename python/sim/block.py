@@ -72,11 +72,23 @@ class Block:
         return [self[i] for i in range(len(self))]
 
     # @validate_call
-    def store(self, items: Sequence[Tensor]) -> None:
+    def store(self, items: Sequence[Tensor], acc: bool = False) -> None:
+        """Store items into the block.
+
+        Args:
+            items: Sequence of tensors to store
+            acc: If True, accumulate with existing values (+=), otherwise assign (=)
+        """
         if len(items) != self._span.length:
             raise ValueError("Length mismatch in store()")
-        for i, v in enumerate(items):
-            self[i] = v
+        if acc:
+            # Accumulate: add new values to existing values
+            for i, v in enumerate(items):
+                self[i] = self[i] + v
+        else:
+            # Regular assignment
+            for i, v in enumerate(items):
+                self[i] = v
 
     def _apply_binary_op(
         self,

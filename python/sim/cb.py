@@ -65,8 +65,14 @@ class ReserveContext:
     def __setitem__(self, idx: int, value: Tensor) -> None:
         self._block[idx] = value
 
-    def store(self, items) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
-        self._block.store(items)  # type: ignore[reportUnknownArgumentType]
+    def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
+        """Store items into the block.
+
+        Args:
+            items: Sequence of tensors or a single tensor to store
+            acc: If True, accumulate with existing values (+=), otherwise assign (=)
+        """
+        self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
 
     # Delegate arithmetic operations
     def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
@@ -146,14 +152,9 @@ class WaitContext:
 
         Args:
             items: Sequence of tensors or a single tensor to store
-            acc: If True, accumulate with existing values (not fully implemented)
+            acc: If True, accumulate with existing values (+=), otherwise assign (=)
         """
-        # TODO: Implement acc=True accumulation mode
-        if acc:
-            # For now, just delegate to regular store
-            # In the future, this should accumulate with existing block values
-            pass
-        self._block.store(items)  # type: ignore[reportUnknownArgumentType]
+        self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
 
     # Delegate arithmetic operations
     def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:

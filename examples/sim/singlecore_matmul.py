@@ -43,9 +43,8 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
                     # Accumulate over K dimension
                     for _ in range(Kt):
                         with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                            # Perform matmul and accumulate
-                            result = out_blk + (a_blk @ b_blk)
-                            out_blk.store(result)
+                            # Perform matmul and accumulate using acc=True
+                            out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
     def mm_reader():
