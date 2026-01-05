@@ -10,7 +10,7 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from typing import Tuple, Optional, Union, List
+from typing import Tuple, Optional, Union, List, Callable
 from types import TracebackType
 
 import torch
@@ -22,7 +22,93 @@ from .ttnnsim import Tensor
 from .constants import TILE_SHAPE
 
 
-class ReserveContext:
+class _BlockContextManager:
+    """Base context manager for Block operations with automatic cleanup.
+
+    Handles the common pattern of wrapping a Block and performing an action
+    on exit (push for reserve, pop for wait).
+    """
+
+    def __init__(
+        self, cb: "CircularBuffer", block: Block, on_exit_func: Callable[[], None]
+    ) -> None:
+        """Initialize the context manager.
+
+        Args:
+            cb: The CircularBuffer managing this block
+            block: The Block being wrapped
+            on_exit_func: Callable to invoke on context exit (cb.push or cb.pop)
+        """
+        self._cb = cb
+        self._block = block
+        self._on_exit_func = on_exit_func
+
+    def block(self) -> Block:
+        """Return the underlying Block object."""
+        return self._block
+
+    def __enter__(self) -> Block:
+        return self._block
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        # Always invoke the cleanup action, even if an exception occurred
+        self._on_exit_func()
+
+    # Delegate Block operations for backward compatibility
+    def __len__(self) -> int:
+        return len(self._block)
+
+    def __getitem__(self, idx: int) -> Tensor:
+        return self._block[idx]
+
+    def __setitem__(self, idx: int, value: Tensor) -> None:
+        self._block[idx] = value
+
+    def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
+        """Store items into the block.
+
+        Args:
+            items: Sequence of tensors or a single tensor to store
+            acc: If True, accumulate with existing values (+=), otherwise assign (=)
+        """
+        self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
+
+    # Delegate arithmetic operations
+    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__add__(other)
+
+    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__sub__(other)
+
+    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__mul__(other)
+
+    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+        return self._block.__truediv__(other)
+
+    def __matmul__(self, other: "Block") -> List[Tensor]:
+        return self._block.__matmul__(other)
+
+    # Reverse operators for when the left operand doesn't support the operation
+    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__radd__(other)
+
+    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rsub__(other)
+
+    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rmul__(other)
+
+    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
+        return self._block.__rtruediv__(other)
+
+
+class ReserveContext(_BlockContextManager):
     """Context manager for reserve operations that automatically pushes on exit.
 
     Can be used as a context manager:
@@ -36,75 +122,10 @@ class ReserveContext:
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        self._cb = cb
-        self._block = block
-
-    def block(self) -> Block:
-        """Return the underlying Block object."""
-        return self._block
-
-    def __enter__(self) -> Block:
-        return self._block
-
-    def __exit__(
-        self,
-        exc_type: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> None:
-        # Always push, even if an exception occurred
-        self._cb.push()
-
-    # Delegate Block operations for backward compatibility
-    def __len__(self) -> int:
-        return len(self._block)
-
-    def __getitem__(self, idx: int) -> Tensor:
-        return self._block[idx]
-
-    def __setitem__(self, idx: int, value: Tensor) -> None:
-        self._block[idx] = value
-
-    def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
-        """Store items into the block.
-
-        Args:
-            items: Sequence of tensors or a single tensor to store
-            acc: If True, accumulate with existing values (+=), otherwise assign (=)
-        """
-        self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
-
-    # Delegate arithmetic operations
-    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__add__(other)
-
-    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__sub__(other)
-
-    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__mul__(other)
-
-    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__truediv__(other)
-
-    def __matmul__(self, other: "Block") -> List[Tensor]:
-        return self._block.__matmul__(other)
-
-    # Reverse operators for when the left operand doesn't support the operation
-    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__radd__(other)
-
-    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rsub__(other)
-
-    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rmul__(other)
-
-    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rtruediv__(other)
+        super().__init__(cb, block, cb.push)
 
 
-class WaitContext:
+class WaitContext(_BlockContextManager):
     """Context manager for wait operations that automatically pops on exit.
 
     Can be used as a context manager:
@@ -118,72 +139,7 @@ class WaitContext:
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        self._cb = cb
-        self._block = block
-
-    def block(self) -> Block:
-        """Return the underlying Block object."""
-        return self._block
-
-    def __enter__(self) -> Block:
-        return self._block
-
-    def __exit__(
-        self,
-        exc_type: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> None:
-        # Always pop, even if an exception occurred
-        self._cb.pop()
-
-    # Delegate Block operations for backward compatibility
-    def __len__(self) -> int:
-        return len(self._block)
-
-    def __getitem__(self, idx: int) -> Tensor:
-        return self._block[idx]
-
-    def __setitem__(self, idx: int, value: Tensor) -> None:
-        self._block[idx] = value
-
-    def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
-        """Store items into the block.
-
-        Args:
-            items: Sequence of tensors or a single tensor to store
-            acc: If True, accumulate with existing values (+=), otherwise assign (=)
-        """
-        self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
-
-    # Delegate arithmetic operations
-    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__add__(other)
-
-    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__sub__(other)
-
-    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__mul__(other)
-
-    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
-        return self._block.__truediv__(other)
-
-    def __matmul__(self, other: "Block") -> List[Tensor]:
-        return self._block.__matmul__(other)
-
-    # Reverse operators for when the left operand doesn't support the operation
-    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__radd__(other)
-
-    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rsub__(other)
-
-    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rmul__(other)
-
-    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rtruediv__(other)
+        super().__init__(cb, block, cb.pop)
 
 
 # TODO: Should this class now be private?
