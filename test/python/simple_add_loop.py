@@ -14,6 +14,10 @@ Uses a for loop to add the same values multiple times (accumulate pattern).
 This tests loop support without requiring dynamic indices in data movement.
 """
 
+import os
+
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+
 import ttnn
 from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy

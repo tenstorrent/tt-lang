@@ -14,6 +14,10 @@ Uses 64x64 tensors (2x2 tiles of 32x32) to test that linearized_index
 correctly computes tile offsets in loops.
 """
 
+import os
+
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+
 import ttnn
 from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy

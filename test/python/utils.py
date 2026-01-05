@@ -73,7 +73,7 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
     Use this at the start of `if __name__ == "__main__":` blocks in tests
     that need access to Tenstorrent hardware (even just for compilation).
 
-    Note: This does NOT check TTLANG_COMPILE_ONLY - tests can still compile
+    Note: This does NOT check the TTLANG_COMPILE_ONLY env var - tests can still compile
     kernels in compile-only mode, they just won't execute on device.
     """
     if not _hardware_available:

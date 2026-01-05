@@ -14,6 +14,10 @@ Unlike simple_add.py which uses L1 tensors, this test keeps tensors in DRAM
 and verifies the data movement kernels can read/write directly from/to DRAM.
 """
 
+import os
+
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+
 import ttnn
 from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy

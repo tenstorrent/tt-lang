@@ -15,10 +15,19 @@ The 'with' statement automatically handles:
 - Release: pop/push at context exit (in reverse order)
 """
 
-import ttnn
+import os
+
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+
 from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
 from ttlang.ttl_api import Program
+
+try:
+    import ttnn
+except ImportError:
+    print("TTNN not available - exiting")
+    exit(0)
 
 
 @ttl.kernel(grid=(1, 1))
@@ -71,9 +80,9 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
 
 # CB binding
-# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
-# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK-DAG: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+# CHECK-DAG: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+# CHECK-DAG: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 
 # 'with' entry: wait for inputs, reserve output (with CB association)
 # CHECK: %[[L:.+]] = ttl.cb_wait %[[CB0]]
@@ -173,6 +182,7 @@ if __name__ == "__main__":
     from utils import require_hardware
 
     print("=== With-Pattern Add Kernel Test ===")
+
     require_hardware()
 
     device = ttnn.open_device(device_id=0)

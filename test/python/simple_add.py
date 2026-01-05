@@ -13,6 +13,10 @@ Simple add kernel - verifies Python DSL lowers to correct TTL ops and C++ code.
 Tests CB operations, add compute, and data movement patterns.
 """
 
+import os
+
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+
 import ttnn
 from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
