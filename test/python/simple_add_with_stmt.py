@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -79,10 +78,10 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB binding
-# CHECK-DAG: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK-DAG: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
-# CHECK-DAG: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CB binding (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
+# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
 # 'with' entry: wait for inputs, reserve output (with CB association)
 # CHECK: %[[L:.+]] = ttl.cb_wait %[[CB0]]

@@ -23,7 +23,12 @@ from ttlang.operators import copy
 from ttlang.ttl_api import Program
 
 
-# CHECK: Thread functions must have no parameters
+# CHECK: error: Thread functions must have no parameters
+# CHECK-NEXT:   --> {{.*}}invalid_thread_with_params.py:45:1
+# CHECK-NEXT:    |
+# CHECK-NEXT: 45 |     def add_compute(some_param):
+# CHECK-NEXT:    |     ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
 def invalid_thread_params_kernel(lhs, rhs, out):
     """This kernel should fail because thread functions have parameters."""
