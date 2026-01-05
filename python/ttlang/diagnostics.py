@@ -15,7 +15,9 @@ import re
 from typing import List, Optional, Tuple
 
 
-def find_variable_assignment(source_lines: List[str], var_name: str, before_line: int) -> Optional[int]:
+def find_variable_assignment(
+    source_lines: List[str], var_name: str, before_line: int
+) -> Optional[int]:
     """Find the line where a variable was assigned, searching backwards.
 
     Args:
@@ -26,7 +28,7 @@ def find_variable_assignment(source_lines: List[str], var_name: str, before_line
     Returns:
         1-based line number where assignment was found, or None
     """
-    pattern = re.compile(rf'^\s*{re.escape(var_name)}\s*=')
+    pattern = re.compile(rf"^\s*{re.escape(var_name)}\s*=")
 
     for i in range(min(before_line - 1, len(source_lines) - 1), -1, -1):
         if pattern.match(source_lines[i]):

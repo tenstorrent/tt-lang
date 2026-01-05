@@ -61,7 +61,9 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(tensor.shape) != 2:
-        _raise_tensor_error(tensor, f"Only 2D tensors supported, got shape {tensor.shape}")
+        _raise_tensor_error(
+            tensor, f"Only 2D tensors supported, got shape {tensor.shape}"
+        )
 
     layout = create_ttnn_layout(
         ctx,

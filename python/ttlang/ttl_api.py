@@ -133,7 +133,7 @@ def _track_tensor_sources(f_params, args, source_file: str) -> None:
         return
 
     try:
-        with open(source_file, 'r') as sf:
+        with open(source_file, "r") as sf:
             source_lines = sf.read().splitlines()
     except (IOError, OSError):
         return
