@@ -94,15 +94,14 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
         num_tiles = get_tiles_per_core(core_id)
 
         for _ in range(num_tiles):
+            # Reserve output block once for the entire K accumulation
+            # The reserved block is automatically initialized with zeros
             with out_cb.reserve() as out_blk:
                 # Accumulate over K dimension
-                for k_idx in range(Kt):
+                for _ in range(Kt):
                     with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                        # Manual accumulation: first iteration stores, subsequent add
-                        if k_idx == 0:
-                            result = a_blk @ b_blk
-                        else:
-                            result = out_blk + (a_blk @ b_blk)
+                        # Accumulate: add matrix multiplication result to output block
+                        result = out_blk + (a_blk @ b_blk)
                         out_blk.store(result)
 
     @ttl.datamovement()

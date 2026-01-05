@@ -320,10 +320,11 @@ def test_heterogeneous_cbs_in_same_api():
     """Test that a single CBAPI instance can handle multiple circular buffers."""
     # Create a shared CBAPI instance
     api = CBAPI()
+    element = make_full_tensor(32, 32, 1.0)
 
     # Create circular buffers for different use cases
-    cb1 = CircularBuffer(shape=(2, 2), buffer_factor=2, api=api)
-    cb2 = CircularBuffer(shape=(2, 2), buffer_factor=2, api=api)
+    cb1 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
+    cb2 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
 
     # Test first circular buffer
     write1 = cb1.reserve()
@@ -358,10 +359,11 @@ def test_default_api_heterogeneous():
     """Test that an explicit API can handle multiple circular buffers."""
     # Create an explicit API instance
     api = CBAPI()
+    element = make_full_tensor(32, 32, 1.0)
 
     # Create circular buffers using explicit API
-    cb1 = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
-    cb2 = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+    cb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
     # Both should use the same API instance
     assert cb1._api is cb2._api  # type: ignore

@@ -13,10 +13,13 @@ operations.
 from typing import Tuple, Optional, Union, List
 from types import TracebackType
 
+import torch
+
 from .cbapi import CBAPI
 from .block import Block
 from .typedefs import CBID, Size, Shape
 from .ttnnsim import Tensor
+from .constants import TILE_SHAPE
 
 
 class ReserveContext:
@@ -210,6 +213,7 @@ class CircularBuffer:
 
     def __init__(
         self,
+        element: Tensor,
         shape: Shape,
         buffer_factor: Size = 2,
         api: Optional[CBAPI] = None,
@@ -218,6 +222,7 @@ class CircularBuffer:
         Initialize a CircularBuffer.
 
         Args:
+            element: A tensor used to determine the dtype for zero-initialized tensors in reserved blocks
             shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
             buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
             api: Optional CBAPI instance to use. If None, uses the shared default instance.
@@ -229,6 +234,7 @@ class CircularBuffer:
         if len(shape) != 2:
             raise ValueError(f"Shape must be a 2-tuple, got {shape}")
 
+        self.element = element
         self._shape = shape
         self._buffer_factor = buffer_factor
 
@@ -244,6 +250,8 @@ class CircularBuffer:
         if self._api is not None:
             self._cb_id: Optional[CBID] = self._api.allocate_cb_id()
             self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
+            # Reset the buffer to initialize with zero entries
+            self._api.host_reset_cb(self._cb_id)
         else:
             self._cb_id: Optional[CBID] = None  # Placeholder until properly initialized
 
@@ -315,6 +323,9 @@ class CircularBuffer:
         number of tiles (as specified by the shape parameter). It returns a context
         manager that provides access to the reserved space.
 
+        The reserved block is automatically initialized with zero tensors using
+        TILE_SHAPE dimensions and the element's dtype before being returned.
+
         Can be used as a context manager (recommended):
             with cb.reserve() as blk:
                 blk.store(data)  # auto-push on exit
@@ -335,6 +346,12 @@ class CircularBuffer:
         api, cb_id = self._ensure_initialized()
         api.cb_reserve_back(cb_id, self._tiles_per_operation)
         block = api.get_write_ptr(cb_id)
+
+        # Initialize the reserved block with zero tensors
+        zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
+        for i in range(len(block)):
+            block[i] = zero_tensor
+
         return ReserveContext(self, block)
 
     def can_reserve(self) -> bool:
@@ -435,23 +452,20 @@ def make_circular_buffer_like(
     element: Tensor,
     shape: Shape,
     buffer_factor: Size = 2,
-    api: Optional[CBAPI] = None,
 ) -> CircularBuffer:
     """
-    Create a CircularBuffer with the same element type as the element.
+    Create a CircularBuffer with the same dtype as the element.
 
     Args:
-        element: An instance used to determine the CircularBuffer's element type, currently unused
+        element: A tensor used to determine the CircularBuffer's dtype
         shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
         buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
-        api: Optional CBAPI instance to use. If None, uses the shared default instance.
 
     Returns:
-        A CircularBuffer with element type matching the element
+        A CircularBuffer with dtype matching the element
 
     Example:
-        x = torch.zeros(32, 32)
+        x = ttnn.zeros((32, 32), dtype=ttnn.float32)
         x_cb = make_circular_buffer_like(x, shape=(2, 2), buffer_factor=2)
     """
-    _ = element
-    return CircularBuffer(shape=shape, buffer_factor=buffer_factor, api=api)
+    return CircularBuffer(element=element, shape=shape, buffer_factor=buffer_factor)

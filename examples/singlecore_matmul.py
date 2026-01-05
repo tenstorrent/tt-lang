@@ -38,16 +38,13 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
         for _ in range(Mt):
             for _ in range(Nt):
                 # Reserve output block once for the entire K accumulation
+                # The reserved block is automatically initialized with zeros
                 with out_cb.reserve() as out_blk:
                     # Accumulate over K dimension
-                    for k_idx in range(Kt):
+                    for _ in range(Kt):
                         with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
                             # Perform matmul and accumulate
-                            if k_idx == 0:
-                                result = a_blk @ b_blk
-                            else:
-                                result = out_blk + (a_blk @ b_blk)
-
+                            result = out_blk + (a_blk @ b_blk)
                             out_blk.store(result)
 
     @ttl.datamovement()
