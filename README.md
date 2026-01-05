@@ -88,7 +88,7 @@ cmake --build build --target check-ttlang
 cmake --build build --target check-ttlang-mlir
 
 # Python runtime tests only
-cmake --build build --target check-ttlang-python
+cmake --build build --target check-ttlang-python-lit
 ```
 
 Or run specific test suites using lit directly:

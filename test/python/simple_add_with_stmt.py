@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# XFAIL: *
-# https://github.com/tenstorrent/tt-lang/issues/164
 # RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -20,14 +18,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program
 from ttlang.operators import copy
 
 try:
@@ -37,43 +29,39 @@ except ImportError:
     exit(0)
 
 
-@pykernel_gen(grid=(1, 1))
+@ttl.kernel(grid=(1, 1))
 def add_with_kernel(lhs, rhs, out):
     """Add kernel using 'with' pattern for automatic CB lifecycle."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
-    @compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    @ttl.compute()
+    def add_compute():
         # 'with' handles wait/reserve at entry, pop/push at exit
         with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
             result = l + r
             o.store(result)
         # Automatic: out_cb.push(), rhs_cb.pop(), lhs_cb.pop() (reverse order)
 
-    @datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    @ttl.datamovement()
+    def dm_read():
         # 'with' for reserve/push pattern
         with lhs_cb.reserve() as lhs_block:
-            tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+            tx_lhs = copy(lhs[0, 0], lhs_cb)
             tx_lhs.wait()
         # Automatic: lhs_cb.push()
 
         with rhs_cb.reserve() as rhs_block:
-            tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+            tx_rhs = copy(rhs[0, 0], rhs_cb)
             tx_rhs.wait()
         # Automatic: rhs_cb.push()
 
-    @datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    @ttl.datamovement()
+    def dm_write():
         # 'with' for wait/pop pattern
         with out_cb.wait() as out_block:
-            tx = copy(out_cb, out_accessor[0, 0])
+            tx = copy(out_cb, out[0, 0])
             tx.wait()
         # Automatic: out_cb.pop()
 
@@ -95,13 +83,19 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 
-# 'with' entry: wait for inputs, reserve output
-# CHECK: ttl.cb_wait %[[CB0]]
-# CHECK: ttl.cb_wait %[[CB1]]
-# CHECK: ttl.cb_reserve %[[CB2]]
+# 'with' entry: wait for inputs, reserve output (with CB association)
+# CHECK: %[[L:.+]] = ttl.cb_wait %[[CB0]]
+# CHECK: ttl.attach_cb %[[L]], %[[CB0]]
+# CHECK: %[[R:.+]] = ttl.cb_wait %[[CB1]]
+# CHECK: ttl.attach_cb %[[R]], %[[CB1]]
+# CHECK: %[[O:.+]] = ttl.cb_reserve %[[CB2]]
+# CHECK: ttl.attach_cb %[[O]], %[[CB2]]
 
 # Add operation
 # CHECK: ttl.add
+
+# store() attaches result to output CB
+# CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # 'with' exit: push output, pop inputs (reverse order)
 # CHECK: ttl.cb_push %[[CB2]]
@@ -115,14 +109,16 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# First CB: reserve, copy, push
+# First CB: reserve (with CB association), copy, push
 # CHECK: ttl.cb_reserve
+# CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
 
-# Second CB: reserve, copy, push
+# Second CB: reserve (with CB association), copy, push
 # CHECK: ttl.cb_reserve
+# CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
@@ -130,8 +126,9 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Output CB: wait, copy, pop
+# Output CB: wait (with CB association), copy, pop
 # CHECK: ttl.cb_wait
+# CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_pop

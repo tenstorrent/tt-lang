@@ -13,14 +13,14 @@ import os
 from typing import List, Optional, Callable, Dict, Union
 
 try:
-    import torch
-except ModuleNotFoundError:
-    torch = None
-
-try:
     import ttnn
 except ModuleNotFoundError:
     ttnn = None
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 try:
     from _ttmlir_runtime import runtime
@@ -38,9 +38,11 @@ from ttmlir.passes import (
 
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 
+from .ttl_utils import get_thread_type_string
+
+
 from pykernel._src.utils import _cleanup_source_code
-from ._src.tensor_accessor import TensorAccessor
-from ._src.tensor_registry import register_tensor_name
+from ._src.tensor_registry import register_tensor_name, get_tensor_global_index
 
 from ._src.ttl_ast import TTLGenericCompiler
 
@@ -409,7 +411,9 @@ def _compile_ttnn_kernel(
     return compiled_kernel
 
 
-def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
+def _collect_captures(
+    f: Callable,
+) -> Dict[str, Union[int, CircularBuffer]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -428,7 +432,9 @@ def _collect_captures(f: Callable) -> Dict[str, Union[int, TensorAccessor]]:
     def convert(name, val):
         if isinstance(val, int):
             return val
-        elif isinstance(val, TensorAccessor):
+        elif is_ttnn_tensor(val):
+            return val
+        elif isinstance(val, CircularBuffer):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
@@ -618,6 +624,9 @@ def _compile_and_run_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
+    from .circular_buffer import _reset_cb_counter
+
+    _reset_cb_counter()
     program = f(*args, **kwargs)
     if not isinstance(program, Program):
         raise TypeError(
@@ -674,6 +683,7 @@ def _compile_and_run_kernel(
             "convert-ttl-to-ttkernel",
             "canonicalize",
             "cse",
+            "lower-affine",
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
@@ -855,6 +865,5 @@ __all__ = [
     "CopyTransferHandler",
     "Semaphore",
     "copy",
-    "TensorAccessor",
     "CompiledTTNNKernel",
 ]

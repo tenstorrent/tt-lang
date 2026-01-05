@@ -164,7 +164,7 @@ def tile_bytes_from_dtype(dtype) -> int:
     Raises:
         ValueError: If dtype is not supported
     """
-    dtype_int = int(dtype)
+    dtype_int = dtype.value
     # Map ttnn DataType enum values to tile sizes
     # Reference: tt-metal/tt_metal/common/constants.hpp
     if dtype_int in (0, 6):  # BFloat16, UInt16
