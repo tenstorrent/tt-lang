@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -13,19 +14,10 @@ Unlike simple_add.py which uses L1 tensors, this test keeps tensors in DRAM
 and verifies the data movement kernels can read/write directly from/to DRAM.
 """
 
-import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))

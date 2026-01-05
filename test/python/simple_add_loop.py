@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -13,19 +14,10 @@ Uses a for loop to add the same values multiple times (accumulate pattern).
 This tests loop support without requiring dynamic indices in data movement.
 """
 
-import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))

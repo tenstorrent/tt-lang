@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -14,17 +15,10 @@ Tests CB operations, add compute, and data movement patterns.
 
 import os
 
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))
@@ -232,6 +226,12 @@ if __name__ == "__main__":
     import torch
 
     print("=== Add Kernel Test ===")
+
+    # Skip hardware execution in compile-only mode
+    if os.environ.get("TTLANG_COMPILE_ONLY") == "1":
+        print("TTLANG_COMPILE_ONLY=1, skipping hardware execution")
+        print("=== Add Kernel Test Complete ===")
+        exit(0)
 
     device = ttnn.open_device(device_id=0)
 

@@ -10,10 +10,10 @@
 # Verify: TTNN interop path with ttnn.Tensors on device.
 
 import torch
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
 import ttnn
+from ttlang import make_circular_buffer_like, ttl
+from ttlang.operators import copy
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))

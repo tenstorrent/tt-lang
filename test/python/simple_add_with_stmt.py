@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # XFAIL: *
+# REQUIRES: ttnn
 # https://github.com/tenstorrent/tt-lang/issues/164
 # RUN: %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
@@ -16,19 +17,10 @@ The 'with' statement automatically handles:
 - Release: pop/push at context exit (in reverse order)
 """
 
-import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))

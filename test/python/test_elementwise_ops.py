@@ -13,20 +13,14 @@ Kernels are generated from a template, written to temp files, and imported.
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-import pytest
-import torch
+import importlib.util
 import sys
 import tempfile
-import importlib.util
 
+import pytest
+import torch
+import ttnn
 from utils import assert_allclose
-
-try:
-    import ttnn
-
-    TTNN_AVAILABLE = True
-except ImportError:
-    TTNN_AVAILABLE = False
 
 # Skip all tests if ttnn not available
 pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
