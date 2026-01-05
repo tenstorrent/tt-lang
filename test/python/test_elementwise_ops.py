@@ -14,7 +14,6 @@ Kernels are generated from a template, written to temp files, and imported.
 # RUN: %python -m pytest %s -v
 
 import importlib.util
-import sys
 import tempfile
 
 import pytest
@@ -23,7 +22,7 @@ import ttnn
 from utils import assert_allclose
 
 # Skip all tests if ttnn not available
-pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
+pytestmark = pytest.mark.requires_ttnn
 
 
 # =============================================================================
@@ -358,7 +357,10 @@ def test_unary_op(device, op_name):
 # =============================================================================
 
 if __name__ == "__main__":
-    if not TTNN_AVAILABLE:
+    import sys
+
+    # Check if ttnn is available
+    if importlib.util.find_spec("ttnn") is None:
         print("TTNN not available - skipping tests")
         sys.exit(0)
 
