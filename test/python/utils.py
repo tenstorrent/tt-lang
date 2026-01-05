@@ -67,11 +67,14 @@ def is_ttnn_available():
     return _ttnn_available
 
 
-def skip_without_hardware(message: str = "Skipping - no hardware available"):
-    """Print message and exit if no hardware is available.
+def require_hardware(message: str = "Skipping test - no hardware available"):
+    """Exit early if no hardware available.
 
     Use this at the start of `if __name__ == "__main__":` blocks in tests
-    that need to run kernels on actual hardware.
+    that need access to Tenstorrent hardware (even just for compilation).
+
+    Note: This does NOT check TTLANG_COMPILE_ONLY - tests can still compile
+    kernels in compile-only mode, they just won't execute on device.
     """
     if not _hardware_available:
         print(message)

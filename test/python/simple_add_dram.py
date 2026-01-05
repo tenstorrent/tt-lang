@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -198,8 +198,10 @@ def add_dram_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from utils import require_hardware
 
     print("=== Add DRAM Kernel Test ===")
+    require_hardware()
 
     device = ttnn.open_device(device_id=0)
 

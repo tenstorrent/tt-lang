@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -13,8 +13,6 @@ Multi-tile add kernel - verifies correct tile indexing across 2x2 tile grid.
 Uses 64x64 tensors (2x2 tiles of 32x32) to test that linearized_index
 correctly computes tile offsets in loops.
 """
-
-import os
 
 import ttnn
 from ttlang import make_circular_buffer_like, ttl
@@ -134,14 +132,10 @@ def add_multitile_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from utils import require_hardware
 
     print("=== Multi-tile Add Kernel Test ===")
-
-    # Skip hardware execution in compile-only mode
-    if os.environ.get("TTLANG_COMPILE_ONLY") == "1":
-        print("TTLANG_COMPILE_ONLY=1, skipping hardware execution")
-        print("=== Multi-tile Add Kernel Test Complete ===")
-        exit(0)
+    require_hardware()
 
     device = ttnn.open_device(device_id=0)
 

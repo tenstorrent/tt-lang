@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -12,8 +12,6 @@ Simple add kernel - verifies Python DSL lowers to correct TTL ops and C++ code.
 
 Tests CB operations, add compute, and data movement patterns.
 """
-
-import os
 
 import ttnn
 from ttlang import make_circular_buffer_like, ttl
@@ -224,14 +222,10 @@ def add_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from utils import require_hardware
 
     print("=== Add Kernel Test ===")
-
-    # Skip hardware execution in compile-only mode
-    if os.environ.get("TTLANG_COMPILE_ONLY") == "1":
-        print("TTLANG_COMPILE_ONLY=1, skipping hardware execution")
-        print("=== Add Kernel Test Complete ===")
-        exit(0)
+    require_hardware()
 
     device = ttnn.open_device(device_id=0)
 

@@ -405,7 +405,7 @@ def _compile_ttnn_kernel(
     )
 
     if verbose:
-        print(f"\nCompiled kernel ready (will execute on {len(kernel_paths)} kernels)")
+        print(f"\nCompiled kernel ready (compiled {len(kernel_paths)} threads)")
         print("=" * 60)
 
     return compiled_kernel
