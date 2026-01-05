@@ -146,3 +146,11 @@ for env_var in [
 # Add system platform feature for UNSUPPORTED directives
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
+
+# Add TTNN feature if available
+try:
+    import ttnn
+
+    config.available_features.add("ttnn")
+except ImportError:
+    pass

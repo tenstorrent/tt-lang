@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
@@ -17,12 +18,7 @@ os.environ["TTLANG_COMPILE_ONLY"] = "1"
 from ttlang import ttl, make_circular_buffer_like
 from ttlang.ttl_api import Program
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
 
 
 # CHECK: ValueError: Only 2D grids supported, got grid
