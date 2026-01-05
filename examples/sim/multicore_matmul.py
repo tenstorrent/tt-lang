@@ -116,9 +116,9 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
             for k in range(Kt):
                 with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                    # Note: Using slice notation for tile indexing
-                    a_wr = ttl.copy(a[out_row : out_row + 1, k : k + 1], a_blk)
-                    b_wr = ttl.copy(b[k : k + 1, out_col : out_col + 1], b_blk)
+                    # Note: Using integer notation for tile indexing
+                    a_wr = ttl.copy(a[out_row, k], a_blk)
+                    b_wr = ttl.copy(b[k, out_col], b_blk)
                     a_wr.wait()
                     b_wr.wait()
 
@@ -134,9 +134,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
             out_col = current_tile_id % Nt
 
             with out_cb.wait() as out_blk:
-                out_wr = ttl.copy(
-                    out_blk, out[out_row : out_row + 1, out_col : out_col + 1]
-                )
+                out_wr = ttl.copy(out_blk, out[out_row, out_col])
                 out_wr.wait()
 
     # Execute the program

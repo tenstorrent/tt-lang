@@ -1,13 +1,9 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-from typing import TYPE_CHECKING
 
 from sim import ttl, ttnn
 from sim.testing import assert_pcc
-
-if TYPE_CHECKING:
-    pass
 
 
 @ttl.kernel(grid=(1, 1))
@@ -54,8 +50,8 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
                     # Reserve blocks for A and B tiles
                     with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
                         # Copy tiles using tile coordinates
-                        a_wr = ttl.copy(a[m : m + 1, k : k + 1], a_blk)
-                        b_wr = ttl.copy(b[k : k + 1, n : n + 1], b_blk)
+                        a_wr = ttl.copy(a[m, k], a_blk)
+                        b_wr = ttl.copy(b[k, n], b_blk)
 
                         a_wr.wait()
                         b_wr.wait()
@@ -67,7 +63,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
                 # Wait for computed output tile
                 with out_cb.wait() as out_blk:
                     # Copy output tile to result tensor
-                    out_wr = ttl.copy(out_blk, out[m : m + 1, n : n + 1])
+                    out_wr = ttl.copy(out_blk, out[m, n])
                     out_wr.wait()
 
     # Execute the program
