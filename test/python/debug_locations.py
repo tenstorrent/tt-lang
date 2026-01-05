@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# RUN: env TTLANG_DEBUG_LOCATIONS=1 %python %s > %t.output 2>&1
+# RUN: env TTLANG_DEBUG_LOCATIONS=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 
 """
@@ -18,8 +18,8 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 os.environ["TTLANG_DEBUG_LOCATIONS"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program
 from ttlang.operators import copy
 
 try:
@@ -31,11 +31,11 @@ except ImportError:
 
 @ttl.kernel(grid=(1, 1))
 def debug_loc_kernel(lhs, out):
-    lhs_accessor = TensorAccessor(lhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def compute_thread(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def compute_thread():
         l = lhs_cb.wait()
         o = out_cb.reserve()
         o.store(l)
@@ -43,16 +43,16 @@ def debug_loc_kernel(lhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         lhs_cb.reserve()
-        tx = copy(lhs_accessor[0, 0], lhs_cb)
+        tx = copy(lhs[0, 0], lhs_cb)
         tx.wait()
         lhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 

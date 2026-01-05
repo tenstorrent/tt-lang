@@ -27,9 +27,9 @@ except ImportError:
 
 
 # CHECK: error: copy() requires exactly one CB argument
-# CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:58:10
+# CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:56:10
 # CHECK-NEXT:    |
-# CHECK-NEXT: 58 |         tx = copy(lhs_accessor[0, 0], rhs_accessor[0, 0])
+# CHECK-NEXT: 56 |         tx = copy(lhs[0, 0], rhs[0, 0])
 # CHECK-NEXT:    |          ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))

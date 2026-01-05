@@ -19,8 +19,8 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
+from ttlang import ttl, make_circular_buffer_like
+from ttlang.ttl_api import Program
 from ttlang.operators import copy
 
 try:
@@ -33,11 +33,11 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def copy_no_wait_kernel(lhs, out):
     """Kernel that forgets to wait on a copy - should fail MLIR verification."""
-    lhs_accessor = TensorAccessor(lhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def compute_thread(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def compute_thread():
         l = lhs_cb.wait()
         o = out_cb.reserve()
         o.store(l)
@@ -45,16 +45,16 @@ def copy_no_wait_kernel(lhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         lhs_cb.reserve()
-        tx = copy(lhs_accessor[0, 0], lhs_cb)
+        tx = copy(lhs[0, 0], lhs_cb)
         # BUG: Forgot to call tx.wait() - this should be caught by MLIR verifier
         lhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(lhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
@@ -64,7 +64,7 @@ def copy_no_wait_kernel(lhs, out):
 # PRETTY: error: expects transfer handle to be synchronized with ttl.wait
 # PRETTY-NEXT:   --> {{.*}}invalid_copy_no_wait.py:50:10
 # PRETTY-NEXT:    |
-# PRETTY-NEXT: 50 |         tx = copy(lhs_accessor[0, 0], lhs_cb)
+# PRETTY-NEXT: 50 |         tx = copy(lhs[0, 0], lhs_cb)
 # PRETTY-NEXT:    |          ^
 # PRETTY-NEXT:    |
 

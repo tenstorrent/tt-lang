@@ -5,10 +5,10 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: non-tiled CBs are not supported.
+Validation test: non-tiled tensors are not supported.
 
 This test verifies that using tiled=False raises the expected ValueError.
-The CB validation check comes before tensor validation in the code path.
+The validation happens when building the MLIR type for tensors.
 """
 
 import os
@@ -26,12 +26,7 @@ except ImportError:
     exit(0)
 
 
-# CHECK: error: Only tiled CBs supported
-# CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:44:5
-# CHECK-NEXT:    |
-# CHECK-NEXT: 44 |     lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-# CHECK-NEXT:    |     ^
-# CHECK-NEXT:    |
+# CHECK: Only tiled tensors supported for TTNN interop
 @ttl.kernel(grid=(1, 1), tiled=False)
 def invalid_non_tiled_kernel(lhs, rhs, out):
     """This kernel should fail because tiled=False is not supported."""

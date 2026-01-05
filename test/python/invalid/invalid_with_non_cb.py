@@ -27,9 +27,9 @@ except ImportError:
 
 
 # CHECK: error: Expected CircularBufferType, got
-# CHECK-NEXT:   --> {{.*}}invalid_with_non_cb.py:51:10
+# CHECK-NEXT:   --> {{.*}}invalid_with_non_cb.py:49:10
 # CHECK-NEXT:    |
-# CHECK-NEXT: 51 |         with l.wait() as data:
+# CHECK-NEXT: 49 |         with l.wait() as data:
 # CHECK-NEXT:    |          ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
