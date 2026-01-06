@@ -10,6 +10,7 @@ Validation test: TTNN interop only supports single-core grid (1, 1).
 
 This test verifies that using a multi-core grid raises ValueError.
 Uses grid=(2, 2) with shape=(64, 64) which is divisible, but grid != (1,1).
+Multi-core sharded layouts require additional support (see GH issue #118).
 """
 
 import os

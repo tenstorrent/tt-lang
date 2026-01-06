@@ -64,24 +64,43 @@ __all__ = [
 
 
 def parse_def_file(def_path: Path) -> tuple[list[str], list[str]]:
-    """Parse TTLElementwiseOps.def and extract operation names."""
+    """Parse TTLElementwiseOps.def and extract operation names.
+
+    Handles both standard and special binary ops:
+    - TTL_BINARY_TILE_OP(Name, TileOp, TTKInit, TTKCompute)
+    - TTL_BINARY_TILE_OP_SPECIAL(Name, TileOp, TTKInit, TTKCompute)
+    - TTL_UNARY_TILE_OP(Name, TileOp, TTKInit, TTKCompute)
+    """
     content = def_path.read_text()
 
     binary_ops = []
     unary_ops = []
 
-    # Match TTL_BINARY_TILE_OP(Name, TileOp) but skip #define lines
-    for match in re.finditer(r"^TTL_BINARY_TILE_OP\((\w+),", content, re.MULTILINE):
+    # Match TTL_BINARY_TILE_OP(Name, ...) and TTL_BINARY_TILE_OP_SPECIAL(Name, ...)
+    # but skip #define lines
+    for match in re.finditer(
+        r"^TTL_BINARY_TILE_OP(?:_SPECIAL)?\((\w+),", content, re.MULTILINE
+    ):
         name = match.group(1).lower()
         # Skip macro parameter names (lowercase indicates it's a parameter)
-        if name[0].isupper() or name not in ("ttl_op", "tile_op"):
+        if name[0].isupper() or name not in (
+            "ttl_op",
+            "tile_op",
+            "ttk_init",
+            "ttk_compute",
+        ):
             binary_ops.append(name)
 
-    # Match TTL_UNARY_TILE_OP(Name, TileOp) but skip #define lines
+    # Match TTL_UNARY_TILE_OP(Name, ...) but skip #define lines
     for match in re.finditer(r"^TTL_UNARY_TILE_OP\((\w+),", content, re.MULTILINE):
         name = match.group(1).lower()
         # Skip macro parameter names
-        if name[0].isupper() or name not in ("ttl_op", "tile_op"):
+        if name[0].isupper() or name not in (
+            "ttl_op",
+            "tile_op",
+            "ttk_init",
+            "ttk_compute",
+        ):
             unary_ops.append(name)
 
     return binary_ops, unary_ops
