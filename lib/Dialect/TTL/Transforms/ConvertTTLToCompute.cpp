@@ -85,6 +85,130 @@ static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
 }
 
 //===----------------------------------------------------------------------===//
+// Tile op emission for fusion
+//===----------------------------------------------------------------------===//
+
+/// Emit the tile-level op corresponding to a tensor-level elementwise op.
+/// Returns the result Value, or null on failure.
+static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *tensorOp,
+                           ValueRange tileOperands, Type tileType) {
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+  if (isa<TTL_OP##Op>(tensorOp))                                               \
+    return b.create<TILE_OP>(loc, tileType, tileOperands[0]);
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+  if (isa<TTL_OP##Op>(tensorOp))                                               \
+    return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1]);
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+  TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// Fused compute building
+//===----------------------------------------------------------------------===//
+
+/// Build a fused ttl.compute from traced elementwise chain.
+/// The trace result contains CB-attached root inputs and ops to fuse.
+static LogicalResult buildFusedCompute(Operation *sinkOp,
+                                       PatternRewriter &rewriter,
+                                       const ElementwiseTraceResult &trace) {
+  auto type = getTensorType(sinkOp->getResult(0));
+  if (!type) {
+    return failure();
+  }
+
+  // Find output CB
+  Value outCb = findOutputCB(sinkOp);
+  if (!outCb) {
+    auto unusedCBs = findUnusedBindCBs(sinkOp);
+    if (unusedCBs.empty()) {
+      return sinkOp->emitError("no unused bind_cb found for output");
+    }
+    outCb = unusedCBs.front().getResult();
+  }
+
+  Location loc = sinkOp->getLoc();
+  MLIRContext *ctx = rewriter.getContext();
+
+  // Build indexing maps: identity for each input and output
+  SmallVector<Attribute> maps;
+  AffineMap identityMap = AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+    maps.push_back(AffineMapAttr::get(identityMap));
+  }
+  maps.push_back(AffineMapAttr::get(identityMap)); // output
+
+  // Build iterator types: all parallel
+  SmallVector<Attribute> iterTypes;
+  for (int64_t i = 0; i < type.getRank(); ++i) {
+    iterTypes.push_back(rewriter.getStringAttr("parallel"));
+  }
+
+  // Create init tensor and attach to output CB
+  Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
+  Value initAttached = rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+  // Create ttl.compute op
+  auto computeOp = rewriter.create<ComputeOp>(
+      loc, TypeRange{type}, trace.rootInputs, ValueRange{initAttached},
+      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+  // Build the body region
+  Block *body = rewriter.createBlock(&computeOp.getBody());
+  Type scalarType = type.getElementType();
+  Type tileType = ttcore::TileType::get(scalarType);
+
+  // Add block arguments for each root input + output
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+    body->addArgument(tileType, loc);
+  }
+  body->addArgument(tileType, loc); // output tile
+
+  rewriter.setInsertionPointToStart(body);
+
+  // Map tensor values to tile values (for wiring up operands)
+  DenseMap<Value, Value> tensorToTile;
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+    tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
+  }
+
+  // Emit tile ops in topological order
+  Value finalResult;
+  for (Operation *op : trace.opsInOrder) {
+    SmallVector<Value, 2> tileOperands;
+    for (Value operand : getElementwiseOperands(op)) {
+      auto it = tensorToTile.find(operand);
+      if (it == tensorToTile.end()) {
+        return op->emitError("fusion failed: operand not mapped to tile value");
+      }
+      tileOperands.push_back(it->second);
+    }
+
+    Value tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+    if (!tileResult) {
+      return op->emitError("fusion failed: unsupported op type");
+    }
+
+    tensorToTile[op->getResult(0)] = tileResult;
+    finalResult = tileResult;
+  }
+
+  rewriter.create<YieldOp>(loc, ValueRange{finalResult});
+  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+
+  // Erase the fused ops (they're now inside the compute body as tile ops)
+  for (Operation *op : trace.opsInOrder) {
+    if (op != sinkOp && op->use_empty()) {
+      rewriter.eraseOp(op);
+    }
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Lowering to ttl.compute with tile ops
 //===----------------------------------------------------------------------===//
 
@@ -100,10 +224,16 @@ static LogicalResult buildBinaryCompute(Operation *op,
     return failure();
   }
 
-  // Inputs must already be attached to CBs.
+  // Try direct CB attachment first
   Value lhsCb = getAttachedCB(lhs);
   Value rhsCb = getAttachedCB(rhs);
+
+  // If inputs aren't CB-attached, try fusion
   if (!lhsCb || !rhsCb) {
+    auto traceResult = traceElementwiseToRoots(op->getResult(0));
+    if (succeeded(traceResult) && !traceResult->opsInOrder.empty()) {
+      return buildFusedCompute(op, rewriter, *traceResult);
+    }
     return op->emitError(
         "inputs must be attached to circular buffers via "
         "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
@@ -180,9 +310,15 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
 
-  // Input must already be attached to a CB.
+  // Try direct CB attachment first
   Value inputCb = getAttachedCB(input);
+
+  // If input isn't CB-attached, try fusion
   if (!inputCb) {
+    auto traceResult = traceElementwiseToRoots(op->getResult(0));
+    if (succeeded(traceResult) && !traceResult->opsInOrder.empty()) {
+      return buildFusedCompute(op, rewriter, *traceResult);
+    }
     return op->emitError(
         "input must be attached to a circular buffer via "
         "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");

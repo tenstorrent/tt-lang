@@ -29,6 +29,7 @@ TILE_SIZE = 32
 
 # Test shapes: all combinations from 1x1 to 16x16 tiles (512x512 elements max)
 TENSOR_TILE_SHAPES = [(r, c) for r in range(1, 16) for c in range(1, 16)]
+TENSOR_TILE_SHAPES_SHORT = [(r, c) for r in range(1, 5) for c in range(1, 5)]
 
 
 def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
@@ -254,11 +255,10 @@ def test_tensor_slice_add(device, tensor_shape):
             ), f"Tile at [{r}, {c}] mismatch: expected {expected_value}, got {result_tile[0,0].item()}"
 
 
-@pytest.mark.skip(reason="Fused kernels are crashing right now")
 @pytest.mark.parametrize(
     "tensor_shape",
-    TENSOR_TILE_SHAPES,
-    ids=[make_test_id(s) for s in TENSOR_TILE_SHAPES],
+    TENSOR_TILE_SHAPES_SHORT,
+    ids=[make_test_id(s) for s in TENSOR_TILE_SHAPES_SHORT],
 )
 def test_tensor_slice_fused(device, tensor_shape):
     """Test looping over all tiles with fused exp(inp) + sqrt(bias) operation."""
