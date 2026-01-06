@@ -60,6 +60,110 @@ inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }
 
+/// Check if an operation is a unary elementwise tensor op.
+inline bool isUnaryElementwiseOp(mlir::Operation *op) {
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+  if (mlir::isa<TTL_OP##Op>(op))                                               \
+    return true;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+  return false;
+}
+
+/// Check if an operation is a binary elementwise tensor op.
+inline bool isBinaryElementwiseOp(mlir::Operation *op) {
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+  if (mlir::isa<TTL_OP##Op>(op))                                               \
+    return true;
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+  TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+  return false;
+}
+
+/// Check if an operation is any elementwise tensor op (unary or binary).
+inline bool isElementwiseOp(mlir::Operation *op) {
+  return isUnaryElementwiseOp(op) || isBinaryElementwiseOp(op);
+}
+
+/// Get the operands of an elementwise op (1 for unary, 2 for binary).
+inline mlir::SmallVector<mlir::Value, 2>
+getElementwiseOperands(mlir::Operation *op) {
+  if (isUnaryElementwiseOp(op)) {
+    return {op->getOperand(0)};
+  }
+  if (isBinaryElementwiseOp(op)) {
+    return {op->getOperand(0), op->getOperand(1)};
+  }
+  return {};
+}
+
+/// Result of tracing through elementwise ops to CB-attached roots.
+struct ElementwiseTraceResult {
+  /// CB-attached input values that form the roots of the chain.
+  mlir::SmallVector<mlir::Value, 2> rootInputs;
+  /// Operations in the chain, topologically ordered (roots first, sink last).
+  mlir::SmallVector<mlir::Operation *, 4> opsInOrder;
+};
+
+/// Trace a value through elementwise ops to find CB-attached roots.
+/// Recursively traces through arbitrary depth elementwise chains.
+///
+/// Returns failure if:
+/// - Value has no defining op and is not CB-attached
+/// - Defining op is not an elementwise op
+/// - Any intermediate result has multiple uses
+///
+/// On success, returns the root CB-attached inputs and ops to fuse.
+inline mlir::FailureOr<ElementwiseTraceResult>
+traceElementwiseToRoots(mlir::Value value) {
+  ElementwiseTraceResult result;
+
+  // Base case: CB-attached value is a root
+  if (getAttachedCB(value)) {
+    result.rootInputs.push_back(value);
+    return result;
+  }
+
+  mlir::Operation *defOp = value.getDefiningOp();
+  if (!defOp) {
+    return mlir::failure();
+  }
+
+  if (!isElementwiseOp(defOp)) {
+    return mlir::failure();
+  }
+
+  // Reject if this op's result has multiple uses (would break SSA semantics)
+  if (!value.hasOneUse()) {
+    return mlir::failure();
+  }
+
+  // Recursively trace all operands
+  for (mlir::Value operand : getElementwiseOperands(defOp)) {
+    auto operandTrace = traceElementwiseToRoots(operand);
+    if (mlir::failed(operandTrace)) {
+      return mlir::failure();
+    }
+    // Merge roots (avoiding duplicates)
+    for (mlir::Value root : operandTrace->rootInputs) {
+      if (!llvm::is_contained(result.rootInputs, root)) {
+        result.rootInputs.push_back(root);
+      }
+    }
+    // Merge ops in dependency order
+    for (mlir::Operation *op : operandTrace->opsInOrder) {
+      if (!llvm::is_contained(result.opsInOrder, op)) {
+        result.opsInOrder.push_back(op);
+      }
+    }
+  }
+
+  // Add this op at the end (after all its dependencies)
+  result.opsInOrder.push_back(defOp);
+
+  return result;
+}
+
 /// Find the first operation of type OpTy in the block preceding the given
 /// operation. Scans backwards from the operation, stopping at block start or
 /// when stopAtOp returns true.
