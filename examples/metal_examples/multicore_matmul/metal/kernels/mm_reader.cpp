@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <stdint.h>
 
-
 void kernel_main() {
   // same arg indices as in reader_binary_diff_lengths for compat
   uint32_t src0_addr = get_arg_val<uint32_t>(0);
