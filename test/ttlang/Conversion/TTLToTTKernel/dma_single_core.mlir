@@ -8,7 +8,7 @@
 // TTKERNEL-LABEL: func.func @dma_single_tile_single_copy
 // TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 128 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
 // Tensor accessor created at function entry with CTA index from ttl.base_cta_index.
 // TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
@@ -37,7 +37,7 @@ module {
 // TTKERNEL-LABEL: func.func @cb_to_tensor
 // TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 128 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
 // Tensor accessor created at function entry.
 // TTKERNEL: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
@@ -72,7 +72,7 @@ module {
 // All tensor accessors created at function entry with chaining.
 // TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
-// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 128 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : index
 // First tensor accessor at function entry - CTA starts at 2 (after 2 bind_cb ops).

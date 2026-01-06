@@ -233,8 +233,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Set base CTA index for TensorAccessorArgs chaining.
         # CB indices occupy [0, num_cbs-1], so TensorAccessorArgs start at num_cbs.
-        # Use the kernel-level CB count from the symbol table.
-        base_cta_index = len(self._kernel_cb_symbol_table)
+        # Use the thread-local CB count from _cb_info.
+        base_cta_index = len(self._cb_info)
         self.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
             IntegerType.get_signless(32), base_cta_index
         )

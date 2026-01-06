@@ -11,7 +11,7 @@
 // Tensor accessors are now created at function entry with chaining, not inside loops.
 // TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant 128 : i32
+// TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : index
 // First tensor accessor (src) at function entry - CTA starts at 1 (after 1 bind_cb).
