@@ -16,12 +16,12 @@ The programming model of TT-Lang is centered around explicit specification of da
 
 ## Kernel program
 
-*Kernel function* is a Python function with ttl.kernel decorator. This function constructs a ttl.Program object by passing up to three *thread functions*. The ttl.Program object itself is a callable with input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html). A thread function is a Python function with no arguments annotated by ttl.compute or ttl.datamovement decorators. Typically thread functions are defined in the scope of the kernel function so that they can capture objects shared by all thread functions.
+*Kernel function* is a Python function with `ttl.kernel` decorator. This function constructs a `ttl.Program` object by passing up to three *thread functions*. The `ttl.Program` object itself is a callable with input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html). A thread function is a Python function with no arguments annotated by `ttl.compute` or `ttl.datamovement` decorators. Typically thread functions are defined in the scope of the kernel function so that they can capture objects shared by all thread functions.
 
 | Type alias/Function | Description |
 | :---- | :---- |
-| ttl.Program \= Callable\[\[\*tensors: ttnn.Tensor\], None\] | A program as a callable object. |
-| ttl.Program(\*threads: Callable\[\[\], None\]) \-\> ttl.Program | A positive integer. The metadata Gt(0), can be used by runtime type-checkers to enforce the integer constraints.  |
+| `ttl.Program = Callable[[*tensors: ttnn.Tensor], None]` | A program as a callable object. |
+| `ttl.Program(*threads: Callable[[], None]) -> ttl.Program` | Create a program with provided thread functions.  |
 
 ## Example
 
@@ -59,14 +59,14 @@ A *grid* defines a space of Tensix cores to which the kernel is submitted for ex
 
 ## Grid size function
 
-The ttl.grid\_size function returns the size of the grid. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of one. The ttl.grid\_size can be used inside a kernel function as well as inside thread functions.
+The `ttl.grid_size` function returns the size of the grid. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of one. The `ttl.grid_size` can be used inside a kernel function as well as inside thread functions.
 
 | Type alias/Function | Description |
 | :---- | :---- |
-| ttl.PositiveInt \= Annotated\[int, Gt(0)\] | A positive integer. The metadata Gt(0), can be used by runtime type-checkers to enforce the integer constraints.  |
-| ttl.Size \= ttl.PositiveInt | A size. |
-| ttl.Shape \= ttl.Size | Tuple\[ttl.Size, …\] | A shape type. ttl.Size for 1D and tuple of ttl.Size otherwise. |
-| ttl.grid\_size(dims: ttl.Size) \-\> ttl.Shape | Return grid size in specified dimensionality. Returns ttl.Size for dims \= 1 and a tuple of ttl.Size for other values of dims. |
+| `ttl.PositiveInt = Annotated[int, Gt(0)]` | A positive integer. The metadata `Gt(0)`, can be used by runtime type-checkers to enforce the integer constraints.  |
+| `ttl.Size = ttl.PositiveInt` | A size. |
+| `ttl.Shape = ttl.Size \| Tuple[ttl.Size, ...]` | A shape type. `ttl.Size` for 1D and tuple of `ttl.Size` otherwise. |
+| `ttl.grid_size(dims: ttl.Size) -> ttl.Shape` | Return grid size in specified dimensionality. Returns `ttl.Size` for `dims = 1` and a tuple of `ttl.Size` for other values of dims. |
 
 ## Example
 
@@ -83,14 +83,14 @@ x_size, y_size, z_size = ttl.grid_size(dims = 3)
 
 ## Core function
 
-The ttl.core function returns *core coordinates* of the current Tensix core. Core coordinates are zero based and contiguous, which corresponds to a logical indexing scheme. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of zero. The ttl.core can be used inside a kernel function as well as inside thread functions.
+The `ttl.core` function returns *core coordinates* of the current Tensix core. Core coordinates are zero based and contiguous, which corresponds to a logical indexing scheme. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of zero. The `ttl.core` can be used inside a kernel function as well as inside thread functions.
 
 | Type alias/Function | Description |
 | :---- | :---- |
-| ttl.NaturalInt \= Annotated\[int, Ge(0)\] | Non-negative integer. The metadata Ge(0), can be used by runtime type-checkers to enforce the integer constraints. |
-| ttl.Index \= ttl.NaturalInt | An index, assumes non-negative indexes. |
-| ttl.CoreCoord \= ttl.Index | Tuple\[ttl.Index, …\] | Core coordinates. ttl.Index for 1D and tuple of ttl.Index otherwise. |
-| ttl.core(dims: ttl.Index) \-\> ttl.CoreCoord | Return core coordinates in specified dimensionality. Returns ttl.Index for dims \= 1 and a tuple of ttl.Index for other values of dims. |
+| `ttl.NaturalInt = Annotated[int, Ge(0)]` | Non-negative integer. The metadata `Ge(0)`, can be used by runtime type-checkers to enforce the integer constraints. |
+| `ttl.Index = ttl.NaturalInt` | An index, assumes non-negative indexes. |
+| `ttl.CoreCoord = ttl.Index \| Tuple[ttl.Index, ...]` | Core coordinates. `ttl.Index` for 1D and tuple of `ttl.Index` otherwise. |
+| `ttl.core(dims: ttl.Index) -> ttl.CoreCoord` | Return core coordinates in specified dimensionality. Returns `ttl.Index` for `dims = 1` and a tuple of `ttl.Index` for other values of dims. |
 
 ## Example
 
@@ -107,9 +107,9 @@ x, y, z = ttl.core(dims = 3)
 
 ## Circular buffer
 
-A *circular buffer* is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. A circular buffer is created with the ttl.make\_circular\_buffer\_like function by passing TT-NN tensor, *shape* and *buffer factor*. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit is a whole tile if the tensor has a tiled layout and is a scalar if the tensor has a row-major layout. Shape determines the shape of a *block* returned by one of the *acquisition functions* and is expressed in shape units. Buffer factor determines the total size of L1 memory allocated as a product of block size and buffer factor. For the most common case buffer factor defaults to 2 to enable double buffering.
+A *circular buffer* is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. A circular buffer is created with the `ttl.make_circular_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit is a whole tile if the tensor has a tiled layout and is a scalar if the tensor has a row-major layout. Shape determines the shape of a *block* returned by one of the *acquisition functions* and is expressed in shape units. Buffer factor determines the total size of L1 memory allocated as a product of block size and buffer factor. For the most common case buffer factor defaults to 2 to enable double buffering.
 
-There are two acquisition functions on a circular buffer object: wait and reserve. A circular buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions. Acquisition functions can be used with Python with statement, which will automatically release acquired blocks at the end of the with scope. Alternatively, if acquisition functions are used without the with the user must explicitly call a corresponding release function: pop for wait and push for reserve.
+There are two acquisition functions on a circular buffer object: `wait` and `reserve`. A circular buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function: `pop` for `wait` and `push` for `reserve`.
 
 ## Example
 
@@ -143,15 +143,15 @@ def some_compute():
 
 | Type alias/Function | Description |
 | :---- | :---- |
-| ttl.make\_circular\_buffer\_like(   ttnn.Tensor: likeness\_tensor,   shape: ttl.Shape,   buffer\_factor: ttl.Size) \-\> ttl.CircularBuffer | Create a circular buffer by inheriting basic properties from likeness\_tensor. |
-| ttl.CircularBuffer.reserve(self) \-\> ttl.Block | Reserve and return a block from a circular buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
-| ttl.CircularBuffer.push(self) | Push a block to a circular buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
-| ttl.CircularBuffer.wait(self) \-\> ttl.Block | Wait for and return a block from a circular buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
-| ttl.CircularBuffer.pop(self) | Pop a block from a circular buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
+|  `ttl.make_circular_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   buffer_factor: ttl.Size) -> ttl.CircularBuffer` | Create a circular buffer by inheriting basic properties from `likeness_tensor`. |
+|  `ttl.CircularBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a circular buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
+| `ttl.CircularBuffer.push(self)` | Push a block to a circular buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
+| `ttl.CircularBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a circular buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
+| `ttl.CircularBuffer.pop(self)` | Pop a block from a circular buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
 
 ## Block
 
-A *block* represents memory acquired from a circular buffer. Block size is determined by the shape of a circular buffer and its memory is allocated when a circular buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the acc \= True parameter, TT-Lang will generate accumulation for all calls after the first one. When acc \= False, all stores simply store (no accumulation). It is illegal to have multiple store invocations  for the same block with different values of acc parameter.  Inside of data movement threads a block can participate in ttl.copy as a source or a destination.
+A *block* represents memory acquired from a circular buffer. Block size is determined by the shape of a circular buffer and its memory is allocated when a circular buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). It is illegal to have multiple `store` invocations  for the same block with different values of `acc` parameter. Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
 
 ## Element-wise example
 
@@ -290,36 +290,36 @@ def matmul_write():
 
 | Function | Description |
 | :---- | :---- |
-| ttl.Block.store(self, expr: ttl.BlockExpr, acc: Boolean \= False) | This function materializes the result of a *block expression* and stores it in the block. When acc is set to True store with accumulation is allowed. Block expression uses Python builtin math operators and ttl.math.xxx functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
-| ttl.math.sqrt(expr: ttl.BlockExpr) \-\> ttl.BlockExpr | Example of TT-Lang math function. |
-| ttl.BlockExpr.\_\_add\_\_(   self,   other: ttl.BlockExpr) \-\> ttl.BlockExpr | Example of Python built-in operator. |
+| `ttl.Block.store(self, expr: ttl.BlockExpr, acc: Boolean = False)` | This function materializes the result of a *block expression* and stores it in the block. When `acc` is set to `True` store with accumulation is allowed. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
+| `ttl.math.sqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Example of TT-Lang math function. |
+| `ttl.BlockExpr.__add__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Example of Python built-in operator. |
 
 ##
 
 ## Pipe
 
-A *pipe* is a communication primitive for organizing the passing of data between data movement threads on different Tensix cores. A pipe is used as a source or a destination in the ttl.copy. The pipe is constructed with source core coordinate (src) and destination (dst), which is either a single core coordinate for unicast or *core range* for multicast. The core range uses a combination of dimension slices and values to describe a contiguous hypercube. The core range dimensions’ aspects will match the corresponding aspects returned by the grid\_size function for the same number of dimensions.
+A *pipe* is a communication primitive for organizing the passing of data between data movement threads on different Tensix cores. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source core coordinate (`src`) and destination (`dst`), which is either a single core coordinate for unicast or *core range* for multicast. The core range uses a combination of dimension slices and values to describe a contiguous hypercube. The core range dimensions’ aspects will match the corresponding aspects returned by the `grid_size` function for the same number of dimensions.
 
 | Type alias/Function | Description |
 | :---- | :---- |
-| ttl.CoreRange \= Tuple\[ttl.Index | slice, ...\] | A core range. |
-| ttl.Pipe\[DstT\](   src: ttl.CoreCoord,   dst: DstT) \-\> ttl.Pipe\[DstT\] | Constructs pipe description to be used to construct pipe net. The dst argument is of DstT type, which can be either ttl.CoreCoord or ttl.CoreRange. |
+| `ttl.CoreRange = Tuple[ttl.Index \| slice, ...]` | A core range. |
+| `ttl.Pipe[DstT](src: ttl.CoreCoord, dst: DstT) -> ttl.Pipe[DstT]` | Constructs pipe description to be used to construct pipe net. The `dst` argument is of `DstT` type, which can be either `ttl.CoreCoord` or `ttl.CoreRange`. |
 
 ## Pipe net
 
-A *pipe net* is a communication primitive that groups pipes into a network. A pipe net is constructed from a list of pipes and encapsulates all necessary information to determine if a given core is source, destination or both and where and from which core or cores the corresponding transfers will occur. Pipe net object has two functions: if\_src and if\_dst. Both functions have a single argument: *condition body function*.
+A *pipe net* is a communication primitive that groups pipes into a network. A pipe net is constructed from a list of pipes and encapsulates all necessary information to determine if a given core is source, destination or both and where and from which core or cores the corresponding transfers will occur. Pipe net object has two functions: `if_src` and `if_dst`. Both functions have a single argument: *condition body function*.
 
-Condition body function is invoked for each pipe in case of if\_src if the current core is a source, and in case of if\_dst if the current core is a destination. The condition body function has a single argument: a pipe identity that satisfies the condition. Condition body function can identify the source and the destination by its src and  dst read-only properties correspondingly.
+Condition body function is invoked for each pipe in case of `if_src` if the current core is a source, and in case of `if_dst` if the current core is a destination. The condition body function has a single argument: a pipe identity that satisfies the condition. Condition body function can identify the source and the destination by its `src` and `dst` read-only properties correspondingly.
 
-A pipe net is constructed in the scope of the kernel function but can only be used with its if\_src and if\_dst functions inside of a data movement thread function. The corresponding  ttl.copy where a pipe is a source or a destination can be called only inside of a condition body function. Calls into if\_src and if\_dst can be nested within condition functions for different pipe nets.
+A pipe net is constructed in the scope of the kernel function but can only be used with its `if_src` and `if_dst` functions inside of a data movement thread function. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
 
 | Function | Description |
 | :---- | :---- |
-| ttl.PipeNet\[DstT\](pipes: List\[ttl.Pipe\[DstT\]\]) \-\> ttl.PipeNet\[DstT\] | Constructs pipe net. |
-| ttl.PipeNet\[DstT\].if\_src(   Self,   cond\_fun: Callable\[\[ttl.SrcPipeIdentity\[DstT\]\], None\]) | Call condition function for each pipe in the pipe net that is a source. |
-| ttl.PipeNet\[DstT\].if\_dst(   self,   cond\_fun: Callable\[\[ttl.DstPipeIdentity\], None\]) | Call condition function for each pipe in the pipe net that is a destination. |
-| @property ttl.SrcPipeIdentity\[DstT\].dst(self) \-\> DstT | Get destination core or core range for pipe in if\_src. |
-| @property ttl.DstPipeIdentity.src(self) \-\> ttl.CoreCoord | Get source core for pipe in if\_dst. |
+| `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]]) -> ttl.PipeNet[DstT]` | Constructs pipe net. |
+| `ttl.PipeNet[DstT].if_src(self, cond_fun: Callable[[ttl.SrcPipeIdentity[DstT]], None])` | Call condition function for each pipe in the pipe net that is a source. |
+| `ttl.PipeNet[DstT].if_dst(self, cond_fun: Callable[[ttl.DstPipeIdentity], None])` | Call condition function for each pipe in the pipe net that is a destination. |
+| `@property ttl.SrcPipeIdentity[DstT].dst(self) -> DstT` | Get destination core or core range for pipe in `if_src`. |
+| `@property ttl.DstPipeIdentity.src(self) -> ttl.CoreCoord` | Get source core for pipe in `if_dst`. |
 
 ##
 
@@ -516,11 +516,11 @@ def dm():
 
 ## Tensor slice
 
-A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension slice or value for each of the tensor's dimensions. A tensor slice can participate in ttl.copy as a source or a destination with the corresponding destination and source being a block. Tensor slice can only be used in the scope of a data movement thread function.
+A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension slice or value for each of the tensor's dimensions. A tensor slice can participate in `ttl.copy` as a source or a destination with the corresponding destination and source being a block. Tensor slice can only be used in the scope of a data movement thread function.
 
 | Function | Description |
 | :---- | :---- |
-| ttnn.Tensor.\_\_getitem\_\_(   self,   \*index: ttl.Index | slice) \-\> ttl.TensorSlice | Get a tensor slice from a TT-NN tensor. |
+| `ttnn.Tensor.__getitem__(self, *index: ttl.Index \| slice) -> ttl.TensorSlice` | Get a tensor slice from a TT-NN tensor. |
 
 ## Example
 
@@ -552,18 +552,18 @@ def dm():
 
 ## Copy
 
-ttl.copy function expresses a variety of data movements that always have two arguments: source and destination. ttl.copy returns a *transfer handle* object. A transfer handle has a wait function that serves as a barrier. When the wait returns the transfer is complete and data in the destination is safe to use.  The ttl.copy can only be used inside of a data movement thread function.
+The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` can only be used inside of a data movement thread function.
 
 | Function | Description |
 | :---- | :---- |
-| ttl.copy(   src: ttl.Block,   dst: ttl.TensorSlice) \-\> ttl.TransferHandle ttl.copy(   src: ttl.TensorSlice,   dst: ttl.Block) \-\> ttl.TransferHandle ttl.copy(   src: ttl.Block,   dst: ttl.PipeIdentity) \-\> ttl.TransferHandle ttl.copy(   src: ttl.PipeIdentity,   dst: ttl.Block) \-\> ttl.TransferHandle | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding ttl.copy where the same pipe is used as source. Furthermore, ttl.copy with pipe must be guarded by pipe net’s if\_src and is\_dst where this pipe is destination and source correspondingly. |
-| ttl.TransferHandle.wait() | Wait for data transfer to complete. **This function is blocking.** |
+| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.TransferHandle` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by pipe net’s `if_src` and `is_dst` where this pipe is destination and source correspondingly. |
+| `ttl.TransferHandle.wait()` | Wait for data transfer to complete. **This function is blocking.** |
 
 ## Semaphore
 
 A *semaphore* is a communication primitive for general synchronization between data movement threads on different Tensix cores. Each semaphore has an associated 32-bit unsigned integer *semaphore value* for each Tensix core. This value can be changed (set or incremented) by a data movement thread on the local or a remote core. When changing semaphore value remotely a single core coordinate for unicast change or a core range for multicast change is specified. Only setting the semaphore value is supported as a multicast change. A data movement thread can wait on a semaphore until its value satisfies a condition. It is possible to specify either a condition with exact value or a condition with minimum value. Only local data movement threads can wait on a semaphore.
 
-ttl.Semaphore class is constructed with its initial value that defaults to zero. A ttl.Semaphore instance can be constructed in kernel function scope. A ttl.Semaphore instance provides wait\_eq, wait\_ge and set functions for managing local semaphore value. To change a remote semaphore value an instance of ttl.UnicastRemoteSemaphore or ttl.MulticastRemoteSemaphore is obtained by calling get\_remote and get\_remote\_multicast functions correspondingly. The ttl.UnicastRemoteSemaphore supports inc and set while ttl.MulticastRemoteSemaphore supports only set. Functions that change the value or wait on condition can be used only in the scope of a data movement thread function. Functions that obtain remote semaphores can be used in scopes of both kernel and data movement thread functions.
+`ttl.Semaphore` class is constructed with its initial value that defaults to zero. A `ttl.Semaphore` instance can be constructed in kernel function scope. A `ttl.Semaphore` instance provides `wait_eq`, `wait_ge` and `set` functions for managing local semaphore value. To change a remote semaphore value an instance of `ttl.UnicastRemoteSemaphore` or `ttl.MulticastRemoteSemaphore` is obtained by calling `get_remote` and `get_remote_multicast` functions correspondingly. The `ttl.UnicastRemoteSemaphore` supports `inc` and `set` while `ttl.MulticastRemoteSemaphore` supports only `set`. Functions that change the value or wait on condition can be used only in the scope of a data movement thread function. Functions that obtain remote semaphores can be used in scopes of both kernel and data movement thread functions.
 
 ## One-to-many barrier example
 
@@ -602,15 +602,15 @@ def dm():
 
 | Function | Description |
 | :---- | :---- |
-| ttl.Count \= ttl.NaturalInt | A type for semaphore value. |
-| ttl.Semaphore.wait\_eq(self, value: ttl.Count) | Wait until the local semaphore value is equal to specified value. **This function is blocking.** Can be used only in the scope of a data movement thread function. |
-| ttl.Semaphore.wait\_ge(self, value: ttl.Count) | Wait until the local semaphore value is greater or equal to specified value. **This function is blocking.** Can be used only in the scope of a data movement thread function. |
-| ttl.Semaphore.set(self, value: ttl.Count) | Set the local semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
-| ttl.Semaphore.get\_remote(self, ttl.CoreCoord: core) \-\> ttl.UnicastRemoteSemaphore | Get remote unicast semaphore for specified core coordinate. Returns an instance of UnicastRemoteSemaphore. Can be used in both kernel and thread function scopes. |
-| ttl.Semaphore.get\_remote\_multicast(self, ttl.CoreRange: core\_range) \-\> ttl.MulticastRemoteSemaphore | Get remote multicast semaphore for specified core range. When called with no arguments returns remote multicast semaphore for the entire grid. Returns an instance of MulticastRemoteSemaphore. Can be used in both kernel and thread function scopes. |
-| ttl.UnicastRemoteSemaphore.set(self, value: ttl.Count) | Set remote unicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
-| ttl.UnicastRemoteSemaphore.inc(self, value: ttl.Count) | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
-| ttl.MulticastRemoteSemaphore.set(self, value: ttl.Count) | Set remote multicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
+| `ttl.Count = ttl.NaturalInt` | A type for semaphore value. |
+| `ttl.Semaphore.wait_eq(self, value: ttl.Count)` | Wait until the local semaphore value is equal to specified value. **This function is blocking.** Can be used only in the scope of a data movement thread function. |
+| `ttl.Semaphore.wait_ge(self, value: ttl.Count)` | Wait until the local semaphore value is greater or equal to specified value. **This function is blocking.** Can be used only in the scope of a data movement thread function. |
+| `ttl.Semaphore.set(self, value: ttl.Count)` | Set the local semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
+| `ttl.Semaphore.get_remote(self, ttl.CoreCoord: core) -> ttl.UnicastRemoteSemaphore` | Get remote unicast semaphore for specified core coordinate. Returns an instance of `ttl.UnicastRemoteSemaphore`. Can be used in both kernel and thread function scopes. |
+| `ttl.Semaphore.get_remote_multicast(self, ttl.CoreRange: core_range) -> ttl.MulticastRemoteSemaphore` | Get remote multicast semaphore for specified core range. When called with no arguments returns remote multicast semaphore for the entire grid. Returns an instance of `ttl.MulticastRemoteSemaphore`. Can be used in both kernel and thread function scopes. |
+| `ttl.UnicastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote unicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
+| `ttl.UnicastRemoteSemaphore.inc(self, value: ttl.Count)` | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
+| `ttl.MulticastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote multicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 
 ## Glossary
 
@@ -639,91 +639,3 @@ def dm():
 | *Transfer handle* | A handle to an asynchronous copy operation. A transfer handle is used as a barrier to ensure that operation is finished and the corresponding source or destination block is safe to use. |
 | *Semaphore* | A communication primitive for general synchronization between data movement threads on different Tensix cores. |
 | *Semaphore value* | A 32-bit unsigned integer value associated with a semaphore on each Tensix core. This value can be set or incremented by a data movement thread on the local or a remote Tensix core. |
-
-#
-
-# Schedule
-
-## Features to milestones/umbrella issues
-
-| *Feature* | *Compiler* | *Simulator* |
-| :---- | :---- | :---- |
-| Manual grid setting for 2D grids | M0 [\#101](https://github.com/tenstorrent/tt-lang/issues/101) | M0 [\#102](https://github.com/tenstorrent/tt-lang/issues/102) |
-| Tilized circular buffers | M0 [\#103](https://github.com/tenstorrent/tt-lang/issues/103) | M0 [\#104](https://github.com/tenstorrent/tt-lang/issues/104) |
-| Element-wise block expressions and non-accumulation ttl.store | M0 [\#105](https://github.com/tenstorrent/tt-lang/issues/105) | M0 [\#106](https://github.com/tenstorrent/tt-lang/issues/106) |
-| Tilized interleaved L1/DRAM tensor slices | M0 [\#107](https://github.com/tenstorrent/tt-lang/issues/107) | M0 [\#108](https://github.com/tenstorrent/tt-lang/issues/108) |
-| TT-NN integration | M0 [\#109](https://github.com/tenstorrent/tt-lang/issues/109) | M0 [\#110](https://github.com/tenstorrent/tt-lang/issues/110) |
-| TT-sim support | M0 [\#111](https://github.com/tenstorrent/tt-lang/issues/111) | N/A |
-| Docker container preview release | M0 [\#112](https://github.com/tenstorrent/tt-lang/issues/112) |  |
-| Element-wise, reductions, variants of matmuls and upsample in kernel zoo | M0 [\#116](https://github.com/tenstorrent/tt-lang/issues/116) |  |
-| Block expressions with dot product and accumulation store | M1 | M0 [\#113](https://github.com/tenstorrent/tt-lang/issues/113) |
-| 2D pipes (single-chip) | M1 | M0 [\#114](https://github.com/tenstorrent/tt-lang/issues/114) |
-| Row-major tensor slices | M1 | M0 [\#115](https://github.com/tenstorrent/tt-lang/issues/115) |
-| Row-major circular buffers | M1 | M0 [\#116](https://github.com/tenstorrent/tt-lang/issues/116) |
-| GenAI codegen demo | M1 |  |
-| Sharded tensor slices | M2 | N/A |
-| 2D semaphores (single-chip) | M2 | M1 |
-| Documentation and pip install | M2 |  |
-| 4D grids, pipes and semaphores (single host multi-chip) | M3 | M1 |
-| 4D tensor slices. (single host multi-chip) | M3 | M1 |
-| Roof line based performance modeling | N/A | M2 |
-
-## Milestones and deadline dates
-
-| *Milestone* | *Description* | *Date* |
-| :---- | :---- | :---- |
-| M0 [\#2](https://github.com/tenstorrent/tt-lang/milestone/2) | Release to models team | 02/01/2026 |
-| M1 | Wide internal release and demo | 03/01/2026 |
-| M2 | Public soft-launch | 04/01/2026 (end of Q1) |
-| M3 | Public launch | 05/01/2026 |
-
-#
-
-# Discussion
-
-## Principles
-
-TT-Lang is a Python-based DSL that enables authoring of programs for TT-hardware at the abstraction level similar to SoTA “tile-level” DSLs for GPUs with. Following are the TT-Lang principles, in the order of significance:
-
-1. Ability to express optimizations that achieve **performance within close range (95%)** of hand written TT-Metalium programs;
-2. Robust and safe abstractions capable of representing a simplified model of hardware that **eliminates whole classes of mistakes** that are possible when writing TT-Metalium programs; Specifically:
-   1. Reduce duplication of information that is typical in mult-threaded separation of kernels;
-   2. Infer CBs operations to eliminate errors in asynchronous code that would be causing hangs or data races (All in single threaded, pop/push guarded by “with” scope in multithreaded);
-   3. Infer xxx\_init/xxx\_tile(s) etc calls based on functional compute expression;
-   4. Use compile time memory allocation (DRAM, L1 and DST register) to eliminate OOMs and clobberring at runtime;
-   5. In addition to (d) use relative memory sizing instead of explicit memory sizing to eliminate OOMs at runtime. With such relative memory sizing the actual size can be maximized at compile time by the allocator or autotuned (see below) at runtime;
-3. Allow TT-Lang programs to be **portable across multiple generations** of TT-hardware. Enable generation-specific details to be expressed as autotunable hyper-parameters;
-4. SoTA **ergonomics**. Specifically:
-   1. Functional simulator;
-   2. VSCode (or similar) integration via language server;
-   3. As-you-type compilation errors;
-   4. As-you-type sanitization (based on functional simulator) errors;
-   5. VSCode integrated line-by-line profiler (ala NSight);
-5. Ability to be authored by **Generative AI** from scratch or in translation from “tile-level” DSLs for GPUs. Ability for the compiler, the sanitizer and the simulator to provide ergonomic errors, warnings, correctness and performance feedback for Generative AI to be able to iterate in an agentic workflow.
-6. Ability to **autotune** within a space of user-defined hyper-parameters;
-7. Ability to **serve as a bootstrap (EmitMetal)** that generates C++ TT-Metalium program for further optimization;
-8. Ability to **augment TT-NN programs** with custom TT-Lang kernels;
-9. Being **Python-based** as to support a limited subset of Python to express programs as well as being able to integrate into the Python environment. This makes TT-Lang more familiar and convenient for the target audience;
-10. Ability to develop TT-Lang programs **out of tree** and without rebuilding TT-NN from source;
-
-## Outcomes
-
-There is a number of outcomes we are looking for that motivate TT-Lang:
-
-* Adoption by internal Models Team as a tool that materially speeds up supporting new models in inference;
-* Adoption by internal Training Team as a tool that enables fast iteration and experimentation without sacrificing performance;
-* Adoption by external users on inference and training tracks as an authoring tool that leverages their experiences with “tile-level” DSLs for GPUs and provides robust abstraction over multiple generations of TT-hardware.
-
-## Questions
-
-1) The programming model can be either single-threaded with a program expressed as a synchronous dataflow using load/store and math operations or it can be multi-threaded and asynchronous with separate data movement and compute kernels using abstractions mapped to CBs and NOC transfers. Can both be supported? If so, which one do we start with?
-   1) In the initial milestone we plan for multi-threaded model will allow the author to fully control the pipeline and order of operations as well as require explicit synchronization;
-   2) The single-threaded model will allow the compiler to “design” the pipeline, reorder operations when necessary and infer necessary synchronization. We will explore the single-threaded model in the context of evaluation of applicability of SoTA “tile-level” DSLs.
-2) Explicit loop nests versus metadata declarations. For-temporal? For-spatial?
-   1) We want to provide a choice of expressing for-temporal loops as either explicit for statements in Python or implicitly as specified in metadata declarations.
-   2) For-spacial looks would only be specified implicitly by grid metadata.
-3) Python code for DSL can be either analyzed at AST level or traced. How much empirical runtime code is allowed/needed? What do we need to write a performant FA?
-   1) We will take the approach of taking AST representation from the kernel's Python code. This will limit what can be used in kernel’s code to a subset of Python that is representable in Arith, Scf and TT-Kernel dialects. We will allow utility functions with the same limitation to be called from kernel’s code.
-4) What is the user experience? Is TT-Lang embedded in TT-NN? In PyTorch? Standalone?
-   1) TT-NN integration that allows mixing TT-NN code with TT-Lang. TT-Lang will be installed as a separate wheel compatible with TT-NN.
-   2) It is unclear if we need standalone mode or PyTorch integration.
