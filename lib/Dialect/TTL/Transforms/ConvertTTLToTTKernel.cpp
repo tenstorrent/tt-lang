@@ -487,10 +487,11 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
     }
 
     // Compute page size from tensor layout.
-    utils::ContiguousLayoutInfo layout =
-        utils::computeContiguousLayout(tensorTy);
+    // For tiled interleaved layouts, page size = tile size in bytes.
+    auto layoutAttr = mlir::cast<tt::ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+    int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
     auto pageSize =
-        builder.create<arith::ConstantIntOp>(loc, layout.pageSizeBytes, 32);
+        builder.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
     // Materialize accessor with chaining.
     auto [accessor, argsOp] = buildTensorAccessorChained(
