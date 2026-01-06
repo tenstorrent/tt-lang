@@ -31,7 +31,8 @@ def api():
 def test_circular_buffer_basic(api: CBAPI) -> None:
     """Test basic CircularBuffer operations."""
     # Create a circular buffer for single tiles with buffer factor 2
-    cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+    element = make_ones_tile()
+    cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
     # Verify basic properties
     assert cb.shape == (1, 1)
@@ -64,7 +65,8 @@ def test_circular_buffer_basic(api: CBAPI) -> None:
 def test_circular_buffer_multi_tile(api: CBAPI) -> None:
     """Test CircularBuffer with multiple tiles per operation."""
     # Create a circular buffer for 2x1 tiles (2 tiles per operation)
-    cb = CircularBuffer(shape=(2, 1), buffer_factor=3, api=api)
+    element = make_ones_tile()
+    cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=3, api=api)
 
     # Verify properties
     assert cb.shape == (2, 1)
@@ -104,7 +106,8 @@ def test_copy_operations(api: CBAPI) -> None:
     accessor_a = tensor_a
 
     # Create circular buffer
-    cb_a = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+    element = make_ones_tile()
+    cb_a = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
     # Test copy from tensor to circular buffer
     cb_view = cb_a.reserve()
@@ -134,18 +137,19 @@ def test_copy_operations(api: CBAPI) -> None:
 def test_error_handling(api: CBAPI) -> None:
     """Test error conditions."""
     # Test invalid shape
+    element = make_ones_tile()
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(0, 1), api=api)  # Invalid shape
+        CircularBuffer(element=element, shape=(0, 1), api=api)  # Invalid shape
 
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(1, 2, 3), api=api)  # type: ignore # Wrong shape dimensions
+        CircularBuffer(element=element, shape=(1, 2, 3), api=api)  # type: ignore # Wrong shape dimensions
 
     # Test invalid buffer factor
     with pytest.raises(ValueError):
-        CircularBuffer(shape=(1, 1), buffer_factor=0, api=api)
+        CircularBuffer(element=element, shape=(1, 1), buffer_factor=0, api=api)
 
     # Test operations without proper setup
-    cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+    cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
     # Can't push without reserve - CBAPI will catch this
     with pytest.raises(CBContractError):
@@ -178,10 +182,17 @@ def test_example_usage_pattern(api: CBAPI) -> None:
     c_accessor = c_in
 
     # Create circular buffers like in the example
-    a_in_cb = CircularBuffer(shape=(granularity, 1), buffer_factor=2, api=api)
-    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2, api=api)
-    c_in_cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
-    _ = CircularBuffer(shape=(granularity, 1), buffer_factor=2, api=api)
+    element = make_ones_tile()
+    a_in_cb = CircularBuffer(
+        element=element, shape=(granularity, 1), buffer_factor=2, api=api
+    )
+    _ = CircularBuffer(
+        element=element, shape=(granularity, 1), buffer_factor=2, api=api
+    )
+    c_in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    _ = CircularBuffer(
+        element=element, shape=(granularity, 1), buffer_factor=2, api=api
+    )
 
     # Verify the circular buffers were created correctly
     assert a_in_cb.shape == (granularity, 1)
@@ -344,7 +355,8 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
 def test_can_wait_and_can_reserve(api: CBAPI) -> None:
     """Test can_wait() and can_reserve() methods."""
     # Create a circular buffer with buffer factor 2 (capacity = 2 tiles)
-    cb = CircularBuffer(shape=(1, 1), buffer_factor=2, api=api)
+    element = make_ones_tile()
+    cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
     # Initially, buffer is empty
     # can_reserve should return True (we have 2 free tiles)
@@ -394,7 +406,8 @@ def test_can_wait_and_can_reserve(api: CBAPI) -> None:
 def test_can_methods_multi_tile(api: CBAPI) -> None:
     """Test can_wait() and can_reserve() with multi-tile operations."""
     # Create a buffer that handles 2 tiles per operation, capacity = 6 tiles
-    cb = CircularBuffer(shape=(2, 1), buffer_factor=3, api=api)
+    element = make_ones_tile()
+    cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=3, api=api)
 
     # Initially empty
     assert cb.can_reserve() is True  # 6 free tiles, need 2
@@ -456,6 +469,56 @@ def test_can_methods_uninitialized(api: CBAPI) -> None:
     print("can_wait() and can_reserve() uninitialized test passed!")
 
 
+def test_context_manager_syntax(api: CBAPI) -> None:
+    """Test the context manager (with statement) syntax for reserve and wait."""
+    # Create a circular buffer
+    element = make_ones_tile()
+    cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+
+    # Test reserve with context manager
+    test_data = make_ones_tile()
+    with cb.reserve() as write_view:
+        write_view[0] = test_data
+        # push() is automatically called on exit
+
+    # Test wait with context manager
+    with cb.wait() as read_view:
+        read_data = read_view[0]
+        assert read_data is not None
+        # pop() is automatically called on exit
+
+    # Verify that we can still use the old style (backward compatibility)
+    write_view2 = cb.reserve()
+    write_view2[0] = make_zeros_tile()
+    cb.push()
+
+    read_view2 = cb.wait()
+    data2 = read_view2[0]
+    assert data2 is not None
+    cb.pop()
+
+    # Test with multiple context managers on same line
+    cb.reset()  # Reset to clean state
+
+    # Write data first
+    with cb.reserve() as w1:
+        w1[0] = make_ones_tile()
+
+    # Create another CB for multi-context test
+    cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    with cb2.reserve() as w2:
+        w2[0] = make_zeros_tile()
+
+    # Test multiple wait contexts (simulating the matmul pattern)
+    with cb.wait() as r1, cb2.wait() as r2:
+        d1 = r1[0]
+        d2 = r2[0]
+        assert d1 is not None
+        assert d2 is not None
+
+    print("Context manager syntax test passed!")
+
+
 if __name__ == "__main__":
     test_api = CBAPI()
     test_circular_buffer_basic(test_api)
@@ -470,4 +533,5 @@ if __name__ == "__main__":
     test_can_wait_and_can_reserve(test_api)
     test_can_methods_multi_tile(test_api)
     test_can_methods_uninitialized(test_api)
+    test_context_manager_syntax(test_api)
     print("All CircularBuffer tests passed!")

@@ -141,6 +141,7 @@ def Program(*funcs: BindableTemplate) -> Any:
                     case CircularBuffer():
                         # create a fresh CB for this core
                         core_context[key] = CircularBuffer(
+                            element=value.element,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
                             api=api,

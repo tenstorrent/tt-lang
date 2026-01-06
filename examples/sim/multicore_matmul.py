@@ -94,27 +94,14 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
         num_tiles = get_tiles_per_core(core_id)
 
         for _ in range(num_tiles):
-            # Translated from: with out_cb.reserve() as out_blk:
-            out_blk = out_cb.reserve()
-
-            # Accumulate over K dimension
-            for k_idx in range(Kt):
-                # Translated from: with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
-                a_blk = a_cb.wait()
-                b_blk = b_cb.wait()
-
-                # Translated from: out_blk.store(a_blk @ b_blk, acc=True)
-                # Manual accumulation: first iteration stores, subsequent add
-                if k_idx == 0:
-                    result = a_blk @ b_blk
-                else:
-                    result = out_blk + (a_blk @ b_blk)
-                out_blk.store(result)
-
-                a_cb.pop()
-                b_cb.pop()
-
-            out_cb.push()
+            # Reserve output block once for the entire K accumulation
+            # The reserved block is automatically initialized with zeros
+            with out_cb.reserve() as out_blk:
+                # Accumulate over K dimension
+                for _ in range(Kt):
+                    with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+                        # Accumulate using acc=True
+                        out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
     def mm_reader():
@@ -128,18 +115,12 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
             out_col = current_tile_id % Nt
 
             for k in range(Kt):
-                # Translated from: with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                a_blk = a_cb.reserve()
-                b_blk = b_cb.reserve()
-
-                # Note: Using slice notation for tile indexing
-                a_wr = ttl.copy(a[out_row : out_row + 1, k : k + 1], a_blk)
-                b_wr = ttl.copy(b[k : k + 1, out_col : out_col + 1], b_blk)
-                a_wr.wait()
-                b_wr.wait()
-
-                a_cb.push()
-                b_cb.push()
+                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    # Note: Using integer notation for tile indexing
+                    a_wr = ttl.copy(a[out_row, k], a_blk)
+                    b_wr = ttl.copy(b[k, out_col], b_blk)
+                    a_wr.wait()
+                    b_wr.wait()
 
     @ttl.datamovement()
     def mm_writer():
@@ -152,15 +133,9 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
             out_row = current_tile_id // Nt
             out_col = current_tile_id % Nt
 
-            # Translated from: with out_cb.wait() as out_blk:
-            out_blk = out_cb.wait()
-
-            out_wr = ttl.copy(
-                out_blk, out[out_row : out_row + 1, out_col : out_col + 1]
-            )
-            out_wr.wait()
-
-            out_cb.pop()
+            with out_cb.wait() as out_blk:
+                out_wr = ttl.copy(out_blk, out[out_row, out_col])
+                out_wr.wait()
 
     # Execute the program
     ttl.Program(mm_compute, mm_reader, mm_writer)(a, b, out)
