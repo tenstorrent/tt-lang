@@ -2,34 +2,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: only 2D CBs are supported.
+Validation test: only 2D tensors are supported.
 
-This test verifies that using a 3D tensor (which creates 3D CB) raises ValueError.
-The CB shape validation check comes before tensor validation in the code path.
+This test verifies that using a 3D tensor raises ValueError.
+The tensor shape validation happens when building the MLIR type.
 """
 
 import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
-# CHECK: Only 2D tensors supported, got shape
+# CHECK: error: Only 2D tensors supported, got shape
+# CHECK-NEXT:   --> {{.*}}invalid_non_2d_cb.py:[[LINE:[0-9]+]]:1
+# CHECK-NEXT:    |
+# CHECK-NEXT: [[LINE]] |         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+# CHECK-NEXT:     |     ^
+# CHECK-NEXT:     |
 @ttl.kernel(grid=(1, 1))
-def invalid_3d_cb_kernel(lhs, rhs, out):
-    """This kernel should fail because 3D tensors create 3D CBs which are not supported."""
+def invalid_3d_tensor_kernel(lhs, rhs, out):
+    """This kernel should fail because 3D tensors are not supported."""
     lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -70,7 +71,7 @@ def invalid_3d_cb_kernel(lhs, rhs, out):
 if __name__ == "__main__":
     import torch
 
-    print("=== Non-2D CB Validation Test ===")
+    print("=== Non-2D Tensor Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 
@@ -107,7 +108,7 @@ if __name__ == "__main__":
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         # This should raise ValueError
-        invalid_3d_cb_kernel(lhs, rhs, out)
+        invalid_3d_tensor_kernel(lhs, rhs, out)
 
         print("ERROR: Expected ValueError was not raised!")
         exit(1)

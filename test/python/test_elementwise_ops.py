@@ -9,29 +9,20 @@ Tests elementwise ops against PyTorch equivalents with L1 memory configuration.
 Kernels are generated from a template, written to temp files, and imported.
 """
 
+# REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
+import importlib.util
+import tempfile
+
 import pytest
 import torch
-import sys
-import tempfile
-import importlib.util
-from pathlib import Path
-
-# Add examples to path for utils
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "examples"))
+import ttnn
 from utils import assert_allclose
 
-try:
-    import ttnn
-
-    TTNN_AVAILABLE = True
-except ImportError:
-    TTNN_AVAILABLE = False
-
 # Skip all tests if ttnn not available
-pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
+pytestmark = pytest.mark.requires_ttnn
 
 
 # =============================================================================
@@ -366,7 +357,10 @@ def test_unary_op(device, op_name):
 # =============================================================================
 
 if __name__ == "__main__":
-    if not TTNN_AVAILABLE:
+    import sys
+
+    # Check if ttnn is available
+    if importlib.util.find_spec("ttnn") is None:
         print("TTNN not available - skipping tests")
         sys.exit(0)
 

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
@@ -9,21 +10,17 @@ Validation test: TTNN interop only supports single-core grid (1, 1).
 
 This test verifies that using a multi-core grid raises ValueError.
 Uses grid=(2, 2) with shape=(64, 64) which is divisible, but grid != (1,1).
+Multi-core sharded layouts require additional support (see GH issue #118).
 """
 
 import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
 # CHECK: TTNN interop only supports single-core grid (1, 1)

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
@@ -14,18 +15,18 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
-# CHECK: ValueError: Only 2D grids supported, got grid
+# CHECK: ValueError: TTNN interop only supports single-core grid (1, 1), got (1, 1, 1)
+# CHECK-NEXT:   --> {{.*}}invalid_3d_grid.py:[[LINE:[0-9]+]]:1
+# CHECK-NEXT:    |
+# CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(1, 1, 1))
+# CHECK-NEXT:    | ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1, 1))
 def invalid_3d_grid_kernel(lhs, rhs, out):
     """This kernel should fail because 3D grids are not supported."""

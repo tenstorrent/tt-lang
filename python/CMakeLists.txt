@@ -95,6 +95,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     __init__.py
     circular_buffer.py
     constants.py
+    diagnostics.py
     ttl.py
     ttl_api.py
     ttl_utils.py
@@ -141,10 +142,11 @@ set(_TTMLIR_PYTHON_CAPI_HINTS)
 if(DEFINED TTMLIR_BUILD_DIR)
   list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
     "${TTMLIR_BUILD_DIR}/python_packages/ttmlir/_mlir_libs")
-endif()
-if(DEFINED TTMLIR_PATH)
-  list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
-    "${TTMLIR_PATH}/python_packages/ttmlir/_mlir_libs")
+else()
+  if(DEFINED TTMLIR_PATH)
+    list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
+      "${TTMLIR_PATH}/python_packages/ttmlir/_mlir_libs")
+  endif()
 endif()
 list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
   "${TTMLIR_TOOLCHAIN_DIR}/python_packages/ttmlir/_mlir_libs"
@@ -188,6 +190,22 @@ add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
 target_link_libraries(TTLangPythonModules.extension._ttlang.dso PRIVATE
   ${TTMLIR_PYTHON_CAPI_LIB}
 )
+
+# Ensure we do not accidentally resolve libTTMLIRPythonCAPI.so from a different
+# tt-mlir install tree at runtime. Mixed CAPI builds in one Python process can
+# lead to MLIRContext registry mismatches.
+#
+# Constrain RUNPATH to the configured tt-mlir build tree.
+if(DEFINED TTMLIR_BUILD_DIR)
+  set(_TTMLIR_PYTHON_LIBDIR "${TTMLIR_BUILD_DIR}/python_packages/ttmlir/_mlir_libs")
+  set(_TTMLIR_LIBDIR "${TTMLIR_BUILD_DIR}/lib")
+  if(EXISTS "${_TTMLIR_PYTHON_LIBDIR}" AND EXISTS "${_TTMLIR_LIBDIR}")
+    set_target_properties(TTLangPythonModules.extension._ttlang.dso PROPERTIES
+      BUILD_RPATH "\$ORIGIN:${_TTMLIR_LIBDIR}:${_TTMLIR_PYTHON_LIBDIR}"
+      INSTALL_RPATH "\$ORIGIN:${_TTMLIR_LIBDIR}:${_TTMLIR_PYTHON_LIBDIR}"
+    )
+  endif()
+endif()
 
 # ###############################################################################
 # Install

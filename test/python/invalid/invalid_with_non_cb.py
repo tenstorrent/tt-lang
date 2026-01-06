@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
@@ -15,18 +16,18 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
-# CHECK: Expected CircularBufferType, got
+# CHECK: error: Expected CircularBufferType, got
+# CHECK-NEXT:   --> {{.*}}invalid_with_non_cb.py:[[LINE:[0-9]+]]:10
+# CHECK-NEXT:    |
+# CHECK-NEXT: [[LINE]] |         with l.wait() as data:
+# CHECK-NEXT:    |          ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
 def invalid_with_non_cb_kernel(lhs, rhs, out):
     """This kernel should fail because 'with' is used on a TensorBlock, not a CB."""

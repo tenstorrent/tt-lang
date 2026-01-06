@@ -52,6 +52,8 @@ config.excludes = [
     "Inputs",
     "lit.cfg.py",
     "sim",
+    "conftest.py",
+    "utils.py",
 ]
 
 # Exclude pytest-style tests (test_*.py) from lit collection.
@@ -136,7 +138,7 @@ for env_var in [
     "TT_METAL_BUILD_HOME",
     "TT_METAL_RUNTIME_ROOT",
     "TT_MLIR_HOME",
-    "SYSTEM_DESC_PATH",
+    "TTLANG_COMPILE_ONLY",
 ]:
     if env_var in os.environ:
         config.environment[env_var] = os.environ[env_var]
@@ -144,3 +146,11 @@ for env_var in [
 # Add system platform feature for UNSUPPORTED directives
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
+
+# Add TTNN feature if available
+try:
+    import ttnn
+
+    config.available_features.add("ttnn")
+except ImportError:
+    pass

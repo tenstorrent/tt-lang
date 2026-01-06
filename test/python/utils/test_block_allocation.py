@@ -10,7 +10,9 @@ get_large_matmul_params is compared with hard coded expected values
 import pytest
 
 from ttlang.utils.block_allocation import split_work_to_cores, get_large_matmul_params
-import ttnn
+
+ttnn = pytest.importorskip("ttnn")
+
 
 
 def extract_coords_from_ttnn_corerangeset(core_range_set):

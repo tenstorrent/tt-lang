@@ -15,7 +15,7 @@ from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
 @dataclass(frozen=True)
 class TTNNLayoutConfig:
-    """Configuration for TTNN layout creation. Only supports L1 + HeightSharded + tiled."""
+    """Configuration for TTNN layout creation. Supports L1/DRAM interleaved tiled layouts."""
 
     logical_shape: List[int]
     grid: List[int]
@@ -26,14 +26,14 @@ class TTNNLayoutConfig:
 _TTNN_BUFFER_TYPE_L1 = 1
 
 # TTNN TensorMemoryLayout enum values (from TTNNOpsEnums.td)
-_TTNN_TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED = 2
+_TTNN_TENSOR_MEMORY_LAYOUT_INTERLEAVED = 0
 
 
 def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
     """
-    Create a TTNNLayoutAttr for L1 height-sharded tiled tensors.
+    Create a TTNNLayoutAttr for L1 interleaved tiled tensors.
 
-    Only supports: L1 memory, HeightSharded layout, tiled (32x32 tiles).
+    Supports: L1/DRAM memory, Interleaved layout, tiled (32x32 tiles).
 
     Args:
         ctx: MLIR context
@@ -71,5 +71,5 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
         element_type,
         _TTNN_BUFFER_TYPE_L1,
         grid_attr,
-        _TTNN_TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED,
+        _TTNN_TENSOR_MEMORY_LAYOUT_INTERLEAVED,
     )
