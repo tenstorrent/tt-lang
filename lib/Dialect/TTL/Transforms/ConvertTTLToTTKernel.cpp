@@ -488,7 +488,8 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
 
     // Compute page size from tensor layout.
     // For tiled interleaved layouts, page size = tile size in bytes.
-    auto layoutAttr = mlir::cast<tt::ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+    auto layoutAttr =
+        mlir::cast<tt::ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
     int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
     auto pageSize =
         builder.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
