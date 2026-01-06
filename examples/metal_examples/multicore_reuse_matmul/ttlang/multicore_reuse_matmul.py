@@ -13,6 +13,7 @@ from metal_examples.utils import assert_with_ulp
 def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
+    assert b.shape[1] == out.shape[1], "Output matrix has incorrect number of columns."
     M = a.shape[0]
     N = b.shape[1]
     K = a.shape[1]
@@ -106,7 +107,7 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
     return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
 
 
-@pytest.mark.parametrize("M,K,N", [(256, 256, 256), (512, 512, 512)])
+@pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 def test_multicore_reuse_matmul_tt_lang(M, K, N):
     """Test multicore matmul kernel."""
     device = ttnn.open_device(device_id=0)

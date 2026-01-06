@@ -404,13 +404,13 @@ def get_large_matmul_params(
     # These must be handled per-core (Npc_min)
     large_factors_N = [f for f in Nt_fac if f > num_cores_x]
     Nt_fac = [f for f in Nt_fac if f <= num_cores_x]
-    Npc_min = prod(large_factors_N) if large_factors_N else 1
+    Npc_min = math.prod(large_factors_N) if large_factors_N else 1
 
     # Remove factors larger than available cores from Mt_fac
     # These must be handled per-core (Mpc_min)
     large_factors_M = [f for f in Mt_fac if f > num_cores_y]
     Mt_fac = [f for f in Mt_fac if f <= num_cores_y]
-    Mpc_min = prod(large_factors_M) if large_factors_M else 1
+    Mpc_min = math.prod(large_factors_M) if large_factors_M else 1
 
     # Check if minimum Npc violates memory constraints
     if Npc_min > get_maximum_block_dim(Mpc_min, in0_block_w):
