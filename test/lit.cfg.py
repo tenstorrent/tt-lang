@@ -138,7 +138,6 @@ for env_var in [
     "TT_METAL_BUILD_HOME",
     "TT_METAL_RUNTIME_ROOT",
     "TT_MLIR_HOME",
-    "SYSTEM_DESC_PATH",
     "TTLANG_COMPILE_ONLY",
 ]:
     if env_var in os.environ:

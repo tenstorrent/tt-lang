@@ -17,16 +17,6 @@ try:
 except ModuleNotFoundError:
     ttnn = None
 
-try:
-    import torch
-except ModuleNotFoundError:
-    torch = None
-
-try:
-    from _ttmlir_runtime import runtime
-except ModuleNotFoundError:
-    runtime = None
-
 from ttmlir.ir import *
 from ttmlir.passmanager import PassManager
 from ttmlir.dialects import ttkernel
@@ -634,9 +624,6 @@ class Program:
         return Program(*self.threads, args=args, kwargs={**self.kwargs, **kwargs})
 
 
-_g_current_system_desc = None
-
-
 def _compile_and_run_kernel(
     f: Callable,
     args: tuple,
@@ -787,7 +774,6 @@ def _compile_and_run_kernel(
                 )
             print(f"SAVED INITIAL TO {initial_mlir_path}")
 
-        device_register_options = f"system-desc-path={_g_current_system_desc}"
         verify = True
         config = CompilerConfig(compile_only)
 
@@ -808,11 +794,7 @@ def _compile_and_run_kernel(
 
         pipeline = ",".join(pipeline_passes)
 
-        register_device = "ttcore-register-device"
-        if device_register_options:
-            register_device = f"{register_device}{{{device_register_options}}}"
-
-        pipeline_str = f"builtin.module({','.join([register_device, pipeline])})"
+        pipeline_str = f"builtin.module({pipeline})"
         # fmt: on
         pm = PassManager.parse(pipeline_str)
         pm.enable_verifier(verify)
@@ -912,14 +894,6 @@ def pykernel_gen(
         raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
     if iterator_types is not None and indexing_maps is None:
         raise ValueError("indexing_maps must be set when iterator_types is set")
-
-    global _g_current_system_desc
-    if _g_current_system_desc is None:
-        _g_current_system_desc = os.environ.get("SYSTEM_DESC_PATH", None)
-    if _g_current_system_desc is None:
-        system_desc = runtime.get_current_system_desc()
-        _g_current_system_desc = "current.ttsys"
-        system_desc.store(_g_current_system_desc)
 
     if indexing_maps is None:
         indexing_maps = []

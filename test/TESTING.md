@@ -99,16 +99,32 @@ Verify core functionality without exhaustive checks.
 
 ## Running Tests
 
+For all tests, make sure to first activate the build environment with `source build/env/activate`.
+
+All tests:
+```bash
+cmake --build build --target check-ttlang-all
+```
+
+Just the Lit tests:
+
 ```bash
 cd /path/to/tt-lang
-source env/activate
-export SYSTEM_DESC_PATH=$(pwd)/system_desc.ttsys
+source build/env/activate
+cmake --build build --target check-ttlang-mlir
+cmake --build build --target check-ttlang-python-lit
+```
 
-# Run all Python tests
-llvm-lit -sv test/python/
+Pytests:
 
-# Run single test
-llvm-lit -sv test/python/test_generic_op.py
+```bash
+cmake --build build --target check-ttlang-pytest
+```
+
+Python binding unit tests:
+
+```bash
+cmake --build build --target check-ttlang-python-bindings
 ```
 
 ## Debugging Failed Tests
