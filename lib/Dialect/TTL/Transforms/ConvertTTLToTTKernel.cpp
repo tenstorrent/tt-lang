@@ -813,7 +813,8 @@ static Value computeTileOffset(Value rowIdx, Value colIdx, int64_t tilesX,
   auto tilesXVal = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
   Value offsetY = rewriter.create<arith::MulIOp>(loc, rowIdx, tilesXVal);
   Value offset = rewriter.create<arith::AddIOp>(loc, offsetY, colIdx);
-  return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), offset);
+  return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(),
+                                             offset);
 }
 
 /// Lower tensor_slice->CB copy: read a single tile from tensor into CB.
@@ -845,8 +846,7 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   auto cbWritePtr = rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted);
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
-  Value tileOffset =
-      computeTileOffset(tileRow, tileCol, tilesX, loc, rewriter);
+  Value tileOffset = computeTileOffset(tileRow, tileCol, tilesX, loc, rewriter);
 
   rewriter.create<ttk::NocAsyncReadTileOp>(loc, tileOffset, *srcAccessor,
                                            cbWritePtr);
@@ -885,8 +885,7 @@ static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
   auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
-  Value tileOffset =
-      computeTileOffset(tileRow, tileCol, tilesX, loc, rewriter);
+  Value tileOffset = computeTileOffset(tileRow, tileCol, tilesX, loc, rewriter);
 
   rewriter.create<ttk::NocAsyncWriteTileOp>(loc, tileOffset, *dstAccessor,
                                             cbReadPtr);

@@ -129,8 +129,8 @@ mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
   // Require TTNN layout encoding so lowering can derive tile/addressing info.
   auto enc = tensorTy.getEncoding();
   if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
-    return emitOpError()
-           << "expects tensor to carry TTNNLayout encoding; got " << tensorTy;
+    return emitOpError() << "expects tensor to carry TTNNLayout encoding; got "
+                         << tensorTy;
   }
 
   // Verify result type matches tensor type.
