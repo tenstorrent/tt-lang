@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
@@ -15,21 +16,16 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
 # CHECK: ValueError: Only tiled tensors supported for TTNN interop
-# CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:35:1
+# CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
-# CHECK-NEXT: 35 | @ttl.kernel(grid=(1, 1), tiled=False)
+# CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(1, 1), tiled=False)
 # CHECK-NEXT:    | ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1), tiled=False)

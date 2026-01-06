@@ -129,11 +129,3 @@ jobs:
           name: hardware-test-reports-${{ inputs.runs-on }}
           path: build/python-lit-report.xml
           retention-days: 7
-
-      - name: Upload system descriptor artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: hardware-system-desc-${{ inputs.runs-on }}
-          path: ttrt-artifacts
-          retention-days: 7

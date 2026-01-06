@@ -18,9 +18,9 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
+from ttlang.ttl_api import Program
 
 try:
     import ttnn
@@ -178,8 +178,11 @@ def add_with_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from utils import require_hardware
 
     print("=== With-Pattern Add Kernel Test ===")
+
+    require_hardware()
 
     device = ttnn.open_device(device_id=0)
 

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
@@ -11,16 +12,10 @@
 # directly from DRAM into CBs.
 
 import torch
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+import ttnn
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - this test requires ttnn")
-    print("=== DRAM Interleaved Test Complete ===")
-    exit(0)
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))
