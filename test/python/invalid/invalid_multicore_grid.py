@@ -10,31 +10,29 @@ Validation test: TTNN interop only supports single-core grid (1, 1).
 
 This test verifies that using a multi-core grid raises ValueError.
 Uses grid=(2, 2) with shape=(64, 64) which is divisible, but grid != (1,1).
+Multi-core sharded layouts require additional support (see GH issue #118).
 """
 
 import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
-from ttlang.operators import copy
-
 import ttnn
+from ttlang import make_circular_buffer_like, ttl
+from ttlang.operators import copy
+from ttlang.ttl_api import Program
 
 
 # CHECK: TTNN interop only supports single-core grid (1, 1)
 @ttl.kernel(grid=(2, 2))
 def invalid_multicore_kernel(lhs, rhs, out):
     """This kernel should fail because multi-core grids are not supported."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -45,23 +43,21 @@ def invalid_multicore_kernel(lhs, rhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs = copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs = copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 

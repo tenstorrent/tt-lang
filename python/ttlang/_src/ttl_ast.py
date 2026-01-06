@@ -10,42 +10,77 @@ from dataclasses import dataclass
 from ttmlir.ir import *
 from ttmlir.dialects import ttcore, func, arith, ttkernel
 
-from pykernel._src.kernel_types import *
 from pykernel._src.kernel_ast import TTCompilerBase
-from .tensor_accessor import TensorAccessor
+from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 from ..dialects import ttl
+from ..dtype_utils import is_ttnn_tensor
 from ..layouts import create_ttnn_layout, TTNNLayoutConfig
 from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
 from ..ttl_utils import get_thread_type_string
+from ..diagnostics import TTLangCompileError
 
 
-def _build_tensor_accessor_type(ctx, accessor, grid, tiled, memory_space):
-    """Build MLIR tensor type for a TensorAccessor with TTNNLayoutAttr."""
+def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
+    """Create an MLIR file location from an AST node."""
+    if not hasattr(node, "lineno"):
+        raise ValueError(f"AST node {type(node).__name__} has no line number")
+    return Location.file(
+        source_file, node.lineno + line_offset, node.col_offset + 1, ctx
+    )
+
+
+def _get_annotation_name(annotation):
+    """Extract the type name from an annotation node.
+
+    Handles both simple names (CircularBuffer) and qualified names (ttl.CircularBuffer).
+    Returns the simple type name (e.g., 'CircularBuffer') in both cases.
+    """
+    if isinstance(annotation, ast.Name):
+        return annotation.id
+    elif isinstance(annotation, ast.Attribute):
+        return annotation.attr
+    else:
+        raise TypeError(f"Unsupported annotation type: {type(annotation)}")
+
+
+def _raise_tensor_error(tensor, message: str):
+    """Raise TTLangCompileError with tensor source location if available."""
+    source_info = get_tensor_source(tensor)
+    if source_info:
+        source_file, line = source_info
+        raise TTLangCompileError(message, source_file=source_file, line=line)
+    raise ValueError(message)
+
+
+def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
+    """Build MLIR tensor type for a ttnn tensor with TTNNLayoutAttr."""
     if not tiled:
         raise ValueError("Only tiled tensors supported for TTNN interop")
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
-    if len(accessor.shape) != 2:
-        raise ValueError(f"Only 2D tensors supported, got shape {accessor.shape}")
+    if len(tensor.shape) != 2:
+        _raise_tensor_error(
+            tensor, f"Only 2D tensors supported, got shape {tensor.shape}"
+        )
 
     layout = create_ttnn_layout(
         ctx,
         TTNNLayoutConfig(
-            logical_shape=accessor.shape,
+            logical_shape=tensor.shape,
             grid=grid,
-            dtype=accessor.dtype,
+            dtype=tensor.dtype,
         ),
     )
 
-    ttcore_dtype = tensor_dtype_to_ttcore_datatype(accessor.dtype)
+    ttcore_dtype = tensor_dtype_to_ttcore_datatype(tensor.dtype)
     element_type = ttcore.ir.TileType.get(
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
     # Device shape: grid dims + shard dims (1x1 tiles per core for single-core)
-    shard_tiles = [accessor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)]
+    shard_tiles = [tensor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)]
     device_shape = list(grid) + shard_tiles
 
     return RankedTensorType.get(device_shape, element_type, layout)
@@ -79,19 +114,55 @@ class TTLGenericCompiler(TTCompilerBase):
             tiled=kwargs.get("tiled", True),
         )
 
+        # Debug location support
+        self.debug_locations = kwargs.get("debug_locations", False)
+        self.source_file = kwargs.get("_source_file", "<unknown>")
+        self.source_lines = kwargs.get("_source_lines", [])
+        self.line_offset = kwargs.get("_line_offset", 0)
+
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
-
-        # Kernel-level CB symbol table maps CB names to global indices.
-        # This table is required for proper CB index assignment across all threads
-        # in a kernel. All threads share the same CB numbering (e.g., if the kernel
-        # has 3 CBs named lhs_cb, rhs_cb, out_cb, they get indices 0, 1, 2 respectively
-        # across all threads).
-        self._kernel_cb_symbol_table: dict = kwargs.get("kernel_cb_symbol_table", {})
 
         self._fn_map = {}
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
+
+    def _loc_for_node(self, node):
+        """Return file location for node if debug_locations enabled, else name location."""
+        if self.debug_locations and hasattr(node, "lineno"):
+            return _make_file_loc(self.ctx, self.source_file, node, self.line_offset)
+        return self.loc
+
+    def _raise_error(self, node, message: str):
+        """Raise a TTLangCompileError with source location from AST node."""
+        line = node.lineno + self.line_offset if hasattr(node, "lineno") else None
+        col = node.col_offset + 1 if hasattr(node, "col_offset") else None
+        raise TTLangCompileError(
+            message,
+            source_file=self.source_file,
+            line=line,
+            col=col,
+        )
+
+    def visit_Call(self, node):
+        """Override to set location context and catch errors for call expressions."""
+        with self._loc_for_node(node):
+            try:
+                return super().visit_Call(node)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
+
+    def visit_Attribute(self, node, func_args=[], kwargs={}):
+        """Override to set location context and catch errors for method calls."""
+        with self._loc_for_node(node):
+            try:
+                return super().visit_Attribute(node, func_args, kwargs)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
 
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline
@@ -105,105 +176,42 @@ class TTLGenericCompiler(TTCompilerBase):
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
         else:
-            raise NotImplementedError(
-                f"constant type {type(node.value).__name__} not implemented"
+            self._raise_error(
+                node, f"constant type {type(node.value).__name__} not implemented"
             )
+
+    def _emit_cb_from_capture(self, cb):
+        """Emit ttl.bind_cb for a captured CircularBuffer instance."""
+        ttcore_dtype = tensor_dtype_to_ttcore_datatype(cb.dtype)
+        element_type = ttcore.ir.TileType.get(
+            self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
+        )
+        cb_type = ttl.CircularBufferType.get(
+            self.ctx,
+            list(cb.shape),
+            element_type,
+            cb.buffer_factor,
+        )
+        # Emit: %cb = ttl.bind_cb {cb_index = N, buffer_factor = M} : !ttl.cb<...>
+        return ttl.bind_cb(cb_type, cb._cb_index, buffer_factor=cb.buffer_factor)
 
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"
 
-        # _cb_info contains ALL CBs from the kernel-level symbol table.
-        # This ensures correct compile-time arg indexing (TensorAccessorArgs
-        # start at total_num_cbs). However, we only emit ttl.bind_cb for CBs
-        # that are actually declared in this thread's function signature.
-        self._cb_info = []
-
-        # Track which CBs are declared in this thread's signature (to bind later)
-        self._signature_cb_names: Set[str] = set()
-
-        # First, collect CB info from the function signature to get shape/dtype
-        signature_cb_info = {}
-        for i in range(len(node.args.args)):
-            arg = node.args.args[i]
-
-            if not arg.annotation:
-                raise TypeError("All kernel arguments must have a type annotation")
-            elif arg.annotation.id == "TensorBlock":
-                raise NotImplementedError("TensorBlock not yet supported in TTL mode")
-            elif arg.annotation.id == "CircularBuffer":
-                if not self.context.tiled:
-                    raise ValueError("Only tiled CBs supported")
-                shape = list(self.args[i].shape)
-                if len(shape) != 2:
-                    raise ValueError(f"Only 2D CBs supported, got shape {shape}")
-
-                # Compute shard shape: tiles per core
-                shard_shape = [
-                    shape[d] // self.context.grid[d] // DEFAULT_TILE_SIZE
-                    for d in range(2)
-                ]
-
-                ttcore_dtype = tensor_dtype_to_ttcore_datatype(self.args[i].dtype)
-                element_type = ttcore.ir.TileType.get(
-                    self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
-                )
-
-                cb_name = arg.arg
-                if cb_name not in self._kernel_cb_symbol_table:
-                    raise ValueError(
-                        f"CircularBuffer '{cb_name}' not found in kernel-level symbol table. "
-                        f"Available CBs: {list(self._kernel_cb_symbol_table.keys())}"
-                    )
-
-                signature_cb_info[cb_name] = {
-                    "shard_shape": shard_shape,
-                    "element_type": element_type,
-                }
-                self._signature_cb_names.add(cb_name)
-            elif arg.annotation.id == "Semaphore":
-                raise NotImplementedError("Semaphore not yet supported in TTL mode")
-            else:
-                raise TypeError(
-                    f"Unknown kernel arguments type annotation {arg.annotation.id}"
-                )
-
-        # Now build _cb_info for ALL CBs in the kernel (sorted by index).
-        # For CBs not in this thread's signature, use info from the first CB as template.
-        # All CBs in a kernel typically have the same shape/dtype in simple cases.
-        template_cb = (
-            next(iter(signature_cb_info.values())) if signature_cb_info else None
-        )
-
-        for cb_name, cb_index in sorted(
-            self._kernel_cb_symbol_table.items(), key=lambda x: x[1]
-        ):
-            if cb_name in signature_cb_info:
-                info = signature_cb_info[cb_name]
-            elif template_cb is not None:
-                # Use template CB info for CBs not in this thread's signature
-                info = template_cb
-            else:
-                raise ValueError(
-                    f"Thread has no CB parameters but kernel has CBs: "
-                    f"{list(self._kernel_cb_symbol_table.keys())}"
-                )
-
-            self._cb_info.append(
-                {
-                    "name": cb_name,
-                    "shard_shape": info["shard_shape"],
-                    "element_type": info["element_type"],
-                    "cb_index": cb_index,
-                }
+        if node.args.args:
+            self._raise_error(
+                node,
+                "Thread functions must have no parameters. "
+                "Use make_circular_buffer_like() in kernel body and capture CBs in closures.",
             )
 
-        # Collect TensorAccessor captures for function arguments
+        # Collect tensor captures for function arguments
         self._tensor_accessor_names = []
         self._tensor_accessor_global_indices = []
         func_arg_types = []
         for name, val in self.captures.items():
-            if isinstance(val, TensorAccessor):
-                tensor_type = _build_tensor_accessor_type(
+            if is_ttnn_tensor(val):
+                tensor_type = _build_tensor_type(
                     self.ctx,
                     val,
                     self.context.grid,
@@ -211,7 +219,9 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.context.memory_space,
                 )
                 self._tensor_accessor_names.append(name)
-                self._tensor_accessor_global_indices.append(val.global_index)
+                self._tensor_accessor_global_indices.append(
+                    get_tensor_global_index(val)
+                )
                 func_arg_types.append(tensor_type)
 
         self.func_entry = func.FuncOp(name=node.name, type=(func_arg_types, []))
@@ -242,45 +252,29 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Emit function body
         with InsertionPoint(func_bb):
-            # Emit ttl.bind_cb ops only for CBs declared in the function signature.
-            # _cb_info contains ALL kernel CBs (for compile-time arg indexing),
-            # but we only bind the ones this thread actually uses.
-            for cb_info in self._cb_info:
-                if cb_info["name"] not in self._signature_cb_names:
-                    continue  # Skip CBs not used by this thread
-
-                buffer_factor = 2  # Default buffer factor
-                cb_type = ttl.CircularBufferType.get(
-                    self.ctx,
-                    cb_info["shard_shape"],
-                    cb_info["element_type"],
-                    buffer_factor,
-                )
-
-                # Emit: %cb = ttl.bind_cb {cb_index = N, buffer_factor = M} : !ttl.cb<...>
-                cb_val = ttl.bind_cb(
-                    cb_type,
-                    cb_info["cb_index"],
-                    buffer_factor=buffer_factor,
-                )
-                self.symbol_tables[-1][cb_info["name"]] = cb_val
-
             # Map TensorAccessor function arguments to symbol table
             for i, name in enumerate(self._tensor_accessor_names):
                 self.symbol_tables[-1][name] = func_bb.arguments[i]
                 self.streams.add(name)
 
-            # Prepopulate other captures (non-TensorAccessor)
+            # Prepopulate other captures (non-tensor)
+            from ..circular_buffer import CircularBuffer
+
             for name, val in self.captures.items():
-                if isinstance(val, TensorAccessor):
+                if is_ttnn_tensor(val):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
                 if isinstance(val, int):
                     self.symbol_tables[-1][name] = arith.ConstantOp(
                         IndexType.get(self.ctx), val
                     )
+                elif isinstance(val, CircularBuffer):
+                    cb_val = self._emit_cb_from_capture(val)
+                    self.symbol_tables[-1][name] = cb_val
                 else:
-                    raise TypeError(f"Invalid capture type for var {name}: {type(val)}")
+                    self._raise_error(
+                        node, f"Invalid capture type for var {name}: {type(val)}"
+                    )
 
             for target in node.body:
                 self.visit(target)
@@ -290,18 +284,21 @@ class TTLGenericCompiler(TTCompilerBase):
         self.symbol_tables.pop()
 
     def visit_FunctionDef(self, node):
-        with self.loc:
+        with self._loc_for_node(node):
             return self._emit_entry(node)
 
     def visit_AsyncFunctionDef(self, node):
-        with self.loc:
+        with self._loc_for_node(node):
             return self._emit_entry(node)
 
-    def _get_cb_tensor_type(self, cb_val):
+    def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""
         cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
         if cb_type is None:
-            raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
+            msg = f"Expected CircularBufferType, got {cb_val.type}"
+            if node is not None:
+                self._raise_error(node, msg)
+            raise ValueError(msg)
         return RankedTensorType.get(cb_type.shape, cb_type.element_type)
 
     def visit_With(self, node):
@@ -316,7 +313,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 ...
                 # releases in reverse order: push(out), pop(rhs), pop(lhs)
         """
-        with self.loc:
+        with self._loc_for_node(node):
             # Process each with-item: acquire resources and track for release
             releases = []  # [(release_op, cb_val), ...] in acquisition order
 
@@ -325,46 +322,53 @@ class TTLGenericCompiler(TTCompilerBase):
                 optional_vars = item.optional_vars
 
                 if not isinstance(context_expr, ast.Call):
-                    raise NotImplementedError(
-                        "'with' requires a method call (e.g., cb.reserve())"
+                    self._raise_error(
+                        context_expr,
+                        "'with' requires a method call (e.g., cb.reserve())",
                     )
 
                 if not isinstance(context_expr.func, ast.Attribute):
-                    raise NotImplementedError(
-                        "'with' requires a method call on an object"
+                    self._raise_error(
+                        context_expr, "'with' requires a method call on an object"
                     )
 
                 method_name = context_expr.func.attr
                 cb_node = context_expr.func.value
 
                 if method_name not in ("reserve", "wait"):
-                    raise NotImplementedError(
-                        f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'"
+                    self._raise_error(
+                        context_expr,
+                        f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'",
                     )
 
                 if not isinstance(cb_node, ast.Name):
-                    raise NotImplementedError(
-                        "'with' requires a simple variable (e.g., cb.reserve())"
+                    self._raise_error(
+                        context_expr,
+                        "'with' requires a simple variable (e.g., cb.reserve())",
                     )
 
                 cb_table = self._var_exists(cb_node.id)
                 if not cb_table:
-                    raise NameError(f"'{cb_node.id}' not found in scope")
+                    self._raise_error(cb_node, f"'{cb_node.id}' not found in scope")
                 cb_val = cb_table[cb_node.id]
 
                 # Get tensor type from CB for reserve/wait result
-                tensor_type = self._get_cb_tensor_type(cb_val)
+                tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
                 if method_name == "reserve":
-                    acquire_result = ttl.cb_reserve(tensor_type, cb_val)
+                    tensor = ttl.cb_reserve(tensor_type, cb_val)
                     releases.append((ttl.cb_push, cb_val))
                 else:  # wait
-                    acquire_result = ttl.cb_wait(tensor_type, cb_val)
+                    tensor = ttl.cb_wait(tensor_type, cb_val)
                     releases.append((ttl.cb_pop, cb_val))
+
+                # Attach CB to tensor so store() can find the CB association
+                acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
 
                 if optional_vars is not None:
                     if not isinstance(optional_vars, ast.Name):
-                        raise NotImplementedError(
-                            "'with ... as var' requires a simple variable name"
+                        self._raise_error(
+                            optional_vars,
+                            "'with ... as var' requires a simple variable name",
                         )
                     self.symbol_tables[-1][optional_vars.id] = acquire_result
 

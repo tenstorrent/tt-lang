@@ -24,11 +24,11 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
-#include "ttlang/Dialect/Utils/LayoutUtils.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"      // IWYU pragma: keep
+#include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -621,7 +621,7 @@ lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter,
                                                tensorToAccessor);
   if (failed(srcAccessor)) {
-    return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
+    return failure(); // Error already emitted by materializeTensorAccessor
   }
 
   // Convert CB to TTKernel type and get write pointer.
@@ -665,7 +665,7 @@ lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter,
                                                tensorToAccessor);
   if (failed(dstAccessor)) {
-    return rewriter.notifyMatchFailure(op, "failed to create tensor accessor");
+    return failure(); // Error already emitted by materializeTensorAccessor
   }
 
   // Convert CB to TTKernel type and get read pointer.

@@ -12,8 +12,8 @@
 // CHECK: // dma_batched
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
-// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
-// Accessors materialized at function entry with chaining
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
+// Tensor 0: get runtime arg, create accessor, get CB write ptr, async read
 // CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // First accessor uses literal base CTA index = num_cbs = 2
 // CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();

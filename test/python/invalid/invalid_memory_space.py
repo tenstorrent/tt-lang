@@ -16,11 +16,10 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
-from ttlang.operators import copy
-
 import ttnn
+from ttlang import make_circular_buffer_like, ttl
+from ttlang.operators import copy
+from ttlang.ttl_api import Program
 
 
 # CHECK: ValueError: Invalid memory_space: 'INVALID'
@@ -28,14 +27,12 @@ import ttnn
 @ttl.kernel(grid=(1, 1), memory_space="INVALID")
 def invalid_memory_space_kernel(lhs, rhs, out):
     """This kernel should fail because memory_space='INVALID' is not supported."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -46,23 +43,21 @@ def invalid_memory_space_kernel(lhs, rhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs = copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs = copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 

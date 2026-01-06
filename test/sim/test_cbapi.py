@@ -5,13 +5,14 @@
 import pytest
 import threading
 import time
-import torch
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 from python.sim.cbapi import CBAPI
 from python.sim.errors import CBContractError, CBTimeoutError
 from python.sim.typedefs import CBID
 from python.sim.cb import CircularBuffer
+from python.sim.cbstate import CBSlot
+from test_utils import make_full_tensor, tensors_exact_equal
 
 
 # Pytest fixtures to reduce redundant setup code
@@ -52,7 +53,8 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI, CBID]):
     # Reserve and write 4 tiles
     api.cb_reserve_back(cb0, 4)
     ptr = api.get_write_ptr(cb0)
-    ptr.store([1, 2, 3, 4])  # type: ignore[arg-type]
+    test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
+    ptr.store(test_tensors)
     api.cb_push_back(cb0, 4)
     stats = api.cb_stats(cb0)
     assert stats.visible == 4
@@ -61,7 +63,11 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI, CBID]):
     # Wait and read
     api.cb_wait_front(cb0, 4)
     read_values = api.get_read_ptr(cb0).to_list()
-    assert read_values == [1, 2, 3, 4]
+    assert len(read_values) == 4
+    for i in range(4):
+        val = read_values[i]
+        assert val is not None
+        assert tensors_exact_equal(val, test_tensors[i])
     api.cb_pop_front(cb0, 4)
     stats = api.cb_stats(cb0)
     assert stats.visible == 0
@@ -69,7 +75,8 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI, CBID]):
     # Reserve full capacity and write
     api.cb_reserve_back(cb0, 8)
     ptr = api.get_write_ptr(cb0)
-    ptr.store(list(range(8)))  # type: ignore[arg-type]
+    test_tensors = [make_full_tensor(32, 32, float(i)) for i in range(8)]
+    ptr.store(test_tensors)
     api.cb_push_back(cb0, 8)
     stats = api.cb_stats(cb0)
     assert stats.visible == 8
@@ -78,7 +85,11 @@ def test_circular_buffer_basic_flow(configured_cb8: Tuple[CBAPI, CBID]):
     api.cb_wait_front(cb0, 4)
     api.cb_wait_front(cb0, 8)
     read_values = api.get_read_ptr(cb0).to_list()
-    assert read_values == list(range(8))
+    assert len(read_values) == 8
+    for i in range(8):
+        val = read_values[i]
+        assert val is not None
+        assert tensors_exact_equal(val, test_tensors[i])
     api.cb_pop_front(cb0, 8)
     stats = api.cb_stats(cb0)
     assert stats.visible == 0
@@ -98,7 +109,7 @@ def test_per_instance_timeout_effect():
 
 def test_threaded_produce_consume(configured_cb: Tuple[CBAPI, CBID]):
     api, cb0 = configured_cb
-    result: List[List[Optional[int]]] = []
+    result: List[List[CBSlot]] = []
 
     def consumer():
         api.cb_wait_front(cb0, 4)
@@ -114,10 +125,18 @@ def test_threaded_produce_consume(configured_cb: Tuple[CBAPI, CBID]):
     # Producer reserves and writes
     api.cb_reserve_back(cb0, 4)
     ptr = api.get_write_ptr(cb0)
-    ptr.store([100, 200, 300, 400])  # type: ignore[arg-type]
+    test_tensors = [make_full_tensor(32, 32, 100.0 + i) for i in range(4)]
+    ptr.store(test_tensors)
     api.cb_push_back(cb0, 4)
     t.join(timeout=1)
-    assert result == [[100, 200, 300, 400]]
+
+    # Verify results
+    assert len(result) == 1
+    assert len(result[0]) == 4
+    for i in range(4):
+        val = result[0][i]
+        assert val is not None  # Type narrowing: CBSlot -> Tensor
+        assert tensors_exact_equal(val, test_tensors[i])
 
 
 def test_cb_pages_nonblocking(configured_cb8: Tuple[CBAPI, CBID]):
@@ -134,7 +153,8 @@ def test_cb_pages_nonblocking(configured_cb8: Tuple[CBAPI, CBID]):
 
     # After initial reserve of 4, push data to make pages available
     ptr = api.get_write_ptr(cb2)
-    ptr.store([1, 2, 3, 4])  # type: ignore[arg-type]
+    test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
+    ptr.store(test_tensors)
     api.cb_push_back(cb2, 4)
     # Divisible sizes: 4 and 2 are both valid
     assert api.cb_pages_available_at_front(cb2, 4)
@@ -173,7 +193,8 @@ def test_cb_pages_available_divisibility_error(configured_cb8: Tuple[CBAPI, CBID
     api, cb = configured_cb8
     api.cb_reserve_back(cb, 4)
     ptr = api.get_write_ptr(cb)
-    ptr.store([1, 2, 3, 4])  # type: ignore[arg-type]
+    test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
+    ptr.store(test_tensors)
     api.cb_push_back(cb, 4)
     with pytest.raises(
         CBContractError, match="First num_tiles=3 must evenly divide capacity=8"
@@ -296,70 +317,76 @@ def test_allocate_cb_id_exceeds_max():
 
 
 def test_heterogeneous_cbs_in_same_api():
-    """Test that a single CBAPI instance can handle circular buffers with different element types."""
+    """Test that a single CBAPI instance can handle multiple circular buffers."""
     # Create a shared CBAPI instance
     api = CBAPI()
+    element = make_full_tensor(32, 32, 1.0)
 
-    # Create circular buffers with different element types
-    int_cb = CircularBuffer[int](shape=(2, 2), buffer_factor=2, api=api)
-    tensor_cb = CircularBuffer[torch.Tensor](shape=(2, 2), buffer_factor=2, api=api)
+    # Create circular buffers for different use cases
+    cb1 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
+    cb2 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
 
-    # Test integer circular buffer
-    int_write = int_cb.reserve()
-    for i in range(len(int_write)):
-        int_write[i] = i + 1
-    int_cb.push()
+    # Test first circular buffer
+    write1 = cb1.reserve()
+    test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
+    for i in range(len(write1)):
+        write1[i] = test_tensors_1[i]
+    cb1.push()
 
-    int_read = int_cb.wait()
-    for i in range(len(int_read)):
-        assert int_read[i] == i + 1
-    int_cb.pop()
+    read1 = cb1.wait()
+    for i in range(len(read1)):
+        assert tensors_exact_equal(read1[i], test_tensors_1[i])
+    cb1.pop()
 
-    # Test tensor circular buffer
-    tensor_write = tensor_cb.reserve()
-    for i in range(len(tensor_write)):
-        tensor_write[i] = torch.ones(32, 32) * (i + 10)
-    tensor_cb.push()
+    # Test second circular buffer
+    write2 = cb2.reserve()
+    test_tensors_2 = [make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))]
+    for i in range(len(write2)):
+        write2[i] = test_tensors_2[i]
+    cb2.push()
 
-    tensor_read = tensor_cb.wait()
-    for i in range(len(tensor_read)):
-        assert torch.allclose(tensor_read[i], torch.ones(32, 32) * (i + 10))
-    tensor_cb.pop()
+    read2 = cb2.wait()
+    for i in range(len(read2)):
+        assert tensors_exact_equal(read2[i], test_tensors_2[i])
+    cb2.pop()
 
     # Verify both CBs used the same API instance
-    assert int_cb._api is api  # type: ignore
-    assert tensor_cb._api is api  # type: ignore
+    assert cb1._api is api  # type: ignore
+    assert cb2._api is api  # type: ignore
 
 
 def test_default_api_heterogeneous():
-    """Test that an explicit API can handle heterogeneous circular buffers."""
+    """Test that an explicit API can handle multiple circular buffers."""
     # Create an explicit API instance
     api = CBAPI()
+    element = make_full_tensor(32, 32, 1.0)
 
-    # Create circular buffers using explicit API (different element types)
-    int_cb = CircularBuffer[int](shape=(1, 1), buffer_factor=2, api=api)
-    tensor_cb = CircularBuffer[torch.Tensor](shape=(1, 1), buffer_factor=2, api=api)
+    # Create circular buffers using explicit API
+    cb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
     # Both should use the same API instance
-    assert int_cb._api is tensor_cb._api  # type: ignore
-    assert int_cb._api is api  # type: ignore
+    assert cb1._api is cb2._api  # type: ignore
+    assert cb1._api is api  # type: ignore
 
     # Test that both work correctly
-    int_write = int_cb.reserve()
-    int_write[0] = 42
-    int_cb.push()
+    write1 = cb1.reserve()
+    tensor1 = make_full_tensor(32, 32, 42.0)
+    write1[0] = tensor1
+    cb1.push()
 
-    tensor_write = tensor_cb.reserve()
-    tensor_write[0] = torch.zeros(32, 32)
-    tensor_cb.push()
+    write2 = cb2.reserve()
+    tensor2 = make_full_tensor(32, 32, 0.0)
+    write2[0] = tensor2
+    cb2.push()
 
-    int_read = int_cb.wait()
-    assert int_read[0] == 42
-    int_cb.pop()
+    read1 = cb1.wait()
+    assert tensors_exact_equal(read1[0], tensor1)
+    cb1.pop()
 
-    tensor_read = tensor_cb.wait()
-    assert torch.allclose(tensor_read[0], torch.zeros(32, 32))
-    tensor_cb.pop()
+    read2 = cb2.wait()
+    assert tensors_exact_equal(read2[0], tensor2)
+    cb2.pop()
 
 
 if __name__ == "__main__":

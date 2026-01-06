@@ -48,7 +48,7 @@ def extract_coords_from_ttnn_corerangeset(core_range_set):
     ],
 )
 def test_split_work_to_cores(grid_size_tuple, units, row_wise):
-    """Compare results from new_split_work_to_cores and ttnn.split_work_to_cores"""
+    """Compare results from split_work_to_cores and ttnn.split_work_to_cores"""
     # Call new function
     new_result = split_work_to_cores(grid_size_tuple, units, row_wise)
     new_total, new_g1, new_g2, new_w1, new_w2 = new_result

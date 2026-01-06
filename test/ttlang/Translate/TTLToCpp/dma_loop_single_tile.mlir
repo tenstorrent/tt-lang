@@ -12,7 +12,7 @@
 // CHECK: // dma_pipelined_loop
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
-// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 128;
+// CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[UB:v[0-9]+]] = 3;
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;

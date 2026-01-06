@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -18,24 +18,21 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
-from ttlang.operators import copy
-
 import ttnn
+from ttlang import make_circular_buffer_like, ttl
+from ttlang.operators import copy
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
     """Add kernel processing 2x2 tile grid (4 tiles total)."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = make_circular_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -46,23 +43,21 @@ def add_multitile_kernel(lhs, rhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs = copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs = copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
@@ -70,10 +65,10 @@ def add_multitile_kernel(lhs, rhs, out):
 
 
 # =============================================================================
-# Initial IR Checks - Verify 2x2 block factors in tensor shapes
+# Initial IR Checks - Verify tensor layout (64x64 = 4 tiles on single core)
 # =============================================================================
 
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<2x2x!ttcore.tile<32x32, bf16>{{.*}}>
+# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x4x!ttcore.tile<32x32, bf16>{{.*}}>
 
 # =============================================================================
 # Initial IR Checks - Verify compute kernel with multi-tile support
@@ -82,21 +77,27 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = [[COMPUTE_BASE_CTA:[0-9]+]] : i32, ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB operations
+# CB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
-# CHECK: ttl.cb_wait %[[CB0]]
-# CHECK: ttl.cb_wait %[[CB1]]
+# Wait operations
+# CHECK-DAG: ttl.cb_wait %[[CB0]]
+# CHECK-DAG: ttl.cb_wait %[[CB1]]
+
+# Reserve operation
 # CHECK: ttl.cb_reserve %[[CB2]]
 
 # Add operation
 # CHECK: ttl.add
 
-# CHECK: ttl.cb_pop %[[CB0]]
-# CHECK: ttl.cb_pop %[[CB1]]
+# Pop/push operations
+# CHECK-DAG: ttl.cb_pop %[[CB0]]
+# CHECK-DAG: ttl.cb_pop %[[CB1]]
 # CHECK: ttl.cb_push %[[CB2]]
+
+# CHECK-LABEL: func.func @dm_read
 
 # =============================================================================
 # C++ Kernel Checks - Verify loops are generated for multi-tile
@@ -137,8 +138,10 @@ def add_multitile_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from utils import require_hardware
 
     print("=== Multi-tile Add Kernel Test ===")
+    require_hardware()
 
     device = ttnn.open_device(device_id=0)
 

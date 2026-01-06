@@ -95,6 +95,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     __init__.py
     circular_buffer.py
     constants.py
+    diagnostics.py
     ttl.py
     ttl_api.py
     ttl_utils.py
@@ -119,7 +120,6 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   SOURCES
     _src/__init__.py
     _src/ttl_ast.py
-    _src/tensor_accessor.py
     _src/tensor_registry.py
 )
 
@@ -193,7 +193,7 @@ target_link_libraries(TTLangPythonModules.extension._ttlang.dso PRIVATE
 
 # Ensure we do not accidentally resolve libTTMLIRPythonCAPI.so from a different
 # tt-mlir install tree at runtime. Mixed CAPI builds in one Python process can
-# lead to MLIRContext registry mismatches (e.g., ops missing during pass runs).
+# lead to MLIRContext registry mismatches.
 #
 # Constrain RUNPATH to the configured tt-mlir build tree.
 if(DEFINED TTMLIR_BUILD_DIR)

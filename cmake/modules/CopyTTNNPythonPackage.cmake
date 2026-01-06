@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Copy tt-metal's ttnn Python package to build tree for development.
-# This is needed for Python lit tests that import ttnn.
+# Copy tt-metal's ttnn Python package to build tree.
+# TTNN is required for compiling and running tt-lang kernels.
 
 # Find ttnn source directory from TT_METAL_HOME or tt-mlir's third_party.
 # _TTMLIR_CMAKE_HOME_DIRECTORY is loaded from the tt-mlir build cache when

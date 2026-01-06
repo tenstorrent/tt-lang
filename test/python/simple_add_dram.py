@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -18,24 +18,21 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
-from ttlang.ttl_api import Program, CircularBuffer, TensorAccessor
-from ttlang.operators import copy
-
 import ttnn
+from ttlang import make_circular_buffer_like, ttl
+from ttlang.operators import copy
+from ttlang.ttl_api import Program
 
 
 @ttl.kernel(grid=(1, 1))
 def add_dram_kernel(lhs, rhs, out):
     """Add kernel that reads/writes directly from/to DRAM."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -46,23 +43,23 @@ def add_dram_kernel(lhs, rhs, out):
         out_cb.push()
 
     @ttl.datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    def dm_read():
         # Reserve CB space, read directly from DRAM into CBs, push
         lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        tx_lhs = copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        tx_rhs = copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
-    def dm_write(out_cb: CircularBuffer):
+    def dm_write():
         # Wait for data, write directly from CB to DRAM, pop
         out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        tx = copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
@@ -83,10 +80,10 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = [[COMPUTE_BASE_CTA:[0-9]+]] : i32, ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB operations
+# CB operations (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
 # CHECK: ttl.cb_wait %[[CB0]]
 # CHECK: ttl.cb_wait %[[CB1]]
@@ -108,7 +105,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: attributes {ttl.base_cta_index = [[DM_READ_BASE_CTA:[0-9]+]] : i32, ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Bind CBs
+# Bind CBs (alphabetical order: lhs_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
@@ -210,8 +207,10 @@ def add_dram_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from utils import require_hardware
 
     print("=== Add DRAM Kernel Test ===")
+    require_hardware()
 
     device = ttnn.open_device(device_id=0)
 

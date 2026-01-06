@@ -5,14 +5,17 @@
 """Pytest configuration and fixtures for tt-lang Python tests."""
 
 import glob
+import importlib.util
 import os
 
 import pytest
 
 # Lit tests that should not be collected by pytest (they have # RUN: directives)
 collect_ignore = [
+    "conftest.py",
     "test_ttnn_interop_add.py",
     "test_dram_interleaved_add.py",
+    "utils.py",
 ]
 
 # =============================================================================
@@ -20,12 +23,8 @@ collect_ignore = [
 # =============================================================================
 
 _ttnn_available = False
-try:
-    import ttnn
-
+if importlib.util.find_spec("ttnn") is not None:
     _ttnn_available = True
-except ImportError:
-    pass
 
 _hardware_available = bool(glob.glob("/dev/tenstorrent*"))
 

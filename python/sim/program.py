@@ -16,12 +16,11 @@ import textwrap
 from typing import Any, Callable, Dict, List, Tuple, Protocol, Generator
 from types import CellType, FunctionType
 
-import torch
 
 from .cb import CircularBuffer
 from .cbapi import CBAPI
-from .tensoraccessor import TensorAccessor
 from .xformyield import transform_wait_reserve_to_yield
+from .ttnnsim import Tensor
 
 
 # Protocol for templates that have a bind method
@@ -130,13 +129,19 @@ def Program(*funcs: BindableTemplate) -> Any:
             api = CBAPI()  # new CBAPI per core
 
             for key, value in self.context.items():
+                # Skip module objects (e.g., local imports like `from python.sim import ttnn`)
+                if isinstance(value, types.ModuleType):
+                    core_context[key] = value
+                    continue
+
                 match value:
-                    case torch.Tensor() | TensorAccessor():
+                    case Tensor():
                         core_context[key] = value
                         memo[id(value)] = value
                     case CircularBuffer():
                         # create a fresh CB for this core
                         core_context[key] = CircularBuffer(
+                            element=value.element,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
                             api=api,
@@ -146,6 +151,8 @@ def Program(*funcs: BindableTemplate) -> Any:
 
             # also make the core number visible
             core_context["_core"] = core
+            # Also inject grid into core context for grid_size() function
+            core_context["grid"] = self.context.get("grid", (1, 1))
 
             return core_context
 
