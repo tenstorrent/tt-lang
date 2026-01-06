@@ -74,7 +74,7 @@ void MAIN {
               int b_index =
                   b_index_subblock_offset + b_index_inner_dim_offset + w;
               matmul_tiles(tt::CBIndex::c_0, tt::CBIndex::c_1, a_index, b_index,
-                           dst_index, false /* transpose */);
+                           dst_index);
               b_index_inner_dim_offset += b_per_core_w;
             }
             dst_index++;
