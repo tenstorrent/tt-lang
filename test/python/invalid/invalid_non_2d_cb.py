@@ -23,9 +23,9 @@ from ttlang.ttl_api import Program
 
 
 # CHECK: error: Only 2D tensors supported, got shape
-# CHECK-NEXT:   --> {{.*}}invalid_non_2d_cb.py:110:1
+# CHECK-NEXT:   --> {{.*}}invalid_non_2d_cb.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
-# CHECK-NEXT: 110 |         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+# CHECK-NEXT: [[LINE]] |         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
 # CHECK-NEXT:     |     ^
 # CHECK-NEXT:     |
 @ttl.kernel(grid=(1, 1))

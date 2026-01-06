@@ -24,9 +24,9 @@ from ttlang.ttl_api import Program
 
 
 # CHECK: error: Thread functions must have no parameters
-# CHECK-NEXT:   --> {{.*}}invalid_thread_with_params.py:45:1
+# CHECK-NEXT:   --> {{.*}}invalid_thread_with_params.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
-# CHECK-NEXT: 45 |     def add_compute(some_param):
+# CHECK-NEXT: [[LINE]] |     def add_compute(some_param):
 # CHECK-NEXT:    |     ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))

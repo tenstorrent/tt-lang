@@ -22,9 +22,9 @@ from ttlang.ttl_api import Program
 
 
 # CHECK: ValueError: Only 2D grids supported, got grid
-# CHECK-NEXT:   --> {{.*}}invalid_3d_grid.py:34:1
+# CHECK-NEXT:   --> {{.*}}invalid_3d_grid.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
-# CHECK-NEXT: 34 | @ttl.kernel(grid=(1, 1, 1))
+# CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(1, 1, 1))
 # CHECK-NEXT:    | ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1, 1))

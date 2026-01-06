@@ -23,9 +23,9 @@ from ttlang.ttl_api import Program
 
 
 # CHECK: error: Expected CircularBufferType, got
-# CHECK-NEXT:   --> {{.*}}invalid_with_non_cb.py:49:10
+# CHECK-NEXT:   --> {{.*}}invalid_with_non_cb.py:[[LINE:[0-9]+]]:10
 # CHECK-NEXT:    |
-# CHECK-NEXT: 49 |         with l.wait() as data:
+# CHECK-NEXT: [[LINE]] |         with l.wait() as data:
 # CHECK-NEXT:    |          ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))

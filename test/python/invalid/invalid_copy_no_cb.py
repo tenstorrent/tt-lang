@@ -23,9 +23,9 @@ from ttlang.ttl_api import Program
 
 
 # CHECK: error: copy() requires exactly one CB argument
-# CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:56:10
+# CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:[[LINE:[0-9]+]]:10
 # CHECK-NEXT:    |
-# CHECK-NEXT: 56 |         tx = copy(lhs[0, 0], rhs[0, 0])
+# CHECK-NEXT: [[LINE]] |         tx = copy(lhs[0, 0], rhs[0, 0])
 # CHECK-NEXT:    |          ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
