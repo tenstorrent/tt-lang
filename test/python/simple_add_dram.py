@@ -109,15 +109,17 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
-# First input: reserve, copy, wait, push
+# First input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB0]]
-# CHECK: %[[TX1:.+]] = ttl.copy %arg0, %[[CB0]] : {{.*}} -> !ttl.transfer_handle<read>
+# CHECK: %[[SLICE0:.+]] = ttl.tensor_slice %arg0
+# CHECK: %[[TX1:.+]] = ttl.copy %[[SLICE0]], %[[CB0]] : {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait %[[TX1]]
 # CHECK: ttl.cb_push %[[CB0]]
 
-# Second input: reserve, copy, wait, push
+# Second input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB1]]
-# CHECK: %[[TX2:.+]] = ttl.copy %arg1, %[[CB1]] : {{.*}} -> !ttl.transfer_handle<read>
+# CHECK: %[[SLICE1:.+]] = ttl.tensor_slice %arg1
+# CHECK: %[[TX2:.+]] = ttl.copy %[[SLICE1]], %[[CB1]] : {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait %[[TX2]]
 # CHECK: ttl.cb_push %[[CB1]]
 
@@ -125,10 +127,11 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Wait for output CB, copy to device, pop
+# Wait for output CB, slice, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: ttl.cb_wait %[[CB2]]
-# CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %arg0 : {{.*}} -> !ttl.transfer_handle<write>
+# CHECK: %[[SLICE2:.+]] = ttl.tensor_slice %arg0
+# CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %[[SLICE2]] : {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait %[[TX]]
 # CHECK: ttl.cb_pop %[[CB2]]
 

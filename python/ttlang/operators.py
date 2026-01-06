@@ -81,28 +81,37 @@ class CopyTransferHandler:
         return ttl.wait(ast_self)
 
 
+def _make_tensor_slice(tensor, indices):
+    """Create a ttl.tensor_slice from a tensor and tile indices."""
+    if len(indices) != 2:
+        raise ValueError(f"Tensor slice requires exactly 2 indices, got {len(indices)}")
+
+    tensor_type = tensor.type
+    ctx = tensor_type.context
+    slice_type = Type.parse(f"!ttl.tensor_slice<{tensor_type}>", ctx)
+    row_idx, col_idx = indices
+    return ttl.tensor_slice(slice_type, tensor, row_idx, col_idx)
+
+
 @syntax("copy")
 def copy(src, dst) -> CopyTransferHandler:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
-        src: Source tensor (for reads) or CB (for writes)
-        dst: Destination CB (for reads) or tensor (for writes)
+        src: Source tensor/slice (for reads) or CB (for writes)
+        dst: Destination CB (for reads) or tensor/slice (for writes)
 
     Returns:
         CopyTransferHandler handle that must be waited on for completion
     """
-    # TODO: Support non-zero indices for tensor accessors
+    # Handle subscripted tensors by creating tensor slices
     if isinstance(src, tuple):
-        src, indices = src
-        # indices are MLIR ConstantOp objects, extract literal values
-        idx_vals = [getattr(i, "literal_value", i) for i in indices]
-        assert idx_vals == [0, 0], f"Only [0, 0] index supported, got {idx_vals}"
+        tensor, indices = src
+        src = _make_tensor_slice(tensor, indices)
     if isinstance(dst, tuple):
-        dst, indices = dst
-        idx_vals = [getattr(i, "literal_value", i) for i in indices]
-        assert idx_vals == [0, 0], f"Only [0, 0] index supported, got {idx_vals}"
+        tensor, indices = dst
+        dst = _make_tensor_slice(tensor, indices)
 
     ctx = src.type.context
 
@@ -112,11 +121,11 @@ def copy(src, dst) -> CopyTransferHandler:
     dst_is_cb = dst_type_str.startswith("!ttl.cb")
 
     if dst_is_cb and not src_is_cb:
-        # Read: device tensor -> CB
+        # Read: device tensor/slice -> CB
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
         return ttl.copy(xf_type, src, dst)
     elif src_is_cb and not dst_is_cb:
-        # Write: CB -> device tensor
+        # Write: CB -> device tensor/slice
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
         return ttl.copy(xf_type, src, dst)
     else:

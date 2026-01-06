@@ -162,6 +162,32 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def visit_Subscript(self, node):
+        """Handle tensor[row, col] indexing for TTL tensor slices."""
+        tbl = self._var_exists(node.value.id)
+        if not tbl:
+            self._raise_error(node, f"Unknown variable: {node.value.id}")
+
+        tensor = tbl[node.value.id]
+        if not isinstance(getattr(tensor, "type", None), RankedTensorType):
+            self._raise_error(node, "TTL only supports subscripting tensors")
+
+        if isinstance(node.slice, ast.Tuple):
+            indices = [self._build_index_value(elt) for elt in node.slice.elts]
+        else:
+            indices = [self._build_index_value(node.slice)]
+
+        return (tensor, indices)
+
+    def _build_index_value(self, node):
+        """Convert AST node to index Value."""
+        if isinstance(node, ast.Constant):
+            return arith.ConstantOp(IndexType.get(self.ctx), node.value)
+        val = self.visit(node)
+        if isinstance(val.type, IndexType):
+            return val
+        return arith.IndexCastOp(IndexType.get(self.ctx), val)
+
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline
     def visit_Constant(self, node):

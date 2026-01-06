@@ -439,8 +439,20 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
   }
 };
 
-enum class CopySourceKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
-enum class CopyDestKind { TensorAccessor, CircularBuffer, Pipe, Unknown };
+enum class CopySourceKind {
+  TensorAccessor,
+  TensorSlice,
+  CircularBuffer,
+  Pipe,
+  Unknown
+};
+enum class CopyDestKind {
+  TensorAccessor,
+  TensorSlice,
+  CircularBuffer,
+  Pipe,
+  Unknown
+};
 
 static bool isTensorAccessorLike(Type t) {
   return llvm::isa<ttk::TensorAccessorType>(t) ||
@@ -451,6 +463,9 @@ static CopySourceKind classifySrc(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopySourceKind::CircularBuffer;
   }
+  if (llvm::isa<TensorSliceType>(v.getType())) {
+    return CopySourceKind::TensorSlice;
+  }
   if (isTensorAccessorLike(v.getType())) {
     return CopySourceKind::TensorAccessor;
   }
@@ -460,6 +475,9 @@ static CopySourceKind classifySrc(Value v) {
 static CopyDestKind classifyDst(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyDestKind::CircularBuffer;
+  }
+  if (llvm::isa<TensorSliceType>(v.getType())) {
+    return CopyDestKind::TensorSlice;
   }
   if (isTensorAccessorLike(v.getType())) {
     return CopyDestKind::TensorAccessor;
@@ -787,6 +805,114 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   return success();
 }
 
+/// Compute linear tile offset from row and column indices.
+/// offset = row * tilesX + col, converted to i32 for NOC ops.
+static Value computeTileOffset(Value rowIdx, Value colIdx, int64_t tilesX,
+                               Location loc,
+                               ConversionPatternRewriter &rewriter) {
+  auto tilesXVal = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
+  Value offsetY = rewriter.create<arith::MulIOp>(loc, rowIdx, tilesXVal);
+  Value offset = rewriter.create<arith::AddIOp>(loc, offsetY, colIdx);
+  return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), offset);
+}
+
+/// Lower tensor_slice->CB copy: read a single tile from tensor into CB.
+static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
+                                    Value dstCB,
+                                    ConversionPatternRewriter &rewriter,
+                                    const TypeConverter &typeConverter) {
+  auto loc = op.getLoc();
+  Value srcTensor = sliceOp.getTensor();
+  Value tileRow = sliceOp.getTileRow();
+  Value tileCol = sliceOp.getTileCol();
+
+  auto bankBase = getBufferAddressFromRuntimeArg(srcTensor, loc, rewriter);
+  if (failed(bankBase)) {
+    return rewriter.notifyMatchFailure(
+        op, "tensor must be a function argument for runtime arg mapping");
+  }
+
+  auto srcAccessor =
+      materializeTensorAccessor(srcTensor, *bankBase, op, rewriter);
+  if (failed(srcAccessor)) {
+    return failure();
+  }
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(dstCB, rewriter, loc);
+  if (failed(cbConverted)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+  }
+  auto cbWritePtr = rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted);
+
+  auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
+  Value tileOffset =
+      computeTileOffset(tileRow, tileCol, tilesX, loc, rewriter);
+
+  rewriter.create<ttk::NocAsyncReadTileOp>(loc, tileOffset, *srcAccessor,
+                                           cbWritePtr);
+
+  auto handle = makeZeroI32(loc, rewriter);
+  rewriter.replaceOp(op, handle);
+  return success();
+}
+
+/// Lower CB->tensor_slice copy: write a single tile from CB to tensor.
+static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
+                                    TensorSliceOp sliceOp,
+                                    ConversionPatternRewriter &rewriter,
+                                    const TypeConverter &typeConverter) {
+  auto loc = op.getLoc();
+  Value dstTensor = sliceOp.getTensor();
+  Value tileRow = sliceOp.getTileRow();
+  Value tileCol = sliceOp.getTileCol();
+
+  auto bankBase = getBufferAddressFromRuntimeArg(dstTensor, loc, rewriter);
+  if (failed(bankBase)) {
+    return rewriter.notifyMatchFailure(
+        op, "tensor must be a function argument for runtime arg mapping");
+  }
+
+  auto dstAccessor =
+      materializeTensorAccessor(dstTensor, *bankBase, op, rewriter);
+  if (failed(dstAccessor)) {
+    return failure();
+  }
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
+  if (failed(cbConverted)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+  }
+  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+
+  auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
+  Value tileOffset =
+      computeTileOffset(tileRow, tileCol, tilesX, loc, rewriter);
+
+  rewriter.create<ttk::NocAsyncWriteTileOp>(loc, tileOffset, *dstAccessor,
+                                            cbReadPtr);
+
+  auto handle = makeZeroI32(loc, rewriter);
+  rewriter.replaceOp(op, handle);
+  return success();
+}
+
+struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TensorSliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // TensorSliceOp is consumed by CopyLowering via getDefiningOp.
+    // After copy lowering, the slice result has no users and can be erased.
+    if (!op.getResult().use_empty()) {
+      return rewriter.notifyMatchFailure(
+          op, "tensor_slice has remaining uses after copy lowering");
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct CopyLowering : OpConversionPattern<CopyOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -805,14 +931,38 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto srcKind = classifySrc(src);
     auto dstKind = classifyDst(dst);
 
-    // Tensor -> CB: read from tensor into circular buffer.
+    // TensorSlice -> CB: read a single tile from tensor into circular buffer.
+    if (srcKind == CopySourceKind::TensorSlice &&
+        dstKind == CopyDestKind::CircularBuffer) {
+      auto sliceOp = src.getDefiningOp<TensorSliceOp>();
+      if (!sliceOp) {
+        return rewriter.notifyMatchFailure(
+            op, "tensor_slice source must come from ttl.tensor_slice op");
+      }
+      return lowerSliceToCB(op, sliceOp, adaptor.getDst(), rewriter,
+                            *typeConverter);
+    }
+
+    // CB -> TensorSlice: write a single tile from circular buffer to tensor.
+    if (srcKind == CopySourceKind::CircularBuffer &&
+        dstKind == CopyDestKind::TensorSlice) {
+      auto sliceOp = dst.getDefiningOp<TensorSliceOp>();
+      if (!sliceOp) {
+        return rewriter.notifyMatchFailure(
+            op, "tensor_slice destination must come from ttl.tensor_slice op");
+      }
+      return lowerCBToSlice(op, adaptor.getSrc(), sliceOp, rewriter,
+                            *typeConverter);
+    }
+
+    // Tensor -> CB: read all tiles from tensor into circular buffer (loop).
     if (srcKind == CopySourceKind::TensorAccessor &&
         dstKind == CopyDestKind::CircularBuffer) {
       return lowerTensorToCB(op, src, adaptor.getDst(), rewriter,
                              *typeConverter);
     }
 
-    // CB -> Tensor: write from circular buffer to tensor.
+    // CB -> Tensor: write all tiles from circular buffer to tensor (loop).
     if (srcKind == CopySourceKind::CircularBuffer &&
         dstKind == CopyDestKind::TensorAccessor) {
       return lowerCBToTensor(op, adaptor.getSrc(), dst, rewriter,
@@ -943,6 +1093,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
       [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
 
+  // TensorSliceOp is legal while it has users (CopyLowering will consume them).
+  // Once users are gone, TensorSliceLowering erases the op.
+  target.addDynamicallyLegalOp<TensorSliceOp>(
+      [](TensorSliceOp op) { return !op.getResult().use_empty(); });
+
   target.addDynamicallyLegalOp<ModuleOp>(
       [&](ModuleOp op) { return typeConverter.isLegal(&op.getBodyRegion()); });
   target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
@@ -951,9 +1106,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   });
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-               CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
-      typeConverter, &ctx);
+  patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
+               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
+               StoreLowering>(typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
