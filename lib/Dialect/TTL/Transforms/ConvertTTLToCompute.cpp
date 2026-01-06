@@ -231,12 +231,12 @@ static LogicalResult buildBinaryCompute(Operation *op,
   // If inputs aren't CB-attached, try fusion
   if (!lhsCb || !rhsCb) {
     auto traceResult = traceElementwiseToRoots(op->getResult(0));
-    if (succeeded(traceResult) && !traceResult->opsInOrder.empty()) {
-      return buildFusedCompute(op, rewriter, *traceResult);
+    if (traceResult.failureReason == TraceFailureReason::Success &&
+        !traceResult.opsInOrder.empty()) {
+      return buildFusedCompute(op, rewriter, traceResult);
     }
-    return op->emitError(
-        "inputs must be attached to circular buffers via "
-        "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
+    emitFusionFailureDiagnostics(op, traceResult);
+    return failure();
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this
@@ -316,12 +316,12 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   // If input isn't CB-attached, try fusion
   if (!inputCb) {
     auto traceResult = traceElementwiseToRoots(op->getResult(0));
-    if (succeeded(traceResult) && !traceResult->opsInOrder.empty()) {
-      return buildFusedCompute(op, rewriter, *traceResult);
+    if (traceResult.failureReason == TraceFailureReason::Success &&
+        !traceResult.opsInOrder.empty()) {
+      return buildFusedCompute(op, rewriter, traceResult);
     }
-    return op->emitError(
-        "input must be attached to a circular buffer via "
-        "`ttl.attach_cb` or `ttl.cb_wait` before lowering to `ttl.compute`");
+    emitFusionFailureDiagnostics(op, traceResult);
+    return failure();
   }
 
   // Find the output CB. First check if there's an attach_cb that uses this

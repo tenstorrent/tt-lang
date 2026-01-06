@@ -97,25 +97,33 @@ getElementwiseOperands(mlir::Operation *op) {
   return {};
 }
 
+/// Reason why elementwise tracing failed.
+enum class TraceFailureReason {
+  Success,
+  NotCBAttached,
+  NoDefiningOp,
+  NotElementwiseOp,
+  MultipleUses,
+};
+
 /// Result of tracing through elementwise ops to CB-attached roots.
 struct ElementwiseTraceResult {
   /// CB-attached input values that form the roots of the chain.
   mlir::SmallVector<mlir::Value, 2> rootInputs;
   /// Operations in the chain, topologically ordered (roots first, sink last).
   mlir::SmallVector<mlir::Operation *, 4> opsInOrder;
+  /// Failure reason (Success if tracing succeeded).
+  TraceFailureReason failureReason = TraceFailureReason::Success;
+  /// The value where tracing failed (only set on failure).
+  mlir::Value failedValue;
 };
 
 /// Trace a value through elementwise ops to find CB-attached roots.
 /// Recursively traces through arbitrary depth elementwise chains.
 ///
-/// Returns failure if:
-/// - Value has no defining op and is not CB-attached
-/// - Defining op is not an elementwise op
-/// - Any intermediate result has multiple uses
-///
-/// On success, returns the root CB-attached inputs and ops to fuse.
-inline mlir::FailureOr<ElementwiseTraceResult>
-traceElementwiseToRoots(mlir::Value value) {
+/// On failure, sets failureReason and failedValue in the result.
+/// Check failureReason == TraceFailureReason::Success to determine success.
+inline ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
   ElementwiseTraceResult result;
 
   // Base case: CB-attached value is a root
@@ -126,32 +134,38 @@ traceElementwiseToRoots(mlir::Value value) {
 
   mlir::Operation *defOp = value.getDefiningOp();
   if (!defOp) {
-    return mlir::failure();
+    result.failureReason = TraceFailureReason::NotCBAttached;
+    result.failedValue = value;
+    return result;
   }
 
   if (!isElementwiseOp(defOp)) {
-    return mlir::failure();
+    result.failureReason = TraceFailureReason::NotElementwiseOp;
+    result.failedValue = value;
+    return result;
   }
 
   // Reject if this op's result has multiple uses (would break SSA semantics)
   if (!value.hasOneUse()) {
-    return mlir::failure();
+    result.failureReason = TraceFailureReason::MultipleUses;
+    result.failedValue = value;
+    return result;
   }
 
   // Recursively trace all operands
   for (mlir::Value operand : getElementwiseOperands(defOp)) {
     auto operandTrace = traceElementwiseToRoots(operand);
-    if (mlir::failed(operandTrace)) {
-      return mlir::failure();
+    if (operandTrace.failureReason != TraceFailureReason::Success) {
+      return operandTrace;
     }
     // Merge roots (avoiding duplicates)
-    for (mlir::Value root : operandTrace->rootInputs) {
+    for (mlir::Value root : operandTrace.rootInputs) {
       if (!llvm::is_contained(result.rootInputs, root)) {
         result.rootInputs.push_back(root);
       }
     }
     // Merge ops in dependency order
-    for (mlir::Operation *op : operandTrace->opsInOrder) {
+    for (mlir::Operation *op : operandTrace.opsInOrder) {
       if (!llvm::is_contained(result.opsInOrder, op)) {
         result.opsInOrder.push_back(op);
       }
@@ -162,6 +176,40 @@ traceElementwiseToRoots(mlir::Value value) {
   result.opsInOrder.push_back(defOp);
 
   return result;
+}
+
+/// Emit diagnostics explaining why elementwise fusion failed.
+inline void emitFusionFailureDiagnostics(mlir::Operation *op,
+                                         const ElementwiseTraceResult &trace) {
+  mlir::Value v = trace.failedValue;
+  switch (trace.failureReason) {
+  case TraceFailureReason::Success:
+    break;
+  case TraceFailureReason::NotCBAttached:
+    if (v) {
+      op->emitError("fusion failed: value is not attached to a circular buffer")
+          .attachNote(v.getLoc())
+          << "this value (block argument) needs ttl.cb_wait or ttl.attach_cb";
+    }
+    break;
+  case TraceFailureReason::NoDefiningOp:
+    op->emitError("fusion failed: cannot trace through block argument");
+    break;
+  case TraceFailureReason::NotElementwiseOp:
+    if (v && v.getDefiningOp()) {
+      op->emitError("fusion failed: cannot trace through non-elementwise op")
+          .attachNote(v.getDefiningOp()->getLoc())
+          << "this op '" << v.getDefiningOp()->getName() << "' is not fusable";
+    }
+    break;
+  case TraceFailureReason::MultipleUses:
+    if (v && v.getDefiningOp()) {
+      op->emitError("fusion failed: intermediate value has multiple uses")
+          .attachNote(v.getDefiningOp()->getLoc())
+          << "this op's result is used multiple times";
+    }
+    break;
+  }
 }
 
 /// Find the first operation of type OpTy in the block preceding the given
