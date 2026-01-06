@@ -6,47 +6,72 @@
 // TTL Elementwise Operation Definitions
 //===----------------------------------------------------------------------===//
 //
-// This file defines mappings for TTL elementwise operations lowering to
-// ttl.compute with tile ops.
+// This file defines mappings for TTL elementwise operations, supporting:
+// 1. TTL tensor ops -> ttl.compute with tile ops (ConvertTTLToCompute)
+// 2. TTL tile ops -> TTKernel ops (ConvertTTLTileOpsToTTKernel)
+// 3. Python binding generation (gen_elementwise.py)
 //
 // It uses the X-macro pattern to generate boilerplate code for pattern
 // definitions and registration.
 //
+// Macro signatures:
+//   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//   TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//   TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//
+// Parameters:
+//   TTL_OP     - TTL tensor op name (e.g., Add -> ttl::AddOp)
+//   TILE_OP   - TTL tile op name (e.g., AddTileOp -> ttl::AddTileOp)
+//   TTK_INIT  - TTKernel init op (e.g., AddBinaryTilesInitOp)
+//   TTK_COMPUTE - TTKernel compute op (e.g., AddBinaryTilesOp)
+//
 // Usage:
-//   #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP)  // your code here
-//   #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP)   // your code here
+//   #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
+//   #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
 //   #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 //
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
-// Elementwise operation mappings (TTL tensor ops -> ttl.compute with tile ops)
+// Elementwise operation mappings
 //===----------------------------------------------------------------------===//
 
 #ifndef TTL_BINARY_TILE_OP
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP)
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
 #ifndef TTL_UNARY_TILE_OP
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP)
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
-// Binary operations: TTL tensor op -> TTL tile op
-TTL_BINARY_TILE_OP(Add, AddTileOp)
-TTL_BINARY_TILE_OP(Sub, SubTileOp)
-TTL_BINARY_TILE_OP(Mul, MulTileOp)
-TTL_BINARY_TILE_OP(Max, MaxTileOp)
+// Special macro for binary ops that use a different lowering template.
+// Max uses 2-arg in-place form: DST[dst0] = max(DST[dst0], DST[dst1])
+#ifndef TTL_BINARY_TILE_OP_SPECIAL
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#endif
 
-// Unary operations: TTL tensor op -> TTL tile op
-TTL_UNARY_TILE_OP(Exp, ExpTileOp)
-TTL_UNARY_TILE_OP(Log, LogTileOp)
-TTL_UNARY_TILE_OP(Sqrt, SqrtTileOp)
-TTL_UNARY_TILE_OP(Rsqrt, RsqrtTileOp)
-TTL_UNARY_TILE_OP(Tanh, TanhTileOp)
-TTL_UNARY_TILE_OP(Abs, AbsTileOp)
-TTL_UNARY_TILE_OP(Neg, NegTileOp)
-TTL_UNARY_TILE_OP(Relu, ReluTileOp)
-TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp)
+// Binary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
+// These use the standard 3-arg binary template: DST[odst] = op(DST[src0], DST[src1])
+TTL_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
+TTL_BINARY_TILE_OP(Sub, SubTileOp, SubBinaryTilesInitOp, SubBinaryTilesOp)
+TTL_BINARY_TILE_OP(Mul, MulTileOp, MulBinaryTilesInitOp, MulBinaryTilesOp)
+
+// Special binary ops with non-standard lowering
+// Max uses 2-arg in-place form (TTLTileMaxToTTKernel template)
+TTL_BINARY_TILE_OP_SPECIAL(Max, MaxTileOp, BinaryMaxTileInitOp, BinaryMaxTileOp)
+
+// Unary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
+// These use the standard unary template: DST[dst_idx] = op(DST[dst_idx])
+TTL_UNARY_TILE_OP(Exp, ExpTileOp, ExpTileInitOp, ExpTileOp)
+TTL_UNARY_TILE_OP(Log, LogTileOp, LogTileInitOp, LogTileOp)
+TTL_UNARY_TILE_OP(Sqrt, SqrtTileOp, SqrtTileInitOp, SqrtTileOp)
+TTL_UNARY_TILE_OP(Rsqrt, RsqrtTileOp, RsqrtTileInitOp, RsqrtTileOp)
+TTL_UNARY_TILE_OP(Tanh, TanhTileOp, TanhTileInitOp, TanhTileOp)
+TTL_UNARY_TILE_OP(Abs, AbsTileOp, AbsTileInitOp, AbsTileOp)
+TTL_UNARY_TILE_OP(Neg, NegTileOp, NegativeTileInitOp, NegativeTileOp)
+TTL_UNARY_TILE_OP(Relu, ReluTileOp, ReluTileInitOp, ReluTileOp)
+TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp, SigmoidTileInitOp, SigmoidTileOp)
 
 #undef TTL_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
+#undef TTL_BINARY_TILE_OP_SPECIAL

@@ -22,7 +22,7 @@ from ttlang.operators import copy
 from ttlang.ttl_api import Program
 
 
-# CHECK: must be divisible by grid dim
+# CHECK: TTNN interop only supports single-core grid (1, 1), got (2, 3)
 @ttl.kernel(grid=(2, 3))
 def invalid_divisibility_kernel(lhs, rhs, out):
     """This kernel should fail because 32 is not divisible by 3."""
