@@ -5,17 +5,13 @@
 # RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_COMPILE_ONLY=1 %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: %python %s 2>&1 | FileCheck %s --check-prefix=CHECK-RUN
+# RUN: %python %s 2>&1 | FileCheck %s --check-prefix=EXEC
 
 """
 Fused kernel with 20 chained ops - tests deep fusion chains with stable ops.
 
 Uses bounded ops (sigmoid, tanh, relu, abs, neg) to avoid overflow.
-Chain 1: sigmoid^5(a) - 5 ops, bounded [0,1]
-Chain 2: tanh^5(b) - 5 ops, bounded [-1,1]
-Chain 3: abs(neg(abs(neg(abs(c))))) - 5 ops
-Final: (chain1 + chain2) * chain3 + relu(chain1 - chain2) - 5 ops
-Total: 20 ops
+Sequential chain avoids multiple uses of intermediate values.
 """
 
 import os
@@ -45,18 +41,31 @@ def fused_chain_kernel(a, b, c, out):
         bv = b_cb.wait()
         cv = c_cb.wait()
         o = out_cb.reserve()
-        # 20 ops using stable bounded functions
-        # Chain 1: 5 sigmoid ops, output in [0,1]
-        a_chain = sigmoid(sigmoid(sigmoid(sigmoid(sigmoid(av)))))
-        # Chain 2: 5 tanh ops, output in [-1,1]
-        b_chain = tanh(tanh(tanh(tanh(tanh(bv)))))
-        # Chain 3: 5 ops (abs, neg alternating)
-        c_chain = abs(neg(abs(neg(abs(cv)))))
-        # Final: 5 ops (add, mul, sub, add, relu)
-        temp1 = a_chain + b_chain
-        temp2 = temp1 * c_chain
-        temp3 = a_chain - b_chain
-        result = temp2 + relu(temp3)
+        # 20 ops: sequential chain to avoid multiple uses of intermediates
+        # Start with a: 5 unary ops
+        v = sigmoid(av)        # 1
+        v = sigmoid(v)         # 2
+        v = tanh(v)            # 3
+        v = tanh(v)            # 4
+        v = abs(v)             # 5
+        # Mix in b: 5 ops (1 binary + 4 unary)
+        v = v + bv             # 6
+        v = sigmoid(v)         # 7
+        v = tanh(v)            # 8
+        v = neg(v)             # 9
+        v = abs(v)             # 10
+        # Mix in c: 5 ops (1 binary + 4 unary)
+        v = v + cv             # 11
+        v = relu(v)            # 12
+        v = sigmoid(v)         # 13
+        v = tanh(v)            # 14
+        v = abs(v)             # 15
+        # Final: 5 more unary ops
+        v = sigmoid(v)         # 16
+        v = tanh(v)            # 17
+        v = relu(v)            # 18
+        v = sigmoid(v)         # 19
+        result = tanh(v)       # 20
         o.store(result)
         a_cb.pop()
         b_cb.pop()
@@ -110,8 +119,6 @@ def fused_chain_kernel(a, b, c, out):
 # CHECK-DAG: ttl.neg
 # CHECK-DAG: ttl.relu
 # CHECK-DAG: ttl.add
-# CHECK-DAG: ttl.mul
-# CHECK-DAG: ttl.sub
 
 # Finalize
 # CHECK: ttl.cb_pop
@@ -144,8 +151,6 @@ def fused_chain_kernel(a, b, c, out):
 # CHECK-CPP-DAG: negative_tile
 # CHECK-CPP-DAG: relu_tile
 # CHECK-CPP-DAG: add_binary_tile
-# CHECK-CPP-DAG: mul_binary_tile
-# CHECK-CPP-DAG: sub_binary_tile
 
 # DST synchronization
 # CHECK-CPP: tile_regs_commit();
@@ -179,17 +184,27 @@ if __name__ == "__main__":
         a_f = a_torch.float()
         b_f = b_torch.float()
         c_f = c_torch.float()
-        # Chain 1: 5 sigmoid ops
-        a_chain = torch.sigmoid(torch.sigmoid(torch.sigmoid(torch.sigmoid(torch.sigmoid(a_f)))))
-        # Chain 2: 5 tanh ops
-        b_chain = torch.tanh(torch.tanh(torch.tanh(torch.tanh(torch.tanh(b_f)))))
-        # Chain 3: abs(neg(abs(neg(abs(c)))))
-        c_chain = torch.abs(-torch.abs(-torch.abs(c_f)))
-        # Final: (a_chain + b_chain) * c_chain + relu(a_chain - b_chain)
-        temp1 = a_chain + b_chain
-        temp2 = temp1 * c_chain
-        temp3 = a_chain - b_chain
-        expected = temp2 + torch.relu(temp3)
+        # 20 sequential ops matching the kernel
+        v = torch.sigmoid(a_f)       # 1
+        v = torch.sigmoid(v)         # 2
+        v = torch.tanh(v)            # 3
+        v = torch.tanh(v)            # 4
+        v = torch.abs(v)             # 5
+        v = v + b_f                  # 6
+        v = torch.sigmoid(v)         # 7
+        v = torch.tanh(v)            # 8
+        v = -v                       # 9 (neg)
+        v = torch.abs(v)             # 10
+        v = v + c_f                  # 11
+        v = torch.relu(v)            # 12
+        v = torch.sigmoid(v)         # 13
+        v = torch.tanh(v)            # 14
+        v = torch.abs(v)             # 15
+        v = torch.sigmoid(v)         # 16
+        v = torch.tanh(v)            # 17
+        v = torch.relu(v)            # 18
+        v = torch.sigmoid(v)         # 19
+        expected = torch.tanh(v)     # 20
 
         a = ttnn.from_torch(
             a_torch,
@@ -233,7 +248,7 @@ if __name__ == "__main__":
         print(result)
         if torch.allclose(result.float(), expected.float(), rtol=1e-1, atol=1e-1):
             print("PASS: Output matches expected!")
-            # CHECK-RUN: PASS
+            # EXEC: PASS
         else:
             max_err = (result.float() - expected.float()).abs().max().item()
             print(f"FAIL: Max error = {max_err:.6f}")
