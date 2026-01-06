@@ -686,9 +686,11 @@ def _compile_and_run_kernel(
         # Validate grid is single core - multi-core requires sharded layout support
         # (see GH issue #118)
         if grid != (1, 1) and grid != [1, 1]:
-            raise ValueError(
-                f"TTNN interop only supports single-core grid (1, 1), got {grid}"
+            msg = f"TTNN interop only supports single-core grid (1, 1), got {grid}"
+            formatted = format_python_error(
+                ValueError(msg), kernel_source_file, kernel_line_offset
             )
+            raise ValueError(formatted) from None
 
         first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
         if first_ttnn_tensor is not None:
