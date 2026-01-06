@@ -56,8 +56,8 @@ func.func @tile_mul(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) 
 }
 
 // CHECK-LABEL: func.func @tile_max
-// CHECK: ttkernel.max_tile_init
-// CHECK: ttkernel.max_tile
+// CHECK: ttkernel.binary_max_tile_init
+// CHECK: ttkernel.binary_max_tile
 func.func @tile_max(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %max = ttl.tile_max %a, %b {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
   func.return %max : !ttcore.tile<32x32, f32>

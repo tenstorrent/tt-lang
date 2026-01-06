@@ -1,4 +1,4 @@
-name: Build tt-mlir automatically (FetchContent)
+name: Build tt-lang with tt-mlir (FetchContent) and run HW tests
 
 on:
     workflow_dispatch:

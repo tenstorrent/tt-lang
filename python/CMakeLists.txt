@@ -95,7 +95,9 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     __init__.py
     circular_buffer.py
     constants.py
+    ttl.py
     ttl_api.py
+    ttl_utils.py
     dtype_utils.py
     ir.py
     layouts.py
@@ -117,7 +119,6 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   SOURCES
     _src/__init__.py
     _src/ttl_ast.py
-    _src/tensor_accessor.py
     _src/tensor_registry.py
 )
 

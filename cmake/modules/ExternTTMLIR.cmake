@@ -9,6 +9,27 @@
 # 2. Pre-installed tt-mlir: TTMLIR_DIR pointing to TTMLIRConfig.cmake, or TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir.
 # 3. FetchContent fallback: Build locally when neither is found.
 
+# Create alias targets for installed tt-mlir exported targets.
+# When tt-mlir is installed, targets are exported with the TTMLIR:: namespace prefix
+# (e.g., TTMLIR::MLIRTTKernelDialect). tt-lang's CMakeLists files reference these
+# targets without the prefix (e.g., MLIRTTKernelDialect) for consistency with
+# tt-mlir build tree usage. This function creates non-namespaced aliases.
+function(ttlang_create_ttmlir_aliases)
+  if(NOT DEFINED TTMLIR_EXPORTED_TARGETS)
+    message(WARNING "TTMLIR_EXPORTED_TARGETS not defined, skipping alias creation")
+    return()
+  endif()
+
+  set(_alias_count 0)
+  foreach(target IN LISTS TTMLIR_EXPORTED_TARGETS)
+    if(TARGET TTMLIR::${target} AND NOT TARGET ${target})
+      add_library(${target} ALIAS TTMLIR::${target})
+      math(EXPR _alias_count "${_alias_count} + 1")
+    endif()
+  endforeach()
+  message(STATUS "Created ${_alias_count} aliases for installed tt-mlir targets")
+endfunction()
+
 # Scenario 1: Pre-built tt-mlir (build tree)
 if(DEFINED TTMLIR_BUILD_DIR)
   set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
@@ -97,6 +118,9 @@ if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)
         message(FATAL_ERROR "Required TTMLIR::TTMLIRCompilerStatic target not found in installed tt-mlir at: ${TTMLIR_CMAKE_DIR}, and library file not found in ${TTMLIR_PATH}/lib")
       endif()
     endif()
+
+    # Create aliases for namespaced targets so tt-lang can use unprefixed names.
+    ttlang_create_ttmlir_aliases()
   endif()
 
   find_package(MLIR REQUIRED CONFIG HINTS "${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir")
@@ -151,12 +175,10 @@ else()
   # Check if TTMLIR_ENABLE_RUNTIME is already set (e.g., from workflow), otherwise default based on platform
   if(NOT DEFINED TTMLIR_ENABLE_RUNTIME)
     if(APPLE)
-      set(_TTMLIR_ENABLE_RUNTIME OFF)
-      set(_TTMLIR_ENABLE_RUNTIME_TESTS OFF)
       set(_TTMLIR_ENABLE_PERF_TRACE OFF)
     else()
-      set(_TTMLIR_ENABLE_RUNTIME ON)
-      set(_TTMLIR_ENABLE_RUNTIME_TESTS ON)
+      set(_TTMLIR_ENABLE_RUNTIME OFF)
+      set(_TTMLIR_ENABLE_RUNTIME_TESTS OFF)
 
       if(TTLANG_ENABLE_PERF_TRACE)
         set(_TTMLIR_ENABLE_PERF_TRACE ON)
@@ -229,16 +251,15 @@ else()
       -DPython3_ROOT_DIR=${_TOOLCHAIN_Python3_ROOT_DIR}
       -DMLIR_DIR=${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir
       -DLLVM_DIR=${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm
-      -DTTMLIR_ENABLE_PYKERNEL=${TTLANG_ENABLE_BINDINGS_PYTHON}
       -DTTMLIR_ENABLE_RUNTIME=${_TTMLIR_ENABLE_RUNTIME}
-      -DTTMLIR_ENABLE_RUNTIME_TESTS=${_TTMLIR_ENABLE_RUNTIME_TESTS}
+      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF
       -DTTMLIR_ENABLE_STABLEHLO=OFF
       -DTTMLIR_ENABLE_OPMODEL=OFF
+      -DTTMLIR_ENABLE_EXPLORER=OFF
       -DTT_RUNTIME_ENABLE_PERF_TRACE=${_TTMLIR_ENABLE_PERF_TRACE}
       -DTTMLIR_ENABLE_BINDINGS_PYTHON=${TTLANG_ENABLE_BINDINGS_PYTHON}
-      -DTTMLIR_ENABLE_DEBUG_STRINGS=OFF
-      -DTTMLIR_ENABLE_EXPLORER=OFF
-      -DBUILD_TESTING=OFF
+      -DTT_RUNTIME_ENABLE_TTNN=ON
+      -DTTMLIR_ENABLE_TTNN_JIT=ON
   )
 
   message(STATUS "Configuring tt-mlir...")
@@ -264,6 +285,22 @@ else()
       WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
 
+  # Install the SharedLib component (includes CMake config files)
+  message(STATUS "Installing tt-mlir SharedLib component...")
+  ttlang_execute_with_env(
+      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --install ${_TTMLIR_BUILD_DIR} --component SharedLib"
+      ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
+      WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
+  )
+
+  # Install the Test component to get ttmlir-opt and other tools installed.
+  message(STATUS "Installing tt-mlir Test component...")
+  ttlang_execute_with_env(
+      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --install ${_TTMLIR_BUILD_DIR} --component Test"
+      ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
+      WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
+  )
+
   message(STATUS "Installing tt-mlir Python wheel...")
   ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} --install ${_TTMLIR_BUILD_DIR} --component TTMLIRPythonWheel"
@@ -277,6 +314,9 @@ else()
   message(STATUS "Searching for TTMLIRConfig.cmake in: ${_TTMLIR_INSTALL_PREFIX}/lib/cmake/ttmlir")
   find_package(TTMLIR REQUIRED CONFIG PATHS "${_TTMLIR_INSTALL_PREFIX}/lib/cmake/ttmlir")
   message(STATUS "Built and using private tt-mlir installation from: ${TTMLIR_CMAKE_DIR}")
+
+  # Create aliases for namespaced targets so tt-lang can use unprefixed names.
+  ttlang_create_ttmlir_aliases()
 
   if(EXISTS "${_TTMLIR_SOURCE_DIR}/cmake/modules")
     list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_SOURCE_DIR}/cmake/modules")

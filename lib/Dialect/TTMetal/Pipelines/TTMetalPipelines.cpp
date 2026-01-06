@@ -188,6 +188,7 @@ void createTTIRToTTMetalBackendPipeline(
     { d2mToTTMetalOptions.mathFidelity = options.mathFidelity; }
     pm.addPass(::mlir::tt::createConvertD2MToTTMetalPass(d2mToTTMetalOptions));
   }
+  pm.addPass(ttkernel::createTTKernelHoistInits());
   // Insert DeviceZone scopes around selected ttkernel ops before EmitC
   // lowering.
   if (options.insertProfilerTraces) {
@@ -202,8 +203,8 @@ void createTTIRToTTMetalPipeline(OpPassManager &pm,
                                  const TTIRToTTMetalPipelineOptions &options) {
   // Create DeviceModule to wrap all ops.
   pm.addPass(ttcore::createTTCoreWrapDeviceModulePass());
-  // Create CPUModuleOp to wrap hoisted ops (if any).
-  pm.addPass(ttir::createTTIRHoistTransform());
+  // Hoist manually tagged ops to CPU module (if any).
+  pm.addPass(ttir::createCPUHoistManuallyTaggedOpsTransform());
 
   // Run regular ttir to ttmetal pipelines on IR in DeviceModule.
   OpPassManager &devicePm =
@@ -213,8 +214,8 @@ void createTTIRToTTMetalPipeline(OpPassManager &pm,
   createTTIRToTTMetalBackendPipeline(devicePm, options);
 
   // Run lowering to LLVM pass on hoisted funcs in CPUModule.
-  ttir::LinalgToLLVMPipelineOptions linalgToLLVMOptions;
-  ttir::createTTIRToCPUPipeline(pm, linalgToLLVMOptions);
+  ttir::TTIRToLLVMCPUPipelineOptions ttirToCPUOptions;
+  ttir::createTTIRToLLVMCPUPipeline(pm, ttirToCPUOptions);
 }
 
 void createD2MToTTMetalPipeline(OpPassManager &pm,
