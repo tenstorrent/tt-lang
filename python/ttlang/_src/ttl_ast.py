@@ -4,22 +4,20 @@
 
 import ast
 import inspect
-from typing import List, Set
 from dataclasses import dataclass
-
-from ttmlir.ir import *
-from ttmlir.dialects import ttcore, func, arith, ttkernel
+from typing import List, Set
 
 from pykernel._src.kernel_ast import TTCompilerBase
-from .tensor_registry import get_tensor_global_index, get_tensor_source
+from ttmlir.dialects import arith, func, ttcore, ttkernel
+from ttmlir.ir import *
 
-from ..dialects import ttl
-from ..dtype_utils import is_ttnn_tensor
-from ..layouts import create_ttnn_layout, TTNNLayoutConfig
-from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
-from ..ttl_utils import get_thread_type_string
 from ..diagnostics import TTLangCompileError
+from ..dialects import ttl
+from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
+from ..layouts import TTNNLayoutConfig, create_ttnn_layout
+from ..ttl_utils import get_thread_type_string
+from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
@@ -224,25 +222,45 @@ class TTLGenericCompiler(TTCompilerBase):
                 )
                 func_arg_types.append(tensor_type)
 
-        # Create temporary function to collect used tensor names during body visit.
-        # This will be discarded and recreated with only used tensors.
-        temp_func = func.FuncOp(name=node.name, type=(func_arg_types, []))
+        # Collect which tensors are actually used in the function body
+        used_tensors = self._collect_used_tensor_names(node)
+
+        # Now filter to only used tensors and create the actual function.
+        # This ensures only captured tensors that are actually referenced in the
+        # thread function body become function arguments for TensorAccessor materialization.
+        filtered_names = []
+        filtered_arg_types = []
+        filtered_indices = []  # Track original indices for mapping
+        for i, tensor_name in enumerate(self._tensor_accessor_names):
+            if tensor_name in used_tensors:
+                filtered_names.append(tensor_name)
+                filtered_arg_types.append(func_arg_types[i])
+                filtered_indices.append(i)
+
+        # Create the actual function with only used tensor arguments
+        self.func_entry = func.FuncOp(name=node.name, type=(filtered_arg_types, []))
+
+        # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
+        thread_type = get_thread_type_string(self.kernel_type)
+        thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
+        self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
+
+        # Add entry block and emit function body with filtered tensors
+        func_bb = self.func_entry.add_entry_block()
+
+        # Reset symbol tables and streams for actual function body emission
         self.symbol_tables.append({})
-        temp_bb = temp_func.add_entry_block()
+        self.streams.clear()
 
         # Add ttl module to symbol table
         self.symbol_tables[-1]["ttl"] = ttl
 
-        # Ensure TTL dialect is registered for type parsing
-        ttl.ensure_dialects_registered(self.ctx)
-
-        self.module_symbol_table = SymbolTable(self.module.operation)
-
-        # Emit function body to collect which tensors are actually used
-        with InsertionPoint(temp_bb):
-            # Map TensorAccessor function arguments to symbol table
-            for i, name in enumerate(self._tensor_accessor_names):
-                self.symbol_tables[-1][name] = temp_bb.arguments[i]
+        # Emit function body with filtered tensor arguments
+        with InsertionPoint(func_bb):
+            # Map filtered TensorAccessor function arguments to symbol table
+            for filtered_idx, orig_idx in enumerate(filtered_indices):
+                name = self._tensor_accessor_names[orig_idx]
+                self.symbol_tables[-1][name] = func_bb.arguments[filtered_idx]
                 self.streams.add(name)
 
             # Prepopulate other captures (non-tensor)
@@ -271,23 +289,10 @@ class TTLGenericCompiler(TTCompilerBase):
 
         self.symbol_tables.pop()
 
-        # Now filter to only used tensors and create the actual function.
-        # This ensures only captured tensors that are actually referenced in the
-        # kernel body become function arguments for TensorAccessor materialization.
-        filtered_names = []
-        filtered_arg_types = []
-        for i, tensor_name in enumerate(self._tensor_accessor_names):
-            if tensor_name in self.streams:
-                filtered_names.append(tensor_name)
-                filtered_arg_types.append(func_arg_types[i])
-
-        # Create the actual function with only used tensor arguments
-        self.func_entry = func.FuncOp(name=node.name, type=(filtered_arg_types, []))
-
-        # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
-        thread_type = get_thread_type_string(self.kernel_type)
-        thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
-        self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
+        # Update _tensor_accessor_global_indices to only include filtered tensors
+        self._tensor_accessor_global_indices = [
+            self._tensor_accessor_global_indices[i] for i in filtered_indices
+        ]
 
         # Note: base_cta_index is set later in ttl_api.py after all threads are
         # compiled and we know the total kernel-level CB count.
@@ -299,6 +304,28 @@ class TTLGenericCompiler(TTCompilerBase):
     def visit_AsyncFunctionDef(self, node):
         with self._loc_for_node(node):
             return self._emit_entry(node)
+
+    def _collect_used_tensor_names(self, node) -> Set[str]:
+        """
+        Collect tensor names actually referenced in the function body via pure AST analysis.
+
+        Returns set of tensor names that appear as ast.Name nodes in the function body.
+        This avoids emitting throwaway MLIR just to detect which tensors are used.
+        """
+        tensor_names = set(self._tensor_accessor_names)
+        used = set()
+
+        class NameCollector(ast.NodeVisitor):
+            def visit_Name(self, n):
+                if n.id in tensor_names:
+                    used.add(n.id)
+                self.generic_visit(n)
+
+        collector = NameCollector()
+        for stmt in node.body:
+            collector.visit(stmt)
+
+        return used
 
     def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""

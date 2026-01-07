@@ -7,51 +7,50 @@
 from __future__ import annotations
 
 import ast
-import inspect
 import functools
+import inspect
 import os
-from typing import List, Optional, Callable, Dict, Union
+from typing import Callable, Dict, List, Optional, Union
 
 try:
     import ttnn
 except ModuleNotFoundError:
     ttnn = None
 
-from ttmlir.ir import *
-from ttmlir.passmanager import PassManager
-from ttmlir.dialects import ttkernel
-from ttmlir.passes import (
-    ttkernel_to_cpp_by_name,
-    get_ttkernel_names,
-    get_ttkernel_arg_spec,
-)
-
-from ttlang.dialects import ttl
-
-from .ttl_utils import get_thread_type_string
-
-
 from pykernel._src.utils import _cleanup_source_code
+from ttlang.dialects import ttl
+from ttmlir.dialects import ttkernel
+from ttmlir.ir import *
+from ttmlir.passes import (
+    get_ttkernel_arg_spec,
+    get_ttkernel_names,
+    ttkernel_to_cpp_by_name,
+)
+from ttmlir.passmanager import PassManager
+
 from ._src.tensor_registry import (
-    register_tensor_name,
-    register_tensor_source,
     get_tensor_global_index,
     get_tensor_source,
+    register_tensor_name,
+    register_tensor_source,
 )
-from .diagnostics import find_variable_assignment
-
 from ._src.ttl_ast import TTLGenericCompiler
-from .diagnostics import format_mlir_error, format_python_error, TTLangCompileError
-
-from .operators import TensorBlock, CopyTransferHandler, copy
 from .circular_buffer import CircularBuffer
-from .semaphore import Semaphore
-from .dtype_utils import (
-    torch_dtype_to_ttnn_datatype,
-    tile_bytes_from_dtype,
-    is_ttnn_tensor,
-)
 from .constants import SUPPORTED_MEMORY_SPACES
+from .diagnostics import (
+    TTLangCompileError,
+    find_variable_assignment,
+    format_mlir_error,
+    format_python_error,
+)
+from .dtype_utils import (
+    is_ttnn_tensor,
+    tile_bytes_from_dtype,
+    torch_dtype_to_ttnn_datatype,
+)
+from .operators import CopyTransferHandler, TensorBlock, copy
+from .semaphore import Semaphore
+from .ttl_utils import get_thread_type_string
 
 
 class CompilerConfig:
@@ -289,7 +288,7 @@ def _compile_ttnn_kernel(
     Builds kernel paths, configs, and CB descriptors from compiled MLIR module.
 
     Args:
-        module: MLIR module after D2M pipeline (with EmitC kernels)
+        module: MLIR module after the tt-lang pipeline (with EmitC kernels)
         args: Input/output tensors (used for shape/dtype info)
         grid: Grid dimensions tuple
         num_outs: Number of output tensors
@@ -369,7 +368,7 @@ def _compile_ttnn_kernel(
     num_tensors = len(args)
 
     # Write all kernels to /tmp for debugging
-    for _, (name, thread_type) in enumerate(kernel_info):
+    for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         _write_kernel_to_tmp(name, cpp_source)
 
@@ -378,7 +377,7 @@ def _compile_ttnn_kernel(
     kernel_arg_specs = []
     noc_kernel_idx = 0
 
-    for _, (name, thread_type) in enumerate(kernel_info):
+    for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
@@ -728,7 +727,7 @@ def _compile_and_run_kernel(
                 all_source_lines[ct.name] = ct.source_lines
 
         # Update base_cta_index on all threads now that we know total CB count.
-        # CB indices occupy [0, num_cbs-1], so TensorAccessorArgs start at num_cbs.
+        # CB indices occupy [0, num_cbs-1], so TensorAccessorArgs cta indices start at num_cbs.
         total_cbs = get_cb_count()
         for ct in compiled_threads:
             ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(

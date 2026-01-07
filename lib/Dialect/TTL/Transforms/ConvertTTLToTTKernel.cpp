@@ -409,13 +409,11 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 /// Build a TensorAccessor using simple index offsets.
 /// Each accessor uses baseCTA + accessorIndex and baseCRTA + accessorIndex.
 /// Returns the TensorAccessor value.
-static Value
-buildTensorAccessor(Location loc, OpBuilder &builder, int32_t ctaIndex,
-                    int32_t crtaIndex, Value bankBase, Value pageSize) {
-  Value ctaConst =
-      builder.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
-  Value crtaConst =
-      builder.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
+static Value buildTensorAccessor(Location loc, OpBuilder &builder,
+                                 int32_t ctaIndex, int32_t crtaIndex,
+                                 Value bankBase, Value pageSize) {
+  Value ctaConst = builder.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  Value crtaConst = builder.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
   auto argsOp = builder.create<ttk::TensorAccessorArgsOp>(
       loc, ctaConst, crtaConst, /*prev_args=*/Value(),
       /*cta_expr=*/StringAttr(), /*crta_expr=*/StringAttr());
@@ -454,7 +452,8 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
   Location loc = funcOp.getLoc();
 
   // Materialize accessors for tensor arguments with simple index offsets.
-  // All function arguments are pre-filtered in Python to only include used tensors.
+  // All function arguments are pre-filtered in Python to only include used
+  // tensors.
   unsigned accessorIndex = 0;
 
   for (auto [argIdx, arg] : llvm::enumerate(funcOp.getArguments())) {
@@ -484,9 +483,9 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
         builder.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
     // Materialize accessor with simple index offsets.
-    Value accessor = buildTensorAccessor(
-        loc, builder, baseCTA + accessorIndex, baseCRTA + accessorIndex,
-        *bankBase, pageSize);
+    Value accessor =
+        buildTensorAccessor(loc, builder, baseCTA + accessorIndex,
+                            baseCRTA + accessorIndex, *bankBase, pageSize);
 
     tensorToAccessor[argIdx] = accessor;
     accessorIndex++;
