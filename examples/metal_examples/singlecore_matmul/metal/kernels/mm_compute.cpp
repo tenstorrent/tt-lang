@@ -41,7 +41,7 @@ void MAIN {
         // tile.
         matmul_tiles(/*in0_cb_id=*/cb_in0, /*in1_cb_id=*/cb_in1,
                      /*in0_tile_index=*/0, /*in1_tile_index=*/0,
-                     /*idst=*/0, /*transpose=*/false);
+                     /*idst=*/0);
 
         // Mark the input tiles as used by popping them from the front of the
         // circular buffers.
