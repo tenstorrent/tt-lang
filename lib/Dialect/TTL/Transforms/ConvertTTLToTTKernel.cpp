@@ -451,9 +451,11 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
   builder.setInsertionPointToStart(&entryBlock);
   Location loc = funcOp.getLoc();
 
-  // Materialize accessors for tensor arguments with simple index offsets.
+  // Materialize accessors for tensor arguments with simple local index offsets.
   // All function arguments are pre-filtered in Python to only include used
-  // tensors.
+  // tensors. Host builds per-thread compile_time_args with TensorAccessorArgs
+  // config for only the tensors this noc thread function uses, so we can use
+  // simple local indexing.
   unsigned accessorIndex = 0;
 
   for (auto [argIdx, arg] : llvm::enumerate(funcOp.getArguments())) {
@@ -482,7 +484,9 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
     auto pageSize =
         builder.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
-    // Materialize accessor with simple index offsets.
+    // Materialize accessor with simple local index offsets.
+    // baseCTA points to the start of this kernel's TensorAccessorArgs in
+    // compile_time_args.
     Value accessor =
         buildTensorAccessor(loc, builder, baseCTA + accessorIndex,
                             baseCRTA + accessorIndex, *bankBase, pageSize);

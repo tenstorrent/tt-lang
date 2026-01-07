@@ -184,12 +184,6 @@ class CompiledTTNNKernel:
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
-        # Build TensorAccessorArgs config for each tensor
-        tensor_accessor_args = []
-        for tensor in args:
-            tensor_args = ttnn.TensorAccessorArgs(tensor).get_compile_time_args()
-            tensor_accessor_args.extend(tensor_args)
-
         # Build kernel descriptors with current tensor addresses
         kernel_descriptors = []
 
@@ -210,11 +204,18 @@ class CompiledTTNNKernel:
             cb_indices = list(range(len(args)))
 
             # Compute kernels only need CB indices
-            # DM kernels need CB indices + TensorAccessorArgs config
+            # DM kernels need CB indices + TensorAccessorArgs config for ONLY the tensors this dm function uses
             if thread_type == "compute":
                 kernel_compile_time_args = cb_indices
             else:
-                kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
+                # Build TensorAccessorArgs config only for tensors this dm function uses
+                kernel_tensor_accessor_args = []
+                for tensor_idx in tensor_indices:
+                    tensor_args = ttnn.TensorAccessorArgs(
+                        args[tensor_idx]
+                    ).get_compile_time_args()
+                    kernel_tensor_accessor_args.extend(tensor_args)
+                kernel_compile_time_args = cb_indices + kernel_tensor_accessor_args
 
             kernel_desc = ttnn.KernelDescriptor(
                 kernel_source=kernel_path,
@@ -728,6 +729,9 @@ def _compile_and_run_kernel(
 
         # Update base_cta_index on all threads now that we know total CB count.
         # CB indices occupy [0, num_cbs-1], so TensorAccessorArgs cta indices start at num_cbs.
+        # All threads share the same base because each thread gets per-thread compile_time_args
+        # with TensorAccessorArgs config for only the tensors that thread uses (built in __call__).
+        # The C++ lowering uses simple local indexing: base + 0, base + 1, etc.
         total_cbs = get_cb_count()
         for ct in compiled_threads:
             ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(

@@ -93,6 +93,15 @@ class CompilerContext:
     tiled: bool
 
 
+@dataclass
+class TensorArgInfo:
+    """Metadata for a tensor function argument."""
+
+    name: str
+    global_index: int
+    arg_type: Type  # MLIR type
+
+
 class TTLGenericCompiler(TTCompilerBase):
     """Compiler that generates TTL dialect ops from Python AST."""
 
@@ -204,9 +213,7 @@ class TTLGenericCompiler(TTCompilerBase):
             )
 
         # Collect tensor captures for function arguments
-        self._tensor_accessor_names = []
-        self._tensor_accessor_global_indices = []
-        func_arg_types = []
+        all_tensor_args = []
         for name, val in self.captures.items():
             if is_ttnn_tensor(val):
                 tensor_type = _build_tensor_type(
@@ -216,28 +223,25 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.context.tiled,
                     self.context.memory_space,
                 )
-                self._tensor_accessor_names.append(name)
-                self._tensor_accessor_global_indices.append(
-                    get_tensor_global_index(val)
+                all_tensor_args.append(
+                    TensorArgInfo(
+                        name=name,
+                        global_index=get_tensor_global_index(val),
+                        arg_type=tensor_type,
+                    )
                 )
-                func_arg_types.append(tensor_type)
 
         # Collect which tensors are actually used in the function body
-        used_tensors = self._collect_used_tensor_names(node)
+        tensor_names = {arg.name for arg in all_tensor_args}
+        used_tensors = self._collect_used_tensor_names(node, tensor_names)
 
-        # Now filter to only used tensors and create the actual function.
-        # This ensures only captured tensors that are actually referenced in the
-        # thread function body become function arguments for TensorAccessor materialization.
-        filtered_names = []
-        filtered_arg_types = []
-        filtered_indices = []  # Track original indices for mapping
-        for i, tensor_name in enumerate(self._tensor_accessor_names):
-            if tensor_name in used_tensors:
-                filtered_names.append(tensor_name)
-                filtered_arg_types.append(func_arg_types[i])
-                filtered_indices.append(i)
+        # Filter to only used tensors
+        filtered_tensor_args = [
+            arg for arg in all_tensor_args if arg.name in used_tensors
+        ]
 
         # Create the actual function with only used tensor arguments
+        filtered_arg_types = [arg.arg_type for arg in filtered_tensor_args]
         self.func_entry = func.FuncOp(name=node.name, type=(filtered_arg_types, []))
 
         # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
@@ -258,10 +262,11 @@ class TTLGenericCompiler(TTCompilerBase):
         # Emit function body with filtered tensor arguments
         with InsertionPoint(func_bb):
             # Map filtered TensorAccessor function arguments to symbol table
-            for filtered_idx, orig_idx in enumerate(filtered_indices):
-                name = self._tensor_accessor_names[orig_idx]
-                self.symbol_tables[-1][name] = func_bb.arguments[filtered_idx]
-                self.streams.add(name)
+            for filtered_idx, tensor_arg in enumerate(filtered_tensor_args):
+                self.symbol_tables[-1][tensor_arg.name] = func_bb.arguments[
+                    filtered_idx
+                ]
+                self.streams.add(tensor_arg.name)
 
             # Prepopulate other captures (non-tensor)
             from ..circular_buffer import CircularBuffer
@@ -289,9 +294,10 @@ class TTLGenericCompiler(TTCompilerBase):
 
         self.symbol_tables.pop()
 
-        # Update _tensor_accessor_global_indices to only include filtered tensors
+        # Store filtered tensor metadata for use in ttl_api.py
+        # (accessed via ct._tensor_accessor_global_indices in ttl_api.py:722)
         self._tensor_accessor_global_indices = [
-            self._tensor_accessor_global_indices[i] for i in filtered_indices
+            arg.global_index for arg in filtered_tensor_args
         ]
 
         # Note: base_cta_index is set later in ttl_api.py after all threads are
@@ -305,14 +311,17 @@ class TTLGenericCompiler(TTCompilerBase):
         with self._loc_for_node(node):
             return self._emit_entry(node)
 
-    def _collect_used_tensor_names(self, node) -> Set[str]:
+    def _collect_used_tensor_names(self, node, tensor_names: Set[str]) -> Set[str]:
         """
         Collect tensor names actually referenced in the function body via pure AST analysis.
 
-        Returns set of tensor names that appear as ast.Name nodes in the function body.
-        This avoids emitting throwaway MLIR just to detect which tensors are used.
+        Args:
+            node: AST FunctionDef node to analyze
+            tensor_names: Set of tensor names to look for (available captures)
+
+        Returns:
+            Set of tensor names actually referenced in the function body.
         """
-        tensor_names = set(self._tensor_accessor_names)
         used = set()
 
         class NameCollector(ast.NodeVisitor):

@@ -38,11 +38,8 @@ def apply_tensor_filtering(compiler, code: str, available_tensors: set) -> set:
     func_node = tree.body[0]
     assert isinstance(func_node, ast.FunctionDef)
 
-    # Set up the tensor names that would be captured
-    compiler._tensor_accessor_names = list(available_tensors)
-
     # Call the actual method we're testing
-    result = compiler._collect_used_tensor_names(func_node)
+    result = compiler._collect_used_tensor_names(func_node, available_tensors)
 
     return result
 
@@ -299,6 +296,34 @@ def middle_kernel():
 """
     available = {"a", "b", "c", "d", "e", "f", "g"}
     expected = {"c", "d", "e"}
+
+    result = apply_tensor_filtering(compiler, code, available)
+    assert result == expected
+
+
+def test_first_and_second_from_three(compiler):
+    """First thread uses x and y, validates correct indices."""
+    code = """
+def thread_fn():
+    copy(x[0, 0], cb0)
+    copy(y[0, 0], cb1)
+"""
+    available = {"x", "y", "z"}
+    expected = {"x", "y"}
+
+    result = apply_tensor_filtering(compiler, code, available)
+    assert result == expected
+
+
+def test_first_and_third_from_three(compiler):
+    """Second thread uses x and z, skipping y in the middle."""
+    code = """
+def thread_fn():
+    copy(x[0, 0], cb0)
+    copy(z[0, 0], cb1)
+"""
+    available = {"x", "y", "z"}
+    expected = {"x", "z"}
 
     result = apply_tensor_filtering(compiler, code, available)
     assert result == expected
