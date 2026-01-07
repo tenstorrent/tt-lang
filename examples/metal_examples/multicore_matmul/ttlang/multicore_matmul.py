@@ -6,10 +6,11 @@ import ttnn
 import pytest
 import torch
 
+import ttl
 from ttl import Program, make_circular_buffer_like, copy
 
-from ttlang.utils.correctness import assert_with_ulp
-from ttlang.utils.block_allocation import split_work_to_cores
+from utils.correctness import assert_with_ulp
+from utils.block_allocation import split_work_to_cores
 
 
 def get_number_of_cores(grid_range):
@@ -39,8 +40,8 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out, shape=(1, 1), buffer_factor=buffering_factor
     )
 
-    print(f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}")
-    (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+    print(f"num_output_tiles_total: {num_output_tiles_total}")
+    (all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
         split_work_to_cores(
             ttl.grid_size(dims=2), num_output_tiles_total, row_wise=True
         )
@@ -127,3 +128,8 @@ def test_multicore_matmul_tt_lang(M, K, N):
     assert_with_ulp(golden, result)
 
     ttnn.close_device(device)
+
+
+if __name__ == "__main__":
+    test_multicore_matmul_tt_lang(256, 256, 256)
+    print("Multicore matmul tt-lang test passed.")

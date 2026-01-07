@@ -5,7 +5,7 @@ import ttnn
 import pytest
 import torch
 
-from ttlang.utils.correctness import assert_with_ulp
+from utils.correctness import assert_with_ulp
 
 
 # (M * N) % (32 *32) == 0 for this implemention

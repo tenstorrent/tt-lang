@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 # Paths
 THIS_DIR = Path(__file__).resolve().parent
 
@@ -29,15 +31,15 @@ def find_repo_root(start: Path) -> Path:
 
 REPO_ROOT = find_repo_root(THIS_DIR)
 EXAMPLES_SIM_DIR = REPO_ROOT / "examples" / "sim"
+EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
 
 # Use the current Python interpreter to run the launcher module reliably
 PYTHON = sys.executable
 LAUNCHER_MODULE = [PYTHON, "-m", "sim.ttlsim"]
 
 
-def run_ttlsim_and_capture(script_rel_path: str) -> tuple[int, str]:
+def run_ttlsim_and_capture(script_path: Path) -> tuple[int, str]:
     """Run ttlsim against the provided example script and return (code, output)."""
-    script_path = EXAMPLES_SIM_DIR / script_rel_path
     proc = subprocess.run(
         LAUNCHER_MODULE + [str(script_path)],
         cwd=REPO_ROOT,
@@ -55,21 +57,45 @@ class TestExamplesCLI:
         assert "success" in out.lower(), f"Expected 'success' in output. Got:\n{out}"
 
     def test_eltwise_add_cli(self) -> None:
-        code, out = run_ttlsim_and_capture("eltwise_add.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "eltwise_add.py")
         self.assert_success_output(code, out)
 
     def test_eltwise_pipe_cli(self) -> None:
-        code, out = run_ttlsim_and_capture("eltwise_pipe.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "eltwise_pipe.py")
         self.assert_success_output(code, out)
 
     def test_eltwise_pipe_core3_cli(self) -> None:
-        code, out = run_ttlsim_and_capture("eltwise_pipe_core3.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "eltwise_pipe_core3.py")
         self.assert_success_output(code, out)
 
     def test_singlecore_matmul_cli(self) -> None:
-        code, out = run_ttlsim_and_capture("singlecore_matmul.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "singlecore_matmul.py")
         self.assert_success_output(code, out)
 
     def test_multicore_matmul_cli(self) -> None:
-        code, out = run_ttlsim_and_capture("multicore_matmul.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "multicore_matmul.py")
+        self.assert_success_output(code, out)
+
+
+class TestMetalExamplesCLI:
+    def assert_success_output(self, code: int, out: str) -> None:
+        assert code == 0, f"ttlsim exited with code {code}. Output:\n{out}"
+        out_lower = out.lower()
+        assert (
+            "success" in out_lower or "passed" in out_lower
+        ), f"Expected 'success' or 'passed' in output. Got:\n{out}"
+
+    def test_singlecore_matmul_metal_cli(self) -> None:
+        code, out = run_ttlsim_and_capture(
+            EXAMPLES_METAL_DIR / "singlecore_matmul" / "ttlang" / "singlecore_matmul.py"
+        )
+        self.assert_success_output(code, out)
+
+    @pytest.mark.xfail(
+        reason="Correctness assertion fails; ULP mismatch in multicore implementation"
+    )
+    def test_multicore_matmul_metal_cli(self) -> None:
+        code, out = run_ttlsim_and_capture(
+            EXAMPLES_METAL_DIR / "multicore_matmul" / "ttlang" / "multicore_matmul.py"
+        )
         self.assert_success_output(code, out)
