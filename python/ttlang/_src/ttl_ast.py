@@ -231,13 +231,8 @@ class TTLGenericCompiler(TTCompilerBase):
         thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
         self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
 
-        # Set base CTA index for TensorAccessorArgs chaining.
-        # CB indices occupy [0, num_cbs-1], so TensorAccessorArgs start at num_cbs.
-        # Use the thread-local CB count from _cb_info.
-        base_cta_index = len(self._cb_info)
-        self.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
-            IntegerType.get_signless(32), base_cta_index
-        )
+        # Note: base_cta_index is set later in ttl_api.py after all threads are
+        # compiled and we know the total kernel-level CB count.
 
         self.symbol_tables.append({})
         func_bb = self.func_entry.add_entry_block()

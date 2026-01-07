@@ -29,8 +29,8 @@ def _next_cb_index():
     return idx
 
 
-def _get_cb_count():
-    """Get current total CB count."""
+def get_cb_count():
+    """Get current total CB count (kernel-scope)."""
     return _cb_index_counter
 
 

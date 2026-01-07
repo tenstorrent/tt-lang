@@ -669,7 +669,7 @@ def _compile_and_run_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    from .circular_buffer import _reset_cb_counter, _get_cb_count
+    from .circular_buffer import _reset_cb_counter, get_cb_count
 
     _reset_cb_counter()
     program = f(*args, **kwargs)
@@ -729,7 +729,7 @@ def _compile_and_run_kernel(
 
         # Update base_cta_index on all threads now that we know total CB count.
         # CB indices occupy [0, num_cbs-1], so TensorAccessorArgs start at num_cbs.
-        total_cbs = _get_cb_count()
+        total_cbs = get_cb_count()
         for ct in compiled_threads:
             ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
                 IntegerType.get_signless(32), total_cbs
