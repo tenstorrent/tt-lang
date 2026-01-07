@@ -165,23 +165,31 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
-# Accessors materialized at function entry with chaining
-# CHECK-CPP: auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC1_ARGS]],
-# CHECK-CPP: auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ACC1_ARGS]].next_compile_time_args_offset(), [[ACC1_ARGS]].next_common_runtime_args_offset()>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor([[ACC2_ARGS]],
+# Variable declarations at function entry
+# CHECK-CPP: int32_t [[TILE_IDX:v[0-9]+]] = 0;
 
-# First input: reserve CB, read tile, push CB
+# Accessors materialized at function entry
+# Base CTA index is 3 (total number of CBs in the kernel: lhs_cb, rhs_cb, out_cb)
+# First accessor uses base index (3) and runtime offset 0
+# CHECK-CPP: int32_t [[BANK_0:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
+# CHECK-CPP: auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 0>();
+# CHECK-CPP: TensorAccessor [[TA1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[BANK_0]],
+# Second accessor uses incremented indices (base+1, runtime+1)
+# CHECK-CPP: int32_t [[BANK_1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
+# CHECK-CPP: auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<4, 1>();
+# CHECK-CPP: TensorAccessor [[TA2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[BANK_1]],
+
+# First input: reserve CB, read tile using TA1, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
-# CHECK-CPP: get_write_ptr(get_compile_time_arg_val(0))
-# CHECK-CPP: noc_async_read_tile(
+# CHECK-CPP: int32_t [[PTR_0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0))
+# CHECK-CPP: noc_async_read_tile([[TILE_IDX]], [[TA1]], [[PTR_0]]);
 # CHECK-CPP: noc_async_read_barrier();
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(0),
 
-# Second input: reserve CB, read tile, push CB
+# Second input: reserve CB, read tile using TA2, push CB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
-# CHECK-CPP: get_write_ptr(get_compile_time_arg_val(1))
-# CHECK-CPP: noc_async_read_tile(
+# CHECK-CPP: int32_t [[PTR_1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1))
+# CHECK-CPP: noc_async_read_tile([[TILE_IDX]], [[TA2]], [[PTR_1]]);
 # CHECK-CPP: noc_async_read_barrier();
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(1),
 
