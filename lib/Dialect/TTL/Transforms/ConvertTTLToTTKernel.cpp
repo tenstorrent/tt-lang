@@ -618,18 +618,20 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     auto tilesXVal = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
 
-    scf::buildLoopNest(
-        rewriter, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
-        ValueRange{one, one},
-        [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
-          // Compute linear tile offset: offset = iy * tilesX + ix
-          Value iy = ivs[0];
-          Value ix = ivs[1];
-          Value offsetY = b.create<arith::MulIOp>(bodyLoc, iy, tilesXVal);
-          Value offset = b.create<arith::AddIOp>(bodyLoc, offsetY, ix);
+    scf::buildLoopNest(rewriter, loc, ValueRange{zero, zero},
+                       ValueRange{yBound, xBound}, ValueRange{one, one},
+                       [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
+                         // Compute linear tile offset: offset = iy * tilesX +
+                         // ix
+                         Value iy = ivs[0];
+                         Value ix = ivs[1];
+                         Value offsetY =
+                             b.create<arith::MulIOp>(bodyLoc, iy, tilesXVal);
+                         Value offset =
+                             b.create<arith::AddIOp>(bodyLoc, offsetY, ix);
 
-          emitBody(b, bodyLoc, offset);
-        });
+                         emitBody(b, bodyLoc, offset);
+                       });
   } else {
     // Single tile: offset is always 0
     Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
@@ -688,8 +690,8 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
                  // Compute CB address: cbWritePtr + tileOffset * pageSize
                  Value byteOffset =
                      b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeIdx);
-                 Value cbAddrIdx =
-                     b.create<arith::AddIOp>(bodyLoc, cbWritePtrIdx, byteOffset);
+                 Value cbAddrIdx = b.create<arith::AddIOp>(
+                     bodyLoc, cbWritePtrIdx, byteOffset);
                  // Cast to i32 for NOC operation.
                  auto i32Ty = b.getI32Type();
                  Value tileOffset32 =
