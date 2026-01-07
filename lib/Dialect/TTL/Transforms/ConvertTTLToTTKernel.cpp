@@ -528,8 +528,7 @@ findTensorAccessor(Value tensor,
 /// in NOC kernels must be pre-materialized at function entry with proper
 /// chaining via materializeFunctionTensorAccessors().
 [[nodiscard]] static FailureOr<Value>
-materializeTensorAccessor(Value tensor, Value /*bankBase*/,
-                          ConversionPatternRewriter &rewriter,
+materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter,
                           const DenseMap<unsigned, Value> &tensorToAccessor) {
   auto existing = findTensorAccessor(tensor, tensorToAccessor);
   if (succeeded(existing)) {
@@ -612,16 +611,9 @@ lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
                 const DenseMap<unsigned, Value> &tensorToAccessor) {
   auto loc = op.getLoc();
 
-  // Get tensor L1 address from runtime args.
-  auto bankBase = getBufferAddressFromRuntimeArg(srcTensor, loc, rewriter);
-  if (failed(bankBase)) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
-  }
-
-  // Look up or create tensor accessor.
-  auto srcAccessor = materializeTensorAccessor(srcTensor, *bankBase, rewriter,
-                                               tensorToAccessor);
+  // Look up pre-materialized tensor accessor.
+  auto srcAccessor =
+      materializeTensorAccessor(srcTensor, rewriter, tensorToAccessor);
   if (failed(srcAccessor)) {
     return failure(); // Error already emitted by materializeTensorAccessor
   }
@@ -656,16 +648,9 @@ lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
                 const DenseMap<unsigned, Value> &tensorToAccessor) {
   auto loc = op.getLoc();
 
-  // Get tensor L1 address from runtime args.
-  auto bankBase = getBufferAddressFromRuntimeArg(dstTensor, loc, rewriter);
-  if (failed(bankBase)) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
-  }
-
-  // Look up or create tensor accessor.
-  auto dstAccessor = materializeTensorAccessor(dstTensor, *bankBase, rewriter,
-                                               tensorToAccessor);
+  // Look up pre-materialized tensor accessor.
+  auto dstAccessor =
+      materializeTensorAccessor(dstTensor, rewriter, tensorToAccessor);
   if (failed(dstAccessor)) {
     return failure(); // Error already emitted by materializeTensorAccessor
   }
@@ -1133,8 +1118,6 @@ struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
-    // Ensure TTKernel dialect is loaded before materializing TTKernel ops.
-    (void)ctx.getOrLoadDialect<ttk::TTKernelDialect>();
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 
