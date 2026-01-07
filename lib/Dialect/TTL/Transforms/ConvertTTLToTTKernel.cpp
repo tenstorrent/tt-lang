@@ -413,8 +413,8 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 static std::pair<Value, ttk::TensorAccessorArgsOp>
 buildTensorAccessorChained(Location loc, OpBuilder &builder,
                            ttk::TensorAccessorArgsOp prevAccessorArgs,
-                           int32_t baseCTAIndex, Value bankBase,
-                           Value pageSize) {
+                           int32_t baseCTAIndex, int32_t baseCRTAIndex,
+                           Value bankBase, Value pageSize) {
   ttk::TensorAccessorArgsOp argsOp;
 
   if (prevAccessorArgs) {
@@ -427,7 +427,8 @@ buildTensorAccessorChained(Location loc, OpBuilder &builder,
     // First accessor: use literal base offsets.
     Value ctaConst =
         builder.create<arith::ConstantIntOp>(loc, baseCTAIndex, 32);
-    Value crtaConst = builder.create<arith::ConstantIntOp>(loc, 0, 32);
+    Value crtaConst =
+        builder.create<arith::ConstantIntOp>(loc, baseCRTAIndex, 32);
     argsOp = builder.create<ttk::TensorAccessorArgsOp>(
         loc, ctaConst, crtaConst, /*prev_args=*/Value(),
         /*cta_expr=*/StringAttr(), /*crta_expr=*/StringAttr());
@@ -458,6 +459,10 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
     return tensorToAccessor;
   }
   int32_t baseCTA = baseCTAAttr.getInt();
+
+  // Read base CRTA index from function attribute, default to 0 if not present.
+  auto baseCRTAAttr = funcOp->getAttrOfType<IntegerAttr>("ttl.base_crta_index");
+  int32_t baseCRTA = baseCRTAAttr ? baseCRTAAttr.getInt() : 0;
 
   // Set insertion point at function entry, preserving previous insertion point.
   OpBuilder::InsertionGuard guard(builder);
@@ -496,7 +501,7 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
 
     // Materialize accessor with chaining.
     auto [accessor, argsOp] = buildTensorAccessorChained(
-        loc, builder, prevAccessorArgs, baseCTA, *bankBase, pageSize);
+        loc, builder, prevAccessorArgs, baseCTA, baseCRTA, *bankBase, pageSize);
 
     tensorToAccessor[argIdx] = accessor;
     prevAccessorArgs = argsOp; // Chain next accessor from this one.
