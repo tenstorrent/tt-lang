@@ -14,7 +14,6 @@ from ttlang.utils.block_allocation import split_work_to_cores, get_large_matmul_
 ttnn = pytest.importorskip("ttnn")
 
 
-
 def extract_coords_from_ttnn_corerangeset(core_range_set):
     """Extract all start and end coordinates from a ttnn CoreRangeSet"""
     if not core_range_set.ranges():
