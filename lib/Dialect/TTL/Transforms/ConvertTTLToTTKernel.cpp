@@ -436,12 +436,14 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
     return op->emitError("operation must be inside a function");
   }
 
-  auto baseCTAAttr = parentFunc->getAttrOfType<IntegerAttr>("ttl.base_cta_index");
+  auto baseCTAAttr =
+      parentFunc->getAttrOfType<IntegerAttr>("ttl.base_cta_index");
   if (!baseCTAAttr) {
     return op->emitError("function missing ttl.base_cta_index attribute");
   }
 
-  auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>("ttl.crta_indices");
+  auto crtaIndicesAttr =
+      parentFunc->getAttrOfType<ArrayAttr>("ttl.crta_indices");
   if (!crtaIndicesAttr) {
     return op->emitError("function missing ttl.crta_indices attribute");
   }
@@ -517,8 +519,8 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
 
   auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, *ctaIndex, crtaIndex,
-                             bankBase, pageSize);
+  return buildTensorAccessor(loc, rewriter, *ctaIndex, crtaIndex, bankBase,
+                             pageSize);
 }
 
 static std::pair<int64_t, int64_t>

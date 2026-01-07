@@ -717,7 +717,10 @@ def _compile_and_run_kernel(
             )
             crta_indices = ct._tensor_accessor_global_indices
             ct.func_entry.attributes["ttl.crta_indices"] = ArrayAttr.get(
-                [IntegerAttr.get(IntegerType.get_signless(64, ctx), idx) for idx in crta_indices],
+                [
+                    IntegerAttr.get(IntegerType.get_signless(64, ctx), idx)
+                    for idx in crta_indices
+                ],
                 ctx,
             )
 
