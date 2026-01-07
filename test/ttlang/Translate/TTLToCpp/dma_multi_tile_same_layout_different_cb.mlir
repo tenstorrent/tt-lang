@@ -61,7 +61,7 @@
 
 module {
   func.func @same_layout_different_cb(%arg0: tensor<64x64xf32, #layout>, %arg1: tensor<64x64xf32, #layout>)
-      attributes {ttl.base_cta_index = 2 : i64, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
+      attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb1 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
     %cb2 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[4, 1], f32, 2>
 

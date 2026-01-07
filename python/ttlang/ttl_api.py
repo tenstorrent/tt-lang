@@ -713,12 +713,12 @@ def _compile_and_run_kernel(
             # Set TensorAccessor indexing attributes for C++ lowering
             base_cta = get_cb_count()
             ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
-                IntegerType.get_signless(64, ctx), base_cta
+                IntegerType.get_signless(32, ctx), base_cta
             )
             crta_indices = ct._tensor_accessor_global_indices
             ct.func_entry.attributes["ttl.crta_indices"] = ArrayAttr.get(
                 [
-                    IntegerAttr.get(IntegerType.get_signless(64, ctx), idx)
+                    IntegerAttr.get(IntegerType.get_signless(32, ctx), idx)
                     for idx in crta_indices
                 ],
                 ctx,

@@ -35,7 +35,7 @@
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
-  func.func @dma_pipelined_loop(%t: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i64, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @dma_pipelined_loop(%t: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c3 = arith.constant 3 : index

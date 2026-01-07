@@ -47,7 +47,7 @@
 
 // Reader kernel: reads A and B from DRAM, pushes to CB0 and CB1
 func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #layout>)
-    attributes {ttl.base_cta_index = 2 : i64, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
+    attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
 
@@ -129,7 +129,7 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                          %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    attributes {ttl.base_cta_index = 3 : i64, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+    attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %output = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
@@ -184,7 +184,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Writer kernel: pops from CB2, writes to DRAM
 func.func @writer_unary(%out: tensor<64x64xf32, #layout>)
-    attributes {ttl.base_cta_index = 1 : i64, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+    attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
 
   // Wait for data from compute thread (must match CB shape)
