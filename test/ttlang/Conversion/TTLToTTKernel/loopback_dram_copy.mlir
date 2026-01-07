@@ -25,7 +25,7 @@
 module {
   func.func @loopback_dram_copy(%src: tensor<32x32xf32, #layout>,
                                 %dst: tensor<32x32xf32, #layout>)
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+      attributes {ttl.base_cta_index = 1 : i64, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c4 = arith.constant 4 : index
