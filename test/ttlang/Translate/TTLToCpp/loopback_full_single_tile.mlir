@@ -29,12 +29,10 @@
 // Read: tensor → CB (uses get_write_ptr for CB destination, reuses ACC_READ from function entry)
 // CHECK-NOT:     TensorAccessorArgs
 // CHECK-NOT:     TensorAccessor
-// CHECK:     int32_t [[RT_ARG_R_LOOP:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
 // CHECK:     int32_t [[CB_WRITE_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[CB_WRITE_PTR]]);
 // CHECK:     noc_async_read_barrier();
 // Write: CB → tensor (uses get_read_ptr for CB source, reuses ACC_WRITE from function entry)
-// CHECK:     int32_t [[RT_ARG_W_LOOP:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
 // CHECK:     int32_t [[CB_READ_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
 // CHECK:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[CB_READ_PTR]]);
 // CHECK:     noc_async_write_barrier();

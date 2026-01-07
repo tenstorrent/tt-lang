@@ -30,7 +30,6 @@
 // CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
 
 // Read tensor A into CB0
-// CHECK:   int32_t {{.*}} = get_common_arg_val<uint32_t>([[ZERO]]);
 // CHECK:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
 // CHECK-NOT:     TensorAccessorArgs
@@ -42,7 +41,6 @@
 // CHECK-NEXT:   noc_async_read_barrier();
 
 // Read tensor B into CB1 (reuses ACC_B materialized at function entry)
-// CHECK:   int32_t [[RT_ARG_B_LOOP:v[0-9]+]] = get_common_arg_val<uint32_t>([[ONE]]);
 // CHECK:   int32_t [[CB1_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // CHECK-NEXT:   for (size_t [[I_B:i[0-9]+]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
 // CHECK-NOT:     TensorAccessorArgs

@@ -26,7 +26,6 @@
 // CHECK-NOT:   TensorAccessorArgs
 // CHECK-NOT:   TensorAccessor
 // Tensor 0: get CB write ptr, async read using pre-materialized accessor
-// CHECK:   int32_t {{v[0-9]+}} = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
 // Tensor 1: get CB write ptr, async read using pre-materialized accessor

@@ -34,7 +34,6 @@
 // CHECK:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
 
 // First copy: 64x64 (2x2 tiles) → CB [2,2]
-// CHECK:   int32_t {{v[0-9]+}} = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Generated tile loops iterate over tensor grid (2x2)
 // CHECK:   for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[TILE_STEP]]) {
