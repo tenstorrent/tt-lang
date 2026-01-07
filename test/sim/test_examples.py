@@ -5,7 +5,7 @@
 # TODO: This could probably be done better with lit tests
 """CLI tests that invoke ttlsim for simulator examples.
 
-Runs the ttlsim launcher against each script under examples/sim and verifies
+Runs the ttlsim launcher against each script under examples/ and verifies
 that the output indicates success.
 """
 
@@ -23,14 +23,14 @@ THIS_DIR = Path(__file__).resolve().parent
 
 def find_repo_root(start: Path) -> Path:
     for p in [start] + list(start.parents):
-        if (p / "examples" / "sim").exists() and (p / "python" / "sim").exists():
+        if (p / "examples").exists() and (p / "python" / "sim").exists():
             return p
-    # Fallback: assume three levels up
-    return start.parent.parent.parent
+    # Fallback: assume repo root is the parent of tests
+    return start.parent
 
 
 REPO_ROOT = find_repo_root(THIS_DIR)
-EXAMPLES_SIM_DIR = REPO_ROOT / "examples" / "sim"
+EXAMPLES_DIR = REPO_ROOT / "examples"
 EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
 
 # Use the current Python interpreter to run the launcher module reliably
@@ -57,23 +57,23 @@ class TestExamplesCLI:
         assert "success" in out.lower(), f"Expected 'success' in output. Got:\n{out}"
 
     def test_eltwise_add_cli(self) -> None:
-        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "eltwise_add.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "eltwise_add.py")
         self.assert_success_output(code, out)
 
     def test_eltwise_pipe_cli(self) -> None:
-        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "eltwise_pipe.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "eltwise_pipe.py")
         self.assert_success_output(code, out)
 
     def test_eltwise_pipe_core3_cli(self) -> None:
-        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "eltwise_pipe_core3.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "eltwise_pipe_core3.py")
         self.assert_success_output(code, out)
 
     def test_singlecore_matmul_cli(self) -> None:
-        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "singlecore_matmul.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "singlecore_matmul.py")
         self.assert_success_output(code, out)
 
     def test_multicore_matmul_cli(self) -> None:
-        code, out = run_ttlsim_and_capture(EXAMPLES_SIM_DIR / "multicore_matmul.py")
+        code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "multicore_matmul.py")
         self.assert_success_output(code, out)
 
 
