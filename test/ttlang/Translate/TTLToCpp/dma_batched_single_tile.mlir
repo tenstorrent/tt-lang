@@ -18,9 +18,9 @@
 // First accessor uses literal base CTA index = num_cbs = 2
 // CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
-// Second accessor chains from first
+// Second accessor uses simple index offset
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
-// CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ARGS0]].next_compile_time_args_offset(), [[ARGS0]].next_common_runtime_args_offset()>();
+// CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
 // No more accessor creation after function entry
 // CHECK-NOT:   TensorAccessorArgs

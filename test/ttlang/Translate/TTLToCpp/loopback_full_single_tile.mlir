@@ -16,14 +16,14 @@
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[UB:v[0-9]+]] = 4;
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
-// Accessors materialized at function entry with chaining
+// Accessors materialized at function entry with simple index offsets
 // CHECK:   int32_t [[RT_ARG_R:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
 // First accessor uses literal base CTA index = num_cbs = 1
 // CHECK:   auto [[ARGS_READ:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK:   TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[RT_ARG_R]], [[ADDR]]);
-// Second accessor chains from first
+// Second accessor uses simple index offset: base CTA + 1 = 2, base CRTA + 1 = 1
 // CHECK:   int32_t [[RT_ARG_W:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
-// CHECK:   auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ARGS_READ]].next_compile_time_args_offset(), [[ARGS_READ]].next_common_runtime_args_offset()>();
+// CHECK:   auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 1>();
 // CHECK:   TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[RT_ARG_W]], [[ADDR]]);
 // CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
 // Read: tensor → CB (uses get_write_ptr for CB destination, reuses ACC_READ from function entry)

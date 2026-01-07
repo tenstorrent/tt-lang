@@ -406,41 +406,27 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
-/// Build a TensorAccessor with chaining from a previous TensorAccessorArgsOp.
-/// For the first accessor in a function, prevAccessorArgs should be nullptr.
-/// Returns both the TensorAccessor value and its TensorAccessorArgsOp for
-/// chaining subsequent accessors.
-static std::pair<Value, ttk::TensorAccessorArgsOp>
-buildTensorAccessorChained(Location loc, OpBuilder &builder,
-                           ttk::TensorAccessorArgsOp prevAccessorArgs,
-                           int32_t baseCTAIndex, int32_t baseCRTAIndex,
-                           Value bankBase, Value pageSize) {
-  ttk::TensorAccessorArgsOp argsOp;
-
-  if (prevAccessorArgs) {
-    // Chain from previous accessor using prev_args operand.
-    argsOp = builder.create<ttk::TensorAccessorArgsOp>(
-        loc, /*cta_base=*/Value(), /*crta_base=*/Value(),
-        /*prev_args=*/prevAccessorArgs.getResult(),
-        /*cta_expr=*/StringAttr(), /*crta_expr=*/StringAttr());
-  } else {
-    // First accessor: use literal base offsets.
-    Value ctaConst =
-        builder.create<arith::ConstantIntOp>(loc, baseCTAIndex, 32);
-    Value crtaConst =
-        builder.create<arith::ConstantIntOp>(loc, baseCRTAIndex, 32);
-    argsOp = builder.create<ttk::TensorAccessorArgsOp>(
-        loc, ctaConst, crtaConst, /*prev_args=*/Value(),
-        /*cta_expr=*/StringAttr(), /*crta_expr=*/StringAttr());
-  }
+/// Build a TensorAccessor using simple index offsets.
+/// Each accessor uses baseCTA + accessorIndex and baseCRTA + accessorIndex.
+/// Returns the TensorAccessor value.
+static Value
+buildTensorAccessor(Location loc, OpBuilder &builder, int32_t ctaIndex,
+                    int32_t crtaIndex, Value bankBase, Value pageSize) {
+  Value ctaConst =
+      builder.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  Value crtaConst =
+      builder.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
+  auto argsOp = builder.create<ttk::TensorAccessorArgsOp>(
+      loc, ctaConst, crtaConst, /*prev_args=*/Value(),
+      /*cta_expr=*/StringAttr(), /*crta_expr=*/StringAttr());
 
   auto accessor = builder.create<ttk::TensorAccessorOp>(loc, argsOp.getResult(),
                                                         bankBase, pageSize);
-  return {accessor.getResult(), argsOp};
+  return accessor.getResult();
 }
 
 /// Pre-materialize tensor accessors for all tensor function arguments in NOC
-/// kernels. Accessors are created at function entry with proper chaining.
+/// kernels. Accessors are created at function entry with simple index offsets.
 /// Returns a map from function argument index to the materialized accessor.
 static DenseMap<unsigned, Value>
 materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
@@ -459,10 +445,7 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
     return tensorToAccessor;
   }
   int32_t baseCTA = baseCTAAttr.getInt();
-
-  // Read base CRTA index from function attribute, default to 0 if not present.
-  auto baseCRTAAttr = funcOp->getAttrOfType<IntegerAttr>("ttl.base_crta_index");
-  int32_t baseCRTA = baseCRTAAttr ? baseCRTAAttr.getInt() : 0;
+  int32_t baseCRTA = 0; // CRTA index always starts at 0 per thread
 
   // Set insertion point at function entry, preserving previous insertion point.
   OpBuilder::InsertionGuard guard(builder);
@@ -470,8 +453,9 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
   builder.setInsertionPointToStart(&entryBlock);
   Location loc = funcOp.getLoc();
 
-  // Materialize accessors for all tensor arguments in order, with chaining.
-  ttk::TensorAccessorArgsOp prevAccessorArgs = nullptr;
+  // Materialize accessors for tensor arguments with simple index offsets.
+  // All function arguments are pre-filtered in Python to only include used tensors.
+  unsigned accessorIndex = 0;
 
   for (auto [argIdx, arg] : llvm::enumerate(funcOp.getArguments())) {
     auto tensorTy = llvm::dyn_cast<RankedTensorType>(arg.getType());
@@ -499,12 +483,13 @@ materializeFunctionTensorAccessors(func::FuncOp funcOp, OpBuilder &builder) {
     auto pageSize =
         builder.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
-    // Materialize accessor with chaining.
-    auto [accessor, argsOp] = buildTensorAccessorChained(
-        loc, builder, prevAccessorArgs, baseCTA, baseCRTA, *bankBase, pageSize);
+    // Materialize accessor with simple index offsets.
+    Value accessor = buildTensorAccessor(
+        loc, builder, baseCTA + accessorIndex, baseCRTA + accessorIndex,
+        *bankBase, pageSize);
 
     tensorToAccessor[argIdx] = accessor;
-    prevAccessorArgs = argsOp; // Chain next accessor from this one.
+    accessorIndex++;
   }
 
   return tensorToAccessor;
@@ -530,8 +515,8 @@ findTensorAccessor(Value tensor,
 
 /// Look up a pre-materialized TensorAccessor for the given tensor value.
 /// Returns failure if no pre-materialized accessor exists. All tensor accessors
-/// in NOC kernels must be pre-materialized at function entry with proper
-/// chaining via materializeFunctionTensorAccessors().
+/// in NOC kernels must be pre-materialized at function entry via
+/// materializeFunctionTensorAccessors().
 [[nodiscard]] static FailureOr<Value>
 materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter,
                           const DenseMap<unsigned, Value> &tensorToAccessor) {
@@ -540,15 +525,14 @@ materializeTensorAccessor(Value tensor, ConversionPatternRewriter &rewriter,
     return *existing;
   }
 
-  // No pre-materialized accessor found. This indicates either:
-  // 1. The function is missing the ttl.base_cta_index attribute
-  // 2. The tensor is not a function argument with TTNN layout encoding
-  // 3. materializeFunctionTensorAccessors() was not called
+  // No pre-materialized accessor found. This can happen if:
+  // 1. The tensor is not a function argument (not captured by the thread)
+  // 2. The tensor doesn't have TTNN layout encoding
+  // 3. The parent function is not a NOC (data movement) kernel
   return rewriter.notifyMatchFailure(
       tensor.getLoc(),
-      "no pre-materialized tensor accessor found; ensure the parent function "
-      "has the 'ttl.base_cta_index' attribute and the tensor is a function "
-      "argument with TTNN layout encoding");
+      "no pre-materialized tensor accessor found; this tensor may not be "
+      "captured by the thread function or may not be marked as used");
 }
 
 static std::pair<int64_t, int64_t>

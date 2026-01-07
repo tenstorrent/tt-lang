@@ -18,9 +18,9 @@
 // CHECK-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_A:v[0-9]+]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]], [[TILE_SIZE:v[0-9]+]]);
 
-// Second tensor accessor - chains from first using .next_compile_time_args_offset()
+// Second tensor accessor - uses simple index offset
 // CHECK-NEXT:   int32_t [[RT_ARG_B:v[0-9]+]] = get_common_arg_val<uint32_t>([[IDX_B:v[0-9]+]]);
-// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ARGS_A]].next_compile_time_args_offset(), [[ARGS_A]].next_common_runtime_args_offset()>();
+// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACC_B:v[0-9]+]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]], [[TILE_SIZE]]);
 
 // Read first tensor

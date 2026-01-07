@@ -38,14 +38,14 @@
 // CHECK-DAG:   size_t [[TILE_STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 4;
 // CHECK-DAG:   size_t [[TILE_LB:v[0-9]+]] = 0;
-// Accessors materialized at function entry with chaining
+// Accessors materialized at function entry with simple index offsets
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
 // First accessor uses literal base CTA index = num_cbs = 2
 // CHECK:   auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
-// Second accessor chains from first
+// Second accessor uses simple index offset
 // CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
-// CHECK:   auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ACC1_ARGS]].next_compile_time_args_offset(), [[ACC1_ARGS]].next_common_runtime_args_offset()>();
+// CHECK:   auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[TILE_LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[TILE_STEP]]) {
 // First copy: arg0 (64x64) → CB0, uses pre-materialized accessor ACC1

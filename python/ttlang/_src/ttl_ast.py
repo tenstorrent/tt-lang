@@ -224,18 +224,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 )
                 func_arg_types.append(tensor_type)
 
-        self.func_entry = func.FuncOp(name=node.name, type=(func_arg_types, []))
-
-        # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
-        thread_type = get_thread_type_string(self.kernel_type)
-        thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
-        self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
-
-        # Note: base_cta_index is set later in ttl_api.py after all threads are
-        # compiled and we know the total kernel-level CB count.
-
+        # Create temporary function to collect used tensor names during body visit.
+        # This will be discarded and recreated with only used tensors.
+        temp_func = func.FuncOp(name=node.name, type=(func_arg_types, []))
         self.symbol_tables.append({})
-        func_bb = self.func_entry.add_entry_block()
+        temp_bb = temp_func.add_entry_block()
 
         # Add ttl module to symbol table
         self.symbol_tables[-1]["ttl"] = ttl
@@ -245,11 +238,11 @@ class TTLGenericCompiler(TTCompilerBase):
 
         self.module_symbol_table = SymbolTable(self.module.operation)
 
-        # Emit function body
-        with InsertionPoint(func_bb):
+        # Emit function body to collect which tensors are actually used
+        with InsertionPoint(temp_bb):
             # Map TensorAccessor function arguments to symbol table
             for i, name in enumerate(self._tensor_accessor_names):
-                self.symbol_tables[-1][name] = func_bb.arguments[i]
+                self.symbol_tables[-1][name] = temp_bb.arguments[i]
                 self.streams.add(name)
 
             # Prepopulate other captures (non-tensor)
@@ -277,6 +270,27 @@ class TTLGenericCompiler(TTCompilerBase):
             func.ReturnOp([])
 
         self.symbol_tables.pop()
+
+        # Now filter to only used tensors and create the actual function.
+        # This ensures only captured tensors that are actually referenced in the
+        # kernel body become function arguments for TensorAccessor materialization.
+        filtered_names = []
+        filtered_arg_types = []
+        for i, tensor_name in enumerate(self._tensor_accessor_names):
+            if tensor_name in self.streams:
+                filtered_names.append(tensor_name)
+                filtered_arg_types.append(func_arg_types[i])
+
+        # Create the actual function with only used tensor arguments
+        self.func_entry = func.FuncOp(name=node.name, type=(filtered_arg_types, []))
+
+        # Set thread attribute: ttl.kernel_thread = #ttkernel.thread<compute/noc>
+        thread_type = get_thread_type_string(self.kernel_type)
+        thread_attr = ttkernel.ir.ThreadTypeAttr.get(self.ctx, thread_type)
+        self.func_entry.attributes["ttl.kernel_thread"] = thread_attr
+
+        # Note: base_cta_index is set later in ttl_api.py after all threads are
+        # compiled and we know the total kernel-level CB count.
 
     def visit_FunctionDef(self, node):
         with self._loc_for_node(node):

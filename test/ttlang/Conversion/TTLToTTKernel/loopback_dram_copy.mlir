@@ -8,9 +8,10 @@
 
 // TTKERNEL-LABEL: func.func @loopback_dram_copy
 // Verify runtime args and CB pointers are used for both read and write operations.
-// Tensor accessors are now created at function entry with chaining, not inside loops.
+// Tensor accessors are now created at function entry with simple index offsets, not inside loops.
 // TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
+// TTKERNEL-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
 // TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : index
@@ -18,9 +19,9 @@
 // TTKERNEL: %[[BANK0:.*]] = ttkernel.get_common_arg_val(%[[C0]]) : (index) -> i32
 // TTKERNEL: %[[ARGS0:.*]] = ttkernel.TensorAccessorArgs(%[[C1_I32]], %[[C0_I32]])
 // TTKERNEL: %[[ACC_R:.*]] = ttkernel.TensorAccessor(%[[ARGS0]], %[[BANK0]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// Second tensor accessor (dst) chains from first.
+// Second tensor accessor (dst) uses simple index offset: CTA = 1+1=2, CRTA = 0+1=1.
 // TTKERNEL: %[[BANK1:.*]] = ttkernel.get_common_arg_val(%[[C1]]) : (index) -> i32
-// TTKERNEL: %[[ARGS1:.*]] = ttkernel.TensorAccessorArgs(prev = %[[ARGS0]])
+// TTKERNEL: %[[ARGS1:.*]] = ttkernel.TensorAccessorArgs(%[[C2_I32]], %[[C1_I32]])
 // TTKERNEL: %[[ACC_W:.*]] = ttkernel.TensorAccessor(%[[ARGS1]], %[[BANK1]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // Loop uses pre-materialized accessors.
 // TTKERNEL: scf.for

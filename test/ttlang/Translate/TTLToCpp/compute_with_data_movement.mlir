@@ -19,14 +19,14 @@
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
-// Accessors materialized at function entry with chaining
+// Accessors materialized at function entry with simple index offsets
 // CHECK:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
 // First accessor uses literal base CTA index = num_cbs = 2
 // CHECK-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
-// Second accessor chains from first
+// Second accessor uses simple index offset: base CTA + 1 = 3, base CRTA + 1 = 1
 // CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
-// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<[[ARGS_A]].next_compile_time_args_offset(), [[ARGS_A]].next_common_runtime_args_offset()>();
+// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
 
 // Read tensor A into CB0
@@ -178,7 +178,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Write output to DRAM from CB2
 // CHECK:   int32_t [[RT_ARG_OUT:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
-// TensorAccessorArgs uses base CTA index = num_cbs = 1 (only cb2 bound in this func)
+// TensorAccessorArgs uses base CTA index = 1 (writer has 1 tensor arg)
 // CHECK-NEXT:   auto [[ARGS_OUT:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_OUT:.*]] = TensorAccessor([[ARGS_OUT]], [[RT_ARG_OUT]],
 // CHECK:   int32_t [[CB2_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));

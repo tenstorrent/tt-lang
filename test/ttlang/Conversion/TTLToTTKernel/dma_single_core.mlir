@@ -66,12 +66,14 @@ module {
 // Batched transfer pattern: issue multiple transfers, then wait on all of them.
 // Mirrors TT-Metal kernels that batch NOC async operations for throughput.
 // Each tensor arg maps to a runtime arg at its index.
-// With chained accessors, all TensorAccessorArgs/TensorAccessor are created at
-// function entry, with subsequent accessors chaining via prev = %previous_args.
+// With simple index offsets, all TensorAccessorArgs/TensorAccessor are created at
+// function entry, with each accessor using baseCTA + index and baseCRTA + index.
 // TTKERNEL-LABEL: func.func @dma_batched
-// All tensor accessors created at function entry with chaining.
+// All tensor accessors created at function entry with simple index offsets.
 // TTKERNEL-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // TTKERNEL-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
+// TTKERNEL-DAG: %[[C3_I32:.*]] = arith.constant 3 : i32
+// TTKERNEL-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
 // TTKERNEL-DAG: %[[PAGE_SIZE:.*]] = arith.constant {{[0-9]+}} : i32
 // TTKERNEL-DAG: %[[C0:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[C1:.*]] = arith.constant 1 : index
@@ -79,9 +81,9 @@ module {
 // TTKERNEL: %[[BANK0:.*]] = ttkernel.get_common_arg_val(%[[C0]]) : (index) -> i32
 // TTKERNEL: %[[ARGS0:.*]] = ttkernel.TensorAccessorArgs(%[[C2_I32]], %[[C0_I32]])
 // TTKERNEL: %[[ACC0:.*]] = ttkernel.TensorAccessor(%[[ARGS0]], %[[BANK0]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
-// Second tensor accessor chains from first.
+// Second tensor accessor uses simple index offset: CTA = 2+1=3, CRTA = 0+1=1.
 // TTKERNEL: %[[BANK1:.*]] = ttkernel.get_common_arg_val(%[[C1]]) : (index) -> i32
-// TTKERNEL: %[[ARGS1:.*]] = ttkernel.TensorAccessorArgs(prev = %[[ARGS0]])
+// TTKERNEL: %[[ARGS1:.*]] = ttkernel.TensorAccessorArgs(%[[C3_I32]], %[[C1_I32]])
 // TTKERNEL: %[[ACC1:.*]] = ttkernel.TensorAccessor(%[[ARGS1]], %[[BANK1]], %[[PAGE_SIZE]]) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // Copy operations use pre-materialized accessors.
 // TTKERNEL: %[[CB0_PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
