@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
-from typing import TYPE_CHECKING
 import math
+from typing import TYPE_CHECKING
 
 from sim import ttl, ttnn
-from sim.typedefs import Pipe
 from sim.testing import assert_pcc
+from sim.typedefs import Pipe
 
 if TYPE_CHECKING:
     from sim.pykernel_env import granularity

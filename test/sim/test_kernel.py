@@ -5,12 +5,14 @@
 Tests for kernel.py module (kernel decorator, grid_size, etc.).
 """
 
-import pytest
 from typing import cast
+
+import pytest
+from test_utils import make_zeros_tensor
+
 from python.sim import ttl, ttnn
 from python.sim.kernel import flatten_core_index
 from python.sim.typedefs import Shape
-from test_utils import make_zeros_tensor
 
 
 class TestGridSize:

@@ -8,11 +8,11 @@
 import ast
 import inspect
 
+from ttmlir.dialects import arith, emitc, func, memref, scf
 from ttmlir.ir import *
-from ttmlir.dialects import func, scf, arith, memref, emitc
 
-from .kernel_types import ClassRegistry
 from .base_ast import PyKernelAstBase
+from .kernel_types import ClassRegistry
 from .utils import _cast, _get_type_str
 
 

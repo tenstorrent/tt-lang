@@ -8,8 +8,8 @@ This module provides decorators for marking functions as compute or data movemen
 operations within the simulation framework.
 """
 
-from typing import Any, Callable, Dict
 from types import FunctionType
+from typing import Any, Callable, Dict
 
 from .program import BindableTemplate, rebind_func_with_ctx
 

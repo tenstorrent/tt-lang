@@ -4,11 +4,12 @@
 
 """TTL (TT-Lang) dialect Python bindings."""
 
-from ._ttl_ops_gen import *  # noqa: F401,F403
-from ._ttl_enum_gen import *  # noqa: F401,F403
+from ttmlir._mlir_libs import get_dialect_registry
+
 from .._mlir_libs import _ttlang
 from .._mlir_libs._ttlang import ttl_ir as ir
-from ttmlir._mlir_libs import get_dialect_registry
+from ._ttl_enum_gen import *  # noqa: F401,F403
+from ._ttl_ops_gen import *  # noqa: F401,F403
 
 
 def ensure_dialects_registered(ctx):

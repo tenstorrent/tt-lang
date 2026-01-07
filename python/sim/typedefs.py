@@ -6,10 +6,11 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from typing import Annotated, Tuple, NamedTuple, Union
-from pydantic import Field
-from enum import Enum, auto
 from dataclasses import dataclass
+from enum import Enum, auto
+from typing import Annotated, NamedTuple, Tuple, Union
+
+from pydantic import Field
 
 
 # TODO: Expand IndexType as needed, see relevant issue:

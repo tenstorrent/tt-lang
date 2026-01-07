@@ -4,12 +4,11 @@
 # up to tt-lang spec, not intended to compile or run currently
 import sys
 from pathlib import Path
-import ttnn
+
 import pytest
 import torch
-
-from ttl import Program, make_circular_buffer_like, copy
-
+import ttnn
+from ttl import Program, copy, make_circular_buffer_like
 from ttlang.utils.correctness import assert_with_ulp
 
 

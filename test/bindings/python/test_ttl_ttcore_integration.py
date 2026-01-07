@@ -5,9 +5,9 @@
 # Pytest for the ttlang python bindings and the ability to use
 # ttmlir and ttlang bindings together.
 
+from ttlang.dialects import ttl
 from ttmlir import ir as tmlir_ir
 from ttmlir.dialects import ttcore
-from ttlang.dialects import ttl
 
 
 def test_ttl_and_ttcore_same_context():

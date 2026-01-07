@@ -8,9 +8,10 @@ This module provides decorators and utilities for generating kernels with
 specified grid configurations and granularity settings.
 """
 
-from typing import Any, Callable, Union, Tuple, List, cast
 import inspect
-from .typedefs import Shape, Size, CoreIndex, Index
+from typing import Any, Callable, List, Tuple, Union, cast
+
+from .typedefs import CoreIndex, Index, Shape, Size
 
 
 def _get_from_frame(var_name: str, error_msg: str) -> Any:

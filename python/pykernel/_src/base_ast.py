@@ -7,8 +7,8 @@
 import ast
 import inspect
 
+from ttmlir.dialects import emitc, func
 from ttmlir.ir import *
-from ttmlir.dialects import func, emitc
 
 
 class PyKernelAstBase(ast.NodeVisitor):

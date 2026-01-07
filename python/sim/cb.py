@@ -10,16 +10,16 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from typing import Tuple, Optional, Union, List, Callable
 from types import TracebackType
+from typing import Callable, List, Optional, Tuple, Union
 
 import torch
 
-from .cbapi import CBAPI
 from .block import Block
-from .typedefs import CBID, Size, Shape
-from .ttnnsim import Tensor
+from .cbapi import CBAPI
 from .constants import TILE_SHAPE
+from .ttnnsim import Tensor
+from .typedefs import CBID, Shape, Size
 
 
 class _BlockContextManager:

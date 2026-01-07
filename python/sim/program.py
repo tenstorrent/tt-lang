@@ -8,19 +8,18 @@ This module provides the core execution framework for running compute and data m
 functions across multiple cores with proper context binding and error handling.
 """
 
-import types
 import copy
-import traceback
 import inspect
 import textwrap
-from typing import Any, Callable, Dict, List, Tuple, Protocol, Generator
+import traceback
+import types
 from types import CellType, FunctionType
-
+from typing import Any, Callable, Dict, Generator, List, Protocol, Tuple
 
 from .cb import CircularBuffer
 from .cbapi import CBAPI
-from .xformyield import transform_wait_reserve_to_yield
 from .ttnnsim import Tensor
+from .xformyield import transform_wait_reserve_to_yield
 
 
 # Protocol for templates that have a bind method

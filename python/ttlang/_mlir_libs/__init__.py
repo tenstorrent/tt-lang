@@ -7,9 +7,6 @@
 # shipping a duplicate binary.
 import sys
 
-from ttmlir._mlir_libs import (  # type: ignore
-    _mlir,
-    get_dialect_registry,
-)
+from ttmlir._mlir_libs import _mlir, get_dialect_registry  # type: ignore
 
 sys.modules[__name__ + "._mlir"] = _mlir

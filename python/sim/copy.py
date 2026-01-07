@@ -10,9 +10,9 @@ CircularBuffer system.
 """
 
 from .copyhandlers import (
-    CopyTransferHandler,
     CopyEndpoint,
     CopyEndpointType,
+    CopyTransferHandler,
     handler_registry,
 )
 

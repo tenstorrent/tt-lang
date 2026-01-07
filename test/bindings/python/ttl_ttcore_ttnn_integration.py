@@ -5,9 +5,9 @@
 #
 # Ensure ttl, ttcore, and ttnn dialects all work in the shared tt-mlir context.
 
+from ttlang.dialects import ttl
 from ttmlir import ir as tmlir_ir
 from ttmlir.dialects import ttcore, ttnn
-from ttlang.dialects import ttl
 
 with tmlir_ir.Context() as ctx, tmlir_ir.Location.unknown():
     ttl.ensure_dialects_registered(ctx)

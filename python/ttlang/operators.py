@@ -10,12 +10,11 @@ from typing import Tuple, Union
 
 from ttmlir.ir import Type
 
-from .dialects import ttl
-from ._src.ttl_ast import syntax
-
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
+from ._src.ttl_ast import syntax
+from .dialects import ttl
 
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]

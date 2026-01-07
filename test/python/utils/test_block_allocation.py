@@ -7,7 +7,6 @@
 Test comparing split_work_to_cores with ttnn.split_work_to_cores
 """
 import pytest
-
 from ttlang.utils.block_allocation import split_work_to_cores
 
 ttnn = pytest.importorskip("ttnn")

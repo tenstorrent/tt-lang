@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+import torch
 from ttlang.ttl_api import *
 from ttlang.utils.correctness import assert_allclose
-import torch
 
 
 @pykernel_gen(

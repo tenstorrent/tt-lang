@@ -4,8 +4,9 @@
 
 """Utilities for comparing tensor outputs in tests."""
 
-import torch
 import math
+
+import torch
 
 
 def assert_pcc(golden, actual, threshold=0.99):

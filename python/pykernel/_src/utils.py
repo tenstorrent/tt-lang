@@ -5,9 +5,10 @@
 # NOTE: This file was copied from tt-mlir/tools/pykernel/_src/utils.py
 # and cleaned up to remove unused code (_discover_dialect_ops).
 
-import textwrap
 import inspect
+import textwrap
 from typing import Callable
+
 from ttmlir.dialects import arith
 from ttmlir.ir import *
 

@@ -9,26 +9,26 @@ New transfer types can be added by creating a new handler and decorating it with
 @register_copy_handler.
 """
 
+import threading
+import time
+from collections import deque
 from typing import (
+    TYPE_CHECKING,
     Any,
+    Deque,
     Dict,
+    List,
     Protocol,
     Tuple,
     Type,
-    Deque,
-    List,
-    Union,
     TypedDict,
-    TYPE_CHECKING,
+    Union,
 )
-from collections import deque
-import threading
-import time
-from .typedefs import Count, Shape
-from .ttnnsim import Tensor
+
 from .block import Block
-from .constants import TILE_SHAPE, COPY_PIPE_TIMEOUT
-from .typedefs import Pipe, Count
+from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
+from .ttnnsim import Tensor
+from .typedefs import Count, Pipe, Shape
 
 if TYPE_CHECKING:
     from .cb import ReserveContext, WaitContext
