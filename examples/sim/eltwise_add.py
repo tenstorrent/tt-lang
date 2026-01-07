@@ -2,26 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
-from typing import TYPE_CHECKING
 import math
 
-from sim import ttl, ttnn
+import ttl
+import ttnn
 from sim.testing import assert_pcc
-
-if TYPE_CHECKING:
-    from sim.pykernel_env import granularity
 
 
 # type: ignore
 @ttl.kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
-    granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
 def eltwise_add(
     a_in: ttnn.Tensor,
     b_in: ttnn.Tensor,
     out: ttnn.Tensor,
 ) -> None:
+
+    # Set granularity
+    granularity = 2
+
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
     assert a_in.shape[0] % granularity == 0
