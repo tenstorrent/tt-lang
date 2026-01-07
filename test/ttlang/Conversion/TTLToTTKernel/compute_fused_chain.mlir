@@ -38,7 +38,10 @@
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK]], %[[C4:.*]])
-// CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[C0]], false)
+// Compute CB tile index: i * 2 + j (linearized row-major index for 2x2 grid).
+// CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[I]], %[[C2]] : index
+// CHECK-NEXT:      %[[CB_IDX:.*]] = arith.addi %[[IOFF]], %[[J]] : index
+// CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[CB_IDX]], false)
 // CHECK-NEXT:      ttkernel.cb_push_back(%[[CB2_TTK]], %[[C4]])
 // CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
 // CHECK-NEXT:      scf.yield %[[INSERT]]

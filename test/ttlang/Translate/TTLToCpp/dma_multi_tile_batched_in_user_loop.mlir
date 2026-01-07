@@ -32,6 +32,7 @@
 // CHECK-LABEL: // batched_multi_tile_user_loop
 // CHECK: void kernel_main() {
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
+// CHECK-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[USER_UB:v[0-9]+]] = 3;
@@ -45,14 +46,23 @@
 // CHECK:     auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
 // CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
+// Cast CB ptr to size_t for index arithmetic
+// CHECK:     ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR1]];
+// CHECK:     size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
 // Tile loops: for tile_y in 0..2, for tile_x in 0..2
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[STEP]]) {
 // CHECK:       for (size_t [[TILE1_X:[a-z][0-9]+]] = [[LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[STEP]]) {
 // CHECK:         size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
 // CHECK:         size_t [[TILE1_OFFSET_X:v[0-9]+]] = [[TILE1_OFFSET_Y]] + [[TILE1_X]];
+// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
+// CHECK:         size_t [[BYTE_OFF1:v[0-9]+]] = [[TILE1_OFFSET_X]] * [[PAGE_SIZE]];
+// CHECK:         size_t [[CB_ADDR1_IDX:v[0-9]+]] = [[CB_PTR1_IDX]] + [[BYTE_OFF1]];
+// Cast to i32 for NOC operation
 // CHECK:         ptrdiff_t [[TILE1_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE1_OFFSET_X]];
 // CHECK:         int32_t [[TILE1_OFFSET:v[0-9]+]] = (int32_t) [[TILE1_OFFSET_PTR]];
-// CHECK:         noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_PTR1]]);
+// CHECK:         ptrdiff_t [[CB_ADDR1_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR1_IDX]];
+// CHECK:         int32_t [[CB_ADDR1:v[0-9]+]] = (int32_t) [[CB_ADDR1_PTR]];
+// CHECK:         noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_ADDR1]]);
 // CHECK:       }
 // CHECK:     }
 
@@ -61,14 +71,23 @@
 // CHECK:     auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
 // CHECK:     int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
+// Cast CB ptr to size_t for index arithmetic
+// CHECK:     ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR2]];
+// CHECK:     size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
 // Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[STEP]]) {
 // CHECK:       for (size_t [[TILE2_X:[a-z][0-9]+]] = [[LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[STEP]]) {
 // CHECK:         size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
 // CHECK:         size_t [[TILE2_OFFSET_X:v[0-9]+]] = [[TILE2_OFFSET_Y]] + [[TILE2_X]];
+// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
+// CHECK:         size_t [[BYTE_OFF2:v[0-9]+]] = [[TILE2_OFFSET_X]] * [[PAGE_SIZE]];
+// CHECK:         size_t [[CB_ADDR2_IDX:v[0-9]+]] = [[CB_PTR2_IDX]] + [[BYTE_OFF2]];
+// Cast to i32 for NOC operation
 // CHECK:         ptrdiff_t [[TILE2_OFFSET_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE2_OFFSET_X]];
 // CHECK:         int32_t [[TILE2_OFFSET:v[0-9]+]] = (int32_t) [[TILE2_OFFSET_PTR]];
-// CHECK:         noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_PTR2]]);
+// CHECK:         ptrdiff_t [[CB_ADDR2_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR2_IDX]];
+// CHECK:         int32_t [[CB_ADDR2:v[0-9]+]] = (int32_t) [[CB_ADDR2_PTR]];
+// CHECK:         noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_ADDR2]]);
 // CHECK:       }
 // CHECK:     }
 

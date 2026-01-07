@@ -628,16 +628,12 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
           Value offsetY = b.create<arith::MulIOp>(bodyLoc, iy, tilesXVal);
           Value offset = b.create<arith::AddIOp>(bodyLoc, offsetY, ix);
 
-          // Convert offset to i32 for TTKernel NOC operations
-          Value offset32 =
-              b.create<arith::IndexCastOp>(bodyLoc, b.getI32Type(), offset);
-
-          emitBody(b, bodyLoc, offset32);
+          emitBody(b, bodyLoc, offset);
         });
   } else {
     // Single tile: offset is always 0
-    Value zero32 = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
-    emitBody(rewriter, loc, zero32);
+    Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    emitBody(rewriter, loc, zeroIdx);
   }
 }
 
@@ -677,8 +673,13 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
       mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
   assert(layoutAttr && "tensor must have TTNNLayoutAttr encoding");
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-  auto pageSizeVal =
-      rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
+  auto pageSizeIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+
+  // Cast cbWritePtr to index for address arithmetic.
+  auto indexTy = rewriter.getIndexType();
+  auto cbWritePtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbWritePtr);
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
@@ -686,10 +687,16 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  // Compute CB address: cbWritePtr + tileOffset * pageSize
                  Value byteOffset =
-                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeVal);
+                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeIdx);
+                 Value cbAddrIdx =
+                     b.create<arith::AddIOp>(bodyLoc, cbWritePtrIdx, byteOffset);
+                 // Cast to i32 for NOC operation.
+                 auto i32Ty = b.getI32Type();
+                 Value tileOffset32 =
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tileOffset);
                  Value cbAddr =
-                     b.create<arith::AddIOp>(bodyLoc, cbWritePtr, byteOffset);
-                 b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
+                 b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset32,
                                                    *srcAccessor, cbAddr);
                });
 
@@ -734,8 +741,13 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
       mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
   assert(layoutAttr && "tensor must have TTNNLayoutAttr encoding");
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-  auto pageSizeVal =
-      rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
+  auto pageSizeIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+
+  // Cast cbReadPtr to index for address arithmetic.
+  auto indexTy = rewriter.getIndexType();
+  auto cbReadPtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
 
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
@@ -743,10 +755,16 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  // Compute CB address: cbReadPtr + tileOffset * pageSize
                  Value byteOffset =
-                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeVal);
+                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeIdx);
+                 Value cbAddrIdx =
+                     b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+                 // Cast to i32 for NOC operation.
+                 auto i32Ty = b.getI32Type();
+                 Value tileOffset32 =
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tileOffset);
                  Value cbAddr =
-                     b.create<arith::AddIOp>(bodyLoc, cbReadPtr, byteOffset);
-                 b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
+                 b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset32,
                                                     *dstAccessor, cbAddr);
                });
 
