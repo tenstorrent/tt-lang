@@ -76,7 +76,7 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x1x!ttcore.tile<32x32, bf16>{{.*}}>
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i64, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
 # CB binding (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
@@ -107,7 +107,7 @@ def add_with_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i64, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # First CB: reserve (with CB association), copy, push
 # CHECK: ttl.cb_reserve
@@ -124,7 +124,7 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_push
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i64, ttl.crta_indices = [2], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Output CB: wait (with CB association), copy, pop
 # CHECK: ttl.cb_wait
