@@ -22,7 +22,7 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
-        runs-on: ubuntu-latest
+        runs-on: test1-large-runner-lang
         timeout-minutes: 360
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
