@@ -28,7 +28,9 @@ except ImportError:
     # Config not available (running outside build dir) - check env or device files
     import glob
 
-    if os.environ.get("TTLANG_HAS_DEVICE") == "1":
+    if os.environ.get("TT_METAL_SIMULATOR"):
+        _hardware_available = True
+    elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
         _hardware_available = True
     elif glob.glob("/dev/tenstorrent*"):
         _hardware_available = True
