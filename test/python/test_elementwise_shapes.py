@@ -19,13 +19,14 @@ Total test cases: 13 ops x 5 shapes = 65 tests
 # RUN: %python -m pytest %s -v
 
 import atexit
+import importlib.util
 import os
-import pytest
 import sys
 import tempfile
-import importlib.util
 from pathlib import Path
 from typing import Callable
+
+import pytest
 
 # Import ttnn BEFORE torch to avoid nanobind initialization issues
 try:
@@ -248,7 +249,9 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Ca
     return kernel
 
 
-def make_binary_fn_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Callable:
+def make_binary_fn_kernel(
+    name: str, op: str, tile_rows: int, tile_cols: int
+) -> Callable:
     """Generate a binary kernel using function call syntax."""
     cache_key = (name, op, tile_rows, tile_cols, "binary_fn")
     if cache_key in _kernel_cache:
