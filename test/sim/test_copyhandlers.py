@@ -2,28 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
 from typing import List
-from python.sim.copyhandlers import (
-    handler_registry,
-    TensorToBlockHandler,
-    BlockToTensorHandler,
-    BlockToPipeHandler,
-    PipeToBlockHandler,
-)
-from python.sim.block import Block, Span
-from python.sim.cbstate import CBSlot
-from python.sim.typedefs import Pipe
-from python.sim import ttnn
-from python.sim.constants import TILE_SHAPE
+
+import pytest
 from test_utils import (
-    make_ones_tile,
-    make_zeros_tile,
-    make_full_tile,
-    make_rand_tensor,
     make_arange_tensor,
+    make_full_tile,
+    make_ones_tile,
+    make_rand_tensor,
+    make_zeros_tile,
     tensors_equal,
 )
+
+from python.sim import ttnn
+from python.sim.block import Block, Span
+from python.sim.cbstate import CBSlot
+from python.sim.constants import TILE_SHAPE
+from python.sim.copyhandlers import (
+    BlockToPipeHandler,
+    BlockToTensorHandler,
+    PipeToBlockHandler,
+    TensorToBlockHandler,
+    handler_registry,
+)
+from python.sim.typedefs import Pipe
 
 
 class TestHandlerRegistry:

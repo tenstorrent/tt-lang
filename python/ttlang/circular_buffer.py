@@ -4,12 +4,12 @@
 
 """Circular buffer operations for inter-thread communication."""
 
-from typing import Tuple, Any
+from typing import Any, Tuple
 
 from ttmlir.ir import *
 
-from .dialects import ttl
 from ._src.ttl_ast import syntax
+from .dialects import ttl
 
 # Module-level counter for CB index assignment in creation order
 _cb_index_counter = 0
@@ -27,6 +27,11 @@ def _next_cb_index():
     idx = _cb_index_counter
     _cb_index_counter += 1
     return idx
+
+
+def get_cb_count():
+    """Return number of CBs allocated so far."""
+    return _cb_index_counter
 
 
 def _get_cb_tensor_type(cb_val):

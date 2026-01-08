@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-import torch
-import pytest
 from typing import Any
+
+import pytest
+import torch
 
 from sim import ttnn
 

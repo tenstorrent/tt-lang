@@ -9,7 +9,6 @@ import ttnn
 from sim.testing import assert_pcc
 
 
-# type: ignore
 @ttl.kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
 )

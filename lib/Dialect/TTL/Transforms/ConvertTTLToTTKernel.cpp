@@ -48,6 +48,14 @@ using mlir::ValueRange;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
+// Start index in compile-time args for TA static metadata (is_sharded,
+// is_dram). CTA layout is [CBs, TAs], so this is the number of CBs.
+constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
+// Maps local args to global tensor indices for common runtime args (buffer
+// addresses). CRTA is filtered per-thread, containing only addresses for
+// tensors this thread uses.
+constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
+
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
@@ -124,6 +132,57 @@ getBufferAddressFromRuntimeArg(Value tensor, Location loc,
 
 static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
+}
+
+/// Compute linearized CB tile index from enclosing scf.for loops.
+/// For nested loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
+/// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
+/// Returns constant 0 if not inside any loops (single-tile case).
+static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
+  Location loc = op->getLoc();
+
+  SmallVector<scf::ForOp> loops;
+  Operation *parent = op->getParentOp();
+  while (parent) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      loops.push_back(forOp);
+    }
+    parent = parent->getParentOp();
+  }
+
+  if (loops.empty()) {
+    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
+  // Validate assumptions: all loops have step=1 and lower bound=0.
+  for (auto loop : loops) {
+    auto lb = getConstantIntValue(loop.getLowerBound());
+    assert(lb && *lb == 0 &&
+           "computeCBTileIndexFromLoops: expected lower bound of 0");
+    auto ub = getConstantIntValue(loop.getUpperBound());
+    assert(ub && "computeCBTileIndexFromLoops: expected constant upper bound");
+    auto step = getConstantIntValue(loop.getStep());
+    assert(step && *step == 1 &&
+           "computeCBTileIndexFromLoops: expected step of 1");
+  }
+
+  // Process in reverse order (innermost-first) without mutating the vector.
+  Value linearIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
+  for (auto [i, loop] : llvm::enumerate(llvm::reverse(loops))) {
+    Value iv = loop.getInductionVar();
+
+    // Stride = product of upper bounds of more-nested loops.
+    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
+    for (auto innerLoop : llvm::drop_begin(llvm::reverse(loops), i + 1)) {
+      stride =
+          builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
+    }
+
+    Value term = builder.create<arith::MulIOp>(loc, iv, stride);
+    linearIdx = builder.create<arith::AddIOp>(loc, linearIdx, term);
+  }
+
+  return linearIdx;
 }
 
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
@@ -370,10 +429,8 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     }
 
-    // The CB tile index is always 0 because we pack one tile at a time into
-    // the reserved section of the CB. The index is relative to the current
-    // reserved section (from cb_reserve_back), not the absolute CB position.
-    auto cbTileIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    // Compute CB tile index from enclosing loops for multi-tile cases.
+    auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
@@ -420,6 +477,44 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
     return std::nullopt;
   }
   return transferHandle.getKind();
+}
+
+/// Compute CTA index for a tensor function argument.
+/// Reads ttl.base_cta_index and ttl.crta_indices from parent function.
+/// Returns baseCTA + crtaIndices[localArgIdx].
+static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  if (failed(argIdx)) {
+    return op->emitError("tensor must be a function argument");
+  }
+
+  auto parentFunc = op->getParentOfType<func::FuncOp>();
+  if (!parentFunc) {
+    return op->emitError("operation must be inside a function");
+  }
+
+  auto baseCTAAttr = parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttr);
+  if (!baseCTAAttr) {
+    return op->emitError("function missing ")
+           << kBaseCTAIndexAttr << " attribute";
+  }
+
+  auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
+  if (!crtaIndicesAttr) {
+    return op->emitError("function missing ")
+           << kCRTAIndicesAttr << " attribute";
+  }
+
+  if (*argIdx >= crtaIndicesAttr.size()) {
+    return op->emitError("argument index out of range for ")
+           << kCRTAIndicesAttr;
+  }
+
+  int64_t baseCTA = baseCTAAttr.getInt();
+  int64_t globalTensorIdx =
+      mlir::cast<IntegerAttr>(crtaIndicesAttr[*argIdx]).getInt();
+
+  return static_cast<int32_t>(baseCTA + globalTensorIdx);
 }
 
 /// Create a TensorAccessor from a tensor type and bank base address.
@@ -472,17 +567,21 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
   // For tiled interleaved layouts, page size = tile size in bytes.
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
 
-  // TODO(XX): Placeholder CTA offsets - Python regex replaces 42+argIdx
-  // with actual offsets from ttnn.TensorAccessorArgs.get_compile_time_args().
+  auto ctaIndex = computeCTAIndex(tensor, op);
+  if (failed(ctaIndex)) {
+    return failure();
+  }
+
   auto argIdx = getTensorFuncArgIndex(tensor);
-  int32_t ctaPlaceholder =
-      42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
-  constexpr int32_t crtaPlaceholder = 0;
+  if (failed(argIdx)) {
+    return failure();
+  }
+  int32_t crtaIndex = static_cast<int32_t>(*argIdx);
 
   auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, ctaPlaceholder, crtaPlaceholder,
-                             bankBase, pageSize);
+  return buildTensorAccessor(loc, rewriter, *ctaIndex, crtaIndex, bankBase,
+                             pageSize);
 }
 
 static std::pair<int64_t, int64_t>
@@ -495,14 +594,24 @@ getTileGridShape(const RankedTensorType &tensorTy) {
   return {tilesY, tilesX};
 }
 
-/// Extract tile grid shape from a Value if it's a static rank-2 tensor.
-/// Returns {1, 1} for non-tensor types or dynamic shapes.
+/// Extract tile grid shape from a Value if it's a static tensor.
+/// Handles both rank-2 tensors (logical shape) and rank-4 tensors
+/// (device shape: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]).
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
-  if (tensorTy && tensorTy.hasStaticShape() && tensorTy.getRank() == 2) {
+  assert(tensorTy && "expected RankedTensorType");
+  assert(tensorTy.hasStaticShape() && "expected static shape");
+
+  auto dims = tensorTy.getShape();
+  if (dims.size() == 2) {
     return getTileGridShape(tensorTy);
+  } else if (dims.size() == 4) {
+    // Rank-4 tensor: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
+    // The last two dimensions are already tile counts, not element counts.
+    return {dims[2], dims[3]};
   }
-  return {1, 1};
+
+  llvm_unreachable("expected rank-2 or rank-4 tensor");
 }
 
 // Emit a tile loop (or single tile body) with proper offset computation.
@@ -519,26 +628,24 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     auto tilesXVal = rewriter.create<arith::ConstantIndexOp>(loc, tilesX);
 
-    scf::buildLoopNest(
-        rewriter, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
-        ValueRange{one, one},
-        [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
-          // Compute linear tile offset: offset = iy * tilesX + ix
-          Value iy = ivs[0];
-          Value ix = ivs[1];
-          Value offsetY = b.create<arith::MulIOp>(bodyLoc, iy, tilesXVal);
-          Value offset = b.create<arith::AddIOp>(bodyLoc, offsetY, ix);
+    scf::buildLoopNest(rewriter, loc, ValueRange{zero, zero},
+                       ValueRange{yBound, xBound}, ValueRange{one, one},
+                       [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
+                         // Compute linear tile offset: offset = iy * tilesX +
+                         // ix
+                         Value iy = ivs[0];
+                         Value ix = ivs[1];
+                         Value offsetY =
+                             b.create<arith::MulIOp>(bodyLoc, iy, tilesXVal);
+                         Value offset =
+                             b.create<arith::AddIOp>(bodyLoc, offsetY, ix);
 
-          // Convert offset to i32 for TTKernel NOC operations
-          Value offset32 =
-              b.create<arith::IndexCastOp>(bodyLoc, b.getI32Type(), offset);
-
-          emitBody(b, bodyLoc, offset32);
-        });
+                         emitBody(b, bodyLoc, offset);
+                       });
   } else {
     // Single tile: offset is always 0
-    Value zero32 = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
-    emitBody(rewriter, loc, zero32);
+    Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    emitBody(rewriter, loc, zeroIdx);
   }
 }
 
@@ -572,12 +679,38 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
 
+  // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
+  auto tensorTy = mlir::cast<RankedTensorType>(srcTensor.getType());
+  auto layoutAttr =
+      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+  assert(layoutAttr &&
+         "lowerTensorToCB: srcTensor must have TTNNLayoutAttr encoding");
+  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
+
+  // Cast cbWritePtr to index for address arithmetic.
+  auto indexTy = rewriter.getIndexType();
+  auto cbWritePtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbWritePtr);
+
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset,
-                                                   *srcAccessor, cbWritePtr);
+                 // Compute CB address: cbWritePtr + tileOffset * pageSize
+                 auto pageSizeIdx =
+                     b.create<arith::ConstantIndexOp>(bodyLoc, pageSizeBytes);
+                 Value byteOffset =
+                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeIdx);
+                 Value cbAddrIdx = b.create<arith::AddIOp>(
+                     bodyLoc, cbWritePtrIdx, byteOffset);
+                 // Cast to i32 for NOC operation.
+                 auto i32Ty = b.getI32Type();
+                 Value tileOffset32 =
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tileOffset);
+                 Value cbAddr =
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
+                 b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileOffset32,
+                                                   *srcAccessor, cbAddr);
                });
 
   auto handle = makeZeroI32(loc, rewriter);
@@ -615,12 +748,38 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
 
   auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
 
+  // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
+  auto tensorTy = mlir::cast<RankedTensorType>(dstTensor.getType());
+  auto layoutAttr =
+      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+  assert(layoutAttr &&
+         "lowerCBToTensor: dstTensor must have TTNNLayoutAttr encoding");
+  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
+
+  // Cast cbReadPtr to index for address arithmetic.
+  auto indexTy = rewriter.getIndexType();
+  auto cbReadPtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+
   // TODO(#138): Emit single block transfer for contiguous layouts instead of
   // tile loop.
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
-                 b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset,
-                                                    *dstAccessor, cbReadPtr);
+                 // Compute CB address: cbReadPtr + tileOffset * pageSize
+                 auto pageSizeIdx =
+                     b.create<arith::ConstantIndexOp>(bodyLoc, pageSizeBytes);
+                 Value byteOffset =
+                     b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeIdx);
+                 Value cbAddrIdx =
+                     b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+                 // Cast to i32 for NOC operation.
+                 auto i32Ty = b.getI32Type();
+                 Value tileOffset32 =
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tileOffset);
+                 Value cbAddr =
+                     b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
+                 b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileOffset32,
+                                                    *dstAccessor, cbAddr);
                });
 
   auto handle = makeZeroI32(loc, rewriter);

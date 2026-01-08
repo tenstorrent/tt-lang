@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
 import math
-
 import ttl
 import ttnn
 from sim.typedefs import Pipe

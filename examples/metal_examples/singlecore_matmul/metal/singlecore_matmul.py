@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-import ttnn
 import pytest
 import torch
 
 from utils.correctness import assert_with_ulp
+import ttnn
 
 
 @pytest.mark.parametrize(

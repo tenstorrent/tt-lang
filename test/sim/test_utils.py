@@ -5,8 +5,9 @@
 """Common test utilities for simulator tests."""
 
 import torch
+
 from python.sim import ttnn
-from python.sim.typedefs import Size, Shape
+from python.sim.typedefs import Shape, Size
 
 # Constants
 TILE_SHAPE: Shape = (32, 32)

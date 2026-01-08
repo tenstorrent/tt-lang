@@ -8,9 +8,10 @@ _CState and related internal state management for cbsim.
 
 from threading import Condition, RLock, Thread
 from typing import List, Optional
-from .typedefs import Size, Index, Count, Span
+
 from .errors import CBContractError, CBNotConfigured
 from .ttnnsim import Tensor
+from .typedefs import Count, Index, Size, Span
 
 # Type alias for circular buffer slots
 CBSlot = Optional[Tensor]

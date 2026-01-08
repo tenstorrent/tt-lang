@@ -7,51 +7,50 @@
 from __future__ import annotations
 
 import ast
-import inspect
 import functools
+import inspect
 import os
-from typing import List, Optional, Callable, Dict, Union
+from typing import Callable, Dict, List, Optional, Union
 
 try:
     import ttnn
 except ModuleNotFoundError:
     ttnn = None
 
-from ttmlir.ir import *
-from ttmlir.passmanager import PassManager
-from ttmlir.dialects import ttkernel
-from ttmlir.passes import (
-    ttkernel_to_cpp_by_name,
-    get_ttkernel_names,
-    get_ttkernel_arg_spec,
-)
-
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
-
-from .ttl_utils import get_thread_type_string
-
-
 from pykernel._src.utils import _cleanup_source_code
+from ttmlir.dialects import ttkernel
+from ttmlir.ir import *
+from ttmlir.passes import (
+    get_ttkernel_arg_spec,
+    get_ttkernel_names,
+    ttkernel_to_cpp_by_name,
+)
+from ttmlir.passmanager import PassManager
+
 from ._src.tensor_registry import (
-    register_tensor_name,
-    register_tensor_source,
     get_tensor_global_index,
     get_tensor_source,
+    register_tensor_name,
+    register_tensor_source,
 )
-from .diagnostics import find_variable_assignment
-
 from ._src.ttl_ast import TTLGenericCompiler
-from .diagnostics import format_mlir_error, format_python_error, TTLangCompileError
-
-from .operators import TensorBlock, CopyTransferHandler, copy
 from .circular_buffer import CircularBuffer
-from .semaphore import Semaphore
-from .dtype_utils import (
-    torch_dtype_to_ttnn_datatype,
-    tile_bytes_from_dtype,
-    is_ttnn_tensor,
-)
 from .constants import SUPPORTED_MEMORY_SPACES
+from .diagnostics import (
+    TTLangCompileError,
+    find_variable_assignment,
+    format_mlir_error,
+    format_python_error,
+)
+from .dtype_utils import (
+    is_ttnn_tensor,
+    tile_bytes_from_dtype,
+    torch_dtype_to_ttnn_datatype,
+)
+from .operators import CopyTransferHandler, TensorBlock, copy
+from .semaphore import Semaphore
+from .ttl_utils import get_thread_type_string
 
 
 class CompilerConfig:
@@ -265,32 +264,11 @@ class CompiledTTNNKernel:
         return ttnn.generic_op(list(args), program)
 
 
-def _write_kernel_to_tmp(
-    name: str, source: str, num_tensors: int = 0, tensor_indices: list = None
-) -> str:
+def _write_kernel_to_tmp(name: str, source: str) -> str:
     """Write kernel source to /tmp and return the file path."""
-    import re
     import hashlib
+    import re
 
-    # TODO(XX): Fix TensorAccessorArgs CTA offsets. C++ emits placeholder 42+idx,
-    # replace with actual offset = global_idx + num_tensors (CB indices occupy 0..num_tensors-1).
-    if num_tensors > 0 and tensor_indices:
-
-        def replace_cta_offset(m):
-            placeholder = int(m.group(1))
-            local_idx = placeholder - 42
-            # Map local accessor index to global tensor index
-            global_idx = (
-                tensor_indices[local_idx]
-                if local_idx < len(tensor_indices)
-                else local_idx
-            )
-            actual_offset = global_idx + num_tensors
-            return f"TensorAccessorArgs<{actual_offset}, 0>()"
-
-        source = re.sub(r"TensorAccessorArgs<(\d+), 0>\(\)", replace_cta_offset, source)
-
-    # Use content hash in path to avoid JIT cache collisions between different kernels
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
     path = f"/tmp/ttlang_kernel_{name}_{content_hash}.cpp"
     with open(path, "w") as f:
@@ -386,33 +364,14 @@ def _compile_ttnn_kernel(
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
-    num_tensors = len(args)
-
-    # Write all kernels to /tmp for debugging
-    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
-        cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = (
-            thread_tensor_indices[kernel_idx]
-            if kernel_idx < len(thread_tensor_indices)
-            else []
-        )
-        _write_kernel_to_tmp(name, cpp_source, num_tensors, tensor_indices)
-
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
 
-    for kernel_idx, (name, thread_type) in enumerate(kernel_info):
+    for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
-        tensor_indices = (
-            thread_tensor_indices[kernel_idx]
-            if kernel_idx < len(thread_tensor_indices)
-            else []
-        )
-        kernel_path = _write_kernel_to_tmp(
-            name, cpp_source, num_tensors, tensor_indices
-        )
+        kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
 
         if thread_type == "compute":
@@ -750,6 +709,20 @@ def _compile_and_run_kernel(
                 raise type(e)(formatted) from None
             compiled_threads.append(ct)
             thread_tensor_indices.append(ct._tensor_accessor_global_indices)
+
+            # Set TensorAccessor indexing attributes for C++ lowering
+            base_cta = get_cb_count()
+            ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
+                IntegerType.get_signless(32, ctx), base_cta
+            )
+            crta_indices = ct._tensor_accessor_global_indices
+            ct.func_entry.attributes["ttl.crta_indices"] = ArrayAttr.get(
+                [
+                    IntegerAttr.get(IntegerType.get_signless(32, ctx), idx)
+                    for idx in crta_indices
+                ],
+                ctx,
+            )
 
             # Collect source info for error reporting
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):

@@ -6,10 +6,10 @@
 
 from typing import Optional, Tuple
 
+from pykernel._src.utils import _asindex
 from ttmlir.dialects import d2m
 
 from ._src.ttl_ast import syntax
-from pykernel._src.utils import _asindex
 
 
 @syntax("!d2m.semaphore")

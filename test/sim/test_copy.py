@@ -8,19 +8,21 @@ Tests the copy transfer functionality between tensors and Blocks,
 including error handling and edge cases.
 """
 
-import pytest
-from python.sim.copy import CopyTransaction, copy
-from python.sim.block import Block, Span
-from python.sim.cbstate import CBSlot
 from typing import List
-from python.sim.typedefs import Pipe
+
+import pytest
 from test_utils import (
-    make_ones_tile,
-    make_zeros_tile,
     make_full_tile,
+    make_ones_tile,
     make_rand_tensor,
+    make_zeros_tile,
     tensors_equal,
 )
+
+from python.sim.block import Block, Span
+from python.sim.cbstate import CBSlot
+from python.sim.copy import CopyTransaction, copy
+from python.sim.typedefs import Pipe
 
 
 class TestCopyTransaction:

@@ -1,14 +1,13 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-import ttnn
-import pytest
-import torch
 import matplotlib.pyplot as plt
 import numpy as np
-
-from ttlang.utils.correctness import assert_with_ulp
+import pytest
+import torch
+import ttnn
 from ttlang.utils.block_allocation import get_large_matmul_params
+from ttlang.utils.correctness import assert_with_ulp
 
 
 @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])

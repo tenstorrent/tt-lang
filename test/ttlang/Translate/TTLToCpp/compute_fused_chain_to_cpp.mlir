@@ -57,8 +57,12 @@
 // --- Reserve output CB2 for packing ---
 // CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
+// --- Compute CB tile index: i * 2 + j (linearized row-major index) ---
+// CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
+// CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+
 // --- Pack DST[0] to output CB2 ---
-// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[ZERO]]);
+// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // --- Push to signal data ready ---
 // CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);

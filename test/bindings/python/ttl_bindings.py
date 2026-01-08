@@ -6,9 +6,9 @@
 
 # Tests for TTL dialect Python bindings, using both ttmlir and ttlang modules
 
-from ttmlir.ir import *
-from ttmlir.dialects import ttcore
 from ttlang.dialects import ttl
+from ttmlir.dialects import ttcore
+from ttmlir.ir import *
 
 with Context() as ctx, Location.unknown():
     ttl.ensure_dialects_registered(ctx)

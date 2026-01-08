@@ -2,17 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
 import threading
 import time
 from typing import List, Tuple
 
+import pytest
+from test_utils import make_full_tensor, tensors_exact_equal
+
+from python.sim.cb import CircularBuffer
 from python.sim.cbapi import CBAPI
+from python.sim.cbstate import CBSlot
 from python.sim.errors import CBContractError, CBTimeoutError
 from python.sim.typedefs import CBID
-from python.sim.cb import CircularBuffer
-from python.sim.cbstate import CBSlot
-from test_utils import make_full_tensor, tensors_exact_equal
 
 
 # Pytest fixtures to reduce redundant setup code

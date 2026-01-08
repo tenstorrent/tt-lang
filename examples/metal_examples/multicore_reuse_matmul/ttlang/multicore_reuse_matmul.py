@@ -1,12 +1,11 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-import ttnn
 import pytest
 import torch
-
-from ttl import Program, make_circular_buffer_like, copy, core
+import ttnn
 from metal_examples.utils import assert_with_ulp
+from ttl import Program, copy, core, make_circular_buffer_like
 
 
 @ttl.kernel(grid=(13, 10))

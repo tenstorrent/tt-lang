@@ -4,22 +4,20 @@
 
 import ast
 import inspect
-from typing import List, Set
 from dataclasses import dataclass
-
-from ttmlir.ir import *
-from ttmlir.dialects import ttcore, func, arith, ttkernel
+from typing import List, Set
 
 from pykernel._src.kernel_ast import TTCompilerBase
-from .tensor_registry import get_tensor_global_index, get_tensor_source
+from ttmlir.dialects import arith, func, ttcore, ttkernel
+from ttmlir.ir import *
 
-from ..dialects import ttl
-from ..dtype_utils import is_ttnn_tensor
-from ..layouts import create_ttnn_layout, TTNNLayoutConfig
-from ..dtype_utils import tensor_dtype_to_ttcore_datatype
 from ..constants import DEFAULT_TILE_SIZE
-from ..ttl_utils import get_thread_type_string
 from ..diagnostics import TTLangCompileError
+from ..dialects import ttl
+from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
+from ..layouts import TTNNLayoutConfig, create_ttnn_layout
+from ..ttl_utils import get_thread_type_string
+from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:

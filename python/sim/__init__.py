@@ -6,16 +6,15 @@
 sim package: simulation components for TT-Lang including circular buffers, tensors, and copy operations.
 """
 
-from .cbapi import CBAPI, CBStats
-from .typedefs import CoreIndex, Shape, Pipe
-from .constants import TILE_SHAPE, MAX_CBS
-from .copy import copy, CopyTransaction
-from .program import Program
-from .kernel import core
-from .decorators import compute, datamovement
-from .kernel import kernel
-from .pipe import if_pipe_src, if_pipe_dst, core_in_pipe
 from . import ttnnsim as ttnn
+from .cbapi import CBAPI, CBStats
+from .constants import MAX_CBS, TILE_SHAPE
+from .copy import CopyTransaction, copy
+from .decorators import compute, datamovement
+from .kernel import core, kernel
+from .pipe import core_in_pipe, if_pipe_dst, if_pipe_src
+from .program import Program
+from .typedefs import CoreIndex, Pipe, Shape
 
 
 # Create ttl namespace object
@@ -23,14 +22,14 @@ class _TTLNamespace:
     """TT-Lang namespace for DSL constructs."""
 
     def __init__(self):
-        from .kernel import kernel, grid_size, core
         from .cb import make_circular_buffer_like
-        from .decorators import compute, datamovement
-        from .program import Program
-        from .copy import copy
-        from .typedefs import Pipe, Size, Shape
         from .constants import TILE_SHAPE
-        from .pipe import if_pipe_src, if_pipe_dst, core_in_pipe
+        from .copy import copy
+        from .decorators import compute, datamovement
+        from .kernel import core, grid_size, kernel
+        from .pipe import core_in_pipe, if_pipe_dst, if_pipe_src
+        from .program import Program
+        from .typedefs import Pipe, Shape, Size
 
         self.kernel = kernel
         self.grid_size = grid_size

@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # up to tt-lang spec, not intended to compile or run currently
+import sys
+from pathlib import Path
 import ttnn
 import pytest
 import torch
