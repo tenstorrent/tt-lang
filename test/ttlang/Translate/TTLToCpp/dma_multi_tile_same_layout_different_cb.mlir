@@ -25,8 +25,7 @@
 
 // First copy: 64x64 (2x2 tiles) → CB [2,2]
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_LB]]);
-// Placeholder value 42 is a temporary hack, see issue #168
-// CHECK:   auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<42, 0>();
+// CHECK:   auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
 // Generated tile loops iterate over tensor grid (2x2)
@@ -43,8 +42,7 @@
 
 // Second copy: 64x64 (2x2 tiles) → CB [4,1] - SAME tensor layout, DIFFERENT CB shape
 // CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
-// Placeholder value 43 is a temporary hack, see issue #168
-// CHECK:   auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<43, 0>();
+// CHECK:   auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR2:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
 // Generated tile loops still iterate over tensor grid (2x2), not CB shape (4x1)
@@ -63,7 +61,7 @@
 
 module {
   func.func @same_layout_different_cb(%arg0: tensor<64x64xf32, #layout>, %arg1: tensor<64x64xf32, #layout>)
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+      attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb1 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
     %cb2 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[4, 1], f32, 2>
 

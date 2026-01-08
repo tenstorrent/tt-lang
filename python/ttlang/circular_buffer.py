@@ -29,6 +29,11 @@ def _next_cb_index():
     return idx
 
 
+def get_cb_count():
+    """Return number of CBs allocated so far."""
+    return _cb_index_counter
+
+
 def _get_cb_tensor_type(cb_val):
     """Extract the tensor type from a TTL CB type."""
     cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)

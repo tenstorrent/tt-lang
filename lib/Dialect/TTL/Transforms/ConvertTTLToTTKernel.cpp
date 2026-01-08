@@ -48,6 +48,14 @@ using mlir::ValueRange;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
+// Start index in compile-time args for TA static metadata (is_sharded,
+// is_dram). CTA layout is [CBs, TAs], so this is the number of CBs.
+constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
+// Maps local args to global tensor indices for common runtime args (buffer
+// addresses). CRTA is filtered per-thread, containing only addresses for
+// tensors this thread uses.
+constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
+
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
@@ -422,6 +430,44 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
+/// Compute CTA index for a tensor function argument.
+/// Reads ttl.base_cta_index and ttl.crta_indices from parent function.
+/// Returns baseCTA + crtaIndices[localArgIdx].
+static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  if (failed(argIdx)) {
+    return op->emitError("tensor must be a function argument");
+  }
+
+  auto parentFunc = op->getParentOfType<func::FuncOp>();
+  if (!parentFunc) {
+    return op->emitError("operation must be inside a function");
+  }
+
+  auto baseCTAAttr = parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttr);
+  if (!baseCTAAttr) {
+    return op->emitError("function missing ")
+           << kBaseCTAIndexAttr << " attribute";
+  }
+
+  auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
+  if (!crtaIndicesAttr) {
+    return op->emitError("function missing ")
+           << kCRTAIndicesAttr << " attribute";
+  }
+
+  if (*argIdx >= crtaIndicesAttr.size()) {
+    return op->emitError("argument index out of range for ")
+           << kCRTAIndicesAttr;
+  }
+
+  int64_t baseCTA = baseCTAAttr.getInt();
+  int64_t globalTensorIdx =
+      mlir::cast<IntegerAttr>(crtaIndicesAttr[*argIdx]).getInt();
+
+  return static_cast<int32_t>(baseCTA + globalTensorIdx);
+}
+
 /// Create a TensorAccessor from a tensor type and bank base address.
 /// The bankBase should come from runtime args via
 /// getBufferAddressFromRuntimeArg.
@@ -472,17 +518,21 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
   // For tiled interleaved layouts, page size = tile size in bytes.
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
 
-  // TODO(XX): Placeholder CTA offsets - Python regex replaces 42+argIdx
-  // with actual offsets from ttnn.TensorAccessorArgs.get_compile_time_args().
+  auto ctaIndex = computeCTAIndex(tensor, op);
+  if (failed(ctaIndex)) {
+    return failure();
+  }
+
   auto argIdx = getTensorFuncArgIndex(tensor);
-  int32_t ctaPlaceholder =
-      42 + (failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx));
-  constexpr int32_t crtaPlaceholder = 0;
+  if (failed(argIdx)) {
+    return failure();
+  }
+  int32_t crtaIndex = static_cast<int32_t>(*argIdx);
 
   auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, ctaPlaceholder, crtaPlaceholder,
-                             bankBase, pageSize);
+  return buildTensorAccessor(loc, rewriter, *ctaIndex, crtaIndex, bankBase,
+                             pageSize);
 }
 
 static std::pair<int64_t, int64_t>

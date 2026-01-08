@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
 
-from sim import ttl, ttnn
 from sim.testing import assert_pcc
+
+from sim import ttl, ttnn
 
 
 def get_number_of_cores(core_range_set):
