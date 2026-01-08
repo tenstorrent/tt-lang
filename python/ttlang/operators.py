@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Tuple, Union
 
+from ttmlir.dialects import tensor
 from ttmlir.ir import Type
 
 # Re-export generated elementwise operations
@@ -81,16 +82,121 @@ class CopyTransferHandler:
         return ttl.wait(ast_self)
 
 
-def _make_tensor_slice(tensor, indices):
-    """Create a ttl.tensor_slice from a tensor and tile indices."""
+# Sentinel value for dynamic dimensions in tensor.extract_slice
+# This is ShapedType::kDynamic in MLIR
+DYNAMIC_SENTINEL = -9223372036854775808  # INT64_MIN
+
+
+def _try_get_constant_int(value):
+    """Try to extract constant integer from an MLIR arith.constant op.
+
+    Returns (int_value, None) if the value is from arith.constant,
+    or (None, value) if it's a dynamic value (e.g., loop induction variable).
+    """
+    # Handle case where we get the Op object instead of its result Value
+    if hasattr(value, "result"):
+        op = value
+        result_val = value.result
+    elif hasattr(value, "owner"):
+        op = value.owner
+        result_val = value
+    else:
+        # Not a recognized MLIR type, treat as dynamic
+        return (None, value)
+
+    # Check if owner is actually an Op (not a Block, which happens for loop vars)
+    if not hasattr(op, "name"):
+        return (None, result_val)
+
+    if op.name != "arith.constant":
+        return (None, result_val)
+
+    # Get the value attribute from arith.constant
+    attr = op.attributes["value"]
+    return (int(attr), None)
+
+
+def _make_extract_slice(src_tensor, indices):
+    """Create a tensor.extract_slice from a tensor and tile indices.
+
+    The indices are tile coordinates. For DMA operations, we extract a
+    single tile at the specified position.
+
+    Handles both 2D tensors (MLIR lit tests) and 4D device-shaped tensors
+    (Python-generated). For 4D tensors, the indices map to shard dimensions
+    (last two), with zeros for grid dimensions.
+
+    Supports both constant indices (compile-time known) and dynamic indices
+    (e.g., loop induction variables).
+    """
     if len(indices) != 2:
         raise ValueError(f"Tensor slice requires exactly 2 indices, got {len(indices)}")
 
-    tensor_type = tensor.type
-    ctx = tensor_type.context
-    slice_type = Type.parse(f"!ttl.tensor_slice<{tensor_type}>", ctx)
-    row_idx, col_idx = indices
-    return ttl.tensor_slice(slice_type, tensor, row_idx, col_idx)
+    row_const, row_dyn = _try_get_constant_int(indices[0])
+    col_const, col_dyn = _try_get_constant_int(indices[1])
+
+    tensor_type = src_tensor.type
+    shape = list(tensor_type.shape)
+    rank = len(shape)
+
+    # Build offset arrays - use DYNAMIC_SENTINEL for dynamic offsets
+    # and collect dynamic values separately
+    dynamic_offsets = []
+
+    if rank == 2:
+        # 2D logical shape (lit tests): offsets are tile indices directly
+        static_offsets = []
+        if row_const is not None:
+            static_offsets.append(row_const)
+        else:
+            static_offsets.append(DYNAMIC_SENTINEL)
+            dynamic_offsets.append(row_dyn)
+        if col_const is not None:
+            static_offsets.append(col_const)
+        else:
+            static_offsets.append(DYNAMIC_SENTINEL)
+            dynamic_offsets.append(col_dyn)
+        static_sizes = shape
+        static_strides = [1, 1]
+    elif rank == 4:
+        # 4D device shape [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
+        # Grid dims are always 0 (static), tile indices go to shard dims
+        static_offsets = [0, 0]  # Grid offsets are always 0
+        # Shard row offset
+        if row_const is not None:
+            static_offsets.append(row_const)
+        else:
+            static_offsets.append(DYNAMIC_SENTINEL)
+            dynamic_offsets.append(row_dyn)
+        # Shard col offset
+        if col_const is not None:
+            static_offsets.append(col_const)
+        else:
+            static_offsets.append(DYNAMIC_SENTINEL)
+            dynamic_offsets.append(col_dyn)
+        static_sizes = [1, 1, 1, 1]
+        static_strides = [1, 1, 1, 1]
+    else:
+        raise ValueError(
+            f"Expected 2D or 4D tensor, got {rank}D tensor with shape {shape}"
+        )
+
+    # Build result type with the extracted shape
+    from ttmlir.ir import RankedTensorType
+    result_type = RankedTensorType.get(
+        static_sizes, tensor_type.element_type, tensor_type.encoding
+    )
+
+    return tensor.extract_slice(
+        result_type,
+        src_tensor,
+        dynamic_offsets,
+        [],  # dynamic sizes (always static)
+        [],  # dynamic strides (always static)
+        static_offsets,
+        static_sizes,
+        static_strides,
+    )
 
 
 @syntax("copy")
@@ -105,13 +211,13 @@ def copy(src, dst) -> CopyTransferHandler:
     Returns:
         CopyTransferHandler handle that must be waited on for completion
     """
-    # Handle subscripted tensors by creating tensor slices
+    # Handle subscripted tensors by creating tensor.extract_slice
     if isinstance(src, tuple):
-        tensor, indices = src
-        src = _make_tensor_slice(tensor, indices)
+        src_tensor, indices = src
+        src = _make_extract_slice(src_tensor, indices)
     if isinstance(dst, tuple):
-        tensor, indices = dst
-        dst = _make_tensor_slice(tensor, indices)
+        dst_tensor, indices = dst
+        dst = _make_extract_slice(dst_tensor, indices)
 
     ctx = src.type.context
 

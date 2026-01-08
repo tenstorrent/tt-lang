@@ -7,9 +7,9 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Tensor slice test - verifies tensor[row, col] creates ttl.tensor_slice ops.
+Tensor slice test - verifies tensor[row, col] creates tensor.extract_slice ops.
 
-Uses 64x64 tensors (2x2 tiles of 32x32) and accesses specific tiles
+Uses 128x128 tensors (4x4 tiles of 32x32) and accesses specific tiles
 via indices to test the tensor slice infrastructure.
 """
 
@@ -72,27 +72,24 @@ def tile_index_kernel(lhs, rhs, out):
 
 
 # =============================================================================
-# Initial IR Checks - Verify tensor_slice ops are generated
+# Initial IR Checks - Verify tensor.extract_slice ops are generated
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
 
-# First tensor slice at [0, 1]
-# CHECK: %[[C1:.+]] = arith.constant 1 : index
-# CHECK: ttl.tensor_slice %arg0[%{{.+}}, %[[C1]]]
-# CHECK: ttl.copy %{{.+}}, %{{.+}} : (!ttl.tensor_slice{{.*}}) -> !ttl.transfer_handle<read>
+# First tensor slice at [0, 1] - extracts at offset [0,0,0,1] for 4D device shape
+# CHECK: tensor.extract_slice %arg0[0, 0, 0, 1] [1, 1, 1, 1] [1, 1, 1, 1]
+# CHECK: ttl.copy %{{.+}}, %{{.+}} : (tensor<{{.+}}>) -> !ttl.transfer_handle<read>
 
 # Second tensor slice at [0, 2]
-# CHECK: %[[C2:.+]] = arith.constant 2 : index
-# CHECK: ttl.tensor_slice %arg1[%{{.+}}, %[[C2]]]
-# CHECK: ttl.copy %{{.+}}, %{{.+}} : (!ttl.tensor_slice{{.*}}) -> !ttl.transfer_handle<read>
+# CHECK: tensor.extract_slice %arg1[0, 0, 0, 2] [1, 1, 1, 1] [1, 1, 1, 1]
+# CHECK: ttl.copy %{{.+}}, %{{.+}} : (tensor<{{.+}}>) -> !ttl.transfer_handle<read>
 
 # CHECK-LABEL: func.func @dm_write
 
 # Output tensor slice at [0, 3]
-# CHECK: %[[C3:.+]] = arith.constant 3 : index
-# CHECK: ttl.tensor_slice %arg0[%{{.+}}, %[[C3]]]
-# CHECK: ttl.copy %{{.+}}, %{{.+}} : ({{.*}}!ttl.tensor_slice{{.*}}) -> !ttl.transfer_handle<write>
+# CHECK: tensor.extract_slice %arg0[0, 0, 0, 3] [1, 1, 1, 1] [1, 1, 1, 1]
+# CHECK: ttl.copy %{{.+}}, %{{.+}} : ({{.*}}tensor<{{.+}}>) -> !ttl.transfer_handle<write>
 
 # =============================================================================
 # C++ Kernel Checks - Verify correct tile offsets in NOC ops
@@ -125,10 +122,10 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        # 64x64 = 2x2 tiles of 32x32
-        lhs_torch = torch.full((64, 64), 2.0, dtype=torch.bfloat16)
-        rhs_torch = torch.full((64, 64), 3.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        # 128x128 = 4x4 tiles of 32x32
+        lhs_torch = torch.full((128, 128), 2.0, dtype=torch.bfloat16)
+        rhs_torch = torch.full((128, 128), 3.0, dtype=torch.bfloat16)
+        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
 
         lhs = ttnn.from_torch(
             lhs_torch,
@@ -156,7 +153,7 @@ if __name__ == "__main__":
         rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        print("Compiling tile index kernel (64x64 = 2x2 tiles)...")
+        print("Compiling tile index kernel (128x128 = 4x4 tiles)...")
         tile_index_kernel(lhs, rhs, out)
 
         print("=== Tile Index Kernel Test Complete ===")

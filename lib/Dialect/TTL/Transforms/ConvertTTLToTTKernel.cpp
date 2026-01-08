@@ -439,14 +439,21 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
   }
 };
 
-enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
+enum class CopyOperandKind { ExtractSlice, DirectTensor, CircularBuffer, Unknown };
 
 static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
   }
-  if (llvm::isa<TensorSliceType>(v.getType())) {
-    return CopyOperandKind::TensorSlice;
+  if (v.getDefiningOp<tensor::ExtractSliceOp>()) {
+    return CopyOperandKind::ExtractSlice;
+  }
+  // Direct tensor with TTNN layout (identity slice folded by canonicalization)
+  if (auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType())) {
+    if (tensorTy.getEncoding() &&
+        llvm::isa<tt::ttnn::TTNNLayoutAttr>(tensorTy.getEncoding())) {
+      return CopyOperandKind::DirectTensor;
+    }
   }
   return CopyOperandKind::Unknown;
 }
@@ -627,16 +634,58 @@ static Value linearizeTileIndex(OpBuilder &builder, Location loc, Value row,
   return builder.create<arith::AddIOp>(loc, rowOffset, col);
 }
 
-/// Lower tensor_slice->CB copy: read tiles from tensor into CB.
-/// Loops over CB shape, reading tiles starting at slice offset.
-static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
-                                    Value dstCB,
-                                    ConversionPatternRewriter &rewriter,
-                                    const TypeConverter &typeConverter) {
+/// Get offset Value at a given index from extract_slice.
+/// Handles both static (constant) and dynamic (operand) offsets.
+static Value getOffsetValue(tensor::ExtractSliceOp extractOp, size_t idx,
+                            Location loc, OpBuilder &builder) {
+  auto staticOffsets = extractOp.getStaticOffsets();
+  if (staticOffsets[idx] != ShapedType::kDynamic) {
+    // Static offset - create a constant
+    return builder.create<arith::ConstantIndexOp>(loc, staticOffsets[idx]);
+  }
+  // Dynamic offset - get from getMixedOffsets()
+  auto mixedOffsets = extractOp.getMixedOffsets();
+  if (auto val = llvm::dyn_cast<Value>(mixedOffsets[idx])) {
+    return val;
+  }
+  // Fallback: create constant from attribute
+  auto attr = llvm::cast<Attribute>(mixedOffsets[idx]);
+  return builder.create<arith::ConstantIndexOp>(
+      loc, llvm::cast<IntegerAttr>(attr).getInt());
+}
+
+/// Lower tensor->CB copy: read tiles from tensor into CB.
+/// extractOp may be nullptr if identity slice was folded by canonicalization.
+static LogicalResult lowerTensorToCB(CopyOp op, Value tensorVal,
+                                     tensor::ExtractSliceOp extractOp,
+                                     Value dstCB,
+                                     ConversionPatternRewriter &rewriter,
+                                     const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
-  Value srcTensor = sliceOp.getTensor();
-  Value startRow = sliceOp.getTileRow();
-  Value startCol = sliceOp.getTileCol();
+
+  // Get source tensor and offsets
+  Value srcTensor;
+  Value startRow, startCol;
+
+  if (extractOp) {
+    srcTensor = extractOp.getSource();
+    auto staticOffsets = extractOp.getStaticOffsets();
+    if (staticOffsets.size() < 2) {
+      return rewriter.notifyMatchFailure(
+          op, "tensor.extract_slice must have at least 2 offsets");
+    }
+    // For 4D device shape [grid_y, grid_x, shard_y, shard_x], tile indices
+    // are in positions 2,3. For 2D logical shape, they're in positions 0,1.
+    size_t rowIdx = (staticOffsets.size() == 4) ? 2 : 0;
+    size_t colIdx = (staticOffsets.size() == 4) ? 3 : 1;
+    startRow = getOffsetValue(extractOp, rowIdx, loc, rewriter);
+    startCol = getOffsetValue(extractOp, colIdx, loc, rewriter);
+  } else {
+    // Direct tensor (identity slice folded) - offset is 0,0
+    srcTensor = tensorVal;
+    startRow = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    startCol = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  }
 
   auto bankBase = getBufferAddressFromRuntimeArg(srcTensor, loc, rewriter);
   if (failed(bankBase)) {
@@ -723,16 +772,37 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   return success();
 }
 
-/// Lower CB->tensor_slice copy: write tiles from CB to tensor.
-/// Loops over CB shape, writing tiles starting at slice offset.
-static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
-                                    TensorSliceOp sliceOp,
-                                    ConversionPatternRewriter &rewriter,
-                                    const TypeConverter &typeConverter) {
+/// Lower CB->tensor copy: write tiles from CB to tensor.
+/// extractOp may be nullptr if identity slice was folded by canonicalization.
+static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value tensorVal,
+                                     tensor::ExtractSliceOp extractOp,
+                                     ConversionPatternRewriter &rewriter,
+                                     const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
-  Value dstTensor = sliceOp.getTensor();
-  Value startRow = sliceOp.getTileRow();
-  Value startCol = sliceOp.getTileCol();
+
+  // Get destination tensor and offsets
+  Value dstTensor;
+  Value startRow, startCol;
+
+  if (extractOp) {
+    dstTensor = extractOp.getSource();
+    auto staticOffsets = extractOp.getStaticOffsets();
+    if (staticOffsets.size() < 2) {
+      return rewriter.notifyMatchFailure(
+          op, "tensor.extract_slice must have at least 2 offsets");
+    }
+    // For 4D device shape [grid_y, grid_x, shard_y, shard_x], tile indices
+    // are in positions 2,3. For 2D logical shape, they're in positions 0,1.
+    size_t rowIdx = (staticOffsets.size() == 4) ? 2 : 0;
+    size_t colIdx = (staticOffsets.size() == 4) ? 3 : 1;
+    startRow = getOffsetValue(extractOp, rowIdx, loc, rewriter);
+    startCol = getOffsetValue(extractOp, colIdx, loc, rewriter);
+  } else {
+    // Direct tensor (identity slice folded) - offset is 0,0
+    dstTensor = tensorVal;
+    startRow = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    startCol = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  }
 
   auto bankBase = getBufferAddressFromRuntimeArg(dstTensor, loc, rewriter);
   if (failed(bankBase)) {
@@ -819,23 +889,6 @@ static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
   return success();
 }
 
-struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TensorSliceOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    // TensorSliceOp is consumed by CopyLowering via getDefiningOp.
-    // After copy lowering, the slice result has no users and can be erased.
-    if (!op.getResult().use_empty()) {
-      return rewriter.notifyMatchFailure(
-          op, "tensor_slice has remaining uses after copy lowering");
-    }
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 struct CopyLowering : OpConversionPattern<CopyOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -852,38 +905,33 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto srcKind = classifyOperand(src);
     auto dstKind = classifyOperand(dst);
 
-    // Validate: copy requires exactly one TensorSlice and one CircularBuffer.
-    bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
+    // Tensor operand can be ExtractSlice or DirectTensor (identity slice folded)
+    bool srcIsTensor = srcKind == CopyOperandKind::ExtractSlice ||
+                       srcKind == CopyOperandKind::DirectTensor;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
-    bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
+    bool dstIsTensor = dstKind == CopyOperandKind::ExtractSlice ||
+                       dstKind == CopyOperandKind::DirectTensor;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
 
-    if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
+    if (!((srcIsTensor && dstIsCB) || (srcIsCB && dstIsTensor))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
-             << "got src=" << src.getType() << " dst=" << dst.getType();
+        diag << "ttl.copy requires one tensor operand and one "
+             << "circular_buffer, got src=" << src.getType()
+             << " dst=" << dst.getType();
       });
     }
 
-    // TensorSlice -> CB: read tiles from tensor into circular buffer.
-    if (srcIsSlice && dstIsCB) {
-      auto sliceOp = src.getDefiningOp<TensorSliceOp>();
-      if (!sliceOp) {
-        return rewriter.notifyMatchFailure(
-            op, "tensor_slice source must come from ttl.tensor_slice op");
-      }
-      return lowerSliceToCB(op, sliceOp, adaptor.getDst(), rewriter,
-                            *typeConverter);
+    // Tensor -> CB: read tiles from tensor into circular buffer.
+    if (srcIsTensor && dstIsCB) {
+      auto extractOp = src.getDefiningOp<tensor::ExtractSliceOp>();
+      return lowerTensorToCB(op, src, extractOp, adaptor.getDst(), rewriter,
+                             *typeConverter);
     }
 
-    // CB -> TensorSlice: write tiles from circular buffer to tensor.
-    auto sliceOp = dst.getDefiningOp<TensorSliceOp>();
-    if (!sliceOp) {
-      return rewriter.notifyMatchFailure(
-          op, "tensor_slice destination must come from ttl.tensor_slice op");
-    }
-    return lowerCBToSlice(op, adaptor.getSrc(), sliceOp, rewriter,
-                          *typeConverter);
+    // CB -> Tensor: write tiles from circular buffer to tensor.
+    auto extractOp = dst.getDefiningOp<tensor::ExtractSliceOp>();
+    return lowerCBToTensor(op, adaptor.getSrc(), dst, extractOp, rewriter,
+                           *typeConverter);
   }
 };
 
@@ -1004,10 +1052,6 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
       [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
 
-  // TensorSliceOp is legal while it has users (CopyLowering will consume them).
-  // Once users are gone, TensorSliceLowering erases the op.
-  target.addDynamicallyLegalOp<TensorSliceOp>(
-      [](TensorSliceOp op) { return !op.getResult().use_empty(); });
 
   target.addDynamicallyLegalOp<ModuleOp>(
       [&](ModuleOp op) { return typeConverter.isLegal(&op.getBodyRegion()); });
@@ -1017,9 +1061,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   });
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
-               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering>(typeConverter, &ctx);
+  patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
+               CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
+      typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

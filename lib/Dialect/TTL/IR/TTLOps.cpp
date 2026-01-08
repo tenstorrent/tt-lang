@@ -6,6 +6,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "TTLOpsVerifyUtils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Support/LogicalResult.h"
@@ -123,26 +124,22 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
   return mlir::success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
-  auto tensorTy = getTensor().getType();
-
-  // Require TTNN layout encoding so lowering can derive tile/addressing info.
-  auto enc = tensorTy.getEncoding();
-  if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
-    return emitOpError() << "expects tensor to carry TTNNLayout encoding; got "
-                         << tensorTy;
+/// Get the underlying tensor for a ttl.copy operand.
+/// Handles two cases:
+/// 1. tensor.extract_slice result - returns the source tensor
+/// 2. Direct tensor with TTNN layout (identity slice folded by canonicalization)
+static mlir::Value getUnderlyingTensor(mlir::Value v) {
+  if (auto extractOp = v.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    return extractOp.getSource();
   }
-
-  // Verify result type matches tensor type.
-  auto resultTy = mlir::cast<TensorSliceType>(getResult().getType());
-  if (resultTy.getTensorType() != tensorTy) {
-    return emitOpError() << "result tensor_slice type must wrap the input "
-                            "tensor type; got input "
-                         << tensorTy << " but result wraps "
-                         << resultTy.getTensorType();
+  // Direct tensor (block arg or folded identity slice)
+  if (auto tensorTy = mlir::dyn_cast<mlir::RankedTensorType>(v.getType())) {
+    if (tensorTy.getEncoding() &&
+        mlir::isa<mlir::tt::ttnn::TTNNLayoutAttr>(tensorTy.getEncoding())) {
+      return v;
+    }
   }
-
-  return success();
+  return nullptr;
 }
 
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
@@ -151,8 +148,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   const bool srcIsCb = mlir::isa<CircularBufferType>(srcTy);
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
-  const bool srcIsSlice = mlir::isa<TensorSliceType>(srcTy);
-  const bool dstIsSlice = mlir::isa<TensorSliceType>(dstTy);
 
   // Exactly one side must be a CB.
   if (srcIsCb == dstIsCb) {
@@ -164,21 +159,23 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   // TODO(#88): Add support for pipes and blocks as ttl.copy operands once those
   // IR types/ops land.
 
-  // Extract the underlying tensor type from the non-CB operand.
-  Type nonCbTy = srcIsCb ? dstTy : srcTy;
-  RankedTensorType rankedTensorTy;
+  // The non-CB operand must be a tensor with TTNN layout, either from:
+  // - tensor.extract_slice (explicit slice)
+  // - Direct tensor (identity slice folded by canonicalization)
+  Value nonCbVal = srcIsCb ? getDst() : getSrc();
+  Value sourceTensor = getUnderlyingTensor(nonCbVal);
+  if (!sourceTensor) {
+    return emitOpError()
+           << "expects the non-CB operand to be a tensor with TTNN layout; got "
+           << nonCbVal.getType();
+  }
 
-  if (srcIsSlice || dstIsSlice) {
-    auto sliceTy = mlir::cast<TensorSliceType>(srcIsSlice ? srcTy : dstTy);
-    rankedTensorTy = sliceTy.getTensorType();
-  } else {
-    rankedTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
-    if (!rankedTensorTy) {
-      return emitOpError()
-             << "expects the non-CB operand to be a ranked tensor or "
-                "!ttl.tensor_slice; got "
-             << nonCbTy;
-    }
+  auto rankedTensorTy =
+      mlir::dyn_cast<RankedTensorType>(sourceTensor.getType());
+  if (!rankedTensorTy) {
+    return emitOpError()
+           << "expects tensor operand to be a ranked tensor; got "
+           << sourceTensor.getType();
   }
 
   // TT-Lang programs operate on TTNN tensors. Require a TTNN layout encoding so

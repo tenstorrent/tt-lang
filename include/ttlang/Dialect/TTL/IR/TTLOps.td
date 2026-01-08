@@ -73,35 +73,6 @@ def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
   let hasVerifier = 1;
 }
 
-def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
-  let summary = "Create a view into a tensor at specific tile indices";
-  let description = [{
-    `ttl.tensor_slice` creates a view into a TTNN tensor at a specific tile
-    position. The resulting `!ttl.tensor_slice` can be passed to `ttl.copy`
-    to transfer a single tile rather than all tiles.
-
-    The indices are tile coordinates (not element coordinates). For a tensor
-    with shape [64, 64] and tile size 32x32, valid indices are [0,0], [0,1],
-    [1,0], and [1,1].
-
-    Example:
-    ```mlir
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %slice = ttl.tensor_slice %tensor[%c0, %c1]
-             : tensor<64x64xbf16, #layout> -> !ttl.tensor_slice<tensor<64x64xbf16, #layout>>
-    ```
-  }];
-  let arguments = (ins
-    AnyRankedTensor:$tensor,
-    Index:$tile_row,
-    Index:$tile_col
-  );
-  let results = (outs TTL_TensorSlice:$result);
-  let assemblyFormat = "$tensor `[` $tile_row `,` $tile_col `]` attr-dict `:` type($tensor) `->` type($result)";
-  let hasVerifier = 1;
-}
-
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Asynchronous copy between tensor slice and circular buffer";
   let description = [{
@@ -112,9 +83,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     corresponding `ttl.wait` has completed.
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
-    must be either:
-    - A `!ttl.tensor_slice` (a view into a tensor at specific tile indices)
-    - A ranked tensor with TTNN layout encoding (transfers all tiles via loop)
+    must be a result of `tensor.extract_slice` on a tensor with TTNN layout.
+    The slice offsets specify the starting tile coordinates for the transfer.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     ttkernel noc ops land in tt-mlir. Issue: #87.
@@ -127,10 +97,10 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
       %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-      // Create a slice at tile position (0, 0)
-      %c0 = arith.constant 0 : index
-      %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
-      %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      // Create a slice at tile position (0, 0) - extract full tensor as single-tile slice
+      %slice = tensor.extract_slice %t[0, 0][32, 32][1, 1]
+               : tensor<32x32xf32, #layout> to tensor<32x32xf32, #layout>
+      %xf = ttl.copy %slice, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       ttl.wait %xf : !ttl.transfer_handle<read>
       func.return
     }

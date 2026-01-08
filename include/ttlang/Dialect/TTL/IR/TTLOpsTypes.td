@@ -51,30 +51,4 @@ def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
   }];
 }
 
-def TTL_TensorSlice : TTL_Type<"TensorSlice", "tensor_slice"> {
-  let summary = "A view into a tensor at specific tile indices";
-  let description = [{
-    Represents a slice of a TTNN tensor at a specific tile position. The slice
-    captures both the underlying tensor type and the tile indices, allowing
-    `ttl.copy` to transfer a single tile rather than looping over all tiles.
-
-    The tensor type must be a ranked tensor with TTNN layout encoding.
-
-    Example:
-    ```mlir
-    !ttl.tensor_slice<tensor<64x64xbf16, #layout>>
-    ```
-  }];
-  let parameters = (ins
-    "mlir::RankedTensorType":$tensorType
-  );
-  let assemblyFormat = "`<` $tensorType `>`";
-
-  let extraClassDeclaration = [{
-    mlir::Type getElementType() const {
-      return getTensorType().getElementType();
-    }
-  }];
-}
-
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD
