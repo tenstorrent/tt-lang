@@ -101,19 +101,22 @@ def tile_index_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
+# Constants are hoisted to the top of the function
+# Second read tile index (2) is declared before first read tile index (1)
+# CHECK-CPP: int32_t [[V2:[a-z0-9]+]] = 2;
+# CHECK-CPP: int32_t [[V1:[a-z0-9]+]] = 1;
+
 # First read at tile [0, 1]: offset = 1
-# CHECK-CPP: int32_t [[V1:.+]] = 1;
 # CHECK-CPP: noc_async_read_tile([[V1]],
 
 # Second read at tile [0, 2]: offset = 2
-# CHECK-CPP: int32_t [[V2:.+]] = 2;
 # CHECK-CPP: noc_async_read_tile([[V2]],
 
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 
 # Write at tile [0, 3]: offset = 3
-# CHECK-CPP: int32_t [[V3:.+]] = 3;
+# CHECK-CPP: int32_t [[V3:[a-z0-9]+]] = 3;
 # CHECK-CPP: noc_async_write_tile([[V3]],
 
 

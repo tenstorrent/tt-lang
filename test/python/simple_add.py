@@ -111,7 +111,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Bind CBs (alphabetical order: lhs_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
@@ -133,7 +133,7 @@ def add_kernel(lhs, rhs, out):
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Wait for output CB, slice, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
