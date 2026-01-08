@@ -48,11 +48,12 @@ using mlir::ValueRange;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
-// Start index in compile-time args for TA static metadata (is_sharded, is_dram).
-// CTA layout is [CBs, TAs], so this is the number of CBs.
+// Start index in compile-time args for TA static metadata (is_sharded,
+// is_dram). CTA layout is [CBs, TAs], so this is the number of CBs.
 constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
-// Maps local args to global tensor indices for common runtime args (buffer addresses).
-// CRTA is filtered per-thread, containing only addresses for tensors this thread uses.
+// Maps local args to global tensor indices for common runtime args (buffer
+// addresses). CRTA is filtered per-thread, containing only addresses for
+// tensors this thread uses.
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
@@ -443,20 +444,21 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
     return op->emitError("operation must be inside a function");
   }
 
-  auto baseCTAAttr =
-      parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttr);
+  auto baseCTAAttr = parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttr);
   if (!baseCTAAttr) {
-    return op->emitError("function missing ") << kBaseCTAIndexAttr << " attribute";
+    return op->emitError("function missing ")
+           << kBaseCTAIndexAttr << " attribute";
   }
 
-  auto crtaIndicesAttr =
-      parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
+  auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
   if (!crtaIndicesAttr) {
-    return op->emitError("function missing ") << kCRTAIndicesAttr << " attribute";
+    return op->emitError("function missing ")
+           << kCRTAIndicesAttr << " attribute";
   }
 
   if (*argIdx >= crtaIndicesAttr.size()) {
-    return op->emitError("argument index out of range for ") << kCRTAIndicesAttr;
+    return op->emitError("argument index out of range for ")
+           << kCRTAIndicesAttr;
   }
 
   int64_t baseCTA = baseCTAAttr.getInt();

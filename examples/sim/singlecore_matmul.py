@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from sim import ttl, ttnn
 from sim.testing import assert_pcc
+
+from sim import ttl, ttnn
 
 
 @ttl.kernel(grid=(1, 1))

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 import torch
+
 from sim import ttnn
 
 
