@@ -2,14 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # up to tt-lang spec, not intended to compile or run currently
-import ttnn
 import pytest
 import torch
-
-from ttl import Program, make_circular_buffer_like, copy
-
-from ttlang.utils.correctness import assert_with_ulp
+import ttnn
+from ttl import Program, copy, make_circular_buffer_like
 from ttlang.utils.block_allocation import split_work_to_cores
+from ttlang.utils.correctness import assert_with_ulp
 
 
 def get_number_of_cores(grid_range):

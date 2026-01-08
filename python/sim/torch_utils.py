@@ -47,8 +47,10 @@ Use:
     assert tu.all_true(tensor > 0)
 """
 
+from typing import List, Union
+
 import torch
-from typing import Union, List
+
 from .typedefs import Count, Shape
 
 

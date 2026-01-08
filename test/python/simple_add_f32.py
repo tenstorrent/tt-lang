@@ -16,9 +16,9 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
+from ttlang import make_circular_buffer_like, ttl
 from ttlang.operators import copy
+from ttlang.ttl_api import Program
 
 try:
     import ttnn

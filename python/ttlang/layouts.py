@@ -4,8 +4,8 @@
 
 """Layout creation utilities for tensor distribution across cores."""
 
-from typing import List
 from dataclasses import dataclass
+from typing import List
 
 from ttmlir.dialects import ttcore, ttnn
 

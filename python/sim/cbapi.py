@@ -7,13 +7,15 @@ Public API for cbsim: a class-based interface with a singleton default.
 """
 
 import threading
-from typing import List, Optional, Annotated, NamedTuple, Any
-from pydantic import validate_call, Field
-from .errors import CBContractError, CBTimeoutError
-from .constants import MAX_CBS, CB_DEFAULT_TIMEOUT
-from .typedefs import Size, CBID
+from typing import Annotated, Any, List, NamedTuple, Optional
+
+from pydantic import Field, validate_call
+
 from .block import Block
 from .cbstate import CBState
+from .constants import CB_DEFAULT_TIMEOUT, MAX_CBS
+from .errors import CBContractError, CBTimeoutError
+from .typedefs import CBID, Size
 
 
 class CBStats(NamedTuple):

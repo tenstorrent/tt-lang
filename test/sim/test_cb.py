@@ -9,17 +9,18 @@ the underlying CBAPI and provides the expected interface for tensor operations.
 """
 
 import pytest
-from python.sim.cb import CircularBuffer
-from python.sim.cbapi import CBAPI
-from python.sim import ttnn, TILE_SHAPE, copy
-from python.sim.errors import CBContractError
 from test_utils import (
+    make_ones_tensor,
     make_ones_tile,
-    make_zeros_tile,
     make_rand_tensor,
     make_zeros_tensor,
-    make_ones_tensor,
+    make_zeros_tile,
 )
+
+from python.sim import TILE_SHAPE, copy, ttnn
+from python.sim.cb import CircularBuffer
+from python.sim.cbapi import CBAPI
+from python.sim.errors import CBContractError
 
 
 @pytest.fixture

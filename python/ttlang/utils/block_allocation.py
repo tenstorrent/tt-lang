@@ -1,11 +1,9 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-from typing import Tuple, List
 import itertools
 import math
-import sympy
-from collections import namedtuple
+from typing import List, Tuple
 
 
 def remove_leading_ones(grid: Tuple[int, ...]) -> Tuple[int, ...]:

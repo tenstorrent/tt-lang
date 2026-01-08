@@ -7,9 +7,10 @@ Test suite for the TensorAccessor class with PyTorch tensors.
 
 import pytest
 import torch
+from test_utils import all_equal, make_full, make_ones, make_randn, make_zeros
+
 from python.sim.tensoraccessor import TensorAccessor
 from python.sim.typedefs import IndexType
-from test_utils import make_randn, make_zeros, make_ones, make_full, all_equal
 
 
 class TestTensorAccessor:

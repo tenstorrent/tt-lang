@@ -7,11 +7,13 @@ Block and supporting Span for cbsim.
 """
 
 import operator as _op
-from typing import List, Sequence, Any, Union, Callable
-from .typedefs import Size, Index, Span
+from typing import Any, Callable, List, Sequence, Union
+
+from pydantic import validate_call
+
 from .cbstate import CBSlot
 from .ttnnsim import Tensor
-from pydantic import validate_call
+from .typedefs import Index, Size, Span
 
 
 # Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not

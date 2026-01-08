@@ -5,9 +5,10 @@
 Pipe utilities for conditional execution based on pipe roles.
 """
 
-from typing import Callable, Union, List, Optional, Iterator, Generator, Any
-from .typedefs import Pipe, CoreIndex
+from typing import Any, Callable, Generator, Iterator, List, Optional, Union
+
 from .kernel import core, flatten_core_index
+from .typedefs import CoreIndex, Pipe
 
 
 # TODO: Core Ranges should probably be their own type

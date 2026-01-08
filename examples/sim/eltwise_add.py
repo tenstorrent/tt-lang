@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
-from typing import TYPE_CHECKING
 import math
+from typing import TYPE_CHECKING
 
 from sim import ttl, ttnn
 from sim.testing import assert_pcc

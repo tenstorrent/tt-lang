@@ -9,11 +9,10 @@ import os
 import pathlib
 import shutil
 import subprocess
-
-from setuptools import setup, Extension
-from setuptools.command.build_ext import build_ext
 from datetime import datetime
 
+from setuptools import Extension, setup
+from setuptools.command.build_ext import build_ext
 
 readme = None
 

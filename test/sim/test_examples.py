@@ -17,11 +17,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "examples" / "sim")
 from eltwise_add import eltwise_add  # type: ignore[import-not-found]
 from eltwise_pipe import eltwise_pipe  # type: ignore[import-not-found]
 from eltwise_pipe_core3 import eltwise_pipe_core3  # type: ignore[import-not-found]
-from singlecore_matmul import tt_lang_singlecore_matmul  # type: ignore[import-not-found]
 from multicore_matmul import tt_lang_multicore_matmul  # type: ignore[import-not-found]
-
 from sim import ttnn
 from sim.testing import assert_pcc
+from singlecore_matmul import (
+    tt_lang_singlecore_matmul,  # type: ignore[import-not-found]
+)
 
 
 class TestExamples:

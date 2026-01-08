@@ -18,12 +18,13 @@ Scope:
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple, Union, cast, List
+from typing import Any, List, Optional, Tuple, Union, cast
+
 import torch
 
-from .tensoraccessor import TensorAccessor
-from .typedefs import IndexType, Shape, Count
 from .constants import TILE_SHAPE
+from .tensoraccessor import TensorAccessor
+from .typedefs import Count, IndexType, Shape
 
 # Public constants (mirror TTL constants)
 TILE_SIZE: int = TILE_SHAPE[0]

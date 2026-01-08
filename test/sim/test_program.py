@@ -11,22 +11,16 @@ This test verifies the Program class behavior including:
 - Multi-core execution
 """
 
+from typing import cast
+
 import pytest
 import torch
-from typing import cast
-from python.sim import (
-    ttl,
-    TILE_SHAPE,
-    copy,
-    ttnn,
-)
-from python.sim.program import (
-    Program,
-    rebind_func_with_ctx,
-    _make_cell,  # type: ignore[reportPrivateUsage]
-)
 import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
+
+from python.sim import TILE_SHAPE, copy, ttl, ttnn
+from python.sim.program import _make_cell  # type: ignore[reportPrivateUsage]
+from python.sim.program import Program, rebind_func_with_ctx
 
 
 class TestBasicExecution:

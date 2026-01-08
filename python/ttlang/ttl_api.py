@@ -7,51 +7,50 @@
 from __future__ import annotations
 
 import ast
-import inspect
 import functools
+import inspect
 import os
-from typing import List, Optional, Callable, Dict, Union
+from typing import Callable, Dict, List, Optional, Union
 
 try:
     import ttnn
 except ModuleNotFoundError:
     ttnn = None
 
-from ttmlir.ir import *
-from ttmlir.passmanager import PassManager
-from ttmlir.dialects import ttkernel
-from ttmlir.passes import (
-    ttkernel_to_cpp_by_name,
-    get_ttkernel_names,
-    get_ttkernel_arg_spec,
-)
-
 import ttlang._mlir_libs._ttlang  # Register tt-lang passes
-
-from .ttl_utils import get_thread_type_string
-
-
 from pykernel._src.utils import _cleanup_source_code
+from ttmlir.dialects import ttkernel
+from ttmlir.ir import *
+from ttmlir.passes import (
+    get_ttkernel_arg_spec,
+    get_ttkernel_names,
+    ttkernel_to_cpp_by_name,
+)
+from ttmlir.passmanager import PassManager
+
 from ._src.tensor_registry import (
-    register_tensor_name,
-    register_tensor_source,
     get_tensor_global_index,
     get_tensor_source,
+    register_tensor_name,
+    register_tensor_source,
 )
-from .diagnostics import find_variable_assignment
-
 from ._src.ttl_ast import TTLGenericCompiler
-from .diagnostics import format_mlir_error, format_python_error, TTLangCompileError
-
-from .operators import TensorBlock, CopyTransferHandler, copy
 from .circular_buffer import CircularBuffer
-from .semaphore import Semaphore
-from .dtype_utils import (
-    torch_dtype_to_ttnn_datatype,
-    tile_bytes_from_dtype,
-    is_ttnn_tensor,
-)
 from .constants import SUPPORTED_MEMORY_SPACES
+from .diagnostics import (
+    TTLangCompileError,
+    find_variable_assignment,
+    format_mlir_error,
+    format_python_error,
+)
+from .dtype_utils import (
+    is_ttnn_tensor,
+    tile_bytes_from_dtype,
+    torch_dtype_to_ttnn_datatype,
+)
+from .operators import CopyTransferHandler, TensorBlock, copy
+from .semaphore import Semaphore
+from .ttl_utils import get_thread_type_string
 
 
 class CompilerConfig:
@@ -269,8 +268,8 @@ def _write_kernel_to_tmp(
     name: str, source: str, num_tensors: int = 0, tensor_indices: list = None
 ) -> str:
     """Write kernel source to /tmp and return the file path."""
-    import re
     import hashlib
+    import re
 
     # TODO(XX): Fix TensorAccessorArgs CTA offsets. C++ emits placeholder 42+idx,
     # replace with actual offset = global_idx + num_tensors (CB indices occupy 0..num_tensors-1).
