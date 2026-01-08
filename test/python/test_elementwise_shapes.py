@@ -6,23 +6,26 @@
 Test for TTL elementwise operations across multiple tensor shapes.
 
 Tests elementwise ops against PyTorch equivalents with L1 memory configuration,
-sweeping all tile configurations from 1x1 to 4x4.
+sweeping 1D tile configurations (row or column vectors only).
 
 Parameterized over:
 - Operations: binary (add, sub, mul, max) and unary (exp, log, sqrt, etc.)
-- Shapes: all tile configurations from 1x1 to 4x4 (16 shapes total)
+- Shapes: 1D tile configurations (1x1, 1x2, 1x3, 2x1, 3x1) - 5 shapes total
 
-Total test cases: 13 ops x 16 shapes = 208 tests
+Total test cases: 13 ops x 5 shapes = 65 tests
 """
 
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
+import atexit
+import os
 import pytest
 import sys
 import tempfile
 import importlib.util
 from pathlib import Path
+from typing import Callable
 
 # Import ttnn BEFORE torch to avoid nanobind initialization issues
 try:
@@ -39,7 +42,7 @@ from utils import assert_allclose
 pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
 
 # =============================================================================
-# Shape Configurations - all permutations from 1x1 to 4x4 tiles
+# Shape Configurations - 1D tile configurations (row or column vectors)
 # =============================================================================
 
 TILE_SIZE = 32
@@ -193,10 +196,25 @@ def {name}_kernel(inp, out):
 # =============================================================================
 
 # Cache for generated kernels: (name, op, tile_rows, tile_cols) -> kernel
-_kernel_cache = {}
+_kernel_cache: dict[tuple, Callable] = {}
+
+# Track temp files for cleanup
+_temp_files: list[str] = []
 
 
-def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
+def _cleanup_temp_files() -> None:
+    """Clean up all temporary kernel files at exit."""
+    for path in _temp_files:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_temp_files)
+
+
+def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Callable:
     """Generate a binary kernel for the given shape."""
     cache_key = (name, op, tile_rows, tile_cols, "binary")
     if cache_key in _kernel_cache:
@@ -220,6 +238,7 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
         f.write(code)
         temp_path = f.name
 
+    _temp_files.append(temp_path)
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -229,7 +248,7 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
     return kernel
 
 
-def make_binary_fn_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
+def make_binary_fn_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Callable:
     """Generate a binary kernel using function call syntax."""
     cache_key = (name, op, tile_rows, tile_cols, "binary_fn")
     if cache_key in _kernel_cache:
@@ -253,6 +272,7 @@ def make_binary_fn_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
         f.write(code)
         temp_path = f.name
 
+    _temp_files.append(temp_path)
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -262,7 +282,7 @@ def make_binary_fn_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
     return kernel
 
 
-def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
+def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Callable:
     """Generate a unary kernel for the given shape."""
     cache_key = (name, op, tile_rows, tile_cols, "unary")
     if cache_key in _kernel_cache:
@@ -286,6 +306,7 @@ def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int):
         f.write(code)
         temp_path = f.name
 
+    _temp_files.append(temp_path)
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -489,7 +510,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print("=== Elementwise Ops Shape Sweep Test ===")
-    print(f"Shapes: {len(TILE_SHAPES)} configurations (1x1 to 4x4 tiles)")
+    print(f"Shapes: {len(TILE_SHAPES)} configurations (1D tile vectors)")
     print(f"Binary ops: {list(BINARY_OPS.keys()) + list(BINARY_FN_OPS.keys())}")
     print(f"Unary ops: {list(UNARY_OPS.keys())}")
     print(

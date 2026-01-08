@@ -154,18 +154,26 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
     return builder.create<arith::ConstantIndexOp>(loc, 0);
   }
 
-  // Reverse to get outermost-first order.
-  std::reverse(loops.begin(), loops.end());
+  // Validate assumptions: all loops have step=1 and lower bound=0.
+  for (auto loop : loops) {
+    assert(loop.getConstantLowerBound() == 0 &&
+           "computeCBTileIndexFromLoops: expected lower bound of 0");
+    assert(loop.getConstantUpperBound() &&
+           "computeCBTileIndexFromLoops: expected constant upper bound");
+    auto step = loop.getStepAsInt();
+    assert(step == 1 && "computeCBTileIndexFromLoops: expected step of 1");
+  }
 
+  // Process in reverse order (innermost-first) without mutating the vector.
   Value linearIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
-  for (size_t i = 0; i < loops.size(); ++i) {
-    Value iv = loops[i].getInductionVar();
+  for (auto [i, loop] : llvm::enumerate(llvm::reverse(loops))) {
+    Value iv = loop.getInductionVar();
 
-    // Compute stride as product of remaining loop upper bounds.
+    // Stride = product of upper bounds of more-nested loops.
     Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
-    for (size_t j = i + 1; j < loops.size(); ++j) {
+    for (auto innerLoop : llvm::drop_begin(llvm::reverse(loops), i + 1)) {
       stride =
-          builder.create<arith::MulIOp>(loc, stride, loops[j].getUpperBound());
+          builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
     }
 
     Value term = builder.create<arith::MulIOp>(loc, iv, stride);
@@ -670,13 +678,12 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   auto [tilesY, tilesX] = getTileGridShapeFromValue(srcTensor);
 
   // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
-  auto tensorTy = llvm::cast<RankedTensorType>(srcTensor.getType());
+  auto tensorTy = mlir::cast<RankedTensorType>(srcTensor.getType());
   auto layoutAttr =
       mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  assert(layoutAttr && "tensor must have TTNNLayoutAttr encoding");
+  assert(layoutAttr &&
+         "lowerTensorToCB: srcTensor must have TTNNLayoutAttr encoding");
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-  auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
 
   // Cast cbWritePtr to index for address arithmetic.
   auto indexTy = rewriter.getIndexType();
@@ -688,6 +695,8 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  // Compute CB address: cbWritePtr + tileOffset * pageSize
+                 auto pageSizeIdx =
+                     b.create<arith::ConstantIndexOp>(bodyLoc, pageSizeBytes);
                  Value byteOffset =
                      b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeIdx);
                  Value cbAddrIdx = b.create<arith::AddIOp>(
@@ -738,13 +747,12 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   auto [tilesY, tilesX] = getTileGridShapeFromValue(dstTensor);
 
   // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
-  auto tensorTy = llvm::cast<RankedTensorType>(dstTensor.getType());
+  auto tensorTy = mlir::cast<RankedTensorType>(dstTensor.getType());
   auto layoutAttr =
       mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  assert(layoutAttr && "tensor must have TTNNLayoutAttr encoding");
+  assert(layoutAttr &&
+         "lowerCBToTensor: dstTensor must have TTNNLayoutAttr encoding");
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-  auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
 
   // Cast cbReadPtr to index for address arithmetic.
   auto indexTy = rewriter.getIndexType();
@@ -756,6 +764,8 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
   emitTileLoop(rewriter, loc, tilesY, tilesX,
                [&](OpBuilder &b, Location bodyLoc, Value tileOffset) {
                  // Compute CB address: cbReadPtr + tileOffset * pageSize
+                 auto pageSizeIdx =
+                     b.create<arith::ConstantIndexOp>(bodyLoc, pageSizeBytes);
                  Value byteOffset =
                      b.create<arith::MulIOp>(bodyLoc, tileOffset, pageSizeIdx);
                  Value cbAddrIdx =
