@@ -8,7 +8,8 @@ Test comparing split_work_to_cores with ttnn.split_work_to_cores
 get_large_matmul_params is compared with hard coded expected values
 """
 import pytest
-from ttlang.utils.block_allocation import split_work_to_cores
+
+from utils.block_allocation import split_work_to_cores, get_large_matmul_params
 
 ttnn = pytest.importorskip("ttnn")
 

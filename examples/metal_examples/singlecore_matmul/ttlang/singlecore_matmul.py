@@ -4,12 +4,14 @@
 # up to tt-lang spec, not intended to compile or run currently
 import sys
 from pathlib import Path
-
+import ttnn
 import pytest
 import torch
-import ttnn
-from ttl import Program, copy, make_circular_buffer_like
-from ttlang.utils.correctness import assert_with_ulp
+
+import ttl
+from ttl import Program, make_circular_buffer_like, copy
+
+from utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))
@@ -77,3 +79,8 @@ def test_singlecore_matmul_tt_lang():
     assert_with_ulp(golden, result)
 
     ttnn.close_device(device)
+
+
+if __name__ == "__main__":
+    test_singlecore_matmul_tt_lang()
+    print("PASSED")

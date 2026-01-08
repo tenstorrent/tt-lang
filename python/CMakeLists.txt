@@ -124,7 +124,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
 )
 
 declare_mlir_python_sources(TTLangPythonCommon.Utils
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     utils/__init__.py
