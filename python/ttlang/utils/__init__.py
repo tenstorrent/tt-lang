@@ -10,6 +10,7 @@ from .correctness import assert_allclose, assert_pcc, assert_with_ulp
 __all__ = [
     # block_allocation
     "split_work_to_cores",
+    "get_large_matmul_params",
     # correctness
     "assert_pcc",
     "assert_allclose",
