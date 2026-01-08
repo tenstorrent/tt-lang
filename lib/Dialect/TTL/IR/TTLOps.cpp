@@ -123,28 +123,6 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
   return mlir::success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
-  auto tensorTy = getTensor().getType();
-
-  // Require TTNN layout encoding so lowering can derive tile/addressing info.
-  auto enc = tensorTy.getEncoding();
-  if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
-    return emitOpError() << "expects tensor to carry TTNNLayout encoding; got "
-                         << tensorTy;
-  }
-
-  // Verify result type matches tensor type.
-  auto resultTy = mlir::cast<TensorSliceType>(getResult().getType());
-  if (resultTy.getTensorType() != tensorTy) {
-    return emitOpError() << "result tensor_slice type must wrap the input "
-                            "tensor type; got input "
-                         << tensorTy << " but result wraps "
-                         << resultTy.getTensorType();
-  }
-
-  return success();
-}
-
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getDst().getType();

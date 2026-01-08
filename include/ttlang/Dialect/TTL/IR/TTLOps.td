@@ -73,7 +73,13 @@ def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
   let hasVerifier = 1;
 }
 
-def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
+def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [
+    Pure,
+    TypesMatchWith<"result tensor_slice must wrap input tensor type",
+                   "tensor", "result",
+                   "TensorSliceType::get($_ctxt, "
+                   "llvm::cast<mlir::RankedTensorType>($_self))">
+  ]> {
   let summary = "Create a view into a tensor at specific tile indices";
   let description = [{
     `ttl.tensor_slice` creates a view into a TTNN tensor at a specific tile
@@ -93,13 +99,12 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     ```
   }];
   let arguments = (ins
-    AnyRankedTensor:$tensor,
+    TTNNTensor:$tensor,
     Index:$tile_row,
     Index:$tile_col
   );
   let results = (outs TTL_TensorSlice:$result);
   let assemblyFormat = "$tensor `[` $tile_row `,` $tile_col `]` attr-dict `:` type($tensor) `->` type($result)";
-  let hasVerifier = 1;
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {

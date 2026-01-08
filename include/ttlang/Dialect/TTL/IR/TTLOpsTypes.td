@@ -10,6 +10,21 @@ include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
 include "mlir/IR/AttrTypeBase.td"
 
 //===----------------------------------------------------------------------===//
+// Type constraints
+//===----------------------------------------------------------------------===//
+
+// A ranked tensor with TTNN layout encoding. This constraint is useful for
+// operations that require tensor tile/addressing info derived from TTNNLayoutAttr.
+def TTNNTensor : TypeConstraint<
+    And<[
+      CPred<"llvm::isa<mlir::RankedTensorType>($_self)">,
+      CPred<"llvm::cast<mlir::RankedTensorType>($_self).getEncoding() && "
+            "llvm::isa<mlir::tt::ttnn::TTNNLayoutAttr>("
+            "llvm::cast<mlir::RankedTensorType>($_self).getEncoding())">
+    ]>,
+    "ranked tensor with TTNN layout encoding">;
+
+//===----------------------------------------------------------------------===//
 // TTL type definitions
 //===----------------------------------------------------------------------===//
 

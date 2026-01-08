@@ -86,11 +86,9 @@ def _make_tensor_slice(tensor, indices):
     if len(indices) != 2:
         raise ValueError(f"Tensor slice requires exactly 2 indices, got {len(indices)}")
 
-    tensor_type = tensor.type
-    ctx = tensor_type.context
-    slice_type = Type.parse(f"!ttl.tensor_slice<{tensor_type}>", ctx)
     row_idx, col_idx = indices
-    return ttl.tensor_slice(slice_type, tensor, row_idx, col_idx)
+    # Result type is inferred from tensor type via TypesMatchWith trait
+    return ttl.tensor_slice(tensor, row_idx, col_idx)
 
 
 @syntax("copy")
