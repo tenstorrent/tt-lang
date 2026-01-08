@@ -609,12 +609,11 @@ static void emitTileLoop(
     auto xBound = builder.create<arith::ConstantIndexOp>(loc, tilesX);
     auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
 
-    scf::buildLoopNest(
-        builder, loc, ValueRange{zero, zero}, ValueRange{yBound, xBound},
-        ValueRange{one, one},
-        [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
-          emitBody(b, bodyLoc, ivs[0], ivs[1]);
-        });
+    scf::buildLoopNest(builder, loc, ValueRange{zero, zero},
+                       ValueRange{yBound, xBound}, ValueRange{one, one},
+                       [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
+                         emitBody(b, bodyLoc, ivs[0], ivs[1]);
+                       });
   } else {
     emitBody(builder, loc, zero, zero);
   }
@@ -684,34 +683,40 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
 
   auto indexTy = rewriter.getIndexType();
-  auto cbWritePtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbWritePtr);
-  auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+  auto cbWritePtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbWritePtr);
+  auto pageSizeIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
   emitTileLoop(
       rewriter, loc, cbRows, cbCols,
       [&, tensorTilesX, cbCols](OpBuilder &b, Location bodyLoc, Value loopRow,
                                 Value loopCol) {
-        // Tensor tile index: (startRow + loopRow) * tensorCols + (startCol + loopCol)
+        // Tensor tile index: (startRow + loopRow) * tensorCols + (startCol +
+        // loopCol)
         Value tensorRow = b.create<arith::AddIOp>(bodyLoc, startRow, loopRow);
         Value tensorCol = b.create<arith::AddIOp>(bodyLoc, startCol, loopCol);
         Value tensorTileIdx =
             linearizeTileIndex(b, bodyLoc, tensorRow, tensorCol, tensorTilesX);
 
         // CB tile index within the CB buffer.
-        Value cbTileIdx = linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
+        Value cbTileIdx =
+            linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
 
         // Compute CB address: cbWritePtr + cbTileIdx * pageSize
-        Value byteOffset = b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
-        Value cbAddrIdx = b.create<arith::AddIOp>(bodyLoc, cbWritePtrIdx, byteOffset);
+        Value byteOffset =
+            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+        Value cbAddrIdx =
+            b.create<arith::AddIOp>(bodyLoc, cbWritePtrIdx, byteOffset);
 
         // Cast to i32 for NOC operation.
         Value tensorTileIdx32 =
             b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tensorTileIdx);
         Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
 
-        b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tensorTileIdx32, *srcAccessor,
-                                          cbAddr);
+        b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tensorTileIdx32,
+                                          *srcAccessor, cbAddr);
       });
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
@@ -774,34 +779,40 @@ static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
 
   auto indexTy = rewriter.getIndexType();
-  auto cbReadPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
-  auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+  auto cbReadPtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+  auto pageSizeIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
   emitTileLoop(
       rewriter, loc, cbRows, cbCols,
       [&, tensorTilesX, cbCols](OpBuilder &b, Location bodyLoc, Value loopRow,
                                 Value loopCol) {
-        // Tensor tile index: (startRow + loopRow) * tensorCols + (startCol + loopCol)
+        // Tensor tile index: (startRow + loopRow) * tensorCols + (startCol +
+        // loopCol)
         Value tensorRow = b.create<arith::AddIOp>(bodyLoc, startRow, loopRow);
         Value tensorCol = b.create<arith::AddIOp>(bodyLoc, startCol, loopCol);
         Value tensorTileIdx =
             linearizeTileIndex(b, bodyLoc, tensorRow, tensorCol, tensorTilesX);
 
         // CB tile index within the CB buffer.
-        Value cbTileIdx = linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
+        Value cbTileIdx =
+            linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
 
         // Compute CB address: cbReadPtr + cbTileIdx * pageSize
-        Value byteOffset = b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
-        Value cbAddrIdx = b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+        Value byteOffset =
+            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+        Value cbAddrIdx =
+            b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
 
         // Cast to i32 for NOC operation.
         Value tensorTileIdx32 =
             b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tensorTileIdx);
         Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
 
-        b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tensorTileIdx32, *dstAccessor,
-                                           cbAddr);
+        b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tensorTileIdx32,
+                                           *dstAccessor, cbAddr);
       });
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
