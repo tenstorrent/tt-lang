@@ -77,15 +77,18 @@
 // Reader kernel: reads A and B from DRAM, pushes to CB0 and CB1
 func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #layout>)
     attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
 
   // Copy A to CB0
-  %xf_a = ttl.copy %a, %cb0 : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+  %slice_a = ttl.tensor_slice %a[%c0, %c0] : tensor<64x64xf32, #layout> -> !ttl.tensor_slice<tensor<64x64xf32, #layout>>
+  %xf_a = ttl.copy %slice_a, %cb0 : (!ttl.tensor_slice<tensor<64x64xf32, #layout>>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %xf_a : !ttl.transfer_handle<read>
 
   // Copy B to CB1
-  %xf_b = ttl.copy %b, %cb1 : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+  %slice_b = ttl.tensor_slice %b[%c0, %c0] : tensor<64x64xf32, #layout> -> !ttl.tensor_slice<tensor<64x64xf32, #layout>>
+  %xf_b = ttl.copy %slice_b, %cb1 : (!ttl.tensor_slice<tensor<64x64xf32, #layout>>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %xf_b : !ttl.transfer_handle<read>
 
   func.return
@@ -233,13 +236,15 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // Writer kernel: pops from CB2, writes to DRAM
 func.func @writer_unary(%out: tensor<64x64xf32, #layout>)
     attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
 
   // Wait for data from compute thread (must match CB shape)
   %cb2_view = ttl.cb_wait %cb2 : <[2, 2], f32, 2> -> tensor<2x2xf32>
 
   // Copy from CB2 to output tensor
-  %xf_out = ttl.copy %cb2, %out : (!ttl.cb<[2, 2], f32, 2>, tensor<64x64xf32, #layout>) -> !ttl.transfer_handle<write>
+  %slice_out = ttl.tensor_slice %out[%c0, %c0] : tensor<64x64xf32, #layout> -> !ttl.tensor_slice<tensor<64x64xf32, #layout>>
+  %xf_out = ttl.copy %cb2, %slice_out : (!ttl.cb<[2, 2], f32, 2>, !ttl.tensor_slice<tensor<64x64xf32, #layout>>) -> !ttl.transfer_handle<write>
   ttl.wait %xf_out : !ttl.transfer_handle<write>
 
   func.return

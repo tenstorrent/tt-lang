@@ -19,7 +19,8 @@ module {
   func.func @dma_single_tile_single_copy(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
+    %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
@@ -44,7 +45,8 @@ module {
   func.func @cb_to_tensor(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<write>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
+    %xf = ttl.copy %cb, %slice : (!ttl.cb<[1, 1], f32, 2>, !ttl.tensor_slice<tensor<32x32xf32, #layout>>) -> !ttl.transfer_handle<write>
     ttl.wait %xf : !ttl.transfer_handle<write>
     func.return
   }
@@ -75,10 +77,13 @@ module {
 // TTKERNEL-NOT: ttkernel.noc_async_write_barrier
 module {
   func.func @dma_batched(%t0: tensor<32x32xf32, #layout>, %t1: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
     %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf0 = ttl.copy %t0, %cb0 : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
-    %xf1 = ttl.copy %t1, %cb1 : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %slice0 = ttl.tensor_slice %t0[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
+    %slice1 = ttl.tensor_slice %t1[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
+    %xf0 = ttl.copy %slice0, %cb0 : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf1 = ttl.copy %slice1, %cb1 : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf0 : !ttl.transfer_handle<read>
     ttl.wait %xf1 : !ttl.transfer_handle<read>
     func.return
@@ -109,9 +114,10 @@ module {
     %c3 = arith.constant 3 : index
     %c1 = arith.constant 1 : index
 
-    %xf_init = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
+    %xf_init = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     %last = scf.for %i = %c0 to %c3 step %c1 iter_args(%prev = %xf_init) -> (!ttl.transfer_handle<read>) {
-      %xf_next = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf_next = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       ttl.wait %prev : !ttl.transfer_handle<read>
       scf.yield %xf_next : !ttl.transfer_handle<read>
     }
@@ -150,8 +156,9 @@ module {
     %c1 = arith.constant 1 : index
     %handles0 = tensor.empty(%c4) : tensor<?x!ttl.transfer_handle<read>>
 
+    %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
     %handles = scf.for %i = %c0 to %c4 step %c1 iter_args(%h = %handles0) -> tensor<?x!ttl.transfer_handle<read>> {
-      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       %h2 = tensor.insert %xf into %h[%i] : tensor<?x!ttl.transfer_handle<read>>
       scf.yield %h2 : tensor<?x!ttl.transfer_handle<read>>
     }
@@ -180,7 +187,8 @@ module {
   func.func @dma_single_tile_double_wait(%t: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
+    %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
@@ -207,8 +215,9 @@ module {
     %c1 = arith.constant 1 : index
     %handles0 = tensor.empty(%c1) : tensor<?x!ttl.transfer_handle<read>>
 
+    %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
     %handles = scf.for %i = %c0 to %c1 step %c1 iter_args(%h = %handles0) -> tensor<?x!ttl.transfer_handle<read>> {
-      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       %h2 = tensor.insert %xf into %h[%i] : tensor<?x!ttl.transfer_handle<read>>
       scf.yield %h2 : tensor<?x!ttl.transfer_handle<read>>
     }
@@ -256,8 +265,9 @@ module {
 module {
   func.func @dma_multi_tile_read(%arg0: tensor<64x64xf32, #layout_tile>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %arg0, %cb : (tensor<64x64xf32, #layout_tile>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout_tile> -> !ttl.tensor_slice<tensor<64x64xf32, #layout_tile>>
+    %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<64x64xf32, #layout_tile>>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
@@ -300,8 +310,9 @@ module {
 module {
   func.func @dma_multi_tile_write(%arg0: tensor<64x64xf32, #layout_tile>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<64x64xf32, #layout_tile>) -> !ttl.transfer_handle<write>
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout_tile> -> !ttl.tensor_slice<tensor<64x64xf32, #layout_tile>>
+    %xf = ttl.copy %cb, %slice : (!ttl.cb<[2, 2], f32, 2>, !ttl.tensor_slice<tensor<64x64xf32, #layout_tile>>) -> !ttl.transfer_handle<write>
     ttl.wait %xf : !ttl.transfer_handle<write>
     func.return
   }
@@ -344,8 +355,9 @@ module {
 module {
   func.func @dma_multi_tile_read_cb_shape(%arg0: tensor<64x64xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 1], f32, 2>
-    %xf = ttl.copy %arg0, %cb : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout> -> !ttl.tensor_slice<tensor<64x64xf32, #layout>>
+    %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<64x64xf32, #layout>>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
@@ -389,8 +401,9 @@ module {
 module {
   func.func @dma_multi_tile_write_rect(%arg0: tensor<96x64xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], f32, 2>, tensor<96x64xf32, #layout>) -> !ttl.transfer_handle<write>
+    %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[3, 2], f32, 2>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<96x64xf32, #layout> -> !ttl.tensor_slice<tensor<96x64xf32, #layout>>
+    %xf = ttl.copy %cb, %slice : (!ttl.cb<[3, 2], f32, 2>, !ttl.tensor_slice<tensor<96x64xf32, #layout>>) -> !ttl.transfer_handle<write>
     ttl.wait %xf : !ttl.transfer_handle<write>
     func.return
   }

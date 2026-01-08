@@ -439,50 +439,16 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
   }
 };
 
-enum class CopySourceKind {
-  TensorAccessor,
-  TensorSlice,
-  CircularBuffer,
-  Pipe,
-  Unknown
-};
-enum class CopyDestKind {
-  TensorAccessor,
-  TensorSlice,
-  CircularBuffer,
-  Pipe,
-  Unknown
-};
+enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
 
-static bool isTensorAccessorLike(Type t) {
-  return llvm::isa<ttk::TensorAccessorType>(t) ||
-         llvm::isa<RankedTensorType>(t);
-}
-
-static CopySourceKind classifySrc(Value v) {
+static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
-    return CopySourceKind::CircularBuffer;
+    return CopyOperandKind::CircularBuffer;
   }
   if (llvm::isa<TensorSliceType>(v.getType())) {
-    return CopySourceKind::TensorSlice;
+    return CopyOperandKind::TensorSlice;
   }
-  if (isTensorAccessorLike(v.getType())) {
-    return CopySourceKind::TensorAccessor;
-  }
-  return CopySourceKind::Unknown;
-}
-
-static CopyDestKind classifyDst(Value v) {
-  if (llvm::isa<CircularBufferType>(v.getType())) {
-    return CopyDestKind::CircularBuffer;
-  }
-  if (llvm::isa<TensorSliceType>(v.getType())) {
-    return CopyDestKind::TensorSlice;
-  }
-  if (isTensorAccessorLike(v.getType())) {
-    return CopyDestKind::TensorAccessor;
-  }
-  return CopyDestKind::Unknown;
+  return CopyOperandKind::Unknown;
 }
 
 static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
@@ -660,140 +626,6 @@ static Value linearizeTileIndex(OpBuilder &builder, Location loc, Value row,
   auto numColsVal = builder.create<arith::ConstantIndexOp>(loc, numCols);
   Value rowOffset = builder.create<arith::MulIOp>(loc, row, numColsVal);
   return builder.create<arith::AddIOp>(loc, rowOffset, col);
-}
-
-/// Lower tensor->CB copy: read from DRAM/L1 tensor into circular buffer.
-static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TypeConverter &typeConverter) {
-  auto loc = op.getLoc();
-
-  // Get tensor L1 address from runtime args.
-  auto bankBase = getBufferAddressFromRuntimeArg(srcTensor, loc, rewriter);
-  if (failed(bankBase)) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
-  }
-
-  // Create tensor accessor with actual buffer address.
-  // This derives page size from TTNNLayoutAttr encoding.
-  auto srcAccessor =
-      materializeTensorAccessor(srcTensor, *bankBase, op, rewriter);
-  if (failed(srcAccessor)) {
-    return failure(); // Error already emitted by materializeTensorAccessor
-  }
-
-  // Convert CB to TTKernel type and get write pointer.
-  auto cbConverted = utils::convertTTLCBToTTKernel(dstCB, rewriter, loc);
-  if (failed(cbConverted)) {
-    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
-  }
-  auto cbWritePtr = rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted);
-
-  auto tileGridShape = getTileGridShapeFromValue(srcTensor);
-  int64_t tilesY = tileGridShape.first;
-  int64_t tilesX = tileGridShape.second;
-
-  // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
-  auto tensorTy = mlir::cast<RankedTensorType>(srcTensor.getType());
-  auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  assert(layoutAttr &&
-         "lowerTensorToCB: srcTensor must have TTNNLayoutAttr encoding");
-  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-
-  // Cast cbWritePtr to index for address arithmetic.
-  auto indexTy = rewriter.getIndexType();
-  auto cbWritePtrIdx =
-      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbWritePtr);
-
-  auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
-  auto i32Ty = rewriter.getI32Type();
-
-  // TODO(#138): Emit single block transfer for contiguous layouts instead of
-  // tile loop.
-  emitTileLoop(
-      rewriter, loc, tilesY, tilesX,
-      [&, tilesX](OpBuilder &b, Location bodyLoc, Value row, Value col) {
-        Value tileIdx = linearizeTileIndex(b, bodyLoc, row, col, tilesX);
-        // Compute CB address: cbWritePtr + tileIdx * pageSize
-        Value byteOffset = b.create<arith::MulIOp>(bodyLoc, tileIdx, pageSizeIdx);
-        Value cbAddrIdx = b.create<arith::AddIOp>(bodyLoc, cbWritePtrIdx, byteOffset);
-        // Cast to i32 for NOC operation.
-        Value tileIdx32 = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tileIdx);
-        Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
-        b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tileIdx32, *srcAccessor, cbAddr);
-      });
-
-  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
-  return success();
-}
-
-/// Lower CB->tensor copy: write from circular buffer to DRAM/L1 tensor.
-static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TypeConverter &typeConverter) {
-  auto loc = op.getLoc();
-
-  // Get tensor L1 address from runtime args.
-  auto bankBase = getBufferAddressFromRuntimeArg(dstTensor, loc, rewriter);
-  if (failed(bankBase)) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
-  }
-
-  // Create tensor accessor with actual buffer address.
-  // This derives page size from TTNNLayoutAttr encoding.
-  auto dstAccessor =
-      materializeTensorAccessor(dstTensor, *bankBase, op, rewriter);
-  if (failed(dstAccessor)) {
-    return failure(); // Error already emitted by materializeTensorAccessor
-  }
-
-  // Convert CB to TTKernel type and get read pointer.
-  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
-  if (failed(cbConverted)) {
-    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
-  }
-  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
-
-  auto tileGridShape = getTileGridShapeFromValue(dstTensor);
-  int64_t tilesY = tileGridShape.first;
-  int64_t tilesX = tileGridShape.second;
-
-  // Get page size for CB pointer arithmetic from TTNNLayoutAttr.
-  auto tensorTy = mlir::cast<RankedTensorType>(dstTensor.getType());
-  auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  assert(layoutAttr &&
-         "lowerCBToTensor: dstTensor must have TTNNLayoutAttr encoding");
-  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-
-  // Cast cbReadPtr to index for address arithmetic.
-  auto indexTy = rewriter.getIndexType();
-  auto cbReadPtrIdx =
-      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
-
-  auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
-  auto i32Ty = rewriter.getI32Type();
-
-  // TODO(#138): Emit single block transfer for contiguous layouts instead of
-  // tile loop.
-  emitTileLoop(
-      rewriter, loc, tilesY, tilesX,
-      [&, tilesX](OpBuilder &b, Location bodyLoc, Value row, Value col) {
-        Value tileIdx = linearizeTileIndex(b, bodyLoc, row, col, tilesX);
-        // Compute CB address: cbReadPtr + tileIdx * pageSize
-        Value byteOffset = b.create<arith::MulIOp>(bodyLoc, tileIdx, pageSizeIdx);
-        Value cbAddrIdx = b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
-        // Cast to i32 for NOC operation.
-        Value tileIdx32 = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tileIdx);
-        Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
-        b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tileIdx32, *dstAccessor, cbAddr);
-      });
-
-  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
-  return success();
 }
 
 /// Lower tensor_slice->CB copy: read tiles from tensor into CB.
@@ -1004,16 +836,26 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return rewriter.notifyMatchFailure(op, "no type converter");
     }
 
-    // Use original operands for classification since lowering functions
-    // handle type conversion internally.
     Value src = op.getSrc();
     Value dst = op.getDst();
-    auto srcKind = classifySrc(src);
-    auto dstKind = classifyDst(dst);
+    auto srcKind = classifyOperand(src);
+    auto dstKind = classifyOperand(dst);
 
-    // TensorSlice -> CB: read a single tile from tensor into circular buffer.
-    if (srcKind == CopySourceKind::TensorSlice &&
-        dstKind == CopyDestKind::CircularBuffer) {
+    // Validate: copy requires exactly one TensorSlice and one CircularBuffer.
+    bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
+    bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
+    bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
+    bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
+
+    if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
+             << "got src=" << src.getType() << " dst=" << dst.getType();
+      });
+    }
+
+    // TensorSlice -> CB: read tiles from tensor into circular buffer.
+    if (srcIsSlice && dstIsCB) {
       auto sliceOp = src.getDefiningOp<TensorSliceOp>();
       if (!sliceOp) {
         return rewriter.notifyMatchFailure(
@@ -1023,36 +865,14 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
                             *typeConverter);
     }
 
-    // CB -> TensorSlice: write a single tile from circular buffer to tensor.
-    if (srcKind == CopySourceKind::CircularBuffer &&
-        dstKind == CopyDestKind::TensorSlice) {
-      auto sliceOp = dst.getDefiningOp<TensorSliceOp>();
-      if (!sliceOp) {
-        return rewriter.notifyMatchFailure(
-            op, "tensor_slice destination must come from ttl.tensor_slice op");
-      }
-      return lowerCBToSlice(op, adaptor.getSrc(), sliceOp, rewriter,
-                            *typeConverter);
+    // CB -> TensorSlice: write tiles from circular buffer to tensor.
+    auto sliceOp = dst.getDefiningOp<TensorSliceOp>();
+    if (!sliceOp) {
+      return rewriter.notifyMatchFailure(
+          op, "tensor_slice destination must come from ttl.tensor_slice op");
     }
-
-    // Tensor -> CB: read all tiles from tensor into circular buffer (loop).
-    if (srcKind == CopySourceKind::TensorAccessor &&
-        dstKind == CopyDestKind::CircularBuffer) {
-      return lowerTensorToCB(op, src, adaptor.getDst(), rewriter,
-                             *typeConverter);
-    }
-
-    // CB -> Tensor: write all tiles from circular buffer to tensor (loop).
-    if (srcKind == CopySourceKind::CircularBuffer &&
-        dstKind == CopyDestKind::TensorAccessor) {
-      return lowerCBToTensor(op, adaptor.getSrc(), dst, rewriter,
-                             *typeConverter);
-    }
-
-    return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-      diag << "unsupported ttl.copy src/dst combination: src=" << src.getType()
-           << " dst=" << dst.getType();
-    });
+    return lowerCBToSlice(op, adaptor.getSrc(), sliceOp, rewriter,
+                          *typeConverter);
   }
 };
 
