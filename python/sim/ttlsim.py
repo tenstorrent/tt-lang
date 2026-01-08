@@ -33,11 +33,6 @@ def setup_simulator_imports() -> None:
     sys.modules["ttl"] = ttl  # type: ignore[assignment]
     sys.modules["ttnn"] = ttnn  # type: ignore[assignment]
 
-    # Also inject into __main__ for direct imports in kernel files
-    main_module = sys.modules["__main__"]
-    main_module.ttl = ttl  # type: ignore[attr-defined]
-    main_module.ttnn = ttnn  # type: ignore[attr-defined]
-
 
 def run_file(filepath: str, argv: list[str]) -> None:
     """
@@ -65,9 +60,7 @@ def run_file(filepath: str, argv: list[str]) -> None:
         exec_globals: dict[str, Any] = {
             "__name__": "__main__",
             "__file__": str(file_path),
-            # Include shadowed modules
-            "ttl": sys.modules.get("ttl"),
-            "ttnn": sys.modules.get("ttnn"),
+            "__builtins__": __builtins__,
         }
         exec(code, exec_globals)
 

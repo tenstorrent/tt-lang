@@ -133,7 +133,7 @@ def main() -> None:
 
     golden = a_in + b_in
     assert_pcc(golden, out)
-    print("eltwise_add: success")
+    print("PASSED")
 
 
 if __name__ == "__main__":
