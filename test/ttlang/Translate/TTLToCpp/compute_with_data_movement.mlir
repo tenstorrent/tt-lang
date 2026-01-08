@@ -17,6 +17,7 @@
 // CHECK: void kernel_main() {
 // CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
+// CHECK-DAG:   size_t [[PAGE_SIZE:.*]] = 4096;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
 // Read tensor A into CB0
@@ -24,9 +25,23 @@
 // CHECK-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
 // CHECK:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
+// Cast CB ptr to size_t for index arithmetic
+// CHECK-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
+// CHECK-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
 // CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
-// CHECK:       noc_async_read_tile({{.*}}, [[ACC_A]], [[CB0_PTR]]);
+// Tile offset computation: i * cols + j
+// CHECK:       size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
+// CHECK-NEXT:       size_t [[TILE_OFF_A_X:v[0-9]+]] = [[TILE_OFF_A_Y]] + [[J_A]];
+// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
+// CHECK-NEXT:       size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A_X]] * [[PAGE_SIZE]];
+// CHECK-NEXT:       size_t [[CB_ADDR_A_IDX:v[0-9]+]] = [[CB0_PTR_IDX]] + [[BYTE_OFF_A]];
+// Cast to i32 for NOC operation
+// CHECK-NEXT:       ptrdiff_t [[TILE_OFF_A_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_A_X]];
+// CHECK-NEXT:       int32_t [[TILE_OFF_A:v[0-9]+]] = (int32_t) [[TILE_OFF_A_PTR]];
+// CHECK-NEXT:       ptrdiff_t [[CB_ADDR_A_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_A_IDX]];
+// CHECK-NEXT:       int32_t [[CB_ADDR_A:v[0-9]+]] = (int32_t) [[CB_ADDR_A_PTR]];
+// CHECK-NEXT:       noc_async_read_tile([[TILE_OFF_A]], [[ACC_A]], [[CB_ADDR_A]]);
 // CHECK:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   noc_async_read_barrier();
@@ -36,9 +51,23 @@
 // CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
 // CHECK:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
+// Cast CB ptr to size_t for index arithmetic
+// CHECK-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
+// CHECK-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
 // CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
-// CHECK:       noc_async_read_tile({{.*}}, [[ACC_B]], [[CB1_PTR]]);
+// Tile offset computation: i * cols + j
+// CHECK:       size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
+// CHECK-NEXT:       size_t [[TILE_OFF_B_X:v[0-9]+]] = [[TILE_OFF_B_Y]] + [[J_B]];
+// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
+// CHECK-NEXT:       size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B_X]] * [[PAGE_SIZE]];
+// CHECK-NEXT:       size_t [[CB_ADDR_B_IDX:v[0-9]+]] = [[CB1_PTR_IDX]] + [[BYTE_OFF_B]];
+// Cast to i32 for NOC operation
+// CHECK-NEXT:       ptrdiff_t [[TILE_OFF_B_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_B_X]];
+// CHECK-NEXT:       int32_t [[TILE_OFF_B:v[0-9]+]] = (int32_t) [[TILE_OFF_B_PTR]];
+// CHECK-NEXT:       ptrdiff_t [[CB_ADDR_B_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_B_IDX]];
+// CHECK-NEXT:       int32_t [[CB_ADDR_B:v[0-9]+]] = (int32_t) [[CB_ADDR_B_PTR]];
+// CHECK-NEXT:       noc_async_read_tile([[TILE_OFF_B]], [[ACC_B]], [[CB_ADDR_B]]);
 // CHECK:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   noc_async_read_barrier();
@@ -111,8 +140,12 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // Reserve output CB2
 // CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
+// Compute CB tile index: i * 2 + j (linearized row-major index)
+// CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
+// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+
 // Pack result to output CB2
-// CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[ZERO]]);
+// CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // Push to signal data ready
 // CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
@@ -166,6 +199,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK: void kernel_main() {
 // CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[BOUND:.*]] = 2;
+// CHECK-DAG:   size_t [[PAGE_SIZE:.*]] = 4096;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
 // Write output to DRAM from CB2
@@ -173,9 +207,23 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:   auto [[ARGS_OUT:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_OUT:.*]] = TensorAccessor([[ARGS_OUT]], [[RT_ARG_OUT]],
 // CHECK:   int32_t [[CB2_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
+// Cast CB ptr to size_t for index arithmetic
+// CHECK-NEXT:   ptrdiff_t [[CB2_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB2_PTR]];
+// CHECK-NEXT:   size_t [[CB2_PTR_IDX:v[0-9]+]] = (size_t) [[CB2_PTR_PTRDIFF]];
 // CHECK-NEXT:   for (size_t [[I_OUT:.*]] = [[ZERO]]; [[I_OUT]] < [[BOUND]]; [[I_OUT]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J_OUT:.*]] = [[ZERO]]; [[J_OUT]] < [[BOUND]]; [[J_OUT]] += [[ONE]]) {
-// CHECK:       noc_async_write_tile({{.*}}, [[ACC_OUT]], [[CB2_PTR]]);
+// Tile offset computation: i * cols + j
+// CHECK:       size_t [[TILE_OFF_OUT_Y:v[0-9]+]] = [[I_OUT]] * [[BOUND]];
+// CHECK-NEXT:       size_t [[TILE_OFF_OUT_X:v[0-9]+]] = [[TILE_OFF_OUT_Y]] + [[J_OUT]];
+// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
+// CHECK-NEXT:       size_t [[BYTE_OFF_OUT:v[0-9]+]] = [[TILE_OFF_OUT_X]] * [[PAGE_SIZE]];
+// CHECK-NEXT:       size_t [[CB_ADDR_OUT_IDX:v[0-9]+]] = [[CB2_PTR_IDX]] + [[BYTE_OFF_OUT]];
+// Cast to i32 for NOC operation
+// CHECK-NEXT:       ptrdiff_t [[TILE_OFF_OUT_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_OUT_X]];
+// CHECK-NEXT:       int32_t [[TILE_OFF_OUT:v[0-9]+]] = (int32_t) [[TILE_OFF_OUT_PTR]];
+// CHECK-NEXT:       ptrdiff_t [[CB_ADDR_OUT_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_OUT_IDX]];
+// CHECK-NEXT:       int32_t [[CB_ADDR_OUT:v[0-9]+]] = (int32_t) [[CB_ADDR_OUT_PTR]];
+// CHECK-NEXT:       noc_async_write_tile([[TILE_OFF_OUT]], [[ACC_OUT]], [[CB_ADDR_OUT]]);
 // CHECK:     }
 // CHECK-NEXT:   }
 // CHECK-NEXT:   noc_async_write_barrier();

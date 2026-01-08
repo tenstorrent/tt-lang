@@ -26,7 +26,15 @@ _ttnn_available = False
 if importlib.util.find_spec("ttnn") is not None:
     _ttnn_available = True
 
-_hardware_available = bool(glob.glob("/dev/tenstorrent*"))
+# Check for hardware: simulator, env var, or physical device
+if os.environ.get("TT_METAL_SIMULATOR"):
+    _hardware_available = True
+elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+    _hardware_available = True
+elif glob.glob("/dev/tenstorrent*"):
+    _hardware_available = True
+else:
+    _hardware_available = False
 
 # Set compile-only mode if no hardware
 if not _hardware_available:
