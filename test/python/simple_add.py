@@ -199,6 +199,10 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(0),
 
 # Second input: reserve CB, read tile, push CB
+# TensorAccessorArgs<CTA, CRTA>: CTA indexes static tensor metadata (is_sharded,
+# is_dram, etc.) in compile-time args shared by all kernels. CTA layout is
+# [3 CBs, then TAs], so tensor 1's metadata is at index 3+1=4. CRTA indexes
+# buffer addresses in common runtime args, filtered per-kernel (1 = second arg).
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<4, 1>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(

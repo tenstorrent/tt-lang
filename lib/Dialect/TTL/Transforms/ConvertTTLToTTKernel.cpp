@@ -48,6 +48,13 @@ using mlir::ValueRange;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
+// Start index in compile-time args for TA static metadata (is_sharded, is_dram).
+// CTA layout is [CBs, TAs], so this is the number of CBs.
+constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
+// Maps local args to global tensor indices for common runtime args (buffer addresses).
+// CRTA is filtered per-thread, containing only addresses for tensors this thread uses.
+constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
+
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
@@ -437,19 +444,19 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
   }
 
   auto baseCTAAttr =
-      parentFunc->getAttrOfType<IntegerAttr>("ttl.base_cta_index");
+      parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttr);
   if (!baseCTAAttr) {
-    return op->emitError("function missing ttl.base_cta_index attribute");
+    return op->emitError("function missing ") << kBaseCTAIndexAttr << " attribute";
   }
 
   auto crtaIndicesAttr =
-      parentFunc->getAttrOfType<ArrayAttr>("ttl.crta_indices");
+      parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
   if (!crtaIndicesAttr) {
-    return op->emitError("function missing ttl.crta_indices attribute");
+    return op->emitError("function missing ") << kCRTAIndicesAttr << " attribute";
   }
 
   if (*argIdx >= crtaIndicesAttr.size()) {
-    return op->emitError("argument index out of range for ttl.crta_indices");
+    return op->emitError("argument index out of range for ") << kCRTAIndicesAttr;
   }
 
   int64_t baseCTA = baseCTAAttr.getInt();
@@ -515,7 +522,10 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
   }
 
   auto argIdx = getTensorFuncArgIndex(tensor);
-  int32_t crtaIndex = failed(argIdx) ? 0 : static_cast<int32_t>(*argIdx);
+  if (failed(argIdx)) {
+    return failure();
+  }
+  int32_t crtaIndex = static_cast<int32_t>(*argIdx);
 
   auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
