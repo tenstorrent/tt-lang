@@ -156,12 +156,14 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
 
   // Validate assumptions: all loops have step=1 and lower bound=0.
   for (auto loop : loops) {
-    assert(loop.getConstantLowerBound() == 0 &&
+    auto lb = getConstantIntValue(loop.getLowerBound());
+    assert(lb && *lb == 0 &&
            "computeCBTileIndexFromLoops: expected lower bound of 0");
-    assert(loop.getConstantUpperBound() &&
-           "computeCBTileIndexFromLoops: expected constant upper bound");
-    auto step = loop.getStepAsInt();
-    assert(step == 1 && "computeCBTileIndexFromLoops: expected step of 1");
+    auto ub = getConstantIntValue(loop.getUpperBound());
+    assert(ub && "computeCBTileIndexFromLoops: expected constant upper bound");
+    auto step = getConstantIntValue(loop.getStep());
+    assert(step && *step == 1 &&
+           "computeCBTileIndexFromLoops: expected step of 1");
   }
 
   // Process in reverse order (innermost-first) without mutating the vector.
