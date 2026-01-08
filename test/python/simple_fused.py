@@ -72,7 +72,7 @@ def fused_kernel(inp, bias, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @fused_compute
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = {{[0-9]+}} : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
 # Wait for inputs and reserve output
 # CHECK: ttl.cb_wait
