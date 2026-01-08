@@ -52,6 +52,9 @@ def run_file(filepath: str, argv: list[str]) -> None:
         print(f"Error: File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
+    # Add script's directory to sys.path to enable relative imports
+    sys.path.insert(0, str(file_path.parent))
+
     # Set up sys.argv for the executed script
     sys.argv = [str(file_path)] + argv
 
