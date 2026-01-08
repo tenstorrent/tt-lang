@@ -15,8 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 # Paths
 THIS_DIR = Path(__file__).resolve().parent
 
@@ -91,9 +89,6 @@ class TestMetalExamplesCLI:
         )
         self.assert_success_output(code, out)
 
-    @pytest.mark.xfail(
-        reason="Correctness assertion fails; ULP mismatch in multicore implementation"
-    )
     def test_multicore_matmul_metal_cli(self) -> None:
         code, out = run_ttlsim_and_capture(
             EXAMPLES_METAL_DIR / "multicore_matmul" / "ttlang" / "multicore_matmul.py"
