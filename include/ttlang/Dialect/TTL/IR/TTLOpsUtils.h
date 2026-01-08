@@ -62,7 +62,7 @@ inline bool isTileComputeOp(mlir::Operation *op) {
 
 /// Check if an operation is a unary elementwise tensor op.
 inline bool isUnaryElementwiseOp(mlir::Operation *op) {
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (mlir::isa<TTL_OP##Op>(op))                                               \
     return true;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -71,10 +71,10 @@ inline bool isUnaryElementwiseOp(mlir::Operation *op) {
 
 /// Check if an operation is a binary elementwise tensor op.
 inline bool isBinaryElementwiseOp(mlir::Operation *op) {
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (mlir::isa<TTL_OP##Op>(op))                                               \
     return true;
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
   return false;
@@ -188,7 +188,7 @@ inline void emitFusionFailureDiagnostics(mlir::Operation *op,
   case TraceFailureReason::NotCBAttached:
     if (v) {
       op->emitError("fusion failed: value is not attached to a circular buffer")
-          .attachNote(v.getLoc())
+              .attachNote(v.getLoc())
           << "this value (block argument) needs ttl.cb_wait or ttl.attach_cb";
     }
     break;
@@ -198,14 +198,14 @@ inline void emitFusionFailureDiagnostics(mlir::Operation *op,
   case TraceFailureReason::NotElementwiseOp:
     if (v && v.getDefiningOp()) {
       op->emitError("fusion failed: cannot trace through non-elementwise op")
-          .attachNote(v.getDefiningOp()->getLoc())
+              .attachNote(v.getDefiningOp()->getLoc())
           << "this op '" << v.getDefiningOp()->getName() << "' is not fusable";
     }
     break;
   case TraceFailureReason::MultipleUses:
     if (v && v.getDefiningOp()) {
       op->emitError("fusion failed: intermediate value has multiple uses")
-          .attachNote(v.getDefiningOp()->getLoc())
+              .attachNote(v.getDefiningOp()->getLoc())
           << "this op's result is used multiple times";
     }
     break;

@@ -92,13 +92,13 @@ static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
 /// Returns the result Value, or null on failure.
 static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *tensorOp,
                            ValueRange tileOperands, Type tileType) {
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(tensorOp))                                               \
     return b.create<TILE_OP>(loc, tileType, tileOperands[0]);
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##Op>(tensorOp))                                               \
     return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1]);
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -134,7 +134,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Build indexing maps: identity for each input and output
   SmallVector<Attribute> maps;
-  AffineMap identityMap = AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+  AffineMap identityMap =
+      AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     maps.push_back(AffineMapAttr::get(identityMap));
   }
@@ -148,7 +149,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Create init tensor and attach to output CB
   Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
-  Value initAttached = rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+  Value initAttached =
+      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(

@@ -43,29 +43,29 @@ def fused_chain_kernel(a, b, c, out):
         o = out_cb.reserve()
         # 20 ops: sequential chain to avoid multiple uses of intermediates
         # Start with a: 5 unary ops
-        v = sigmoid(av)        # 1
-        v = sigmoid(v)         # 2
-        v = tanh(v)            # 3
-        v = tanh(v)            # 4
-        v = abs(v)             # 5
+        v = sigmoid(av)  # 1
+        v = sigmoid(v)  # 2
+        v = tanh(v)  # 3
+        v = tanh(v)  # 4
+        v = abs(v)  # 5
         # Mix in b: 5 ops (1 binary + 4 unary)
-        v = v + bv             # 6
-        v = sigmoid(v)         # 7
-        v = tanh(v)            # 8
-        v = neg(v)             # 9
-        v = abs(v)             # 10
+        v = v + bv  # 6
+        v = sigmoid(v)  # 7
+        v = tanh(v)  # 8
+        v = neg(v)  # 9
+        v = abs(v)  # 10
         # Mix in c: 5 ops (1 binary + 4 unary)
-        v = v + cv             # 11
-        v = relu(v)            # 12
-        v = sigmoid(v)         # 13
-        v = tanh(v)            # 14
-        v = abs(v)             # 15
+        v = v + cv  # 11
+        v = relu(v)  # 12
+        v = sigmoid(v)  # 13
+        v = tanh(v)  # 14
+        v = abs(v)  # 15
         # Final: 5 more unary ops
-        v = sigmoid(v)         # 16
-        v = tanh(v)            # 17
-        v = relu(v)            # 18
-        v = sigmoid(v)         # 19
-        result = tanh(v)       # 20
+        v = sigmoid(v)  # 16
+        v = tanh(v)  # 17
+        v = relu(v)  # 18
+        v = sigmoid(v)  # 19
+        result = tanh(v)  # 20
         o.store(result)
         a_cb.pop()
         b_cb.pop()
@@ -185,26 +185,26 @@ if __name__ == "__main__":
         b_f = b_torch.float()
         c_f = c_torch.float()
         # 20 sequential ops matching the kernel
-        v = torch.sigmoid(a_f)       # 1
-        v = torch.sigmoid(v)         # 2
-        v = torch.tanh(v)            # 3
-        v = torch.tanh(v)            # 4
-        v = torch.abs(v)             # 5
-        v = v + b_f                  # 6
-        v = torch.sigmoid(v)         # 7
-        v = torch.tanh(v)            # 8
-        v = -v                       # 9 (neg)
-        v = torch.abs(v)             # 10
-        v = v + c_f                  # 11
-        v = torch.relu(v)            # 12
-        v = torch.sigmoid(v)         # 13
-        v = torch.tanh(v)            # 14
-        v = torch.abs(v)             # 15
-        v = torch.sigmoid(v)         # 16
-        v = torch.tanh(v)            # 17
-        v = torch.relu(v)            # 18
-        v = torch.sigmoid(v)         # 19
-        expected = torch.tanh(v)     # 20
+        v = torch.sigmoid(a_f)  # 1
+        v = torch.sigmoid(v)  # 2
+        v = torch.tanh(v)  # 3
+        v = torch.tanh(v)  # 4
+        v = torch.abs(v)  # 5
+        v = v + b_f  # 6
+        v = torch.sigmoid(v)  # 7
+        v = torch.tanh(v)  # 8
+        v = -v  # 9 (neg)
+        v = torch.abs(v)  # 10
+        v = v + c_f  # 11
+        v = torch.relu(v)  # 12
+        v = torch.sigmoid(v)  # 13
+        v = torch.tanh(v)  # 14
+        v = torch.abs(v)  # 15
+        v = torch.sigmoid(v)  # 16
+        v = torch.tanh(v)  # 17
+        v = torch.relu(v)  # 18
+        v = torch.sigmoid(v)  # 19
+        expected = torch.tanh(v)  # 20
 
         a = ttnn.from_torch(
             a_torch,
@@ -252,7 +252,9 @@ if __name__ == "__main__":
         else:
             max_err = (result.float() - expected.float()).abs().max().item()
             print(f"FAIL: Max error = {max_err:.6f}")
-            print(f"Result[0,0] = {result[0,0].item()}, Expected = {expected[0,0].item()}")
+            print(
+                f"Result[0,0] = {result[0,0].item()}, Expected = {expected[0,0].item()}"
+            )
 
         print("=== Fused Chain Kernel Test Complete ===")
 
