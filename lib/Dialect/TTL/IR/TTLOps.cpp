@@ -129,8 +129,8 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   const bool srcIsCb = mlir::isa<CircularBufferType>(srcTy);
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
-  const bool srcIsSlice = mlir::isa<TensorSliceType>(srcTy);
-  const bool dstIsSlice = mlir::isa<TensorSliceType>(dstTy);
+  const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
+  const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
 
   // Exactly one side must be a CB.
   if (srcIsCb == dstIsCb) {
@@ -143,18 +143,21 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   // IR types/ops land.
 
   // Extract the underlying tensor type from the non-CB operand.
+  // For slices, get the original tensor from the defining TensorSliceOp.
   Type nonCbTy = srcIsCb ? dstTy : srcTy;
   RankedTensorType rankedTensorTy;
 
   if (srcIsSlice || dstIsSlice) {
-    auto sliceTy = mlir::cast<TensorSliceType>(srcIsSlice ? srcTy : dstTy);
-    rankedTensorTy = sliceTy.getTensorType();
+    auto sliceOp = srcIsSlice ? getSrc().getDefiningOp<TensorSliceOp>()
+                              : getDst().getDefiningOp<TensorSliceOp>();
+    rankedTensorTy =
+        mlir::cast<RankedTensorType>(sliceOp.getTensor().getType());
   } else {
     rankedTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
     if (!rankedTensorTy) {
       return emitOpError()
              << "expects the non-CB operand to be a ranked tensor or "
-                "!ttl.tensor_slice; got "
+                "tensor_slice result; got "
              << nonCbTy;
     }
   }

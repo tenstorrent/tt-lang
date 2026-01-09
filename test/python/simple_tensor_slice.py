@@ -80,19 +80,19 @@ def tile_index_kernel(lhs, rhs, out):
 # First tensor slice at [0, 1]
 # CHECK: %[[C1:.+]] = arith.constant 1 : index
 # CHECK: ttl.tensor_slice %arg0[%{{.+}}, %[[C1]]]
-# CHECK: ttl.copy %{{.+}}, %{{.+}} : (!ttl.tensor_slice{{.*}}) -> !ttl.transfer_handle<read>
+# CHECK: ttl.copy %{{.+}}, %{{.+}} : (tensor<{{.*}}>) -> !ttl.transfer_handle<read>
 
 # Second tensor slice at [0, 2]
 # CHECK: %[[C2:.+]] = arith.constant 2 : index
 # CHECK: ttl.tensor_slice %arg1[%{{.+}}, %[[C2]]]
-# CHECK: ttl.copy %{{.+}}, %{{.+}} : (!ttl.tensor_slice{{.*}}) -> !ttl.transfer_handle<read>
+# CHECK: ttl.copy %{{.+}}, %{{.+}} : (tensor<{{.*}}>) -> !ttl.transfer_handle<read>
 
 # CHECK-LABEL: func.func @dm_write
 
 # Output tensor slice at [0, 3]
 # CHECK: %[[C3:.+]] = arith.constant 3 : index
 # CHECK: ttl.tensor_slice %arg0[%{{.+}}, %[[C3]]]
-# CHECK: ttl.copy %{{.+}}, %{{.+}} : ({{.*}}!ttl.tensor_slice{{.*}}) -> !ttl.transfer_handle<write>
+# CHECK: ttl.copy %{{.+}}, %{{.+}} : ({{.*}}tensor<{{.*}}>) -> !ttl.transfer_handle<write>
 
 # =============================================================================
 # C++ Kernel Checks - Verify correct tile offsets in NOC ops

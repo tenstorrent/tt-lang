@@ -445,7 +445,7 @@ static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
   }
-  if (llvm::isa<TensorSliceType>(v.getType())) {
+  if (v.getDefiningOp<TensorSliceOp>()) {
     return CopyOperandKind::TensorSlice;
   }
   return CopyOperandKind::Unknown;

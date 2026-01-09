@@ -86,13 +86,13 @@ module {
     %cb2 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
 
     // First copy: 64x64 → CB [2,2]
-    %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout> -> !ttl.tensor_slice<tensor<64x64xf32, #layout>>
-    %xf1 = ttl.copy %slice0, %cb1 : (!ttl.tensor_slice<tensor<64x64xf32, #layout>>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+    %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout> -> tensor<64x64xf32, #layout>
+    %xf1 = ttl.copy %slice0, %cb1 : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf1 : !ttl.transfer_handle<read>
 
     // Second copy: 64x64 (same layout) → CB [2,2]
-    %slice1 = ttl.tensor_slice %arg1[%c0, %c0] : tensor<64x64xf32, #layout> -> !ttl.tensor_slice<tensor<64x64xf32, #layout>>
-    %xf2 = ttl.copy %slice1, %cb2 : (!ttl.tensor_slice<tensor<64x64xf32, #layout>>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+    %slice1 = ttl.tensor_slice %arg1[%c0, %c0] : tensor<64x64xf32, #layout> -> tensor<64x64xf32, #layout>
+    %xf2 = ttl.copy %slice1, %cb2 : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf2 : !ttl.transfer_handle<read>
 
     func.return

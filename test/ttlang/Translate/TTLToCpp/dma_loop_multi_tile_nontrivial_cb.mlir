@@ -102,15 +102,15 @@ module {
     %c1 = arith.constant 1 : index
 
     // User-written loop over 4 iterations
-    %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout_2x2> -> !ttl.tensor_slice<tensor<64x64xf32, #layout_2x2>>
-    %slice1 = ttl.tensor_slice %arg1[%c0, %c0] : tensor<96x64xf32, #layout_3x2> -> !ttl.tensor_slice<tensor<96x64xf32, #layout_3x2>>
+    %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout_2x2> -> tensor<64x64xf32, #layout_2x2>
+    %slice1 = ttl.tensor_slice %arg1[%c0, %c0] : tensor<96x64xf32, #layout_3x2> -> tensor<96x64xf32, #layout_3x2>
     scf.for %i = %c0 to %c4 step %c1 {
       // First copy: 64x64 (2x2 tiles) → CB [2,2]
-      %xf1 = ttl.copy %slice0, %cb1 : (!ttl.tensor_slice<tensor<64x64xf32, #layout_2x2>>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf1 = ttl.copy %slice0, %cb1 : (tensor<64x64xf32, #layout_2x2>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
       ttl.wait %xf1 : !ttl.transfer_handle<read>
 
       // Second copy: 96x64 (3x2 tiles) → CB [3,2]
-      %xf2 = ttl.copy %slice1, %cb2 : (!ttl.tensor_slice<tensor<96x64xf32, #layout_3x2>>, !ttl.cb<[3, 2], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf2 = ttl.copy %slice1, %cb2 : (tensor<96x64xf32, #layout_3x2>, !ttl.cb<[3, 2], f32, 2>) -> !ttl.transfer_handle<read>
       ttl.wait %xf2 : !ttl.transfer_handle<read>
     }
 

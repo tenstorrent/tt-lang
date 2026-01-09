@@ -38,22 +38,6 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("step", &SliceAttr::getStep);
 
   //===--------------------------------------------------------------------===//
-  // TensorSliceType
-  //===--------------------------------------------------------------------===//
-
-  tt_type_class<TensorSliceType>(m, "TensorSliceType")
-      .def_static(
-          "get",
-          [](MlirContext ctx, MlirType tensorType) {
-            return wrap(TensorSliceType::get(
-                unwrap(ctx), cast<RankedTensorType>(unwrap(tensorType))));
-          },
-          nb::arg("context"), nb::arg("tensor_type"))
-      .def_prop_ro("tensor_type", [](TensorSliceType &self) {
-        return wrap(self.getTensorType());
-      });
-
-  //===--------------------------------------------------------------------===//
   // CircularBufferType
   //===--------------------------------------------------------------------===//
 

@@ -96,8 +96,15 @@ def _make_tensor_slice(tensor, indices):
         raise ValueError(f"Expected 2 tile indices (row, col), got {len(indices)}")
 
     row_idx, col_idx = indices
-    # Result type is inferred from tensor type via TypesMatchWith trait
-    return ttl.tensor_slice(tensor, row_idx, col_idx)
+
+    # Build result type: same as input but with last two dims reduced to [1, 1]
+    # Shape: [grid_row, grid_col, 1, 1] (single tile slice)
+    orig_shape = list(tensor_type.shape)
+    reduced_shape = orig_shape[:2] + [1, 1]
+    result_type = RankedTensorType.get(
+        reduced_shape, tensor_type.element_type, tensor_type.encoding
+    )
+    return ttl.tensor_slice(result_type, tensor, row_idx, col_idx)
 
 
 @syntax("copy")

@@ -41,10 +41,10 @@ module {
     %c3 = arith.constant 3 : index
     %c1 = arith.constant 1 : index
 
-    %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
-    %xf_init = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> tensor<32x32xf32, #layout>
+    %xf_init = ttl.copy %slice, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     %last = scf.for %i = %c0 to %c3 step %c1 iter_args(%prev = %xf_init) -> (!ttl.transfer_handle<read>) {
-      %xf_next = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf_next = ttl.copy %slice, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       ttl.wait %prev : !ttl.transfer_handle<read>
       scf.yield %xf_next : !ttl.transfer_handle<read>
     }
