@@ -33,7 +33,6 @@ fi
 
 # Compare SHAs
 if [ "$CURRENT_SHA" = "$EXPECTED_SHA" ]; then
-    echo "SHA matches: $CURRENT_SHA"
     # Initialize submodules
     if ! (cd "$TTMLIR_SRC_DIR" && git submodule update --init --recursive >/dev/null 2>&1); then
         echo "WARNING: Failed to initialize submodules, continuing anyway"

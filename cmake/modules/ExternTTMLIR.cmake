@@ -228,6 +228,7 @@ else()
   set(_TTMLIR_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build")
 
   # Check if TTMLIR_SRC_DIR is provided and SHA matches. If not, fetch tt-mlir from GitHub.
+  set(_USE_PROVIDED_SRC_DIR FALSE)
   if(DEFINED TTMLIR_SRC_DIR)
     set(_CHECK_SCRIPT "${CMAKE_SOURCE_DIR}/.github/scripts/check-ttmlir-src-dir.sh")
     execute_process(
@@ -237,20 +238,27 @@ else()
     if(_CHECK_RESULT EQUAL 0)
       message(STATUS "Using provided tt-mlir source directory: ${TTMLIR_SRC_DIR} (SHA matches: ${TTMLIR_GIT_TAG})")
       set(_TTMLIR_SOURCE_DIR "${TTMLIR_SRC_DIR}")
+      set(_USE_PROVIDED_SRC_DIR TRUE)
+
     else()
       message(STATUS "Provided tt-mlir source directory does not match required SHA (${TTMLIR_GIT_TAG}), will fetch instead")
     endif()
   endif()
 
-  include(FetchContent)
-  FetchContent_Populate(
-      tt-mlir
-      GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
-      GIT_TAG ${TTMLIR_GIT_TAG}
-      GIT_SUBMODULES_RECURSE TRUE
-      SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
-      BINARY_DIR "${_TTMLIR_BUILD_DIR}"
-  )
+  # Only use FetchContent if we don't have a matching source directory
+  if(NOT _USE_PROVIDED_SRC_DIR)
+    include(FetchContent)
+    FetchContent_Populate(
+        tt-mlir
+        GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
+        GIT_TAG ${TTMLIR_GIT_TAG}
+        GIT_SUBMODULES_RECURSE TRUE
+        SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
+        BINARY_DIR "${_TTMLIR_BUILD_DIR}"
+    )
+    set(_TTMLIR_SOURCE_DIR "${tt-mlir_SOURCE_DIR}")
+    set(_TTMLIR_BUILD_DIR "${tt-mlir_BINARY_DIR}")
+  endif()
 
   set(_TTMLIR_CMAKE_ARGS
       -G Ninja
@@ -281,10 +289,10 @@ else()
   set(ENV{TTMLIR_TOOLCHAIN_DIR} "${TTMLIR_TOOLCHAIN_DIR}")
   string(REPLACE ";" " " _TTMLIR_CMAKE_ARGS_STRING "${_TTMLIR_CMAKE_ARGS}")
   ttlang_debug_message("Configuring tt-mlir with: ${_TTMLIR_CMAKE_ARGS_STRING}")
+  message(STATUS "_TTMLIR_SOURCE_DIR=${_TTMLIR_SOURCE_DIR}, _TTMLIR_BUILD_DIR=${_TTMLIR_BUILD_DIR}")
   ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} ${_TTMLIR_CMAKE_ARGS_STRING} -S ${_TTMLIR_SOURCE_DIR} -B ${_TTMLIR_BUILD_DIR}"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
-      WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
 
   message(STATUS "Building tt-mlir in ${_TTMLIR_BUILD_DIR}...")
