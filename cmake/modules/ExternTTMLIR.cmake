@@ -289,7 +289,6 @@ else()
   set(ENV{TTMLIR_TOOLCHAIN_DIR} "${TTMLIR_TOOLCHAIN_DIR}")
   string(REPLACE ";" " " _TTMLIR_CMAKE_ARGS_STRING "${_TTMLIR_CMAKE_ARGS}")
   ttlang_debug_message("Configuring tt-mlir with: ${_TTMLIR_CMAKE_ARGS_STRING}")
-  message(STATUS "_TTMLIR_SOURCE_DIR=${_TTMLIR_SOURCE_DIR}, _TTMLIR_BUILD_DIR=${_TTMLIR_BUILD_DIR}")
   ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} ${_TTMLIR_CMAKE_ARGS_STRING} -S ${_TTMLIR_SOURCE_DIR} -B ${_TTMLIR_BUILD_DIR}"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
