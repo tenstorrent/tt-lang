@@ -297,7 +297,7 @@ else()
 
   message(STATUS "Building tt-mlir in ${_TTMLIR_BUILD_DIR}...")
   ttlang_execute_with_env(
-      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} ${_TTMLIR_TARGETS_TO_BUILD}"
+      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal PIP_USER=1 PIP_CACHE_DIR=${CMAKE_BINARY_DIR}/.pip-cache -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} ${_TTMLIR_TARGETS_TO_BUILD}"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
       WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
