@@ -41,12 +41,15 @@ ${TT_LANG_HOME}/python:\
 @TTMLIR_PATH@/ttrt/runtime/ttnn:\
 $PYTHONPATH"
 
-# TODO(#200): Fix this hack to not require tt-mlir source directory to be present
-if [ -z "${TT_METAL_RUNTIME_ROOT}" ] && [ -d "@TTMLIR_PATH@/../third_party/tt-metal/src/tt-metal" ]; then
-  export TT_METAL_RUNTIME_ROOT="@TTMLIR_PATH@/../third_party/tt-metal/src/tt-metal"
-  export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
-elif [ -z "${TT_METAL_RUNTIME_ROOT}" ]; then
-  echo "WARNING: You need to set TT_METAL_RUNTIME_ROOT to run on TT hardware"
+# Set TT_METAL_RUNTIME_ROOT if not already set
+# The path is determined by CMake at configure time in ExternTTMLIR.cmake
+if [ -z "${TT_METAL_RUNTIME_ROOT}" ]; then
+  if [ -n "@TT_METAL_RUNTIME_ROOT@" ]; then
+    export TT_METAL_RUNTIME_ROOT="@TT_METAL_RUNTIME_ROOT@"
+    export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
+  else
+    echo "WARNING: TT_METAL_RUNTIME_ROOT not configured. You may need to set it manually to run on TT hardware"
+  fi
 fi
 
 # Mark environment as activated.
@@ -54,7 +57,8 @@ export TTLANG_ENV_ACTIVATED=1
 
 if [ "${_TTLANG_QUIET}" -eq 0 ]; then
   echo "tt-lang environment activated"
-  echo "  tt-mlir: @TTMLIR_PATH@"
-  echo "  Toolchain: ${TTMLIR_TOOLCHAIN_DIR}"
-  echo "  Python: $(which python3)"
+  echo "  Python:                $(which python3)"
+  echo "  TT-MLIR:               @TTMLIR_PATH@"
+  echo "  Toolchain:             ${TTMLIR_TOOLCHAIN_DIR}"
+  echo "  TT_METAL_RUNTIME_ROOT: ${TT_METAL_RUNTIME_ROOT}"
 fi

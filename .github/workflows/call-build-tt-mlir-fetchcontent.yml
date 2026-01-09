@@ -13,8 +13,8 @@ on:
                 description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
                 required: false
                 type: string
-    schedule:
-        - cron: "0 12 * * *" # 4am PST
+    # schedule:
+    #     - cron: "0 12 * * *"
 
 permissions:
     checks: write

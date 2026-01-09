@@ -297,7 +297,7 @@ else()
 
   message(STATUS "Building tt-mlir in ${_TTMLIR_BUILD_DIR}...")
   ttlang_execute_with_env(
-      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal PIP_USER=1 PIP_CACHE_DIR=${CMAKE_BINARY_DIR}/.pip-cache -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} ${_TTMLIR_TARGETS_TO_BUILD}"
+      COMMAND "${CMAKE_COMMAND} -E env TT_METAL_RUNTIME_ROOT=${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal PIP_CACHE_DIR=${CMAKE_BINARY_DIR}/.pip-cache -- ${CMAKE_COMMAND} --build ${_TTMLIR_BUILD_DIR} ${_TTMLIR_TARGETS_TO_BUILD}"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
       WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
@@ -331,6 +331,31 @@ else()
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
       WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
+
+  # Fix RISC-V compiler libexec permissions
+  # The installed compiler's internal executables (cc1plus, etc.) need execute permissions
+  set(_RISCV_LIBEXEC_DIR "${_TTMLIR_INSTALL_PREFIX}/ttrt/runtime/runtime/sfpi/compiler/libexec")
+  if(EXISTS "${_RISCV_LIBEXEC_DIR}")
+    message(STATUS "Fixing RISC-V compiler libexec permissions...")
+    file(GLOB_RECURSE _RISCV_LIBEXEC_FILES "${_RISCV_LIBEXEC_DIR}/*")
+    foreach(_file IN LISTS _RISCV_LIBEXEC_FILES)
+      if(NOT IS_DIRECTORY "${_file}")
+        file(CHMOD "${_file}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+      endif()
+    endforeach()
+  endif()
+
+  # Copy tt-metal soc_descriptors to expected location for runtime
+  # This is needed because the runtime looks for these files relative to the tt-lang source directory
+  set(_TT_METAL_SOC_DESCRIPTORS_SRC "${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal/soc_descriptors")
+  set(_TT_METAL_SOC_DESCRIPTORS_DST "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal/soc_descriptors")
+  if(EXISTS "${_TT_METAL_SOC_DESCRIPTORS_SRC}")
+    message(STATUS "Copying tt-metal soc_descriptors from tt-mlir source to ${_TT_METAL_SOC_DESCRIPTORS_DST}...")
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal")
+    file(COPY "${_TT_METAL_SOC_DESCRIPTORS_SRC}" DESTINATION "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal")
+  else()
+    message(WARNING "tt-metal soc_descriptors not found at ${_TT_METAL_SOC_DESCRIPTORS_SRC}, runtime may fail to find device descriptor files")
+  endif()
 
   # Save original toolchain dir before finding the locally built tt-mlir.
   set(_ORIGINAL_TTMLIR_TOOLCHAIN_DIR "${TTMLIR_TOOLCHAIN_DIR}")
@@ -376,4 +401,26 @@ else()
     include(MLIRDetectPythonEnv)
     mlir_configure_python_dev_packages()
   endif()
+endif()
+
+# Set TT_METAL_RUNTIME_ROOT for env/activate script
+# Search order:
+# 1. tt-mlir install directory (FetchContent build with installed tt-mlir)
+# 2. tt-mlir source directory (build tree scenario)
+# 3. tt-lang third_party directory (legacy/fallback)
+if(EXISTS "${TTMLIR_PATH}/tt-metal/tt_metal")
+  # Install scenario: tt-metal installed alongside tt-mlir (most common for FetchContent)
+  set(TT_METAL_RUNTIME_ROOT "${TTMLIR_PATH}/tt-metal/tt_metal")
+  message(STATUS "Found tt-metal runtime at: ${TT_METAL_RUNTIME_ROOT}")
+elseif(EXISTS "${TTMLIR_PATH}/../third_party/tt-metal/src/tt-metal")
+  # Build tree scenario: tt-mlir source tree contains tt-metal
+  get_filename_component(TT_METAL_RUNTIME_ROOT "${TTMLIR_PATH}/../third_party/tt-metal/src/tt-metal" ABSOLUTE)
+  message(STATUS "Found tt-metal runtime at: ${TT_METAL_RUNTIME_ROOT}")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal")
+  # Fallback: tt-lang third_party directory
+  set(TT_METAL_RUNTIME_ROOT "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal")
+  message(STATUS "Found tt-metal runtime at: ${TT_METAL_RUNTIME_ROOT}")
+else()
+  set(TT_METAL_RUNTIME_ROOT "")
+  message(WARNING "Could not find tt-metal runtime. Hardware tests may fail. You can set TT_METAL_RUNTIME_ROOT environment variable manually.")
 endif()
