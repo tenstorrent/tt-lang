@@ -13,21 +13,24 @@
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
-// Tensor 0: get runtime arg, create accessor, get CB write ptr, async read
-// CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
-// CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
-// CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
+// CHECK-DAG:   size_t [[SIZE_ZERO:v[0-9]+]] = 0;
+// CHECK-DAG:   size_t [[SIZE_ONE:v[0-9]+]] = 1;
+// Function entry: create both tensor accessors
+// CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>([[SIZE_ZERO]]);
+// CHECK-NEXT:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
+// CHECK-NEXT:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
+// CHECK-NEXT:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[SIZE_ONE]]);
+// CHECK-NEXT:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
+// Use accessor 0 for first copy
 // CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
-// Tensor 1: get runtime arg, create accessor, get CB write ptr, async read
-// CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
-// CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
-// CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
-// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
-// Consecutive barriers deduplicated to single barrier.
-// CHECK:   noc_async_read_barrier();
-// CHECK:   return;
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
+// Use accessor 1 for second copy
+// CHECK-NEXT:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
+// Consecutive barriers deduplicated to single barrier
+// CHECK-NEXT:   noc_async_read_barrier();
+// CHECK-NEXT:   return;
 // CHECK-NEXT: }
 module {
   func.func @dma_batched(%t0: tensor<32x32xf32, #layout>, %t1: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {

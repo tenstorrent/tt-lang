@@ -20,10 +20,17 @@
 // CHECK-DAG:   size_t [[PAGE_SIZE:.*]] = 4096;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
-// Read tensor A into CB0
+// Function entry: materialize both accessors ONCE (function-level emission)
+// Accessor for tensor A (arg 0)
 // CHECK:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
 // CHECK-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
+// Accessor for tensor B (arg 1)
+// CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
+// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
+// CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
+
+// Read tensor A into CB0 using pre-materialized accessor
 // CHECK:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
 // Cast CB ptr to size_t for index arithmetic
 // CHECK-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
@@ -46,11 +53,8 @@
 // CHECK-NEXT:   }
 // CHECK-NEXT:   noc_async_read_barrier();
 
-// Read tensor B into CB1
-// CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
-// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
-// CHECK:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
+// Read tensor B into CB1 using pre-materialized accessor
+// CHECK-NEXT:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
 // Cast CB ptr to size_t for index arithmetic
 // CHECK-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
 // CHECK-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];

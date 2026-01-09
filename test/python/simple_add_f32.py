@@ -71,11 +71,11 @@ def add_kernel_f32(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
 # CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 
 if __name__ == "__main__":

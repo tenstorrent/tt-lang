@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import itertools
 import math
+import sympy
+from collections import namedtuple
 from typing import List, Tuple
 
 

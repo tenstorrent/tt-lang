@@ -30,6 +30,7 @@
 #include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"      // IWYU pragma: keep
 #include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 
@@ -45,12 +46,14 @@ using mlir::RewritePatternSet;
 using mlir::TypeConverter;
 using mlir::UnrealizedConversionCastOp;
 using mlir::ValueRange;
+using mlir::WalkResult;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
 // Start index in compile-time args for TA static metadata (is_sharded,
 // is_dram). CTA layout is [CBs, TAs], so this is the number of CBs.
 constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
+
 // Maps local args to global tensor indices for common runtime args (buffer
 // addresses). CRTA is filtered per-thread, containing only addresses for
 // tensors this thread uses.
@@ -118,15 +121,14 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
 /// Get the L1 buffer address from runtime args for a tensor function argument.
 /// Runtime args are indexed by the tensor's function argument position.
 static FailureOr<Value>
-getBufferAddressFromRuntimeArg(Value tensor, Location loc,
-                               ConversionPatternRewriter &rewriter) {
+getBufferAddressFromRuntimeArg(Value tensor, Location loc, OpBuilder &builder) {
   auto argIdx = getTensorFuncArgIndex(tensor);
   if (failed(argIdx)) {
     return failure();
   }
-  auto idxConst = rewriter.create<arith::ConstantIndexOp>(loc, *argIdx);
-  return rewriter
-      .create<ttk::GetCommonArgValOp>(loc, rewriter.getI32Type(), idxConst)
+  auto idxConst = builder.create<arith::ConstantIndexOp>(loc, *argIdx);
+  return builder
+      .create<ttk::GetCommonArgValOp>(loc, builder.getI32Type(), idxConst)
       .getResult();
 }
 
@@ -188,17 +190,16 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
 /// ctaIndex: Index into compile-time args where tensor config starts.
 /// crtaIndex: Index into compile-runtime args (typically 0).
-static Value buildTensorAccessor(Location loc,
-                                 ConversionPatternRewriter &rewriter,
+static Value buildTensorAccessor(Location loc, OpBuilder &builder,
                                  int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
-  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
-  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
-  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
+  auto ctaConst = builder.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
+  auto crtaConst = builder.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
+  auto args = builder.create<ttk::TensorAccessorArgsOp>(
       loc, ctaConst.getResult(), crtaConst.getResult(),
       /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr);
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
-                                                         bankBase, pageSize);
+  auto accessor = builder.create<ttk::TensorAccessorOp>(loc, args.getResult(),
+                                                        bankBase, pageSize);
   return accessor.getResult();
 }
 
@@ -490,6 +491,9 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
 
   auto parentFunc = op->getParentOfType<func::FuncOp>();
   if (!parentFunc) {
+    parentFunc = llvm::dyn_cast<func::FuncOp>(op);
+  }
+  if (!parentFunc) {
     return op->emitError("operation must be inside a function");
   }
 
@@ -529,9 +533,9 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
 /// Unsupported layouts will emit errors referencing the appropriate GH issues:
 ///   - Sharded layouts: See GH issue #118
 ///   - Row-major (non-tiled): See GH issue #173
-static FailureOr<Value>
-materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
-                          ConversionPatternRewriter &rewriter) {
+static FailureOr<Value> materializeTensorAccessor(Value tensor, Value bankBase,
+                                                  Operation *op,
+                                                  OpBuilder &builder) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
     return op->emitError("expected RankedTensorType for tensor accessor");
@@ -578,9 +582,9 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
   }
   int32_t crtaIndex = static_cast<int32_t>(*argIdx);
 
-  auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
+  auto pageSize = builder.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, *ctaIndex, crtaIndex, bankBase,
+  return buildTensorAccessor(loc, builder, *ctaIndex, crtaIndex, bankBase,
                              pageSize);
 }
 
@@ -649,25 +653,111 @@ emitTileLoop(ConversionPatternRewriter &rewriter, Location loc, int64_t tilesY,
   }
 }
 
-/// Lower tensor->CB copy: read from DRAM/L1 tensor into circular buffer.
-static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TypeConverter &typeConverter) {
-  auto loc = op.getLoc();
+/// Maps each function operation to its tensor accessors.
+/// The inner map uses the function argument index (unsigned) as the key
+/// to look up the pre-materialized TensorAccessor Value for that tensor arg.
+using FuncAccessorMapsType = DenseMap<func::FuncOp, DenseMap<unsigned, Value>>;
 
-  // Get tensor L1 address from runtime args.
-  auto bankBase = getBufferAddressFromRuntimeArg(srcTensor, loc, rewriter);
-  if (failed(bankBase)) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
+/// Look up a pre-materialized TensorAccessor for a tensor argument.
+static FailureOr<Value>
+lookupTensorAccessor(Value tensor,
+                     const DenseMap<unsigned, Value> &tensorToAccessor) {
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  if (failed(argIdx)) {
+    return failure();
   }
 
-  // Create tensor accessor with actual buffer address.
-  // This derives page size from TTNNLayoutAttr encoding.
-  auto srcAccessor =
-      materializeTensorAccessor(srcTensor, *bankBase, op, rewriter);
+  auto it = tensorToAccessor.find(*argIdx);
+  if (it == tensorToAccessor.end()) {
+    return failure();
+  }
+
+  return it->second;
+}
+
+/// Materialize TensorAccessor ops at function entry for tensor arguments used
+/// by ttl.copy. Returns a map used later by CopyLowering.
+static FailureOr<FuncAccessorMapsType>
+materializeFuncTensorAccessors(ModuleOp mod, MLIRContext &ctx) {
+  FuncAccessorMapsType funcAccessorMaps;
+
+  auto walkResult = mod.walk([&](func::FuncOp funcOp) -> WalkResult {
+    if (!isNocKernel(funcOp.getOperation())) {
+      return WalkResult::advance();
+    }
+
+    if (funcOp.isExternal() || funcOp.getBody().empty()) {
+      return WalkResult::advance();
+    }
+
+    DenseMap<unsigned, Value> tensorAccessors;
+
+    Block &entryBlock = funcOp.getBody().front();
+    OpBuilder builder(&ctx);
+    builder.setInsertionPointToStart(&entryBlock);
+
+    for (unsigned argIdx = 0; argIdx < funcOp.getNumArguments(); ++argIdx) {
+      auto arg = funcOp.getArgument(argIdx);
+      auto tensorTy = llvm::dyn_cast<RankedTensorType>(arg.getType());
+      if (!tensorTy) {
+        continue;
+      }
+
+      bool usedByCopy = llvm::any_of(arg.getUses(), [](OpOperand &use) {
+        return llvm::isa<CopyOp>(use.getOwner());
+      });
+      if (!usedByCopy) {
+        continue;
+      }
+
+      auto bankBase =
+          getBufferAddressFromRuntimeArg(arg, arg.getLoc(), builder);
+      if (failed(bankBase)) {
+        funcOp.emitError(
+            "tensor must be a function argument for runtime arg mapping");
+        return WalkResult::interrupt();
+      }
+
+      auto accessor = materializeTensorAccessor(arg, *bankBase,
+                                                funcOp.getOperation(), builder);
+      if (failed(accessor)) {
+        return WalkResult::interrupt();
+      }
+
+      tensorAccessors.try_emplace(argIdx, *accessor);
+    }
+
+    if (!tensorAccessors.empty()) {
+      funcAccessorMaps.try_emplace(funcOp, std::move(tensorAccessors));
+    }
+
+    return WalkResult::advance();
+  });
+
+  if (walkResult.wasInterrupted()) {
+    return failure();
+  }
+
+  return funcAccessorMaps;
+}
+
+/// Lower tensor->CB copy: read from DRAM/L1 tensor into circular buffer.
+static LogicalResult
+lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
+                ConversionPatternRewriter &rewriter,
+                const TypeConverter &typeConverter,
+                const DenseMap<unsigned, Value> *tensorAccessors) {
+  auto loc = op.getLoc();
+
+  if (!tensorAccessors) {
+    return rewriter.notifyMatchFailure(
+        op, "no tensor accessor map for parent function");
+  }
+
+  auto srcAccessor = lookupTensorAccessor(srcTensor, *tensorAccessors);
   if (failed(srcAccessor)) {
-    return failure(); // Error already emitted by materializeTensorAccessor
+    return rewriter.notifyMatchFailure(
+        op, "no pre-materialized tensor accessor found for src tensor");
   }
 
   // Convert CB to TTKernel type and get write pointer.
@@ -719,24 +809,22 @@ static LogicalResult lowerTensorToCB(CopyOp op, Value srcTensor, Value dstCB,
 }
 
 /// Lower CB->tensor copy: write from circular buffer to DRAM/L1 tensor.
-static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
-                                     ConversionPatternRewriter &rewriter,
-                                     const TypeConverter &typeConverter) {
+static LogicalResult
+lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
+                ConversionPatternRewriter &rewriter,
+                const TypeConverter &typeConverter,
+                const DenseMap<unsigned, Value> *tensorAccessors) {
   auto loc = op.getLoc();
 
-  // Get tensor L1 address from runtime args.
-  auto bankBase = getBufferAddressFromRuntimeArg(dstTensor, loc, rewriter);
-  if (failed(bankBase)) {
+  if (!tensorAccessors) {
     return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
+        op, "no tensor accessor map for parent function");
   }
 
-  // Create tensor accessor with actual buffer address.
-  // This derives page size from TTNNLayoutAttr encoding.
-  auto dstAccessor =
-      materializeTensorAccessor(dstTensor, *bankBase, op, rewriter);
+  auto dstAccessor = lookupTensorAccessor(dstTensor, *tensorAccessors);
   if (failed(dstAccessor)) {
-    return failure(); // Error already emitted by materializeTensorAccessor
+    return rewriter.notifyMatchFailure(
+        op, "no pre-materialized tensor accessor found for dst tensor");
   }
 
   // Convert CB to TTKernel type and get read pointer.
@@ -788,7 +876,12 @@ static LogicalResult lowerCBToTensor(CopyOp op, Value srcCB, Value dstTensor,
 }
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
-  using OpConversionPattern::OpConversionPattern;
+  CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
+               const FuncAccessorMapsType *funcAccessorMaps)
+      : OpConversionPattern(typeConverter, context),
+        funcAccessorMaps(funcAccessorMaps) {}
+
+  const FuncAccessorMapsType *funcAccessorMaps;
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -796,6 +889,16 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto *typeConverter = this->getTypeConverter();
     if (!typeConverter) {
       return rewriter.notifyMatchFailure(op, "no type converter");
+    }
+
+    const DenseMap<unsigned, Value> *tensorAccessors = nullptr;
+    if (funcAccessorMaps) {
+      if (auto parentFunc = op->getParentOfType<func::FuncOp>()) {
+        auto it = funcAccessorMaps->find(parentFunc);
+        if (it != funcAccessorMaps->end()) {
+          tensorAccessors = &it->second;
+        }
+      }
     }
 
     // Use original operands for classification since lowering functions
@@ -809,14 +912,14 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     if (srcKind == CopySourceKind::TensorAccessor &&
         dstKind == CopyDestKind::CircularBuffer) {
       return lowerTensorToCB(op, src, adaptor.getDst(), rewriter,
-                             *typeConverter);
+                             *typeConverter, tensorAccessors);
     }
 
     // CB -> Tensor: write from circular buffer to tensor.
     if (srcKind == CopySourceKind::CircularBuffer &&
         dstKind == CopyDestKind::TensorAccessor) {
       return lowerCBToTensor(op, adaptor.getSrc(), dst, rewriter,
-                             *typeConverter);
+                             *typeConverter, tensorAccessors);
     }
 
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
@@ -920,6 +1023,12 @@ static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
                       StringRef passName) {
+  auto accessorMapsOrFailure = materializeFuncTensorAccessors(mod, ctx);
+  if (failed(accessorMapsOrFailure)) {
+    return failure();
+  }
+  FuncAccessorMapsType funcAccessorMaps = *accessorMapsOrFailure;
+
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
@@ -951,9 +1060,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   });
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<BindCBLowering, CopyLowering, WaitLowering, CBReserveLowering,
-               CBPushLowering, CBWaitLowering, CBPopLowering, StoreLowering>(
-      typeConverter, &ctx);
+  patterns.add<BindCBLowering, WaitLowering, CBReserveLowering, CBPushLowering,
+               CBWaitLowering, CBPopLowering, StoreLowering>(typeConverter,
+                                                             &ctx);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &funcAccessorMaps);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
