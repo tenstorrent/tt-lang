@@ -891,6 +891,10 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return rewriter.notifyMatchFailure(op, "no type converter");
     }
 
+    // Look up pre-materialized tensor accessors for this function.
+    // tensorAccessors will be null for:
+    // - Non-NOC kernels (compute kernels don't use tensor accessors)
+    // - Functions with no tensor args used by copy operations
     const DenseMap<unsigned, Value> *tensorAccessors = nullptr;
     if (funcAccessorMaps) {
       if (auto parentFunc = op->getParentOfType<func::FuncOp>()) {
@@ -1023,6 +1027,9 @@ static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
                       StringRef passName) {
+  // Pre-materialize tensor accessors at function entry for all NOC kernels.
+  // The map may be empty if the module has no NOC kernels or no tensor args
+  // used by copy operations; CopyLowering handles this properly.
   auto accessorMapsOrFailure = materializeFuncTensorAccessors(mod, ctx);
   if (failed(accessorMapsOrFailure)) {
     return failure();
