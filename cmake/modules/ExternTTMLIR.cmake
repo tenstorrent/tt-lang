@@ -410,7 +410,7 @@ endif()
 # 3. tt-lang third_party directory (legacy/fallback)
 if(EXISTS "${TTMLIR_PATH}/tt-metal/tt_metal")
   # Install scenario: tt-metal installed alongside tt-mlir (most common for FetchContent)
-  set(TT_METAL_RUNTIME_ROOT "${TTMLIR_PATH}/tt-metal/tt_metal")
+  set(TT_METAL_RUNTIME_ROOT "${TTMLIR_PATH}/tt-metal")
   message(STATUS "Found tt-metal runtime at: ${TT_METAL_RUNTIME_ROOT}")
 elseif(EXISTS "${TTMLIR_PATH}/../third_party/tt-metal/src/tt-metal")
   # Build tree scenario: tt-mlir source tree contains tt-metal
