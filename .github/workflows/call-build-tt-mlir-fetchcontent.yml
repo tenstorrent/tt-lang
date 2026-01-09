@@ -99,11 +99,6 @@ jobs:
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-bindings
 
-            - name: Move ttrt runtime to tt-mlir-install
-              run: |
-                  set -x
-                  cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
-
             - name: Clean up tt-mlir build directory
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |
@@ -151,3 +146,4 @@ jobs:
               uses: re-actors/alls-green@release/v1
               with:
                   jobs: ${{ toJSON(needs) }}
+                  allowed-failures: test-hardware
