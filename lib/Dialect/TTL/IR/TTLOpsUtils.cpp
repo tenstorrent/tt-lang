@@ -42,10 +42,12 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
       return operandTrace;
     }
     // Merge roots and ops (SmallSetVector handles deduplication)
-    for (mlir::Value root : operandTrace.rootInputs)
+    for (mlir::Value root : operandTrace.rootInputs) {
       result.rootInputs.insert(root);
-    for (mlir::Operation *op : operandTrace.opsInOrder)
+    }
+    for (mlir::Operation *op : operandTrace.opsInOrder) {
       result.opsInOrder.insert(op);
+    }
   }
 
   // Add this op at the end (after all its dependencies)

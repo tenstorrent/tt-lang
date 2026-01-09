@@ -38,8 +38,8 @@ class TTLTileComputeOpTrait
 /// Trait for unary elementwise tensor operations (exp, sqrt, etc.).
 template <typename ConcreteType>
 class TTLUnaryElementwiseOpTrait
-    : public mlir::OpTrait::TraitBase<ConcreteType, TTLUnaryElementwiseOpTrait> {
-};
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTLUnaryElementwiseOpTrait> {};
 
 /// Trait for binary elementwise tensor operations (add, mul, etc.).
 template <typename ConcreteType>
