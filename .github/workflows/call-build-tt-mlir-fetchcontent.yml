@@ -1,6 +1,7 @@
 name: Build tt-lang with tt-mlir (FetchContent) and run HW tests
 
 on:
+    push:
     workflow_dispatch:
         inputs:
             tt-mlir-commit:
@@ -73,7 +74,11 @@ jobs:
               run: |
                   set -x
                   echo "Cache hit output: '${{ steps.cache-ttmlir.outputs.cache-hit }}'"
-                  echo "Current workspace: ${{ github.workspace }}"
+                  # NOTE: github.workspace may differ from $(pwd) inside containers!
+                  # Always use $(pwd) for the actual working directory
+                  CURRENT_WORKSPACE="$(pwd)"
+                  echo "Current workspace (pwd): $CURRENT_WORKSPACE"
+                  echo "github.workspace: ${{ github.workspace }}"
                   echo "Checking if tt-mlir-install exists:"
                   ls -la tt-mlir-install/lib/cmake/ttmlir/ 2>/dev/null || echo "tt-mlir-install not found or incomplete"
 
@@ -81,22 +86,48 @@ jobs:
                   # the cache was created. Different GitHub Actions runners use different workspace
                   # paths (/__w/... vs /home/runner/work/...). Fix by replacing paths in cmake files.
                   if [ -f tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake ]; then
-                      echo "=== TTMLIRConfig.cmake first 10 lines ==="
-                      head -10 tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake
+                      echo "=== TTMLIRConfig.cmake first 20 lines ==="
+                      head -20 tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake
 
-                      # Find all cmake files that might have hardcoded paths
-                      CMAKE_FILES=$(find tt-mlir-install -name "*.cmake" -type f)
-                      echo "Found cmake files: $CMAKE_FILES"
+                      # Extract the old workspace path from the cmake file
+                      # Look for paths ending in /tt-mlir-install
+                      OLD_PATH=$(grep -oP '[^"]+(?=/tt-mlir-install)' tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake | head -1)
+                      echo "Detected old workspace path: '$OLD_PATH'"
+                      echo "Current workspace path: '$CURRENT_WORKSPACE'"
 
-                      # Replace both common path variants with current workspace
-                      for cmake_file in $CMAKE_FILES; do
-                          echo "Fixing paths in: $cmake_file"
-                          sed -i "s|/__w/tt-lang/tt-lang|${{ github.workspace }}|g" "$cmake_file"
-                          sed -i "s|/home/runner/work/tt-lang/tt-lang|${{ github.workspace }}|g" "$cmake_file"
-                      done
+                      if [ -n "$OLD_PATH" ] && [ "$OLD_PATH" != "$CURRENT_WORKSPACE" ]; then
+                          echo "Paths differ, fixing cmake files..."
 
-                      echo "=== TTMLIRConfig.cmake after fix ==="
-                      head -10 tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake
+                          # Find all cmake files that might have hardcoded paths
+                          CMAKE_FILES=$(find tt-mlir-install -name "*.cmake" -type f)
+                          echo "Found cmake files:"
+                          echo "$CMAKE_FILES"
+
+                          # Replace old workspace path with current workspace (use pwd, not github.workspace!)
+                          for cmake_file in $CMAKE_FILES; do
+                              echo "Fixing paths in: $cmake_file"
+                              sed -i "s|${OLD_PATH}|${CURRENT_WORKSPACE}|g" "$cmake_file"
+                          done
+
+                          # Add TTMLIR_DIR to TTMLIRConfig.cmake if it doesn't exist
+                          # CMake's find_package requires <Package>_DIR to be set
+                          CONFIG_FILE="tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake"
+                          if ! grep -q "^set(TTMLIR_DIR" "$CONFIG_FILE"; then
+                              echo "Adding TTMLIR_DIR to TTMLIRConfig.cmake"
+                              # Add after TTMLIR_CMAKE_DIR line
+                              sed -i '/^set(TTMLIR_CMAKE_DIR/a set(TTMLIR_DIR "${TTMLIR_CMAKE_DIR}" CACHE PATH "Path to TTMLIR cmake config" FORCE)' "$CONFIG_FILE"
+                          fi
+
+                          echo "=== TTMLIRConfig.cmake after fix ==="
+                          head -25 tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake
+
+                          # Verify library files exist
+                          echo "=== Checking library files ==="
+                          ls -la tt-mlir-install/lib/*.so 2>/dev/null | head -10 || echo "No .so files found"
+                          ls -la tt-mlir-install/lib/*.a 2>/dev/null | head -10 || echo "No .a files found"
+                      else
+                          echo "Paths match or could not detect old path, no fix needed"
+                      fi
                   fi
 
                   # Clean any stale build directory to avoid CMake cache issues
@@ -118,12 +149,16 @@ jobs:
               if: ${{ steps.cache-ttmlir.outputs.cache-hit == 'true' }}
               run: |
                   echo "Configuring tt-lang with pre-installed (cached) tt-mlir"
-                  ls -l .
+                  # NOTE: github.workspace may differ from $(pwd) inside containers
+                  # Use $(pwd) to get the actual working directory
+                  ACTUAL_TTMLIR_DIR="$(pwd)/tt-mlir-install"
+                  echo "Using TTMLIR_DIR: $ACTUAL_TTMLIR_DIR"
+                  ls -la "$ACTUAL_TTMLIR_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake"
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir
+                      -DTTMLIR_DIR="$ACTUAL_TTMLIR_DIR/lib/cmake/ttmlir"
 
             - name: Build tt-lang
               run: |
