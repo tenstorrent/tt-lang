@@ -32,11 +32,12 @@ endfunction()
 
 # Scenario 1: Pre-built tt-mlir (build tree)
 if(DEFINED TTMLIR_BUILD_DIR)
-  set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
-
-  if(EXISTS "${_TTMLIR_CONFIG_PATH}/TTMLIRConfig.cmake")
-    list(APPEND TTMLIR_HINTS "${_TTMLIR_CONFIG_PATH}")
+  # Check if it's a valid build directory (has CMakeCache.txt)
+  if(EXISTS "${TTMLIR_BUILD_DIR}/CMakeCache.txt")
     set(_TTMLIR_BUILD_DIR "${TTMLIR_BUILD_DIR}")
+    set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
+  else()
+    message(FATAL_ERROR "Could not find CMakeCache.txt in the provided build directory: ${TTMLIR_BUILD_DIR}")
   endif()
 endif()
 
