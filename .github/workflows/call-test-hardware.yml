@@ -105,27 +105,27 @@ jobs:
           echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
           echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
 
-      - name: Run smoketest
+      - name: Smoketest
         run: |
+          source build/env/activate
           python3 test/python/smoketest.py
 
-      - name: Generate system descriptor
-        run: |
-          set -x
-          source /opt/ttmlir-toolchain/venv/bin/activate || echo "Failed to activate environment"
-          python3 ./.github/scripts/trtt_wrapper.py query --save-artifacts --disable-eth-dispatch || echo "Failed to save artifacts"
-
-      - name: Run lit tests
-        env:
-          TTLANG_VERBOSE_PASSES: 0
+      - name: Python lit tests
         run: |
           source build/env/activate
           ninja -C build check-ttlang-python-lit
+
+      - name: Pytests
+        run: |
+          source build/env/activate
+          ninja -C build check-ttlang-pytest
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}
-          path: build/python-lit-report.xml
+          path: |
+            build/python-lit-report.xml
+            build/pytest-report.xml
           retention-days: 7

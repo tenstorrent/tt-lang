@@ -39,9 +39,6 @@ jobs:
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
-            - name: Maximize space
-              uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
             - name: Checkout tt-lang
               uses: actions/checkout@v4
               with:
@@ -63,7 +60,7 @@ jobs:
               uses: actions/cache@v4
               with:
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
@@ -71,19 +68,33 @@ jobs:
                   key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
                   max-size: 100M
 
-            - name: Build tt-lang
+            - name: Configure tt-lang (builds tt-mlir with tt-metal)
+              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |
-                  echo "Building tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
-                  df -h
+                  echo "Configuring tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_INSTALL_PREFIX=${{ github.workspace }}/tt-mlir-install \
+                      -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
-                  cmake --build build
 
+            - name: Configure tt-lang with pre-installed tt-mlir
+              if: steps.cache-ttmlir.outputs.cache-hit == 'true'
+              run: |
+                  echo "Configuring tt-lang with pre-installed (cached) tt-mlir"
+                  ls -l .
+                  cmake -G Ninja -B build \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DCMAKE_CXX_COMPILER=clang++-17 \
+                      -DCMAKE_C_COMPILER=clang-17 \
+                      -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir
+
+            - name: Build tt-lang
+              run: |
+                  source build/env/activate
+                  cmake --build build
 
             - name: Test the tt-lang build
               run: |
@@ -103,9 +114,7 @@ jobs:
             - name: Clean up tt-mlir build directory
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |
-                  # We only need tt-mlir-install for caching and artifacts
-                  rm -rf build/tt-mlir-build
-                  rm -rf build/_deps/tt-mlir-src
+                  rm -rf build/_deps/tt-mlir-*
 
             - name: Archive build artifacts
               run: |
