@@ -111,7 +111,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Bind CBs (alphabetical order: lhs_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
@@ -131,7 +131,7 @@ def add_kernel(lhs, rhs, out):
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Wait for output CB, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
@@ -189,27 +189,30 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
-# First input: reserve CB, read tile, push CB
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: get_write_ptr(get_compile_time_arg_val(0))
-# CHECK-CPP: noc_async_read_tile(
-# CHECK-CPP: noc_async_read_barrier();
-# CHECK-CPP: cb_push_back(get_compile_time_arg_val(0),
-
-# Second input: reserve CB, read tile, push CB
+# Function entry: create tensor accessors
 # TensorAccessorArgs<CTA, CRTA>: CTA indexes static tensor metadata (is_sharded,
 # is_dram, etc.) in compile-time args shared by all kernels. CTA layout is
-# [3 CBs, then TAs], so tensor 1's metadata is at index 3+1=4. CRTA indexes
-# buffer addresses in common runtime args, filtered per-kernel (1 = second arg).
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
+# [3 CBs, then TAs], so tensor 0's metadata is at index 3+0=3. CRTA indexes
+# buffer addresses in common runtime args, filtered per-kernel.
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
+# CHECK-CPP-NEXT: TensorAccessor {{.*}} = TensorAccessor(
+# Second tensor accessor at index 3+1=4, CRTA=1
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<4, 1>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: get_write_ptr(get_compile_time_arg_val(1))
-# CHECK-CPP: noc_async_read_tile(
-# CHECK-CPP: noc_async_read_barrier();
-# CHECK-CPP: cb_push_back(get_compile_time_arg_val(1),
+# CHECK-CPP-NEXT: TensorAccessor {{.*}} = TensorAccessor(
+
+# First input: reserve CB, read tile, push CB
+# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
+# CHECK-CPP-NEXT: int32_t {{.*}} = get_write_ptr(get_compile_time_arg_val(0))
+# CHECK-CPP-NEXT: noc_async_read_tile(
+# CHECK-CPP-NEXT: noc_async_read_barrier();
+# CHECK-CPP-NEXT: cb_push_back(get_compile_time_arg_val(0),
+
+# Second input: reserve CB, read tile, push CB
+# CHECK-CPP-NEXT: cb_reserve_back(get_compile_time_arg_val(1),
+# CHECK-CPP-NEXT: int32_t {{.*}} = get_write_ptr(get_compile_time_arg_val(1))
+# CHECK-CPP-NEXT: noc_async_read_tile(
+# CHECK-CPP-NEXT: noc_async_read_barrier();
+# CHECK-CPP-NEXT: cb_push_back(get_compile_time_arg_val(1),
 
 # =============================================================================
 # C++ Kernel Checks - Verify generated dm_write kernel
@@ -218,14 +221,16 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 
+# Function entry: create tensor accessor
+# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
+# CHECK-CPP-NEXT: TensorAccessor {{.*}} = TensorAccessor(
+
 # Wait for output CB, write tile, pop CB
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
-# CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
-# CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: get_read_ptr(get_compile_time_arg_val(2))
-# CHECK-CPP: noc_async_write_tile(
-# CHECK-CPP: noc_async_write_barrier();
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(2),
+# CHECK-CPP-NEXT: int32_t {{.*}} = get_read_ptr(get_compile_time_arg_val(2))
+# CHECK-CPP-NEXT: noc_async_write_tile(
+# CHECK-CPP-NEXT: noc_async_write_barrier();
+# CHECK-CPP-NEXT: cb_pop_front(get_compile_time_arg_val(2),
 
 
 if __name__ == "__main__":

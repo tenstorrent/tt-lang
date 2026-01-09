@@ -16,23 +16,21 @@
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[UB:v[0-9]+]] = 3;
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
-// Pre-loop copy: create accessor with runtime arg, get CB write ptr
-// CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
-// CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
+// Function entry: create accessor ONCE with runtime arg (function-level emission)
+// CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
+// CHECK-NEXT:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
+// CHECK-NEXT:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
+// Pre-loop copy: use pre-materialized accessor
 // CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
-// CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
-// In-loop copy: create accessor with runtime arg, get CB write ptr
-// CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// CHECK:     auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
-// CHECK:     TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
-// CHECK:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK:     noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
-// CHECK:     noc_async_read_barrier();
-// CHECK:   }
-// CHECK:   noc_async_read_barrier();
-// CHECK:   return;
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR0]]);
+// CHECK-NEXT:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
+// In-loop copy: reuse pre-materialized accessor (no new accessor created)
+// CHECK-NEXT:     int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
+// CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR1]]);
+// CHECK-NEXT:     noc_async_read_barrier();
+// CHECK-NEXT:   }
+// CHECK-NEXT:   noc_async_read_barrier();
+// CHECK-NEXT:   return;
 // CHECK-NEXT: }
 module {
   func.func @dma_pipelined_loop(%t: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {

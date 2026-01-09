@@ -7,17 +7,23 @@
            memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // TTKERNEL-LABEL: func.func @loopback_dram_copy
-// Verify runtime args and CB pointers are used for both read and write operations.
+// Verify function-level tensor accessor materialization: accessors are built ONCE
+// at function entry, then reused inside the loop for all copy operations.
+// Function entry: src accessor (arg 0)
+// TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// TTKERNEL-DAG: %[[C1_IDX:.*]] = arith.constant 1 : index
+// TTKERNEL: %[[BANK_BASE_SRC:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
+// TTKERNEL-NEXT: %[[SRC_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
+// TTKERNEL-NEXT: %[[ACC_R:.*]] = ttkernel.TensorAccessor(%[[SRC_ARGS]], %[[BANK_BASE_SRC]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// Function entry: dst accessor (arg 1)
+// TTKERNEL-NEXT: %[[BANK_BASE_DST:.*]] = ttkernel.get_common_arg_val(%[[C1_IDX]]) : (index) -> i32
+// TTKERNEL-NEXT: %[[DST_ARGS:.*]] = ttkernel.TensorAccessorArgs({{.*}})
+// TTKERNEL-NEXT: %[[ACC_W:.*]] = ttkernel.TensorAccessor(%[[DST_ARGS]], %[[BANK_BASE_DST]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// Loop: uses pre-materialized accessors
 // TTKERNEL: scf.for
-// Read: runtime arg for src tensor, accessor, write ptr for CB
-// TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL:   %[[ACC_R:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL:   %[[CB_W_PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
 // TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[ACC_R]], %[[CB_W_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
-// Write: runtime arg for dst tensor, accessor, read ptr for CB
-// TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
-// TTKERNEL:   %[[ACC_W:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL:   %[[CB_R_PTR:.*]] = ttkernel.get_read_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
 // TTKERNEL:   ttkernel.noc_async_write_tile({{.*}}, %[[ACC_W]], %[[CB_R_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL:   ttkernel.noc_async_write_barrier() : () -> ()
