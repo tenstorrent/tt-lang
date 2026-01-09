@@ -152,8 +152,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Create ttl.compute op
   auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, trace.rootInputs, ValueRange{initAttached},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+      loc, TypeRange{type}, trace.rootInputs.getArrayRef(),
+      ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iterTypes));
 
   // Build the body region
   Block *body = rewriter.createBlock(&computeOp.getBody());

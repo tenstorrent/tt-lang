@@ -8,6 +8,8 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
+#include "llvm/ADT/SetVector.h"
+
 namespace mlir::tt::ttl {
 
 /// Trace through unrealized conversion casts to find the original value.
@@ -62,22 +64,12 @@ inline bool isTileComputeOp(mlir::Operation *op) {
 
 /// Check if an operation is a unary elementwise tensor op.
 inline bool isUnaryElementwiseOp(mlir::Operation *op) {
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
-  if (mlir::isa<TTL_OP##Op>(op))                                               \
-    return true;
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-  return false;
+  return op->hasTrait<TTLUnaryElementwiseOpTrait>();
 }
 
 /// Check if an operation is a binary elementwise tensor op.
 inline bool isBinaryElementwiseOp(mlir::Operation *op) {
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  if (mlir::isa<TTL_OP##Op>(op))                                               \
-    return true;
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
-  TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-  return false;
+  return op->hasTrait<TTLBinaryElementwiseOpTrait>();
 }
 
 /// Check if an operation is any elementwise tensor op (unary or binary).
@@ -108,9 +100,9 @@ enum class TraceFailureReason {
 /// Result of tracing through elementwise ops to CB-attached roots.
 struct ElementwiseTraceResult {
   /// CB-attached input values that form the roots of the chain.
-  mlir::SmallVector<mlir::Value, 2> rootInputs;
+  llvm::SmallSetVector<mlir::Value, 2> rootInputs;
   /// Operations in the chain, topologically ordered (roots first, sink last).
-  mlir::SmallVector<mlir::Operation *, 4> opsInOrder;
+  llvm::SmallSetVector<mlir::Operation *, 4> opsInOrder;
   /// Failure reason (Success if tracing succeeded).
   TraceFailureReason failureReason = TraceFailureReason::Success;
   /// The value where tracing failed (only set on failure).

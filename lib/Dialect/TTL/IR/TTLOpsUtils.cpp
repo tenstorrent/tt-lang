@@ -11,7 +11,7 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
 
   // Base case: CB-attached value is a root
   if (getAttachedCB(value)) {
-    result.rootInputs.push_back(value);
+    result.rootInputs.insert(value);
     return result;
   }
 
@@ -41,22 +41,15 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
     if (operandTrace.failureReason != TraceFailureReason::Success) {
       return operandTrace;
     }
-    // Merge roots (avoiding duplicates)
-    for (mlir::Value root : operandTrace.rootInputs) {
-      if (!llvm::is_contained(result.rootInputs, root)) {
-        result.rootInputs.push_back(root);
-      }
-    }
-    // Merge ops in dependency order
-    for (mlir::Operation *op : operandTrace.opsInOrder) {
-      if (!llvm::is_contained(result.opsInOrder, op)) {
-        result.opsInOrder.push_back(op);
-      }
-    }
+    // Merge roots and ops (SmallSetVector handles deduplication)
+    for (mlir::Value root : operandTrace.rootInputs)
+      result.rootInputs.insert(root);
+    for (mlir::Operation *op : operandTrace.opsInOrder)
+      result.opsInOrder.insert(op);
   }
 
   // Add this op at the end (after all its dependencies)
-  result.opsInOrder.push_back(defOp);
+  result.opsInOrder.insert(defOp);
 
   return result;
 }
