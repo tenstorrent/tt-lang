@@ -227,47 +227,30 @@ else()
   set(_TTMLIR_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-src")
   set(_TTMLIR_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build")
 
-  # Check if TTMLIR_SRC_DIR is provided and SHA matches
-  set(_USE_PROVIDED_SRC_DIR FALSE)
+  # Check if TTMLIR_SRC_DIR is provided and SHA matches. If not, fetch tt-mlir from GitHub.
   if(DEFINED TTMLIR_SRC_DIR)
-    if(EXISTS "${TTMLIR_SRC_DIR}/.git")
-      # Get the current commit SHA from the provided directory
-      find_program(GIT_EXECUTABLE git)
-      if(GIT_EXECUTABLE)
-        execute_process(
-          COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
-          WORKING_DIRECTORY "${TTMLIR_SRC_DIR}"
-          OUTPUT_VARIABLE _PROVIDED_SRC_SHA
-          OUTPUT_STRIP_TRAILING_WHITESPACE
-          ERROR_QUIET
-          RESULT_VARIABLE _GIT_SHA_RESULT
-        )
-        if(_GIT_SHA_RESULT EQUAL 0 AND "${_PROVIDED_SRC_SHA}" STREQUAL "${TTMLIR_GIT_TAG}")
-          message(STATUS "Using provided tt-mlir source directory: ${TTMLIR_SRC_DIR} (SHA matches: ${TTMLIR_GIT_TAG})")
-          set(_TTMLIR_SOURCE_DIR "${TTMLIR_SRC_DIR}")
-          set(_USE_PROVIDED_SRC_DIR TRUE)
-        else()
-          message(STATUS "Provided tt-mlir source directory SHA (${_PROVIDED_SRC_SHA}) does not match required SHA (${TTMLIR_GIT_TAG}), will fetch instead")
-        endif()
-      else()
-        message(WARNING "git not found, cannot verify SHA of TTMLIR_SRC_DIR, will fetch instead")
-      endif()
+    set(_CHECK_SCRIPT "${CMAKE_SOURCE_DIR}/.github/scripts/check-ttmlir-src-dir.sh")
+    execute_process(
+      COMMAND bash "${_CHECK_SCRIPT}" "${TTMLIR_SRC_DIR}" "${TTMLIR_GIT_TAG}"
+      RESULT_VARIABLE _CHECK_RESULT
+    )
+    if(_CHECK_RESULT EQUAL 0)
+      message(STATUS "Using provided tt-mlir source directory: ${TTMLIR_SRC_DIR} (SHA matches: ${TTMLIR_GIT_TAG})")
+      set(_TTMLIR_SOURCE_DIR "${TTMLIR_SRC_DIR}")
     else()
-      message(WARNING "TTMLIR_SRC_DIR (${TTMLIR_SRC_DIR}) does not appear to be a git repository, will fetch instead")
+      message(STATUS "Provided tt-mlir source directory does not match required SHA (${TTMLIR_GIT_TAG}), will fetch instead")
     endif()
   endif()
 
-  if(NOT _USE_PROVIDED_SRC_DIR)
-    include(FetchContent)
-    FetchContent_Populate(
-        tt-mlir
-        GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
-        GIT_TAG ${TTMLIR_GIT_TAG}
-        GIT_SUBMODULES_RECURSE TRUE
-        SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
-        BINARY_DIR "${_TTMLIR_BUILD_DIR}"
-    )
-  endif()
+  include(FetchContent)
+  FetchContent_Populate(
+      tt-mlir
+      GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
+      GIT_TAG ${TTMLIR_GIT_TAG}
+      GIT_SUBMODULES_RECURSE TRUE
+      SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
+      BINARY_DIR "${_TTMLIR_BUILD_DIR}"
+  )
 
   set(_TTMLIR_CMAKE_ARGS
       -G Ninja
@@ -297,6 +280,7 @@ else()
   message(STATUS "Configuring tt-mlir...")
   set(ENV{TTMLIR_TOOLCHAIN_DIR} "${TTMLIR_TOOLCHAIN_DIR}")
   string(REPLACE ";" " " _TTMLIR_CMAKE_ARGS_STRING "${_TTMLIR_CMAKE_ARGS}")
+  ttlang_debug_message("Configuring tt-mlir with: ${_TTMLIR_CMAKE_ARGS_STRING}")
   ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} ${_TTMLIR_CMAKE_ARGS_STRING} -S ${_TTMLIR_SOURCE_DIR} -B ${_TTMLIR_BUILD_DIR}"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
