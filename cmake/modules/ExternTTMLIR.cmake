@@ -83,7 +83,13 @@ if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
 endif()
 
 if(NOT DEFINED _TTMLIR_BUILD_DIR)
+  message(STATUS "Searching for TTMLIR with hints: ${TTMLIR_HINTS}")
   find_package(TTMLIR QUIET CONFIG HINTS ${TTMLIR_HINTS})
+  if(TTMLIR_FOUND)
+    message(STATUS "Found TTMLIR via find_package at: ${TTMLIR_DIR}")
+  else()
+    message(STATUS "TTMLIR not found via find_package (will use FetchContent)")
+  endif()
 endif()
 
 if(TTMLIR_FOUND OR DEFINED _TTMLIR_BUILD_DIR)

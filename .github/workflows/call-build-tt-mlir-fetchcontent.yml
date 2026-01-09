@@ -22,7 +22,8 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
-        runs-on: test1-large-runner-lang
+        # runs-on: test1-large-runner-lang
+        runs-on: ubuntu-latest
         timeout-minutes: 360
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
@@ -68,8 +69,41 @@ jobs:
                   key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
                   max-size: 100M
 
+            - name: Debug cache status and fix paths
+              run: |
+                  set -x
+                  echo "Cache hit output: '${{ steps.cache-ttmlir.outputs.cache-hit }}'"
+                  echo "Current workspace: ${{ github.workspace }}"
+                  echo "Checking if tt-mlir-install exists:"
+                  ls -la tt-mlir-install/lib/cmake/ttmlir/ 2>/dev/null || echo "tt-mlir-install not found or incomplete"
+
+                  # The cached TTMLIRConfig.cmake contains hardcoded absolute paths from when
+                  # the cache was created. Different GitHub Actions runners use different workspace
+                  # paths (/__w/... vs /home/runner/work/...). Fix by replacing paths in cmake files.
+                  if [ -f tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake ]; then
+                      echo "=== TTMLIRConfig.cmake first 10 lines ==="
+                      head -10 tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake
+
+                      # Find all cmake files that might have hardcoded paths
+                      CMAKE_FILES=$(find tt-mlir-install -name "*.cmake" -type f)
+                      echo "Found cmake files: $CMAKE_FILES"
+
+                      # Replace both common path variants with current workspace
+                      for cmake_file in $CMAKE_FILES; do
+                          echo "Fixing paths in: $cmake_file"
+                          sed -i "s|/__w/tt-lang/tt-lang|${{ github.workspace }}|g" "$cmake_file"
+                          sed -i "s|/home/runner/work/tt-lang/tt-lang|${{ github.workspace }}|g" "$cmake_file"
+                      done
+
+                      echo "=== TTMLIRConfig.cmake after fix ==="
+                      head -10 tt-mlir-install/lib/cmake/ttmlir/TTMLIRConfig.cmake
+                  fi
+
+                  # Clean any stale build directory to avoid CMake cache issues
+                  rm -rf build
+
             - name: Configure tt-lang (builds tt-mlir with tt-metal)
-              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              if: ${{ steps.cache-ttmlir.outputs.cache-hit != 'true' }}
               run: |
                   echo "Configuring tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
                   cmake -G Ninja -B build \
@@ -81,7 +115,7 @@ jobs:
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
 
             - name: Configure tt-lang with pre-installed tt-mlir
-              if: steps.cache-ttmlir.outputs.cache-hit == 'true'
+              if: ${{ steps.cache-ttmlir.outputs.cache-hit == 'true' }}
               run: |
                   echo "Configuring tt-lang with pre-installed (cached) tt-mlir"
                   ls -l .
@@ -112,7 +146,7 @@ jobs:
                 cmake --build build --target check-ttlang-python-bindings
 
             - name: Clean up tt-mlir build directory
-              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              if: ${{ steps.cache-ttmlir.outputs.cache-hit != 'true' }}
               run: |
                   rm -rf build/_deps/tt-mlir-*
 
