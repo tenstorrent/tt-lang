@@ -25,6 +25,7 @@ configure_file(
 
 set(TTLANG_TEST_DEPENDS
   ttlang-opt
+  ttlang-translate
 )
 
 # Common llvm-lit options for consistent output across tt-lang test suites.
