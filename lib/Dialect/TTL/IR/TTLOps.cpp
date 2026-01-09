@@ -129,9 +129,10 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   const bool srcIsCb = mlir::isa<CircularBufferType>(srcTy);
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
+  const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
+  const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
 
-  // MVP (no pipes): copy is between a TTNN tensor slice and a circular buffer
-  // block. Exactly one side must be a CB.
+  // Exactly one side must be a CB.
   if (srcIsCb == dstIsCb) {
     return emitOpError()
            << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
@@ -141,12 +142,24 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   // TODO(#88): Add support for pipes and blocks as ttl.copy operands once those
   // IR types/ops land.
 
-  Type tensorTy = srcIsCb ? dstTy : srcTy;
-  auto rankedTensorTy = mlir::dyn_cast<RankedTensorType>(tensorTy);
-  if (!rankedTensorTy) {
-    return emitOpError()
-           << "expects the non-CB operand to be a ranked tensor; got "
-           << tensorTy;
+  // Extract the underlying tensor type from the non-CB operand.
+  // For slices, get the original tensor from the defining TensorSliceOp.
+  Type nonCbTy = srcIsCb ? dstTy : srcTy;
+  RankedTensorType rankedTensorTy;
+
+  if (srcIsSlice || dstIsSlice) {
+    auto sliceOp = srcIsSlice ? getSrc().getDefiningOp<TensorSliceOp>()
+                              : getDst().getDefiningOp<TensorSliceOp>();
+    rankedTensorTy =
+        mlir::cast<RankedTensorType>(sliceOp.getTensor().getType());
+  } else {
+    rankedTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
+    if (!rankedTensorTy) {
+      return emitOpError()
+             << "expects the non-CB operand to be a ranked tensor or "
+                "tensor_slice result; got "
+             << nonCbTy;
+    }
   }
 
   // TT-Lang programs operate on TTNN tensors. Require a TTNN layout encoding so
