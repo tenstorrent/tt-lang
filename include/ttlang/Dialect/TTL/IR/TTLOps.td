@@ -116,9 +116,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     corresponding `ttl.wait` has completed.
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
-    must be either:
-    - A `!ttl.tensor_slice` (a view into a tensor at specific tile indices)
-    - A ranked tensor with TTNN layout encoding (transfers all tiles via loop)
+    must be a ranked tensor (the result of a tensor slice) with TTNN layout
+    encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     ttkernel noc ops land in tt-mlir. Issue: #87.
@@ -133,8 +132,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
       %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
       // Create a slice at tile position (0, 0)
       %c0 = arith.constant 0 : index
-      %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> !ttl.tensor_slice<tensor<32x32xf32, #layout>>
-      %xf = ttl.copy %slice, %cb : (!ttl.tensor_slice<tensor<32x32xf32, #layout>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> tensor<32x32xf32, #layout>
+      %xf = ttl.copy %slice, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       ttl.wait %xf : !ttl.transfer_handle<read>
       func.return
     }
