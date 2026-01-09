@@ -177,7 +177,7 @@ else()
     if(APPLE)
       set(_TTMLIR_ENABLE_PERF_TRACE OFF)
     else()
-      set(_TTMLIR_ENABLE_RUNTIME OFF)
+      set(_TTMLIR_ENABLE_RUNTIME ON)
       set(_TTMLIR_ENABLE_RUNTIME_TESTS OFF)
 
       if(TTLANG_ENABLE_PERF_TRACE)
@@ -189,7 +189,6 @@ else()
   else()
     # Use the provided value and derive related settings
     set(_TTMLIR_ENABLE_RUNTIME ${TTMLIR_ENABLE_RUNTIME})
-    list(APPEND _TTMLIR_TARGETS_TO_BUILD "-t ttrt")
 
     if(NOT DEFINED TTMLIR_ENABLE_RUNTIME_TESTS)
       set(_TTMLIR_ENABLE_RUNTIME_TESTS ${TTMLIR_ENABLE_RUNTIME})
@@ -228,15 +227,47 @@ else()
   set(_TTMLIR_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-src")
   set(_TTMLIR_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build")
 
-  include(FetchContent)
-  FetchContent_Populate(
-      tt-mlir
-      GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
-      GIT_TAG ${TTMLIR_GIT_TAG}
-      GIT_SUBMODULES_RECURSE TRUE
-      SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
-      BINARY_DIR "${_TTMLIR_BUILD_DIR}"
-  )
+  # Check if TTMLIR_SRC_DIR is provided and SHA matches
+  set(_USE_PROVIDED_SRC_DIR FALSE)
+  if(DEFINED TTMLIR_SRC_DIR)
+    if(EXISTS "${TTMLIR_SRC_DIR}/.git")
+      # Get the current commit SHA from the provided directory
+      find_program(GIT_EXECUTABLE git)
+      if(GIT_EXECUTABLE)
+        execute_process(
+          COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+          WORKING_DIRECTORY "${TTMLIR_SRC_DIR}"
+          OUTPUT_VARIABLE _PROVIDED_SRC_SHA
+          OUTPUT_STRIP_TRAILING_WHITESPACE
+          ERROR_QUIET
+          RESULT_VARIABLE _GIT_SHA_RESULT
+        )
+        if(_GIT_SHA_RESULT EQUAL 0 AND "${_PROVIDED_SRC_SHA}" STREQUAL "${TTMLIR_GIT_TAG}")
+          message(STATUS "Using provided tt-mlir source directory: ${TTMLIR_SRC_DIR} (SHA matches: ${TTMLIR_GIT_TAG})")
+          set(_TTMLIR_SOURCE_DIR "${TTMLIR_SRC_DIR}")
+          set(_USE_PROVIDED_SRC_DIR TRUE)
+        else()
+          message(STATUS "Provided tt-mlir source directory SHA (${_PROVIDED_SRC_SHA}) does not match required SHA (${TTMLIR_GIT_TAG}), will fetch instead")
+        endif()
+      else()
+        message(WARNING "git not found, cannot verify SHA of TTMLIR_SRC_DIR, will fetch instead")
+      endif()
+    else()
+      message(WARNING "TTMLIR_SRC_DIR (${TTMLIR_SRC_DIR}) does not appear to be a git repository, will fetch instead")
+    endif()
+  endif()
+
+  if(NOT _USE_PROVIDED_SRC_DIR)
+    include(FetchContent)
+    FetchContent_Populate(
+        tt-mlir
+        GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
+        GIT_TAG ${TTMLIR_GIT_TAG}
+        GIT_SUBMODULES_RECURSE TRUE
+        SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
+        BINARY_DIR "${_TTMLIR_BUILD_DIR}"
+    )
+  endif()
 
   set(_TTMLIR_CMAKE_ARGS
       -G Ninja
@@ -260,6 +291,7 @@ else()
       -DTTMLIR_ENABLE_BINDINGS_PYTHON=${TTLANG_ENABLE_BINDINGS_PYTHON}
       -DTT_RUNTIME_ENABLE_TTNN=ON
       -DTTMLIR_ENABLE_TTNN_JIT=ON
+      -DUSE_TTNN_JIT_WHEEL=OFF 
   )
 
   message(STATUS "Configuring tt-mlir...")
