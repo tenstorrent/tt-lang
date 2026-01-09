@@ -11,9 +11,6 @@ within multi-tile tensors using loops over tile indices.
 Parameterized over tensor shapes from 1x1 to 16x16 tiles.
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import tempfile

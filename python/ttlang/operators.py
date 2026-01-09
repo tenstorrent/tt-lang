@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Tuple, Union
 
-from ttmlir.ir import Type
+from ttmlir.ir import RankedTensorType, Type
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -83,8 +83,17 @@ class CopyTransferHandler:
 
 def _make_tensor_slice(tensor, indices):
     """Create a ttl.tensor_slice from a tensor and tile indices."""
+    tensor_type = tensor.type
+    if not isinstance(tensor_type, RankedTensorType):
+        raise ValueError(f"Expected RankedTensorType, got {tensor_type}")
+
+    # TTL tensors are 4D internally: [grid_row, grid_col, shard_row, shard_col]
+    # User provides 2D tile coordinates
+    if tensor_type.rank != 4:
+        raise ValueError(f"Expected rank-4 TTL tensor, got rank {tensor_type.rank}")
+
     if len(indices) != 2:
-        raise ValueError(f"Tensor slice requires exactly 2 indices, got {len(indices)}")
+        raise ValueError(f"Expected 2 tile indices (row, col), got {len(indices)}")
 
     row_idx, col_idx = indices
     # Result type is inferred from tensor type via TypesMatchWith trait
