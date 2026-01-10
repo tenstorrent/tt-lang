@@ -23,6 +23,7 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
+        # Use large runner when rebuilding tt-mlir from scratch (no cache).
         #runs-on: test1-large-runner-lang
         runs-on: ubuntu-latest
         timeout-minutes: 360
@@ -60,11 +61,15 @@ jobs:
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
-            - name: Cache tt-mlir installation only
+            - name: Cache tt-mlir installation and Python files
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
-                  path: tt-mlir-install
+                  # Cache tt-mlir-install plus the symlink targets in build/_deps
+                  path: |
+                      tt-mlir-install
+                      build/_deps/tt-mlir-src/python
+                      build/_deps/tt-mlir-build/python*
                   key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Setup ccache for tt-lang
@@ -73,8 +78,18 @@ jobs:
                   key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
                   max-size: 100M
 
+            - name: Configure tt-lang with pre-installed tt-mlir (cache hit)
+              if: steps.cache-ttmlir.outputs.cache-hit == 'true'
+              run: |
+                  echo "Using cached tt-mlir installation"
+                  cmake -G Ninja -B build \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DCMAKE_CXX_COMPILER=clang++-17 \
+                      -DCMAKE_C_COMPILER=clang-17 \
+                      -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir
+
             - name: Configure tt-lang (builds tt-mlir with tt-metal)
-              if: ${{ steps.cache-ttmlir.outputs.cache-hit != 'true' }}
+              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |
                   echo "Configuring tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
                   cmake -G Ninja -B build \
@@ -84,18 +99,6 @@ jobs:
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
-
-            - name: Configure tt-lang with pre-installed tt-mlir
-              if: ${{ steps.cache-ttmlir.outputs.cache-hit == 'true' }}
-              run: |
-                  echo "Configuring tt-lang with pre-installed (cached) tt-mlir"
-                  echo "Using TT_MLIR_DIR: ${{ env.TT_MLIR_DIR }}"
-                  ls -la "${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir/TTMLIRConfig.cmake"
-                  cmake -G Ninja -B build \
-                      -DCMAKE_BUILD_TYPE=Release \
-                      -DCMAKE_CXX_COMPILER=clang++-17 \
-                      -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_DIR="${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir"
 
             - name: Build tt-lang
               run: |
@@ -136,11 +139,6 @@ jobs:
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-bindings
 
-            - name: Clean up tt-mlir build directory
-              if: ${{ steps.cache-ttmlir.outputs.cache-hit != 'true' }}
-              run: |
-                  rm -rf build/_deps/tt-mlir-*
-
             - name: Archive build artifacts
               run: |
                   set -x
@@ -148,7 +146,8 @@ jobs:
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
                   # Archive both tt-mlir-install and build directories from workspace root
-                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
+                  # Use --dereference to follow symlinks (tt-mlir-install has symlinks to build/_deps)
+                  tar --dereference -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
                     tt-mlir-install build/python_packages build/test build/env
 
             - name: Upload build artifacts for hardware tests
