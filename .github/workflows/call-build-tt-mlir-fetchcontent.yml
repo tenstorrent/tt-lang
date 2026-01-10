@@ -61,15 +61,12 @@ jobs:
               id: llvm-version
               uses: ./.github/actions/get-llvm-version
 
-            - name: Cache tt-mlir installation and Python files
+            - name: Cache tt-mlir installation
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
-                  # Cache tt-mlir-install plus the symlink targets in build/_deps
-                  path: |
-                      tt-mlir-install
-                      build/_deps/tt-mlir-src/python
-                      build/_deps/tt-mlir-build/python*
+                  # Cache normalized tt-mlir-install (self-contained, no symlinks)
+                  path: tt-mlir-install
                   key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}
 
             - name: Setup ccache for tt-lang
@@ -139,15 +136,21 @@ jobs:
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-bindings
 
+            - name: Normalize tt-mlir installation
+              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              run: |
+                  # Replace symlinks with actual files to make tt-mlir-install self-contained
+                  # This can be removed once tt-mlir install is fixed upstream
+                  .github/scripts/normalize-ttmlir-install.sh tt-mlir-install
+
             - name: Archive build artifacts
               run: |
                   set -x
                   ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-                  # Archive both tt-mlir-install and build directories from workspace root
-                  # Use --dereference to follow symlinks (tt-mlir-install has symlinks to build/_deps)
-                  tar --dereference -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
+                  # Archive self-contained tt-mlir-install and tt-lang build outputs
+                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
                     tt-mlir-install build/python_packages build/test build/env
 
             - name: Upload build artifacts for hardware tests
