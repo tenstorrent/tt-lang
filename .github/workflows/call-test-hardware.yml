@@ -96,6 +96,7 @@ jobs:
           echo "Checking tt-mlir-install structure..."
           ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
           ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
+          find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
 
       - name: Set up environment variables
         run: |
@@ -107,7 +108,19 @@ jobs:
 
       - name: Smoketest
         run: |
-          source build/env/activate
+          echo "=== Environment before smoketest ==="
+          echo "PYTHONPATH: $PYTHONPATH"
+          echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+          echo "PATH: $PATH"
+          echo ""
+          echo "=== Testing Python import directly ==="
+          python3 -c "import sys; print('Python path:'); [print(f'  {p}') for p in sys.path]"
+          echo ""
+          python3 -c "import ttmlir; print(f'ttmlir location: {ttmlir.__file__}')"
+          python3 -c "from ttmlir import dialects; print(f'dialects location: {dialects.__path__}')"
+          python3 -c "import ttmlir.dialects.ttcore; print('ttcore import SUCCESS')" || echo "ttcore import FAILED"
+          echo ""
+          echo "=== Running smoketest ==="
           python3 test/python/smoketest.py
 
       - name: Python lit tests
