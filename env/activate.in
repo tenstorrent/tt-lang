@@ -41,6 +41,9 @@ ${TT_LANG_HOME}/python:\
 @TTMLIR_PATH@/ttrt/runtime/ttnn:\
 $PYTHONPATH"
 
+# Set LD_LIBRARY_PATH to find tt-mlir shared libraries (e.g., _ttnncpp.so)
+export LD_LIBRARY_PATH="@TTMLIR_PATH@/lib:${TTMLIR_TOOLCHAIN_DIR}/lib:${LD_LIBRARY_PATH}"
+
 # Set TT_METAL_RUNTIME_ROOT if not already set
 # The path is determined by CMake at configure time in ExternTTMLIR.cmake
 if [ -z "${TT_METAL_RUNTIME_ROOT}" ]; then
@@ -61,4 +64,5 @@ if [ "${_TTLANG_QUIET}" -eq 0 ]; then
   echo "  TT-MLIR:               @TTMLIR_PATH@"
   echo "  Toolchain:             ${TTMLIR_TOOLCHAIN_DIR}"
   echo "  TT_METAL_RUNTIME_ROOT: ${TT_METAL_RUNTIME_ROOT}"
+  echo "  LD_LIBRARY_PATH:       ${LD_LIBRARY_PATH}"
 fi
