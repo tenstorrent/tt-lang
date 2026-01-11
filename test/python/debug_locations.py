@@ -71,12 +71,13 @@ def debug_loc_kernel(lhs, out):
 # CHECK: } loc(#loc1)
 
 # Verify location aliases are defined with actual file line numbers (at end of MLIR)
-# CHECK-DAG: #loc1 = loc("{{.*}}debug_locations.py":38:1)
-# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":39:9)
-# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":40:9)
-# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":41:5)
-# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":42:5)
-# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":43:5)
+# Use regex for line numbers to be robust against header changes (REQUIRES, etc.)
+# CHECK-DAG: #loc1 = loc("{{.*}}debug_locations.py":{{[0-9]+}}:1)
+# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":{{[0-9]+}}:9)
+# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":{{[0-9]+}}:9)
+# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":{{[0-9]+}}:5)
+# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":{{[0-9]+}}:5)
+# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":{{[0-9]+}}:5)
 
 
 if __name__ == "__main__":

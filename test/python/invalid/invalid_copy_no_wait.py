@@ -63,9 +63,9 @@ def copy_no_wait_kernel(lhs, out):
 
 
 # PRETTY: error: expects transfer handle to be synchronized with ttl.wait
-# PRETTY-NEXT:   --> {{.*}}invalid_copy_no_wait.py:50:10
+# PRETTY-NEXT:   --> {{.*}}invalid_copy_no_wait.py:[[LINE:[0-9]+]]:10
 # PRETTY-NEXT:    |
-# PRETTY-NEXT: 50 |         tx = copy(lhs[0, 0], lhs_cb)
+# PRETTY-NEXT: [[LINE]] |         tx = copy(lhs[0, 0], lhs_cb)
 # PRETTY-NEXT:    |          ^
 # PRETTY-NEXT:    |
 
