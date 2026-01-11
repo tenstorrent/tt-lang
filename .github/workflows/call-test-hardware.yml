@@ -98,42 +98,24 @@ jobs:
           ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
           find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
 
-      - name: Set up environment variables
-        run: |
-          TT_MLIR_DIR="$(pwd)/tt-mlir-install"
-          echo "TT_MLIR_DIR=${TT_MLIR_DIR}" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=${TT_MLIR_DIR}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
-          echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${TT_MLIR_DIR}/ttrt/runtime/ttnn:${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
-          echo "TT_METAL_RUNTIME_ROOT=${TT_MLIR_DIR}/tt-metal" >> $GITHUB_ENV
-          echo "TT_METAL_HOME=${TT_MLIR_DIR}/tt-metal" >> $GITHUB_ENV
-
       - name: Smoketest
         run: |
-          echo "=== Environment before smoketest ==="
-          echo "PYTHONPATH: $PYTHONPATH"
-          echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
-          echo "PATH: $PATH"
-          echo ""
-          echo "=== Testing Python import directly ==="
-          python3 -c "import sys; print('Python path:'); [print(f'  {p}') for p in sys.path]"
-          echo ""
-          python3 -c "import ttmlir; print(f'ttmlir location: {ttmlir.__file__}')"
-          python3 -c "from ttmlir import dialects; print(f'dialects location: {dialects.__path__}')"
-          python3 -c "import ttmlir.dialects.ttcore; print('ttcore import SUCCESS')" || echo "ttcore import FAILED"
-          echo ""
-          echo "=== Running smoketest ==="
+          source build/env/activate
           python3 test/python/smoketest.py
 
       - name: Python lit tests
         run: |
           source build/env/activate
-          ninja -C build check-ttlang-python-lit
+          # Create Output directory for lit test temp files
+          mkdir -p build/test/python/Output
+          # Run lit tests directly instead of through ninja (avoids rebuilding)
+          llvm-lit build/test/python -sv -j1 --xunit-xml-output build/test/python-lit-report.xml
 
       - name: Pytests
         run: |
           source build/env/activate
-          ninja -C build check-ttlang-pytest
+          # Run pytest directly instead of through ninja
+          python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
@@ -141,6 +123,6 @@ jobs:
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}
           path: |
-            build/python-lit-report.xml
-            build/pytest-report.xml
+            build/test/python-lit-report.xml
+            build/test/pytest-report.xml
           retention-days: 7
