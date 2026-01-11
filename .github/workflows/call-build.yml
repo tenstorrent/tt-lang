@@ -11,6 +11,13 @@ on:
         description: "Build and deploy documentation."
         type: boolean
         default: false
+      linux_runner:
+        description: "Linux runner to use"
+        type: choice
+        options:
+          - ubuntu-latest
+          - test1-large-runner-lang
+        default: "test1-large-runner-lang"
   workflow_call:
     inputs:
       run_macos:
@@ -23,13 +30,18 @@ on:
         type: boolean
         required: false
         default: false
+      linux_runner:
+        description: "Linux runner to use (ubuntu-latest or test1-large-runner-lang)"
+        type: string
+        required: false
+        default: "ubuntu-latest"
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.run_macos && '[{"os":"ubuntu-latest","timeout":240,"use_container":true},{"os":"macos-26","timeout":360,"use_container":false}]' || '[{"os":"ubuntu-latest","timeout":240,"use_container":true}]') }}
+        include: ${{ fromJSON(inputs.run_macos && format('[{{"os":"{0}","timeout":240,"use_container":true}},{{"os":"macos-26","timeout":360,"use_container":false}}]', inputs.linux_runner) || format('[{{"os":"{0}","timeout":240,"use_container":true}}]', inputs.linux_runner)) }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -116,19 +128,22 @@ jobs:
             -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_ENABLE_SHARED_LIB=ON \
-            -DTTMLIR_ENABLE_RUNTIME=OFF \
+            -DTTMLIR_ENABLE_RUNTIME=${{ runner.os == 'Linux' && 'ON' || 'OFF' }} \
             -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
+            -DTTMLIR_ENABLE_TTRT=OFF \
             -DTTMLIR_ENABLE_STABLEHLO=OFF \
             -DTTMLIR_ENABLE_OPMODEL=OFF \
+            -DTTMLIR_ENABLE_EXPLORER=OFF \
+            -DTTMLIR_ENABLE_ALCHEMIST=OFF \
             -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
             -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DTTMLIR_ENABLE_DEBUG_STRINGS=OFF \
-            -DTTMLIR_ENABLE_EXPLORER=OFF \
+            -DTT_RUNTIME_ENABLE_TTNN=ON \
+            -DTTMLIR_ENABLE_TTNN_JIT=ON \
+            -DUSE_TTNN_JIT_WHEEL=OFF \
             -DBUILD_TESTING=OFF \
             -S .
           cmake --build build --target all --target TTMLIRPythonModules
           cmake --install build
-          cmake --install build --component TTMLIRPythonWheel
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2

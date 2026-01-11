@@ -7,12 +7,24 @@ on:
                 description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
                 required: false
                 type: string
+            linux_runner:
+                description: "Linux runner to use"
+                type: choice
+                options:
+                    - ubuntu-latest
+                    - test1-large-runner-lang
+                default: "ubuntu-latest"
     workflow_call:
         inputs:
             tt-mlir-commit:
                 description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
                 required: false
                 type: string
+            linux_runner:
+                description: "Linux runner to use (ubuntu-latest or test1-large-runner-lang)"
+                type: string
+                required: false
+                default: "ubuntu-latest"
     schedule:
         - cron: "0 12 * * *"
 
@@ -22,9 +34,7 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
-        # Use large runner when rebuilding tt-mlir from scratch (no cache).
-        #runs-on: test1-large-runner-lang
-        runs-on: ubuntu-latest
+        runs-on: ${{ inputs.linux_runner || 'ubuntu-latest' }}
         timeout-minutes: 120
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest

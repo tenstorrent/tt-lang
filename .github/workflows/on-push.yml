@@ -32,6 +32,7 @@ jobs:
       # macOS is disabled by default for pushes. Enable via workflow_dispatch.
       run_macos: ${{ github.event_name == 'workflow_dispatch' && inputs.run_macos }}
       build_docs: ${{ github.ref == 'refs/heads/main' || github.ref_name == 'bnorris/docs-sphinx' }}
+      linux_runner: ubuntu-latest
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
