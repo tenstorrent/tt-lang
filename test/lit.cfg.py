@@ -48,6 +48,13 @@ config.ttlang_source_dir = getattr(
 
 config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
 
+# Create Output directories for lit temp files (%t substitution).
+# This is needed when running from pre-built artifacts where the build
+# directory may not have the Output subdirectories created.
+for subdir in ["python", "ttlang", "bindings/python"]:
+    output_dir = os.path.join(config.test_exec_root, subdir, "Output")
+    os.makedirs(output_dir, exist_ok=True)
+
 config.excludes = [
     "Inputs",
     "lit.cfg.py",
