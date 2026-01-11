@@ -107,21 +107,11 @@ jobs:
         run: |
           source build/env/activate
           python test/python/simple_add.py
-      
-      - name: Single test (python lit)
-        run: |
-          source build/env/activate
-          # Create Output directory for lit temp files (lit.cfg.py creates it but needs to exist before %t expansion)
-          mkdir -p build/test/python/Output
-          llvm-lit -sv test/python/simple_add.py
 
       - name: Python lit tests
         run: |
           source build/env/activate
-          # Create Output directory for lit temp files
-          mkdir -p build/test/python/Output
-          # Run lit tests directly instead of through ninja (avoids rebuilding)
-          llvm-lit test/python -sv -j1 --xunit-xml-output build/test/python-lit-report.xml
+          cmake --build build --target check-ttlang-python-lit
 
       - name: Pytests
         run: |

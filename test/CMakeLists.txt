@@ -5,6 +5,11 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
   MAIN_CONFIG
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
+  PATHS
+  CMAKE_BINARY_DIR
+  CMAKE_SOURCE_DIR
+  TTLANG_PYTHON_PACKAGES_DIR
+  CMAKE_CURRENT_SOURCE_DIR
 )
 
 # Check for Tenstorrent device at configure time
