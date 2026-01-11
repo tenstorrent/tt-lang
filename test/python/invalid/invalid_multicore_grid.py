@@ -23,7 +23,7 @@ from ttlang.operators import copy
 from ttlang.ttl_api import Program
 
 
-# CHECK: TTNN interop only supports single-core grid (1, 1)
+# CHECK: TTNN interop only supports single-core grid (1, 1), got (2, 2)
 @ttl.kernel(grid=(2, 2))
 def invalid_multicore_kernel(lhs, rhs, out):
     """This kernel should fail because multi-core grids are not supported."""
