@@ -103,6 +103,16 @@ jobs:
           source build/env/activate
           python3 test/python/smoketest.py
 
+      - name: Single test (just python)
+        run: |
+          source build/env/activate
+          python test/python/simple_add.py
+      
+      - name: Single test (python lit)
+        run: |
+          source build/env/activate
+          llvm-lit -sv test/python/simple_add.py
+
       - name: Python lit tests
         run: |
           source build/env/activate
