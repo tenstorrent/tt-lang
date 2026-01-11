@@ -1,7 +1,6 @@
 name: Build tt-lang with tt-mlir (FetchContent) and run HW tests
 
 on:
-    push:
     workflow_dispatch:
         inputs:
             tt-mlir-commit:
@@ -14,8 +13,8 @@ on:
                 description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
                 required: false
                 type: string
-    # schedule:
-    #     - cron: "0 12 * * *"
+    schedule:
+        - cron: "0 12 * * *"
 
 permissions:
     checks: write
@@ -26,7 +25,7 @@ jobs:
         # Use large runner when rebuilding tt-mlir from scratch (no cache).
         #runs-on: test1-large-runner-lang
         runs-on: ubuntu-latest
-        timeout-minutes: 360
+        timeout-minutes: 120
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
@@ -37,7 +36,6 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
-            TTLANG_CMAKE_DEBUG: 1
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
@@ -136,7 +134,6 @@ jobs:
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
                   # Archive self-contained tt-mlir-install and tt-lang build directory
-                  # Exclude build/_deps (large, already handled by tt-mlir-install)
                   tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
                     --exclude='build/_deps' \
                     tt-mlir-install build
@@ -171,4 +168,3 @@ jobs:
               uses: re-actors/alls-green@release/v1
               with:
                   jobs: ${{ toJSON(needs) }}
-                  allowed-failures: test-hardware
