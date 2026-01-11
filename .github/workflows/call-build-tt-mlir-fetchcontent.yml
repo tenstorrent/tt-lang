@@ -35,7 +35,7 @@ permissions:
 jobs:
     build-tt-lang-tt-mlir:
         runs-on: ${{ inputs.linux_runner || 'ubuntu-latest' }}
-        timeout-minutes: 120
+        timeout-minutes: 240
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
@@ -58,11 +58,14 @@ jobs:
               with:
                   fetch-depth: 0
 
+            - name: Free more disk space
+              if: runner.os == 'Linux'
+              run: .github/scripts/free-disk-space.sh
+
             - name: Determine tt-mlir commit
               id: ttmlir-commit
               shell: bash
               run: |
-                  df -h
                   bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
 
             - name: Get LLVM version

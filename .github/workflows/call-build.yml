@@ -68,6 +68,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Free more disk space
+        if: runner.os == 'Linux'
+        run: .github/scripts/free-disk-space.sh
+
       - name: Read tt-mlir version
         id: ttmlir-version
         run: |
