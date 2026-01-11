@@ -9,10 +9,9 @@ on:
         description: "Run the macOS build."
         type: boolean
         default: false
-  # TEMPORARILY DISABLED - testing fetchcontent workflow
-  # pull_request:
-  #   types: [opened, synchronize, reopened, ready_for_review]
-  #   branches: ["main"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: ["main"]
 
 permissions:
   checks: write

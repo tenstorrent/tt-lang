@@ -7,9 +7,8 @@ on:
         description: "Run the macOS build (disabled by default)."
         type: boolean
         default: false
-  # TEMPORARILY DISABLED - testing fetchcontent workflow
-  # push:
-  #   branches: ["main"]
+  push:
+    branches: ["main"]
 
 permissions:
   checks: write
