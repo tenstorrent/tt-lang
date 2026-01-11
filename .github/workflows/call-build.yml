@@ -114,7 +114,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
           key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
 
@@ -158,7 +157,7 @@ jobs:
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
-            -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
+            -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
             -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }} \
             -S .
