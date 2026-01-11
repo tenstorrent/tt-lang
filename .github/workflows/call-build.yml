@@ -168,6 +168,11 @@ jobs:
           source build/env/activate
           cmake --build build --target check-ttlang-python-bindings
 
+      - name: Python lit tests
+        run: |
+          source build/env/activate
+          cmake --build build --target check-ttlang-python-lit
+
       - name: Build documentation
         if: inputs.build_docs && runner.os == 'Linux'
         run: |
@@ -180,10 +185,28 @@ jobs:
         with:
           path: ./build/docs/sphinx/_build/html
 
+      - name: Normalize tt-mlir installation
+        run: |
+          # Replace symlinks with actual files to make tt-mlir-install self-contained
+          # This can be removed once tt-mlir install is fixed upstream
+          .github/scripts/normalize-ttmlir-install.sh ${{ env.TT_MLIR_DIR }}
+
+      - name: Archive build artifacts
+        id: archive
+        run: |
+          set -x
+          ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
+          echo "name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+
+          # Archive self-contained tt-mlir-install and tt-lang build directory
+          tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
+            --exclude='build/_deps' \
+            ${{ env.TT_MLIR_DIR }} build
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
-          path: |
-            build/python_packages
+          name: ttlang-ttmlir-install-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          path: ${{ steps.archive.outputs.name }}
+          if-no-files-found: error
           retention-days: 1

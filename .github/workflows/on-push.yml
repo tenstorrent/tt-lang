@@ -37,6 +37,16 @@ jobs:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
+  test-hardware:
+    needs: build
+    uses: ./.github/workflows/call-test-hardware.yml
+    secrets: inherit
+    with:
+      runs-on: n150
+      build-os: ubuntu
+      timeout: 60
+      artifact-prefix: ttlang
+
   deploy-docs:
     if: github.ref == 'refs/heads/main' || github.ref_name == 'bnorris/docs-sphinx'
     needs: build
@@ -55,6 +65,7 @@ jobs:
       - pre-commit
       - build
       - test-sim
+      - test-hardware
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed

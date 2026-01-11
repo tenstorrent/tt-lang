@@ -39,16 +39,27 @@ jobs:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
+  test-hardware:
+    needs: build
+    uses: ./.github/workflows/call-test-hardware.yml
+    secrets: inherit
+    with:
+      runs-on: n150
+      build-os: ubuntu
+      timeout: 60
+      artifact-prefix: ttlang
+
   check-all-green:
     if: always()
     needs:
       - pre-commit
       - build
       - test-sim
+      - test-hardware
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build, test-sim
+          allowed-skips: build, test-sim, test-hardware
           jobs: ${{ toJSON(needs) }}
