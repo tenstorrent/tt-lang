@@ -121,7 +121,7 @@ jobs:
               run: |
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-lit
-                
+
             - name: Normalize tt-mlir installation
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |

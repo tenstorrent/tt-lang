@@ -161,3 +161,7 @@ try:
     config.available_features.add("ttnn")
 except ImportError:
     pass
+
+# Add tt-device feature if hardware is available (detected by CMake at configure time)
+if getattr(config, "ttlang_has_device", False):
+    config.available_features.add("tt-device")

@@ -1,5 +1,14 @@
 # Test configuration
 
+# Check for Tenstorrent device at configure time (must be before configure_lit_site_cfg)
+ttlang_check_device_available(TTLANG_HAS_DEVICE)
+
+if(TTLANG_HAS_DEVICE)
+  set(TTLANG_HAS_DEVICE_INT 1)
+else()
+  set(TTLANG_HAS_DEVICE_INT 0)
+endif()
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
@@ -11,15 +20,6 @@ configure_lit_site_cfg(
   TTLANG_PYTHON_PACKAGES_DIR
   CMAKE_CURRENT_SOURCE_DIR
 )
-
-# Check for Tenstorrent device at configure time
-ttlang_check_device_available(TTLANG_HAS_DEVICE)
-
-if(TTLANG_HAS_DEVICE)
-  set(TTLANG_HAS_DEVICE_INT 1)
-else()
-  set(TTLANG_HAS_DEVICE_INT 0)
-endif()
 
 # Generate test config file with device availability
 configure_file(
