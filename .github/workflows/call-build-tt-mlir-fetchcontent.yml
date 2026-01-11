@@ -102,25 +102,6 @@ jobs:
                   source build/env/activate
                   cmake --build build
 
-            - name: Debug contents of build/python_packages
-              run: |
-                  echo "=== Contents of build/python_packages ==="
-                  ls -la build/python_packages/ || echo "build/python_packages not found"
-                  echo ""
-                  echo "=== Contents of tt-mlir-install/python_packages/ttmlir ==="
-                  ls -la tt-mlir-install/python_packages/ttmlir/ || echo "ttmlir not found"
-                  echo ""
-                  echo "=== Contents of tt-mlir-install/python_packages/ttmlir/dialects ==="
-                  ls -la tt-mlir-install/python_packages/ttmlir/dialects/ || echo "dialects not found"
-                  echo ""
-                  echo "=== Looking for ttcore ==="
-                  find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
-                  find build/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in build"
-                  echo ""
-                  echo "=== Contents of build/env ==="
-                  ls -la build/env/ || echo "build/env not found"
-                  cat build/env/activate 2>/dev/null | head -50 || echo "activate not found"
-
             - name: Test the tt-lang build
               run: |
                   source build/env/activate
@@ -136,6 +117,11 @@ jobs:
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-bindings
 
+            - name: Python lit tests
+              run: |
+                source build/env/activate
+                cmake --build build --target check-ttlang-python-lit
+                
             - name: Normalize tt-mlir installation
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
               run: |
