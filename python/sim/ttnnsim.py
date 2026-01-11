@@ -30,6 +30,9 @@ from .typedefs import Count, IndexType, Shape
 TILE_SIZE: int = TILE_SHAPE[0]
 TILE_LAYOUT = IndexType.TILE
 
+# Memory config placeholder (no-op in simulator)
+L1_MEMORY_CONFIG = None
+
 # Type aliases for binary operations
 Scalar = Union[float, int]
 TensorOrScalar = Union["Tensor", float, int]
@@ -452,6 +455,35 @@ def to_torch(t: Union[Tensor, torch.Tensor]) -> torch.Tensor:
             return tt
         case _:
             raise TypeError(f"Unsupported type for to_torch: {type(t)}")
+
+
+def from_torch(
+    tensor: torch.Tensor,
+    dtype: Optional[torch.dtype] = None,
+    layout: Any = None,
+    device: Optional[Device] = None,
+    memory_config: Any = None,
+) -> Tensor:
+    """Convert a torch.Tensor to a TTNN simulator Tensor.
+
+    Accepts additional keyword arguments for API compatibility with TTNN
+    (layout, device, memory_config), but these are no-ops in the simulator.
+
+    Args:
+        tensor: Input torch tensor to wrap
+        dtype: Optional dtype to convert to (defaults to tensor's dtype)
+        layout: Layout parameter (no-op in simulator)
+        device: Device parameter (no-op in simulator)
+        memory_config: Memory config parameter (no-op in simulator)
+
+    Returns:
+        Tensor wrapping the input (potentially converted) torch tensor
+    """
+    # Convert dtype if specified
+    if dtype is not None and tensor.dtype != dtype:
+        tensor = tensor.to(dtype)
+
+    return Tensor(tensor)
 
 
 def isclose(

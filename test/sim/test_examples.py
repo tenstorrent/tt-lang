@@ -96,3 +96,21 @@ def test_metal_example_cli(example_path: str) -> None:
     """Test metal examples run successfully via ttlsim CLI."""
     code, out = run_ttlsim_and_capture(EXAMPLES_METAL_DIR / example_path)
     assert_success_output(code, out)
+
+
+def test_eltwise_add2_fails_with_expected_error() -> None:
+    """Test that eltwise_add2.py fails with the expected copy validation error.
+
+    This example demonstrates a common mistake: copying a single tile into a
+    block that expects multiple tiles. The error message should clearly indicate
+    the mismatch.
+    """
+    code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "eltwise_add2.py")
+    assert code != 0, f"Expected eltwise_add2.py to fail, but it exited with code 0"
+    expected_error = (
+        "Unsupported or invalid copy transfer from Tensor to Block: "
+        "Tensor contains 1 tiles but Block has 4 slots"
+    )
+    assert (
+        expected_error in out
+    ), f"Expected error message not found.\nExpected: {expected_error}\nGot:\n{out}"
