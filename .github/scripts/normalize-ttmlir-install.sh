@@ -18,9 +18,13 @@ fi
 
 echo "Normalizing tt-mlir installation at: $INSTALL_DIR"
 
-# Find all symlinks and replace them with their targets
-# Using process substitution to avoid subshell issues with set -e
-while IFS= read -r link; do
+# Find all symlinks first (before we start modifying the filesystem)
+mapfile -t symlinks < <(find "$INSTALL_DIR" -type l)
+
+echo "Found ${#symlinks[@]} symlinks to process"
+
+# Replace each symlink with its target
+for link in "${symlinks[@]}"; do
     target=$(readlink -f "$link")
     if [ -e "$target" ]; then
         # Remove symlink and copy the target
@@ -34,6 +38,6 @@ while IFS= read -r link; do
     else
         echo "  Warning: Broken symlink (target missing): $link -> $target"
     fi
-done < <(find "$INSTALL_DIR" -type l)
+done
 
 echo "Normalization complete."

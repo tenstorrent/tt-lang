@@ -149,9 +149,11 @@ jobs:
                   ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-                  # Archive self-contained tt-mlir-install and tt-lang build outputs
+                  # Archive self-contained tt-mlir-install and tt-lang build directory
+                  # Exclude build/_deps (large, already handled by tt-mlir-install)
                   tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
-                    tt-mlir-install build/python_packages build/test build/env
+                    --exclude='build/_deps' \
+                    tt-mlir-install build
 
             - name: Upload build artifacts for hardware tests
               uses: actions/upload-artifact@v4
