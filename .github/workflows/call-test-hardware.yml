@@ -107,7 +107,7 @@ jobs:
         run: |
           source build/env/activate
           python test/python/simple_add.py
-      
+
       - name: Single test (python lit)
         run: |
           source build/env/activate
