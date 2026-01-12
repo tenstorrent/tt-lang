@@ -43,8 +43,8 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
-        name: build-tt-lang-tt-mlir (${{ inputs.linux_runner }})
-        runs-on: ${{ inputs.linux_runner }}
+        name: build-tt-lang-tt-mlir (${{ inputs.linux_runner || 'test1-large-runner-lang' }})
+        runs-on: ${{ inputs.linux_runner || 'test1-large-runner-lang' }}
         timeout-minutes: 240
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
@@ -104,6 +104,7 @@ jobs:
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir \
+                      -DFETCHCONTENT_UPDATES_DISCONNECTED=ON \
                       -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
 
             - name: Configure tt-lang (builds tt-mlir with tt-metal)
