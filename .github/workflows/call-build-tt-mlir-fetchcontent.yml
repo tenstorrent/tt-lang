@@ -85,6 +85,8 @@ jobs:
                   # Cache normalized tt-mlir-install (self-contained, no symlinks)
                   path: tt-mlir-install
                   key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                  restore-keys: |
+                      ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
