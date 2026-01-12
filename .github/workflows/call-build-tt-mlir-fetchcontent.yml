@@ -93,14 +93,16 @@ jobs:
             - name: Check if tt-mlir was restored from cache
               id: check-ttmlir-cache
               run: |
-                  # Check if cache was restored (either exact hit or restore-key match)
-                  if [ -d "${{ env.TT_MLIR_DIR }}" ] && [ -f "${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir/TTMLIRConfig.cmake" ]; then
+                  # Check if cache was restored with complete installation (including ttrt/TTNN)
+                  if [ -d "${{ env.TT_MLIR_DIR }}" ] && \
+                     [ -f "${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir/TTMLIRConfig.cmake" ] && \
+                     [ -d "${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/ttnn" ]; then
                       echo "restored=true" >> $GITHUB_OUTPUT
-                      echo "✓ tt-mlir installation restored from cache at ${{ env.TT_MLIR_DIR }}"
+                      echo "✓ tt-mlir installation (with ttrt/TTNN) restored from cache at ${{ env.TT_MLIR_DIR }}"
                       ls -lh "${{ env.TT_MLIR_DIR }}" | head -10
                   else
                       echo "restored=false" >> $GITHUB_OUTPUT
-                      echo "✗ tt-mlir installation not found, will build from scratch"
+                      echo "✗ tt-mlir installation incomplete or missing ttrt/TTNN, will rebuild"
                       echo "  This will take ~60-90 minutes and requires large runner"
                   fi
 
@@ -159,6 +161,14 @@ jobs:
               run: |
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-lit
+
+            - name: Copy ttrt runtime (contains ttnn Python package) to tt-mlir-install
+              if: steps.check-ttmlir-cache.outputs.restored != 'true'
+              run: |
+                  set -x
+                  # TTNN Python package lives in ttrt/runtime and needs to be in the install dir
+                  mkdir -p tt-mlir-install/python_packages/ttrt/runtime
+                  cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
 
             - name: Build documentation
               if: inputs.build_docs
