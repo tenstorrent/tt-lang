@@ -69,14 +69,13 @@ def debug_loc_kernel(lhs, out):
 # CHECK: } loc(#loc1)
 
 # Verify location aliases are defined with actual file line numbers (at end of MLIR)
-# Capture the line number for @ttl.compute() and verify subsequent lines relative to it
-# TODO: Figure out a machine-independent way to verify the BASE line number
-# CHECK-DAG: #loc1 = loc("{{.*}}debug_locations.py":[[BASE:[0-9]+]]:1)
-# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":[[#BASE+1]]:9)
-# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":[[#BASE+2]]:9)
-# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":[[#BASE+3]]:5)
-# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":[[#BASE+4]]:5)
-# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":[[#BASE+5]]:5)
+# TODO: Figure out a machine-independent way to verify the BASE line number more precisely
+# CHECK: #loc1 = loc("{{.*}}debug_locations.py":[[#BASE:]]:1)
+# CHECK: #loc2 = loc("{{.*}}debug_locations.py":[[#BASE+1]]:9)
+# CHECK: #loc3 = loc("{{.*}}debug_locations.py":[[#BASE+2]]:9)
+# CHECK: #loc4 = loc("{{.*}}debug_locations.py":[[#BASE+3]]:5)
+# CHECK: #loc5 = loc("{{.*}}debug_locations.py":[[#BASE+4]]:5)
+# CHECK: #loc6 = loc("{{.*}}debug_locations.py":[[#BASE+5]]:5)
 
 
 if __name__ == "__main__":
