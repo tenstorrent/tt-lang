@@ -25,6 +25,8 @@ jobs:
   build:
     uses: ./.github/workflows/call-build-tt-mlir-fetchcontent.yml
     secrets: inherit
+    with:
+      linux_runner: test1-large-runner-lang  # Use large runner until cache is stable
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
