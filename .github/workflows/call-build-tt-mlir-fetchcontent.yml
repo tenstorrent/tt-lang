@@ -43,7 +43,8 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
-        runs-on: ${{ inputs.linux_runner || 'ubuntu-latest' }}
+        name: build-tt-lang-tt-mlir (${{ inputs.linux_runner }})
+        runs-on: ${{ inputs.linux_runner }}
         timeout-minutes: 240
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
@@ -84,7 +85,7 @@ jobs:
               with:
                   # Cache normalized tt-mlir-install (self-contained, no symlinks)
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-${{ github.ref }}
                   restore-keys: |
                       ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
 
