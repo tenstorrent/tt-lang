@@ -18,16 +18,14 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+from ttlang import ttl
 
 
 @ttl.kernel(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -44,12 +42,12 @@ def add_kernel(lhs, rhs, out):
     def dm_read():
         # Reserve CB space before reading into it
         lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
@@ -57,11 +55,11 @@ def add_kernel(lhs, rhs, out):
     def dm_write():
         # Wait for data to be ready, then write out
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================

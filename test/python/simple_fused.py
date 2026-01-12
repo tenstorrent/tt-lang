@@ -7,7 +7,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Simple fused kernel - verifies exp(inp) + sqrt(bias) fusion lowers correctly.
+Simple fused kernel - verifies ttl.math.exp(inp) + ttl.math.sqrt(bias) fusion lowers correctly.
 
 Tests that multiple elementwise ops fuse into a single compute body.
 """
@@ -16,9 +16,7 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like, exp, sqrt
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttlang import ttl
 
 try:
     import ttnn
@@ -29,17 +27,17 @@ except ImportError:
 
 @ttl.kernel(grid=(1, 1))
 def fused_kernel(inp, bias, out):
-    """Kernel that computes exp(inp) + sqrt(bias) - fuses 3 ops."""
-    inp_cb = make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    bias_cb = make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    """Kernel that computes ttl.math.exp(inp) + ttl.math.sqrt(bias) - fuses 3 ops."""
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    bias_cb = ttl.make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
         i = inp_cb.wait()
         b = bias_cb.wait()
         o = out_cb.reserve()
-        result = exp(i) + sqrt(b)
+        result = ttl.math.exp(i) + ttl.math.sqrt(b)
         o.store(result)
         inp_cb.pop()
         bias_cb.pop()
@@ -48,23 +46,23 @@ def fused_kernel(inp, bias, out):
     @ttl.datamovement()
     def dm_read():
         inp_cb.reserve()
-        tx_inp = copy(inp[0, 0], inp_cb)
+        tx_inp = ttl.copy(inp[0, 0], inp_cb)
         tx_inp.wait()
         inp_cb.push()
 
         bias_cb.reserve()
-        tx_bias = copy(bias[0, 0], bias_cb)
+        tx_bias = ttl.copy(bias[0, 0], bias_cb)
         tx_bias.wait()
         bias_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(fused_compute, dm_read, dm_write)(inp, bias, out)
+    return ttl.Program(fused_compute, dm_read, dm_write)(inp, bias, out)
 
 
 # =============================================================================

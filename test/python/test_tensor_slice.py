@@ -37,16 +37,14 @@ def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
 
 
 ADD_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttlang import ttl
 
 @ttl.kernel(grid=(1, 1))
 def tile_loop_kernel(inp, bias, out):
     """Kernel that loops over all tiles, adding bias to each."""
-    inp_cb = make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    bias_cb = make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    bias_cb = ttl.make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -62,8 +60,8 @@ def tile_loop_kernel(inp, bias, out):
         for r in range({tile_rows}):
             for c in range({tile_cols}):
                 with inp_cb.reserve(), bias_cb.reserve():
-                    tx_inp = copy(inp[r, c], inp_cb)
-                    tx_bias = copy(bias[r, c], bias_cb)
+                    tx_inp = ttl.copy(inp[r, c], inp_cb)
+                    tx_bias = ttl.copy(bias[r, c], bias_cb)
                     tx_inp.wait()
                     tx_bias.wait()
 
@@ -72,23 +70,21 @@ def tile_loop_kernel(inp, bias, out):
         for r in range({tile_rows}):
             for c in range({tile_cols}):
                 with out_cb.wait():
-                    tx = copy(out_cb, out[r, c])
+                    tx = ttl.copy(out_cb, out[r, c])
                     tx.wait()
 
-    return Program(add_compute, dm_read, dm_write)(inp, bias, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 FUSED_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like, exp, sqrt
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttlang import ttl
 
 @ttl.kernel(grid=(1, 1))
 def fused_kernel(inp, bias, out):
-    """Kernel that computes exp(inp) + sqrt(bias) - fuses 3 ops."""
-    inp_cb = make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    bias_cb = make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    """Kernel that computes ttl.math.exp(inp) + ttl.math.sqrt(bias) - fuses 3 ops."""
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    bias_cb = ttl.make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
@@ -96,7 +92,7 @@ def fused_kernel(inp, bias, out):
             for _ in range({tile_cols}):
                 with inp_cb.wait() as inp_tile, bias_cb.wait() as bias_tile:
                     with out_cb.reserve() as out_tile:
-                        result = exp(inp_tile) + sqrt(bias_tile)
+                        result = ttl.math.exp(inp_tile) + ttl.math.sqrt(bias_tile)
                         out_tile.store(result)
 
     @ttl.datamovement()
@@ -104,8 +100,8 @@ def fused_kernel(inp, bias, out):
         for r in range({tile_rows}):
             for c in range({tile_cols}):
                 with inp_cb.reserve(), bias_cb.reserve():
-                    tx_inp = copy(inp[r, c], inp_cb)
-                    tx_bias = copy(bias[r, c], bias_cb)
+                    tx_inp = ttl.copy(inp[r, c], inp_cb)
+                    tx_bias = ttl.copy(bias[r, c], bias_cb)
                     tx_inp.wait()
                     tx_bias.wait()
 
@@ -114,10 +110,10 @@ def fused_kernel(inp, bias, out):
         for r in range({tile_rows}):
             for c in range({tile_cols}):
                 with out_cb.wait():
-                    tx = copy(out_cb, out[r, c])
+                    tx = ttl.copy(out_cb, out[r, c])
                     tx.wait()
 
-    return Program(fused_compute, dm_read, dm_write)(inp, bias, out)
+    return ttl.Program(fused_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 _add_kernel_cache = {}
@@ -261,7 +257,7 @@ def test_tensor_slice_add(device, tensor_shape):
     ids=[make_test_id(s) for s in TENSOR_TILE_SHAPES_SHORT],
 )
 def test_tensor_slice_fused(device, tensor_shape):
-    """Test looping over all tiles with fused exp(inp) + sqrt(bias) operation."""
+    """Test looping over all tiles with fused ttl.math.exp(inp) + ttl.math.sqrt(bias) operation."""
     tile_rows, tile_cols = tensor_shape
     height, width = tiles_to_tensor_shape(tile_rows, tile_cols)
 
@@ -309,7 +305,7 @@ def test_tensor_slice_fused(device, tensor_shape):
 
     result = ttnn.to_torch(out)
 
-    # Verify each tile: exp(inp) + sqrt(bias) = exp(tile_value) + sqrt(4.0)
+    # Verify each tile: ttl.math.exp(inp) + ttl.math.sqrt(bias) = ttl.math.exp(tile_value) + sqrt(4.0)
     sqrt_bias = 2.0  # sqrt(4.0)
     for r in range(tile_rows):
         for c in range(tile_cols):

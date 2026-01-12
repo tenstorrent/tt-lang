@@ -63,16 +63,14 @@ def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
 # =============================================================================
 
 BINARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttlang import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_cb = make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_cb = make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_cb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
@@ -88,44 +86,41 @@ def {name}_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
-from ttlang import {op}
+from ttlang import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call) for {tile_rows}x{tile_cols} tiles."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_cb = make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_cb = make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_cb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
-        result = {op}(l, r)
+        result = ttl.math.{op}(l, r)
         o.store(result)
         lhs_cb.pop()
         rhs_cb.pop()
@@ -134,42 +129,39 @@ def {name}_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
-from ttlang import {op}
+from ttlang import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    inp_cb = make_circular_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_cb = make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_cb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
         x = inp_cb.wait()
         o = out_cb.reserve()
-        result = {op}(x)
+        result = ttl.math.{op}(x)
         o.store(result)
         inp_cb.pop()
         out_cb.push()
@@ -177,18 +169,18 @@ def {name}_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         inp_cb.reserve()
-        tx_inp = copy(inp[0, 0], inp_cb)
+        tx_inp = ttl.copy(inp[0, 0], inp_cb)
         tx_inp.wait()
         inp_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_fn, dm_read, dm_write)(inp, out)
+    return ttl.Program(compute_fn, dm_read, dm_write)(inp, out)
 '''
 
 

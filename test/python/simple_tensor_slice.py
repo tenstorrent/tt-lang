@@ -17,9 +17,7 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttlang import ttl
 
 try:
     import ttnn
@@ -31,9 +29,9 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def tile_index_kernel(lhs, rhs, out):
     """Kernel that accesses specific tiles via indices."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -50,13 +48,13 @@ def tile_index_kernel(lhs, rhs, out):
     def dm_read():
         # Access tile at [0, 1]
         lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 1], lhs_cb)
+        tx_lhs = ttl.copy(lhs[0, 1], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         # Access tile at [0, 2]
         rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 2], rhs_cb)
+        tx_rhs = ttl.copy(rhs[0, 2], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
@@ -64,11 +62,11 @@ def tile_index_kernel(lhs, rhs, out):
     def dm_write():
         # Write to tile at [0, 3]
         out_cb.wait()
-        tx = copy(out_cb, out[0, 3])
+        tx = ttl.copy(out_cb, out[0, 3])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================
