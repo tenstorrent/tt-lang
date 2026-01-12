@@ -110,7 +110,7 @@ jobs:
               uses: hendrikmuhs/ccache-action@v1.2
               with:
                   key: ${{ runner.os }}-ttlang-llvm${{ steps.llvm-version.outputs.version }}
-                  max-size: 100M
+                  max-size: 200M
 
             - name: Configure tt-lang with pre-installed tt-mlir (cache hit)
               if: steps.check-ttmlir-cache.outputs.restored == 'true'
