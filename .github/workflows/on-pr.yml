@@ -27,7 +27,7 @@ jobs:
     secrets: inherit
     with:
       # Use the large runner temporarily if you have to rebuild tt-mlir from scratch (e.g., during uplifts)
-      # linux_runner: test1-large-runner-lang
+      #linux_runner: test1-large-runner-lang
       linux_runner: ubuntu-latest
 
   test-sim:

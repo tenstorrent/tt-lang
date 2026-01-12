@@ -88,6 +88,7 @@ jobs:
                   key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-${{ github.ref }}
                   restore-keys: |
                       ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                      ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
                   lookup-only: false
 
             - name: Check if tt-mlir was restored from cache
