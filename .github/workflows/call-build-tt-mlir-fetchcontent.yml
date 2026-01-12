@@ -45,7 +45,6 @@ jobs:
 
         env:
             TT_LANG_HOME: ${{ github.workspace }}
-            TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
@@ -58,15 +57,13 @@ jobs:
               with:
                   fetch-depth: 0
 
-            - name: Free more disk space
-              if: runner.os == 'Linux'
-              run: .github/scripts/free-disk-space.sh
-
             - name: Determine tt-mlir commit
               id: ttmlir-commit
               shell: bash
               run: |
+                  df -h
                   bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
+                  echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
 
             - name: Get LLVM version
               id: llvm-version
