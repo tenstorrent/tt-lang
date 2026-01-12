@@ -1,23 +1,6 @@
 name: Build
 
 on:
-  workflow_dispatch:
-    inputs:
-      run_macos:
-        description: "Run the macOS build."
-        type: boolean
-        default: false
-      build_docs:
-        description: "Build and deploy documentation."
-        type: boolean
-        default: false
-      linux_runner:
-        description: "Linux runner to use"
-        type: choice
-        options:
-          - ubuntu-latest
-          - test1-large-runner-lang
-        default: "test1-large-runner-lang"
   workflow_call:
     inputs:
       run_macos:

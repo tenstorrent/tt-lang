@@ -9,6 +9,13 @@ on:
         description: "Run the macOS build."
         type: boolean
         default: false
+      linux_runner:
+        description: "Linux runner to use"
+        type: choice
+        options:
+          - ubuntu-latest
+          - test1-large-runner-lang
+        default: "ubuntu-latest"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: ["main"]
@@ -34,7 +41,7 @@ jobs:
       # macOS is disabled by default. Enable via workflow_dispatch input, or by
       # applying the `ci:macos` label to a PR.
       run_macos: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_macos) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:macos')) }}
-      linux_runner: ubuntu-latest
+      linux_runner: ${{ inputs.linux_runner || 'ubuntu-latest' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
