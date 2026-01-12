@@ -82,8 +82,6 @@ jobs:
                   # Cache normalized tt-mlir-install (self-contained, no symlinks)
                   path: tt-mlir-install
                   key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
-                  restore-keys: |
-                      ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
                   lookup-only: false
 
             - name: Check if tt-mlir was restored from cache
