@@ -88,16 +88,20 @@ jobs:
                   key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-${{ github.ref }}
                   restore-keys: |
                       ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                  lookup-only: false
 
             - name: Check if tt-mlir was restored from cache
               id: check-ttmlir-cache
               run: |
+                  # Check if cache was restored (either exact hit or restore-key match)
                   if [ -d "${{ env.TT_MLIR_DIR }}" ] && [ -f "${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir/TTMLIRConfig.cmake" ]; then
                       echo "restored=true" >> $GITHUB_OUTPUT
-                      echo "tt-mlir installation found in cache at ${{ env.TT_MLIR_DIR }}"
+                      echo "✓ tt-mlir installation restored from cache at ${{ env.TT_MLIR_DIR }}"
+                      ls -lh "${{ env.TT_MLIR_DIR }}" | head -10
                   else
                       echo "restored=false" >> $GITHUB_OUTPUT
-                      echo "tt-mlir installation not found at ${{ env.TT_MLIR_DIR }}, will build"
+                      echo "✗ tt-mlir installation not found, will build from scratch"
+                      echo "  This will take ~60-90 minutes and requires large runner"
                   fi
 
             - name: Setup ccache for tt-lang
