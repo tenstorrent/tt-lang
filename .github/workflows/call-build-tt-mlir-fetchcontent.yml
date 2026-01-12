@@ -166,7 +166,7 @@ jobs:
               if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
                   set -x
-                  # TTNN Python package lives in ttrt/runtime and needs to be in the install dir
+                  # TODO: Remove when tt-mlir install is fixed to install the runtime python packages
                   mkdir -p tt-mlir-install/python_packages/ttrt/runtime
                   cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
 
