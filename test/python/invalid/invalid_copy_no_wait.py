@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: tt-device
 # Test 1: Pretty error output (default, no verbose errors)
 # RUN: not %python %s 2>&1 | FileCheck %s --check-prefix=PRETTY
 

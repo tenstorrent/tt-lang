@@ -4,7 +4,7 @@
 
 """Utility functions for tt-lang."""
 
-from .block_allocation import split_work_to_cores
+from .block_allocation import get_large_matmul_params, split_work_to_cores
 from .correctness import assert_allclose, assert_pcc, assert_with_ulp
 
 __all__ = [

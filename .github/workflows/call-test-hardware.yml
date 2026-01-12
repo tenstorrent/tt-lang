@@ -96,36 +96,35 @@ jobs:
           echo "Checking tt-mlir-install structure..."
           ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
           ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
+          find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
 
-      - name: Set up environment variables
-        run: |
-          TT_MLIR_DIR="$(pwd)/tt-mlir-install"
-          echo "TT_MLIR_DIR=${TT_MLIR_DIR}" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=${TT_MLIR_DIR}/lib:/opt/ttmlir-toolchain/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
-          echo "PYTHONPATH=$(pwd)/build/python_packages:${TT_MLIR_DIR}/python_packages:${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${TT_MLIR_DIR}/bin:/opt/ttmlir-toolchain/venv/bin:${PATH}" >> $GITHUB_ENV
-
-      - name: Run smoketest
-        run: |
-          python3 test/python/smoketest.py
-
-      - name: Generate system descriptor
-        run: |
-          set -x
-          source /opt/ttmlir-toolchain/venv/bin/activate || echo "Failed to activate environment"
-          python3 ./.github/scripts/trtt_wrapper.py query --save-artifacts --disable-eth-dispatch || echo "Failed to save artifacts"
-
-      - name: Run lit tests
-        env:
-          TTLANG_VERBOSE_PASSES: 0
+      - name: Smoketest
         run: |
           source build/env/activate
-          ninja -C build check-ttlang-python-lit
+          python3 test/python/smoketest.py
+
+      - name: Single test (just python)
+        run: |
+          source build/env/activate
+          python test/python/simple_add.py
+
+      - name: Python lit tests
+        run: |
+          source build/env/activate
+          cmake --build build --target check-ttlang-python-lit
+
+      - name: Pytests
+        run: |
+          source build/env/activate
+          # Run pytest directly instead of through ninja
+          python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}
-          path: build/python-lit-report.xml
+          path: |
+            build/test/python-lit-report.xml
+            build/test/pytest-report.xml
           retention-days: 7

@@ -268,9 +268,12 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
     """Write kernel source to /tmp and return the file path."""
     import hashlib
     import re
+    import os
 
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
-    path = f"/tmp/ttlang_kernel_{name}_{content_hash}.cpp"
+    user = os.environ.get("USER", "default")
+    path = f"/tmp/{user}/ttlang_kernel_{name}_{content_hash}.cpp"
+    os.makedirs(f"/tmp/{user}", exist_ok=True)
     with open(path, "w") as f:
         f.write(source)
     print(f"=== {name} kernel written to {path} ===")

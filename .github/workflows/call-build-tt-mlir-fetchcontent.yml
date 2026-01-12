@@ -7,14 +7,35 @@ on:
                 description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
                 required: false
                 type: string
+            linux_runner:
+                description: "Linux runner to use"
+                type: choice
+                options:
+                    - ubuntu-latest
+                    - test1-large-runner-lang
+                default: "ubuntu-latest"
+            build_docs:
+                description: "Build and deploy documentation."
+                type: boolean
+                default: false
     workflow_call:
         inputs:
             tt-mlir-commit:
                 description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
                 required: false
                 type: string
+            linux_runner:
+                description: "Linux runner to use (ubuntu-latest or test1-large-runner-lang)"
+                type: string
+                required: false
+                default: "ubuntu-latest"
+            build_docs:
+                description: "Build and deploy documentation."
+                type: boolean
+                required: false
+                default: false
     schedule:
-        - cron: "0 12 * * *" # 4am PST
+        - cron: "0 12 * * *"
 
 permissions:
     checks: write
@@ -22,8 +43,9 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
-        runs-on: ubuntu-latest
-        timeout-minutes: 360
+        name: build-tt-lang-tt-mlir (${{ inputs.linux_runner || 'test1-large-runner-lang' }})
+        runs-on: ${{ inputs.linux_runner || 'test1-large-runner-lang' }}
+        timeout-minutes: 240
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
 
@@ -34,7 +56,6 @@ jobs:
         env:
             TT_LANG_HOME: ${{ github.workspace }}
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
-            TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
@@ -52,40 +73,68 @@ jobs:
               run: |
                   df -h
                   bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
+                  echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
 
-            - name: Get LLVM version
-              id: llvm-version
-              uses: ./.github/actions/get-llvm-version
-
-            - name: Cache tt-mlir installation only
+            - name: Cache tt-mlir installation
               id: cache-ttmlir
               uses: actions/cache@v4
               with:
+                  # Cache normalized tt-mlir-install (self-contained, no symlinks)
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-llvm-${{ steps.llvm-version.outputs.version }}-v2
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                  lookup-only: false
+
+            - name: Check if tt-mlir was restored from cache
+              id: check-ttmlir-cache
+              run: |
+                  # Check if cache was restored with complete installation (including ttrt/TTNN)
+                  if [ -d "${{ env.TT_MLIR_DIR }}" ] && \
+                     [ -f "${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir/TTMLIRConfig.cmake" ] && \
+                     [ -d "${{ env.TT_MLIR_DIR }}/python_packages/ttrt/runtime/ttnn" ]; then
+                      echo "restored=true" >> $GITHUB_OUTPUT
+                      echo "✓ tt-mlir installation (with ttrt/TTNN) restored from cache at ${{ env.TT_MLIR_DIR }}"
+                      ls -lh "${{ env.TT_MLIR_DIR }}" | head -10
+                  else
+                      echo "restored=false" >> $GITHUB_OUTPUT
+                      echo "✗ tt-mlir installation incomplete or missing ttrt/TTNN, will rebuild"
+                      echo "  This will take ~60-90 minutes and requires large runner"
+                  fi
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
-                  key: ${{ runner.os }}-ttlang-fetchcontent-llvm${{ steps.llvm-version.outputs.version }}
-                  max-size: 100M
+                  key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ steps.ttmlir-commit.outputs.commit }}
+                  max-size: 200M
+
+            - name: Configure tt-lang with pre-installed tt-mlir (cache hit)
+              if: steps.check-ttmlir-cache.outputs.restored == 'true'
+              run: |
+                  echo "Using cached tt-mlir installation"
+                  cmake -G Ninja -B build \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DCMAKE_CXX_COMPILER=clang++-17 \
+                      -DCMAKE_C_COMPILER=clang-17 \
+                      -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir \
+                      -DFETCHCONTENT_UPDATES_DISCONNECTED=ON \
+                      -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
+
+            - name: Configure tt-lang (builds tt-mlir with tt-metal)
+              if: steps.check-ttmlir-cache.outputs.restored != 'true'
+              run: |
+                  echo "Configuring tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
+                  cmake -G Ninja -B build \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DCMAKE_CXX_COMPILER=clang++-17 \
+                      -DCMAKE_C_COMPILER=clang-17 \
+                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
+                      -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
+                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }} \
+                      -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
 
             - name: Build tt-lang
               run: |
-                  echo "Building tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
-                  df -h
-                  cmake -G Ninja -B build \
-                      -DCMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_INSTALL_PREFIX=`pwd`/tt-mlir-install \
-                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_ENABLE_RUNTIME=ON \
-                      -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
-                      -DCMAKE_CXX_COMPILER=clang++-17 \
-                      -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
-                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
+                  source build/env/activate
                   cmake --build build
-
 
             - name: Test the tt-lang build
               run: |
@@ -102,17 +151,37 @@ jobs:
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-bindings
 
-            - name: Move ttrt runtime to tt-mlir-install
+            - name: Python lit tests
+              run: |
+                source build/env/activate
+                cmake --build build --target check-ttlang-python-lit
+
+            - name: Copy ttrt runtime (contains ttnn Python package) to tt-mlir-install
+              if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
                   set -x
+                  # TODO: Remove when tt-mlir install is fixed to install the runtime python packages
+                  mkdir -p tt-mlir-install/python_packages/ttrt/runtime
                   cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* tt-mlir-install/python_packages/ttrt/runtime/
 
-            - name: Clean up tt-mlir build directory
-              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+            - name: Build documentation
+              if: inputs.build_docs
               run: |
-                  # We only need tt-mlir-install for caching and artifacts
-                  rm -rf build/tt-mlir-build
-                  rm -rf build/_deps/tt-mlir-src
+                source build/env/activate
+                cmake --build build --target ttlang-docs
+
+            - name: Upload documentation artifact
+              if: inputs.build_docs
+              uses: actions/upload-pages-artifact@v3
+              with:
+                path: ./build/docs/sphinx/_build/html
+
+            - name: Normalize tt-mlir installation
+              if: steps.check-ttmlir-cache.outputs.restored != 'true'
+              run: |
+                  # Replace symlinks with actual files to make tt-mlir-install self-contained
+                  # This can be removed once tt-mlir install is fixed upstream
+                  .github/scripts/normalize-ttmlir-install.sh tt-mlir-install
 
             - name: Archive build artifacts
               run: |
@@ -120,9 +189,10 @@ jobs:
                   ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
                   echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
 
-                  # Archive both tt-mlir-install and build directories from workspace root
+                  # Archive self-contained tt-mlir-install and tt-lang build directory
                   tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
-                    tt-mlir-install build/python_packages build/test build/env
+                    --exclude='build/_deps' \
+                    tt-mlir-install build
 
             - name: Upload build artifacts for hardware tests
               uses: actions/upload-artifact@v4
@@ -142,15 +212,3 @@ jobs:
             build-os: ubuntu
             timeout: 60
             artifact-prefix: ttlang-fetchcontent
-
-    check-all-green:
-        if: always()
-        needs:
-            - build-tt-lang-tt-mlir
-            - test-hardware
-        runs-on: ubuntu-latest
-        steps:
-            - name: Decide whether all needed jobs succeeded or failed
-              uses: re-actors/alls-green@release/v1
-              with:
-                  jobs: ${{ toJSON(needs) }}
