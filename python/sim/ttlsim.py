@@ -62,7 +62,11 @@ def run_file(filepath: str, argv: list[str]) -> None:
             "__file__": str(file_path),
             "__builtins__": __builtins__,
         }
-        exec(code, exec_globals)
+        try:
+            exec(code, exec_globals)
+        except Exception:
+            print(f"\nError executing {file_path.name}:", file=sys.stderr)
+            raise
 
 
 def run_module(module_name: str, argv: list[str]) -> None:
