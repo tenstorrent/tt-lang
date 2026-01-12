@@ -36,9 +36,6 @@ jobs:
         shell: bash
 
     env:
-      TT_LANG_HOME: ${{ github.workspace }}
-      TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
-      TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
       TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
 
     steps:
@@ -56,6 +53,7 @@ jobs:
         run: |
           TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
           echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
+          echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
 
       - name: Checkout tt-mlir
         uses: actions/checkout@v4
@@ -82,12 +80,6 @@ jobs:
           toolchain-hash: ${{ steps.toolchain-hash.outputs.hash }}
 
       # Common steps (MacOS and Ubuntu) from here down
-      - name: Compute tt-mlir commit hash
-        id: ttmlir-commit-hash
-        run: |
-          HASH=$(shasum third-party/tt-mlir.commit | awk '{print $1}')
-          echo "hash=$HASH" >> $GITHUB_OUTPUT
-
       - name: Get LLVM version
         id: llvm-version
         uses: ./.github/actions/get-llvm-version
@@ -98,7 +90,7 @@ jobs:
         with:
           path: |
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-version.outputs.commit }}
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
