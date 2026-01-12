@@ -38,7 +38,7 @@ def test_metal_matmul(M, K, N):
     )
     assert Mt % per_core_M == 0, "per_core_M must divide Mt"
     assert Nt % per_core_N == 0, "per_core_N must divide Nt"
-    assert Kt % K_block_size == 0, "K_block_size must divide Kt"  # huh
+    assert Kt % K_block_size == 0, "K_block_size must divide Kt"
     num_blocks_y = Mt // per_core_M
     num_blocks_x = Nt // per_core_N
     assert (
