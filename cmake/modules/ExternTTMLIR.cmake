@@ -21,12 +21,14 @@ function(ttlang_create_ttmlir_aliases)
   endif()
 
   set(_alias_count 0)
+
   foreach(target IN LISTS TTMLIR_EXPORTED_TARGETS)
     if(TARGET TTMLIR::${target} AND NOT TARGET ${target})
       add_library(${target} ALIAS TTMLIR::${target})
       math(EXPR _alias_count "${_alias_count} + 1")
     endif()
   endforeach()
+
   message(STATUS "Created ${_alias_count} aliases for installed tt-mlir targets")
 endfunction()
 
@@ -168,6 +170,17 @@ else()
 
   message(STATUS "tt-mlir not found. Building private copy version: ${TTMLIR_GIT_TAG}")
 
+  if(TTLANG_BUILD_TTMLIR_TOOLCHAIN)
+    if(NOT DEFINED ENV{TTMLIR_TOOLCHAIN_DIR})
+      message(FATAL_ERROR "TTLANG_BUILD_TTMLIR_TOOLCHAIN is enabled but TTMLIR_TOOLCHAIN_DIR environment variable is not set. "
+        "Set it to the toolchain install directory, e.g.: export TTMLIR_TOOLCHAIN_DIR=$HOME/t/ttmlir-toolchain")
+    endif()
+
+    set(_BUILD_TOOLCHAIN_DIR "$ENV{TTMLIR_TOOLCHAIN_DIR}")
+    message(STATUS "TTLANG_BUILD_TTMLIR_TOOLCHAIN enabled, installing to: ${_BUILD_TOOLCHAIN_DIR}")
+    set(TTMLIR_TOOLCHAIN_DIR "${_BUILD_TOOLCHAIN_DIR}" CACHE PATH "tt-mlir toolchain installation directory" FORCE)
+  endif()
+
   set(_TOOLCHAIN_Python3_ROOT_DIR "${TTMLIR_TOOLCHAIN_DIR}/venv")
   set(_TOOLCHAIN_Python3_EXECUTABLE "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3")
   set(_TTMLIR_TARGETS_TO_BUILD "-t all")
@@ -237,6 +250,15 @@ else()
       SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
       BINARY_DIR "${_TTMLIR_BUILD_DIR}"
   )
+
+  if(TTLANG_BUILD_TTMLIR_TOOLCHAIN)
+    message(STATUS "Building LLVM/MLIR toolchain in ${CMAKE_BINARY_DIR}/_deps/tt-mlir-toolchain-build (this may take a while)...")
+    execute_process(
+        COMMAND "${CMAKE_SOURCE_DIR}/tools/build-toolchain.sh" "${_TTMLIR_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/_deps/tt-mlir-toolchain-build"
+        COMMAND_ECHO STDOUT
+        COMMAND_ERROR_IS_FATAL ANY
+    )
+  endif()
 
   set(_TTMLIR_CMAKE_ARGS
       -G Ninja
