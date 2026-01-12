@@ -46,15 +46,15 @@ def multiple_uses_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        inp_cb.reserve()
-        tx = ttl.copy(inp[0, 0], inp_cb)
+        inp_blk = inp_cb.reserve()
+        tx = ttl.copy(inp[0, 0], inp_blk)
         tx.wait()
         inp_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = ttl.copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 

@@ -46,20 +46,20 @@ def fused_kernel(inp, bias, out):
 
     @ttl.datamovement()
     def dm_read():
-        inp_cb.reserve()
-        tx_inp = ttl.copy(inp[0, 0], inp_cb)
+        inp_blk = inp_cb.reserve()
+        tx_inp = ttl.copy(inp[0, 0], inp_blk)
         tx_inp.wait()
         inp_cb.push()
 
-        bias_cb.reserve()
-        tx_bias = ttl.copy(bias[0, 0], bias_cb)
+        bias_blk = bias_cb.reserve()
+        tx_bias = ttl.copy(bias[0, 0], bias_blk)
         tx_bias.wait()
         bias_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = ttl.copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 

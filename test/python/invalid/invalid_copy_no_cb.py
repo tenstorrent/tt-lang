@@ -20,7 +20,7 @@ import ttnn
 from ttlang import ttl
 
 
-# CHECK: error: copy() requires exactly one CB argument
+# CHECK: error: copy() requires exactly one block argument
 # CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:[[LINE:[0-9]+]]:10
 # CHECK-NEXT:    |
 # CHECK-NEXT: [[LINE]] |         tx = ttl.copy(lhs[0, 0], rhs[0, 0])
@@ -52,8 +52,8 @@ def invalid_copy_no_cb_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = ttl.copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 

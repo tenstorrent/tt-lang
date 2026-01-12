@@ -48,13 +48,13 @@ def add_with_kernel(a, b, c, y):
         for row in range(rows):
             for col in range(cols):
                 with (
-                    a_cb.reserve() as a_block,
-                    b_cb.reserve() as b_block,
-                    c_cb.reserve() as c_block,
+                    a_cb.reserve() as a_blk,
+                    b_cb.reserve() as b_blk,
+                    c_cb.reserve() as c_blk,
                 ):
-                    tx_a = ttl.copy(a[row, col], a_cb)
-                    tx_b = ttl.copy(b[row, col], b_cb)
-                    tx_c = ttl.copy(c[row, col], c_cb)
+                    tx_a = ttl.copy(a[row, col], a_blk)
+                    tx_b = ttl.copy(b[row, col], b_blk)
+                    tx_c = ttl.copy(c[row, col], c_blk)
 
                     tx_a.wait()
                     tx_b.wait()
@@ -64,8 +64,8 @@ def add_with_kernel(a, b, c, y):
     def add_write():
         for row in range(rows):
             for col in range(cols):
-                with y_cb.wait() as y_block:
-                    tx = ttl.copy(y_cb, y[row, col])
+                with y_cb.wait() as y_blk:
+                    tx = ttl.copy(y_blk, y[row, col])
                     tx.wait()
 
     return ttl.Program(add_compute, add_read, add_write)(a, b, c, y)

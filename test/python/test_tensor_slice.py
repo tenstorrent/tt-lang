@@ -59,9 +59,9 @@ def tile_loop_kernel(inp, bias, out):
     def dm_read():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with inp_cb.reserve(), bias_cb.reserve():
-                    tx_inp = ttl.copy(inp[r, c], inp_cb)
-                    tx_bias = ttl.copy(bias[r, c], bias_cb)
+                with inp_cb.reserve() as inp_blk, bias_cb.reserve() as bias_blk:
+                    tx_inp = ttl.copy(inp[r, c], inp_blk)
+                    tx_bias = ttl.copy(bias[r, c], bias_blk)
                     tx_inp.wait()
                     tx_bias.wait()
 
@@ -69,8 +69,8 @@ def tile_loop_kernel(inp, bias, out):
     def dm_write():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with out_cb.wait():
-                    tx = ttl.copy(out_cb, out[r, c])
+                with out_cb.wait() as out_blk:
+                    tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
     return ttl.Program(add_compute, dm_read, dm_write)(inp, bias, out)
@@ -99,9 +99,9 @@ def fused_kernel(inp, bias, out):
     def dm_read():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with inp_cb.reserve(), bias_cb.reserve():
-                    tx_inp = ttl.copy(inp[r, c], inp_cb)
-                    tx_bias = ttl.copy(bias[r, c], bias_cb)
+                with inp_cb.reserve() as inp_blk, bias_cb.reserve() as bias_blk:
+                    tx_inp = ttl.copy(inp[r, c], inp_blk)
+                    tx_bias = ttl.copy(bias[r, c], bias_blk)
                     tx_inp.wait()
                     tx_bias.wait()
 
@@ -109,8 +109,8 @@ def fused_kernel(inp, bias, out):
     def dm_write():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with out_cb.wait():
-                    tx = ttl.copy(out_cb, out[r, c])
+                with out_cb.wait() as out_blk:
+                    tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
     return ttl.Program(fused_compute, dm_read, dm_write)(inp, bias, out)
