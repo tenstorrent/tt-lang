@@ -81,9 +81,8 @@ jobs:
               with:
                   # Cache normalized tt-mlir-install (self-contained, no symlinks)
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-${{ github.ref }}
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
                   restore-keys: |
-                      ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
                       ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
                   lookup-only: false
 
