@@ -200,6 +200,4 @@ jobs:
             - name: Decide whether all needed jobs succeeded or failed
               uses: re-actors/alls-green@release/v1
               with:
-                  # TODO: Remove allowed-failures once test-hardware is stable
-                  allowed-failures: test-hardware
                   jobs: ${{ toJSON(needs) }}
