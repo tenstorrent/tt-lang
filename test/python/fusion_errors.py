@@ -16,9 +16,7 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl, make_circular_buffer_like, exp, sqrt
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttlang import ttl
 
 try:
     import ttnn
@@ -31,15 +29,15 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def multiple_uses_kernel(inp, out):
     """Kernel where intermediate value is used twice - should fail fusion."""
-    inp_cb = make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
         i = inp_cb.wait()
         o = out_cb.reserve()
         # exp_result is used twice - this should fail fusion
-        exp_result = exp(i)
+        exp_result = ttl.math.exp(i)
         result = exp_result + exp_result
         o.store(result)
         inp_cb.pop()
@@ -48,18 +46,18 @@ def multiple_uses_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         inp_cb.reserve()
-        tx = copy(inp[0, 0], inp_cb)
+        tx = ttl.copy(inp[0, 0], inp_cb)
         tx.wait()
         inp_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute, dm_read, dm_write)(inp, out)
+    return ttl.Program(compute, dm_read, dm_write)(inp, out)
 
 
 if __name__ == "__main__":

@@ -18,9 +18,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 os.environ["TTLANG_DEBUG_LOCATIONS"] = "1"
 
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+from ttlang import ttl
 
 try:
     import ttnn
@@ -31,8 +29,8 @@ except ImportError:
 
 @ttl.kernel(grid=(1, 1))
 def debug_loc_kernel(lhs, out):
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_thread():
@@ -45,18 +43,18 @@ def debug_loc_kernel(lhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_cb.reserve()
-        tx = copy(lhs[0, 0], lhs_cb)
+        tx = ttl.copy(lhs[0, 0], lhs_cb)
         tx.wait()
         lhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_thread, dm_read, dm_write)(lhs, out)
+    return ttl.Program(compute_thread, dm_read, dm_write)(lhs, out)
 
 
 # Verify function definitions exist
@@ -70,12 +68,12 @@ def debug_loc_kernel(lhs, out):
 # CHECK: } loc(#loc1)
 
 # Verify location aliases are defined with actual file line numbers (at end of MLIR)
-# CHECK-DAG: #loc1 = loc("{{.*}}debug_locations.py":38:1)
-# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":39:9)
-# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":40:9)
-# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":41:5)
-# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":42:5)
-# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":43:5)
+# CHECK-DAG: #loc1 = loc("{{.*}}debug_locations.py":36:1)
+# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":37:9)
+# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":38:9)
+# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":39:5)
+# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":40:5)
+# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":41:5)
 
 
 if __name__ == "__main__":
