@@ -25,14 +25,14 @@ jobs:
     secrets: inherit
     with:
       linux_runner: test1-large-runner-lang
-      build_docs: ${{ github.ref == 'refs/heads/main' || github.ref_name == 'bnorris/docs-sphinx' }}
+      build_docs: ${{ github.ref == 'refs/heads/main' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   deploy-docs:
-    if: github.ref == 'refs/heads/main' || github.ref_name == 'bnorris/docs-sphinx'
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:
