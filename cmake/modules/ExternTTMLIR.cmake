@@ -32,11 +32,12 @@ endfunction()
 
 # Scenario 1: Pre-built tt-mlir (build tree)
 if(DEFINED TTMLIR_BUILD_DIR)
-  set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
-
-  if(EXISTS "${_TTMLIR_CONFIG_PATH}/TTMLIRConfig.cmake")
-    list(APPEND TTMLIR_HINTS "${_TTMLIR_CONFIG_PATH}")
+  # Check if it's a valid build directory (has CMakeCache.txt)
+  if(EXISTS "${TTMLIR_BUILD_DIR}/CMakeCache.txt")
     set(_TTMLIR_BUILD_DIR "${TTMLIR_BUILD_DIR}")
+    set(_TTMLIR_CONFIG_PATH "${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir")
+  else()
+    message(FATAL_ERROR "Could not find CMakeCache.txt in the provided build directory: ${TTMLIR_BUILD_DIR}")
   endif()
 endif()
 
@@ -177,7 +178,7 @@ else()
     if(APPLE)
       set(_TTMLIR_ENABLE_PERF_TRACE OFF)
     else()
-      set(_TTMLIR_ENABLE_RUNTIME OFF)
+      set(_TTMLIR_ENABLE_RUNTIME ON)
       set(_TTMLIR_ENABLE_RUNTIME_TESTS OFF)
 
       if(TTLANG_ENABLE_PERF_TRACE)
@@ -189,7 +190,6 @@ else()
   else()
     # Use the provided value and derive related settings
     set(_TTMLIR_ENABLE_RUNTIME ${TTMLIR_ENABLE_RUNTIME})
-    list(APPEND _TTMLIR_TARGETS_TO_BUILD "-t ttrt")
 
     if(NOT DEFINED TTMLIR_ENABLE_RUNTIME_TESTS)
       set(_TTMLIR_ENABLE_RUNTIME_TESTS ${TTMLIR_ENABLE_RUNTIME})
@@ -228,15 +228,38 @@ else()
   set(_TTMLIR_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-src")
   set(_TTMLIR_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/tt-mlir-build")
 
-  include(FetchContent)
-  FetchContent_Populate(
-      tt-mlir
-      GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
-      GIT_TAG ${TTMLIR_GIT_TAG}
-      GIT_SUBMODULES_RECURSE TRUE
-      SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
-      BINARY_DIR "${_TTMLIR_BUILD_DIR}"
-  )
+  # Check if TTMLIR_SRC_DIR is provided and SHA matches. If not, fetch tt-mlir from GitHub.
+  set(_USE_PROVIDED_SRC_DIR FALSE)
+  if(DEFINED TTMLIR_SRC_DIR)
+    set(_CHECK_SCRIPT "${CMAKE_SOURCE_DIR}/.github/scripts/check-ttmlir-src-dir.sh")
+    execute_process(
+      COMMAND bash "${_CHECK_SCRIPT}" "${TTMLIR_SRC_DIR}" "${TTMLIR_GIT_TAG}"
+      RESULT_VARIABLE _CHECK_RESULT
+    )
+    if(_CHECK_RESULT EQUAL 0)
+      message(STATUS "Using provided tt-mlir source directory: ${TTMLIR_SRC_DIR} (SHA matches: ${TTMLIR_GIT_TAG})")
+      set(_TTMLIR_SOURCE_DIR "${TTMLIR_SRC_DIR}")
+      set(_USE_PROVIDED_SRC_DIR TRUE)
+
+    else()
+      message(STATUS "Provided tt-mlir source directory does not match required SHA (${TTMLIR_GIT_TAG}), will fetch instead")
+    endif()
+  endif()
+
+  # Only use FetchContent if we don't have a matching source directory
+  if(NOT _USE_PROVIDED_SRC_DIR)
+    include(FetchContent)
+    FetchContent_Populate(
+        tt-mlir
+        GIT_REPOSITORY https://github.com/tenstorrent/tt-mlir.git
+        GIT_TAG ${TTMLIR_GIT_TAG}
+        GIT_SUBMODULES_RECURSE TRUE
+        SOURCE_DIR "${_TTMLIR_SOURCE_DIR}"
+        BINARY_DIR "${_TTMLIR_BUILD_DIR}"
+    )
+    set(_TTMLIR_SOURCE_DIR "${tt-mlir_SOURCE_DIR}")
+    set(_TTMLIR_BUILD_DIR "${tt-mlir_BINARY_DIR}")
+  endif()
 
   set(_TTMLIR_CMAKE_ARGS
       -G Ninja
@@ -260,15 +283,16 @@ else()
       -DTTMLIR_ENABLE_BINDINGS_PYTHON=${TTLANG_ENABLE_BINDINGS_PYTHON}
       -DTT_RUNTIME_ENABLE_TTNN=ON
       -DTTMLIR_ENABLE_TTNN_JIT=ON
+      -DUSE_TTNN_JIT_WHEEL=OFF
   )
 
   message(STATUS "Configuring tt-mlir...")
   set(ENV{TTMLIR_TOOLCHAIN_DIR} "${TTMLIR_TOOLCHAIN_DIR}")
   string(REPLACE ";" " " _TTMLIR_CMAKE_ARGS_STRING "${_TTMLIR_CMAKE_ARGS}")
+  ttlang_debug_message("Configuring tt-mlir with: ${_TTMLIR_CMAKE_ARGS_STRING}")
   ttlang_execute_with_env(
       COMMAND "${CMAKE_COMMAND} ${_TTMLIR_CMAKE_ARGS_STRING} -S ${_TTMLIR_SOURCE_DIR} -B ${_TTMLIR_BUILD_DIR}"
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
-      WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
 
   message(STATUS "Building tt-mlir in ${_TTMLIR_BUILD_DIR}...")
@@ -307,6 +331,31 @@ else()
       ENV_SCRIPT "${_TTMLIR_SOURCE_DIR}/env/activate"
       WORKING_DIRECTORY "${_TTMLIR_BUILD_DIR}"
   )
+
+  # Fix RISC-V compiler libexec permissions
+  # The installed compiler's internal executables (cc1plus, etc.) need execute permissions
+  set(_RISCV_LIBEXEC_DIR "${_TTMLIR_INSTALL_PREFIX}/ttrt/runtime/runtime/sfpi/compiler/libexec")
+  if(EXISTS "${_RISCV_LIBEXEC_DIR}")
+    message(STATUS "Fixing RISC-V compiler libexec permissions...")
+    file(GLOB_RECURSE _RISCV_LIBEXEC_FILES "${_RISCV_LIBEXEC_DIR}/*")
+    foreach(_file IN LISTS _RISCV_LIBEXEC_FILES)
+      if(NOT IS_DIRECTORY "${_file}")
+        file(CHMOD "${_file}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+      endif()
+    endforeach()
+  endif()
+
+  # Copy tt-metal soc_descriptors to expected location for runtime
+  # This is needed because the runtime looks for these files relative to the tt-lang source directory
+  set(_TT_METAL_SOC_DESCRIPTORS_SRC "${_TTMLIR_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal/soc_descriptors")
+  set(_TT_METAL_SOC_DESCRIPTORS_DST "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal/soc_descriptors")
+  if(EXISTS "${_TT_METAL_SOC_DESCRIPTORS_SRC}")
+    message(STATUS "Copying tt-metal soc_descriptors from tt-mlir source to ${_TT_METAL_SOC_DESCRIPTORS_DST}...")
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal")
+    file(COPY "${_TT_METAL_SOC_DESCRIPTORS_SRC}" DESTINATION "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal/tt_metal")
+  else()
+    message(WARNING "tt-metal soc_descriptors not found at ${_TT_METAL_SOC_DESCRIPTORS_SRC}, runtime may fail to find device descriptor files")
+  endif()
 
   # Save original toolchain dir before finding the locally built tt-mlir.
   set(_ORIGINAL_TTMLIR_TOOLCHAIN_DIR "${TTMLIR_TOOLCHAIN_DIR}")
@@ -352,4 +401,26 @@ else()
     include(MLIRDetectPythonEnv)
     mlir_configure_python_dev_packages()
   endif()
+endif()
+
+# Set TT_METAL_RUNTIME_ROOT for env/activate script
+# Search order:
+# 1. tt-mlir install directory (FetchContent build with installed tt-mlir)
+# 2. tt-mlir source directory (build tree scenario)
+# 3. tt-lang third_party directory (legacy/fallback)
+if(EXISTS "${TTMLIR_PATH}/tt-metal/tt_metal")
+  # Install scenario: tt-metal installed alongside tt-mlir (most common for FetchContent)
+  set(TT_METAL_RUNTIME_ROOT "${TTMLIR_PATH}/tt-metal")
+  message(STATUS "Found tt-metal runtime at: ${TT_METAL_RUNTIME_ROOT}")
+elseif(EXISTS "${TTMLIR_PATH}/../third_party/tt-metal/src/tt-metal")
+  # Build tree scenario: tt-mlir source tree contains tt-metal
+  get_filename_component(TT_METAL_RUNTIME_ROOT "${TTMLIR_PATH}/../third_party/tt-metal/src/tt-metal" ABSOLUTE)
+  message(STATUS "Found tt-metal runtime at: ${TT_METAL_RUNTIME_ROOT}")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal")
+  # Fallback: tt-lang third_party directory
+  set(TT_METAL_RUNTIME_ROOT "${CMAKE_SOURCE_DIR}/third_party/tt-metal/src/tt-metal")
+  message(STATUS "Found tt-metal runtime at: ${TT_METAL_RUNTIME_ROOT}")
+else()
+  set(TT_METAL_RUNTIME_ROOT "")
+  message(WARNING "Could not find tt-metal runtime. Hardware tests may fail. You can set TT_METAL_RUNTIME_ROOT environment variable manually.")
 endif()

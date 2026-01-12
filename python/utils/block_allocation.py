@@ -3,8 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 import itertools
 import math
+from collections import namedtuple
 from typing import List, Tuple
 from collections import namedtuple
+
+import sympy
 
 
 def remove_leading_ones(grid: Tuple[int, ...]) -> Tuple[int, ...]:

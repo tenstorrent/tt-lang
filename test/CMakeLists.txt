@@ -1,13 +1,6 @@
 # Test configuration
 
-configure_lit_site_cfg(
-  ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
-  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
-  MAIN_CONFIG
-  ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
-)
-
-# Check for Tenstorrent device at configure time
+# Check for Tenstorrent device at configure time (must be before configure_lit_site_cfg)
 ttlang_check_device_available(TTLANG_HAS_DEVICE)
 
 if(TTLANG_HAS_DEVICE)
@@ -15,6 +8,18 @@ if(TTLANG_HAS_DEVICE)
 else()
   set(TTLANG_HAS_DEVICE_INT 0)
 endif()
+
+configure_lit_site_cfg(
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
+  MAIN_CONFIG
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
+  PATHS
+  CMAKE_BINARY_DIR
+  CMAKE_SOURCE_DIR
+  TTLANG_PYTHON_PACKAGES_DIR
+  CMAKE_CURRENT_SOURCE_DIR
+)
 
 # Generate test config file with device availability
 configure_file(
@@ -25,6 +30,7 @@ configure_file(
 
 set(TTLANG_TEST_DEPENDS
   ttlang-opt
+  ttlang-translate
 )
 
 # Common llvm-lit options for consistent output across tt-lang test suites.

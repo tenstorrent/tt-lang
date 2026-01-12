@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: tt-device
 # RUN: env TTLANG_DEBUG_LOCATIONS=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 
@@ -68,12 +69,13 @@ def debug_loc_kernel(lhs, out):
 # CHECK: } loc(#loc1)
 
 # Verify location aliases are defined with actual file line numbers (at end of MLIR)
-# CHECK-DAG: #loc1 = loc("{{.*}}debug_locations.py":36:1)
-# CHECK-DAG: #loc2 = loc("{{.*}}debug_locations.py":37:9)
-# CHECK-DAG: #loc3 = loc("{{.*}}debug_locations.py":38:9)
-# CHECK-DAG: #loc4 = loc("{{.*}}debug_locations.py":39:5)
-# CHECK-DAG: #loc5 = loc("{{.*}}debug_locations.py":40:5)
-# CHECK-DAG: #loc6 = loc("{{.*}}debug_locations.py":41:5)
+# TODO: Figure out a machine-independent way to verify the BASE line number more precisely
+# CHECK: #loc1 = loc("{{.*}}debug_locations.py":[[#BASE:]]:1)
+# CHECK: #loc2 = loc("{{.*}}debug_locations.py":[[#BASE+1]]:9)
+# CHECK: #loc3 = loc("{{.*}}debug_locations.py":[[#BASE+2]]:9)
+# CHECK: #loc4 = loc("{{.*}}debug_locations.py":[[#BASE+3]]:5)
+# CHECK: #loc5 = loc("{{.*}}debug_locations.py":[[#BASE+4]]:5)
+# CHECK: #loc6 = loc("{{.*}}debug_locations.py":[[#BASE+5]]:5)
 
 
 if __name__ == "__main__":

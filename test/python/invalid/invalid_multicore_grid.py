@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
+# REQUIRES: ttnn, tt-device
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
@@ -21,7 +21,7 @@ import ttnn
 from ttlang import ttl
 
 
-# CHECK: TTNN interop only supports single-core grid (1, 1)
+# CHECK: TTNN interop only supports single-core grid (1, 1), got (2, 2)
 @ttl.kernel(grid=(2, 2))
 def invalid_multicore_kernel(lhs, rhs, out):
     """This kernel should fail because multi-core grids are not supported."""
