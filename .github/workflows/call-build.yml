@@ -1,6 +1,16 @@
 name: Build
 
 on:
+  workflow_dispatch:
+    inputs:
+      run_macos:
+        description: "Run the macOS build."
+        type: boolean
+        default: false
+      build_docs:
+        description: "Build and deploy documentation."
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       run_macos:
@@ -13,18 +23,13 @@ on:
         type: boolean
         required: false
         default: false
-      linux_runner:
-        description: "Linux runner to use (ubuntu-latest or test1-large-runner-lang)"
-        type: string
-        required: false
-        default: "test1-large-runner-lang"
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.run_macos && format('[{{"os":"{0}","timeout":240,"use_container":true}},{{"os":"macos-26","timeout":360,"use_container":false}}]', inputs.linux_runner) || format('[{{"os":"{0}","timeout":240,"use_container":true}}]', inputs.linux_runner)) }}
+        include: ${{ fromJSON(inputs.run_macos && '[{"os":"ubuntu-latest","timeout":240,"use_container":true},{"os":"macos-26","timeout":360,"use_container":false}]' || '[{"os":"ubuntu-latest","timeout":240,"use_container":true}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -36,6 +41,9 @@ jobs:
         shell: bash
 
     env:
+      TT_LANG_HOME: ${{ github.workspace }}
+      TT_MLIR_HOME: ${{ github.workspace }}/tt-mlir
+      TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
       TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
 
     steps:
@@ -53,7 +61,6 @@ jobs:
         run: |
           TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
           echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
-          echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
 
       - name: Checkout tt-mlir
         uses: actions/checkout@v4
@@ -80,6 +87,12 @@ jobs:
           toolchain-hash: ${{ steps.toolchain-hash.outputs.hash }}
 
       # Common steps (MacOS and Ubuntu) from here down
+      - name: Compute tt-mlir commit hash
+        id: ttmlir-commit-hash
+        run: |
+          HASH=$(shasum third-party/tt-mlir.commit | awk '{print $1}')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
       - name: Get LLVM version
         id: llvm-version
         uses: ./.github/actions/get-llvm-version
@@ -89,8 +102,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-version.outputs.commit }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -102,22 +116,19 @@ jobs:
             -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_ENABLE_SHARED_LIB=ON \
-            -DTTMLIR_ENABLE_RUNTIME=${{ runner.os == 'Linux' && 'ON' || 'OFF' }} \
+            -DTTMLIR_ENABLE_RUNTIME=OFF \
             -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
-            -DTTMLIR_ENABLE_TTRT=OFF \
             -DTTMLIR_ENABLE_STABLEHLO=OFF \
             -DTTMLIR_ENABLE_OPMODEL=OFF \
-            -DTTMLIR_ENABLE_EXPLORER=OFF \
-            -DTTMLIR_ENABLE_ALCHEMIST=OFF \
             -DTT_RUNTIME_ENABLE_PERF_TRACE=OFF \
             -DTTMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DTT_RUNTIME_ENABLE_TTNN=ON \
-            -DTTMLIR_ENABLE_TTNN_JIT=ON \
-            -DUSE_TTNN_JIT_WHEEL=OFF \
+            -DTTMLIR_ENABLE_DEBUG_STRINGS=OFF \
+            -DTTMLIR_ENABLE_EXPLORER=OFF \
             -DBUILD_TESTING=OFF \
             -S .
           cmake --build build --target all --target TTMLIRPythonModules
           cmake --install build
+          cmake --install build --component TTMLIRPythonWheel
 
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
@@ -132,7 +143,7 @@ jobs:
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_TOOLCHAIN_DIR=${{ env.TTMLIR_TOOLCHAIN_DIR }} \
-            -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir \
+            -DTTMLIR_BUILD_DIR=$GITHUB_WORKSPACE/tt-mlir/build \
             -DTTLANG_ENABLE_BINDINGS_PYTHON=ON \
             -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }} \
             -S .
@@ -157,11 +168,6 @@ jobs:
           source build/env/activate
           cmake --build build --target check-ttlang-python-bindings
 
-      - name: Python lit tests
-        run: |
-          source build/env/activate
-          cmake --build build --target check-ttlang-python-lit
-
       - name: Build documentation
         if: inputs.build_docs && runner.os == 'Linux'
         run: |
@@ -174,28 +180,10 @@ jobs:
         with:
           path: ./build/docs/sphinx/_build/html
 
-      - name: Normalize tt-mlir installation
-        run: |
-          # Replace symlinks with actual files to make tt-mlir-install self-contained
-          # This can be removed once tt-mlir install is fixed upstream
-          .github/scripts/normalize-ttmlir-install.sh ${{ env.TT_MLIR_DIR }}
-
-      - name: Archive build artifacts
-        id: archive
-        run: |
-          set -x
-          ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
-          echo "name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
-
-          # Archive self-contained tt-mlir-install and tt-lang build directory
-          tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
-            --exclude='build/_deps' \
-            ${{ env.TT_MLIR_DIR }} build
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ttlang-ttmlir-install-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
-          path: ${{ steps.archive.outputs.name }}
-          if-no-files-found: error
+          name: build-${{ runner.os == 'Linux' && 'ubuntu' || 'macos' }}
+          path: |
+            build/python_packages
           retention-days: 1

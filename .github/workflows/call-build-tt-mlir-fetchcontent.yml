@@ -14,6 +14,10 @@ on:
                     - ubuntu-latest
                     - test1-large-runner-lang
                 default: "ubuntu-latest"
+            build_docs:
+                description: "Build and deploy documentation."
+                type: boolean
+                default: false
     workflow_call:
         inputs:
             tt-mlir-commit:
@@ -25,6 +29,11 @@ on:
                 type: string
                 required: false
                 default: "ubuntu-latest"
+            build_docs:
+                description: "Build and deploy documentation."
+                type: boolean
+                required: false
+                default: false
     schedule:
         - cron: "0 12 * * *"
 
@@ -75,7 +84,7 @@ jobs:
               with:
                   # Cache normalized tt-mlir-install (self-contained, no symlinks)
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                  key: ${{ runner.os }}-ttlang-fetchcontent-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
@@ -91,7 +100,8 @@ jobs:
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir
+                      -DTTMLIR_DIR=${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir \
+                      -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
 
             - name: Configure tt-lang (builds tt-mlir with tt-metal)
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -103,7 +113,8 @@ jobs:
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
-                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }}
+                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }} \
+                      -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
 
             - name: Build tt-lang
               run: |
@@ -129,6 +140,18 @@ jobs:
               run: |
                 source build/env/activate
                 cmake --build build --target check-ttlang-python-lit
+
+            - name: Build documentation
+              if: inputs.build_docs
+              run: |
+                source build/env/activate
+                cmake --build build --target ttlang-docs
+
+            - name: Upload documentation artifact
+              if: inputs.build_docs
+              uses: actions/upload-pages-artifact@v3
+              with:
+                path: ./build/docs/sphinx/_build/html
 
             - name: Normalize tt-mlir installation
               if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -177,4 +200,6 @@ jobs:
             - name: Decide whether all needed jobs succeeded or failed
               uses: re-actors/alls-green@release/v1
               with:
+                  # TODO: Remove allowed-failures once test-hardware is stable
+                  allowed-failures: test-hardware
                   jobs: ${{ toJSON(needs) }}

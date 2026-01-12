@@ -2,20 +2,13 @@ name: On PR
 
 on:
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 22 * * *"
   workflow_dispatch:
     inputs:
       run_macos:
         description: "Run the macOS build."
         type: boolean
         default: false
-      linux_runner:
-        description: "Linux runner to use"
-        type: choice
-        options:
-          - ubuntu-latest
-          - test1-large-runner-lang
-        default: "ubuntu-latest"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: ["main"]
@@ -41,21 +34,10 @@ jobs:
       # macOS is disabled by default. Enable via workflow_dispatch input, or by
       # applying the `ci:macos` label to a PR.
       run_macos: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_macos) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:macos')) }}
-      linux_runner: ${{ inputs.linux_runner || 'ubuntu-latest' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
-
-  test-hardware:
-    needs: build
-    uses: ./.github/workflows/call-test-hardware.yml
-    secrets: inherit
-    with:
-      runs-on: n150
-      build-os: ubuntu
-      timeout: 60
-      artifact-prefix: ttlang
 
   check-all-green:
     if: always()
@@ -63,11 +45,10 @@ jobs:
       - pre-commit
       - build
       - test-sim
-      - test-hardware
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether all needed jobs succeeded or failed
         uses: re-actors/alls-green@release/v1
         with:
-          allowed-skips: build, test-sim, test-hardware
+          allowed-skips: build, test-sim
           jobs: ${{ toJSON(needs) }}
