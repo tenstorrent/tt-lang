@@ -73,8 +73,41 @@ def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
   let hasVerifier = 1;
 }
 
+def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
+  let summary = "Create a view into a tensor at specific tile indices";
+  let description = [{
+    `ttl.tensor_slice` creates a view into a TTNN tensor at a specific tile
+    position. The resulting tensor can be passed to `ttl.copy` to transfer
+    tiles starting at the specified position.
+
+    The indices are tile coordinates (not element coordinates). For a tensor
+    with shape [64, 64] and tile size 32x32, valid indices are [0,0], [0,1],
+    [1,0], and [1,1].
+
+    The result tensor has a reduced shape matching the CB dimensions but
+    retains the original tensor's layout encoding. The lowering traces back
+    to the original tensor via the defining op.
+
+    Example:
+    ```mlir
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %slice = ttl.tensor_slice %tensor[%c0, %c1]
+             : tensor<1x1x2x2x!ttcore.tile<32x32, bf16>, #layout>
+               -> tensor<1x1x1x1x!ttcore.tile<32x32, bf16>, #layout>
+    ```
+  }];
+  let arguments = (ins
+    TTNNTensor:$tensor,
+    Index:$tile_row,
+    Index:$tile_col
+  );
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$tensor `[` $tile_row `,` $tile_col `]` attr-dict `:` type($tensor) `->` type($result)";
+}
+
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Asynchronous copy between tensor and circular buffer";
+  let summary = "Asynchronous copy between tensor slice and circular buffer";
   let description = [{
     `ttl.copy` initiates an asynchronous transfer and returns a transfer handle
     (`!ttl.transfer_handle`) that can be synchronized with `ttl.wait`.
@@ -82,10 +115,9 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     This operation is non-blocking. The destination is not safe to use until a
     corresponding `ttl.wait` has completed.
 
-    In the current MVP (no pipes/blocks yet), exactly one operand must be a
-    circular buffer (`!ttl.cb`). The other operand must be a ranked tensor
-    carrying a TTNN layout encoding (for example `#ttnn.ttnn_layout<...>`), so
-    lowering can derive tile and addressing information.
+    Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
+    must be a ranked tensor (the result of a tensor slice) with TTNN layout
+    encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     ttkernel noc ops land in tt-mlir. Issue: #87.
@@ -98,8 +130,11 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
       %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-      ttl.wait %xf
+      // Create a slice at tile position (0, 0)
+      %c0 = arith.constant 0 : index
+      %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> tensor<32x32xf32, #layout>
+      %xf = ttl.copy %slice, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      ttl.wait %xf : !ttl.transfer_handle<read>
       func.return
     }
     ```
