@@ -19,17 +19,15 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+from ttlang import ttl
 
 
 @ttl.kernel(grid=(1, 1))
 def add_dram_kernel(lhs, rhs, out):
     """Add kernel that reads/writes directly from/to DRAM."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -46,12 +44,12 @@ def add_dram_kernel(lhs, rhs, out):
     def dm_read():
         # Reserve CB space, read directly from DRAM into CBs, push
         lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
         tx_rhs.wait()
         rhs_cb.push()
 
@@ -59,11 +57,11 @@ def add_dram_kernel(lhs, rhs, out):
     def dm_write():
         # Wait for data, write directly from CB to DRAM, pop
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================
@@ -109,15 +107,17 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
-# First input: reserve, copy, wait, push
+# First input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB0]]
-# CHECK: %[[TX1:.+]] = ttl.copy %arg0, %[[CB0]] : {{.*}} -> !ttl.transfer_handle<read>
+# CHECK: %[[SLICE0:.+]] = ttl.tensor_slice %arg0
+# CHECK: %[[TX1:.+]] = ttl.copy %[[SLICE0]], %[[CB0]] : {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait %[[TX1]]
 # CHECK: ttl.cb_push %[[CB0]]
 
-# Second input: reserve, copy, wait, push
+# Second input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB1]]
-# CHECK: %[[TX2:.+]] = ttl.copy %arg1, %[[CB1]] : {{.*}} -> !ttl.transfer_handle<read>
+# CHECK: %[[SLICE1:.+]] = ttl.tensor_slice %arg1
+# CHECK: %[[TX2:.+]] = ttl.copy %[[SLICE1]], %[[CB1]] : {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait %[[TX2]]
 # CHECK: ttl.cb_push %[[CB1]]
 
@@ -125,10 +125,11 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Wait for output CB, copy to device, pop
+# Wait for output CB, slice, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: ttl.cb_wait %[[CB2]]
-# CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %arg0 : {{.*}} -> !ttl.transfer_handle<write>
+# CHECK: %[[SLICE2:.+]] = ttl.tensor_slice %arg0
+# CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %[[SLICE2]] : {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait %[[TX]]
 # CHECK: ttl.cb_pop %[[CB2]]
 

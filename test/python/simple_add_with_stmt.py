@@ -19,9 +19,7 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+from ttlang import ttl
 
 try:
     import ttnn
@@ -33,9 +31,9 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def add_with_kernel(lhs, rhs, out):
     """Add kernel using 'with' pattern for automatic CB lifecycle."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -49,12 +47,12 @@ def add_with_kernel(lhs, rhs, out):
     def dm_read():
         # 'with' for reserve/push pattern
         with lhs_cb.reserve() as lhs_block:
-            tx_lhs = copy(lhs[0, 0], lhs_cb)
+            tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
             tx_lhs.wait()
         # Automatic: lhs_cb.push()
 
         with rhs_cb.reserve() as rhs_block:
-            tx_rhs = copy(rhs[0, 0], rhs_cb)
+            tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
             tx_rhs.wait()
         # Automatic: rhs_cb.push()
 
@@ -62,11 +60,11 @@ def add_with_kernel(lhs, rhs, out):
     def dm_write():
         # 'with' for wait/pop pattern
         with out_cb.wait() as out_block:
-            tx = copy(out_cb, out[0, 0])
+            tx = ttl.copy(out_cb, out[0, 0])
             tx.wait()
         # Automatic: out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================

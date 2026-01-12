@@ -620,67 +620,6 @@ class TTCompilerBase(PyKernelAstBase):
                     f"Compare operator {type(node.ops).__name__} not implemented"
                 )
 
-    # Subscript Value
-    def visit_Subscript(self, node):
-        # Now process accessing elements from array types
-        # Accesses are done through numpy style tuple indices or constants
-        tbl = self._var_exists(node.value.id)
-
-        if not tbl:
-            raise ValueError("Array doesn't exist.")
-
-        arr = tbl[node.value.id]
-
-        # Make sure this is a memref type
-        if not hasattr(arr, "type") or not (
-            isinstance(arr.type, MemRefType) or isinstance(arr.type, RankedTensorType)
-        ):
-            raise ValueError("Can only subscript Arrays")
-
-        # Ensure slice is valid
-        # Visit the slice, if not Tuple or constant
-        def _build_index(slice, shape, bounds_check_idx):
-            if hasattr(slice, "value"):
-                if slice.value >= shape[bounds_check_idx]:
-                    raise IndexError("Index out of bounds.")
-                return arith.ConstantOp(IndexType.get(self.ctx), slice.value)
-            else:
-                # Forcefully cast to IndexType if we have a BinOp, etc...
-                # Allow MLIR to take care of errors.
-                r = self.visit(slice)
-                if isinstance(r.type, IndexType):
-                    return r
-                else:
-                    return arith.IndexCastOp(IndexType.get(self.ctx), r)
-
-        # Make sure that the Constant checks up against rank type
-        if isinstance(node.slice, ast.Constant):
-            # Make sure Constant checks up against rank
-            if arr.type.rank < 1:
-                raise IndexError("Can only index elements of Array, rank < 1")
-
-            # Check against bounds
-            if arr.type.shape[0] <= node.slice.value:
-                raise IndexError("Index out of bounds.")
-
-            idx = _build_index(node.slice, arr.type.shape, 0)
-        elif isinstance(node.slice, ast.Tuple):
-            # Check Rank
-            if len(node.slice.elts) > arr.type.rank:
-                raise IndexError("Can only index elements of Array, rank >= len(index)")
-
-            idx = [
-                _build_index(elt, arr.type.shape, i)
-                for i, elt in enumerate(node.slice.elts)
-            ]
-        else:
-            idx = [_build_index(node.slice, arr.type.shape, 0)]
-
-        if isinstance(arr.type, MemRefType):
-            return memref.LoadOp(arr, idx)
-        elif isinstance(arr.type, RankedTensorType):
-            return (arr, idx)
-
     def visit_Attribute(self, node, func_args=[], kwargs={}):
         # type name should be !ttkernel.* if it has attributes
         mlir_value = self._var_exists(node.value.id)[node.value.id]
