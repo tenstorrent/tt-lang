@@ -16,9 +16,7 @@ Sequential chain avoids multiple uses of intermediate values.
 
 import os
 
-from ttlang import ttl, make_circular_buffer_like, sigmoid, tanh, abs, neg, relu
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttlang import ttl
 
 try:
     import ttnn
@@ -30,10 +28,10 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def fused_chain_kernel(a, b, c, out):
     """Kernel with 20 chained ops - deep fusion test."""
-    a_cb = make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_cb = make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
@@ -43,29 +41,29 @@ def fused_chain_kernel(a, b, c, out):
         o = out_cb.reserve()
         # 20 ops: sequential chain to avoid multiple uses of intermediates
         # Start with a: 5 unary ops
-        v = sigmoid(av)  # 1
-        v = sigmoid(v)  # 2
-        v = tanh(v)  # 3
-        v = tanh(v)  # 4
-        v = abs(v)  # 5
+        v = ttl.math.sigmoid(av)  # 1
+        v = ttl.math.sigmoid(v)  # 2
+        v = ttl.math.tanh(v)  # 3
+        v = ttl.math.tanh(v)  # 4
+        v = ttl.math.abs(v)  # 5
         # Mix in b: 5 ops (1 binary + 4 unary)
         v = v + bv  # 6
-        v = sigmoid(v)  # 7
-        v = tanh(v)  # 8
-        v = neg(v)  # 9
-        v = abs(v)  # 10
+        v = ttl.math.sigmoid(v)  # 7
+        v = ttl.math.tanh(v)  # 8
+        v = ttl.math.neg(v)  # 9
+        v = ttl.math.abs(v)  # 10
         # Mix in c: 5 ops (1 binary + 4 unary)
         v = v + cv  # 11
-        v = relu(v)  # 12
-        v = sigmoid(v)  # 13
-        v = tanh(v)  # 14
-        v = abs(v)  # 15
+        v = ttl.math.relu(v)  # 12
+        v = ttl.math.sigmoid(v)  # 13
+        v = ttl.math.tanh(v)  # 14
+        v = ttl.math.abs(v)  # 15
         # Final: 5 more unary ops
-        v = sigmoid(v)  # 16
-        v = tanh(v)  # 17
-        v = relu(v)  # 18
-        v = sigmoid(v)  # 19
-        result = tanh(v)  # 20
+        v = ttl.math.sigmoid(v)  # 16
+        v = ttl.math.tanh(v)  # 17
+        v = ttl.math.relu(v)  # 18
+        v = ttl.math.sigmoid(v)  # 19
+        result = ttl.math.tanh(v)  # 20
         o.store(result)
         a_cb.pop()
         b_cb.pop()
@@ -75,28 +73,28 @@ def fused_chain_kernel(a, b, c, out):
     @ttl.datamovement()
     def dm_read():
         a_cb.reserve()
-        tx_a = copy(a[0, 0], a_cb)
+        tx_a = ttl.copy(a[0, 0], a_cb)
         tx_a.wait()
         a_cb.push()
 
         b_cb.reserve()
-        tx_b = copy(b[0, 0], b_cb)
+        tx_b = ttl.copy(b[0, 0], b_cb)
         tx_b.wait()
         b_cb.push()
 
         c_cb.reserve()
-        tx_c = copy(c[0, 0], c_cb)
+        tx_c = ttl.copy(c[0, 0], c_cb)
         tx_c.wait()
         c_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        tx = ttl.copy(out_cb, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(fused_compute, dm_read, dm_write)(a, b, c, out)
+    return ttl.Program(fused_compute, dm_read, dm_write)(a, b, c, out)
 
 
 # =============================================================================
