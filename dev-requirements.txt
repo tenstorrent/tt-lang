@@ -1,6 +1,7 @@
 # Development dependencies
 pytest
 black
+pre-commit
 sphinx
 myst-parser
 sphinx-rtd-theme
