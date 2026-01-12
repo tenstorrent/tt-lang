@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Tuple, Union
 
-from ttmlir.ir import Type
+from ttmlir.ir import RankedTensorType, Type
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -81,28 +81,51 @@ class CopyTransferHandler:
         return ttl.wait(ast_self)
 
 
+def _make_tensor_slice(tensor, indices):
+    """Create a ttl.tensor_slice from a tensor and tile indices."""
+    tensor_type = tensor.type
+    if not isinstance(tensor_type, RankedTensorType):
+        raise ValueError(f"Expected RankedTensorType, got {tensor_type}")
+
+    # TTL tensors are 4D internally: [grid_row, grid_col, shard_row, shard_col]
+    # User provides 2D tile coordinates
+    if tensor_type.rank != 4:
+        raise ValueError(f"Expected rank-4 TTL tensor, got rank {tensor_type.rank}")
+
+    if len(indices) != 2:
+        raise ValueError(f"Expected 2 tile indices (row, col), got {len(indices)}")
+
+    row_idx, col_idx = indices
+
+    # Build result type: same as input but with last two dims reduced to [1, 1]
+    # Shape: [grid_row, grid_col, 1, 1] (single tile slice)
+    orig_shape = list(tensor_type.shape)
+    reduced_shape = orig_shape[:2] + [1, 1]
+    result_type = RankedTensorType.get(
+        reduced_shape, tensor_type.element_type, tensor_type.encoding
+    )
+    return ttl.tensor_slice(result_type, tensor, row_idx, col_idx)
+
+
 @syntax("copy")
 def copy(src, dst) -> CopyTransferHandler:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
-        src: Source tensor (for reads) or CB (for writes)
-        dst: Destination CB (for reads) or tensor (for writes)
+        src: Source tensor/slice (for reads) or CB (for writes)
+        dst: Destination CB (for reads) or tensor/slice (for writes)
 
     Returns:
         CopyTransferHandler handle that must be waited on for completion
     """
-    # TODO: Support non-zero indices for tensor accessors
+    # Handle subscripted tensors by creating tensor slices
     if isinstance(src, tuple):
-        src, indices = src
-        # indices are MLIR ConstantOp objects, extract literal values
-        idx_vals = [getattr(i, "literal_value", i) for i in indices]
-        assert idx_vals == [0, 0], f"Only [0, 0] index supported, got {idx_vals}"
+        tensor, indices = src
+        src = _make_tensor_slice(tensor, indices)
     if isinstance(dst, tuple):
-        dst, indices = dst
-        idx_vals = [getattr(i, "literal_value", i) for i in indices]
-        assert idx_vals == [0, 0], f"Only [0, 0] index supported, got {idx_vals}"
+        tensor, indices = dst
+        dst = _make_tensor_slice(tensor, indices)
 
     ctx = src.type.context
 
@@ -112,11 +135,11 @@ def copy(src, dst) -> CopyTransferHandler:
     dst_is_cb = dst_type_str.startswith("!ttl.cb")
 
     if dst_is_cb and not src_is_cb:
-        # Read: device tensor -> CB
+        # Read: device tensor/slice -> CB
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
         return ttl.copy(xf_type, src, dst)
     elif src_is_cb and not dst_is_cb:
-        # Write: CB -> device tensor
+        # Write: CB -> device tensor/slice
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
         return ttl.copy(xf_type, src, dst)
     else:

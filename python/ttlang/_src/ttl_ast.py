@@ -152,15 +152,71 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def _is_ttl_module_access(self, node):
+        """Check if node is ttl.XXX access pattern."""
+        return isinstance(node.value, ast.Name) and node.value.id == "ttl"
+
+    def _is_ttl_math_access(self, node):
+        """Check if node is ttl.math.XXX access pattern."""
+        return (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "ttl"
+            and node.value.attr == "math"
+        )
+
+    def _resolve_ttl_function(self, node, func_args, kwargs):
+        """Resolve and call a ttl.XXX or ttl.math.XXX function."""
+        if self._is_ttl_module_access(node):
+            namespace = "ttl"
+        elif self._is_ttl_math_access(node):
+            namespace = "ttl.math"
+        else:
+            return None
+
+        fn = self._fn_map.get(node.attr)
+        if fn is None:
+            self._raise_error(node, f"Unknown function: {namespace}.{node.attr}")
+        return fn(*func_args, **kwargs)
+
     def visit_Attribute(self, node, func_args=[], kwargs={}):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
             try:
+                # Handle ttl.XXX and ttl.math.XXX attribute access
+                if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
+                    return self._resolve_ttl_function(node, func_args, kwargs)
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def visit_Subscript(self, node):
+        """Handle tensor[row, col] indexing for TTL tensor slices."""
+        tbl = self._var_exists(node.value.id)
+        if not tbl:
+            self._raise_error(node, f"Unknown variable: {node.value.id}")
+
+        tensor = tbl[node.value.id]
+        if not isinstance(getattr(tensor, "type", None), RankedTensorType):
+            self._raise_error(node, "TTL only supports subscripting tensors")
+
+        if isinstance(node.slice, ast.Tuple):
+            indices = [self._build_index_value(elt) for elt in node.slice.elts]
+        else:
+            indices = [self._build_index_value(node.slice)]
+
+        return (tensor, indices)
+
+    def _build_index_value(self, node):
+        """Convert AST node to index Value."""
+        if isinstance(node, ast.Constant):
+            return arith.ConstantOp(IndexType.get(self.ctx), node.value)
+        val = self.visit(node)
+        if isinstance(val.type, IndexType):
+            return val
+        return arith.IndexCastOp(IndexType.get(self.ctx), val)
 
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline

@@ -3,14 +3,40 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-TTL DSL module providing decorator APIs (@ttl.kernel(), @ttl.compute(), @ttl.datamovement())
+TTL DSL module providing the unified ttl.* API namespace.
+
+Decorators:
+    @ttl.kernel() - Define a kernel function
+    @ttl.compute() - Define a compute thread
+    @ttl.datamovement() - Define a data movement thread
+
+Classes:
+    ttl.Program - Kernel program executor
+    ttl.Semaphore - Multi-core synchronization primitive
+
+Functions:
+    ttl.make_circular_buffer_like() - Create a circular buffer
+    ttl.copy() - Asynchronous data transfer
+
+Math operations:
+    ttl.math.sqrt(), ttl.math.exp(), etc.
 """
 
-from ttlang.ttl_api import compute, datamovement
-from ttlang.ttl_api import pykernel_gen as kernel
+from .ttl_api import pykernel_gen as kernel, compute, datamovement, Program
+from .circular_buffer import make_circular_buffer_like
+from .operators import copy
+from .semaphore import Semaphore
+
+# Math operations namespace
+from . import ttl_math as math
 
 __all__ = [
     "kernel",
     "compute",
     "datamovement",
+    "Program",
+    "make_circular_buffer_like",
+    "copy",
+    "Semaphore",
+    "math",
 ]
