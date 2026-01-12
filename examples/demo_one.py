@@ -52,9 +52,12 @@ def add_with_kernel(a, b, c, y):
                     b_cb.reserve() as b_block,
                     c_cb.reserve() as c_block,
                 ):
-                    tx_a = ttl.copy(a[row, col], a_cb)
-                    tx_b = ttl.copy(b[row, col], b_cb)
-                    tx_c = ttl.copy(c[row, col], c_cb)
+                    # Scale indices by block size to avoid overlapping reads
+                    r_idx = row * row_tiles
+                    c_idx = col * col_tiles
+                    tx_a = ttl.copy(a[r_idx, c_idx], a_cb)
+                    tx_b = ttl.copy(b[r_idx, c_idx], b_cb)
+                    tx_c = ttl.copy(c[r_idx, c_idx], c_cb)
 
                     tx_a.wait()
                     tx_b.wait()
@@ -65,7 +68,10 @@ def add_with_kernel(a, b, c, y):
         for row in range(rows):
             for col in range(cols):
                 with y_cb.wait() as y_block:
-                    tx = ttl.copy(y_cb, y[row, col])
+                    # Scale indices by block size to match read pattern
+                    r_idx = row * row_tiles
+                    c_idx = col * col_tiles
+                    tx = ttl.copy(y_cb, y[r_idx, c_idx])
                     tx.wait()
 
     return ttl.Program(add_compute, add_read, add_write)(a, b, c, y)
