@@ -89,6 +89,17 @@ jobs:
                   restore-keys: |
                       ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
 
+            - name: Check if tt-mlir was restored from cache
+              id: check-ttmlir-cache
+              run: |
+                  if [ -d "${{ env.TT_MLIR_DIR }}" ] && [ -f "${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir/TTMLIRConfig.cmake" ]; then
+                      echo "restored=true" >> $GITHUB_OUTPUT
+                      echo "tt-mlir installation found in cache at ${{ env.TT_MLIR_DIR }}"
+                  else
+                      echo "restored=false" >> $GITHUB_OUTPUT
+                      echo "tt-mlir installation not found at ${{ env.TT_MLIR_DIR }}, will build"
+                  fi
+
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
@@ -96,7 +107,7 @@ jobs:
                   max-size: 100M
 
             - name: Configure tt-lang with pre-installed tt-mlir (cache hit)
-              if: steps.cache-ttmlir.outputs.cache-hit == 'true'
+              if: steps.check-ttmlir-cache.outputs.restored == 'true'
               run: |
                   echo "Using cached tt-mlir installation"
                   cmake -G Ninja -B build \
@@ -108,7 +119,7 @@ jobs:
                       -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
 
             - name: Configure tt-lang (builds tt-mlir with tt-metal)
-              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
                   echo "Configuring tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
                   cmake -G Ninja -B build \
@@ -158,7 +169,7 @@ jobs:
                 path: ./build/docs/sphinx/_build/html
 
             - name: Normalize tt-mlir installation
-              if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+              if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
                   # Replace symlinks with actual files to make tt-mlir-install self-contained
                   # This can be removed once tt-mlir install is fixed upstream
