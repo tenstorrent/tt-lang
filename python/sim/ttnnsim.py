@@ -32,6 +32,7 @@ TILE_LAYOUT = IndexType.TILE
 
 # Memory config placeholder (no-op in simulator)
 L1_MEMORY_CONFIG = None
+DRAM_MEMORY_CONFIG = None
 
 # Type aliases for binary operations
 Scalar = Union[float, int]
