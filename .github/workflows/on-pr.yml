@@ -4,11 +4,6 @@ on:
   schedule:
     - cron: "0 22 * * *"
   workflow_dispatch:
-    inputs:
-      run_macos:
-        description: "Run the macOS build."
-        type: boolean
-        default: false
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: ["main"]
@@ -28,12 +23,8 @@ jobs:
     secrets: inherit
 
   build:
-    uses: ./.github/workflows/call-build.yml
+    uses: ./.github/workflows/call-build-tt-mlir-fetchcontent.yml
     secrets: inherit
-    with:
-      # macOS is disabled by default. Enable via workflow_dispatch input, or by
-      # applying the `ci:macos` label to a PR.
-      run_macos: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_macos) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:macos')) }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml

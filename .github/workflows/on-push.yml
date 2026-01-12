@@ -2,11 +2,6 @@ name: On Push
 
 on:
   workflow_dispatch:
-    inputs:
-      run_macos:
-        description: "Run the macOS build (disabled by default)."
-        type: boolean
-        default: false
   push:
     branches: ["main"]
 
@@ -26,11 +21,9 @@ jobs:
     secrets: inherit
 
   build:
-    uses: ./.github/workflows/call-build.yml
+    uses: ./.github/workflows/call-build-tt-mlir-fetchcontent.yml
     secrets: inherit
     with:
-      # macOS is disabled by default for pushes. Enable via workflow_dispatch.
-      run_macos: ${{ github.event_name == 'workflow_dispatch' && inputs.run_macos }}
       build_docs: ${{ github.ref == 'refs/heads/main' || github.ref_name == 'bnorris/docs-sphinx' }}
 
   test-sim:
