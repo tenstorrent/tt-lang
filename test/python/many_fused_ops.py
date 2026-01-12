@@ -73,25 +73,25 @@ def fused_chain_kernel(a, b, c, out):
 
     @ttl.datamovement()
     def dm_read():
-        a_cb.reserve()
-        tx_a = ttl.copy(a[0, 0], a_cb)
+        a_blk = a_cb.reserve()
+        tx_a = ttl.copy(a[0, 0], a_blk)
         tx_a.wait()
         a_cb.push()
 
-        b_cb.reserve()
-        tx_b = ttl.copy(b[0, 0], b_cb)
+        b_blk = b_cb.reserve()
+        tx_b = ttl.copy(b[0, 0], b_blk)
         tx_b.wait()
         b_cb.push()
 
-        c_cb.reserve()
-        tx_c = ttl.copy(c[0, 0], c_cb)
+        c_blk = c_cb.reserve()
+        tx_c = ttl.copy(c[0, 0], c_blk)
         tx_c.wait()
         c_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = ttl.copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 

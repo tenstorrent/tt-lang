@@ -46,21 +46,21 @@ def add_with_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         # 'with' for reserve/push pattern
-        with lhs_cb.reserve() as lhs_block:
-            tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
+        with lhs_cb.reserve() as lhs_blk:
+            tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
         # Automatic: lhs_cb.push()
 
-        with rhs_cb.reserve() as rhs_block:
-            tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
+        with rhs_cb.reserve() as rhs_blk:
+            tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
         # Automatic: rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         # 'with' for wait/pop pattern
-        with out_cb.wait() as out_block:
-            tx = ttl.copy(out_cb, out[0, 0])
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
         # Automatic: out_cb.pop()
 

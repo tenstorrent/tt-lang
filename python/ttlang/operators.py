@@ -107,14 +107,34 @@ def _make_tensor_slice(tensor, indices):
     return ttl.tensor_slice(result_type, tensor, row_idx, col_idx)
 
 
+def _is_block(value) -> bool:
+    """Check if a value is a block (result of cb.reserve() or cb.wait()).
+
+    A block is a tensor with an attached CB, produced by ttl.attach_cb.
+    """
+    if not hasattr(value, "owner") or value.owner is None:
+        return False
+    owner_name = value.owner.name
+    return owner_name == "ttl.attach_cb"
+
+
+def _get_cb_from_block(block):
+    """Extract the CB from a block (result of ttl.attach_cb).
+
+    The attach_cb op has signature: (tensor, cb) -> tensor
+    So the CB is operand[1].
+    """
+    return block.owner.operands[1]
+
+
 @syntax("copy")
 def copy(src, dst) -> CopyTransferHandler:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
-        src: Source tensor/slice (for reads) or CB (for writes)
-        dst: Destination CB (for reads) or tensor/slice (for writes)
+        src: Source tensor/slice (for reads) or block (for writes)
+        dst: Destination block (for reads) or tensor/slice (for writes)
 
     Returns:
         CopyTransferHandler handle that must be waited on for completion
@@ -129,23 +149,26 @@ def copy(src, dst) -> CopyTransferHandler:
 
     ctx = src.type.context
 
-    src_type_str = str(src.type)
-    dst_type_str = str(dst.type)
-    src_is_cb = src_type_str.startswith("!ttl.cb")
-    dst_is_cb = dst_type_str.startswith("!ttl.cb")
+    # Check if src/dst is a block (result of cb.reserve()/cb.wait())
+    src_is_block = _is_block(src)
+    dst_is_block = _is_block(dst)
 
-    if dst_is_cb and not src_is_cb:
-        # Read: device tensor/slice -> CB
+    # Extract CB from block if needed
+    src_cb = _get_cb_from_block(src) if src_is_block else None
+    dst_cb = _get_cb_from_block(dst) if dst_is_block else None
+
+    if dst_is_block and not src_is_block:
+        # Read: device tensor/slice -> block (CB)
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
-        return ttl.copy(xf_type, src, dst)
-    elif src_is_cb and not dst_is_cb:
-        # Write: CB -> device tensor/slice
+        return ttl.copy(xf_type, src, dst_cb)
+    elif src_is_block and not dst_is_block:
+        # Write: block (CB) -> device tensor/slice
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
-        return ttl.copy(xf_type, src, dst)
+        return ttl.copy(xf_type, src_cb, dst)
     else:
         raise ValueError(
-            f"copy() requires exactly one CB argument. "
-            f"Got src={src_type_str}, dst={dst_type_str}"
+            f"copy() requires exactly one block argument (result of cb.reserve() or cb.wait()). "
+            f"Got src_is_block={src_is_block}, dst_is_block={dst_is_block}"
         )
 
 
