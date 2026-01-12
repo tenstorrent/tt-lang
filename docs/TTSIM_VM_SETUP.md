@@ -7,7 +7,7 @@ This guide explains how to run tt-lang hardware tests on macOS using a Linux vir
 tt-lang tests marked with `# REQUIRES: ttnn` need access to Tenstorrent hardware or a compatible simulator. Since the tt-mlir runtime only works on Linux, macOS users need a Linux VM to run these tests.
 
 The `tools/vm/` infrastructure provides:
-- **Lima** (automated) or **UTM** (manual) VM setup
+- **Lima** automated VM setup
 - **ttsim** integration for hardware simulation
 - **Shared directories** so you can edit code on macOS and test in Linux
 - **Parameterized configuration** for easy customization
@@ -16,7 +16,7 @@ The `tools/vm/` infrastructure provides:
 
 ### Prerequisites
 
-1. **Lima** (recommended) or **UTM**:
+1. **Lima**:
    ```bash
    brew install lima
    ```
@@ -47,6 +47,29 @@ This will:
 Initial setup takes 30-60 minutes for the first build.
 
 ### Running Tests
+
+#### Using the lirun convenience script
+
+The `lirun` wrapper script simplifies running commands in the VM with the correct environment:
+
+```bash
+# Run all tests
+./tools/vm/lirun cmake --build build-linux -t check-ttlang-all
+
+# Run specific test target
+./tools/vm/lirun cmake --build build-linux -t check-ttlang-python-lit
+
+# Run lit tests directly
+./tools/vm/lirun llvm-lit -sv test/python/
+
+# Run a single test file
+./tools/vm/lirun llvm-lit -sv test/python/simple_add.py
+
+# Run any command in the VM
+./tools/vm/lirun python examples/custom_dm_matmul.py
+```
+
+#### Using the run-tests.sh wrapper
 
 ```bash
 # Run all tests
@@ -377,15 +400,6 @@ TTLANG_HAS_DEVICE=1
 
 These are set automatically when you source `~/activate-ttsim.sh`.
 
-## UTM Alternative
-
-If Lima doesn't work for your setup, use UTM with manual configuration:
-
-```bash
-./tools/vm/setup-vm.sh --utm
-```
-
-This displays UTM setup instructions. For the full guide, see [tools/vm/utm-setup.md](../tools/vm/utm-setup.md).
 
 ## Known Limitations
 
