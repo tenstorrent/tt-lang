@@ -75,10 +75,6 @@ jobs:
                   bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
                   echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
 
-            - name: Get LLVM version
-              id: llvm-version
-              uses: ./.github/actions/get-llvm-version
-
             - name: Cache tt-mlir installation
               id: cache-ttmlir
               uses: actions/cache@v4
@@ -110,7 +106,7 @@ jobs:
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
-                  key: ${{ runner.os }}-ttlang-llvm${{ steps.llvm-version.outputs.version }}
+                  key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ steps.ttmlir-commit.outputs.commit }}
                   max-size: 200M
 
             - name: Configure tt-lang with pre-installed tt-mlir (cache hit)
