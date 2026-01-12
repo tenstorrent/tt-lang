@@ -512,3 +512,147 @@ def test_repeat_single_dimension():
 
     expected = torch.tensor([[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]])
     assert torch.allclose(b.to_torch(), expected)
+
+
+# ---- from_torch tests ----
+
+
+def test_from_torch_basic_conversion():
+    """Test basic tensor conversion from torch to ttnn."""
+    t = torch.full((64, 64), 3.0, dtype=torch.bfloat16)
+    tensor = ttnn.from_torch(t)
+
+    assert tensor.shape == (64, 64)
+    assert tensor.dtype == torch.bfloat16
+    assert torch.allclose(ttnn.to_torch(tensor), t)
+
+
+def test_from_torch_dtype_conversion():
+    """Test dtype conversion during from_torch."""
+    t = torch.randn((32, 32), dtype=torch.float32)
+    tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16)
+
+    assert tensor.dtype == torch.bfloat16
+    assert tensor.shape == (32, 32)
+
+
+def test_from_torch_dtype_no_conversion():
+    """Test that dtype is preserved when not specified."""
+    t = torch.zeros((64, 64), dtype=torch.float32)
+    tensor = ttnn.from_torch(t)
+
+    assert tensor.dtype == torch.float32
+    assert torch.equal(ttnn.to_torch(tensor), t)
+
+
+def test_from_torch_various_shapes():
+    """Test from_torch with various tensor shapes."""
+    shapes = [(32, 32), (64, 64), (128, 128), (256, 256)]
+
+    for shape in shapes:
+        t = torch.ones(shape, dtype=torch.bfloat16)
+        tensor = ttnn.from_torch(t)
+        assert tensor.shape == shape
+
+
+def test_from_torch_layout_parameter_accepted():
+    """Test that layout parameter is accepted (no-op in simulator)."""
+    t = torch.randn((64, 64), dtype=torch.bfloat16)
+    tensor = ttnn.from_torch(t, layout=ttnn.TILE_LAYOUT)
+
+    assert tensor.shape == (64, 64)
+    assert torch.allclose(ttnn.to_torch(tensor), t)
+
+
+def test_from_torch_device_parameter_accepted():
+    """Test that device parameter is accepted (no-op in simulator)."""
+    device = ttnn.open_device(device_id=0)
+    t = torch.randn((64, 64), dtype=torch.bfloat16)
+    tensor = ttnn.from_torch(t, device=device)
+
+    assert tensor.shape == (64, 64)
+    ttnn.close_device(device)
+
+
+def test_from_torch_memory_config_parameter_accepted():
+    """Test that memory_config parameter is accepted (no-op in simulator)."""
+    t = torch.randn((64, 64), dtype=torch.bfloat16)
+    tensor = ttnn.from_torch(t, memory_config=ttnn.L1_MEMORY_CONFIG)
+
+    assert tensor.shape == (64, 64)
+
+
+def test_from_torch_all_parameters():
+    """Test from_torch with all parameters specified."""
+    device = ttnn.open_device(device_id=0)
+    t = torch.full((128, 128), 5.0, dtype=torch.float32)
+
+    tensor = ttnn.from_torch(
+        t,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
+    )
+
+    assert tensor.shape == (128, 128)
+    assert tensor.dtype == torch.bfloat16
+    ttnn.close_device(device)
+
+
+def test_from_torch_roundtrip_conversion():
+    """Test that from_torch -> to_torch preserves data."""
+    original = torch.randn((64, 64), dtype=torch.bfloat16)
+    tensor = ttnn.from_torch(original)
+    result = ttnn.to_torch(tensor)
+
+    assert torch.equal(original, result)
+
+
+def test_from_torch_values_preserved():
+    """Test that tensor values are correctly preserved."""
+    values = [0.0, 1.0, -1.0, 3.14159, -2.71828]
+
+    for val in values:
+        t = torch.full((32, 32), val, dtype=torch.bfloat16)
+        tensor = ttnn.from_torch(t)
+        result = ttnn.to_torch(tensor)
+
+        assert torch.allclose(result, t, rtol=1e-3)
+
+
+def test_from_torch_non_contiguous_tensor():
+    """Test from_torch with non-contiguous tensor."""
+    t = torch.randn((128, 128), dtype=torch.bfloat16)
+    t_transposed = t.t()  # Non-contiguous
+
+    tensor = ttnn.from_torch(t_transposed)
+    assert tensor.shape == (128, 128)
+
+
+def test_from_torch_slice_conversion():
+    """Test from_torch with tensor slice."""
+    t = torch.randn((128, 128), dtype=torch.bfloat16)
+    t_slice = t[32:96, 32:96]
+
+    tensor = ttnn.from_torch(t_slice)
+    assert tensor.shape == (64, 64)
+    assert torch.equal(ttnn.to_torch(tensor), t_slice)
+
+
+def test_from_torch_dtype_conversion_preserves_values():
+    """Test that dtype conversion preserves values within precision limits."""
+    t = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+    tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16)
+
+    result = ttnn.to_torch(tensor).to(torch.float32)
+    assert torch.allclose(result, t, rtol=1e-2)  # bfloat16 has lower precision
+
+
+def test_from_torch_large_tensor():
+    """Test from_torch with larger tensor."""
+    t = torch.randn((512, 512), dtype=torch.bfloat16)
+    tensor = ttnn.from_torch(t)
+
+    assert tensor.shape == (512, 512)
+    assert torch.equal(ttnn.to_torch(tensor), t)
