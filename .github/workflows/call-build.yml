@@ -34,7 +34,7 @@ on:
         description: "Linux runner to use (ubuntu-latest or test1-large-runner-lang)"
         type: string
         required: false
-        default: "ubuntu-latest"
+        default: "test1-large-runner-lang"
 
 jobs:
   build:
