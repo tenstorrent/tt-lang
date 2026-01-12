@@ -86,19 +86,19 @@ def {name}_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_blk = lhs_cb.reserve()
-        tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
+        tx_lhs = ttl.copy(lhs[{slice_syntax}], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_blk = rhs_cb.reserve()
-        tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
+        tx_rhs = ttl.copy(rhs[{slice_syntax}], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
+        tx = ttl.copy(out_blk, out[{slice_syntax}])
         tx.wait()
         out_cb.pop()
 
@@ -129,19 +129,19 @@ def {name}_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_blk = lhs_cb.reserve()
-        tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
+        tx_lhs = ttl.copy(lhs[{slice_syntax}], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
         rhs_blk = rhs_cb.reserve()
-        tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
+        tx_rhs = ttl.copy(rhs[{slice_syntax}], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
+        tx = ttl.copy(out_blk, out[{slice_syntax}])
         tx.wait()
         out_cb.pop()
 
@@ -169,14 +169,14 @@ def {name}_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_cb.reserve()
-        tx_inp = ttl.copy(inp[0, 0], inp_blk)
+        tx_inp = ttl.copy(inp[{slice_syntax}], inp_blk)
         tx_inp.wait()
         inp_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
+        tx = ttl.copy(out_blk, out[{slice_syntax}])
         tx.wait()
         out_cb.pop()
 
@@ -187,6 +187,14 @@ def {name}_kernel(inp, out):
 # =============================================================================
 # Kernel Factories - generate kernels with specific shapes
 # =============================================================================
+
+
+def _get_slice_syntax(tile_rows: int, tile_cols: int) -> str:
+    """Return slice syntax for tensor indexing based on tile shape."""
+    if tile_rows == 1 and tile_cols == 1:
+        return "0, 0"
+    return f"0:{tile_rows}, 0:{tile_cols}"
+
 
 # Cache for generated kernels: (name, op, tile_rows, tile_cols) -> kernel
 _kernel_cache: dict[tuple, Callable] = {}
@@ -220,6 +228,7 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Ca
         tile_rows=tile_rows,
         tile_cols=tile_cols,
         buffer_factor=buffer_factor,
+        slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
     with tempfile.NamedTemporaryFile(
@@ -256,6 +265,7 @@ def make_binary_fn_kernel(
         tile_rows=tile_rows,
         tile_cols=tile_cols,
         buffer_factor=buffer_factor,
+        slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
     with tempfile.NamedTemporaryFile(
@@ -290,6 +300,7 @@ def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Cal
         tile_rows=tile_rows,
         tile_cols=tile_cols,
         buffer_factor=buffer_factor,
+        slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
     with tempfile.NamedTemporaryFile(

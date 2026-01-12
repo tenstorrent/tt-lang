@@ -81,8 +81,14 @@ class CopyTransferHandler:
         return ttl.wait(ast_self)
 
 
-def _make_tensor_slice(tensor, indices):
-    """Create a ttl.tensor_slice from a tensor and tile indices."""
+def _make_tensor_slice(tensor, indices, slice_shape):
+    """Create a ttl.tensor_slice from a tensor, tile indices, and shape.
+
+    Args:
+        tensor: The source tensor to slice from
+        indices: (row, col) tile indices for the slice start position
+        slice_shape: (rows, cols) shape for the slice in tiles
+    """
     tensor_type = tensor.type
     if not isinstance(tensor_type, RankedTensorType):
         raise ValueError(f"Expected RankedTensorType, got {tensor_type}")
@@ -97,10 +103,9 @@ def _make_tensor_slice(tensor, indices):
 
     row_idx, col_idx = indices
 
-    # Build result type: same as input but with last two dims reduced to [1, 1]
-    # Shape: [grid_row, grid_col, 1, 1] (single tile slice)
+    # Build result type: [grid_row, grid_col, slice_rows, slice_cols]
     orig_shape = list(tensor_type.shape)
-    reduced_shape = orig_shape[:2] + [1, 1]
+    reduced_shape = orig_shape[:2] + list(slice_shape)
     result_type = RankedTensorType.get(
         reduced_shape, tensor_type.element_type, tensor_type.encoding
     )
@@ -127,6 +132,51 @@ def _get_cb_from_block(block):
     return block.owner.operands[1]
 
 
+def _get_cb_shape(cb_val):
+    """Extract the block shape from a CB value."""
+    cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
+    if cb_type is None:
+        raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
+    return list(cb_type.shape)
+
+
+def _process_tensor_subscript(subscript_tuple, cb_shape):
+    """Process tensor subscript and create tensor slice.
+
+    Args:
+        subscript_tuple: (tensor, indices) where indices are [(value, is_range), ...]
+        cb_shape: [rows, cols] shape from the CB
+
+    Returns:
+        Tensor slice with shape matching cb_shape
+    """
+    tensor, indices = subscript_tuple
+
+    if len(indices) != 2:
+        raise ValueError(f"Expected 2 indices (row, col), got {len(indices)}")
+
+    cb_is_multi_tile = cb_shape[0] > 1 or cb_shape[1] > 1
+    uses_ranges = any(is_range for _, is_range in indices)
+
+    if cb_is_multi_tile and not uses_ranges:
+        raise ValueError(
+            f"CB shape {cb_shape} requires range syntax (e.g., tensor[0:2, 0:2]), "
+            f"but got index syntax (e.g., tensor[0, 0])"
+        )
+
+    if not cb_is_multi_tile and uses_ranges:
+        raise ValueError(
+            f"CB shape {cb_shape} requires index syntax (e.g., tensor[0, 0]), "
+            f"but got range syntax (e.g., tensor[0:2, 0:2])"
+        )
+
+    # TODO: Validate that range size matches CB shape (requires runtime or
+    # constant folding to compare end - start with cb_shape dimensions).
+
+    start_indices = [value for value, _ in indices]
+    return _make_tensor_slice(tensor, start_indices, cb_shape)
+
+
 @syntax("copy")
 def copy(src, dst) -> CopyTransferHandler:
     """
@@ -138,14 +188,33 @@ def copy(src, dst) -> CopyTransferHandler:
 
     Returns:
         CopyTransferHandler handle that must be waited on for completion
+
+    For multi-tile CBs (shape > 1x1), use range syntax: tensor[0:2, 0:2]
+    For single-tile CBs (shape 1x1), use index syntax: tensor[0, 0]
     """
-    # Handle subscripted tensors by creating tensor slices
-    if isinstance(src, tuple):
-        tensor, indices = src
-        src = _make_tensor_slice(tensor, indices)
-    if isinstance(dst, tuple):
-        tensor, indices = dst
-        dst = _make_tensor_slice(tensor, indices)
+    src_is_subscript = isinstance(src, tuple)
+    dst_is_subscript = isinstance(dst, tuple)
+
+    # Identify the block argument to get CB shape
+    if dst_is_subscript:
+        if not _is_block(src):
+            raise ValueError("copy() with tensor subscript dst requires block src")
+        cb_shape = _get_cb_shape(_get_cb_from_block(src))
+    elif src_is_subscript:
+        if not _is_block(dst):
+            raise ValueError("copy() with tensor subscript src requires block dst")
+        cb_shape = _get_cb_shape(_get_cb_from_block(dst))
+    else:
+        raise ValueError(
+            "copy() requires at least one tensor subscript argument "
+            "(e.g., tensor[row, col] or tensor[r0:r1, c0:c1])"
+        )
+
+    # Process subscripted tensors into tensor slices
+    if src_is_subscript:
+        src = _process_tensor_subscript(src, cb_shape)
+    if dst_is_subscript:
+        dst = _process_tensor_subscript(dst, cb_shape)
 
     ctx = src.type.context
 

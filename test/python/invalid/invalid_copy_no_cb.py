@@ -20,7 +20,7 @@ import ttnn
 from ttlang import ttl
 
 
-# CHECK: error: copy() requires exactly one block argument
+# CHECK: error: copy() with tensor subscript dst requires block src
 # CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:[[LINE:[0-9]+]]:10
 # CHECK-NEXT:    |
 # CHECK-NEXT: [[LINE]] |         tx = ttl.copy(lhs[0, 0], rhs[0, 0])
