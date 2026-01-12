@@ -99,18 +99,33 @@ def test_metal_example_cli(example_path: str) -> None:
 
 
 def test_eltwise_add2_fails_with_expected_error() -> None:
-    """Test that eltwise_add2.py fails with the expected copy validation error.
+    """Test that eltwise_add_error.py fails with the expected copy validation error.
 
     This example demonstrates a common mistake: copying a single tile into a
     block that expects multiple tiles. The error message should clearly indicate
-    the mismatch.
+    the mismatch and point to the exact line where the error occurs.
     """
-    code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "eltwise_add2.py")
-    assert code != 0, f"Expected eltwise_add2.py to fail, but it exited with code 0"
-    expected_error = (
-        "Unsupported or invalid copy transfer from Tensor to Block: "
-        "Tensor contains 1 tiles but Block has 4 slots"
-    )
+    code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "eltwise_add_error.py")
     assert (
-        expected_error in out
-    ), f"Expected error message not found.\nExpected: {expected_error}\nGot:\n{out}"
+        code != 0
+    ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
+    # Check for the core error message
+    assert (
+        "Tensor contains 1 tiles but Block has 4 slots" in out
+    ), f"Expected error message not found in output:\n{out}"
+    # Verify source location is shown
+    assert (
+        "examples/eltwise_add_error.py:37" in out
+    ), f"Expected source location not found in output:\n{out}"
+
+    # Verify the reported line number is correct by checking the actual source
+    source_file = EXAMPLES_DIR / "eltwise_add_error.py"
+    with open(source_file) as f:
+        lines = f.readlines()
+        # Line 37 (1-indexed) should contain the problematic copy call
+        error_line = lines[36].strip()  # 0-indexed
+        assert "tx_a = copy(a[r, c], a_block)" in error_line, (
+            f"Line 37 in eltwise_add_error.py does not contain expected copy call.\n"
+            f"Expected: 'tx_a = copy(a[r, c], a_block)'\n"
+            f"Got: {error_line}"
+        )

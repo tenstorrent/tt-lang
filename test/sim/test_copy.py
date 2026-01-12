@@ -365,7 +365,7 @@ class TestMulticastCopy:
         dst_ring = Block(dst_buf, 1, Span(0, 1))
 
         tx_recv = copy(pipe, dst_ring)
-        with pytest.raises(ValueError, match="Timeout waiting for pipe data"):
+        with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
             tx_recv.wait()
 
 
