@@ -83,9 +83,7 @@ add_custom_target(check-ttlang
 
 # Pytest tests (test_*.py files).
 add_custom_target(check-ttlang-pytest
-  COMMAND ${CMAKE_COMMAND} -E env
-    PYTHONPATH=${CMAKE_SOURCE_DIR}/python:${CMAKE_BINARY_DIR}/python_packages:$ENV{PYTHONPATH}
-    ${Python3_EXECUTABLE} -m pytest
+  COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
