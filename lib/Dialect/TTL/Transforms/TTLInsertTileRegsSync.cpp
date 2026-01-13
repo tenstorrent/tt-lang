@@ -6,24 +6,22 @@
 // TTL Insert Tile Regs Sync Pass
 //===----------------------------------------------------------------------===//
 //
-// This pass inserts DST register synchronization operations around ttl.compute
-// regions to enforce the MATH/PACK thread synchronization protocol required by
+// This pass inserts DST register synchronization operations inside ttl.compute
+// bodies to enforce the MATH/PACK thread synchronization protocol required by
 // the hardware DST register bank.
 //
-// The pass performs the following transformations:
-//
-// 1. Inside ttl.compute body:
+// The pass performs the following transformations inside ttl.compute body:
 //    - Inserts tile_regs_acquire at the beginning (if not present)
 //    - Inserts tile_regs_commit immediately before ttl.store/ttl.yield
 //    - Inserts tile_regs_wait before ttl.store
 //    - Inserts ttl.store for outputs that lack one (requires existing CB view)
+//    - Inserts tile_regs_release at the end (before yield)
 //
-// 2. Outside ttl.compute (in parent block):
-//    - Inserts tile_regs_release immediately after the ttl.compute operation
+// All sync ops are inside the body so they get cloned into each loop iteration
+// when ConvertTTLComputeToSCF lowers to scf.for loops.
 //
-// This establishes the correct DST lifecycle:
-//   MATH thread:  acquire -> [compute] -> commit
-//   PACK thread:  wait -> release
+// This establishes the correct DST lifecycle per tile:
+//   acquire -> [compute] -> commit -> wait -> [pack] -> release
 //
 // The pass is designed to run once during lowering; it does not check for
 // existing sync ops.
@@ -88,12 +86,14 @@ struct TTLInsertTileRegsSyncPass
         builder.create<InitSFPUOp>(loc, icb, ocb);
       }
 
+      Block &body = computeOp.getRegion().front();
+
+      // Insert acquire at start of compute body (so it's inside the loop after
+      // lowering).
       if (!existingAcquire) {
-        builder.setInsertionPoint(computeOperation);
+        builder.setInsertionPointToStart(&body);
         builder.create<TileRegsAcquireOp>(loc);
       }
-
-      Block &body = computeOp.getRegion().front();
       auto *terminator = body.getTerminator();
       auto yieldOp = cast<YieldOp>(terminator);
       OperandRange yieldedValues = yieldOp.getValues();
@@ -216,12 +216,10 @@ struct TTLInsertTileRegsSyncPass
         storeForOutput.try_emplace(idx, newStore);
       }
 
-      // Release: after compute in parent block.
-      Operation *next = computeOperation->getNextNode();
-      if (!isa_and_nonnull<TileRegsReleaseOp>(next)) {
-        builder.setInsertionPointAfter(computeOperation);
-        builder.create<TileRegsReleaseOp>(loc);
-      }
+      // Release: at end of compute body (before yield), so it's inside the loop
+      // after lowering.
+      builder.setInsertionPoint(terminator);
+      builder.create<TileRegsReleaseOp>(loc);
 
       return WalkResult::advance();
     });
