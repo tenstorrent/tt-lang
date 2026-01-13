@@ -29,6 +29,12 @@ from ttmlir.passes import (
 )
 from ttmlir.passmanager import PassManager
 
+from ._src.auto_profile import (
+    get_line_mapper,
+    is_auto_profile_enabled,
+    parse_device_profile_csv,
+    print_profile_report,
+)
 from ._src.tensor_registry import (
     get_tensor_global_index,
     get_tensor_source,
@@ -97,6 +103,66 @@ def _make_cache_key(args: tuple) -> tuple:
 def _should_execute() -> bool:
     """Check if kernel execution should proceed (not compile-only mode)."""
     return os.environ.get("TTLANG_COMPILE_ONLY", "0") != "1"
+
+
+def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
+    """
+    Read device profiler data and display profile report.
+
+    Called after kernel execution when auto-profiling is enabled.
+    """
+    if not is_auto_profile_enabled():
+        return
+
+    if ttnn is None:
+        print("[Auto-profile] ttnn not available, skipping profiling")
+        return
+
+    from pathlib import Path
+
+    # Get device from first ttnn tensor
+    device = None
+    for tensor in tensors:
+        if is_ttnn_tensor(tensor) and hasattr(tensor, "device"):
+            device = tensor.device()
+            break
+
+    if device is None:
+        print("[Auto-profile] No device found in tensors, skipping profiling")
+        return
+
+    # Dump profiler data from device
+    try:
+        ttnn.DumpDeviceProfiler(device)
+    except Exception as e:
+        print(f"[Auto-profile] Failed to dump device profiler: {e}")
+        return
+
+    # Find the profile CSV
+    profile_csv_path = os.environ.get(
+        "TTLANG_PROFILE_CSV", "/tmp/profile_log_device.csv"
+    )
+    csv_path = Path(profile_csv_path)
+
+    if not csv_path.exists():
+        print(f"[Auto-profile] Profile CSV not found at {csv_path}")
+        print(
+            "[Auto-profile] Ensure TT_METAL_DEVICE_PROFILER=1 is set before running"
+        )
+        return
+
+    # Parse and display results
+    line_mapper = get_line_mapper()
+    line_mapper.set_source(source_lines)
+
+    try:
+        results = parse_device_profile_csv(csv_path, line_mapper)
+        if results:
+            print_profile_report(results, source_lines, line_mapper)
+        else:
+            print("[Auto-profile] No signpost results found in profile CSV")
+    except Exception as e:
+        print(f"[Auto-profile] Failed to parse profile CSV: {e}")
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -191,6 +257,7 @@ class CompiledTTNNKernel:
         kernel_tensor_indices,
         cb_configs=None,
         program_hash=None,
+        source_lines=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -204,6 +271,7 @@ class CompiledTTNNKernel:
             kernel_tensor_indices: List of global tensor indices used by each kernel
             cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index
             program_hash: Hash for tt-metal program cache
+            source_lines: Source code lines for auto-profiling reports
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -213,6 +281,7 @@ class CompiledTTNNKernel:
         self.kernel_tensor_indices = kernel_tensor_indices
         self.cb_configs = cb_configs or []
         self.program_hash = program_hash
+        self.source_lines = source_lines
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -280,6 +349,7 @@ def _compile_ttnn_kernel(
     cb_configs=None,
     program_hash=None,
     verbose=True,
+    source_lines=None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -293,6 +363,7 @@ def _compile_ttnn_kernel(
         num_outs: Number of output tensors
         program_hash: Hash for tt-metal program cache
         verbose: Print compilation info
+        source_lines: Source code lines for auto-profiling reports
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -406,6 +477,7 @@ def _compile_ttnn_kernel(
         kernel_tensor_indices=thread_tensor_indices,
         cb_configs=cb_configs,
         program_hash=program_hash,
+        source_lines=source_lines,
     )
 
     if verbose:
@@ -846,6 +918,12 @@ def _compile_kernel(
                 )
             print(f"SAVED FINAL TO {final_mlir_path}")
 
+        # Extract source lines for auto-profiling (use first thread's source)
+        profile_source_lines = None
+        if all_source_lines:
+            first_thread = next(iter(all_source_lines.keys()))
+            profile_source_lines = all_source_lines[first_thread]
+
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(
             module,
@@ -855,6 +933,7 @@ def _compile_kernel(
             thread_tensor_indices,
             cb_configs,
             program_hash=program_hash,
+            source_lines=profile_source_lines,
         )
         return compiled_kernel
 
@@ -955,7 +1034,13 @@ def pykernel_gen(
 
             # Execute (unless compile-only mode)
             if compiled_kernel is not None and _should_execute():
-                return compiled_kernel(*args)
+                result = compiled_kernel(*args)
+
+                # Run auto-profiling after execution
+                if is_auto_profile_enabled() and compiled_kernel.source_lines:
+                    _run_profiling_pipeline(args, compiled_kernel.source_lines)
+
+                return result
 
         return _wrapper
 
