@@ -763,3 +763,32 @@ def split_work_to_cores(
         units_per_core_group_1,
         units_per_core_group_2,
     )
+
+
+def multiply(input_tensor_a: Tensor, input_tensor_b: Tensor) -> Tensor:
+    """Element-wise multiplication of two tensors.
+
+    Performs element-wise multiplication on two input tensors and returns the result.
+
+    Args:
+        input_tensor_a: First input tensor
+        input_tensor_b: Second input tensor
+
+    Returns:
+        Tensor: Output tensor with element-wise multiplication result
+
+    Example:
+        >>> a = ttnn.from_torch(torch.tensor([[1, 2], [3, 4]], dtype=torch.bfloat16))
+        >>> b = ttnn.from_torch(torch.tensor([[5, 6], [7, 8]], dtype=torch.bfloat16))
+        >>> c = ttnn.multiply(a, b)
+        >>> # c contains [[5, 12], [21, 32]]
+    """
+    # Convert both tensors to torch
+    ta = input_tensor_a.to_torch()
+    tb = input_tensor_b.to_torch()
+
+    # Perform element-wise multiplication
+    result = ta * tb
+
+    # Wrap result back in simulator Tensor
+    return Tensor(result)

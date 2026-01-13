@@ -268,6 +268,91 @@ def test_tensor_binary_ops_reject_torch_tensor():
         _ = a @ b  # type: ignore[operator]
 
 
+# ---- multiply function tests ----
+
+
+def test_multiply_basic():
+    """Test basic element-wise multiplication."""
+    a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.bfloat16))
+    b = ttnn.from_torch(torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.bfloat16))
+
+    c = ttnn.multiply(a, b)
+
+    assert isinstance(c, ttnn.Tensor)
+    assert c.shape == (2, 2)
+
+    expected = torch.tensor([[5.0, 12.0], [21.0, 32.0]], dtype=torch.bfloat16)
+    assert torch.allclose(c.to_torch(), expected, rtol=1e-2)
+
+
+def test_multiply_same_shape():
+    """Test multiply with same-shaped tensors."""
+    a = ttnn.from_torch(torch.ones(4, 4, dtype=torch.float32) * 3.0)
+    b = ttnn.from_torch(torch.ones(4, 4, dtype=torch.float32) * 7.0)
+
+    c = ttnn.multiply(a, b)
+
+    assert c.shape == (4, 4)
+    assert torch.allclose(c.to_torch(), torch.ones(4, 4) * 21.0)
+
+
+def test_multiply_tile_sized_tensors():
+    """Test multiply with tile-sized tensors (32x32)."""
+    a = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    b = ttnn.from_torch(torch.ones(32, 32, dtype=torch.bfloat16) * 2.0)
+
+    c = ttnn.multiply(a, b)
+
+    assert c.shape == (32, 32)
+    # Result should be a * 2.0
+    expected = a.to_torch() * 2.0
+    assert torch.allclose(c.to_torch(), expected, rtol=1e-2)
+
+
+def test_multiply_zeros():
+    """Test multiply with zeros."""
+    a = ttnn.from_torch(torch.randn(4, 4, dtype=torch.float32))
+    b = ttnn.from_torch(torch.zeros(4, 4, dtype=torch.float32))
+
+    c = ttnn.multiply(a, b)
+
+    assert torch.allclose(c.to_torch(), torch.zeros(4, 4))
+
+
+def test_multiply_ones():
+    """Test multiply with ones (identity)."""
+    a = ttnn.from_torch(torch.randn(4, 4, dtype=torch.float32))
+    b = ttnn.from_torch(torch.ones(4, 4, dtype=torch.float32))
+
+    c = ttnn.multiply(a, b)
+
+    assert torch.allclose(c.to_torch(), a.to_torch())
+
+
+def test_multiply_negative_values():
+    """Test multiply with negative values."""
+    a = ttnn.from_torch(torch.tensor([[-1.0, 2.0], [-3.0, 4.0]], dtype=torch.float32))
+    b = ttnn.from_torch(torch.tensor([[2.0, -3.0], [4.0, -5.0]], dtype=torch.float32))
+
+    c = ttnn.multiply(a, b)
+
+    expected = torch.tensor([[-2.0, -6.0], [-12.0, -20.0]], dtype=torch.float32)
+    assert torch.allclose(c.to_torch(), expected)
+
+
+def test_multiply_large_tensors():
+    """Test multiply with larger tensors."""
+    a = ttnn.rand((64, 64), dtype=ttnn.bfloat16)
+    b = ttnn.rand((64, 64), dtype=ttnn.bfloat16)
+
+    c = ttnn.multiply(a, b)
+
+    assert c.shape == (64, 64)
+    # Verify computation is correct
+    expected = a.to_torch() * b.to_torch()
+    assert torch.allclose(c.to_torch(), expected, rtol=1e-2)
+
+
 # ---- Core coordinate classes tests ----
 
 
