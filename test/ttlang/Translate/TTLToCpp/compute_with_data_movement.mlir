@@ -129,7 +129,11 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
 
 // Compute dynamic DST index for outputs: footprint + tile_linear_idx
-// CHECK:            size_t [[DST_OUT:.*]] = [[LINIDX]] + {{.*}};
+// The linear index may be recomputed (not CSE'd with CB linear index above)
+// CHECK:            size_t [[DST_OFF_I:.*]] = [[I]] * {{.*}};
+// CHECK-NEXT:       size_t [[DST_LIN:.*]] = [[DST_OFF_I]] + [[J]];
+// CHECK-NEXT:       size_t [[DST_FOOTPRINT:.*]] = 2;
+// CHECK-NEXT:       size_t [[DST_OUT:.*]] = [[DST_LIN]] + [[DST_FOOTPRINT]];
 
 // Compute: A + B (uses DST[0] and DST[1] as inputs, writes to DST[output])
 // CHECK-NEXT:       add_binary_tile_init();

@@ -39,7 +39,11 @@
 // CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
 
 // --- Compute dynamic DST index for outputs: footprint + tile_linear_idx ---
-// CHECK:           size_t [[DST_OUT:.*]] = [[LINIDX]] + {{.*}};
+// The linear index may be recomputed (not CSE'd with CB linear index above)
+// CHECK:           size_t [[DST_OFF_I:.*]] = [[I]] * {{.*}};
+// CHECK-NEXT:      size_t [[DST_LIN:.*]] = [[DST_OFF_I]] + [[J]];
+// CHECK-NEXT:      size_t [[DST_FOOTPRINT:.*]] = 2;
+// CHECK-NEXT:      size_t [[DST_OUT:.*]] = [[DST_LIN]] + [[DST_FOOTPRINT]];
 
 // --- Add: DST[0] + DST[1] -> DST[output] ---
 // CHECK-NEXT:      add_binary_tile_init();
