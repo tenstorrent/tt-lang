@@ -314,8 +314,12 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     }
     int64_t baseOdstIdx = dstIdxAttr.getInt();
 
-    int64_t src0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
-    int64_t src1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
+    // Use original operands (not adapted) to get DST indices, since the adapted
+    // operands may have lost their dst_idx attributes after prior lowerings
+    // (binary ops replace themselves with adaptor.getLhs(), losing the
+    // intermediate dst_idx tracking).
+    int64_t src0Idx = getDstIndexFromValue(op.getLhs()).value_or(0);
+    int64_t src1Idx = getDstIndexFromValue(op.getRhs()).value_or(1);
 
     Value src0 = computeDynamicDstIndex(op, rewriter, src0Idx);
     Value src1 = computeDynamicDstIndex(op, rewriter, src1Idx);
