@@ -624,36 +624,6 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
                              pageSize);
 }
 
-static std::pair<int64_t, int64_t>
-getTileGridShape(const RankedTensorType &tensorTy) {
-  auto dims = tensorTy.getShape();
-  assert(dims.size() == 2 && "only rank-2 tensors supported currently");
-  auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
-  int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
-  int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
-  return {tilesY, tilesX};
-}
-
-/// Extract tile grid shape from a Value if it's a static tensor.
-/// Handles both rank-2 tensors (logical shape) and rank-4 tensors
-/// (device shape: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]).
-static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
-  auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
-  assert(tensorTy && "expected RankedTensorType");
-  assert(tensorTy.hasStaticShape() && "expected static shape");
-
-  auto dims = tensorTy.getShape();
-  if (dims.size() == 2) {
-    return getTileGridShape(tensorTy);
-  } else if (dims.size() == 4) {
-    // Rank-4 tensor: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
-    // The last two dimensions are already tile counts, not element counts.
-    return {dims[2], dims[3]};
-  }
-
-  llvm_unreachable("expected rank-2 or rank-4 tensor");
-}
-
 // Emit a tile loop (or single tile body). The callback receives (row, col)
 // indices as index-typed Values.
 static void emitTileLoop(
@@ -724,11 +694,7 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   int64_t cbRows = cbShape[0];
   int64_t cbCols = cbShape[1];
 
-  // Get tensor grid shape for computing tensor tile indices.
-  auto tensorTileGridShape = getTileGridShapeFromValue(srcTensor);
-  int64_t tensorTilesX = tensorTileGridShape.second;
-
-  // Get page size for CB address arithmetic.
+  // Get page size and tensor stride from layout encoding.
   auto tensorTy = mlir::cast<RankedTensorType>(srcTensor.getType());
   auto layoutAttr =
       mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
@@ -737,6 +703,16 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
         op, "tensor must have TTNNLayoutAttr encoding");
   }
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
+
+  // Get tensor stride for computing tensor tile indices.
+  // For rank-4 tensors [grid_y, grid_x, shard_y, shard_x], the stride for
+  // row-major linearization is shard_x (number of tile columns in the shard).
+  auto tensorShape = tensorTy.getShape();
+  if (tensorShape.size() != 4) {
+    return rewriter.notifyMatchFailure(
+        op, "tensor must be rank-4 [grid_y, grid_x, shard_y, shard_x]");
+  }
+  int64_t tensorTilesX = tensorShape.back();
 
   auto indexTy = rewriter.getIndexType();
   auto cbWritePtrIdx =
@@ -820,11 +796,7 @@ static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
   int64_t cbRows = cbShape[0];
   int64_t cbCols = cbShape[1];
 
-  // Get tensor grid shape for computing tensor tile indices.
-  auto tensorTileGridShape = getTileGridShapeFromValue(dstTensor);
-  int64_t tensorTilesX = tensorTileGridShape.second;
-
-  // Get page size for CB address arithmetic.
+  // Get page size and tensor stride from layout encoding.
   auto tensorTy = mlir::cast<RankedTensorType>(dstTensor.getType());
   auto layoutAttr =
       mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
@@ -833,6 +805,16 @@ static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
         op, "tensor must have TTNNLayoutAttr encoding");
   }
   int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
+
+  // Get tensor stride for computing tensor tile indices.
+  // For rank-4 tensors [grid_y, grid_x, shard_y, shard_x], the stride for
+  // row-major linearization is shard_x (number of tile columns in the shard).
+  auto tensorShape = tensorTy.getShape();
+  if (tensorShape.size() != 4) {
+    return rewriter.notifyMatchFailure(
+        op, "tensor must be rank-4 [grid_y, grid_x, shard_y, shard_x]");
+  }
+  int64_t tensorTilesX = tensorShape.back();
 
   auto indexTy = rewriter.getIndexType();
   auto cbReadPtrIdx =
