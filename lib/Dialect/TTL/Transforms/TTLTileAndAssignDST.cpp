@@ -159,8 +159,12 @@ struct TTLTileAndAssignDSTPass
         return;
       }
 
-      // Check multi-tile capacity: peakUsage * numTiles must fit in DST.
-      // Compute numTiles from the output tensor shape.
+      // Check multi-tile capacity using optimized formula:
+      // totalDSTRequired = num_inputs + numTiles
+      //
+      // Since tile iterations have no loop-carried dependencies, we can reuse
+      // DST slots for inputs across all iterations and only allocate unique
+      // slots for outputs (one per tile).
       std::uint32_t numTiles = 1;
       if (!computeOp.getOutputs().empty()) {
         auto outputType =
@@ -172,37 +176,37 @@ struct TTLTileAndAssignDSTPass
         }
       }
 
-      std::uint32_t totalDSTRequired = peakUsage * numTiles;
+      std::uint32_t numInputs =
+          static_cast<std::uint32_t>(computeOp.getInputs().size());
+      std::uint32_t totalDSTRequired = numInputs + numTiles;
+
       if (totalDSTRequired > capacity) {
         // TODO: Handle multi-tile compute that exceeds DST capacity by
         // splitting into multiple compute regions with intermediate
         // commit/wait/pack sequences. For now, emit an error.
         computeOp.emitOpError()
             << "multi-tile compute requires " << totalDSTRequired
-            << " DST registers (" << peakUsage << " per tile * " << numTiles
+            << " DST registers (" << numInputs << " inputs + " << numTiles
             << " tiles) but capacity is only " << capacity
             << "\nnote: reduce tile grid size or split the operation";
         signalPassFailure();
         return;
       }
 
-      // Store peak DST usage as attribute for multi-tile DST offset
-      // computation. In multi-tile mode, each tile's DST indices are offset by:
-      //   tile_linear_index * peakDSTUsage
-      OpBuilder attrBuilder(computeOp.getContext());
-      computeOp->setAttr(kDstFootprintAttrName,
-                         attrBuilder.getI32IntegerAttr(peakUsage));
+      // Two-phase DST allocation:
+      // Phase 1: Allocate DST registers for inputs (block arguments)
+      // Phase 2: Allocate DST registers for outputs starting after inputs
+      //
+      // This ensures outputs get indices >= inputs_footprint, so they map to
+      // DST[inputs_footprint + tile_index] in multi-tile compute cases.
 
-      // Insert copy_tile immediately before the first use of each block
-      // argument. Track register usage for capacity validation. Bit set =
-      // register in use, bit clear = register free.
       llvm::SmallBitVector inUse(capacity);
       DenseMap<Value, std::uint32_t> dstIndexForValue;
+      std::uint32_t maxInputDstIndex = 0;
+      bool hasInputs = false;
 
+      // Phase 1: Allocate inputs only, with liveness-based reuse
       for (Operation &op : *body) {
-        // First pass: allocate registers for new block arguments used by this
-        // op. We replace all uses to ensure the copy happens only once at first
-        // use.
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {
@@ -221,24 +225,23 @@ struct TTLTileAndAssignDSTPass
           auto assignedDstIndex = static_cast<std::uint32_t>(freeReg);
           inUse.set(assignedDstIndex);
 
+          maxInputDstIndex = std::max(maxInputDstIndex, assignedDstIndex);
+          hasInputs = true;
+
           OpBuilder builder(&op);
           Location loc = op.getLoc();
 
           // Compute index_map for CB linearization from iteration dimensions.
-          // Find which input this block argument corresponds to.
           AffineMapAttr indexMapAttr;
           for (auto [idx, input] : llvm::enumerate(computeOp.getInputs())) {
             if (arg == body->getArgument(idx)) {
               auto tensorType = cast<RankedTensorType>(input.getType());
               int64_t rank = tensorType.getRank();
 
-              // Build row-major linearization affine expression.
-              // TODO: Support dynamic shapes using symbols and getMixedSizes().
               SmallVector<int64_t> staticShape(tensorType.getShape().begin(),
                                                tensorType.getShape().end());
               SmallVector<int64_t> strides = mlir::computeStrides(staticShape);
 
-              // Build linearization: sum of (dim_i * stride_i)
               AffineExpr linearExpr = builder.getAffineConstantExpr(0);
               for (int64_t i = 0; i < rank; ++i) {
                 linearExpr =
@@ -253,8 +256,6 @@ struct TTLTileAndAssignDSTPass
             }
           }
 
-          // Create linearized_index op (will be materialized during loop
-          // lowering)
           Value srcIndex = builder.create<LinearizedIndexOp>(loc, indexMapAttr);
           Value dstIndex =
               builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
@@ -269,60 +270,72 @@ struct TTLTileAndAssignDSTPass
           });
         }
 
-        // Combined pass: free operands at last use, then allocate results
-        // atomically. This prevents register conflicts within a single
-        // operation (e.g., freeing and reallocating the same register).
-        if (tt::ttl::isTileComputeOp(&op)) {
-          // First: free operands at their last use
-          for (Value operand : op.getOperands()) {
-            if (!isTileValue(operand)) {
-              continue;
-            }
-            if (isLastUse(op, operand)) {
-              auto it = dstIndexForValue.find(operand);
-              if (it != dstIndexForValue.end()) {
-                inUse.reset(it->second);
-              }
-            }
+        // Free input operands at last use (for intra-input liveness reuse)
+        for (Value operand : op.getOperands()) {
+          if (!isTileValue(operand)) {
+            continue;
           }
-
-          // Second: allocate registers for results (can now safely reuse
-          // freed regs)
-          for (Value res : op.getResults()) {
-            if (!isTileValue(res)) {
-              continue;
-            }
-            int freeReg = inUse.find_first_unset();
-            if (freeReg < 0) {
-              op.emitOpError("insufficient DST registers for results");
-              signalPassFailure();
-              return;
-            }
-            dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
-            inUse.set(freeReg);
-            // NOTE: Sets single dst_idx on the operation. All tile ops
-            // currently produce exactly one tile result, so this is safe. If
-            // multi-result tile ops are added, this will need per-result
-            // attributes.
-            OpBuilder attrBuilder(res.getContext());
-            op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
-                                            static_cast<int32_t>(freeReg)));
-          }
-        } else {
-          // For non-compute ops, still free operands at last use
-          for (Value operand : op.getOperands()) {
-            if (!isTileValue(operand)) {
-              continue;
-            }
-            if (isLastUse(op, operand)) {
-              auto it = dstIndexForValue.find(operand);
-              if (it != dstIndexForValue.end()) {
-                inUse.reset(it->second);
-              }
+          if (isLastUse(op, operand)) {
+            auto it = dstIndexForValue.find(operand);
+            if (it != dstIndexForValue.end()) {
+              inUse.reset(it->second);
             }
           }
         }
       }
+
+      // Compute footprint: outputs start at this index
+      std::uint32_t footprint = hasInputs ? (maxInputDstIndex + 1) : 0;
+
+      // Phase 2: Allocate outputs starting from footprint
+      // Reset inUse and mark [0, footprint) as reserved for inputs
+      inUse.reset();
+      for (std::uint32_t i = 0; i < footprint; ++i) {
+        inUse.set(i);
+      }
+
+      for (Operation &op : *body) {
+        if (!tt::ttl::isTileComputeOp(&op)) {
+          continue;
+        }
+
+        // Free operands at last use (allows output register reuse)
+        for (Value operand : op.getOperands()) {
+          if (!isTileValue(operand)) {
+            continue;
+          }
+          if (isLastUse(op, operand)) {
+            auto it = dstIndexForValue.find(operand);
+            if (it != dstIndexForValue.end() && it->second >= footprint) {
+              inUse.reset(it->second);
+            }
+          }
+        }
+
+        // Allocate registers for results (must be >= footprint)
+        for (Value res : op.getResults()) {
+          if (!isTileValue(res)) {
+            continue;
+          }
+          int freeReg = inUse.find_first_unset();
+          if (freeReg < 0) {
+            op.emitOpError("insufficient DST registers for results");
+            signalPassFailure();
+            return;
+          }
+          dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
+          inUse.set(freeReg);
+          OpBuilder attrBuilder(res.getContext());
+          op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
+                                          static_cast<int32_t>(freeReg)));
+        }
+      }
+
+      // Set footprint attribute for multi-tile DST index computation.
+      // Outputs will be placed at DST[footprint + tile_linear_index].
+      OpBuilder builder(computeOp.getContext());
+      computeOp->setAttr(kDstFootprintAttrName,
+                         builder.getI32IntegerAttr(footprint));
     });
   }
 };

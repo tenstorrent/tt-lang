@@ -202,15 +202,15 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
 }
 
 /// Compute dynamic DST index for multi-tile pack operations.
-/// Returns: baseDstIdx + (tileLinearIndex * dstFootprint)
-/// If dstFootprint attribute is not found or not in loops, returns the
-/// unmodified cbTileIndex.
+/// Returns: numInputs + cbTileIndex
+/// Pack operations pack output tiles from DST back to CB. With the optimized
+/// DST allocation, outputs are stored at DST[numInputs + tile_index].
 static Value computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
                                            Value cbTileIndex,
                                            int64_t baseDstIdx = 0) {
   Location loc = op->getLoc();
 
-  // Collect enclosing loops to find footprint attribute.
+  // Collect enclosing loops to find numInputs attribute.
   SmallVector<scf::ForOp> loops;
   for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(p)) {
@@ -222,19 +222,17 @@ static Value computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
     return cbTileIndex;
   }
 
-  // Find dst_footprint on outermost loop.
-  auto footprintAttr =
+  // Find dst_footprint attribute (stores numInputs) on outermost loop.
+  auto numInputsAttr =
       loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
-  if (!footprintAttr) {
+  if (!numInputsAttr) {
     return cbTileIndex;
   }
 
-  // Dynamic DST index: base + cbTileIndex * footprint
-  int64_t footprint = footprintAttr.getInt();
-  Value base = builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
-  Value footprintVal = builder.create<arith::ConstantIndexOp>(loc, footprint);
-  Value offset = builder.create<arith::MulIOp>(loc, cbTileIndex, footprintVal);
-  return builder.create<arith::AddIOp>(loc, base, offset);
+  // Dynamic DST index for outputs: numInputs + cbTileIndex
+  int64_t numInputs = numInputsAttr.getInt();
+  Value base = builder.create<arith::ConstantIndexOp>(loc, numInputs);
+  return builder.create<arith::AddIOp>(loc, base, cbTileIndex);
 }
 
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.

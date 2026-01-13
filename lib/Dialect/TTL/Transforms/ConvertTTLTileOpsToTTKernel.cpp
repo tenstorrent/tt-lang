@@ -192,25 +192,34 @@ static Value computeDynamicDstIndex(Operation *op, OpBuilder &builder,
     return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
   }
 
-  // Find dst_footprint attribute - check ComputeOp (pre-loop lowering)
-  // or outermost enclosing SCF loop (post-loop lowering).
-  IntegerAttr footprintAttr;
+  // Find dst_footprint attribute (stores numInputs) - check ComputeOp
+  // (pre-loop lowering) or outermost enclosing SCF loop (post-loop lowering).
+  IntegerAttr numInputsAttr;
   if (auto computeOp = op->getParentOfType<ComputeOp>()) {
-    footprintAttr =
+    numInputsAttr =
         computeOp->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
   } else if (!loops.empty()) {
     // Check outermost loop for attribute propagated during loop lowering.
-    footprintAttr =
+    numInputsAttr =
         loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
   }
 
-  if (!footprintAttr) {
+  if (!numInputsAttr) {
     return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
   }
 
-  // Build affine map: base + footprint * (iv0 * ub1 + iv1) for 2D case.
-  // General: base + footprint * linearize(ivs, ubs)
-  int64_t footprint = footprintAttr.getInt();
+  int64_t numInputs = numInputsAttr.getInt();
+
+  // Multi-tile DST optimization: inputs reuse the same DST slots across
+  // iterations, outputs get unique slots per tile.
+  // - If baseDstIdx < numInputs: this is an input, return constant (no offset)
+  // - If baseDstIdx >= numInputs: this is an output, add tile_linear_index
+  if (baseDstIdx < numInputs) {
+    // Input: constant DST index, no tile offset
+    return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
+  }
+
+  // Output: compute numInputs + tile_linear_index
   SmallVector<Value> ivs;
   SmallVector<int64_t> ubs;
   for (auto loop : llvm::reverse(loops)) {
@@ -219,13 +228,12 @@ static Value computeDynamicDstIndex(Operation *op, OpBuilder &builder,
     ubs.push_back(ub ? *ub : 1);
   }
 
-  // Compute strides and build linearization expression.
+  // Compute strides and build linearization: numInputs + linearize(ivs, ubs)
   SmallVector<int64_t> strides = mlir::computeStrides(ubs);
-  AffineExpr linearExpr = builder.getAffineConstantExpr(baseDstIdx);
+  AffineExpr linearExpr = builder.getAffineConstantExpr(numInputs);
   for (size_t i = 0; i < ivs.size(); ++i) {
-    linearExpr =
-        linearExpr + builder.getAffineDimExpr(i) *
-                         builder.getAffineConstantExpr(footprint * strides[i]);
+    linearExpr = linearExpr + builder.getAffineDimExpr(i) *
+                                  builder.getAffineConstantExpr(strides[i]);
   }
 
   AffineMap map = AffineMap::get(ivs.size(), 0, linearExpr);
