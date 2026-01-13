@@ -54,22 +54,22 @@ def add_with_kernel(a, b, c, y):
                 ):
                     tx_a = ttl.copy(
                         a[
-                            row * row_tiles : row * row_tiles + row_tiles,
-                            col * col_tiles : col * col_tiles + col_tiles,
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
                         ],
                         a_blk,
                     )
                     tx_b = ttl.copy(
                         b[
-                            row * row_tiles : row * row_tiles + row_tiles,
-                            col * col_tiles : col * col_tiles + col_tiles,
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
                         ],
                         b_blk,
                     )
                     tx_c = ttl.copy(
                         c[
-                            row * row_tiles : row * row_tiles + row_tiles,
-                            col * col_tiles : col * col_tiles + col_tiles,
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
                         ],
                         c_blk,
                     )
@@ -86,8 +86,8 @@ def add_with_kernel(a, b, c, y):
                     tx = ttl.copy(
                         y_blk,
                         y[
-                            row * row_tiles : row * row_tiles + row_tiles,
-                            col * col_tiles : col * col_tiles + col_tiles,
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
                         ],
                     )
                     tx.wait()
@@ -142,18 +142,7 @@ try:
     print(y)
     print(expected_y)
 
-    if not torch.allclose(y, expected_y, rtol=1e-2, atol=1e-2):
-        mismatch = ~torch.isclose(y, expected_y, rtol=1e-2, atol=1e-2)
-        mismatch_indices = torch.nonzero(mismatch)
-        print(f"\nMismatches found: {mismatch_indices.shape[0]}")
-        for idx in mismatch_indices[:20]:  # Print first 20 mismatches
-            i, j = idx[0].item(), idx[1].item()
-            print(
-                f"  [{i}, {j}]: got {y[i, j].item()}, expected {expected_y[i, j].item()}"
-            )
-        if mismatch_indices.shape[0] > 20:
-            print(f"  ... and {mismatch_indices.shape[0] - 20} more")
-        assert False, "Tensors do not match"
+    assert torch.allclose(y, expected_y, rtol=1e-2, atol=1e-2), "Tensors do not match"
 
 finally:
     ttnn.close_device(device)
