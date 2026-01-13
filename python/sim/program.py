@@ -23,6 +23,28 @@ from .ttnnsim import Tensor
 from .xformyield import transform_wait_reserve_to_yield_ast
 
 
+# TODO: Pretty printing should be moved to utils maybe?
+# Import at runtime to avoid circular dependency
+def _get_ttlang_compile_error():
+    """Lazy import of TTLangCompileError to avoid circular dependency."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    # Direct import of diagnostics module without going through ttlang package
+    # This avoids importing the full compiler infrastructure
+    diagnostics_path = Path(__file__).parent.parent / "ttlang" / "diagnostics.py"
+    spec = importlib.util.spec_from_file_location(
+        "ttlang.diagnostics", diagnostics_path
+    )
+    if spec and spec.loader:
+        diagnostics = importlib.util.module_from_spec(spec)
+        sys.modules["ttlang.diagnostics"] = diagnostics
+        spec.loader.exec_module(diagnostics)
+        return diagnostics.TTLangCompileError
+    raise ImportError("Could not load ttlang.diagnostics")
+
+
 # Protocol for templates that have a bind method
 class BindableTemplate(Protocol):
     """Protocol for templates that can be bound to a specific execution context."""
@@ -308,14 +330,11 @@ def Program(*funcs: BindableTemplate) -> Any:
                         )
                 except Exception as e:
                     # Generator raised an error - add source context
-                    tb_str = traceback.format_exc()
-                    error_msg = f"{name}: {type(e).__name__}: {e}"
-
                     # Add original source location if available
                     if name in orig_source_map:
                         orig_file, func_def_line = orig_source_map[name]
 
-                        # Extract line number from traceback
+                        # Extract line number and column from traceback
                         # Since we preserve original line numbers in AST, the traceback line
                         # is relative to the function definition
                         tb = traceback.extract_tb(e.__traceback__)
@@ -327,30 +346,41 @@ def Program(*funcs: BindableTemplate) -> Any:
                                 # Adjust to absolute line in file: (func_def_line - 1) + frame.lineno
                                 if frame.lineno is not None:
                                     actual_line = func_def_line - 1 + frame.lineno
-                                    error_msg += f"\n  At: {orig_file}:{actual_line}"
+                                    actual_col = getattr(frame, "colno", None) or 1
 
-                                    # Read the actual source line from the file
-                                    try:
-                                        with open(orig_file, "r") as f:
-                                            lines = f.readlines()
-                                            if 0 <= actual_line - 1 < len(lines):
-                                                source_line = lines[
-                                                    actual_line - 1
-                                                ].rstrip()
-                                                error_msg += f"\n    {source_line}"
-                                    except (OSError, IndexError):
-                                        pass  # If we can't read the file, just skip showing the line
+                                    # Use TTLangCompileError for pretty formatting
+                                    TTLangCompileError = _get_ttlang_compile_error()
+                                    compile_error = TTLangCompileError(
+                                        f"{type(e).__name__}: {e}",
+                                        source_file=orig_file,
+                                        line=actual_line,
+                                        col=actual_col,
+                                    )
+                                    print(f"\n❌ Error in {name}:")
+                                    print(compile_error.format())
+                                    print("-" * 50)
+                                    raise RuntimeError(str(compile_error))
 
                                 break
                         else:
                             # Fallback if we can't find the transformed frame
+                            error_msg = f"{name}: {type(e).__name__}: {e}"
                             error_msg += f"\n  In function defined at: {orig_file}:{func_def_line}"
-
-                    print(f"\n❌ {error_msg}")
-                    print("   traceback:")
-                    print(tb_str)
-                    print("-" * 50)
-                    raise RuntimeError(error_msg)
+                            print(f"\n❌ {error_msg}")
+                            tb_str = traceback.format_exc()
+                            print("   traceback:")
+                            print(tb_str)
+                            print("-" * 50)
+                            raise RuntimeError(error_msg)
+                    else:
+                        # No source mapping - print full traceback
+                        error_msg = f"{name}: {type(e).__name__}: {e}"
+                        print(f"\n❌ {error_msg}")
+                        tb_str = traceback.format_exc()
+                        print("   traceback:")
+                        print(tb_str)
+                        print("-" * 50)
+                        raise RuntimeError(error_msg)
 
             # First, compile and execute all sources to create generators
             # active[name] = (generator, blocking_object, operation)
