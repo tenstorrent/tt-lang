@@ -164,5 +164,6 @@ except ImportError:
 
 # Add tt-device feature if hardware is available (detected by CMake at configure time)
 # Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)
-if getattr(config, "ttlang_has_device", False) or os.environ.get("TT_METAL_SIMULATOR"):
+_has_device = getattr(config, "ttlang_has_device", False)
+if _has_device or os.environ.get("TT_METAL_SIMULATOR"):
     config.available_features.add("tt-device")

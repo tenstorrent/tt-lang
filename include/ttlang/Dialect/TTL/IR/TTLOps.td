@@ -358,8 +358,10 @@ def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
 //===----------------------------------------------------------------------===//
 
 // Base class for tile operations
+// Note: These ops are NOT Pure because they write to DST registers.
+// DCE would incorrectly eliminate them if they were marked Pure.
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [Pure, TTL_TileComputeOpTrait])>;
+    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait])>;
 
 def TTL_TileType : TypeConstraint<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
@@ -412,7 +414,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
 }
 
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType,
+                                                TTL_TileBinaryOpTrait])> {
   let summary = "Binary tile operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs AnyType:$result);
@@ -420,7 +423,8 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
 }
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType,
+                                                TTL_TileUnaryOpTrait])> {
   let summary = "Unary tile operation";
   let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);

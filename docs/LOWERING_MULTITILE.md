@@ -85,10 +85,11 @@ Replaces tensor-level `ttl.add` with `ttl.compute` region containing element-wis
 
 Pass: [lib/Dialect/TTL/Transforms/TTLTileAndAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLTileAndAssignDST.cpp)
 
-Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. The `ttl.linearized_index` computes tile position: for 2x2, maps (0,0)->0, (0,1)->1, (1,0)->2, (1,1)->3.
+Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. The `ttl.linearized_index` computes tile position: for 2x2, maps (0,0)->0, (0,1)->1, (1,0)->2, (1,1)->3. DST allocation uses a two-phase strategy: inputs get constant DST indices (0, 1, ...) based on liveness, outputs get `footprint + tile_linear_idx` where footprint is the number of DST registers needed for inputs. Unary ops are in-place (read and write the same DST register), so their output reuses the input's DST index. The `ttl.dst_footprint` attribute on the compute op stores the input footprint for use during lowering.
 
 ```mlir
-%11 = ttl.compute ins(%4, %6 : ...) outs(%10 : ...) {...} {
+%11 = ttl.compute ins(%4, %6 : ...) outs(%10 : ...) {...}
+      {"ttl.dst_footprint" = 2 : i32} {
 ^bb0(%arg0: !ttcore.tile<32x32, bf16>, %arg1: !ttcore.tile<32x32, bf16>, %arg2: !ttcore.tile<32x32, bf16>):
   %13 = ttl.linearized_index affine_map<(d0, d1) -> (d0 * 2 + d1)> : index
   %c0 = arith.constant 0 : index
@@ -100,7 +101,7 @@ Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attr
   %dst_token_0, %dst_tile_1 = ttl.copy_tile %arg1, %14, %c1 : !ttcore.tile<32x32, bf16>, index, index
                                                             -> !ttl.dst, !ttcore.tile<32x32, bf16>
 
-  %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 2 : i32} : !ttcore.tile<32x32, bf16>
   ttl.yield %15 : !ttcore.tile<32x32, bf16>
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 ```
@@ -109,7 +110,7 @@ Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attr
 
 Pass: [lib/Dialect/TTL/Transforms/TTLInsertTileRegsSync.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLInsertTileRegsSync.cpp)
 
-Inserts DST register lifecycle operations. `init_sfpu` initializes SFPU hardware. `tile_regs_acquire/release` bracket compute. `tile_regs_commit/wait` synchronize the register pipeline inside the loop body. `ttl.store` writes result tiles to output buffer.
+Inserts DST register lifecycle operations. `init_sfpu` initializes SFPU hardware. `tile_regs_acquire/release` bracket the entire compute+pack sequence. For multi-tile, `tile_regs_commit/wait` are placed outside the compute loop body to synchronize after all tiles are computed but before packing begins. `ttl.store` writes result tiles to output buffer.
 
 ```mlir
 ttl.init_sfpu(%0, %2) : <[2, 2], !ttcore.tile<32x32, bf16>, 2>, <[2, 2], !ttcore.tile<32x32, bf16>, 2>
@@ -119,13 +120,15 @@ ttl.tile_regs_acquire
 ^bb0(...):
   // ... copy_tile operations ...
   %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
-
-  ttl.tile_regs_commit
-  ttl.tile_regs_wait
-  ttl.store %15, %7 : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
-
   ttl.yield %15 : !ttcore.tile<32x32, bf16>
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+
+// Sync placed outside compute loop for multi-tile
+ttl.tile_regs_commit
+ttl.tile_regs_wait
+
+// Pack loop (separate from compute)
+ttl.store %result, %output_cb : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
 
 ttl.tile_regs_release
 ```
@@ -134,7 +137,7 @@ ttl.tile_regs_release
 
 Pass: [lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp)
 
-Materializes `ttl.compute` into explicit nested `scf.for` loops. Loop bounds come from tensor shape (2x2). `tensor.extract/insert` access individual tiles. `iter_args` carry output tensor between iterations (functional style). `affine.apply` evaluates the linearized index using loop induction variables.
+Materializes `ttl.compute` into two separate nested `scf.for` loop nests: one for compute operations and one for pack operations. Loop bounds come from tensor shape (2x2). `tensor.extract/insert` access individual tiles. `iter_args` carry output tensor between iterations (functional style). `affine.apply` evaluates the linearized index using loop induction variables. The `ttl.dst_footprint` attribute is propagated to the outermost loop of each nest for use in dynamic DST index computation.
 
 ```mlir
 %c2 = arith.constant 2 : index
@@ -144,25 +147,32 @@ Materializes `ttl.compute` into explicit nested `scf.for` loops. Loop bounds com
 ttl.init_sfpu(%0, %2) : ...
 ttl.tile_regs_acquire
 
-%11 = scf.for %arg0 = %c0 to %c2 step %c1 iter_args(%arg1 = %10) -> (tensor<2x2x!ttcore.tile<32x32, bf16>>) {
-  %13 = scf.for %arg2 = %c0 to %c2 step %c1 iter_args(%arg3 = %arg1) -> (tensor<2x2x!ttcore.tile<32x32, bf16>>) {
-
+// Compute loop - math operations only, no pack
+scf.for %arg0 = %c0 to %c2 step %c1 {"ttl.dst_footprint" = 2 : i32} {
+  scf.for %arg2 = %c0 to %c2 step %c1 {
     %extracted = tensor.extract %4[%arg0, %arg2] : tensor<2x2x!ttcore.tile<32x32, bf16>>
     %extracted_0 = tensor.extract %6[%arg0, %arg2] : tensor<2x2x!ttcore.tile<32x32, bf16>>
 
     %14 = affine.apply affine_map<(d0, d1) -> (d0 * 2 + d1)>(%arg0, %arg2)
-    %15 = affine.apply affine_map<(d0, d1) -> (d0 * 2 + d1)>(%arg0, %arg2)
 
     %dst_token, %dst_tile = ttl.copy_tile %extracted, %14, %c0 : ...
-    %dst_token_1, %dst_tile_2 = ttl.copy_tile %extracted_0, %15, %c1 : ...
+    %dst_token_1, %dst_tile_2 = ttl.copy_tile %extracted_0, %14, %c1 : ...
 
     %16 = ttl.tile_add %dst_tile, %dst_tile_2 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  }
+}
 
-    ttl.tile_regs_commit
-    ttl.tile_regs_wait
-    ttl.store %16, %7 : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+// Sync between compute and pack loops
+ttl.tile_regs_commit
+ttl.tile_regs_wait
 
-    %inserted = tensor.insert %16 into %arg3[%arg0, %arg2] : tensor<2x2x!ttcore.tile<32x32, bf16>>
+// Pack loop - separate from compute
+%11 = scf.for %arg0 = %c0 to %c2 step %c1 iter_args(%arg1 = %10) {"ttl.dst_footprint" = 2 : i32}
+    -> (tensor<2x2x!ttcore.tile<32x32, bf16>>) {
+  %13 = scf.for %arg2 = %c0 to %c2 step %c1 iter_args(%arg3 = %arg1)
+      -> (tensor<2x2x!ttcore.tile<32x32, bf16>>) {
+    ttl.store %result, %output_cb : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+    %inserted = tensor.insert %result into %arg3[%arg0, %arg2] : tensor<2x2x!ttcore.tile<32x32, bf16>>
     scf.yield %inserted : tensor<2x2x!ttcore.tile<32x32, bf16>>
   }
   scf.yield %13 : tensor<2x2x!ttcore.tile<32x32, bf16>>
@@ -175,25 +185,40 @@ ttl.tile_regs_release
 
 Pass: [lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp)
 
-Converts TTL operations to hardware-specific `ttkernel.*` operations. CB handles become typed `!ttkernel.cb`. Tile operations map to hardware intrinsics: `copy_tile_init/copy_tile`, `add_binary_tile_init/add_binary_tile`, `pack_tile`.
+Converts TTL operations to hardware-specific `ttkernel.*` operations. CB handles become typed `!ttkernel.cb`. Tile operations map to hardware intrinsics: `copy_tile_init/copy_tile`, `add_binary_tile_init/add_binary_tile`, `pack_tile`. DST indices for `copy_tile` use constant values (0, 1, ...) from the `dst_idx` attribute. Output operations use `footprint + linearized_tile_index` where footprint comes from `ttl.dst_footprint`. Pack operations use `footprint + cb_tile_index` to read the correct DST register for each tile.
 
 ```mlir
-scf.for %arg0 = %c0 to %c2 step %c1 {
+// Compute loop
+scf.for %arg0 = %c0 to %c2 step %c1 {"ttl.dst_footprint" = 2 : i32} {
   scf.for %arg1 = %c0 to %c2 step %c1 {
+    // Linearized tile index: i * 2 + j
+    %lin_idx = affine.apply affine_map<(d0, d1) -> (d0 * 2 + d1)>(%arg0, %arg1)
 
-    %14 = affine.apply affine_map<(d0, d1) -> (d0 * 2 + d1)>(%arg0, %arg1)
+    ttkernel.copy_tile_init(%0) : ...
+    ttkernel.copy_tile(%0, %lin_idx, %c0) : ...  // DST index = 0 (constant)
 
-    ttkernel.copy_tile_init(%0) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>) -> ()
-    ttkernel.copy_tile(%0, %14, %c0) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index, index) -> ()
-    ttkernel.copy_tile_init(%1) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>) -> ()
-    ttkernel.copy_tile(%1, %14, %c1) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.copy_tile_init(%1) : ...
+    ttkernel.copy_tile(%1, %lin_idx, %c1) : ...  // DST index = 1 (constant)
 
-    ttkernel.add_binary_tile_init() : () -> ()
-    ttkernel.add_binary_tile(%c0, %c1, %c0) : (index, index, index) -> ()
+    // Output DST index: footprint(2) + linearized_index
+    %dst_out = arith.addi %lin_idx, %c2 : index
 
-    ttkernel.tile_regs_commit() : () -> ()
-    ttkernel.tile_regs_wait() : () -> ()
-    ttkernel.pack_tile(%c0, %2, %c0, false) : (index, !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.add_binary_tile_init() : ...
+    ttkernel.add_binary_tile(%c0, %c1, %dst_out) : ...  // inputs at 0,1; output at 2+lin_idx
+  }
+}
+
+ttkernel.tile_regs_commit() : ...
+ttkernel.tile_regs_wait() : ...
+
+// Pack loop
+scf.for %arg0 = %c0 to %c2 step %c1 {"ttl.dst_footprint" = 2 : i32} {
+  scf.for %arg1 = %c0 to %c2 step %c1 {
+    %cb_idx = arith.muli %arg0, %c2 : index
+    %cb_idx_1 = arith.addi %cb_idx, %arg1 : index
+    // DST index for pack: footprint + cb_tile_index
+    %pack_dst = arith.addi %cb_idx_1, %c2 : index
+    ttkernel.pack_tile(%pack_dst, %2, %cb_idx_1, false) : ...
   }
 }
 ```
@@ -205,24 +230,43 @@ Pass: MLIR standard pass (`mlir/Conversion/AffineToStandard`)
 Lowers `affine.apply` to explicit arithmetic. The linearized index `affine_map<(d0, d1) -> (d0 * 2 + d1)>` becomes `arith.muli` and `arith.addi`.
 
 ```mlir
+// Compute loop
 scf.for %arg0 = %c0 to %c2 step %c1 {
   scf.for %arg1 = %c0 to %c2 step %c1 {
-
+    // Linearized tile index: i * 2 + j
     %c2_0 = arith.constant 2 : index
-    %3 = arith.muli %arg0, %c2_0 overflow<nsw> : index   // row * 2
-    %4 = arith.addi %3, %arg1 : index                    // + col
+    %lin_off = arith.muli %arg0, %c2_0 : index
+    %lin_idx = arith.addi %lin_off, %arg1 : index
 
-    ttkernel.copy_tile_init(%0) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>) -> ()
-    ttkernel.copy_tile(%0, %4, %c0) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index, index) -> ()
-    ttkernel.copy_tile_init(%1) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>) -> ()
-    ttkernel.copy_tile(%1, %4, %c1) : (!ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.copy_tile_init(%0) : ...
+    ttkernel.copy_tile(%0, %lin_idx, %c0) : ...  // DST index = 0
 
-    ttkernel.add_binary_tile_init() : () -> ()
-    ttkernel.add_binary_tile(%c0, %c1, %c0) : (index, index, index) -> ()
+    ttkernel.copy_tile_init(%1) : ...
+    ttkernel.copy_tile(%1, %lin_idx, %c1) : ...  // DST index = 1
 
-    ttkernel.tile_regs_commit() : () -> ()
-    ttkernel.tile_regs_wait() : () -> ()
-    ttkernel.pack_tile(%c0, %2, %c0, false) : (index, !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index) -> ()
+    // Output DST index: footprint + linearized_index
+    %c2_1 = arith.constant 2 : index
+    %dst_off = arith.muli %arg0, %c2_1 : index
+    %dst_lin = arith.addi %dst_off, %arg1 : index
+    %c2_2 = arith.constant 2 : index
+    %dst_out = arith.addi %dst_lin, %c2_2 : index
+
+    ttkernel.add_binary_tile_init() : ...
+    ttkernel.add_binary_tile(%c0, %c1, %dst_out) : ...
+  }
+}
+
+ttkernel.tile_regs_commit() : ...
+ttkernel.tile_regs_wait() : ...
+
+// Pack loop
+scf.for %arg0 = %c0 to %c2 step %c1 {
+  scf.for %arg1 = %c0 to %c2 step %c1 {
+    %cb_off = arith.muli %arg0, %c2 : index
+    %cb_idx = arith.addi %cb_off, %arg1 : index
+    // DST index for pack: footprint + cb_tile_index
+    %pack_dst = arith.addi %cb_idx, %c2 : index
+    ttkernel.pack_tile(%pack_dst, %2, %cb_idx, false) : ...
   }
 }
 ```
@@ -234,40 +278,65 @@ Three separate kernel files are generated: compute, data movement read, and data
 ### Compute Kernel
 
 ```cpp
+namespace NAMESPACE {
 void kernel_main() {
-  constexpr int32_t num_tiles = 4;
-  constexpr size_t tile_rows = 2;
-  constexpr size_t tile_cols = 2;
-
-  cb_wait_front(get_compile_time_arg_val(0), num_tiles);
-  cb_wait_front(get_compile_time_arg_val(1), num_tiles);
-  cb_reserve_back(get_compile_time_arg_val(2), num_tiles);
-
+  int32_t v1 = 4;
+  size_t v2 = 2;
+  size_t v3 = 1;
+  size_t v4 = 0;
+  cb_wait_front(get_compile_time_arg_val(0), v1);
+  cb_wait_front(get_compile_time_arg_val(1), v1);
   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
   tile_regs_acquire();
 
-  for (size_t row = 0; row < tile_rows; row++) {
-    for (size_t col = 0; col < tile_cols; col++) {
-      size_t linear_idx = row * tile_cols + col;
+  // Compute loop
+  for (size_t i5 = v4; i5 < v2; i5 += v3) {
+    for (size_t j6 = v4; j6 < v2; j6 += v3) {
+      // Linearized tile index: i * 2 + j
+      size_t v7 = 2;
+      size_t v8 = i5 * v7;
+      size_t v9 = v8 + j6;
 
       copy_tile_init(get_compile_time_arg_val(0));
-      copy_tile(get_compile_time_arg_val(0), linear_idx, 0);
+      copy_tile(get_compile_time_arg_val(0), v9, v4);  // DST index = 0
+
       copy_tile_init(get_compile_time_arg_val(1));
-      copy_tile(get_compile_time_arg_val(1), linear_idx, 1);
+      copy_tile(get_compile_time_arg_val(1), v9, v3);  // DST index = 1
+
+      // Output DST index: footprint + linearized_index
+      size_t v10 = 2;
+      size_t v11 = i5 * v10;
+      size_t v12 = v11 + j6;
+      size_t v13 = 2;
+      size_t v14 = v12 + v13;
 
       add_binary_tile_init();
-      add_binary_tile(0, 1, 0);
+      add_binary_tile(v4, v3, v14);  // inputs at DST[0], DST[1]; output at DST[2+lin_idx]
+    }
+  }
 
-      tile_regs_commit();
-      tile_regs_wait();
-      pack_tile<false>(0, get_compile_time_arg_val(2), 0);
+  // Sync between compute and pack loops
+  tile_regs_commit();
+  tile_regs_wait();
+
+  // Pack loop - separate from compute
+  for (size_t i15 = v4; i15 < v2; i15 += v3) {
+    for (size_t j16 = v4; j16 < v2; j16 += v3) {
+      cb_reserve_back(get_compile_time_arg_val(2), v1);
+      // CB tile index: i * 2 + j
+      size_t v17 = i15 * v2;
+      size_t v18 = v17 + j16;
+      // DST index for pack: footprint + cb_tile_index
+      size_t v19 = v18 + v2;
+      pack_tile<false>(v19, get_compile_time_arg_val(2), v18);
+      cb_push_back(get_compile_time_arg_val(2), v1);
     }
   }
 
   tile_regs_release();
-  cb_pop_front(get_compile_time_arg_val(0), num_tiles);
-  cb_pop_front(get_compile_time_arg_val(1), num_tiles);
-  cb_push_back(get_compile_time_arg_val(2), num_tiles);
+  return;
+}
+void MAIN { kernel_main(); }
 }
 ```
 

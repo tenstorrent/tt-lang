@@ -120,40 +120,59 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK-NEXT:       size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
 // CHECK-NEXT:       size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
 
-// Load tile from CB0 into DST[0]
+// Load tile from CB0 into DST[0] (constant - inputs reuse DST slots)
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
 // CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
 
-// Load tile from CB1 into DST[1]
+// Load tile from CB1 into DST[1] (constant - inputs reuse DST slots)
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
 // CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
 
-// Compute: A + B
+// Compute dynamic DST index for outputs: footprint + tile_linear_idx
+// The linear index may be recomputed (not CSE'd with CB linear index above)
+// CHECK:            size_t [[DST_OFF_I:.*]] = [[I]] * {{.*}};
+// CHECK-NEXT:       size_t [[DST_LIN:.*]] = [[DST_OFF_I]] + [[J]];
+// CHECK-NEXT:       size_t [[DST_FOOTPRINT:.*]] = 2;
+// CHECK-NEXT:       size_t [[DST_OUT:.*]] = [[DST_LIN]] + [[DST_FOOTPRINT]];
+
+// Compute: A + B (uses DST[0] and DST[1] as inputs, writes to DST[output])
 // CHECK-NEXT:       add_binary_tile_init();
-// CHECK-NEXT:       add_binary_tile([[ZERO]], [[ONE]], [[ZERO]]);
+// CHECK-NEXT:       add_binary_tile([[ZERO]], [[ONE]], [[DST_OUT]]);
 
-// Compute: exp(A + B)
+// Compute: exp(A + B) (operates on DST[output])
 // CHECK-NEXT:       exp_tile_init();
-// CHECK-NEXT:       exp_tile([[ZERO]]);
+// CHECK-NEXT:       exp_tile([[DST_OUT]]);
 
-// Synchronize DST registers before pack
-// CHECK-NEXT:       tile_regs_commit();
-// CHECK-NEXT:       tile_regs_wait();
+// End compute loops
+// CHECK-NEXT:     }
+// CHECK-NEXT:   }
+
+// Synchronize DST registers before pack (OUTSIDE compute loops)
+// CHECK-NEXT:   tile_regs_commit();
+// CHECK-NEXT:   tile_regs_wait();
+
+// Pack loop - separate from compute loop (multitile fix)
+// CHECK-NEXT:   for (size_t [[PACK_I:i[0-9]+]] = [[ZERO]]; [[PACK_I]] < {{.*}}; [[PACK_I]] += [[ONE]]) {
+// CHECK-NEXT:   for (size_t [[PACK_J:j[0-9]+]] = [[ZERO]]; [[PACK_J]] < {{.*}}; [[PACK_J]] += [[ONE]]) {
 
 // Reserve output CB2
 // CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // Compute CB tile index: i * 2 + j (linearized row-major index)
-// CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+// CHECK:            size_t [[CB_OFF_I:v[0-9]+]] = [[PACK_I]] * {{.*}};
+// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[PACK_J]];
 
-// Pack result to output CB2
-// CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// Pack DST index: footprint + [[CB_IDX]]
+// Outputs are stored at DST[footprint + linear_tile_index]
+// CHECK-NEXT:       size_t [[PACK_DST:v[0-9]+]] = [[CB_IDX]] + {{.*}};
+
+// Pack result from DST to output CB2
+// CHECK-NEXT:       pack_tile{{.*}}([[PACK_DST]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // Push to signal data ready
 // CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
-// End loops
+// End pack loops
 // CHECK-NEXT:     }
 // CHECK-NEXT:   }
 
@@ -183,7 +202,8 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%output_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map, #map],
-       iterator_types = ["parallel", "parallel"]} {
+       iterator_types = ["parallel", "parallel"],
+       "ttl.dst_footprint" = 2 : i32} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):

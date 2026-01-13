@@ -20,9 +20,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -169,6 +172,96 @@ struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
 // Helpers
 //===----------------------------------------------------------------------===//
 
+/// Compute dynamic DST index for multi-tile operations.
+/// Returns: numInputs + tile_linear_index for output tiles.
+/// If dst_footprint attribute is not found or not in loops, returns static
+/// baseDstIdx.
+///
+/// The dst_footprint attribute marks the outermost tile loop. Only loops at or
+/// below this level contribute to the tile linear index. Outer block loops
+/// (above the tile loops) are excluded from linearization.
+static Value computeDynamicDstIndex(Operation *op, OpBuilder &builder,
+                                    int64_t baseDstIdx) {
+  Location loc = op->getLoc();
+
+  // Collect enclosing loops (innermost first) and find the tile loop boundary.
+  SmallVector<scf::ForOp> allLoops;
+  for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(p)) {
+      allLoops.push_back(forOp);
+    }
+  }
+
+  if (allLoops.empty()) {
+    return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
+  }
+
+  // Find dst_footprint attribute (stores numInputs) - check ComputeOp
+  // (pre-loop lowering) or any enclosing SCF loop (post-loop lowering).
+  // The attribute is placed on the outermost tile loop.
+  IntegerAttr numInputsAttr;
+  size_t tileLoopBoundary = allLoops.size(); // Index of outermost tile loop
+
+  if (auto computeOp = op->getParentOfType<ComputeOp>()) {
+    numInputsAttr =
+        computeOp->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
+    // In pre-loop lowering, all loops are tile loops.
+    tileLoopBoundary = allLoops.size();
+  } else {
+    // Search enclosing loops for the attribute (innermost first).
+    // The loop with dst_footprint is the outermost tile loop.
+    for (size_t i = 0; i < allLoops.size(); ++i) {
+      numInputsAttr =
+          allLoops[i]->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
+      if (numInputsAttr) {
+        // Found: loops[0..i] are tile loops, loops[i+1..] are block loops.
+        tileLoopBoundary = i + 1;
+        break;
+      }
+    }
+  }
+
+  if (!numInputsAttr) {
+    return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
+  }
+
+  int64_t numInputs = numInputsAttr.getInt();
+
+  // Multi-tile DST optimization: inputs reuse the same DST slots across
+  // iterations, outputs get unique slots per tile.
+  // - If baseDstIdx < numInputs: this is an input, return constant (no offset)
+  // - If baseDstIdx >= numInputs: this is an output, add tile_linear_index
+  if (baseDstIdx < numInputs) {
+    // Input: constant DST index, no tile offset
+    return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
+  }
+
+  // Extract only tile loops (up to and including the loop with dst_footprint).
+  SmallVector<scf::ForOp> tileLoops(allLoops.begin(),
+                                    allLoops.begin() + tileLoopBoundary);
+
+  // Output: compute numInputs + tile_linear_index
+  // Collect IVs and bounds from tile loops only (outermost first for strides).
+  SmallVector<Value> ivs;
+  SmallVector<int64_t> ubs;
+  for (auto loop : llvm::reverse(tileLoops)) {
+    ivs.push_back(loop.getInductionVar());
+    auto ub = getConstantIntValue(loop.getUpperBound());
+    ubs.push_back(ub ? *ub : 1);
+  }
+
+  // Compute strides and build linearization: numInputs + linearize(ivs, ubs)
+  SmallVector<int64_t> strides = mlir::computeStrides(ubs);
+  AffineExpr linearExpr = builder.getAffineConstantExpr(numInputs);
+  for (size_t i = 0; i < ivs.size(); ++i) {
+    linearExpr = linearExpr + builder.getAffineDimExpr(i) *
+                                  builder.getAffineConstantExpr(strides[i]);
+  }
+
+  AffineMap map = AffineMap::get(ivs.size(), 0, linearExpr);
+  return builder.create<affine::AffineApplyOp>(loc, map, ivs);
+}
+
 /// Extract the DST register index from a tile value. The index is obtained
 /// from either the copy_tile op that placed the tile in DST, or from the
 /// dst_idx attribute on the producing tile operation.
@@ -209,8 +302,8 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
     if (!dstIdxAttr) {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
-    int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+    int64_t baseDstIdx = dstIdxAttr.getInt();
+    Value dstIdxVal = computeDynamicDstIndex(op, rewriter, baseDstIdx);
 
     // Emit init + compute ops
     rewriter.create<InitOp>(loc);
@@ -241,44 +334,21 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     if (!dstIdxAttr) {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
-    int64_t odstIdx = dstIdxAttr.getInt();
+    int64_t baseOdstIdx = dstIdxAttr.getInt();
 
-    int64_t src0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
-    int64_t src1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
+    // Use original operands (not adapted) to get DST indices, since the adapted
+    // operands may have lost their dst_idx attributes after prior lowerings
+    // (binary ops replace themselves with adaptor.getLhs(), losing the
+    // intermediate dst_idx tracking).
+    int64_t src0Idx = getDstIndexFromValue(op.getLhs()).value_or(0);
+    int64_t src1Idx = getDstIndexFromValue(op.getRhs()).value_or(1);
 
-    Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
-    Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
-    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
+    Value src0 = computeDynamicDstIndex(op, rewriter, src0Idx);
+    Value src1 = computeDynamicDstIndex(op, rewriter, src1Idx);
+    Value odst = computeDynamicDstIndex(op, rewriter, baseOdstIdx);
 
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
-
-    rewriter.replaceOp(op, adaptor.getLhs());
-    return success();
-  }
-};
-
-/// Special pattern for MaxTileOp which uses 2-arg in-place form:
-/// DST[dst0] = max(DST[dst0], DST[dst1])
-/// TODO: Remove this special pattern once TTKernel adds a 3-arg max_binary_tile
-/// op that matches the add/sub/mul signature: max(src0, src1, odst).
-template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
-struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
-  using OpConversionPattern<SourceOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    int64_t dst0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
-    int64_t dst1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
-
-    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
-    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
-
-    rewriter.create<InitOp>(loc);
-    rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -330,17 +400,28 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
 
     // Initialize the copy for the given CB (matches TTKernel contract).
     rewriter.create<ttk::CopyTileInitOp>(loc, cb);
-    // Emit the copy from CB[src_index] to DST[dst_index].
-    rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
-                                     adaptor.getDstIndex());
 
-    // Materialize results: dst token from dst_index, and a tile value
+    // Compute dynamic DST index: base + (tileIndex * footprint).
+    // The base index comes from the static dstIndex operand.
+    Value baseDstIdx = adaptor.getDstIndex();
+    int64_t baseDstIdxVal = 0;
+    if (auto constOp = dyn_cast_or_null<arith::ConstantIndexOp>(
+            baseDstIdx.getDefiningOp())) {
+      baseDstIdxVal = constOp.value();
+    }
+    Value dynamicDstIdx = computeDynamicDstIndex(op, rewriter, baseDstIdxVal);
+
+    // Emit the copy from CB[src_index] to DST[dynamic_dst_index].
+    rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
+                                     dynamicDstIdx);
+
+    // Materialize results: dst token from dynamic dst_index, and a tile value
     // passthrough (the tile remains the same logical value for downstream tile
     // ops).
     auto token = rewriter
                      .create<mlir::UnrealizedConversionCastOp>(
                          loc, TypeRange{op.getResult(0).getType()},
-                         ValueRange{adaptor.getDstIndex()})
+                         ValueRange{dynamicDstIdx})
                      .getResult(0);
     auto tile = rewriter
                     .create<mlir::UnrealizedConversionCastOp>(
@@ -368,12 +449,6 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
       TTLTileBinaryToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-// Generate type aliases for special binary tile op lowerings (2-arg in-place)
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
-  using TTL_OP##TileLowering =                                                 \
-      TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -397,11 +472,6 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Binary ops (ttl.tile_* → ttkernel.*_tiles)
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  patterns.add<TTL_OP##TileLowering>(ctx);
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
-  // Special binary ops (non-standard lowering template)
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 

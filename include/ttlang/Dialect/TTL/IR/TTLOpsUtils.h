@@ -62,6 +62,18 @@ inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }
 
+/// Check if an operation is a unary tile compute operation.
+/// Unary SFPU ops (exp, sqrt, etc.) operate in-place: DST[idx] = op(DST[idx]).
+inline bool isTileUnaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileUnaryOpTrait>();
+}
+
+/// Check if an operation is a binary tile compute operation.
+/// Binary ops: DST[odst] = DST[src0] op DST[src1].
+inline bool isTileBinaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileBinaryOpTrait>();
+}
+
 /// Check if an operation is a unary elementwise tensor op.
 inline bool isUnaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLUnaryElementwiseOpTrait>();

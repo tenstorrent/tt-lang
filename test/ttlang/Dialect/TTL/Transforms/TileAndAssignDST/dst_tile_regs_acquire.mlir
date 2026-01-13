@@ -1,5 +1,5 @@
 // Summary: ensure ttl.acquire_dst is inserted ahead of DST copies in ttl.compute.
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --ttl-insert-tile-regs-sync --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=64},ttl-insert-tile-regs-sync),canonicalize,cse)' --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -16,7 +16,7 @@
 // CHECK-NEXT:        %[[LIN_IDX:.*]] = ttl.linearized_index
 // CHECK-NEXT:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
 // CHECK-NEXT:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
-// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 2 : i32}
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]

@@ -1,6 +1,6 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=4}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=4096}))' --split-input-file | FileCheck %s
 
-// Capacity is 4.
+// Capacity is 4096 (large to allow multi-tile grids in this test).
 // We chain 5 adds (3 inputs). With capacity 4, reuse must succeed.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
@@ -14,14 +14,14 @@
 // CHECK-NEXT:   %[[LIN_IDX_1:.*]] = ttl.linearized_index #{{.*}} : index
 // CHECK-NEXT:   %[[C1:.*]] = arith.constant 1 : index
 // CHECK-NEXT:   %[[DST1:.*]], %[[TILE1:.*]] = ttl.copy_tile %[[ARG1]], %[[LIN_IDX_1]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[X0:.*]] = ttl.tile_add %[[TILE0]], %[[TILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[X0:.*]] = ttl.tile_add %[[TILE0]], %[[TILE1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[LIN_IDX_2:.*]] = ttl.linearized_index #{{.*}} : index
-// CHECK-NEXT:   %[[C1_2:.*]] = arith.constant 1 : index
-// CHECK-NEXT:   %[[DST2:.*]], %[[TILE2:.*]] = ttl.copy_tile %[[ARG2]], %[[LIN_IDX_2]], %[[C1_2]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[X1:.*]] = ttl.tile_add %[[X0]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[X2:.*]] = ttl.tile_add %[[X1]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[X3:.*]] = ttl.tile_add %[[X2]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[X4:.*]] = ttl.tile_add %[[X3]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[C0_2:.*]] = arith.constant 0 : index
+// CHECK-NEXT:   %[[DST2:.*]], %[[TILE2:.*]] = ttl.copy_tile %[[ARG2]], %[[LIN_IDX_2]], %[[C0_2]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[X1:.*]] = ttl.tile_add %[[X0]], %[[TILE2]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[X2:.*]] = ttl.tile_add %[[X1]], %[[TILE2]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[X3:.*]] = ttl.tile_add %[[X2]], %[[TILE2]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[X4:.*]] = ttl.tile_add %[[X3]], %[[TILE2]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.yield %[[X4]]
 
 func.func @chain_reuse(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>,
@@ -74,9 +74,9 @@ func.func @chain_reuse(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>,
 // CHECK-NEXT:   %[[LIN_IDX_1:.*]] = ttl.linearized_index #{{.*}} : index
 // CHECK-NEXT:   %[[C1:.*]] = arith.constant 1 : index
 // CHECK-NEXT:   %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]], %[[LIN_IDX_1]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[ADD0:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[ADD1:.*]] = ttl.tile_add %[[COPY0]], %[[ADD0]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[ADD2:.*]] = ttl.tile_add %[[COPY0]], %[[ADD1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[ADD0:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[ADD1:.*]] = ttl.tile_add %[[COPY0]], %[[ADD0]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[ADD2:.*]] = ttl.tile_add %[[COPY0]], %[[ADD1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.yield %[[ADD2]]
 
 func.func @block_arg_multi_use(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>)
