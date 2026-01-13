@@ -200,14 +200,14 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
 
   return linearIdx;
 }
--
-    /// Compute dynamic DST index for multi-tile pack operations.
-    /// Returns: baseDstIdx + (tileLinearIndex * dstFootprint)
-    /// If dstFootprint attribute is not found or not in loops, returns the
-    /// unmodified cbTileIndex.
-    static Value
-    computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
-                                  Value cbTileIndex, int64_t baseDstIdx = 0) {
+
+/// Compute dynamic DST index for multi-tile pack operations.
+/// Returns: baseDstIdx + (tileLinearIndex * dstFootprint)
+/// If dstFootprint attribute is not found or not in loops, returns the
+/// unmodified cbTileIndex.
+static Value computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
+                                           Value cbTileIndex,
+                                           int64_t baseDstIdx = 0) {
   Location loc = op->getLoc();
 
   // Collect enclosing loops to find footprint attribute.

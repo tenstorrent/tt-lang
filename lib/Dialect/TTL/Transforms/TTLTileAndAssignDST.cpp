@@ -159,6 +159,33 @@ struct TTLTileAndAssignDSTPass
         return;
       }
 
+      // Check multi-tile capacity: peakUsage * numTiles must fit in DST.
+      // Compute numTiles from the output tensor shape.
+      std::uint32_t numTiles = 1;
+      if (!computeOp.getOutputs().empty()) {
+        auto outputType =
+            dyn_cast<RankedTensorType>(computeOp.getOutputs()[0].getType());
+        if (outputType) {
+          for (int64_t dim : outputType.getShape()) {
+            numTiles *= dim;
+          }
+        }
+      }
+
+      std::uint32_t totalDSTRequired = peakUsage * numTiles;
+      if (totalDSTRequired > capacity) {
+        // TODO: Handle multi-tile compute that exceeds DST capacity by
+        // splitting into multiple compute regions with intermediate
+        // commit/wait/pack sequences. For now, emit an error.
+        computeOp.emitOpError()
+            << "multi-tile compute requires " << totalDSTRequired
+            << " DST registers (" << peakUsage << " per tile * " << numTiles
+            << " tiles) but capacity is only " << capacity
+            << "\nnote: reduce tile grid size or split the operation";
+        signalPassFailure();
+        return;
+      }
+
       // Store peak DST usage as attribute for multi-tile DST offset
       // computation. In multi-tile mode, each tile's DST indices are offset by:
       //   tile_linear_index * peakDSTUsage
