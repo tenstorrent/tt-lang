@@ -37,7 +37,7 @@ except ImportError:
     TTNN_AVAILABLE = False
 
 import torch
-from utils import assert_allclose
+from ttlang.utils import assert_allclose
 
 # Skip all tests if ttnn not available
 pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")

@@ -231,7 +231,7 @@ def add_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from utils import require_hardware
+    from ttlang.utils import require_hardware
 
     print("=== Add Kernel Test ===")
     require_hardware()
