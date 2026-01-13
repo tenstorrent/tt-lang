@@ -354,6 +354,44 @@ def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
 }
 
 //===----------------------------------------------------------------------===//
+// Core indexing operations (for multi-core kernels)
+//===----------------------------------------------------------------------===//
+
+def TTL_CoreXOp : TTL_Op<"core_x", [Pure]> {
+  let summary = "Get the X coordinate of the current core";
+  let description = [{
+    Returns the X coordinate (column) of the core executing this kernel.
+    For a grid of shape (rows, cols), X ranges from 0 to cols-1.
+
+    Lowers to `ttkernel.my_x`.
+
+    Example:
+    ```mlir
+    %x = ttl.core_x : index
+    ```
+  }];
+  let results = (outs Index:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
+  let summary = "Get the Y coordinate of the current core";
+  let description = [{
+    Returns the Y coordinate (row) of the core executing this kernel.
+    For a grid of shape (rows, cols), Y ranges from 0 to rows-1.
+
+    Lowers to `ttkernel.my_y`.
+
+    Example:
+    ```mlir
+    %y = ttl.core_y : index
+    ```
+  }];
+  let results = (outs Index:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
 // Tile-Level Operations (for use inside ttl.compute body)
 //===----------------------------------------------------------------------===//
 

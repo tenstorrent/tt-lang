@@ -196,13 +196,18 @@ class CompiledTTNNKernel:
         # Build kernel descriptors with current tensor addresses
         kernel_descriptors = []
 
+        # Compute grid dimensions from core_ranges for runtime_args structure
+        # runtime_args structure: [x][y][args_per_core] where x=cols, y=rows
+        grid_size = self.core_ranges.bounding_box().grid_size()
+        grid_cols = grid_size.x
+        grid_rows = grid_size.y
+
         for kernel_idx, ((kernel_path, thread_type), config, rt_args) in enumerate(
             zip(self.kernel_paths, self.kernel_configs, self.kernel_arg_specs)
         ):
-            # runtime_args structure: [cores][core_ranges][args_per_core]
-            # For single-core execution, this is one empty list per core range.
-            # TODO: Support per-core runtime args for multi-core grids
-            runtime_args = [[[]]]
+            # runtime_args structure: [x][y][args_per_core]
+            # Each core gets an empty arg list (we use my_x/my_y for indexing)
+            runtime_args = [[[] for _ in range(grid_rows)] for _ in range(grid_cols)]
 
             # Build common_runtime_args using kernel_tensor_indices
             # C++ indexes by function-local position, we provide addresses in that order
@@ -366,9 +371,12 @@ def _compile_ttnn_kernel(
         print("\nttnn not available - cannot compile for ttnn.generic_op")
         return None
 
-    # TODO: Support multi-core grids. Currently hardcoded to single core (0,0).
-    core = ttnn.CoreCoord(0, 0)
-    core_range = ttnn.CoreRange(core, core)
+    # Build CoreRangeSet from grid dimensions
+    # Grid is (rows, cols), CoreCoord is (x=col, y=row)
+    grid_rows, grid_cols = grid
+    core_start = ttnn.CoreCoord(0, 0)
+    core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
+    core_range = ttnn.CoreRange(core_start, core_end)
     core_ranges = ttnn.CoreRangeSet([core_range])
 
     if verbose:
@@ -659,15 +667,6 @@ def _compile_and_run_kernel(
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
     if has_ttnn_tensors:
-        # Validate grid is single core - multi-core requires sharded layout support
-        # (see GH issue #118)
-        if grid != (1, 1) and grid != [1, 1]:
-            msg = f"TTNN interop only supports single-core grid (1, 1), got {grid}"
-            formatted = format_python_error(
-                ValueError(msg), kernel_source_file, kernel_line_offset
-            )
-            raise ValueError(formatted) from None
-
         first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
         if first_ttnn_tensor is not None:
             memory_space = _detect_memory_space_from_tensor(
