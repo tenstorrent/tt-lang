@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+print(f"DEBUG at top: ttlang_has_device = {getattr(config, 'ttlang_has_device', 'NOT FOUND')}")
+
 import os
 import platform
 import sys
@@ -164,5 +166,9 @@ except ImportError:
 
 # Add tt-device feature if hardware is available (detected by CMake at configure time)
 # Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)
-if getattr(config, "ttlang_has_device", False) or os.environ.get("TT_METAL_SIMULATOR"):
+_has_device = getattr(config, "ttlang_has_device", False)
+print(f"DEBUG: ttlang_has_device = {_has_device}, type = {type(_has_device)}")
+print(f"DEBUG: all config attrs = {[a for a in dir(config) if not a.startswith('_')]}")
+if _has_device or os.environ.get("TT_METAL_SIMULATOR"):
     config.available_features.add("tt-device")
+print(f"DEBUG: available_features = {config.available_features}")

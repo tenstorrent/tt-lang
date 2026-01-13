@@ -16,5 +16,5 @@ func.func @ok(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.t
 // CHECK-LABEL: func.func @ok
 // CHECK: tensor.empty
 // CHECK: ttl.compute
-// CHECK: ttl.tile_add {{.*}} {dst_idx = 0 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
 // CHECK: ttl.yield

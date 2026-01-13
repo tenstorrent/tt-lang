@@ -25,18 +25,19 @@
 // Compute linear tile index: i * cols + j (via affine map)
 // CHECK-NEXT:      %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
-// Dynamic DST index: base + tile_idx * footprint (via affine map)
-// CHECK-NEXT:      %[[DST0:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
-// CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]], %[[DST0]])
+// Input 0 uses constant DST index 0
+// CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]], %[[C0]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
-// CHECK-NEXT:      %[[DST1:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
-// CHECK-NEXT:      ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]], %[[DST1]])
+// Input 1 uses constant DST index 1
+// CHECK-NEXT:      ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]], %[[C1]])
+// Output DST index: footprint + tile_linear_idx (via affine map: d0 * 2 + d1 + 2)
+// CHECK-NEXT:      %[[DST_OUT:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // CHECK-NEXT:      ttkernel.add_binary_tile_init()
-// CHECK-NEXT:      ttkernel.add_binary_tile(%[[DST0]], %[[DST1]], %[[DST0]])
+// CHECK-NEXT:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[DST_OUT]])
 // CHECK-NEXT:      ttkernel.mul_binary_tile_init()
-// CHECK-NEXT:      ttkernel.mul_binary_tile(%[[DST0]], %[[DST1]], %[[DST0]])
+// CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[DST_OUT]])
 // CHECK-NEXT:      ttkernel.exp_tile_init()
-// CHECK-NEXT:      ttkernel.exp_tile(%[[DST0]])
+// CHECK-NEXT:      ttkernel.exp_tile(%[[DST_OUT]])
 // End compute loops (no iter_args needed - results in DST registers)
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
@@ -51,8 +52,8 @@
 // Compute CB tile index: i * 2 + j (linearized row-major index for 2x2 grid).
 // CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[PACK_I]], %[[C2]] : index
 // CHECK-NEXT:      %[[CB_IDX:.*]] = arith.addi %[[IOFF]], %[[PACK_J]] : index
-// Dynamic DST index for pack: cbTileIndex * footprint (base=0, simplified by CSE)
-// CHECK-NEXT:      %[[PACK_DST:.*]] = arith.muli %[[CB_IDX]], %[[C2]]
+// Dynamic DST index for pack: numInputs + cbTileIndex (footprint=2)
+// CHECK-NEXT:      %[[PACK_DST:.*]] = arith.addi %[[CB_IDX]], %[[C2]]
 // CHECK-NEXT:      ttkernel.pack_tile(%[[PACK_DST]], %[[CB2_TTK]], %[[CB_IDX]], false)
 // CHECK-NEXT:      ttkernel.cb_push_back(%[[CB2_TTK]], %[[C4]])
 // CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[PACK_TILE]] into %[[PACK_ACC2]][%[[PACK_I]], %[[PACK_J]]]

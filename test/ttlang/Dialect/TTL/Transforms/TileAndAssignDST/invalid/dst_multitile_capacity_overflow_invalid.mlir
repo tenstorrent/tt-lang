@@ -3,8 +3,8 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Multi-tile capacity overflow. With 3x3 grid (9 tiles) and 2 DST
-// registers per tile, total need is 18 but default capacity is only 8.
+// Purpose: Multi-tile capacity overflow. With 3x3 grid (9 tiles) and 2 inputs,
+// total need is 2 inputs + 9 tiles = 11 but default capacity is only 8.
 func.func @multitile_capacity_overflow(%a: tensor<3x3x!ttcore.tile<32x32, f32>>,
                                        %b: tensor<3x3x!ttcore.tile<32x32, f32>>)
     -> tensor<3x3x!ttcore.tile<32x32, f32>> {
@@ -18,7 +18,7 @@ func.func @multitile_capacity_overflow(%a: tensor<3x3x!ttcore.tile<32x32, f32>>,
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<3x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 1>) -> tensor<3x3x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<3x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 1>) -> tensor<3x3x!ttcore.tile<32x32, f32>>
 
-  // expected-error @+1 {{multi-tile compute requires 18 DST registers (2 per tile * 9 tiles) but capacity is only 8}}
+  // expected-error @+1 {{multi-tile compute requires 11 DST registers (2 inputs + 9 tiles) but capacity is only 8}}
   %result = ttl.compute
       ins(%a_cb, %b_cb :
           tensor<3x3x!ttcore.tile<32x32, f32>>,
@@ -29,7 +29,7 @@ func.func @multitile_capacity_overflow(%a: tensor<3x3x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
-    // Two inputs = 2 DST registers per tile. 3x3 = 9 tiles. Total = 18 > 8.
+    // Two inputs + 9 tiles = 11 DST registers total. Exceeds capacity of 8.
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<3x3x!ttcore.tile<32x32, f32>>

@@ -21,7 +21,7 @@ func.func @binary_add(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tensor
   // CHECK-NEXT:   %[[LIN_IDX:.*]] = ttl.linearized_index
   // CHECK-NEXT:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[IN0]], %[[LIN_IDX]], %[[C0]]
   // CHECK-NEXT:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[IN1]], %[[LIN_IDX]], %[[C1]]
-  // CHECK-NEXT:   %[[ADD:.+]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[ADD:.+]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
   // CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -93,7 +93,7 @@ func.func @chained_ops(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tenso
   // CHECK-NEXT:   %[[LIN_IDX:.*]] = ttl.linearized_index
   // CHECK-NEXT:   %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[IN0]], %[[LIN_IDX]], %[[C0]]
   // CHECK-NEXT:   %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[IN1]], %[[LIN_IDX]], %[[C1]]
-  // CHECK-NEXT:   %[[TILE_ADD:.+]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   %[[TILE_ADD:.+]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
   // CHECK-NEXT:   ttl.yield %[[TILE_ADD]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %0 = ttl.add %a, %b : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -255,7 +255,7 @@ func.func @dst_assignment_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: te
 
   // First compute: binary add
   // CHECK: %[[COMP0:.+]] = ttl.compute
-  // CHECK: ttl.tile_add{{.*}}{dst_idx = 0 : i32}
+  // CHECK: ttl.tile_add{{.*}}{dst_idx = 2 : i32}
   %0 = ttl.add %a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: %[[COMP0_CB:.+]] = ttl.attach_cb %[[COMP0]]
@@ -273,7 +273,7 @@ func.func @dst_assignment_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: te
 
   // Third compute: binary mul
   // CHECK: %[[COMP2:.+]] = ttl.compute
-  // CHECK: ttl.tile_mul{{.*}}{dst_idx = 0 : i32}
+  // CHECK: ttl.tile_mul{{.*}}{dst_idx = 2 : i32}
   // CHECK: return %[[COMP2]]
   %2 = ttl.mul %exp_cb, %c_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

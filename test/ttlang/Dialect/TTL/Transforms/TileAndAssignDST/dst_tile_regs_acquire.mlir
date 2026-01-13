@@ -16,7 +16,7 @@
 // CHECK-NEXT:        %[[LIN_IDX:.*]] = ttl.linearized_index
 // CHECK-NEXT:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
 // CHECK-NEXT:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
-// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 2 : i32}
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
