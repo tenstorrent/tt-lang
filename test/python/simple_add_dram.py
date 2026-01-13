@@ -203,7 +203,7 @@ def add_dram_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from ttlang.utils import require_hardware
+    from utils import require_hardware
 
     print("=== Add DRAM Kernel Test ===")
     require_hardware()

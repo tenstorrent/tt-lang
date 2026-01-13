@@ -136,7 +136,7 @@ def add_loop_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from ttlang.utils import require_hardware
+    from utils import require_hardware
 
     print("=== Loop Add Kernel Test ===")
     require_hardware()
