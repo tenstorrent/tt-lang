@@ -16,13 +16,12 @@
 // CHECK:       %[[CB1_TTK:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK:       %[[CB2_TTK:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB0_TTK]], %[[C4]])
-// CHECK-NEXT:  %[[CAST0:.*]] = builtin.unrealized_conversion_cast %[[CB0_TTK]]
 // CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB1_TTK]], %[[C4]])
 // CHECK-NEXT:  ttkernel.init_sfpu(%[[CB0_TTK]], %[[CB2_TTK]])
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
-// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT]])
-// CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
-// CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[CAST0]][%[[I]], %[[J]]]
+// Compute loop (math ops only, no pack ops)
+// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+// CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
 // Compute linear tile index: i * cols + j (via affine map)
 // CHECK-NEXT:      %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
@@ -35,21 +34,29 @@
 // CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.exp_tile_init()
 // CHECK-NEXT:      ttkernel.exp_tile(%[[C0]])
-// CHECK-NEXT:      ttkernel.tile_regs_commit
-// CHECK-NEXT:      ttkernel.tile_regs_wait
+// End compute loops (no iter_args needed - results in DST registers)
+// CHECK-NEXT:    }
+// CHECK-NEXT:  }
+// Sync ops OUTSIDE compute loops (multitile fix)
+// CHECK-NEXT:  ttkernel.tile_regs_commit
+// CHECK-NEXT:  ttkernel.tile_regs_wait
+// Pack loop (separate from compute loop, with iter_args for tensor updates)
+// CHECK-NEXT:  %[[PACK_RESULT:.*]] = scf.for %[[PACK_I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[PACK_ACC:.*]] = %[[OUTPUT]])
+// CHECK-NEXT:    %[[INNER_RESULT:.*]] = scf.for %[[PACK_J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[PACK_ACC2:.*]] = %[[PACK_ACC]])
+// CHECK-NEXT:      %[[PACK_TILE:.*]] = tensor.extract %[[PACK_ACC2]][%[[PACK_I]], %[[PACK_J]]]
 // CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK]], %[[C4:.*]])
 // Compute CB tile index: i * 2 + j (linearized row-major index for 2x2 grid).
-// CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[I]], %[[C2]] : index
-// CHECK-NEXT:      %[[CB_IDX:.*]] = arith.addi %[[IOFF]], %[[J]] : index
+// CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[PACK_I]], %[[C2]] : index
+// CHECK-NEXT:      %[[CB_IDX:.*]] = arith.addi %[[IOFF]], %[[PACK_J]] : index
 // CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[CB_IDX]], false)
 // CHECK-NEXT:      ttkernel.cb_push_back(%[[CB2_TTK]], %[[C4]])
-// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
+// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[PACK_TILE]] into %[[PACK_ACC2]][%[[PACK_I]], %[[PACK_J]]]
 // CHECK-NEXT:      scf.yield %[[INSERT]]
 // CHECK-NEXT:    }
-// CHECK-NEXT:    scf.yield
-// CHECK:       }
+// CHECK-NEXT:    scf.yield %[[INNER_RESULT]]
+// CHECK-NEXT:  }
 // CHECK-NEXT:  ttkernel.tile_regs_release
-// CHECK-NEXT:  return
+// CHECK-NEXT:  return %[[PACK_RESULT]]
 // CHECK-NOT:   ttl.attach_cb
 // CHECK-NOT:   ttl.copy_tile
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,

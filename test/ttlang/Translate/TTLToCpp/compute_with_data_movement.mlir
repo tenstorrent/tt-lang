@@ -136,16 +136,24 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK-NEXT:       exp_tile_init();
 // CHECK-NEXT:       exp_tile([[ZERO]]);
 
-// Synchronize DST registers before pack
-// CHECK-NEXT:       tile_regs_commit();
-// CHECK-NEXT:       tile_regs_wait();
+// End compute loops
+// CHECK-NEXT:     }
+// CHECK-NEXT:   }
+
+// Synchronize DST registers before pack (OUTSIDE compute loops)
+// CHECK-NEXT:   tile_regs_commit();
+// CHECK-NEXT:   tile_regs_wait();
+
+// Pack loop - separate from compute loop (multitile fix)
+// CHECK-NEXT:   for (size_t [[PACK_I:i[0-9]+]] = [[ZERO]]; [[PACK_I]] < {{.*}}; [[PACK_I]] += [[ONE]]) {
+// CHECK-NEXT:   for (size_t [[PACK_J:j[0-9]+]] = [[ZERO]]; [[PACK_J]] < {{.*}}; [[PACK_J]] += [[ONE]]) {
 
 // Reserve output CB2
 // CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // Compute CB tile index: i * 2 + j (linearized row-major index)
-// CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+// CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[PACK_I]] * {{.*}};
+// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[PACK_J]];
 
 // Pack result to output CB2
 // CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
@@ -153,7 +161,7 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // Push to signal data ready
 // CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
-// End loops
+// End pack loops
 // CHECK-NEXT:     }
 // CHECK-NEXT:   }
 

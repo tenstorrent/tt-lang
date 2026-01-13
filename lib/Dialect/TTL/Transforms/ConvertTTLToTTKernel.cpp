@@ -137,8 +137,15 @@ static bool isNocKernel(Operation *op) {
 /// Compute linearized CB tile index from enclosing scf.for loops.
 /// For nested loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
 /// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
+///
+/// When cbShapeRank > 0, only the innermost cbShapeRank loops are used,
+/// which computes a relative index within a CB block rather than an absolute
+/// tensor-wide index. This is necessary for multi-tile CB shapes where outer
+/// loops iterate over blocks and inner loops iterate over tiles within a block.
+///
 /// Returns constant 0 if not inside any loops (single-tile case).
-static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
+static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
+                                         size_t cbShapeRank = 0) {
   Location loc = op->getLoc();
 
   SmallVector<scf::ForOp> loops;
@@ -152,6 +159,15 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
 
   if (loops.empty()) {
     return builder.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
+  // If cbShapeRank is specified, only use the innermost cbShapeRank loops.
+  // This computes a relative index within a CB block rather than an absolute
+  // index across all loops. The loops vector is ordered innermost-first
+  // (loops[0] is the immediate parent loop), so we truncate to keep only
+  // the first cbShapeRank elements.
+  if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
+    loops.resize(cbShapeRank);
   }
 
   // Validate assumptions: all loops have step=1 and lower bound=0.
@@ -429,8 +445,12 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     }
 
-    // Compute CB tile index from enclosing loops for multi-tile cases.
-    auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter);
+    // Compute CB tile index from innermost 2 loops for multi-tile cases.
+    // TTL CBs are always 2D (enforced by Python API), so we use the innermost
+    // 2 loops to compute a relative index within a CB block rather than an
+    // absolute index across all loops.
+    constexpr size_t kCBShapeRank = 2;
+    auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter, kCBShapeRank);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 

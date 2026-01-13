@@ -50,16 +50,24 @@
 // CHECK-NEXT:      exp_tile_init();
 // CHECK-NEXT:      exp_tile([[ZERO]]);
 
-// --- DST register synchronization ---
-// CHECK-NEXT:      tile_regs_commit();
-// CHECK-NEXT:      tile_regs_wait();
+// --- End compute loops ---
+// CHECK-NEXT:    }
+// CHECK-NEXT:  }
+
+// --- DST register synchronization (OUTSIDE loops after fix) ---
+// CHECK-NEXT:  tile_regs_commit();
+// CHECK-NEXT:  tile_regs_wait();
+
+// --- Pack loop (separate from compute loop after multitile fix) ---
+// CHECK-NEXT:  for (size_t [[PACK_I:i[0-9]+]] = [[ZERO]]; [[PACK_I]] < {{.*}}; [[PACK_I]] += [[STEP]]) {
+// CHECK-NEXT:  for (size_t [[PACK_J:j[0-9]+]] = [[ZERO]]; [[PACK_J]] < {{.*}}; [[PACK_J]] += [[STEP]]) {
 
 // --- Reserve output CB2 for packing ---
 // CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // --- Compute CB tile index: i * 2 + j (linearized row-major index) ---
-// CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+// CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[PACK_I]] * {{.*}};
+// CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[PACK_J]];
 
 // --- Pack DST[0] to output CB2 ---
 // CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
@@ -67,7 +75,7 @@
 // --- Push to signal data ready ---
 // CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
-// --- End of inner and outer loops ---
+// --- End of pack loops ---
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 
