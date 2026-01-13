@@ -98,8 +98,7 @@ def add_with_kernel(a, b, c, y):
 device = ttnn.open_device(device_id=0)
 
 try:
-    # shape = (64, 64)
-    shape = (256, 256)
+    shape = (2048, 2048)
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)
     c = torch.rand(shape, dtype=torch.bfloat16)
