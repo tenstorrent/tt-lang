@@ -7,16 +7,8 @@
 import glob
 import importlib.util
 import os
-import sys
-from pathlib import Path
 
 import pytest
-
-# Ensure tt-lang python package is importable (for `utils`, etc.).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_PYTHON_DIR = _REPO_ROOT / "python"
-if str(_PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(_PYTHON_DIR))
 
 # Lit tests that should not be collected by pytest (they have # RUN: directives)
 collect_ignore = [
