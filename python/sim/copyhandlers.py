@@ -27,7 +27,7 @@ from typing import (
 
 from .block import Block
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
-from .ttnnsim import Tensor
+from .ttnnsim import Tensor, tensor_shape_in_tiles
 from .typedefs import Count, Pipe, Shape
 
 if TYPE_CHECKING:
@@ -243,12 +243,13 @@ class TensorToBlockHandler:
                 f"Copy only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
             )
 
-        num_tiles = tile_count(src.shape, TILE_SHAPE)
-        expected_tiles = len(dst)
-
-        if num_tiles != expected_tiles:
+        # Validate tensor shape matches block shape (in tiles)
+        block_shape = dst.shape
+        src_shape_in_tiles = tensor_shape_in_tiles(src, TILE_SHAPE)
+        if src_shape_in_tiles != block_shape:
             raise ValueError(
-                f"Tensor contains {num_tiles} tiles but Block has {expected_tiles} slots"
+                f"Tensor shape {src.shape} (={src_shape_in_tiles} tiles) does not match "
+                f"Block shape {block_shape} tiles (={tuple(d * t for d, t in zip(block_shape, TILE_SHAPE))} elements)"
             )
 
     def transfer(self, src: Tensor, dst: Block) -> None:
@@ -284,9 +285,14 @@ class BlockToTensorHandler:
                 f"Copy only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
             )
 
-        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
-        if len(src) != dst_tiles:
-            raise ValueError(f"Expected {len(src)} tiles but found {dst_tiles}")
+        # Validate tensor shape matches block shape (in tiles)
+        block_shape = src.shape
+        dst_shape_in_tiles = tensor_shape_in_tiles(dst, TILE_SHAPE)
+        if dst_shape_in_tiles != block_shape:
+            raise ValueError(
+                f"Tensor shape {dst.shape} (={dst_shape_in_tiles} tiles) does not match "
+                f"Block shape {block_shape} tiles (={tuple(d * t for d, t in zip(block_shape, TILE_SHAPE))} elements)"
+            )
 
     def transfer(self, src: Block, dst: Tensor) -> None:
         """Transfer Block data to tensor using tile-level indexing.

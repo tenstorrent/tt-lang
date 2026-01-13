@@ -27,7 +27,7 @@ def api() -> CBAPI:
 def configured_cb(api: CBAPI) -> Tuple[CBAPI, CBID]:
     """Create a configured CB with capacity 4."""
     cb_id = 0
-    api.host_configure_cb(cb_id, 4)
+    api.host_configure_cb(cb_id, 4, shape=(1, 1))
     return api, cb_id
 
 
@@ -35,7 +35,7 @@ def configured_cb(api: CBAPI) -> Tuple[CBAPI, CBID]:
 def configured_cb8(api: CBAPI) -> Tuple[CBAPI, CBID]:
     """Create a configured CB with capacity 8."""
     cb_id = 0
-    api.host_configure_cb(cb_id, 8)
+    api.host_configure_cb(cb_id, 8, shape=(1, 1))
     return api, cb_id
 
 
@@ -100,7 +100,7 @@ def test_per_instance_timeout_effect():
     # consumer should timeout based on instance timeout
     api = CBAPI(timeout=0.2)
     cb = 3
-    api.host_configure_cb(cb, 4)
+    api.host_configure_cb(cb, 4, shape=(1, 1))
     start = time.perf_counter()
     with pytest.raises(CBTimeoutError, match="timed out after 0.2s"):
         api.cb_wait_front(cb, 1)
@@ -223,7 +223,7 @@ def test_get_write_ptr_requires_reserve(configured_cb: Tuple[CBAPI, CBID]):
 def test_multiple_consumers_error(timeout_api: CBAPI):
     api = timeout_api
     cb = 0
-    api.host_configure_cb(cb, 4)
+    api.host_configure_cb(cb, 4, shape=(1, 1))
     errors: List[str] = []
 
     def consumer():
@@ -246,7 +246,7 @@ def test_multiple_consumers_error(timeout_api: CBAPI):
 def test_multiple_producers_error(timeout_api: CBAPI):
     api = timeout_api
     cb = 0
-    api.host_configure_cb(cb, 4)
+    api.host_configure_cb(cb, 4, shape=(1, 1))
     errors: List[str] = []
 
     def producer():

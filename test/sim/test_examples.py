@@ -109,9 +109,10 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
     assert (
         code != 0
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
-    # Check for the core error message
+    # Check for the core error message (shape mismatch)
     assert (
-        "Tensor contains 1 tiles but Block has 4 slots" in out
+        "Tensor shape (32, 32) (=(1, 1) tiles) does not match Block shape (2, 2) tiles"
+        in out
     ), f"Expected error message not found in output:\n{out}"
     # Verify source location is shown
     assert (

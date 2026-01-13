@@ -30,6 +30,31 @@ from .typedefs import Count, IndexType, Shape
 TILE_SIZE: int = TILE_SHAPE[0]
 TILE_LAYOUT = IndexType.TILE
 
+
+def tensor_shape_in_tiles(
+    tensor: "Tensor", tile_shape: Tuple[int, ...]
+) -> Tuple[int, ...]:
+    """
+    Convert tensor shape from element dimensions to tile dimensions.
+
+    Divides each dimension of the tensor shape by the corresponding tile
+    dimension to compute how many tiles the tensor spans.
+
+    Args:
+        tensor: Input TTNN Tensor
+        tile_shape: Shape of each tile
+
+    Returns:
+        Shape in tiles
+
+    Example:
+        tensor = ttnn.from_torch(torch.randn(64, 32))
+        shape = tensor_shape_in_tiles(tensor, (32, 32))
+        assert shape == (2, 1)  # 64/32=2 rows, 32/32=1 col
+    """
+    return tuple(dim // tile_dim for dim, tile_dim in zip(tensor.shape, tile_shape))
+
+
 # Memory config placeholder (no-op in simulator)
 L1_MEMORY_CONFIG = None
 DRAM_MEMORY_CONFIG = None
@@ -426,7 +451,7 @@ class Tensor:
 
 
 def rand(
-    shape: Tuple[int, ...], dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
+    shape: Shape, dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
 ) -> Tensor:
     """Create a random tensor with given shape and dtype.
 
@@ -439,7 +464,7 @@ def rand(
 
 
 def empty(
-    shape: Tuple[int, ...], dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
+    shape: Shape, dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
 ) -> Tensor:
     """Create an uninitialized tensor with given shape and dtype."""
     t = torch.empty(shape, dtype=dtype)
