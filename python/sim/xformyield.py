@@ -20,7 +20,7 @@ __all__ = [
     "YieldInserter",
     "YieldingFunctionMarker",
     "YieldFromInserter",
-    "transform_wait_reserve_to_yield",
+    "transform_wait_reserve_to_yield_ast",
     # Legacy alias for backward compatibility with tests
     "WaitReserveToYieldTransformer",
 ]
@@ -272,20 +272,22 @@ class YieldFromInserter(ast.NodeTransformer):
                 return False
 
 
-def transform_wait_reserve_to_yield(source: str) -> str:
+def transform_wait_reserve_to_yield_ast(source: str) -> ast.Module:
     """
-    Transform wait() and reserve() calls to yield operation info to the scheduler.
+    Transform wait() and reserve() calls to yield statements, returning AST.
 
-    This is a three-stage transformation:
+    Performs a three-stage transformation:
     1. Insert yields before wait()/reserve() calls
     2. Mark all functions that contain yields (directly or transitively)
     3. Insert 'yield from' for calls to yielding functions
+
+    The returned AST preserves original line numbers for accurate error reporting.
 
     Args:
         source: Python source code as string
 
     Returns:
-        Transformed source code with yields and yield froms
+        Transformed AST module with original line numbers preserved
 
     Example:
         >>> code = '''
@@ -293,12 +295,8 @@ def transform_wait_reserve_to_yield(source: str) -> str:
         ...     block = cb.wait()
         ...     return block
         ... '''
-        >>> transformed = transform_wait_reserve_to_yield(code)
-        >>> print(transformed)
-        def func():
-            yield (cb, 'wait')
-            block = cb.wait()
-            return block
+        >>> tree = transform_wait_reserve_to_yield_ast(code)
+        >>> # Compile and execute the AST directly to preserve line numbers
     """
     tree = ast.parse(source)
 
@@ -316,7 +314,7 @@ def transform_wait_reserve_to_yield(source: str) -> str:
     tree = yield_from_inserter.visit(tree)
     ast.fix_missing_locations(tree)
 
-    return ast.unparse(tree)
+    return tree
 
 
 # Legacy alias for backward compatibility with existing tests

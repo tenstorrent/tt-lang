@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 import torch
+
+from utils.correctness import assert_with_ulp
 import ttnn
-from ttlang.utils.correctness import assert_with_ulp
 
 
 # (M * N) % (32 *32) == 0 for this implemention

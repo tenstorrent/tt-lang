@@ -15,8 +15,14 @@ from python.sim.xformyield import (
     YieldFromInserter,
     YieldingFunctionMarker,
     YieldInserter,
-    transform_wait_reserve_to_yield,
+    transform_wait_reserve_to_yield_ast,
 )
+
+
+def _transform_to_string(source: str) -> str:
+    """Helper to transform source and return unparsed string for testing."""
+    tree = transform_wait_reserve_to_yield_ast(source)
+    return ast.unparse(tree)
 
 
 def test_transform_wait_assignment() -> None:
@@ -26,7 +32,7 @@ def func():
     block = cb.wait()
     return block
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yield was inserted before wait()
     assert "yield (cb, 'wait')" in result
@@ -47,7 +53,7 @@ def func():
     block = cb.reserve()
     return block
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yield was inserted before reserve()
     assert "yield (cb, 'reserve')" in result
@@ -68,7 +74,7 @@ def func():
     cb.wait()
     print("done")
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yield was inserted before wait()
     assert "yield (cb, 'wait')" in result
@@ -84,7 +90,7 @@ def func():
     cb.reserve()
     print("done")
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yield was inserted before reserve()
     assert "yield (cb, 'reserve')" in result
@@ -103,7 +109,7 @@ def func():
     cb4.reserve()
     return block1
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify all yields were inserted
     assert "yield (cb1, 'wait')" in result
@@ -130,7 +136,7 @@ def func():
     result = cb.stats()
     return result
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify no yields were inserted
     assert "yield" not in result
@@ -156,7 +162,7 @@ def outer():
 
     return block1
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify both functions were transformed
     assert "yield (cb1, 'wait')" in result
@@ -173,7 +179,7 @@ def func():
     data = some_obj.get_cb().reserve()
     return block
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yields were inserted with the correct objects
     assert "yield (buffer.cb, 'wait')" in result
@@ -190,7 +196,7 @@ def func():
     return block
 """
     # The new implementation transforms all assignments, including chained ones
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should insert yield before the chained assignment
     assert "yield (cb, 'wait')" in result
@@ -237,7 +243,7 @@ def func():
         block = cb.reserve()
     return block
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # The new implementation recursively transforms control flow statements
     # So yields should be inserted inside if/else blocks
@@ -253,7 +259,7 @@ def test_empty_function() -> None:
 def func():
     pass
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should remain unchanged
     assert "pass" in result
@@ -270,7 +276,7 @@ def func():
     y = compute(x)
     return y * 2
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should remain unchanged
     assert "yield" not in result
@@ -288,7 +294,7 @@ def func(arg1: int, arg2: str, *args, **kwargs) -> bool:
     block = cb.wait()
     return True
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify signature is preserved (ast.unparse format)
     assert "def func(arg1: int, arg2: str, *args, **kwargs) -> bool:" in result
@@ -303,7 +309,7 @@ def test_wait_in_return_statement() -> None:
 def func():
     return cb.wait()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Return statement is not assignment or expression statement,
     # so it should not be transformed
@@ -320,7 +326,7 @@ def func():
     result = process(cb.wait())
     return result
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # The wait() is part of a larger call expression, not a direct wait() call
     # so it should not be transformed
@@ -377,7 +383,7 @@ def func2():
     block = cb2.reserve()
     return block
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify both functions were transformed
     assert "yield (cb1, 'wait')" in result
@@ -394,7 +400,7 @@ def func():
     block = cb.wait()
     return block
 '''
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify docstring is preserved
     assert '"""This is a docstring."""' in result or "'This is a docstring.'" in result
@@ -609,7 +615,7 @@ def level2():
 def level3():
     level2()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should have yield in level1
     assert "yield (cb, 'wait')" in result
@@ -635,7 +641,7 @@ def level3():
 def level4():
     level3()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should have yield in level1
     assert "yield (cb, 'reserve')" in result
@@ -661,7 +667,7 @@ def caller():
     yielding()
     non_yielding()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should have yield from for yielding()
     assert "yield from yielding()" in result
@@ -686,7 +692,7 @@ def coordinator():
     pipe_src()
     pipe_dst()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should have yields in both inner functions
     assert result.count("yield (cb,") == 2
@@ -705,7 +711,7 @@ def recursive(n):
         block = cb.wait()
         recursive(n - 1)
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should have yield before wait
     assert "yield (cb, 'wait')" in result
@@ -726,7 +732,7 @@ def func2():
     y = func1()
     return y * 2
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should have no yields or yield froms
     assert "yield" not in result
@@ -748,7 +754,7 @@ def main():
     x = cb.wait()
     result = helper()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Should have yield for wait
     assert "yield (cb, 'wait')" in result
@@ -773,7 +779,7 @@ def dm_func():
     # Wait for copy to complete
     tx.wait()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yield was inserted before copy().wait()
     assert "yield (tx, 'wait')" in result
@@ -800,7 +806,7 @@ def dm_func():
     a_tx.wait()
     b_tx.wait()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yields were inserted for both copy operations
     assert "yield (a_tx, 'wait')" in result
@@ -836,7 +842,7 @@ def mixed_func():
     out_tx.wait()
     cb.pop()
 """
-    result = transform_wait_reserve_to_yield(source)
+    result = _transform_to_string(source)
 
     # Verify yields for CB operations
     assert "yield (cb, 'reserve')" in result

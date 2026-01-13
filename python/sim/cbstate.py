@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from .errors import CBContractError, CBNotConfigured
 from .ttnnsim import Tensor
-from .typedefs import Count, Index, Size, Span
+from .typedefs import Count, Index, Shape, Size, Span
 
 # Type alias for circular buffer slots
 CBSlot = Optional[Tensor]
@@ -35,6 +35,7 @@ class CBState:
         "can_produce",
         "consumer_waiting",
         "producer_reserving",
+        "shape",
     )
 
     def __init__(self):
@@ -52,6 +53,7 @@ class CBState:
         self.can_produce = Condition(self.lock)
         self.consumer_waiting: Optional[Thread] = None
         self.producer_reserving: Optional[Thread] = None
+        self.shape: Shape  # Shape in tiles (rows, cols)
 
     def require_configured(self) -> None:
         if not self.configured:

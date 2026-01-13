@@ -15,7 +15,7 @@ from .block import Block
 from .cbstate import CBState
 from .constants import CB_DEFAULT_TIMEOUT, MAX_CBS
 from .errors import CBContractError, CBTimeoutError
-from .typedefs import CBID, Size
+from .typedefs import CBID, Shape, Size
 
 
 class CBStats(NamedTuple):
@@ -59,13 +59,16 @@ class CBAPI:
             return cb_id
 
     @validate_call
-    def host_configure_cb(self, cb_id: CBID, capacity_tiles: Size) -> None:
+    def host_configure_cb(
+        self, cb_id: CBID, capacity_tiles: Size, shape: Shape
+    ) -> None:
         # Lazily create CBState if not already created
         if self._pool[int(cb_id)] is None:
             self._pool[int(cb_id)] = CBState()
         cb_state: Any = self._pool[int(cb_id)]
         with cb_state.lock:
             cb_state.cap = capacity_tiles
+            cb_state.shape = shape
             cb_state.reset()
 
     @validate_call
@@ -190,7 +193,7 @@ class CBAPI:
                     f"cb_pop_front({num_tiles}) exceeds visible={cb_state.visible}"
                 )
             span = cb_state.front_span(num_tiles)
-            view = Block(cb_state.buf, cb_state.cap, span)
+            view = Block(cb_state.buf, cb_state.cap, span, cb_state.shape)
             for i in range(len(view)):
                 view.pop(i)
             cb_state.head = (cb_state.head + num_tiles) % cb_state.cap
@@ -213,7 +216,7 @@ class CBAPI:
                     "read window invalidated; call cb_wait_front again"
                 )
             span = cb_state.front_span(cb_state.last_wait_target)
-            return Block(cb_state.buf, cb_state.cap, span)
+            return Block(cb_state.buf, cb_state.cap, span, cb_state.shape)
 
     @validate_call
     def get_write_ptr(self, cb_id: CBID) -> Block:
@@ -225,7 +228,7 @@ class CBAPI:
             if cb_state.reserved < cb_state.last_reserve_target:
                 raise CBContractError("write window invalidated; call cb_reserve again")
             span = cb_state.back_span(cb_state.last_reserve_target)
-            return Block(cb_state.buf, cb_state.cap, span)
+            return Block(cb_state.buf, cb_state.cap, span, cb_state.shape)
 
     @validate_call
     def set_timeout(self, seconds: Optional[Annotated[float, Field(gt=0)]]) -> None:

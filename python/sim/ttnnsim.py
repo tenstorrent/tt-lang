@@ -30,6 +30,35 @@ from .typedefs import Count, IndexType, Shape
 TILE_SIZE: int = TILE_SHAPE[0]
 TILE_LAYOUT = IndexType.TILE
 
+
+def tensor_shape_in_tiles(
+    tensor: "Tensor", tile_shape: Tuple[int, ...]
+) -> Tuple[int, ...]:
+    """
+    Convert tensor shape from element dimensions to tile dimensions.
+
+    Divides each dimension of the tensor shape by the corresponding tile
+    dimension to compute how many tiles the tensor spans.
+
+    Args:
+        tensor: Input TTNN Tensor
+        tile_shape: Shape of each tile
+
+    Returns:
+        Shape in tiles
+
+    Example:
+        tensor = ttnn.from_torch(torch.randn(64, 32))
+        shape = tensor_shape_in_tiles(tensor, (32, 32))
+        assert shape == (2, 1)  # 64/32=2 rows, 32/32=1 col
+    """
+    return tuple(dim // tile_dim for dim, tile_dim in zip(tensor.shape, tile_shape))
+
+
+# Memory config placeholder (no-op in simulator)
+L1_MEMORY_CONFIG = None
+DRAM_MEMORY_CONFIG = None
+
 # Type aliases for binary operations
 Scalar = Union[float, int]
 TensorOrScalar = Union["Tensor", float, int]
@@ -422,7 +451,7 @@ class Tensor:
 
 
 def rand(
-    shape: Tuple[int, ...], dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
+    shape: Shape, dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
 ) -> Tensor:
     """Create a random tensor with given shape and dtype.
 
@@ -435,7 +464,7 @@ def rand(
 
 
 def empty(
-    shape: Tuple[int, ...], dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
+    shape: Shape, dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
 ) -> Tensor:
     """Create an uninitialized tensor with given shape and dtype."""
     t = torch.empty(shape, dtype=dtype)
@@ -452,6 +481,35 @@ def to_torch(t: Union[Tensor, torch.Tensor]) -> torch.Tensor:
             return tt
         case _:
             raise TypeError(f"Unsupported type for to_torch: {type(t)}")
+
+
+def from_torch(
+    tensor: torch.Tensor,
+    dtype: Optional[torch.dtype] = None,
+    layout: Any = None,
+    device: Optional[Device] = None,
+    memory_config: Any = None,
+) -> Tensor:
+    """Convert a torch.Tensor to a TTNN simulator Tensor.
+
+    Accepts additional keyword arguments for API compatibility with TTNN
+    (layout, device, memory_config), but these are no-ops in the simulator.
+
+    Args:
+        tensor: Input torch tensor to wrap
+        dtype: Optional dtype to convert to (defaults to tensor's dtype)
+        layout: Layout parameter (no-op in simulator)
+        device: Device parameter (no-op in simulator)
+        memory_config: Memory config parameter (no-op in simulator)
+
+    Returns:
+        Tensor wrapping the input (potentially converted) torch tensor
+    """
+    # Convert dtype if specified
+    if dtype is not None and tensor.dtype != dtype:
+        tensor = tensor.to(dtype)
+
+    return Tensor(tensor)
 
 
 def isclose(
@@ -705,3 +763,32 @@ def split_work_to_cores(
         units_per_core_group_1,
         units_per_core_group_2,
     )
+
+
+def multiply(input_tensor_a: Tensor, input_tensor_b: Tensor) -> Tensor:
+    """Element-wise multiplication of two tensors.
+
+    Performs element-wise multiplication on two input tensors and returns the result.
+
+    Args:
+        input_tensor_a: First input tensor
+        input_tensor_b: Second input tensor
+
+    Returns:
+        Tensor: Output tensor with element-wise multiplication result
+
+    Example:
+        >>> a = ttnn.from_torch(torch.tensor([[1, 2], [3, 4]], dtype=torch.bfloat16))
+        >>> b = ttnn.from_torch(torch.tensor([[5, 6], [7, 8]], dtype=torch.bfloat16))
+        >>> c = ttnn.multiply(a, b)
+        >>> # c contains [[5, 12], [21, 32]]
+    """
+    # Convert both tensors to torch
+    ta = input_tensor_a.to_torch()
+    tb = input_tensor_b.to_torch()
+
+    # Perform element-wise multiplication
+    result = ta * tb
+
+    # Wrap result back in simulator Tensor
+    return Tensor(result)

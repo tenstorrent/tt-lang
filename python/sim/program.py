@@ -9,6 +9,7 @@ functions across multiple cores with proper context binding and error handling.
 """
 
 import copy
+import ast
 import inspect
 import textwrap
 import traceback
@@ -19,7 +20,29 @@ from typing import Any, Callable, Dict, Generator, List, Protocol, Tuple
 from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .ttnnsim import Tensor
-from .xformyield import transform_wait_reserve_to_yield
+from .xformyield import transform_wait_reserve_to_yield_ast
+
+
+# TODO: Pretty printing should be moved to utils maybe?
+# Import at runtime to avoid circular dependency
+def _get_ttlang_compile_error():
+    """Lazy import of TTLangCompileError to avoid circular dependency."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    # Direct import of diagnostics module without going through ttlang package
+    # This avoids importing the full compiler infrastructure
+    diagnostics_path = Path(__file__).parent.parent / "ttlang" / "diagnostics.py"
+    spec = importlib.util.spec_from_file_location(
+        "ttlang.diagnostics", diagnostics_path
+    )
+    if spec and spec.loader:
+        diagnostics = importlib.util.module_from_spec(spec)
+        sys.modules["ttlang.diagnostics"] = diagnostics
+        spec.loader.exec_module(diagnostics)
+        return diagnostics.TTLangCompileError
+    raise ImportError("Could not load ttlang.diagnostics")
 
 
 # Protocol for templates that have a bind method
@@ -165,7 +188,9 @@ def Program(*funcs: BindableTemplate) -> Any:
             """Cooperative scheduling execution mode - all cores run in round-robin."""
 
             # Create transformed sources for all cores
-            all_sources: List[Tuple[str, str, str, Dict[str, Any]]] = []
+            all_sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]] = (
+                []
+            )
 
             for core in range(total_cores):
                 # build per-core context
@@ -188,10 +213,10 @@ def Program(*funcs: BindableTemplate) -> Any:
             compute_func_tmpl: BindableTemplate,
             dm0_tmpl: BindableTemplate,
             dm1_tmpl: BindableTemplate,
-        ) -> List[Tuple[str, str, str, Dict[str, Any]]]:
+        ) -> List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]]:
             """Transform function sources for cooperative execution.
 
-            Returns list of (name, func_name, transformed_source, namespace) tuples
+            Returns list of (name, func_name, transformed_ast, namespace, orig_file, orig_lineno) tuples
             that the scheduler will compile and execute.
 
             The transformation inserts `yield (cb, operation)` before each wait()/reserve(),
@@ -201,7 +226,7 @@ def Program(*funcs: BindableTemplate) -> Any:
             3. Continue generator if unblocked, or switch to another if blocked
             4. Detect deadlock when all generators are blocked
             """
-            sources: List[Tuple[str, str, str, Dict[str, Any]]] = []
+            sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]] = []
 
             for name, tmpl in [
                 ("compute", compute_func_tmpl),
@@ -215,6 +240,10 @@ def Program(*funcs: BindableTemplate) -> Any:
                 func = inspect.unwrap(bound_func)
                 source = textwrap.dedent(inspect.getsource(func))
 
+                # Capture original file and line number for error reporting
+                orig_file = inspect.getsourcefile(func) or "<unknown>"
+                orig_lineno = inspect.getsourcelines(func)[1]
+
                 # Strip decorators from source (lines starting with @)
                 source_lines = source.split("\n")
                 func_start_idx = 0
@@ -222,27 +251,38 @@ def Program(*funcs: BindableTemplate) -> Any:
                     if line.strip().startswith("def "):
                         func_start_idx = i
                         break
+
+                # Adjust orig_lineno to point to the def line, not the decorator
+                orig_lineno += func_start_idx
+
                 source = "\n".join(source_lines[func_start_idx:])
 
-                # Transform: add yields before wait()/reserve() calls
-                transformed_source = transform_wait_reserve_to_yield(source)
+                # Transform: add yields before wait()/reserve() calls, returning AST
+                transformed_ast = transform_wait_reserve_to_yield_ast(source)
 
                 # Prepare namespace with core context and function's globals
                 # Use original function's globals to get imports like 'ttl', 'copy', etc.
                 func_globals = func.__globals__
                 namespace = {**func_globals, **core_context}
 
-                # Return transformed source and context for scheduler to execute
+                # Return transformed AST and context for scheduler to execute
                 # Use the original function's name (compute, dm0, dm1), not the wrapper's name (runner)
                 func_name = func.__name__
                 sources.append(
-                    (f"core{core}-{name}", func_name, transformed_source, namespace)
+                    (
+                        f"core{core}-{name}",
+                        func_name,
+                        transformed_ast,
+                        namespace,
+                        orig_file,
+                        orig_lineno,
+                    )
                 )
 
             return sources
 
         def _run_round_robin_scheduler(
-            self, sources: List[Tuple[str, str, str, Dict[str, Any]]]
+            self, sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]]
         ) -> None:
             """Compile sources into generators and run them in round-robin.
 
@@ -255,6 +295,12 @@ def Program(*funcs: BindableTemplate) -> Any:
             - If no, try other generators
             - If all generators are blocked, raise deadlock error
             """
+
+            # Build mapping of generator names to original source locations
+            orig_source_map: Dict[str, Tuple[str, int]] = {
+                name: (orig_file, orig_lineno)
+                for name, _, _, _, orig_file, orig_lineno in sources
+            }
 
             def _advance_generator(
                 name: str,
@@ -283,23 +329,74 @@ def Program(*funcs: BindableTemplate) -> Any:
                             f"Transformed code should always yield before completing."
                         )
                 except Exception as e:
-                    # Generator raised an error
-                    tb_str = traceback.format_exc()
-                    error_msg = f"{name}: {type(e).__name__}: {e}"
-                    print(f"\n❌ {error_msg}")
-                    print("   traceback:")
-                    print(tb_str)
-                    print("-" * 50)
-                    raise RuntimeError(error_msg)
+                    # Generator raised an error - add source context
+                    # Add original source location if available
+                    if name in orig_source_map:
+                        orig_file, func_def_line = orig_source_map[name]
+
+                        # Extract line number and column from traceback
+                        # Since we preserve original line numbers in AST, the traceback line
+                        # is relative to the function definition
+                        tb = traceback.extract_tb(e.__traceback__)
+                        for frame in tb:
+                            # Find the frame in the transformed code
+                            if f"<{name}_transformed>" in frame.filename:
+                                # frame.lineno is the line number within the transformed function
+                                # which has line numbers preserved from the original source
+                                # Adjust to absolute line in file: (func_def_line - 1) + frame.lineno
+                                if frame.lineno is not None:
+                                    actual_line = func_def_line - 1 + frame.lineno
+                                    actual_col = getattr(frame, "colno", None) or 1
+
+                                    # Use TTLangCompileError for pretty formatting
+                                    TTLangCompileError = _get_ttlang_compile_error()
+                                    compile_error = TTLangCompileError(
+                                        f"{type(e).__name__}: {e}",
+                                        source_file=orig_file,
+                                        line=actual_line,
+                                        col=actual_col,
+                                    )
+                                    print(f"\n❌ Error in {name}:")
+                                    print(compile_error.format())
+                                    print("-" * 50)
+                                    raise RuntimeError(str(compile_error))
+
+                                break
+                        else:
+                            # Fallback if we can't find the transformed frame
+                            error_msg = f"{name}: {type(e).__name__}: {e}"
+                            error_msg += f"\n  In function defined at: {orig_file}:{func_def_line}"
+                            print(f"\n❌ {error_msg}")
+                            tb_str = traceback.format_exc()
+                            print("   traceback:")
+                            print(tb_str)
+                            print("-" * 50)
+                            raise RuntimeError(error_msg)
+                    else:
+                        # No source mapping - print full traceback
+                        error_msg = f"{name}: {type(e).__name__}: {e}"
+                        print(f"\n❌ {error_msg}")
+                        tb_str = traceback.format_exc()
+                        print("   traceback:")
+                        print(tb_str)
+                        print("-" * 50)
+                        raise RuntimeError(error_msg)
 
             # First, compile and execute all sources to create generators
             # active[name] = (generator, blocking_object, operation)
             # blocking_object can be CircularBuffer or CopyTransaction - both support can_wait()/can_reserve()
             active: Dict[str, Tuple[Generator[None, None, None], Any, str]] = {}
 
-            for name, func_name, transformed_source, namespace in sources:
-                # Compile transformed source to bytecode
-                code_obj = compile(transformed_source, f"<{name}_transformed>", "exec")
+            for (
+                name,
+                func_name,
+                transformed_ast,
+                namespace,
+                _orig_file,
+                _orig_lineno,
+            ) in sources:
+                # Compile transformed AST to bytecode (preserves line numbers)
+                code_obj = compile(transformed_ast, f"<{name}_transformed>", "exec")
 
                 # Execute to define the function in the namespace
                 try:

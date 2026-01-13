@@ -19,7 +19,7 @@ import tempfile
 import pytest
 import torch
 import ttnn
-from utils import assert_allclose
+from test_helpers import assert_allclose
 
 # Skip all tests if ttnn not available
 pytestmark = pytest.mark.requires_ttnn

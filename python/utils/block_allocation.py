@@ -5,6 +5,7 @@ import itertools
 import math
 from collections import namedtuple
 from typing import List, Tuple
+from collections import namedtuple
 
 import sympy
 

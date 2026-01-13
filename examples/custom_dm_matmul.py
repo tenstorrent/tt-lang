@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import torch
 from ttlang.ttl_api import *
-from ttlang.utils.correctness import assert_allclose
+from utils.correctness import assert_allclose
 
 
 @pykernel_gen(
