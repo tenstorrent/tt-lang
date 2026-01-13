@@ -235,9 +235,33 @@ def copy(src, dst) -> CopyTransferHandler:
         )
 
 
+@syntax("core_x")
+def core_x():
+    """
+    Get the X coordinate (column) of the current core.
+
+    Returns:
+        Index value representing the core's X coordinate (0 to grid_cols-1)
+    """
+    return ttl.core_x()
+
+
+@syntax("core_y")
+def core_y():
+    """
+    Get the Y coordinate (row) of the current core.
+
+    Returns:
+        Index value representing the core's Y coordinate (0 to grid_rows-1)
+    """
+    return ttl.core_y()
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
     "copy",
+    "core_x",
+    "core_y",
     *_generated_all,
 ]
