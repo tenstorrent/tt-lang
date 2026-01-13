@@ -120,21 +120,26 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK-NEXT:       size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
 // CHECK-NEXT:       size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
 
-// Load tile from CB0 into DST[0]
+// Load tile from CB0 into DST[dst_idx_a]
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
+// Dynamic DST index: base + (i * footprint * cols + j * footprint) where footprint=2
+// CHECK:            size_t [[DST_A:.*]] = {{.*}} + {{.*}};
+// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[DST_A]]);
 
-// Load tile from CB1 into DST[1]
+// Load tile from CB1 into DST[dst_idx_b]
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
+// Dynamic DST index: (i * footprint * cols + j * footprint) + 1 for second operand
+// CHECK:            size_t [[DST_B_BASE:.*]] = {{.*}} + {{.*}};
+// CHECK:            size_t [[DST_B:.*]] = [[DST_B_BASE]] + {{.*}};
+// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[DST_B]]);
 
 // Compute: A + B
 // CHECK-NEXT:       add_binary_tile_init();
-// CHECK-NEXT:       add_binary_tile([[ZERO]], [[ONE]], [[ZERO]]);
+// CHECK-NEXT:       add_binary_tile([[DST_A]], [[DST_B]], [[DST_A]]);
 
 // Compute: exp(A + B)
 // CHECK-NEXT:       exp_tile_init();
-// CHECK-NEXT:       exp_tile([[ZERO]]);
+// CHECK-NEXT:       exp_tile([[DST_A]]);
 
 // End compute loops
 // CHECK-NEXT:     }
@@ -155,8 +160,11 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[PACK_I]] * {{.*}};
 // CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[PACK_J]];
 
+// Dynamic DST index for pack: cbTileIndex * footprint
+// CHECK-NEXT:       size_t [[PACK_DST:v[0-9]+]] = [[CB_IDX]] * {{.*}};
+
 // Pack result to output CB2
-// CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// CHECK-NEXT:       pack_tile{{.*}}([[PACK_DST]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // Push to signal data ready
 // CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
@@ -191,7 +199,8 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%output_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map, #map],
-       iterator_types = ["parallel", "parallel"]} {
+       iterator_types = ["parallel", "parallel"],
+       "ttl.dst_footprint" = 2 : i32} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
