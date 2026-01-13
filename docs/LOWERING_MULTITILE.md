@@ -85,7 +85,7 @@ Replaces tensor-level `ttl.add` with `ttl.compute` region containing element-wis
 
 Pass: [lib/Dialect/TTL/Transforms/TTLTileAndAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLTileAndAssignDST.cpp)
 
-Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. The `ttl.linearized_index` computes tile position: for 2x2, maps (0,0)->0, (0,1)->1, (1,0)->2, (1,1)->3. Also computes peak DST usage per tile iteration and stores it as `ttl.dst_footprint` attribute on the compute op for use in dynamic DST index computation during lowering.
+Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. The `ttl.linearized_index` computes tile position: for 2x2, maps (0,0)->0, (0,1)->1, (1,0)->2, (1,1)->3. DST allocation uses a two-phase strategy: inputs get constant DST indices (0, 1, ...) based on liveness, outputs get `footprint + tile_linear_idx` where footprint is the number of DST registers needed for inputs. Unary ops are in-place (read and write the same DST register), so their output reuses the input's DST index. The `ttl.dst_footprint` attribute on the compute op stores the input footprint for use during lowering.
 
 ```mlir
 %11 = ttl.compute ins(%4, %6 : ...) outs(%10 : ...) {...}
@@ -101,7 +101,7 @@ Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attr
   %dst_token_0, %dst_tile_1 = ttl.copy_tile %arg1, %14, %c1 : !ttcore.tile<32x32, bf16>, index, index
                                                             -> !ttl.dst, !ttcore.tile<32x32, bf16>
 
-  %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 2 : i32} : !ttcore.tile<32x32, bf16>
   ttl.yield %15 : !ttcore.tile<32x32, bf16>
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 ```
@@ -185,7 +185,7 @@ ttl.tile_regs_release
 
 Pass: [lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp)
 
-Converts TTL operations to hardware-specific `ttkernel.*` operations. CB handles become typed `!ttkernel.cb`. Tile operations map to hardware intrinsics: `copy_tile_init/copy_tile`, `add_binary_tile_init/add_binary_tile`, `pack_tile`. DST indices are computed dynamically using affine maps: `base_dst_idx + footprint * linearize(ivs, ubs)` where footprint comes from the `ttl.dst_footprint` attribute on the enclosing loop.
+Converts TTL operations to hardware-specific `ttkernel.*` operations. CB handles become typed `!ttkernel.cb`. Tile operations map to hardware intrinsics: `copy_tile_init/copy_tile`, `add_binary_tile_init/add_binary_tile`, `pack_tile`. DST indices for `copy_tile` use constant values (0, 1, ...) from the `dst_idx` attribute. Output operations use `footprint + linearized_tile_index` where footprint comes from `ttl.dst_footprint`. Pack operations use `footprint + cb_tile_index` to read the correct DST register for each tile.
 
 ```mlir
 // Compute loop
@@ -195,17 +195,16 @@ scf.for %arg0 = %c0 to %c2 step %c1 {"ttl.dst_footprint" = 2 : i32} {
     %lin_idx = affine.apply affine_map<(d0, d1) -> (d0 * 2 + d1)>(%arg0, %arg1)
 
     ttkernel.copy_tile_init(%0) : ...
-    // Dynamic DST index: base(0) + footprint(2) * lin_idx
-    %dst0 = affine.apply affine_map<(d0, d1) -> (d0 * 4 + d1 * 2)>(%arg0, %arg1)
-    ttkernel.copy_tile(%0, %lin_idx, %dst0) : ...
+    ttkernel.copy_tile(%0, %lin_idx, %c0) : ...  // DST index = 0 (constant)
 
     ttkernel.copy_tile_init(%1) : ...
-    // Dynamic DST index: base(1) + footprint(2) * lin_idx
-    %dst1 = affine.apply affine_map<(d0, d1) -> (d0 * 4 + d1 * 2 + 1)>(%arg0, %arg1)
-    ttkernel.copy_tile(%1, %lin_idx, %dst1) : ...
+    ttkernel.copy_tile(%1, %lin_idx, %c1) : ...  // DST index = 1 (constant)
+
+    // Output DST index: footprint(2) + linearized_index
+    %dst_out = arith.addi %lin_idx, %c2 : index
 
     ttkernel.add_binary_tile_init() : ...
-    ttkernel.add_binary_tile(%dst0, %dst1, %dst0) : ...
+    ttkernel.add_binary_tile(%c0, %c1, %dst_out) : ...  // inputs at 0,1; output at 2+lin_idx
   }
 }
 
@@ -217,8 +216,8 @@ scf.for %arg0 = %c0 to %c2 step %c1 {"ttl.dst_footprint" = 2 : i32} {
   scf.for %arg1 = %c0 to %c2 step %c1 {
     %cb_idx = arith.muli %arg0, %c2 : index
     %cb_idx_1 = arith.addi %cb_idx, %arg1 : index
-    // Dynamic DST index for pack: cbTileIndex * footprint
-    %pack_dst = arith.muli %cb_idx_1, %c2 : index
+    // DST index for pack: footprint + cb_tile_index
+    %pack_dst = arith.addi %cb_idx_1, %c2 : index
     ttkernel.pack_tile(%pack_dst, %2, %cb_idx_1, false) : ...
   }
 }
@@ -228,7 +227,7 @@ scf.for %arg0 = %c0 to %c2 step %c1 {"ttl.dst_footprint" = 2 : i32} {
 
 Pass: MLIR standard pass (`mlir/Conversion/AffineToStandard`)
 
-Lowers `affine.apply` to explicit arithmetic. The DST index maps like `affine_map<(d0, d1) -> (d0 * 4 + d1 * 2)>` become sequences of `arith.muli` and `arith.addi`.
+Lowers `affine.apply` to explicit arithmetic. The linearized index `affine_map<(d0, d1) -> (d0 * 2 + d1)>` becomes `arith.muli` and `arith.addi`.
 
 ```mlir
 // Compute loop
@@ -240,22 +239,20 @@ scf.for %arg0 = %c0 to %c2 step %c1 {
     %lin_idx = arith.addi %lin_off, %arg1 : index
 
     ttkernel.copy_tile_init(%0) : ...
-    // DST index for first operand: i * 4 + j * 2 (base=0, footprint=2, cols=2)
-    %c4 = arith.constant 4 : index
-    %dst0_row = arith.muli %arg0, %c4 : index
-    %dst0_col = arith.muli %arg1, %c2_0 : index
-    %dst0 = arith.addi %dst0_row, %dst0_col : index
-    ttkernel.copy_tile(%0, %lin_idx, %dst0) : ...
+    ttkernel.copy_tile(%0, %lin_idx, %c0) : ...  // DST index = 0
 
     ttkernel.copy_tile_init(%1) : ...
-    // DST index for second operand: i * 4 + j * 2 + 1 (base=1)
-    %dst1_base = arith.addi %dst0_row, %dst0_col : index
-    %c1_0 = arith.constant 1 : index
-    %dst1 = arith.addi %dst1_base, %c1_0 : index
-    ttkernel.copy_tile(%1, %lin_idx, %dst1) : ...
+    ttkernel.copy_tile(%1, %lin_idx, %c1) : ...  // DST index = 1
+
+    // Output DST index: footprint + linearized_index
+    %c2_1 = arith.constant 2 : index
+    %dst_off = arith.muli %arg0, %c2_1 : index
+    %dst_lin = arith.addi %dst_off, %arg1 : index
+    %c2_2 = arith.constant 2 : index
+    %dst_out = arith.addi %dst_lin, %c2_2 : index
 
     ttkernel.add_binary_tile_init() : ...
-    ttkernel.add_binary_tile(%dst0, %dst1, %dst0) : ...
+    ttkernel.add_binary_tile(%c0, %c1, %dst_out) : ...
   }
 }
 
@@ -267,7 +264,8 @@ scf.for %arg0 = %c0 to %c2 step %c1 {
   scf.for %arg1 = %c0 to %c2 step %c1 {
     %cb_off = arith.muli %arg0, %c2 : index
     %cb_idx = arith.addi %cb_off, %arg1 : index
-    %pack_dst = arith.muli %cb_idx, %c2 : index
+    // DST index for pack: footprint + cb_tile_index
+    %pack_dst = arith.addi %cb_idx, %c2 : index
     ttkernel.pack_tile(%pack_dst, %2, %cb_idx, false) : ...
   }
 }
@@ -300,27 +298,20 @@ void kernel_main() {
       size_t v9 = v8 + j6;
 
       copy_tile_init(get_compile_time_arg_val(0));
-      // Dynamic DST index for first operand: i * 4 + j * 2
-      size_t v10 = 4;
-      size_t v11 = i5 * v10;
-      size_t v12 = 2;
-      size_t v13 = j6 * v12;
-      size_t v14 = v11 + v13;
-      copy_tile(get_compile_time_arg_val(0), v9, v14);
+      copy_tile(get_compile_time_arg_val(0), v9, v4);  // DST index = 0
 
       copy_tile_init(get_compile_time_arg_val(1));
-      // Dynamic DST index for second operand: i * 4 + j * 2 + 1
-      size_t v15 = 4;
-      size_t v16 = i5 * v15;
-      size_t v17 = 2;
-      size_t v18 = j6 * v17;
-      size_t v19 = v16 + v18;
-      size_t v20 = 1;
-      size_t v21 = v19 + v20;
-      copy_tile(get_compile_time_arg_val(1), v9, v21);
+      copy_tile(get_compile_time_arg_val(1), v9, v3);  // DST index = 1
+
+      // Output DST index: footprint + linearized_index
+      size_t v10 = 2;
+      size_t v11 = i5 * v10;
+      size_t v12 = v11 + j6;
+      size_t v13 = 2;
+      size_t v14 = v12 + v13;
 
       add_binary_tile_init();
-      add_binary_tile(v14, v21, v14);
+      add_binary_tile(v4, v3, v14);  // inputs at DST[0], DST[1]; output at DST[2+lin_idx]
     }
   }
 
@@ -329,15 +320,15 @@ void kernel_main() {
   tile_regs_wait();
 
   // Pack loop - separate from compute
-  for (size_t i22 = v4; i22 < v2; i22 += v3) {
-    for (size_t j23 = v4; j23 < v2; j23 += v3) {
+  for (size_t i15 = v4; i15 < v2; i15 += v3) {
+    for (size_t j16 = v4; j16 < v2; j16 += v3) {
       cb_reserve_back(get_compile_time_arg_val(2), v1);
       // CB tile index: i * 2 + j
-      size_t v24 = i22 * v2;
-      size_t v25 = v24 + j23;
-      // Dynamic DST index for pack: cbTileIndex * footprint
-      size_t v26 = v25 * v2;
-      pack_tile<false>(v26, get_compile_time_arg_val(2), v25);
+      size_t v17 = i15 * v2;
+      size_t v18 = v17 + j16;
+      // DST index for pack: footprint + cb_tile_index
+      size_t v19 = v18 + v2;
+      pack_tile<false>(v19, get_compile_time_arg_val(2), v18);
       cb_push_back(get_compile_time_arg_val(2), v1);
     }
   }
