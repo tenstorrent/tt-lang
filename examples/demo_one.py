@@ -52,9 +52,27 @@ def add_with_kernel(a, b, c, y):
                     b_cb.reserve() as b_blk,
                     c_cb.reserve() as c_blk,
                 ):
-                    tx_a = ttl.copy(a[row, col], a_blk)
-                    tx_b = ttl.copy(b[row, col], b_blk)
-                    tx_c = ttl.copy(c[row, col], c_blk)
+                    tx_a = ttl.copy(
+                        a[
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
+                        ],
+                        a_blk,
+                    )
+                    tx_b = ttl.copy(
+                        b[
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
+                        ],
+                        b_blk,
+                    )
+                    tx_c = ttl.copy(
+                        c[
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
+                        ],
+                        c_blk,
+                    )
 
                     tx_a.wait()
                     tx_b.wait()
@@ -65,7 +83,13 @@ def add_with_kernel(a, b, c, y):
         for row in range(rows):
             for col in range(cols):
                 with y_cb.wait() as y_blk:
-                    tx = ttl.copy(y_blk, y[row, col])
+                    tx = ttl.copy(
+                        y_blk,
+                        y[
+                            row * row_tiles : (row + 1) * row_tiles,
+                            col * col_tiles : (col + 1) * col_tiles,
+                        ],
+                    )
                     tx.wait()
 
     return ttl.Program(add_compute, add_read, add_write)(a, b, c, y)
@@ -76,9 +100,9 @@ device = ttnn.open_device(device_id=0)
 try:
     # shape = (64, 64)
     shape = (256, 256)
-    a = torch.full(shape, 2.0, dtype=torch.bfloat16)
-    b = torch.full(shape, 3.0, dtype=torch.bfloat16)
-    c = torch.full(shape, 10.0, dtype=torch.bfloat16)
+    a = torch.rand(shape, dtype=torch.bfloat16)
+    b = torch.rand(shape, dtype=torch.bfloat16)
+    c = torch.rand(shape, dtype=torch.bfloat16)
     y = torch.zeros(shape, dtype=torch.bfloat16)
 
     expected_y = a * b + c
@@ -117,7 +141,8 @@ try:
     y = ttnn.to_torch(y)
     print(y)
     print(expected_y)
-    assert torch.equal(y, expected_y)
+
+    assert torch.allclose(y, expected_y, rtol=1e-2, atol=1e-2), "Tensors do not match"
 
 finally:
     ttnn.close_device(device)

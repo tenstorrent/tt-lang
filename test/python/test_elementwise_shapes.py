@@ -48,9 +48,7 @@ pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
 
 TILE_SIZE = 32
 
-# TODO: right now I'm seeing resource errors with shape > 3 tiles (2x2 or 4x1),
-# so limiting to max 3x1 or 1x3.
-TILE_SHAPES = [(r, c) for r in range(1, 4) for c in range(1, 4) if r == 1 or c == 1]
+TILE_SHAPES = [(r, c) for r in range(1, 5) for c in range(1, 5)]
 
 
 def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
@@ -377,8 +375,8 @@ def test_binary_op(device, op_name, tile_shape):
     kernel = make_binary_kernel(op_name, op_str, tile_rows, tile_cols)
 
     # Generate inputs
-    lhs_torch = torch.full(tensor_shape, 2.0, dtype=torch.bfloat16)
-    rhs_torch = torch.full(tensor_shape, 3.0, dtype=torch.bfloat16)
+    lhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
+    rhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     out_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
 
     # Compute expected result
@@ -426,8 +424,8 @@ def test_binary_fn_op(device, op_name, tile_shape):
     kernel = make_binary_fn_kernel(op_name, op_str, tile_rows, tile_cols)
 
     # Generate inputs
-    lhs_torch = torch.full(tensor_shape, 2.0, dtype=torch.bfloat16)
-    rhs_torch = torch.full(tensor_shape, 3.0, dtype=torch.bfloat16)
+    lhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
+    rhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     out_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
 
     # Compute expected result

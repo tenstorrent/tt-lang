@@ -358,8 +358,9 @@ def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
 //===----------------------------------------------------------------------===//
 
 // Base class for tile operations
+// Note: These ops are NOT Pure because they write to DST registers.
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [Pure, TTL_TileComputeOpTrait])>;
+    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait])>;
 
 def TTL_TileType : TypeConstraint<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,

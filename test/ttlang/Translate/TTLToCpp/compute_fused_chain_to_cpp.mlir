@@ -18,17 +18,17 @@
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // CHECK-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// --- DST register lifecycle (acquire before loops) ---
-// CHECK:       tile_regs_acquire();
-
 // --- Nested loops over 2x2 tile grid ---
-// CHECK-NEXT:  for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
+// CHECK:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
 // CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
 
 // --- Compute linear tile index: i * cols + j ---
 // CHECK:           size_t [[COL_SIZE:.*]] = 2;
 // CHECK-NEXT:      size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
 // CHECK-NEXT:      size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
+
+// --- DST register lifecycle (acquire inside loop) ---
+// CHECK-NEXT:      tile_regs_acquire();
 
 // --- Load tile from CB0 (input A) into DST[0] ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
@@ -67,12 +67,12 @@
 // --- Push to signal data ready ---
 // CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
+// --- DST register lifecycle (release inside loop) ---
+// CHECK-NEXT:      tile_regs_release();
+
 // --- End of inner and outer loops ---
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
-
-// --- DST register lifecycle (release after loops) ---
-// CHECK-NEXT:  tile_regs_release();
 // CHECK-NEXT:  return;
 
 // --- Verify no tensor operations remain ---

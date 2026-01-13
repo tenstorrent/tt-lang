@@ -12,9 +12,9 @@
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
 // CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, buffer_factor = 1}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
-// CHECK:           ttl.tile_regs_acquire
-// CHECK-NEXT:      %[[RES:.*]] = ttl.compute
+// CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK:             ttl.tile_regs_acquire
 // CHECK:             %[[LIN_IDX_0:.*]] = ttl.linearized_index #{{.*}} : index
 // CHECK:             %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %[[LIN_IDX_0]], %{{.*}} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK:             %[[LIN_IDX_1:.*]] = ttl.linearized_index #{{.*}} : index
@@ -30,9 +30,9 @@
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.store %[[SQRT]], %[[VIEW]]
+// CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[SQRT]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      return %[[RES]]
 func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                           %b: tensor<2x2x!ttcore.tile<32x32, f32>>)

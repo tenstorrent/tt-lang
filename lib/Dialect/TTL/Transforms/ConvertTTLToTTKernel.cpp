@@ -137,8 +137,14 @@ static bool isNocKernel(Operation *op) {
 /// Compute linearized CB tile index from enclosing scf.for loops.
 /// For nested loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
 /// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
+///
+/// When cbShapeRank > 0, only the innermost cbShapeRank loops are used,
+/// computing a relative index within a CB block rather than an absolute
+/// tensor-wide index.
+///
 /// Returns constant 0 if not inside any loops (single-tile case).
-static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
+static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
+                                         size_t cbShapeRank = 0) {
   Location loc = op->getLoc();
 
   SmallVector<scf::ForOp> loops;
@@ -152,6 +158,11 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder) {
 
   if (loops.empty()) {
     return builder.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
+  // Only use innermost cbShapeRank loops for relative CB index.
+  if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
+    loops.resize(cbShapeRank);
   }
 
   // Validate assumptions: all loops have step=1 and lower bound=0.
@@ -429,8 +440,9 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     }
 
-    // Compute CB tile index from enclosing loops for multi-tile cases.
-    auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter);
+    // Compute CB tile index from innermost 2 loops (CB is always 2D).
+    auto cbTileIndex =
+        computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
