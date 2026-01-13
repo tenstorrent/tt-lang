@@ -200,6 +200,42 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
 
   return linearIdx;
 }
+-
+/// Compute dynamic DST index for multi-tile pack operations.
+/// Returns: baseDstIdx + (tileLinearIndex * dstFootprint)
+/// If dstFootprint attribute is not found or not in loops, returns the
+/// unmodified cbTileIndex.
+static Value computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
+                                           Value cbTileIndex,
+                                           int64_t baseDstIdx = 0) {
+  Location loc = op->getLoc();
+
+  // Collect enclosing loops to find footprint attribute.
+  SmallVector<scf::ForOp> loops;
+  for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(p)) {
+      loops.push_back(forOp);
+    }
+  }
+
+  if (loops.empty()) {
+    return cbTileIndex;
+  }
+
+  // Find dst_footprint on outermost loop.
+  auto footprintAttr =
+      loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
+  if (!footprintAttr) {
+    return cbTileIndex;
+  }
+
+  // Dynamic DST index: base + cbTileIndex * footprint
+  int64_t footprint = footprintAttr.getInt();
+  Value base = builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
+  Value footprintVal = builder.create<arith::ConstantIndexOp>(loc, footprint);
+  Value offset = builder.create<arith::MulIOp>(loc, cbTileIndex, footprintVal);
+  return builder.create<arith::AddIOp>(loc, base, offset);
+}
 
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
 /// ctaIndex: Index into compile-time args where tensor config starts.
@@ -424,33 +460,22 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // Get the DST index from the tile value's dst_idx attribute.
-    // The DST assignment pass (ttl-tile-and-assign-dst) should run before this
-    // pass and annotates tile-producing operations with DST register indices.
-    // If the attribute is missing, we default to DST index 0.
-    auto tileValue = adaptor.getTile();
-    Value dstIndex;
-
-    if (auto defOp = tileValue.getDefiningOp()) {
-      if (auto dstIdxAttr =
-              defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-        dstIndex =
-            rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
-      }
-    }
-
-    // Default to DST index 0 if no attribute is found.
-    // This can happen in unit tests or if DST assignment hasn't run.
-    if (!dstIndex) {
-      dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    }
-
     // Compute CB tile index from innermost 2 loops for multi-tile cases.
     // TTL CBs are always 2D (enforced by Python API), so we use the innermost
     // 2 loops to compute a relative index within a CB block rather than an
     // absolute index across all loops.
     constexpr size_t kCBShapeRank = 2;
     auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter, kCBShapeRank);
+
+    // For multi-tile with two-loop structure, the DST index is computed as:
+    //   base_dst + cbTileIndex * footprint
+    // where base_dst=0 (the output's assigned DST slot) and footprint is the
+    // per-tile DST usage. This matches how compute ops store to DST.
+    //
+    // TODO(#NNN): Validate DST capacity is sufficient for the tile block size.
+    // For bf16/f16 with 2x2 blocks (4 tiles), capacity of 8 is sufficient.
+    Value dstIndex = computeDynamicDstIndexForPack(op, rewriter, cbTileIndex);
+
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 

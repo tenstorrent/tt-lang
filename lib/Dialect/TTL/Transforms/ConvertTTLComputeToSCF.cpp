@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -429,7 +430,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     bool packFailed = false;
 
     // Loop 1: Compute phase - iterate over all tiles, compute into DST regs.
-    // Compute doesn't modify output tensors, so iter_args pass through unchanged.
+    // Compute doesn't modify output tensors, so iter_args pass through
+    // unchanged.
     scf::LoopNest computeLoop = scf::buildLoopNest(
         rewriter, loc, lowerBounds, upperBounds, steps, initValues,
         [&](OpBuilder &b, Location loc, ValueRange ivs,
@@ -445,6 +447,16 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
     if (computeFailed) {
       return rewriter.notifyMatchFailure(op, "compute phase failed");
+    }
+
+    // Propagate dst_footprint attribute to outermost compute loop for access
+    // during tile op lowering (for multi-tile dynamic DST index computation).
+    if (auto footprintAttr =
+            op->getAttrOfType<IntegerAttr>(kDstFootprintAttrName)) {
+      if (!computeLoop.loops.empty()) {
+        computeLoop.loops.front()->setAttr(kDstFootprintAttrName,
+                                           footprintAttr);
+      }
     }
 
     // Insert commit/wait between compute and pack loops.
@@ -468,6 +480,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
     if (packFailed) {
       return rewriter.notifyMatchFailure(op, "pack phase failed");
+    }
+
+    // Propagate dst_footprint attribute to outermost pack loop for access
+    // during store/pack_tile lowering (for multi-tile dynamic DST index).
+    if (auto footprintAttr =
+            op->getAttrOfType<IntegerAttr>(kDstFootprintAttrName)) {
+      if (!packLoop.loops.empty()) {
+        packLoop.loops.front()->setAttr(kDstFootprintAttrName, footprintAttr);
+      }
     }
 
     rewriter.replaceOp(op, packLoop.results);

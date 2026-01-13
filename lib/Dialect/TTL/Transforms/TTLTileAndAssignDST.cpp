@@ -159,6 +159,13 @@ struct TTLTileAndAssignDSTPass
         return;
       }
 
+      // Store peak DST usage as attribute for multi-tile DST offset
+      // computation. In multi-tile mode, each tile's DST indices are offset by:
+      //   tile_linear_index * peakDSTUsage
+      OpBuilder attrBuilder(computeOp.getContext());
+      computeOp->setAttr(kDstFootprintAttrName,
+                         attrBuilder.getI32IntegerAttr(peakUsage));
+
       // Insert copy_tile immediately before the first use of each block
       // argument. Track register usage for capacity validation. Bit set =
       // register in use, bit clear = register free.

@@ -29,6 +29,7 @@ class TTLTileOpTrait
 /// Attribute names.
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
+inline constexpr llvm::StringRef kDstFootprintAttrName = "ttl.dst_footprint";
 
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>

@@ -20,9 +20,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -169,6 +172,66 @@ struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
 // Helpers
 //===----------------------------------------------------------------------===//
 
+/// Compute dynamic DST index for multi-tile operations.
+/// Returns: baseDstIdx + (tileLinearIndex * dstFootprint)
+/// If dstFootprint attribute is not found or not in loops, returns static
+/// baseDstIdx.
+static Value computeDynamicDstIndex(Operation *op, OpBuilder &builder,
+                                    int64_t baseDstIdx) {
+  Location loc = op->getLoc();
+
+  // Collect enclosing loop IVs and bounds (innermost first).
+  SmallVector<scf::ForOp> loops;
+  for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(p)) {
+      loops.push_back(forOp);
+    }
+  }
+
+  if (loops.empty()) {
+    return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
+  }
+
+  // Find dst_footprint attribute - check ComputeOp (pre-loop lowering)
+  // or outermost enclosing SCF loop (post-loop lowering).
+  IntegerAttr footprintAttr;
+  if (auto computeOp = op->getParentOfType<ComputeOp>()) {
+    footprintAttr =
+        computeOp->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
+  } else if (!loops.empty()) {
+    // Check outermost loop for attribute propagated during loop lowering.
+    footprintAttr =
+        loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
+  }
+
+  if (!footprintAttr) {
+    return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
+  }
+
+  // Build affine map: base + footprint * (iv0 * ub1 + iv1) for 2D case.
+  // General: base + footprint * linearize(ivs, ubs)
+  int64_t footprint = footprintAttr.getInt();
+  SmallVector<Value> ivs;
+  SmallVector<int64_t> ubs;
+  for (auto loop : llvm::reverse(loops)) {
+    ivs.push_back(loop.getInductionVar());
+    auto ub = getConstantIntValue(loop.getUpperBound());
+    ubs.push_back(ub ? *ub : 1);
+  }
+
+  // Compute strides and build linearization expression.
+  SmallVector<int64_t> strides = mlir::computeStrides(ubs);
+  AffineExpr linearExpr = builder.getAffineConstantExpr(baseDstIdx);
+  for (size_t i = 0; i < ivs.size(); ++i) {
+    linearExpr =
+        linearExpr + builder.getAffineDimExpr(i) *
+                         builder.getAffineConstantExpr(footprint * strides[i]);
+  }
+
+  AffineMap map = AffineMap::get(ivs.size(), 0, linearExpr);
+  return builder.create<affine::AffineApplyOp>(loc, map, ivs);
+}
+
 /// Extract the DST register index from a tile value. The index is obtained
 /// from either the copy_tile op that placed the tile in DST, or from the
 /// dst_idx attribute on the producing tile operation.
@@ -209,8 +272,8 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
     if (!dstIdxAttr) {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
-    int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+    int64_t baseDstIdx = dstIdxAttr.getInt();
+    Value dstIdxVal = computeDynamicDstIndex(op, rewriter, baseDstIdx);
 
     // Emit init + compute ops
     rewriter.create<InitOp>(loc);
@@ -241,14 +304,14 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     if (!dstIdxAttr) {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
-    int64_t odstIdx = dstIdxAttr.getInt();
+    int64_t baseOdstIdx = dstIdxAttr.getInt();
 
     int64_t src0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
     int64_t src1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
 
-    Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
-    Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
-    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
+    Value src0 = computeDynamicDstIndex(op, rewriter, src0Idx);
+    Value src1 = computeDynamicDstIndex(op, rewriter, src1Idx);
+    Value odst = computeDynamicDstIndex(op, rewriter, baseOdstIdx);
 
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
@@ -274,8 +337,8 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     int64_t dst0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
     int64_t dst1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
 
-    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
-    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
+    Value dst0 = computeDynamicDstIndex(op, rewriter, dst0Idx);
+    Value dst1 = computeDynamicDstIndex(op, rewriter, dst1Idx);
 
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
@@ -330,17 +393,28 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
 
     // Initialize the copy for the given CB (matches TTKernel contract).
     rewriter.create<ttk::CopyTileInitOp>(loc, cb);
-    // Emit the copy from CB[src_index] to DST[dst_index].
-    rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
-                                     adaptor.getDstIndex());
 
-    // Materialize results: dst token from dst_index, and a tile value
+    // Compute dynamic DST index: base + (tileIndex * footprint).
+    // The base index comes from the static dstIndex operand.
+    Value baseDstIdx = adaptor.getDstIndex();
+    int64_t baseDstIdxVal = 0;
+    if (auto constOp = dyn_cast_or_null<arith::ConstantIndexOp>(
+            baseDstIdx.getDefiningOp())) {
+      baseDstIdxVal = constOp.value();
+    }
+    Value dynamicDstIdx = computeDynamicDstIndex(op, rewriter, baseDstIdxVal);
+
+    // Emit the copy from CB[src_index] to DST[dynamic_dst_index].
+    rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
+                                     dynamicDstIdx);
+
+    // Materialize results: dst token from dynamic dst_index, and a tile value
     // passthrough (the tile remains the same logical value for downstream tile
     // ops).
     auto token = rewriter
                      .create<mlir::UnrealizedConversionCastOp>(
                          loc, TypeRange{op.getResult(0).getType()},
-                         ValueRange{adaptor.getDstIndex()})
+                         ValueRange{dynamicDstIdx})
                      .getResult(0);
     auto tile = rewriter
                     .create<mlir::UnrealizedConversionCastOp>(

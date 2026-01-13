@@ -46,7 +46,7 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
   // CHECK-NEXT: %[[ARG0_CB:.*]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
   // CHECK-NEXT: %[[INIT:.*]] = tensor.empty
   // CHECK-NEXT: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB1]]
-  // CHECK-NEXT: %[[RESULT:.*]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
+  // CHECK-NEXT: %[[RESULT:.*]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]{{.*}}} {
   // CHECK-NEXT: ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[LIN_IDX:.*]] = ttl.linearized_index
   // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]], %[[LIN_IDX]], %[[C0]]
