@@ -15,6 +15,7 @@ from ttlang._generated_elementwise import __all__ as _elementwise_all
 from ttlang.circular_buffer import make_circular_buffer_like
 
 # Export TTL DSL API
+from ttlang.operators import signpost
 from ttlang.ttl_api import (
     CircularBuffer,
     CopyTransferHandler,
@@ -31,6 +32,7 @@ __all__ = [
     "Semaphore",
     "CopyTransferHandler",
     "make_circular_buffer_like",
+    "signpost",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,
 ]

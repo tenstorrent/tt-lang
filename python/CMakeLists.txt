@@ -120,6 +120,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
+    _src/auto_profile.py
     _src/ttl_ast.py
     _src/tensor_registry.py
 )

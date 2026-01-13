@@ -13,6 +13,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LINK_LIBS PUBLIC
   MLIRAnalysis
   MLIRArithDialect
+  MLIREmitCDialect
   MLIRFuncDialect
   MLIRLinalgDialect
   MLIRMathDialect

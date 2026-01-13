@@ -5,7 +5,7 @@
 import ast
 import inspect
 from dataclasses import dataclass
-from typing import List, Set
+from typing import List, Optional, Set
 
 from pykernel._src.kernel_ast import TTCompilerBase
 from ttmlir.dialects import arith, func, ttcore, ttkernel
@@ -17,6 +17,7 @@ from ..dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
 from ..layouts import TTNNLayoutConfig, create_ttnn_layout
 from ..ttl_utils import get_thread_type_string
+from .auto_profile import generate_signpost_name, get_line_mapper, is_auto_profile_enabled
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
@@ -121,6 +122,10 @@ class TTLGenericCompiler(TTCompilerBase):
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
 
+        # Auto-profiling support
+        self.auto_profile_enabled = is_auto_profile_enabled()
+        self.line_mapper = get_line_mapper() if self.auto_profile_enabled else None
+
         self._fn_map = {}
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
@@ -142,15 +147,89 @@ class TTLGenericCompiler(TTCompilerBase):
             col=col,
         )
 
+    # Auto-profiling helpers (factored out to keep visitor code clean)
+
+    def _emit_signpost(self, name: str):
+        """Emit a signpost operation into the MLIR."""
+        ttl.signpost(name)
+
+    def _get_operation_name(self, node: ast.AST) -> Optional[str]:
+        """
+        Extract a meaningful operation name from an AST node.
+
+        Returns operation name like "copy", "pop", "reserve", etc.
+        Returns None if the node should not be instrumented.
+        """
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                # Don't instrument signpost calls themselves
+                if func_name == "signpost":
+                    return None
+                return func_name
+            elif isinstance(node.func, ast.Attribute):
+                return node.func.attr
+        elif isinstance(node, ast.BinOp):
+            op_map = {
+                ast.Add: "tile_add",
+                ast.Sub: "tile_sub",
+                ast.Mult: "tile_mul",
+                ast.MatMult: "tile_matmul",
+            }
+            return op_map.get(type(node.op))
+        return None
+
+    def _try_emit_auto_signposts(self, node, visit_fn):
+        """
+        Wrap a visitor with before/after signposts if auto-profiling is enabled.
+
+        Returns the result of visit_fn() with signposts emitted around it.
+        """
+        if not self.auto_profile_enabled:
+            return visit_fn()
+
+        op_name = self._get_operation_name(node)
+        if op_name is None:
+            return visit_fn()
+
+        before_name, after_name = generate_signpost_name(
+            op_name, node.lineno, node.col_offset
+        )
+
+        # Get source line text for reporting
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {node.lineno}>"
+
+        # Register signposts with line mapper
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, node.lineno, source_line)
+            self.line_mapper.register_signpost(after_name, node.lineno, source_line)
+
+        self._emit_signpost(before_name)
+        result = visit_fn()
+        self._emit_signpost(after_name)
+        return result
+
     def visit_Call(self, node):
-        """Override to set location context and catch errors for call expressions."""
+        """Override to set location context, catch errors, and inject auto-profiling."""
         with self._loc_for_node(node):
             try:
-                return super().visit_Call(node)
+                return self._try_emit_auto_signposts(
+                    node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
+                )
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def visit_BinOp(self, node):
+        """Override to inject auto-profiling for binary operations."""
+        with self._loc_for_node(node):
+            return self._try_emit_auto_signposts(
+                node, lambda: super(TTLGenericCompiler, self).visit_BinOp(node)
+            )
 
     def _is_ttl_module_access(self, node):
         """Check if node is ttl.XXX access pattern."""

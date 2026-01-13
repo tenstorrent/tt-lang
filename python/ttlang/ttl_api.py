@@ -28,6 +28,12 @@ from ttmlir.passes import (
 )
 from ttmlir.passmanager import PassManager
 
+from ._src.auto_profile import (
+    get_line_mapper,
+    is_auto_profile_enabled,
+    parse_device_profile_csv,
+    print_profile_report,
+)
 from ._src.tensor_registry import (
     get_tensor_global_index,
     get_tensor_source,
@@ -68,6 +74,66 @@ class CompilerConfig:
     def should_execute(self) -> bool:
         """Check if runtime execution should proceed."""
         return not self._compile_only
+
+
+def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
+    """
+    Read device profiler data and display profile report.
+
+    Called after kernel execution when auto-profiling is enabled.
+    """
+    if not is_auto_profile_enabled():
+        return
+
+    if ttnn is None:
+        print("[Auto-profile] ttnn not available, skipping profiling")
+        return
+
+    from pathlib import Path
+
+    # Get device from first ttnn tensor
+    device = None
+    for tensor in tensors:
+        if is_ttnn_tensor(tensor) and hasattr(tensor, "device"):
+            device = tensor.device()
+            break
+
+    if device is None:
+        print("[Auto-profile] No device found in tensors, skipping profiling")
+        return
+
+    # Dump profiler data from device
+    try:
+        ttnn.DumpDeviceProfiler(device)
+    except Exception as e:
+        print(f"[Auto-profile] Failed to dump device profiler: {e}")
+        return
+
+    # Find the profile CSV
+    profile_csv_path = os.environ.get(
+        "TTLANG_PROFILE_CSV", "/tmp/profile_log_device.csv"
+    )
+    csv_path = Path(profile_csv_path)
+
+    if not csv_path.exists():
+        print(f"[Auto-profile] Profile CSV not found at {csv_path}")
+        print(
+            "[Auto-profile] Ensure TT_METAL_DEVICE_PROFILER=1 is set before running"
+        )
+        return
+
+    # Parse and display results
+    line_mapper = get_line_mapper()
+    line_mapper.set_source(source_lines)
+
+    try:
+        results = parse_device_profile_csv(csv_path, line_mapper)
+        if results:
+            print_profile_report(results, source_lines, line_mapper)
+        else:
+            print("[Auto-profile] No signpost results found in profile CSV")
+    except Exception as e:
+        print(f"[Auto-profile] Failed to parse profile CSV: {e}")
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -854,6 +920,12 @@ def _compile_and_run_kernel(
         )
         if compiled_kernel is not None and config.should_execute():
             compiled_kernel(*args)
+
+            # Run auto-profiling pipeline after execution
+            if all_source_lines:
+                first_thread = next(iter(all_source_lines.keys()))
+                _run_profiling_pipeline(args, all_source_lines[first_thread])
+
         return compiled_kernel
 
 

@@ -7,6 +7,7 @@
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -932,6 +933,23 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   }
 };
 
+struct SignpostLowering : OpConversionPattern<SignpostOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SignpostOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Emit DeviceZoneScopedN wrapped in braces to avoid variable conflicts.
+    auto loc = op.getLoc();
+    rewriter.create<emitc::VerbatimOp>(loc, "{");
+    rewriter.create<emitc::VerbatimOp>(
+        loc, "DeviceZoneScopedN(\"" + op.getName().str() + "\");");
+    rewriter.create<emitc::VerbatimOp>(loc, "}");
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -997,7 +1015,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
                          func::FuncDialect, tensor::TensorDialect,
-                         ttkernel::TTKernelDialect>();
+                         ttkernel::TTKernelDialect, emitc::EmitCDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
@@ -1031,7 +1049,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering>(typeConverter, &ctx);
+               SignpostLowering, StoreLowering>(typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
