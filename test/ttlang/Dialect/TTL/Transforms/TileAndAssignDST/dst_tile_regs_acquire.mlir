@@ -211,13 +211,14 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify init_sfpu is inserted even when tile_regs_acquire is already present.
+// When pre-existing acquire is in parent, it stays there (not moved inside body).
 // CHECK-LABEL:   func.func @init_sfpu_with_preexisting_acquire
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      ttl.tile_regs_acquire
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0
-// CHECK:             ttl.tile_regs_acquire
 // CHECK:             %[[ADD:.*]] = ttl.tile_add
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
