@@ -148,7 +148,9 @@ try:
         print(f"\nMismatches found: {mismatch_indices.shape[0]}")
         for idx in mismatch_indices[:20]:  # Print first 20 mismatches
             i, j = idx[0].item(), idx[1].item()
-            print(f"  [{i}, {j}]: got {y[i, j].item()}, expected {expected_y[i, j].item()}")
+            print(
+                f"  [{i}, {j}]: got {y[i, j].item()}, expected {expected_y[i, j].item()}"
+            )
         if mismatch_indices.shape[0] > 20:
             print(f"  ... and {mismatch_indices.shape[0] - 20} more")
         assert False, "Tensors do not match"

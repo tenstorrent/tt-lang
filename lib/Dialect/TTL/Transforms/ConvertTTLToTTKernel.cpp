@@ -441,7 +441,8 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
     }
 
     // Compute CB tile index from innermost 2 loops (CB is always 2D).
-    auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    auto cbTileIndex =
+        computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
