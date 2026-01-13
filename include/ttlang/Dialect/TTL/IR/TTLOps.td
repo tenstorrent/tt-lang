@@ -414,7 +414,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
 }
 
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType,
+                                                TTL_TileBinaryOpTrait])> {
   let summary = "Binary tile operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs AnyType:$result);
@@ -422,7 +423,8 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
 }
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType,
+                                                TTL_TileUnaryOpTrait])> {
   let summary = "Unary tile operation";
   let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);

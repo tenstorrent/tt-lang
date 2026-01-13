@@ -36,6 +36,16 @@ template <typename ConcreteType>
 class TTLTileComputeOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileComputeOpTrait> {};
 
+/// Trait for unary tile ops (exp, sqrt, etc.) - operate in-place on DST.
+template <typename ConcreteType>
+class TTLTileUnaryOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileUnaryOpTrait> {};
+
+/// Trait for binary tile ops (add, mul, etc.) - DST[odst] = DST[src0] op DST[src1].
+template <typename ConcreteType>
+class TTLTileBinaryOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileBinaryOpTrait> {};
+
 /// Trait for unary elementwise tensor operations (exp, sqrt, etc.).
 template <typename ConcreteType>
 class TTLUnaryElementwiseOpTrait
