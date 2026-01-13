@@ -201,16 +201,26 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
   return linearIdx;
 }
 
-/// Compute dynamic DST index for multi-tile pack operations.
-/// Returns: numInputs + cbTileIndex
-/// Pack operations pack output tiles from DST back to CB. With the optimized
-/// DST allocation, outputs are stored at DST[numInputs + tile_index].
+/// Get base DST index from a tile's defining operation.
+/// Traces through casts to find the compute/copy_tile op with dst_idx attr.
+static std::optional<int64_t> getDstIdxFromTile(Value tile) {
+  Value v = traceUnrealizedCasts(tile);
+  if (auto defOp = v.getDefiningOp()) {
+    if (auto attr = defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+      return attr.getInt();
+    }
+  }
+  return std::nullopt;
+}
+
+/// Compute DST index for pack operations.
+/// Multi-tile: footprint + cbTileIndex (outputs start after inputs)
+/// Single-tile: use dst_idx from store op or tile's defining op
 static Value computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
-                                           Value cbTileIndex,
-                                           int64_t baseDstIdx = 0) {
+                                           Value cbTileIndex, Value tile) {
   Location loc = op->getLoc();
 
-  // Collect enclosing loops to find numInputs attribute.
+  // Collect enclosing loops to find footprint attribute.
   SmallVector<scf::ForOp> loops;
   for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(p)) {
@@ -218,21 +228,28 @@ static Value computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
     }
   }
 
-  if (loops.empty()) {
-    return cbTileIndex;
+  // Multi-tile case: footprint set on outermost loop
+  if (!loops.empty()) {
+    if (auto footprintAttr =
+            loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName)) {
+      int64_t footprint = footprintAttr.getInt();
+      Value base = builder.create<arith::ConstantIndexOp>(loc, footprint);
+      return builder.create<arith::AddIOp>(loc, base, cbTileIndex);
+    }
   }
 
-  // Find dst_footprint attribute (stores numInputs) on outermost loop.
-  auto numInputsAttr =
-      loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
-  if (!numInputsAttr) {
-    return cbTileIndex;
+  // Check dst_idx on the store op itself (propagated during pack loop gen)
+  if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+    return builder.create<arith::ConstantIndexOp>(loc, attr.getInt());
   }
 
-  // Dynamic DST index for outputs: numInputs + cbTileIndex
-  int64_t numInputs = numInputsAttr.getInt();
-  Value base = builder.create<arith::ConstantIndexOp>(loc, numInputs);
-  return builder.create<arith::AddIOp>(loc, base, cbTileIndex);
+  // Fallback: get dst_idx from tile's defining op
+  if (auto dstIdx = getDstIdxFromTile(tile)) {
+    return builder.create<arith::ConstantIndexOp>(loc, *dstIdx);
+  }
+
+  // Final fallback: use cbTileIndex as-is
+  return cbTileIndex;
 }
 
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
@@ -465,14 +482,10 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
     constexpr size_t kCBShapeRank = 2;
     auto cbTileIndex = computeCBTileIndexFromLoops(op, rewriter, kCBShapeRank);
 
-    // For multi-tile with two-loop structure, the DST index is computed as:
-    //   base_dst + cbTileIndex * footprint
-    // where base_dst=0 (the output's assigned DST slot) and footprint is the
-    // per-tile DST usage. This matches how compute ops store to DST.
-    //
-    // TODO(#NNN): Validate DST capacity is sufficient for the tile block size.
-    // For bf16/f16 with 2x2 blocks (4 tiles), capacity of 8 is sufficient.
-    Value dstIndex = computeDynamicDstIndexForPack(op, rewriter, cbTileIndex);
+    // Compute DST index: multi-tile uses footprint + cbTileIndex,
+    // single-tile reads dst_idx from the tile's defining op.
+    Value dstIndex = computeDynamicDstIndexForPack(op, rewriter, cbTileIndex,
+                                                   adaptor.getTile());
 
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);

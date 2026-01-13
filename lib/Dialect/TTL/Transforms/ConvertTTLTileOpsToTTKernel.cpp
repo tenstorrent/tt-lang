@@ -329,33 +329,6 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
-/// Special pattern for MaxTileOp which uses 2-arg in-place form:
-/// DST[dst0] = max(DST[dst0], DST[dst1])
-/// TODO: Remove this special pattern once TTKernel adds a 3-arg max_binary_tile
-/// op that matches the add/sub/mul signature: max(src0, src1, odst).
-template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
-struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
-  using OpConversionPattern<SourceOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    int64_t dst0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
-    int64_t dst1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
-
-    Value dst0 = computeDynamicDstIndex(op, rewriter, dst0Idx);
-    Value dst1 = computeDynamicDstIndex(op, rewriter, dst1Idx);
-
-    rewriter.create<InitOp>(loc);
-    rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
-
-    rewriter.replaceOp(op, adaptor.getLhs());
-    return success();
-  }
-};
-
 /// Lower ttl.copy_tile to TTKernel copy_tile_init + copy_tile.
 struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   using OpConversionPattern<CopyTileOp>::OpConversionPattern;
@@ -450,12 +423,6 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
       TTLTileBinaryToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-// Generate type aliases for special binary tile op lowerings (2-arg in-place)
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
-  using TTL_OP##TileLowering =                                                 \
-      TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -479,11 +446,6 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Binary ops (ttl.tile_* → ttkernel.*_tiles)
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  patterns.add<TTL_OP##TileLowering>(ctx);
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
-  // Special binary ops (non-standard lowering template)
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 

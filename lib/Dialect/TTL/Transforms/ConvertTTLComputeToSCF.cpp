@@ -217,13 +217,18 @@ generatePackPhase(OpBuilder &b, Location loc, ComputeOp op,
     return failure();
   }
 
-  // Map compute op results to placeholder values (extracted output tiles).
+  // Map compute op results to placeholder values and collect dst_idx.
   // Pack ops reference compute results via SSA, but the actual data comes from
   // DST registers. We provide placeholder values to satisfy SSA requirements.
+  DenseMap<Value, int64_t> dstIdxForResult;
   for (Operation *computeOp : phases.computeOps) {
+    if (auto attr = computeOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+      for (Value result : computeOp->getResults()) {
+        dstIdxForResult[result] = attr.getInt();
+      }
+    }
     for (Value result : computeOp->getResults()) {
       if (!mapping.contains(result) && !iterArgs.empty()) {
-        // Extract from first output - the type should match compute result.
         SmallVector<Value> indices =
             applyIndexingMap(b, loc, indexingMaps[numInputs], ivs);
         Value placeholder =
@@ -233,9 +238,22 @@ generatePackPhase(OpBuilder &b, Location loc, ComputeOp op,
     }
   }
 
-  // Clone pack ops - these become pack_tile which reads from DST registers.
-  // The DST index is computed from loop IVs by later lowering passes.
-  cloneOps(b, phases.packOps, mapping);
+  // Clone pack ops and transfer dst_idx from compute results to store ops.
+  for (Operation *op : phases.packOps) {
+    if (isa<LinearizedIndexOp>(op)) {
+      continue;
+    }
+    Operation *cloned = b.clone(*op, mapping);
+    // Transfer dst_idx if store op references a compute result with dst_idx
+    if (auto storeOp = dyn_cast<StoreOp>(cloned)) {
+      Value originalTile = op->getOperand(0);
+      if (auto it = dstIdxForResult.find(originalTile);
+          it != dstIdxForResult.end()) {
+        cloned->setAttr(kDstIdxAttrName,
+                        b.getI32IntegerAttr(static_cast<int32_t>(it->second)));
+      }
+    }
+  }
 
   // Tensor insert to maintain SSA form. The actual data comes from DST via
   // pack_tile, but we need tensor values to flow through the loop.
@@ -482,8 +500,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       return rewriter.notifyMatchFailure(op, "pack phase failed");
     }
 
-    // Propagate dst_footprint attribute to outermost pack loop for access
-    // during store/pack_tile lowering (for multi-tile dynamic DST index).
+    // Propagate dst_footprint to outermost pack loop for multi-tile.
+    // Single-tile uses dst_idx from the tile's defining op directly.
     if (auto footprintAttr =
             op->getAttrOfType<IntegerAttr>(kDstFootprintAttrName)) {
       if (!packLoop.loops.empty()) {
