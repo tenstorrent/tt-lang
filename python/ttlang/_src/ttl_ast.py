@@ -193,7 +193,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(node, str(e))
 
     def visit_Subscript(self, node):
-        """Handle tensor[row, col] indexing for TTL tensor slices."""
+        """Handle tensor[row, col] or tensor[r0:r1, c0:c1] indexing."""
         tbl = self._var_exists(node.value.id)
         if not tbl:
             self._raise_error(node, f"Unknown variable: {node.value.id}")
@@ -203,20 +203,38 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(node, "TTL only supports subscripting tensors")
 
         if isinstance(node.slice, ast.Tuple):
-            indices = [self._build_index_value(elt) for elt in node.slice.elts]
+            indices = [self._build_index_or_range(elt) for elt in node.slice.elts]
         else:
-            indices = [self._build_index_value(node.slice)]
+            indices = [self._build_index_or_range(node.slice)]
 
         return (tensor, indices)
 
-    def _build_index_value(self, node):
-        """Convert AST node to index Value."""
+    def _to_index_value(self, node):
+        """Convert AST node to MLIR index Value."""
         if isinstance(node, ast.Constant):
             return arith.ConstantOp(IndexType.get(self.ctx), node.value)
         val = self.visit(node)
         if isinstance(val.type, IndexType):
             return val
         return arith.IndexCastOp(IndexType.get(self.ctx), val)
+
+    def _build_index_or_range(self, node):
+        """Convert AST node to (start_value, is_range) tuple.
+
+        For slice syntax (start:end), returns (start_value, True).
+        For index syntax (value), returns (value, False).
+        """
+        if isinstance(node, ast.Slice):
+            if node.lower is None:
+                self._raise_error(node, "Slice must have explicit start index")
+            if node.upper is None:
+                self._raise_error(node, "Slice must have explicit stop index")
+            if node.step is not None:
+                self._raise_error(node, "Slice step is not supported")
+            start_val = self._to_index_value(node.lower)
+            return (start_val, True)
+        else:
+            return (self._to_index_value(node), False)
 
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline

@@ -2,52 +2,44 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: tt-device
-# RUN: not env TTLANG_COMPILE_ONLY=1 %python %s 2>&1 | FileCheck %s
+# REQUIRES: ttnn, tt-device
+# RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Negative tests for fusion errors.
+Validation test: single-tile CB requires index syntax for tensor slices.
 
-Tests that the compiler produces clear error messages when fusion fails due to:
-- Multiple uses of an intermediate value
-- Non-elementwise operations in the chain
+When a CB has shape 1x1, tensor indexing must use index syntax
+(e.g., tensor[0, 0]) rather than range syntax (e.g., tensor[0:1, 0:1]).
 """
 
 import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
+import ttnn
 from ttlang import ttl
 
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
 
-
-# CHECK: fusion failed: intermediate value has multiple uses
+# CHECK: error: CB shape [1, 1] requires index syntax (e.g., tensor[0, 0]), but got range syntax (e.g., tensor[0:2, 0:2])
 @ttl.kernel(grid=(1, 1))
-def multiple_uses_kernel(inp, out):
-    """Kernel where intermediate value is used twice - should fail fusion."""
+def invalid_singletile_range_kernel(inp, out):
+    """This kernel should fail: 1x1 CB but using range syntax."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def compute():
-        i = inp_cb.wait()
+    def compute_fn():
+        x = inp_cb.wait()
         o = out_cb.reserve()
-        # exp_result is used twice - this should fail fusion
-        exp_result = ttl.math.exp(i)
-        result = exp_result + exp_result
-        o.store(result)
+        o.store(x)
         inp_cb.pop()
         out_cb.push()
 
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_cb.reserve()
-        tx = ttl.copy(inp[0, 0], inp_blk)
+        # INVALID: using range syntax with 1x1 CB
+        tx = ttl.copy(inp[0:1, 0:1], inp_blk)
         tx.wait()
         inp_cb.push()
 
@@ -58,11 +50,13 @@ def multiple_uses_kernel(inp, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute, dm_read, dm_write)(inp, out)
+    return ttl.Program(compute_fn, dm_read, dm_write)(inp, out)
 
 
 if __name__ == "__main__":
     import torch
+
+    print("=== Single-tile CB Range Syntax Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 
@@ -85,11 +79,10 @@ if __name__ == "__main__":
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-        inp = ttnn.to_memory_config(inp, memory_config=ttnn.L1_MEMORY_CONFIG)
-        out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
+        invalid_singletile_range_kernel(inp, out)
 
-        # This should fail with fusion error
-        multiple_uses_kernel(inp, out)
+        print("ERROR: Expected ValueError was not raised!")
+        exit(1)
 
     finally:
         ttnn.close_device(device)

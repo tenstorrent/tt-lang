@@ -40,18 +40,18 @@ def add_kernel_f32(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        with lhs_cb.reserve():
-            tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
+        with lhs_cb.reserve() as lhs_blk:
+            tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
 
-        with rhs_cb.reserve():
-            tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
+        with rhs_cb.reserve() as rhs_blk:
+            tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait():
-            tx = ttl.copy(out_cb, out[0, 0])
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
     return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)

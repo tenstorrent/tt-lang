@@ -43,15 +43,15 @@ def debug_loc_kernel(lhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_cb.reserve()
-        tx = ttl.copy(lhs[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx = ttl.copy(lhs[0, 0], lhs_blk)
         tx.wait()
         lhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = ttl.copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 

@@ -42,20 +42,20 @@ def add_multitile_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_cb.reserve()
-        tx_lhs = ttl.copy(lhs[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[0:2, 0:2], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = ttl.copy(rhs[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[0:2, 0:2], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = ttl.copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
         out_cb.pop()
 
