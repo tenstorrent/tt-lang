@@ -108,9 +108,6 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // Initialize SFPU for CB data formats
 // CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
-// Acquire DST registers
-// CHECK-NEXT:   tile_regs_acquire();
-
 // Nested loops over 2x2 tile grid
 // CHECK-NEXT:   for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[ONE]]) {
@@ -119,6 +116,9 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // CHECK:            size_t [[COL_SIZE:.*]] = 2;
 // CHECK-NEXT:       size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
 // CHECK-NEXT:       size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
+
+// Acquire DST registers (inside loop)
+// CHECK-NEXT:       tile_regs_acquire();
 
 // Load tile from CB0 into DST[0]
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
@@ -153,12 +153,12 @@ func.func @reader_binary(%a: tensor<64x64xf32, #layout>, %b: tensor<64x64xf32, #
 // Push to signal data ready
 // CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
+// Release DST registers (inside loop)
+// CHECK-NEXT:       tile_regs_release();
+
 // End loops
 // CHECK-NEXT:     }
 // CHECK-NEXT:   }
-
-// Release DST registers
-// CHECK-NEXT:   tile_regs_release();
 // CHECK-NEXT:   return;
 
 // Compute kernel: reads from CB0, CB1, computes f(A+B), writes to CB2
