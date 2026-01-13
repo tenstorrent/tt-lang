@@ -1,6 +1,6 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=4}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=4096}))' --split-input-file | FileCheck %s
 
-// Capacity is 4.
+// Capacity is 4096 (large to allow multi-tile grids in this test).
 // We chain 5 adds (3 inputs). With capacity 4, reuse must succeed.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

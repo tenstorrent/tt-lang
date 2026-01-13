@@ -1,5 +1,5 @@
 // Summary: ensure ttl.acquire_dst is inserted ahead of DST copies in ttl.compute.
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --ttl-insert-tile-regs-sync --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=64},ttl-insert-tile-regs-sync),canonicalize,cse)' --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

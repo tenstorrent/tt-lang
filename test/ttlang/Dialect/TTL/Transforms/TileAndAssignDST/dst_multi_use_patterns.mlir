@@ -2,7 +2,7 @@
 // and fan-out scenarios to ensure the DST allocator correctly handles values
 // used by multiple operations without clobbering live registers.
 
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=4096}),canonicalize)' --split-input-file | FileCheck %s
 
 // Test: Diamond dependency pattern with intermediate result reuse.
 // Purpose: Verify that a value used by multiple tile ops is copied once and
