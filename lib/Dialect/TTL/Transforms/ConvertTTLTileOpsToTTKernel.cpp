@@ -173,35 +173,52 @@ struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
 //===----------------------------------------------------------------------===//
 
 /// Compute dynamic DST index for multi-tile operations.
-/// Returns: baseDstIdx + (tileLinearIndex * dstFootprint)
-/// If dstFootprint attribute is not found or not in loops, returns static
+/// Returns: numInputs + tile_linear_index for output tiles.
+/// If dst_footprint attribute is not found or not in loops, returns static
 /// baseDstIdx.
+///
+/// The dst_footprint attribute marks the outermost tile loop. Only loops at or
+/// below this level contribute to the tile linear index. Outer block loops
+/// (above the tile loops) are excluded from linearization.
 static Value computeDynamicDstIndex(Operation *op, OpBuilder &builder,
                                     int64_t baseDstIdx) {
   Location loc = op->getLoc();
 
-  // Collect enclosing loop IVs and bounds (innermost first).
-  SmallVector<scf::ForOp> loops;
+  // Collect enclosing loops (innermost first) and find the tile loop boundary.
+  SmallVector<scf::ForOp> allLoops;
   for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(p)) {
-      loops.push_back(forOp);
+      allLoops.push_back(forOp);
     }
   }
 
-  if (loops.empty()) {
+  if (allLoops.empty()) {
     return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
   }
 
   // Find dst_footprint attribute (stores numInputs) - check ComputeOp
-  // (pre-loop lowering) or outermost enclosing SCF loop (post-loop lowering).
+  // (pre-loop lowering) or any enclosing SCF loop (post-loop lowering).
+  // The attribute is placed on the outermost tile loop.
   IntegerAttr numInputsAttr;
+  size_t tileLoopBoundary = allLoops.size(); // Index of outermost tile loop
+
   if (auto computeOp = op->getParentOfType<ComputeOp>()) {
     numInputsAttr =
         computeOp->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
-  } else if (!loops.empty()) {
-    // Check outermost loop for attribute propagated during loop lowering.
-    numInputsAttr =
-        loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
+    // In pre-loop lowering, all loops are tile loops.
+    tileLoopBoundary = allLoops.size();
+  } else {
+    // Search enclosing loops for the attribute (innermost first).
+    // The loop with dst_footprint is the outermost tile loop.
+    for (size_t i = 0; i < allLoops.size(); ++i) {
+      numInputsAttr =
+          allLoops[i]->getAttrOfType<IntegerAttr>(kDstFootprintAttrName);
+      if (numInputsAttr) {
+        // Found: loops[0..i] are tile loops, loops[i+1..] are block loops.
+        tileLoopBoundary = i + 1;
+        break;
+      }
+    }
   }
 
   if (!numInputsAttr) {
@@ -219,10 +236,15 @@ static Value computeDynamicDstIndex(Operation *op, OpBuilder &builder,
     return builder.create<arith::ConstantIndexOp>(loc, baseDstIdx);
   }
 
+  // Extract only tile loops (up to and including the loop with dst_footprint).
+  SmallVector<scf::ForOp> tileLoops(allLoops.begin(),
+                                    allLoops.begin() + tileLoopBoundary);
+
   // Output: compute numInputs + tile_linear_index
+  // Collect IVs and bounds from tile loops only (outermost first for strides).
   SmallVector<Value> ivs;
   SmallVector<int64_t> ubs;
-  for (auto loop : llvm::reverse(loops)) {
+  for (auto loop : llvm::reverse(tileLoops)) {
     ivs.push_back(loop.getInductionVar());
     auto ub = getConstantIntValue(loop.getUpperBound());
     ubs.push_back(ub ? *ub : 1);

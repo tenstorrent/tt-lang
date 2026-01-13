@@ -216,25 +216,24 @@ static std::optional<int64_t> getDstIdxFromTile(Value tile) {
 /// Compute DST index for pack operations.
 /// Multi-tile: footprint + cbTileIndex (outputs start after inputs)
 /// Single-tile: use dst_idx from store op or tile's defining op
+///
+/// The dst_footprint attribute is on the outermost tile loop, not necessarily
+/// the outermost loop overall (there may be block iteration loops above it).
 static Value computeDynamicDstIndexForPack(Operation *op, OpBuilder &builder,
                                            Value cbTileIndex, Value tile) {
   Location loc = op->getLoc();
 
-  // Collect enclosing loops to find footprint attribute.
-  SmallVector<scf::ForOp> loops;
+  // Multi-tile case: search enclosing loops for footprint attribute.
+  // The attribute is on the outermost tile loop (pack loop), which may not
+  // be the overall outermost loop if there are block iteration loops above.
   for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(p)) {
-      loops.push_back(forOp);
-    }
-  }
-
-  // Multi-tile case: footprint set on outermost loop
-  if (!loops.empty()) {
-    if (auto footprintAttr =
-            loops.back()->getAttrOfType<IntegerAttr>(kDstFootprintAttrName)) {
-      int64_t footprint = footprintAttr.getInt();
-      Value base = builder.create<arith::ConstantIndexOp>(loc, footprint);
-      return builder.create<arith::AddIOp>(loc, base, cbTileIndex);
+      if (auto footprintAttr =
+              forOp->getAttrOfType<IntegerAttr>(kDstFootprintAttrName)) {
+        int64_t footprint = footprintAttr.getInt();
+        Value base = builder.create<arith::ConstantIndexOp>(loc, footprint);
+        return builder.create<arith::AddIOp>(loc, base, cbTileIndex);
+      }
     }
   }
 
