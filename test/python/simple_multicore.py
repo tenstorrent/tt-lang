@@ -11,7 +11,8 @@
 Multicore kernel lit test - verifies core(dims=2) lowers to
 get_absolute_logical_x() and get_absolute_logical_y() in generated C++.
 
-Tests a 2x2 grid kernel that uses dynamic core indices for tile indexing.
+Tests an 8x8 grid kernel that uses dynamic core indices for tile indexing.
+Each core processes one tile from a 256x256 tensor (8x8 tiles).
 """
 
 import os
@@ -82,17 +83,15 @@ def multicore_add(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
-# Verify get_absolute_logical_y() appears (for row/Y coordinate)
-# CHECK-CPP: get_absolute_logical_y()
-
-# Verify get_absolute_logical_x() appears (for column/X coordinate)
+# Verify both logical coordinates appear (x before y in generated code)
 # CHECK-CPP: get_absolute_logical_x()
+# CHECK-CPP: get_absolute_logical_y()
 
 # dm_write kernel should also use logical coordinates
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP: get_absolute_logical_y()
 # CHECK-CPP: get_absolute_logical_x()
+# CHECK-CPP: get_absolute_logical_y()
 
 
 if __name__ == "__main__":
@@ -105,10 +104,10 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        # 2x2 grid = 64x64 tensor (2 tiles x 2 tiles)
-        lhs_torch = torch.full((64, 64), 2.0, dtype=torch.bfloat16)
-        rhs_torch = torch.full((64, 64), 3.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        # 8x8 grid = 256x256 tensor (8 tiles x 8 tiles, one tile per core)
+        lhs_torch = torch.full((256, 256), 2.0, dtype=torch.bfloat16)
+        rhs_torch = torch.full((256, 256), 3.0, dtype=torch.bfloat16)
+        out_torch = torch.zeros((256, 256), dtype=torch.bfloat16)
 
         lhs = ttnn.from_torch(
             lhs_torch,
