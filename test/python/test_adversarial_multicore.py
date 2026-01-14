@@ -54,9 +54,13 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     # Mix of buffer_factor=1 and buffer_factor=2
     a_cb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(2, 2), buffer_factor=1)  # No double buffer!
+    b_cb = ttl.make_circular_buffer_like(
+        b, shape=(2, 2), buffer_factor=1
+    )  # No double buffer!
     c_cb = ttl.make_circular_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    d_cb = ttl.make_circular_buffer_like(d, shape=(2, 2), buffer_factor=1)  # No double buffer!
+    d_cb = ttl.make_circular_buffer_like(
+        d, shape=(2, 2), buffer_factor=1
+    )  # No double buffer!
 
     out1_cb = ttl.make_circular_buffer_like(out1, shape=(2, 2), buffer_factor=2)
     out2_cb = ttl.make_circular_buffer_like(out2, shape=(2, 2), buffer_factor=1)
@@ -149,7 +153,9 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
             tx = ttl.copy(o4_blk, out4[row : row + 2, col : col + 2])
             tx.wait()
 
-    return ttl.Program(evil_compute, dm_read, dm_write)(a, b, c, d, out1, out2, out3, out4)
+    return ttl.Program(evil_compute, dm_read, dm_write)(
+        a, b, c, d, out1, out2, out3, out4
+    )
 
 
 def compute_expected(a, b, c, d):
@@ -217,32 +223,73 @@ def test_adversarial_multicore(device):
     exp1, exp2, exp3, exp4 = compute_expected(a_torch, b_torch, c_torch, d_torch)
 
     # All tensors in DRAM (same size, can freely mix in ops)
-    a = ttnn.from_torch(a_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    b = ttnn.from_torch(b_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    c = ttnn.from_torch(c_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    d = ttnn.from_torch(d_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    a = ttnn.from_torch(
+        a_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    b = ttnn.from_torch(
+        b_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    c = ttnn.from_torch(
+        c_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    d = ttnn.from_torch(
+        d_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
 
-    out1 = ttnn.from_torch(out1_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    out2 = ttnn.from_torch(out2_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    out3 = ttnn.from_torch(out3_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    out4 = ttnn.from_torch(out4_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    out1 = ttnn.from_torch(
+        out1_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out2 = ttnn.from_torch(
+        out2_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out3 = ttnn.from_torch(
+        out3_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out4 = ttnn.from_torch(
+        out4_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
 
     # Run kernel
     adversarial_kernel(a, b, c, d, out1, out2, out3, out4)
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)
-    assert (x_size, y_size) == (GRID_COLS, GRID_ROWS), (
-        f"grid_size mismatch: got ({x_size}, {y_size}), expected ({GRID_COLS}, {GRID_ROWS})"
-    )
+    assert (x_size, y_size) == (
+        GRID_COLS,
+        GRID_ROWS,
+    ), f"grid_size mismatch: got ({x_size}, {y_size}), expected ({GRID_COLS}, {GRID_ROWS})"
 
     # Verify results
     result1 = ttnn.to_torch(out1)
@@ -250,18 +297,18 @@ def test_adversarial_multicore(device):
     result3 = ttnn.to_torch(out3)
     result4 = ttnn.to_torch(out4)
 
-    assert torch.allclose(result1.float(), exp1, rtol=0.05, atol=0.1), (
-        f"out1 mismatch: max diff = {(result1.float() - exp1).abs().max().item()}"
-    )
-    assert torch.allclose(result2.float(), exp2, rtol=0.05, atol=0.1), (
-        f"out2 mismatch: max diff = {(result2.float() - exp2).abs().max().item()}"
-    )
-    assert torch.allclose(result3.float(), exp3, rtol=0.05, atol=0.1), (
-        f"out3 mismatch: max diff = {(result3.float() - exp3).abs().max().item()}"
-    )
-    assert torch.allclose(result4.float(), exp4, rtol=0.05, atol=0.1), (
-        f"out4 mismatch: max diff = {(result4.float() - exp4).abs().max().item()}"
-    )
+    assert torch.allclose(
+        result1.float(), exp1, rtol=0.05, atol=0.1
+    ), f"out1 mismatch: max diff = {(result1.float() - exp1).abs().max().item()}"
+    assert torch.allclose(
+        result2.float(), exp2, rtol=0.05, atol=0.1
+    ), f"out2 mismatch: max diff = {(result2.float() - exp2).abs().max().item()}"
+    assert torch.allclose(
+        result3.float(), exp3, rtol=0.05, atol=0.1
+    ), f"out3 mismatch: max diff = {(result3.float() - exp3).abs().max().item()}"
+    assert torch.allclose(
+        result4.float(), exp4, rtol=0.05, atol=0.1
+    ), f"out4 mismatch: max diff = {(result4.float() - exp4).abs().max().item()}"
 
 
 if __name__ == "__main__":
