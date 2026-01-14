@@ -3,13 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Comprehensive multicore test combining multiple features:
-- 2MB DRAM inputs (a, b) + smaller L1 input (c)
-- 2MB DRAM outputs (out1, out2) + smaller L1 output (out3)
+Broadcast multicore test: scoping-based tile reuse pattern.
+
+Key feature: Different tensor sizes with scoping-based broadcast. The L1 tensor
+(256x256) has 1 tile per core, while DRAM tensors (1024x1024) have 16 tiles per
+core. The single L1 tile is loaded once and held in scope while iterating over
+all 16 DRAM tiles, effectively "broadcasting" the L1 value.
+
+Features:
+- 2MB DRAM tensors (1024x1024): a, b, out1, out2 - 4x4 tiles per core
+- 128KB L1 tensors (256x256): c, out3 - 1x1 tile per core
 - 8x8 multicore grid with dynamic indexing via core(dims=2)
-- Different CB shapes: 4x4 for DRAM, 1x1 for L1
-- 20 fused ops using bounded operations
-- Random inputs
+- 1x1 CB shapes for all CBs (shapes match in binary ops)
+- L1 tile 'c' held in outer scope, reused across 16 DRAM iterations
+- 20 fused ops across 3 outputs
 """
 
 import pytest
@@ -48,20 +55,20 @@ L1_SHAPE = (
 
 
 @ttl.kernel(grid=(8, 8))
-def comprehensive_kernel(a, b, c, out1, out2, out3):
+def bcast_kernel(a, b, c, out1, out2, out3):
     """
     Multicore kernel with 20 fused ops across 3 outputs.
-    DRAM tensors (a, b, out1, out2): 4x4 tiles per core
+    DRAM tensors (a, b, out1, out2): 4x4 tiles per core, processed 1x1 at a time
     L1 tensors (c, out3): 1x1 tile per core
 
-    Key feature: L1 tile 'c' is broadcast across all 16 DRAM iterations.
-    This tests mixed DRAM+L1 operations with different tensor sizes.
+    Key feature: L1 tile 'c' is held in scope and broadcast across all 16 DRAM
+    iterations. This tests scoping-based broadcast with different tensor sizes.
     """
-    # DRAM CBs: 4x4 tiles
-    a_cb = ttl.make_circular_buffer_like(a, shape=(4, 4), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(4, 4), buffer_factor=2)
-    out1_cb = ttl.make_circular_buffer_like(out1, shape=(4, 4), buffer_factor=2)
-    out2_cb = ttl.make_circular_buffer_like(out2, shape=(4, 4), buffer_factor=2)
+    # All CBs use 1x1 shape - broadcast achieved via scoping
+    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out1_cb = ttl.make_circular_buffer_like(out1, shape=(1, 1), buffer_factor=2)
+    out2_cb = ttl.make_circular_buffer_like(out2, shape=(1, 1), buffer_factor=2)
 
     # L1 CBs: 1x1 tile
     c_cb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
@@ -207,8 +214,8 @@ def device():
     ttnn.close_device(dev)
 
 
-def test_comprehensive_multicore(device):
-    """Test comprehensive multicore kernel with mixed DRAM/L1 tensors of different sizes."""
+def test_bcast_multicore(device):
+    """Test scoping-based broadcast: L1 tile reused across DRAM iterations."""
     dram_size_mb = DRAM_SHAPE[0] * DRAM_SHAPE[1] * 2 / (1024 * 1024)
     l1_size_kb = L1_SHAPE[0] * L1_SHAPE[1] * 2 / 1024
 
@@ -282,7 +289,7 @@ def test_comprehensive_multicore(device):
     out3 = ttnn.to_memory_config(out3, memory_config=ttnn.L1_MEMORY_CONFIG)
 
     # Run kernel
-    comprehensive_kernel(a, b, c, out1, out2, out3)
+    bcast_kernel(a, b, c, out1, out2, out3)
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)
