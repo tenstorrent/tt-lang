@@ -165,7 +165,9 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
     loops.resize(cbShapeRank);
   }
 
-  // Validate assumptions: all loops have step=1 and lower bound=0.
+  // Validate assumptions: all loops have lower bound=0.
+  // After unrolling, loops may have non-unit steps, but the unrolled body
+  // has been adjusted so the IV still maps directly to tile indices.
   for (auto loop : loops) {
     auto lb = getConstantIntValue(loop.getLowerBound());
     assert(lb && *lb == 0 &&
@@ -173,11 +175,13 @@ static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
     auto ub = getConstantIntValue(loop.getUpperBound());
     assert(ub && "computeCBTileIndexFromLoops: expected constant upper bound");
     auto step = getConstantIntValue(loop.getStep());
-    assert(step && *step == 1 &&
-           "computeCBTileIndexFromLoops: expected step of 1");
+    assert(step && *step >= 1 &&
+           "computeCBTileIndexFromLoops: expected positive step");
   }
 
   // Process in reverse order (innermost-first) without mutating the vector.
+  // Note: After unrolling, the loop body is duplicated and indices are adjusted
+  // by loopUnrollByFactor, so the IV values still correspond to tile indices.
   Value linearIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
   for (auto [i, loop] : llvm::enumerate(llvm::reverse(loops))) {
     Value iv = loop.getInductionVar();

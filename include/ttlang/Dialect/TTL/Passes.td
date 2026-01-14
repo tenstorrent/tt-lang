@@ -80,6 +80,10 @@ def TTLLowerToLoops
     the tile block. Generates the loop body with `tensor.extract` for input tiles,
     the cloned compute body, and `tensor.insert` to write results back.
 
+    When unrollCompute is enabled (default), generates unrolled loops directly
+    by adjusting the innermost loop step and duplicating the body for each
+    unroll iteration with correctly adjusted induction variables.
+
     This pass runs BEFORE bufferization. After this pass:
     - `ttl.compute` ops are replaced by `scf.for` loops
     - Loop bodies contain `tensor.extract`, `ttl.tile_*` ops, and `tensor.insert`
@@ -114,6 +118,11 @@ def TTLLowerToLoops
     "::mlir::scf::SCFDialect",
     "::mlir::tensor::TensorDialect"
   ];
+
+  let options = [
+    Option<"unrollCompute", "unroll-compute", "bool", /*default=*/"true",
+           "Enable loop unrolling for DST optimization">
+  ];
 }
 
 def TTLAnnotateCBAssociations
@@ -135,24 +144,6 @@ def TTLAnnotateCBAssociations
   }];
 
   let dependentDialects = [];
-}
-
-def TTLUnrollComputeLoops
-    : Pass<"ttl-unroll-compute-loops", "::mlir::func::FuncOp"> {
-  let summary = "Unroll tile loops to maximize DST register utilization";
-  let description = [{
-    Unrolls scf.for loops generated from ttl.compute operations to maximize
-    DST register utilization. Uses MLIR's loopUnrollByFactor utility with
-    a separate epilogue loop for handling remainders.
-
-    The unroll factor is computed by TTLTileAndAssignDST and propagated via
-    the ttl.unroll_factor attribute on the loop.
-  }];
-
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::scf::SCFDialect"
-  ];
 }
 
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

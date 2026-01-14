@@ -26,6 +26,8 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // in this specific order.
   pm.addPass(createTTLTileAndAssignDST());
   pm.addPass(createTTLInsertTileRegsSync());
+  // ttl-lower-to-loops generates unrolled loops directly if unrollCompute is
+  // enabled.
   pm.addPass(createTTLLowerToLoops());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());

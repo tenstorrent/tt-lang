@@ -42,7 +42,8 @@ template <typename ConcreteType>
 class TTLTileUnaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileUnaryOpTrait> {};
 
-/// Trait for binary tile ops (add, mul, etc.) - DST[odst] = DST[src0] op DST[src1].
+/// Trait for binary tile ops (add, mul, etc.) - DST[odst] = DST[src0] op
+/// DST[src1].
 template <typename ConcreteType>
 class TTLTileBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileBinaryOpTrait> {};
