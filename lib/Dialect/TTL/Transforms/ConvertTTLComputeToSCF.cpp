@@ -384,8 +384,39 @@ struct TTLLowerToLoopsPass
                     tensor::TensorDialect>();
   }
 
+  /// Validate that all linearized_index ops have index_map dimensions matching
+  /// their enclosing compute op's iteration domain rank.
+  static LogicalResult validateLinearizedIndexRanks(ComputeOp computeOp) {
+    int64_t iterDomainRank = 0;
+    for (Value operand :
+         llvm::concat<Value>(computeOp.getInputs(), computeOp.getOutputs())) {
+      int64_t rank = cast<RankedTensorType>(operand.getType()).getRank();
+      iterDomainRank = std::max(iterDomainRank, rank);
+    }
+
+    Block &bodyBlock = computeOp.getBody().front();
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
+        AffineMap indexMap = linIdx.getIndexMap();
+        if (static_cast<int64_t>(indexMap.getNumDims()) != iterDomainRank) {
+          return linIdx.emitOpError()
+                 << "index_map has " << indexMap.getNumDims()
+                 << " dimensions but iteration domain has " << iterDomainRank;
+        }
+      }
+    }
+    return success();
+  }
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+
+    // Pre-validate linearized_index ranks before running patterns.
+    for (auto computeOp : func.getOps<ComputeOp>()) {
+      if (failed(validateLinearizedIndexRanks(computeOp))) {
+        return signalPassFailure();
+      }
+    }
 
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerComputeToLoops>(func.getContext(), unrollCompute);
