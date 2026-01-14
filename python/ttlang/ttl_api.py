@@ -527,6 +527,7 @@ def _compile(
                 kernel_type,
                 _collect_captures(f),
                 *args,
+                _globals=f.__globals__,
                 **kwargs,
             )
 
