@@ -1,6 +1,6 @@
 // Summary: Fused add->mul->exp lowers through loops to TTKernel ops (with sync).
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops{unroll-compute=0}, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // Purpose: ensure copy_tile + fused math ops lower to ttkernel with no TTL ops left.
@@ -24,6 +24,9 @@
 // CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[CAST0]][%[[I]], %[[J]]]
 // Compute linear tile index: i * cols + j (via affine map)
 // CHECK-NEXT:      %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
+// Compute CB tile index: i * 2 + j (linearized row-major index for 2x2 grid).
+// CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[I]], %[[C2]] : index
+// CHECK-NEXT:      %[[CB_IDX:.*]] = arith.addi %[[IOFF]], %[[J]] : index
 // CHECK-NEXT:      ttkernel.tile_regs_acquire
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
 // CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]], %[[C0]])
@@ -38,9 +41,6 @@
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK]], %[[C4:.*]])
-// Compute CB tile index: i * 2 + j (linearized row-major index for 2x2 grid).
-// CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[I]], %[[C2]] : index
-// CHECK-NEXT:      %[[CB_IDX:.*]] = arith.addi %[[IOFF]], %[[J]] : index
 // CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[CB_IDX]], false)
 // CHECK-NEXT:      ttkernel.cb_push_back(%[[CB2_TTK]], %[[C4]])
 // CHECK-NEXT:      ttkernel.tile_regs_release
@@ -77,11 +77,12 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %c0 = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %exp, %result_view[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

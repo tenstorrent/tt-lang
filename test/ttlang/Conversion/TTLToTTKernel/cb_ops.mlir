@@ -216,9 +216,10 @@ module {
 // CHECK: ttkernel.pack_tile(%[[C0]], %[[CB]], %[[C0]], {{.*}}) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
 module {
   func.func @store_single(%tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %view[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }
@@ -235,9 +236,10 @@ module {
 // CHECK: ttkernel.cb_push_back(%[[CB]], %[[C1]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
 module {
   func.func @store_and_push(%tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %view[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
@@ -254,9 +256,10 @@ module {
 // CHECK: ttkernel.pack_tile(%[[C0]], %[[CB]], %[[C0]], {{.*}}) : (index, !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>, index) -> ()
 module {
   func.func @store_2x2_shape(%tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
     %view = ttl.cb_reserve %cb : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %view[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }

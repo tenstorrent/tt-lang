@@ -8,7 +8,8 @@
 // expected-error @below {{failed to legalize operation 'ttl.store' that was explicitly marked illegal}}
 module {
   func.func @store_view_not_from_reserve(%tile: !ttcore.tile<32x32, bf16>, %view: tensor<1x1x!ttcore.tile<32x32, bf16>>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    ttl.store %tile, %view[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }
