@@ -87,6 +87,15 @@ static bool isLastUse(Operation &op, Value v) {
   return true;
 }
 
+static bool isOnlyUsedByUnaryTileOps(Value v) {
+  for (Operation *user : v.getUsers()) {
+    if (!isTileUnaryOp(user)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Estimate peak DST usage for a compute body using a simple live-set walk.
 static std::uint32_t estimatePeakDSTUsage(Block *body) {
   llvm::SmallPtrSet<Value, 16> live;
@@ -157,6 +166,43 @@ struct TTLTileAndAssignDSTPass
                "enabling register spilling";
         signalPassFailure();
         return;
+      }
+
+      std::uint32_t numTiles = 1;
+      if (!computeOp.getOutputs().empty()) {
+        auto outputType =
+            dyn_cast<RankedTensorType>(computeOp.getOutputs()[0].getType());
+        if (outputType) {
+          for (int64_t dim : outputType.getShape()) {
+            numTiles *= dim;
+          }
+        }
+      }
+
+      // DST footprint for a single tile loop iteration.
+      // inputs_footprint excludes unary-only inputs (they reuse output DST).
+      std::uint32_t numInputs = 0;
+      for (unsigned i = 0; i < computeOp.getInputs().size(); ++i) {
+        BlockArgument arg = body->getArgument(i);
+        if (isTileValue(arg) && !isOnlyUsedByUnaryTileOps(arg)) {
+          numInputs++;
+        }
+      }
+
+      std::uint32_t numOutputs =
+          static_cast<std::uint32_t>(computeOp.getOutputs().size());
+
+      std::uint32_t footprintPerIteration = numInputs + numOutputs;
+
+      std::uint32_t unrollFactor = 1;
+      if (numTiles > 1 && footprintPerIteration > 0) {
+        unrollFactor = std::min(capacity / footprintPerIteration, numTiles);
+      }
+
+      if (unrollFactor > 1) {
+        OpBuilder attrBuilder(computeOp.getContext());
+        computeOp->setAttr(kUnrollFactorAttrName,
+                           attrBuilder.getI32IntegerAttr(unrollFactor));
       }
 
       // Insert copy_tile immediately before the first use of each block
