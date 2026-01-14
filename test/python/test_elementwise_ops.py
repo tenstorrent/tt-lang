@@ -216,6 +216,7 @@ BINARY_OPS = {
     "sub": (make_binary_kernel("sub", "-"), torch.sub),
     "mul": (make_binary_kernel("mul", "*"), torch.mul),
     "max": (make_binary_fn_kernel("max", "max"), torch.maximum),
+    "min": (make_binary_fn_kernel("min", "min"), torch.minimum),
 }
 
 UNARY_OPS = {
@@ -228,6 +229,7 @@ UNARY_OPS = {
     "neg": (make_unary_kernel("neg", "neg"), torch.neg),
     "relu": (make_unary_kernel("relu", "relu"), torch.relu),
     "sigmoid": (make_unary_kernel("sigmoid", "sigmoid"), torch.sigmoid),
+    "floor": (make_unary_kernel("floor", "floor"), torch.floor),
 }
 
 
