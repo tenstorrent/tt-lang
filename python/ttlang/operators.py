@@ -164,7 +164,6 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
             f"but got index syntax (e.g., tensor[0, 0])"
         )
 
-
     # TODO: Validate that range size matches CB shape (requires runtime or
     # constant folding to compare end - start with cb_shape dimensions).
 
