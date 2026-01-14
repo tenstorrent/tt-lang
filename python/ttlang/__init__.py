@@ -22,7 +22,7 @@ from ttlang.ttl_api import (
     Semaphore,
     TensorBlock,
 )
-from ttlang.operators import matmul, power, where
+from ttlang.operators import matmul, power, reduce_max, reduce_sum, transpose, where
 
 __all__ = [
     "ttl",
@@ -34,6 +34,9 @@ __all__ = [
     "make_circular_buffer_like",
     "matmul",
     "power",
+    "reduce_max",
+    "reduce_sum",
+    "transpose",
     "where",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,

@@ -190,6 +190,18 @@ struct TTLTileAndAssignDSTPass
             continue;
           }
 
+          // Special case: tile_reduce_* reads from CB directly, writes to DST.
+          // Skip copy_tile for input operand - CB lookup happens in lowering.
+          if (isa<TileReduceSumOp, TileReduceMaxOp>(&op)) {
+            continue;
+          }
+
+          // Special case: tile_transpose reads from CB directly, writes to DST.
+          // Skip copy_tile for input operand - CB lookup happens in lowering.
+          if (isa<TileTransposeOp>(&op)) {
+            continue;
+          }
+
           // Allocate: find first free register
           int freeReg = inUse.find_first_unset();
           assert(freeReg >= 0 && "no free DST register (should have been "

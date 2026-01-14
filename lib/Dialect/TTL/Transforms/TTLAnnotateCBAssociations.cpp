@@ -83,6 +83,36 @@ struct TTLAnnotateCBAssociationsPass
         // Store the mapping on the compute op itself using an attribute.
         setCBIndexAttr(compute, idx, cbIndex);
       }
+
+      // Also annotate outputs (for ops like transpose that need output CB).
+      // Output block arguments start after inputs.
+      size_t numInputs = compute.getInputs().size();
+      for (auto [idx, output] : llvm::enumerate(compute.getOutputs())) {
+        Value cb = getAttachedCB(output);
+        if (!cb) {
+          // Outputs should always have an attached CB.
+          continue;
+        }
+
+        IntegerAttr cbIndexAttr;
+        if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+          cbIndexAttr = bindOp.getCbIndexAttr();
+        } else {
+          continue;
+        }
+
+        int64_t cbIndex = cbIndexAttr.getInt();
+        if (cbIndex < 0 || cbIndex >= kMaxCircularBuffers) {
+          compute.emitError("output ")
+              << idx << " has invalid cb_index " << cbIndex
+              << " (must be in range [0, " << (kMaxCircularBuffers - 1) << "])";
+          signalPassFailure();
+          return;
+        }
+
+        // Output block args start after input block args
+        setCBIndexAttr(compute, numInputs + idx, cbIndex);
+      }
     });
   }
 };

@@ -50,6 +50,15 @@
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
+// Reduce ops read from CB (like matmul), require scaling_cb, and have reduce_dim
+// TTL_REDUCE_TILE_OP(TTL_OP, TILE_OP, REDUCE_TYPE)
+//   TTL_OP: TTL tensor op name (e.g., ReduceSum -> ttl::ReduceSumOp)
+//   TILE_OP: TTL tile op name (e.g., TileReduceSumOp -> ttl::TileReduceSumOp)
+//   REDUCE_TYPE: TTKernel reduce type (Sum, Max)
+#ifndef TTL_REDUCE_TILE_OP
+#define TTL_REDUCE_TILE_OP(TTL_OP, TILE_OP, REDUCE_TYPE)
+#endif
+
 // Binary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
 // These use the standard 3-arg binary template: DST[odst] = op(DST[src0], DST[src1])
 TTL_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
@@ -74,6 +83,12 @@ TTL_UNARY_TILE_OP(Relu, ReluTileOp, ReluTileInitOp, ReluTileOp)
 TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp, SigmoidTileInitOp, SigmoidTileOp)
 TTL_UNARY_TILE_OP(Floor, FloorTileOp, RoundingTileInitOp, FloorTileOp)
 
+// Reduce operations: TTL tensor op -> TTL tile op -> TTKernel reduce ops
+// These read directly from CB and write to DST
+TTL_REDUCE_TILE_OP(ReduceSum, TileReduceSumOp, Sum)
+TTL_REDUCE_TILE_OP(ReduceMax, TileReduceMaxOp, Max)
+
 #undef TTL_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
 #undef TTL_BINARY_TILE_OP_MINMAX
+#undef TTL_REDUCE_TILE_OP
