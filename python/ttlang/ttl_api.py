@@ -690,8 +690,10 @@ def _compile_and_run_kernel(
             kwargs[injected_kwarg] = val
 
     from .circular_buffer import _reset_cb_counter, CircularBuffer
+    from .operators import _set_current_grid
 
     _reset_cb_counter()
+    _set_current_grid(grid)
     program = f(*args, **kwargs)
     if not isinstance(program, Program):
         raise TypeError(

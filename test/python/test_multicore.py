@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test for multicore kernel execution with core_x() and core_y() indexing.
+Test for multicore kernel execution with core(dims=2) indexing.
 
 Each core processes 2x2 tiles using dynamic indices based on its grid position.
 Parameterized over grid shapes up to 8x8 cores (hardware limit).
@@ -64,9 +64,10 @@ def multicore_loop(lhs, rhs, out):
         for local_r in range({tiles_per_core_row}):
             for local_c in range({tiles_per_core_col}):
                 with lhs_cb.reserve() as lhs_blk, rhs_cb.reserve() as rhs_blk:
-                    # Compute global indices: core * tiles_per_core + local
-                    row = ttl.core_y() * {tiles_per_core_row} + local_r
-                    col = ttl.core_x() * {tiles_per_core_col} + local_c
+                    # core(dims=2) returns (x, y) where x=col, y=row
+                    x, y = ttl.core(dims=2)
+                    row = y * {tiles_per_core_row} + local_r
+                    col = x * {tiles_per_core_col} + local_c
                     tx_lhs = ttl.copy(lhs[row, col], lhs_blk)
                     tx_rhs = ttl.copy(rhs[row, col], rhs_blk)
                     tx_lhs.wait()
@@ -77,8 +78,9 @@ def multicore_loop(lhs, rhs, out):
         for local_r in range({tiles_per_core_row}):
             for local_c in range({tiles_per_core_col}):
                 with out_cb.wait() as out_blk:
-                    row = ttl.core_y() * {tiles_per_core_row} + local_r
-                    col = ttl.core_x() * {tiles_per_core_col} + local_c
+                    x, y = ttl.core(dims=2)
+                    row = y * {tiles_per_core_row} + local_r
+                    col = x * {tiles_per_core_col} + local_c
                     tx = ttl.copy(out_blk, out[row, col])
                     tx.wait()
 
@@ -185,6 +187,15 @@ def test_multicore_loop(device, grid_shape):
     kernel(lhs, rhs, out)
 
     result = ttnn.to_torch(out)
+
+    # Verify grid_size returns correct values (set during kernel compilation)
+    from ttlang import ttl
+
+    x_size, y_size = ttl.grid_size(dims=2)
+    assert (x_size, y_size) == (
+        grid_cols,
+        grid_rows,
+    ), f"grid_size mismatch: got ({x_size}, {y_size}), expected ({grid_cols}, {grid_rows})"
 
     # Verify each tile: exp(lhs) + sqrt(rhs)
     sqrt_rhs = 2.0
