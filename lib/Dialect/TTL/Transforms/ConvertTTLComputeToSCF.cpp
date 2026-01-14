@@ -150,10 +150,19 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
     }
   }
 
-  // Clone body operations (skip linearized_index since it's already
-  // materialized)
+  // Clone body operations (skip linearized_index since it's already materialized).
+  // Force-clone constants into the loop body to enable per-iteration updates during unrolling.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (!isa<LinearizedIndexOp>(&bodyOp)) {
+    if (isa<LinearizedIndexOp>(&bodyOp))
+      continue;
+
+    if (isa<arith::ConstantOp>(&bodyOp)) {
+      Operation *cloned = b.clone(bodyOp);
+      mapping.map(&bodyOp, cloned);
+      for (auto [origResult, clonedResult] : llvm::zip(bodyOp.getResults(), cloned->getResults())) {
+        mapping.map(origResult, clonedResult);
+      }
+    } else {
       b.clone(bodyOp, mapping);
     }
   }
@@ -222,6 +231,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     if (processingFailed) {
       return rewriter.notifyMatchFailure(
           op, "copy_tile index computation failed (mismatched rank/IVs)");
+    }
+
+    if (auto unrollAttr = op->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName)) {
+      if (!loopNest.loops.empty()) {
+        loopNest.loops.back()->setAttr(kUnrollFactorAttrName, unrollAttr);
+      }
     }
 
     rewriter.replaceOp(op, loopNest.results);
