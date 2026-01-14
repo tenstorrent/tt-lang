@@ -14,7 +14,6 @@ from ttl.ttl import (
     Program,
     make_circular_buffer_like,
     copy,
-    Semaphore,
     math,
 )
 
@@ -36,7 +35,6 @@ __all__ = [
     "Program",
     "CircularBuffer",
     "TensorBlock",
-    "Semaphore",
     "CopyTransferHandler",
     "make_circular_buffer_like",
     "copy",

@@ -49,7 +49,6 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
-from .semaphore import Semaphore
 from .ttl_utils import get_thread_type_string
 
 
@@ -979,7 +978,6 @@ __all__ = [
     "TensorBlock",
     "CircularBuffer",
     "CopyTransferHandler",
-    "Semaphore",
     "copy",
     "CompiledTTNNKernel",
 ]
