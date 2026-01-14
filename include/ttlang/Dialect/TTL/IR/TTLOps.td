@@ -579,7 +579,7 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
-  let summary = "Store a tile into a circular buffer view";
+  let summary = "Store a tile into a circular buffer view at a given index";
   let description = [{
     `ttl.store` packs a single tile from the DST register into a circular buffer
     view obtained from `ttl.cb_reserve`. This operation is used by compute
@@ -587,21 +587,23 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
 
     The tile value typically comes from compute operations (e.g., tile_add,
     tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
-    same CB.
+    same CB. The cb_tile_index specifies which tile slot in the CB to write to.
 
     Example:
     ```mlir
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
                                  -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>,
-                             tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %idx = arith.constant 0 : index
+    ttl.store %tile, %view[%idx] : !ttcore.tile<32x32, bf16>,
+                                   tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
     AnyType:$tile,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    Index:$cb_tile_index
   );
-  let assemblyFormat = "$tile `,` $view attr-dict `:` type($tile) `,` type($view)";
+  let assemblyFormat = "$tile `,` $view `[` $cb_tile_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;
 }
 

@@ -134,72 +134,6 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
-/// Compute linearized CB tile index from enclosing scf.for loops.
-/// For nested loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
-/// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
-///
-/// When cbShapeRank > 0, only the innermost cbShapeRank loops are used,
-/// computing a relative index within a CB block rather than an absolute
-/// tensor-wide index.
-///
-/// Returns constant 0 if not inside any loops (single-tile case).
-static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
-                                         size_t cbShapeRank = 0) {
-  Location loc = op->getLoc();
-
-  SmallVector<scf::ForOp> loops;
-  Operation *parent = op->getParentOp();
-  while (parent) {
-    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      loops.push_back(forOp);
-    }
-    parent = parent->getParentOp();
-  }
-
-  if (loops.empty()) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
-  }
-
-  // Only use innermost cbShapeRank loops for relative CB index.
-  if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
-    loops.resize(cbShapeRank);
-  }
-
-  // Validate assumptions: all loops have lower bound=0.
-  // After unrolling, loops may have non-unit steps, but the unrolled body
-  // has been adjusted so the IV still maps directly to tile indices.
-  for (auto loop : loops) {
-    auto lb = getConstantIntValue(loop.getLowerBound());
-    assert(lb && *lb == 0 &&
-           "computeCBTileIndexFromLoops: expected lower bound of 0");
-    auto ub = getConstantIntValue(loop.getUpperBound());
-    assert(ub && "computeCBTileIndexFromLoops: expected constant upper bound");
-    auto step = getConstantIntValue(loop.getStep());
-    assert(step && *step >= 1 &&
-           "computeCBTileIndexFromLoops: expected positive step");
-  }
-
-  // Process in reverse order (innermost-first) without mutating the vector.
-  // Note: After unrolling, the loop body is duplicated and indices are adjusted
-  // by loopUnrollByFactor, so the IV values still correspond to tile indices.
-  Value linearIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
-  for (auto [i, loop] : llvm::enumerate(llvm::reverse(loops))) {
-    Value iv = loop.getInductionVar();
-
-    // Stride = product of upper bounds of more-nested loops.
-    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
-    for (auto innerLoop : llvm::drop_begin(llvm::reverse(loops), i + 1)) {
-      stride =
-          builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
-    }
-
-    Value term = builder.create<arith::MulIOp>(loc, iv, stride);
-    linearIdx = builder.create<arith::AddIOp>(loc, linearIdx, term);
-  }
-
-  return linearIdx;
-}
-
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
 /// ctaIndex: Index into compile-time args where tensor config starts.
 /// crtaIndex: Index into compile-runtime args (typically 0).
@@ -444,9 +378,9 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     }
 
-    // Compute CB tile index from innermost 2 loops (CB is always 2D).
-    auto cbTileIndex =
-        computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    // Use the CB tile index from the StoreOp operand (computed by
+    // ConvertTTLComputeToSCF from the adjusted loop IVs).
+    Value cbTileIndex = adaptor.getCbTileIndex();
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 

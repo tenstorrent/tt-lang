@@ -150,9 +150,39 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
     }
   }
 
+  // Compute linearized CB tile index from IVs for StoreOp.
+  // For output indexing map (d0, d1) -> (d0, d1), linearize to d0 * cols + d1.
+  // We use the first output's indexing map since all outputs should have
+  // compatible shapes within a compute block.
+  Value cbTileIndex;
+  if (!indexingMaps.empty() && numInputs < indexingMaps.size()) {
+    AffineMap outputMap = indexingMaps[numInputs]; // First output's map
+    SmallVector<Value> outputIndices = applyIndexingMap(b, loc, outputMap, ivs);
+
+    // Linearize: for 2D, idx = row * numCols + col
+    if (outputIndices.size() == 2) {
+      // Get CB shape from the output tensor type (it matches CB shape).
+      auto outputTy =
+          cast<RankedTensorType>(iterArgs.front().getType());
+      int64_t numCols = outputTy.getDimSize(1);
+      Value numColsVal = b.create<arith::ConstantIndexOp>(loc, numCols);
+      Value rowOffset =
+          b.create<arith::MulIOp>(loc, outputIndices[0], numColsVal);
+      cbTileIndex = b.create<arith::AddIOp>(loc, rowOffset, outputIndices[1]);
+    } else if (outputIndices.size() == 1) {
+      cbTileIndex = outputIndices[0];
+    } else {
+      // Fallback for higher-rank: just use 0 (shouldn't happen for CBs).
+      cbTileIndex = b.create<arith::ConstantIndexOp>(loc, 0);
+    }
+  } else {
+    cbTileIndex = b.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
   // Clone body operations (skip linearized_index since it's already
   // materialized). Force-clone constants into the loop body to enable
   // per-iteration updates during unrolling.
+  // For StoreOp, update the cb_tile_index to the computed linearized index.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (isa<LinearizedIndexOp>(&bodyOp)) {
       continue;
@@ -165,6 +195,11 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
            llvm::zip(bodyOp.getResults(), cloned->getResults())) {
         mapping.map(origResult, clonedResult);
       }
+    } else if (auto storeOp = dyn_cast<StoreOp>(&bodyOp)) {
+      // Clone StoreOp with updated cb_tile_index from adjusted IVs.
+      Value mappedTile = mapping.lookupOrDefault(storeOp.getTile());
+      Value mappedView = mapping.lookupOrDefault(storeOp.getView());
+      b.create<StoreOp>(loc, mappedTile, mappedView, cbTileIndex);
     } else {
       b.clone(bodyOp, mapping);
     }
