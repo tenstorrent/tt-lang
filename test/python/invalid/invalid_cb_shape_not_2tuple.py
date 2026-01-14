@@ -11,6 +11,6 @@ Validation test: CB shape must be a 2-tuple.
 
 # CHECK: shape must be a 2-tuple
 # Validation happens in CircularBuffer.__init__, no ttnn needed
-from ttlang import ttl
+import ttl
 
 ttl.make_circular_buffer_like(None, shape=(1, 1, 1), buffer_factor=2)

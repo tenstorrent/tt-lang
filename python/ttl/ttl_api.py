@@ -17,7 +17,7 @@ try:
 except ModuleNotFoundError:
     ttnn = None
 
-import ttlang._mlir_libs._ttlang  # Register tt-lang passes
+import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code
 from ttmlir.dialects import ttkernel
 from ttmlir.ir import *

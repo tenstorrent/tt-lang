@@ -11,7 +11,7 @@
 
 import torch
 import ttnn
-from ttlang import ttl
+import ttl
 
 
 @ttl.kernel(grid=(1, 1))

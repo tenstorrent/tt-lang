@@ -17,7 +17,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import ttl
+import ttl
 
 
 # CHECK: ValueError: Only tiled tensors supported for TTNN interop

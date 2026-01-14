@@ -5,7 +5,7 @@
 #
 # Ensure ttl, ttcore, and ttnn dialects all work in the shared tt-mlir context.
 
-from ttlang.dialects import ttl
+from ttl.dialects import ttl
 from ttmlir import ir as tmlir_ir
 from ttmlir.dialects import ttcore, ttnn
 

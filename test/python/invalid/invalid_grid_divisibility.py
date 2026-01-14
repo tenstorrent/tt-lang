@@ -17,7 +17,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import ttl
+import ttl
 
 
 # CHECK: ValueError: Logical dim 1 (32) must be divisible by grid dim 1 (3)

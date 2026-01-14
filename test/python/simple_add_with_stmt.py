@@ -19,7 +19,7 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import ttl
+import ttl
 
 try:
     import ttnn
