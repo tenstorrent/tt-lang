@@ -164,12 +164,6 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
             f"but got index syntax (e.g., tensor[0, 0])"
         )
 
-    if not cb_is_multi_tile and uses_ranges:
-        raise ValueError(
-            f"CB shape {cb_shape} requires index syntax (e.g., tensor[0, 0]), "
-            f"but got range syntax (e.g., tensor[0:2, 0:2])"
-        )
-
     # TODO: Validate that range size matches CB shape (requires runtime or
     # constant folding to compare end - start with cb_shape dimensions).
 
