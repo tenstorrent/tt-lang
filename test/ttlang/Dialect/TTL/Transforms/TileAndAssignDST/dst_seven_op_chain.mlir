@@ -29,7 +29,7 @@
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[SQRT]], %[[VIEW]]
+// CHECK-NEXT:        ttl.store %[[SQRT]], %[[VIEW]][{{.*}}]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[SQRT]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -57,6 +57,7 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     // Seven-operation fused chain - each must appear in output with dst_idx
+    %c0 = arith.constant 0 : index
     %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %sub = ttl.tile_sub %add, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sub, %b_tile : !ttcore.tile<32x32, f32>
@@ -65,7 +66,7 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %neg = ttl.tile_neg %log : !ttcore.tile<32x32, f32>
     %sqrt = ttl.tile_sqrt %neg : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sqrt, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %sqrt, %result_view[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sqrt : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

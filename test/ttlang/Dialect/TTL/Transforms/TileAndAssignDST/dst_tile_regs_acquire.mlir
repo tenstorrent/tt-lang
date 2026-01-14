@@ -20,7 +20,7 @@
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[ADD]], %[[V]]
+// CHECK-NEXT:        ttl.store %[[ADD]], %[[V]][{{.*}}]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -47,9 +47,10 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %c0 = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %sum, %result_view[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -73,7 +74,7 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[SUM0]], %[[V0]]
+// CHECK-NEXT:        ttl.store %[[SUM0]], %[[V0]][{{.*}}]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[SUM0]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -87,7 +88,7 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[SUM1]], %[[V1]]
+// CHECK-NEXT:        ttl.store %[[SUM1]], %[[V1]][{{.*}}]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[SUM1]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -114,9 +115,10 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %c0_0 = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %sum, %result_view0[%c0_0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -134,9 +136,10 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %c0_1 = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view1 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view1 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %sum, %result_view1[%c0_1] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -163,7 +166,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB3]]
-// CHECK-NEXT:        ttl.store %[[EXP]], %[[V]]
+// CHECK-NEXT:        ttl.store %[[EXP]], %[[V]][{{.*}}]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -196,10 +199,11 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    %c0 = arith.constant 0 : index
     %mul = ttl.tile_mul %sum, %c_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %exp, %result_view[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -223,7 +227,7 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[ADD]], %[[V]]
+// CHECK-NEXT:        ttl.store %[[ADD]], %[[V]][{{.*}}]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -253,9 +257,10 @@ func.func @init_sfpu_with_preexisting_acquire(%a: tensor<2x2x!ttcore.tile<32x32,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %c0 = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %sum, %result_view[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -292,7 +297,6 @@ func.func @ops_between_acquire_and_compute(%a: tensor<2x2x!ttcore.tile<32x32, f3
   ttl.tile_regs_acquire
 
   // Operations between sync ops and compute
-  %c0 = arith.constant 0 : index
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -305,9 +309,10 @@ func.func @ops_between_acquire_and_compute(%a: tensor<2x2x!ttcore.tile<32x32, f3
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %c0_inner = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %sum, %result_view[%c0_inner] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

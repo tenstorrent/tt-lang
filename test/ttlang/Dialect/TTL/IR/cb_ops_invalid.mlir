@@ -93,8 +93,9 @@ module {
 // ttl.store tile operand must be !ttcore.tile.
 module {
   func.func @store_non_tile(%val: f32, %view: tensor<1x1xf32>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c0 = arith.constant 0 : index
     // expected-error @below {{tile operand must be !ttcore.tile, got 'f32'}}
-    ttl.store %val, %view : f32, tensor<1x1xf32>
+    ttl.store %val, %view[%c0] : f32, tensor<1x1xf32>
     func.return
   }
 }
@@ -104,8 +105,9 @@ module {
 // ttl.store view element type must match tile type.
 module {
   func.func @store_type_mismatch(%tile: !ttcore.tile<32x32, bf16>, %view: tensor<1x1x!ttcore.tile<32x32, f32>>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c0 = arith.constant 0 : index
     // expected-error @below {{view element type ('!ttcore.tile<32x32, f32>') must match tile type ('!ttcore.tile<32x32, bf16>')}}
-    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.store %tile, %view[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, f32>>
     func.return
   }
 }

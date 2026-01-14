@@ -9,17 +9,15 @@
 # RUN: %python %s
 
 """
-Test loop unrolling for DST register utilization optimization.
-
-Verifies that tile compute loops are unrolled to maximize DST register usage:
-- 4 tiles with 2 inputs (footprint=3) and capacity=8 → unroll_factor=2
-- DST indices are correctly updated per unrolled iteration
+Verifies loop unrolling for DST register optimization. Uses a 1x4 tile grid with
+2-input addition (footprint=3 DST registers). With capacity=8, the compiler
+unrolls by factor 2, generating iterations at indices i and i+1 within a single
+loop. Tests that each unrolled iteration uses the correct CB tile index in
+pack_tile operations, and that the kernel produces correct numerical results.
 """
 
 import os
 
-# Temporarily disable unrolling for debugging
-# os.environ["TTLANG_DISABLE_UNROLL"] = "1"
 
 import ttnn
 from ttlang import ttl

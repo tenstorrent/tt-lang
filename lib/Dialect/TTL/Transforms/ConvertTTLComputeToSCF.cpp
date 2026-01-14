@@ -162,8 +162,7 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
     // Linearize: for 2D, idx = row * numCols + col
     if (outputIndices.size() == 2) {
       // Get CB shape from the output tensor type (it matches CB shape).
-      auto outputTy =
-          cast<RankedTensorType>(iterArgs.front().getType());
+      auto outputTy = cast<RankedTensorType>(iterArgs.front().getType());
       int64_t numCols = outputTy.getDimSize(1);
       Value numColsVal = b.create<arith::ConstantIndexOp>(loc, numCols);
       Value rowOffset =

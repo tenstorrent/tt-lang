@@ -17,7 +17,7 @@
 // CHECK-NEXT:      %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN]]
 // CHECK-NEXT:      ttl.tile_regs_commit
 // CHECK-NEXT:      ttl.tile_regs_wait
-// CHECK-NEXT:      ttl.store %[[TILE]], %[[OUT_VIEW_PRE]]
+// CHECK:           ttl.store %[[TILE]], %[[OUT_VIEW_PRE]][{{.*}}]
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      ttl.yield %[[TILE]] : !ttcore.tile<32x32, bf16>
 // CHECK-NEXT:    } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -33,7 +33,7 @@ func.func @store_reorder_after_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>
     ^bb0(%in: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
       %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
       // Store appears before yield - pass should reorder it after tile_regs_wait.
-      ttl.store %tile, %out_view_pre : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.store %tile, %out_view_pre[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield %tile : !ttcore.tile<32x32, bf16>
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -60,7 +60,7 @@ func.func @store_reorder_after_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>
 // CHECK-NEXT:      ttl.tile_regs_wait
 // CHECK-NEXT:      %[[VIEW0:.*]] = ttl.cb_reserve %[[CB]]
 // CHECK-NEXT:      %[[VIEW1:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:      ttl.store %[[TILE]], %[[VIEW1]]
+// CHECK:           ttl.store %[[TILE]], %[[VIEW1]][{{.*}}]
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      ttl.yield %[[TILE]] : !ttcore.tile<32x32, bf16>
 // CHECK:         } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -103,7 +103,7 @@ func.func @store_auto_in_body_chooses_last_reserve(%arg0: tensor<1x1x!ttcore.til
 // CHECK-NEXT:      ttl.tile_regs_commit
 // CHECK-NEXT:      ttl.tile_regs_wait
 // CHECK-NEXT:      %[[OUT_BODY_VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:      ttl.store %[[TILE]], %[[OUT_BODY_VIEW]]
+// CHECK:           ttl.store %[[TILE]], %[[OUT_BODY_VIEW]][{{.*}}]
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      ttl.yield %[[TILE]] : !ttcore.tile<32x32, bf16>
 // CHECK:         } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -147,7 +147,7 @@ func.func @store_auto_prefers_body_over_parent(%arg0: tensor<1x1x!ttcore.tile<32
 // CHECK-NEXT:      %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN]]
 // CHECK-NEXT:      ttl.tile_regs_commit
 // CHECK-NEXT:      ttl.tile_regs_wait
-// CHECK-NEXT:      ttl.store %[[TILE]], %[[OUT_VIEW_PARENT]]
+// CHECK:           ttl.store %[[TILE]], %[[OUT_VIEW_PARENT]][{{.*}}]
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      ttl.yield %[[TILE]] : !ttcore.tile<32x32, bf16>
 // CHECK-NEXT:    } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -187,7 +187,7 @@ func.func @store_auto_insert_reuses_parent_reserve(%arg0: tensor<1x1x!ttcore.til
 // CHECK-NEXT:      ttl.tile_regs_commit
 // CHECK-NEXT:      ttl.tile_regs_wait
 // CHECK-NEXT:      %[[OUT_VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:      ttl.store %[[TILE]], %[[OUT_VIEW]]
+// CHECK:           ttl.store %[[TILE]], %[[OUT_VIEW]][{{.*}}]
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      ttl.yield %[[TILE]] : !ttcore.tile<32x32, bf16>
 // CHECK-NEXT:    } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -203,7 +203,7 @@ func.func @store_with_reserve_inside_compute(%arg0: tensor<1x1x!ttcore.tile<32x3
     %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
     // cb_reserve and store both inside compute body.
     %out_view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.store %tile, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %out_view[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield %tile : !ttcore.tile<32x32, bf16>
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -227,7 +227,7 @@ func.func @store_with_reserve_inside_compute(%arg0: tensor<1x1x!ttcore.tile<32x3
 // CHECK-NEXT:      ttl.tile_regs_commit
 // CHECK-NEXT:      ttl.tile_regs_wait
 // CHECK-NEXT:      %[[VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:      ttl.store %[[TILE]], %[[VIEW]]
+// CHECK:           ttl.store %[[TILE]], %[[VIEW]][{{.*}}]
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      ttl.yield %[[TILE]] : !ttcore.tile<32x32, bf16>
 // CHECK-NEXT:    } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
