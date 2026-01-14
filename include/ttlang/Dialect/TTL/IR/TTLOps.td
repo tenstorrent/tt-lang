@@ -354,6 +354,26 @@ def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
 }
 
 //===----------------------------------------------------------------------===//
+// Profiling operations
+//===----------------------------------------------------------------------===//
+
+def TTL_SignpostOp : TTL_Op<"signpost", []> {
+  let summary = "Profiling marker for device tracing";
+  let description = [{
+    Marks a profiling region with a custom name for Tracy profiler visualization.
+    This operation generates DeviceZoneScopedN markers in the emitted C++ code.
+
+    Example:
+    ```mlir
+    ttl.signpost "my_custom_region"
+    ```
+  }];
+
+  let arguments = (ins StrAttr:$name);
+  let assemblyFormat = "$name attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // Tile-Level Operations (for use inside ttl.compute body)
 //===----------------------------------------------------------------------===//
 
