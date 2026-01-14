@@ -293,25 +293,26 @@ def test_bcast_multicore(device):
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)
-    assert (x_size, y_size) == (GRID_COLS, GRID_ROWS), (
-        f"grid_size mismatch: got ({x_size}, {y_size}), expected ({GRID_COLS}, {GRID_ROWS})"
-    )
+    assert (x_size, y_size) == (
+        GRID_COLS,
+        GRID_ROWS,
+    ), f"grid_size mismatch: got ({x_size}, {y_size}), expected ({GRID_COLS}, {GRID_ROWS})"
 
     # Verify DRAM results
     result1 = ttnn.to_torch(out1)
     result2 = ttnn.to_torch(out2)
-    assert torch.allclose(result1.float(), exp1, rtol=0.05, atol=0.1), (
-        f"out1 mismatch: max diff = {(result1.float() - exp1).abs().max().item()}"
-    )
-    assert torch.allclose(result2.float(), exp2, rtol=0.05, atol=0.1), (
-        f"out2 mismatch: max diff = {(result2.float() - exp2).abs().max().item()}"
-    )
+    assert torch.allclose(
+        result1.float(), exp1, rtol=0.05, atol=0.1
+    ), f"out1 mismatch: max diff = {(result1.float() - exp1).abs().max().item()}"
+    assert torch.allclose(
+        result2.float(), exp2, rtol=0.05, atol=0.1
+    ), f"out2 mismatch: max diff = {(result2.float() - exp2).abs().max().item()}"
 
     # Verify L1 result
     result3 = ttnn.to_torch(out3)
-    assert torch.allclose(result3.float(), exp3, rtol=0.05, atol=0.1), (
-        f"out3 mismatch: max diff = {(result3.float() - exp3).abs().max().item()}"
-    )
+    assert torch.allclose(
+        result3.float(), exp3, rtol=0.05, atol=0.1
+    ), f"out3 mismatch: max diff = {(result3.float() - exp3).abs().max().item()}"
 
 
 if __name__ == "__main__":
