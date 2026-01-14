@@ -787,7 +787,7 @@ def _compile_and_run_kernel(
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-tile-and-assign-dst)",
             "func.func(ttl-insert-tile-regs-sync)",
-            "func.func(ttl-lower-to-loops)",
+            "func.func(ttl-lower-to-loops)",  # Handles unrolling via --unroll-compute
             "func.func(ttl-annotate-cb-associations)",
             "convert-ttl-to-ttkernel",
             "canonicalize",

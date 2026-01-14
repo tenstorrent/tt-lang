@@ -150,16 +150,19 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
     }
   }
 
-  // Clone body operations (skip linearized_index since it's already materialized).
-  // Force-clone constants into the loop body to enable per-iteration updates during unrolling.
+  // Clone body operations (skip linearized_index since it's already
+  // materialized). Force-clone constants into the loop body to enable
+  // per-iteration updates during unrolling.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (isa<LinearizedIndexOp>(&bodyOp))
+    if (isa<LinearizedIndexOp>(&bodyOp)) {
       continue;
+    }
 
     if (isa<arith::ConstantOp>(&bodyOp)) {
       Operation *cloned = b.clone(bodyOp);
       mapping.map(&bodyOp, cloned);
-      for (auto [origResult, clonedResult] : llvm::zip(bodyOp.getResults(), cloned->getResults())) {
+      for (auto [origResult, clonedResult] :
+           llvm::zip(bodyOp.getResults(), cloned->getResults())) {
         mapping.map(origResult, clonedResult);
       }
     } else {
@@ -183,7 +186,10 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
 }
 
 struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
-  using OpRewritePattern<ComputeOp>::OpRewritePattern;
+  bool enableUnroll;
+
+  LowerComputeToLoops(MLIRContext *context, bool enableUnroll)
+      : OpRewritePattern<ComputeOp>(context), enableUnroll(enableUnroll) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -199,12 +205,25 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       return failure();
     }
 
+    // Check for unroll factor on the innermost dimension (only if pass option
+    // enables unrolling).
+    int64_t unrollFactor = 1;
+    if (enableUnroll) {
+      if (auto unrollAttr =
+              op->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName)) {
+        unrollFactor = unrollAttr.getInt();
+      }
+    }
+
     // Build loop bounds from iteration domain.
+    // If unrolling, adjust the innermost loop step.
     SmallVector<Value> lowerBounds, upperBounds, steps;
     for (auto [idx, range] : llvm::enumerate(iterDomain)) {
       Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
       Value ub = getValueOrCreateConstantIndexOp(rewriter, loc, range.size);
-      Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      // For the innermost loop (last dimension), apply unroll factor to step.
+      int64_t stepValue = (idx == iterDomain.size() - 1) ? unrollFactor : 1;
+      Value step = rewriter.create<arith::ConstantIndexOp>(loc, stepValue);
       lowerBounds.push_back(lb);
       upperBounds.push_back(ub);
       steps.push_back(step);
@@ -219,24 +238,38 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         rewriter, loc, lowerBounds, upperBounds, steps, initValues,
         [&](OpBuilder &b, Location loc, ValueRange ivs,
             ValueRange iterArgs) -> scf::ValueVector {
-          auto result =
-              generateTileProcessing(b, loc, op, indexingMaps, ivs, iterArgs);
-          if (failed(result)) {
-            processingFailed = true;
-            return {};
+          // Generate unrolled iterations in the loop body.
+          // For each unroll iteration i in [0, unrollFactor), adjust the
+          // innermost IV by +i and process tiles at those indices.
+          SmallVector<Value> currentIterArgs(iterArgs.begin(), iterArgs.end());
+          for (int64_t i = 0; i < unrollFactor; ++i) {
+            // Compute adjusted IVs for this unrolled iteration.
+            SmallVector<Value> adjustedIvs(ivs.begin(), ivs.end());
+            if (!ivs.empty()) {
+              // Adjust the innermost IV: iv + i
+              Value innermostIv = ivs.back();
+              if (i > 0) {
+                Value offset = b.create<arith::ConstantIndexOp>(loc, i);
+                adjustedIvs.back() =
+                    b.create<arith::AddIOp>(loc, innermostIv, offset);
+              }
+            }
+
+            // Generate tile processing for this iteration.
+            auto result = generateTileProcessing(b, loc, op, indexingMaps,
+                                                 adjustedIvs, currentIterArgs);
+            if (failed(result)) {
+              processingFailed = true;
+              return {};
+            }
+            currentIterArgs.assign(result->begin(), result->end());
           }
-          return *result;
+          return currentIterArgs;
         });
 
     if (processingFailed) {
       return rewriter.notifyMatchFailure(
           op, "copy_tile index computation failed (mismatched rank/IVs)");
-    }
-
-    if (auto unrollAttr = op->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName)) {
-      if (!loopNest.loops.empty()) {
-        loopNest.loops.back()->setAttr(kUnrollFactorAttrName, unrollAttr);
-      }
     }
 
     rewriter.replaceOp(op, loopNest.results);
@@ -258,7 +291,7 @@ struct TTLLowerToLoopsPass
     func::FuncOp func = getOperation();
 
     RewritePatternSet patterns(func.getContext());
-    patterns.add<LowerComputeToLoops>(func.getContext());
+    patterns.add<LowerComputeToLoops>(func.getContext(), unrollCompute);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();
