@@ -28,8 +28,8 @@ from ttl.ttl_api import (
     CircularBuffer,
     CopyTransferHandler,
     TensorBlock,
-    matmul
 )
+from ttlang.operators import matmul, power, where
 
 __all__ = [
     "kernel",
@@ -45,6 +45,8 @@ __all__ = [
     "grid_size",
     "math",
     "matmul",
+    "power",
+    "where",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,
 ]

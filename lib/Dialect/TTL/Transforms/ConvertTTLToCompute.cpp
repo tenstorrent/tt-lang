@@ -521,6 +521,162 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
   }
 };
 
+/// Pattern for power: TTL power op -> ttl.compute with tile_power.
+/// Power is a unary op with an additional scalar exponent attribute.
+struct LowerPowerToCompute : OpRewritePattern<PowerOp> {
+  using OpRewritePattern<PowerOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(PowerOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = getTensorType(op.getResult());
+    if (!type) {
+      return failure();
+    }
+
+    Value input = op.getInput();
+    Value inputCb = getAttachedCB(input);
+    if (!inputCb) {
+      return op.emitError("power input must be attached to a circular buffer");
+    }
+
+    Value outCb = findOutputCB(op);
+    if (!outCb) {
+      auto unusedCBs = findUnusedBindCBs(op);
+      if (unusedCBs.empty()) {
+        return op.emitError("no unused bind_cb found for output");
+      }
+      outCb = unusedCBs.front().getResult();
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    // Build identity indexing maps
+    SmallVector<Attribute> maps;
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    maps.push_back(AffineMapAttr::get(identityMap)); // input
+    maps.push_back(AffineMapAttr::get(identityMap)); // output
+
+    // Build iterator types: all parallel
+    SmallVector<Attribute> iterTypes;
+    for (int64_t i = 0; i < type.getRank(); ++i) {
+      iterTypes.push_back(rewriter.getStringAttr("parallel"));
+    }
+
+    // Create init tensor and attach to output CB
+    Value init = buildInitTensor(rewriter, loc, type, input);
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+    // Create ttl.compute op
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{type}, ValueRange{input}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+    // Build the body region with tile type block arguments
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = type.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // input tile
+    body->addArgument(tileType, loc); // output tile
+
+    rewriter.setInsertionPointToStart(body);
+    // Create tile_power with the exponent attribute
+    Value result = rewriter.create<TilePowerOp>(loc, tileType,
+                                                body->getArgument(0),
+                                                op.getExponentAttr());
+    rewriter.create<YieldOp>(loc, ValueRange{result});
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+/// Pattern for where: TTL where op -> ttl.compute with tile_where.
+/// Where is a ternary op: result = condition ? true_val : false_val
+struct LowerWhereToCompute : OpRewritePattern<WhereOp> {
+  using OpRewritePattern<WhereOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhereOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = getTensorType(op.getResult());
+    if (!type) {
+      return failure();
+    }
+
+    Value cond = op.getCondition();
+    Value trueVal = op.getTrueVal();
+    Value falseVal = op.getFalseVal();
+
+    // All inputs must be attached to CBs
+    Value condCb = getAttachedCB(cond);
+    Value trueCb = getAttachedCB(trueVal);
+    Value falseCb = getAttachedCB(falseVal);
+    if (!condCb || !trueCb || !falseCb) {
+      return op.emitError(
+          "where inputs must be attached to circular buffers");
+    }
+
+    Value outCb = findOutputCB(op);
+    if (!outCb) {
+      auto unusedCBs = findUnusedBindCBs(op);
+      if (unusedCBs.empty()) {
+        return op.emitError("no unused bind_cb found for output");
+      }
+      outCb = unusedCBs.front().getResult();
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    // Build identity indexing maps for all inputs and output
+    SmallVector<Attribute> maps;
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    maps.push_back(AffineMapAttr::get(identityMap)); // condition
+    maps.push_back(AffineMapAttr::get(identityMap)); // true_val
+    maps.push_back(AffineMapAttr::get(identityMap)); // false_val
+    maps.push_back(AffineMapAttr::get(identityMap)); // output
+
+    // Build iterator types: all parallel
+    SmallVector<Attribute> iterTypes;
+    for (int64_t i = 0; i < type.getRank(); ++i) {
+      iterTypes.push_back(rewriter.getStringAttr("parallel"));
+    }
+
+    // Create init tensor and attach to output CB
+    Value init = buildInitTensor(rewriter, loc, type, cond);
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+    // Create ttl.compute op with 3 inputs
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{type}, ValueRange{cond, trueVal, falseVal},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    // Build the body region with tile type block arguments
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = type.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // condition tile
+    body->addArgument(tileType, loc); // true_val tile
+    body->addArgument(tileType, loc); // false_val tile
+    body->addArgument(tileType, loc); // output tile
+
+    rewriter.setInsertionPointToStart(body);
+    // Create tile_where with the three input tiles
+    Value result = rewriter.create<TileWhereOp>(
+        loc, tileType, body->getArgument(0), body->getArgument(1),
+        body->getArgument(2));
+    rewriter.create<YieldOp>(loc, ValueRange{result});
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Pass Implementations
 //===----------------------------------------------------------------------===//
@@ -564,6 +720,12 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 
   // Matmul pattern (not generated from .def file).
   patterns.add<LowerMatmulToCompute>(ctx);
+
+  // Power pattern (unary with scalar exponent attribute).
+  patterns.add<LowerPowerToCompute>(ctx);
+
+  // Where pattern (ternary conditional selection).
+  patterns.add<LowerWhereToCompute>(ctx);
 }
 
 } // namespace mlir::tt::ttl

@@ -539,6 +539,84 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Power Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_power to TTKernel power_tile_init + power_tile.
+/// Power is a unary op with an additional scalar exponent parameter.
+struct TTLTilePowerToTTKernel : OpConversionPattern<TilePowerOp> {
+  using OpConversionPattern<TilePowerOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TilePowerOp op, TilePowerOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdx = dstIdxAttr.getInt();
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+
+    // Get the exponent from the op's attribute
+    int32_t exponent = op.getExponent();
+    Value exponentVal = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(exponent));
+
+    // Emit init + compute ops
+    rewriter.create<ttk::PowerTileInitOp>(loc);
+    rewriter.create<ttk::PowUnaryTileOp>(loc, dstIdxVal, exponentVal);
+
+    // Replace with the input (result stays in same DST location)
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Where Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_where to TTKernel where_tile_init + where_tile.
+/// Where is a ternary op: result = condition ? true_val : false_val
+struct TTLTileWhereToTTKernel : OpConversionPattern<TileWhereOp> {
+  using OpConversionPattern<TileWhereOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileWhereOp op, TileWhereOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Get output DST index from attribute (required)
+    auto outIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!outIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+
+    // Get DST indices for operands (use defaults like binary ops)
+    int64_t condIdx = getDstIndexFromValue(adaptor.getCondition()).value_or(0);
+    int64_t trueIdx = getDstIndexFromValue(adaptor.getTrueVal()).value_or(1);
+    int64_t falseIdx = getDstIndexFromValue(adaptor.getFalseVal()).value_or(2);
+
+    Value condIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, condIdx);
+    Value trueIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, trueIdx);
+    Value falseIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, falseIdx);
+    Value outIdxVal =
+        rewriter.create<arith::ConstantIndexOp>(loc, outIdxAttr.getInt());
+
+    // Emit init + compute ops
+    rewriter.create<ttk::WhereTileInitOp>(loc);
+    rewriter.create<ttk::WhereTileOp>(loc, condIdxVal, trueIdxVal, falseIdxVal,
+                                      outIdxVal);
+
+    // Replace with the condition operand (result is in DST[outIdx])
+    rewriter.replaceOp(op, adaptor.getCondition());
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -572,6 +650,12 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Matmul needs type converter for CB conversion.
   patterns.add<TTLTileMatmulToTTKernel>(*typeConverter, ctx);
+
+  // Power op (unary with scalar exponent).
+  patterns.add<TTLTilePowerToTTKernel>(ctx);
+
+  // Where op (ternary conditional selection).
+  patterns.add<TTLTileWhereToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

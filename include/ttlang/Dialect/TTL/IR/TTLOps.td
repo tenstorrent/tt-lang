@@ -590,6 +590,89 @@ def TTL_TileMatmulOp : TTL_TileOp<"tile_matmul", [SameOperandsAndResultType]> {
   let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($result)";
 }
 
+//===----------------------------------------------------------------------===//
+// Power Operation (Unary with scalar exponent)
+//===----------------------------------------------------------------------===//
+
+def TTL_PowerOp : TTL_Op<"power", [Pure]> {
+  let summary = "Element-wise power with scalar exponent";
+  let description = [{
+    Raises each element of the input tensor to a scalar integer power.
+
+    result = input ^ exponent (element-wise)
+
+    The exponent is a compile-time constant integer.
+
+    Example:
+    ```mlir
+    %result = ttl.power %input, 2 : tensor<32x32xf32> -> tensor<32x32xf32>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, I32Attr:$exponent);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $exponent attr-dict `:` type($input) `->` type($result)";
+}
+
+def TTL_TilePowerOp : TTL_TileOp<"tile_power", [SameOperandsAndResultType]> {
+  let summary = "Tile-level power with scalar exponent";
+  let description = [{
+    Raises each element of a tile to a scalar integer power.
+    Maps to ttkernel.power_tile.
+
+    result = input ^ exponent (element-wise)
+
+    Example:
+    ```mlir
+    %result = ttl.tile_power %tile, 2 : !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, I32Attr:$exponent);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $exponent attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Where/Select Operation (Ternary conditional)
+//===----------------------------------------------------------------------===//
+
+def TTL_WhereOp : TTL_Op<"where", [Pure, SameOperandsAndResultType]> {
+  let summary = "Element-wise conditional selection";
+  let description = [{
+    Selects elements from true_val or false_val based on condition.
+
+    result = condition ? true_val : false_val (element-wise)
+
+    For each element, if the condition is non-zero, the corresponding
+    element from true_val is selected; otherwise from false_val.
+
+    Example:
+    ```mlir
+    %result = ttl.where %cond, %true, %false : tensor<32x32xf32>
+    ```
+  }];
+  let arguments = (ins AnyType:$condition, AnyType:$true_val, AnyType:$false_val);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$condition `,` $true_val `,` $false_val attr-dict `:` type($result)";
+}
+
+def TTL_TileWhereOp : TTL_TileOp<"tile_where", [SameOperandsAndResultType]> {
+  let summary = "Tile-level conditional selection";
+  let description = [{
+    Selects elements from true_val or false_val based on condition.
+    Maps to ttkernel.where_tile.
+
+    result = condition ? true_val : false_val (element-wise)
+
+    Example:
+    ```mlir
+    %result = ttl.tile_where %cond, %true, %false : !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins AnyType:$condition, AnyType:$true_val, AnyType:$false_val);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$condition `,` $true_val `,` $false_val attr-dict `:` type($result)";
+}
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 

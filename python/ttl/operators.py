@@ -342,6 +342,45 @@ def matmul(a: TensorBlock, b: TensorBlock, c: TensorBlock) -> TensorBlock:
     return ttl.matmul(c.type, a, b, c)
 
 
+@syntax("power")
+def power(input: TensorBlock, exponent: int) -> TensorBlock:
+    """
+    Element-wise power with scalar exponent: result = input ^ exponent.
+
+    Raises each element of the input tensor to the given integer power.
+
+    Args:
+        input: Input tensor tile
+        exponent: Integer exponent to raise each element to
+
+    Returns:
+        Result tile containing input ^ exponent (element-wise)
+    """
+    exp_val = _get_constant_int(exponent)
+    return ttl.power(input.type, input, exp_val)
+
+
+@syntax("where")
+def where(
+    condition: TensorBlock, true_val: TensorBlock, false_val: TensorBlock
+) -> TensorBlock:
+    """
+    Element-wise conditional selection: result = condition ? true_val : false_val.
+
+    For each element, if the condition is non-zero, selects from true_val;
+    otherwise selects from false_val.
+
+    Args:
+        condition: Condition tensor (non-zero = true)
+        true_val: Values to select when condition is true
+        false_val: Values to select when condition is false
+
+    Returns:
+        Result tile with selected values
+    """
+    return ttl.where(condition, true_val, false_val, results=[true_val.type])
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -349,5 +388,7 @@ __all__ = [
     "core",
     "grid_size",
     "matmul",
+    "power",
+    "where",
     *_generated_all,
 ]
