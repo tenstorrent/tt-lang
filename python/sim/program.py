@@ -34,9 +34,7 @@ def _get_ttlang_compile_error():
     # Direct import of diagnostics module without going through ttl package
     # This avoids importing the full compiler infrastructure
     diagnostics_path = Path(__file__).parent.parent / "ttl" / "diagnostics.py"
-    spec = importlib.util.spec_from_file_location(
-        "ttl.diagnostics", diagnostics_path
-    )
+    spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
     if spec and spec.loader:
         diagnostics = importlib.util.module_from_spec(spec)
         sys.modules["ttl.diagnostics"] = diagnostics
