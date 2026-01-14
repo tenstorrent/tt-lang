@@ -164,19 +164,52 @@ def make_fused_kernel(cb_shape):
 
 TEST_CONFIGS = [
     # (cb_shape, kernel_factory, torch_fn, op_type, expected_unroll)
-
     # Binary ops - footprint=3, capacity=8, unroll=floor(8/3)=2
-    ((1, 4), make_binary_kernel, lambda l, r: l + r, "binary", 2),  # 4 tiles (evenly divisible)
-    ((1, 5), make_binary_kernel, lambda l, r: l + r, "binary", 2),  # 5 tiles (remainder: 1 iter)
+    (
+        (1, 4),
+        make_binary_kernel,
+        lambda l, r: l + r,
+        "binary",
+        2,
+    ),  # 4 tiles (evenly divisible)
+    (
+        (1, 5),
+        make_binary_kernel,
+        lambda l, r: l + r,
+        "binary",
+        2,
+    ),  # 5 tiles (remainder: 1 iter)
     ((2, 2), make_binary_kernel, lambda l, r: l + r, "binary", 2),  # 4 tiles (2D grid)
-
     # Unary ops - footprint=2, capacity=8, unroll=floor(8/2)=4
-    ((2, 2), make_unary_kernel, lambda x: torch.exp(x), "unary", 4),  # 4 tiles (evenly divisible)
-    ((1, 5), make_unary_kernel, lambda x: torch.exp(x), "unary", 4),  # 5 tiles (remainder: 1 iter)
-
+    (
+        (2, 2),
+        make_unary_kernel,
+        lambda x: torch.exp(x),
+        "unary",
+        4,
+    ),  # 4 tiles (evenly divisible)
+    (
+        (1, 5),
+        make_unary_kernel,
+        lambda x: torch.exp(x),
+        "unary",
+        4,
+    ),  # 5 tiles (remainder: 1 iter)
     # Fused chains - footprint=3 (operations reuse DST regs), unroll=2
-    ((1, 4), make_fused_kernel, lambda l, r: torch.exp(l + r * l), "fused", 2),  # evenly divisible
-    ((1, 3), make_fused_kernel, lambda l, r: torch.exp(l + r * l), "fused", 2),  # remainder: 1 iter
+    (
+        (1, 4),
+        make_fused_kernel,
+        lambda l, r: torch.exp(l + r * l),
+        "fused",
+        2,
+    ),  # evenly divisible
+    (
+        (1, 3),
+        make_fused_kernel,
+        lambda l, r: torch.exp(l + r * l),
+        "fused",
+        2,
+    ),  # remainder: 1 iter
 ]
 
 
@@ -199,11 +232,20 @@ def run_test(config, device):
         inp_torch = torch.full(tensor_shape, 0.5, dtype=torch.bfloat16)
         expected = torch_fn(inp_torch)
 
-        inp = ttnn.from_torch(inp_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                             device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        out = ttnn.from_torch(torch.zeros(tensor_shape, dtype=torch.bfloat16),
-                             dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                             device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        inp = ttnn.from_torch(
+            inp_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            torch.zeros(tensor_shape, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
         kernel(inp, out)
         result = ttnn.to_torch(out)
@@ -212,13 +254,27 @@ def run_test(config, device):
         rhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
         expected = torch_fn(lhs_torch, rhs_torch)
 
-        lhs = ttnn.from_torch(lhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                             device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        rhs = ttnn.from_torch(rhs_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                             device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        out = ttnn.from_torch(torch.zeros(tensor_shape, dtype=torch.bfloat16),
-                             dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                             device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        lhs = ttnn.from_torch(
+            lhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        rhs = ttnn.from_torch(
+            rhs_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            torch.zeros(tensor_shape, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
         kernel(lhs, rhs, out)
         result = ttnn.to_torch(out)
@@ -232,7 +288,9 @@ def run_test(config, device):
     num_tiles = rows * cols
     remainder = num_tiles % expected_unroll
     status = "✓" if remainder == 0 else f"✓ (remainder: {remainder} iter)"
-    print(f"{status} {cb_shape[0]}x{cb_shape[1]} {op_type:6s} unroll={expected_unroll} - numerically correct")
+    print(
+        f"{status} {cb_shape[0]}x{cb_shape[1]} {op_type:6s} unroll={expected_unroll} - numerically correct"
+    )
 
 
 # =============================================================================

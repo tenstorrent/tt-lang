@@ -341,12 +341,13 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
       bool remProcessingFailed = false;
       scf::LoopNest remLoopNest = scf::buildLoopNest(
-          rewriter, loc, remLowerBounds, remUpperBounds, remSteps, remInitValues,
+          rewriter, loc, remLowerBounds, remUpperBounds, remSteps,
+          remInitValues,
           [&](OpBuilder &b, Location loc, ValueRange ivs,
               ValueRange iterArgs) -> scf::ValueVector {
             // Generate single iteration (no unrolling) for remainder.
-            auto result = generateTileProcessing(b, loc, op, indexingMaps, ivs,
-                                                 iterArgs);
+            auto result =
+                generateTileProcessing(b, loc, op, indexingMaps, ivs, iterArgs);
             if (failed(result)) {
               remProcessingFailed = true;
               // Return valid-sized vector to avoid buildLoopNest assertion;
@@ -358,9 +359,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
       if (remProcessingFailed) {
         return rewriter.notifyMatchFailure(
-            op,
-            "copy_tile index computation failed in remainder (mismatched "
-            "rank/IVs)");
+            op, "copy_tile index computation failed in remainder (mismatched "
+                "rank/IVs)");
       }
 
       finalResults.assign(remLoopNest.results.begin(),
