@@ -146,9 +146,7 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
 
     if not csv_path.exists():
         print(f"[Auto-profile] Profile CSV not found at {csv_path}")
-        print(
-            "[Auto-profile] Ensure TT_METAL_DEVICE_PROFILER=1 is set before running"
-        )
+        print("[Auto-profile] Ensure TT_METAL_DEVICE_PROFILER=1 is set before running")
         return
 
     # Parse and display results

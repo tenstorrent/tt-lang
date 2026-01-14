@@ -17,7 +17,11 @@ from ..dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
 from ..layouts import TTNNLayoutConfig, create_ttnn_layout
 from ..ttl_utils import get_thread_type_string
-from .auto_profile import generate_signpost_name, get_line_mapper, is_auto_profile_enabled
+from .auto_profile import (
+    generate_signpost_name,
+    get_line_mapper,
+    is_auto_profile_enabled,
+)
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 

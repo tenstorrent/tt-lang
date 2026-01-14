@@ -976,8 +976,8 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
     // Emit DeviceZoneScopedN wrapped in braces to avoid variable conflicts.
     auto loc = op.getLoc();
     rewriter.create<emitc::VerbatimOp>(loc, "{");
-    rewriter.create<emitc::VerbatimOp>(
-        loc, "DeviceZoneScopedN(\"" + op.getName().str() + "\");");
+    rewriter.create<emitc::VerbatimOp>(loc, "DeviceZoneScopedN(\"" +
+                                                op.getName().str() + "\");");
     rewriter.create<emitc::VerbatimOp>(loc, "}");
     rewriter.eraseOp(op);
     return success();
