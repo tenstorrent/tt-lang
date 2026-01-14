@@ -137,30 +137,15 @@ def test_multicore_loop(device, grid_shape):
     """Test multicore kernel with 2x2 tiles per core: exp(lhs) + sqrt(rhs)."""
     grid_rows, grid_cols = grid_shape
     height, width = grid_to_tensor_shape(grid_rows, grid_cols)
-    total_tile_rows = grid_rows * TILES_PER_CORE_ROW
-    total_tile_cols = grid_cols * TILES_PER_CORE_COL
-
     kernel = make_kernel(grid_rows, grid_cols)
 
-    # Input tensors with small values for exp (avoid overflow)
-    lhs_torch = torch.zeros((height, width), dtype=torch.bfloat16)
-    rhs_torch = torch.zeros((height, width), dtype=torch.bfloat16)
-
-    for r in range(total_tile_rows):
-        for c in range(total_tile_cols):
-            # Use 0.01 multiplier to keep exp() output small for bfloat16 precision
-            lhs_value = float(r * total_tile_cols + c + 1) * 0.01
-            rhs_value = 4.0
-            lhs_torch[
-                r * TILE_SIZE : (r + 1) * TILE_SIZE,
-                c * TILE_SIZE : (c + 1) * TILE_SIZE,
-            ] = lhs_value
-            rhs_torch[
-                r * TILE_SIZE : (r + 1) * TILE_SIZE,
-                c * TILE_SIZE : (c + 1) * TILE_SIZE,
-            ] = rhs_value
-
+    # Random inputs: small values for lhs (exp overflow), positive for rhs (sqrt)
+    lhs_torch = torch.rand((height, width), dtype=torch.bfloat16) * 0.5
+    rhs_torch = torch.rand((height, width), dtype=torch.bfloat16) * 4.0 + 0.1
     out_torch = torch.zeros((height, width), dtype=torch.bfloat16)
+
+    # Compute expected result using torch
+    expected = torch.exp(lhs_torch) + torch.sqrt(rhs_torch)
 
     lhs = ttnn.from_torch(
         lhs_torch,
@@ -197,23 +182,10 @@ def test_multicore_loop(device, grid_shape):
         grid_rows,
     ), f"grid_size mismatch: got ({x_size}, {y_size}), expected ({grid_cols}, {grid_rows})"
 
-    # Verify each tile: exp(lhs) + sqrt(rhs)
-    sqrt_rhs = 2.0
-    for r in range(total_tile_rows):
-        for c in range(total_tile_cols):
-            tile_value = float(r * total_tile_cols + c + 1) * 0.01
-            expected_value = float(torch.exp(torch.tensor(tile_value))) + sqrt_rhs
-            result_tile = result[
-                r * TILE_SIZE : (r + 1) * TILE_SIZE,
-                c * TILE_SIZE : (c + 1) * TILE_SIZE,
-            ]
-
-            assert torch.allclose(
-                result_tile.float(),
-                torch.full((TILE_SIZE, TILE_SIZE), expected_value),
-                rtol=0.02,
-                atol=0.5,
-            ), f"Tile [{r}, {c}]: expected {expected_value}, got {result_tile[0,0].item()}"
+    # Verify result matches expected: exp(lhs) + sqrt(rhs)
+    assert torch.allclose(result.float(), expected.float(), rtol=0.02, atol=0.5), (
+        f"Result mismatch for grid {grid_rows}x{grid_cols}"
+    )
 
 
 if __name__ == "__main__":
