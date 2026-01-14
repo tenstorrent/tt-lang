@@ -183,9 +183,9 @@ def test_multicore_loop(device, grid_shape):
     ), f"grid_size mismatch: got ({x_size}, {y_size}), expected ({grid_cols}, {grid_rows})"
 
     # Verify result matches expected: exp(lhs) + sqrt(rhs)
-    assert torch.allclose(result.float(), expected.float(), rtol=0.02, atol=0.5), (
-        f"Result mismatch for grid {grid_rows}x{grid_cols}"
-    )
+    assert torch.allclose(
+        result.float(), expected.float(), rtol=0.02, atol=0.5
+    ), f"Result mismatch for grid {grid_rows}x{grid_cols}"
 
 
 if __name__ == "__main__":
