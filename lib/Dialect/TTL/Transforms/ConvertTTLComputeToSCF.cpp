@@ -239,8 +239,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       return failure();
     }
 
-    // Check for unroll factor on the innermost dimension (only if pass option
-    // enables unrolling).
+    // Check for unroll factor (only if pass option enables unrolling).
     int64_t unrollFactor = 1;
     if (enableUnroll) {
       if (auto unrollAttr =
@@ -249,127 +248,191 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       }
     }
 
-    // Build loop bounds from iteration domain.
-    // If unrolling, adjust the innermost loop step and compute floor division
-    // for the main loop bound.
-    SmallVector<Value> lowerBounds, upperBounds, steps;
-    Value originalUpperBound; // Save original bound for remainder loop
-    for (auto [idx, range] : llvm::enumerate(iterDomain)) {
-      Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
-      Value ub = getValueOrCreateConstantIndexOp(rewriter, loc, range.size);
-      // For the innermost loop (last dimension), apply unroll factor to step.
-      int64_t stepValue = (idx == iterDomain.size() - 1) ? unrollFactor : 1;
-      Value step = rewriter.create<arith::ConstantIndexOp>(loc, stepValue);
-      lowerBounds.push_back(lb);
-      upperBounds.push_back(ub);
-      steps.push_back(step);
+    // Collect dimension sizes for linearization/delinearization.
+    SmallVector<Value> dimSizes;
+    for (const Range &range : iterDomain) {
+      dimSizes.push_back(
+          getValueOrCreateConstantIndexOp(rewriter, loc, range.size));
     }
 
-    // If unrolling, split into main loop (fully unrolled) + remainder loop.
-    // Main loop bound = floor(numTiles / unrollFactor) * unrollFactor
-    if (unrollFactor > 1) {
-      originalUpperBound = upperBounds.back();
-      Value unrollVal =
-          rewriter.create<arith::ConstantIndexOp>(loc, unrollFactor);
-      Value divided =
-          rewriter.create<arith::DivUIOp>(loc, originalUpperBound, unrollVal);
-      Value floored = rewriter.create<arith::MulIOp>(loc, divided, unrollVal);
-      upperBounds.back() = floored;
+    // Compute total number of tiles (product of all dimensions).
+    Value totalTiles = dimSizes[0];
+    for (size_t i = 1; i < dimSizes.size(); ++i) {
+      totalTiles = rewriter.create<arith::MulIOp>(loc, totalTiles, dimSizes[i]);
     }
+
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     // Initial values for iter_args are the output tensors.
     SmallVector<Value> initValues(op.getOutputs());
+    SmallVector<Value> currentResults = initValues;
 
-    // Track whether generateTileProcessing fails inside the lambda.
+    // Helper lambda to delinearize a flat index to multi-dimensional coords.
+    // Uses affine.apply for constant folding when dimensions are static.
+    // For dims [D0, D1, ..., Dn], linearIdx -> [i0, i1, ..., in] where
+    // linearIdx = i0 * (D1*D2*...*Dn) + i1 * (D2*...*Dn) + ... + in
+    auto delinearize = [&](OpBuilder &b, Location loc, Value linearIdx,
+                           ArrayRef<Value> dims) -> SmallVector<Value> {
+      SmallVector<Value> coords;
+      if (dims.size() == 1) {
+        coords.push_back(linearIdx);
+        return coords;
+      }
+
+      // Compute strides: stride[i] = product of dims[i+1..n]
+      SmallVector<int64_t> strides(dims.size(), 1);
+      for (int i = dims.size() - 2; i >= 0; --i) {
+        auto dimConst = dims[i + 1].getDefiningOp<arith::ConstantIndexOp>();
+        if (dimConst) {
+          strides[i] = strides[i + 1] * dimConst.value();
+        } else {
+          // Dynamic dimension - fallback needed but shouldn't happen
+          strides[i] = 1;
+        }
+      }
+
+      // Build affine maps for delinearization:
+      // coord[i] = (linearIdx floordiv stride[i]) mod dim[i]
+      // For outermost: coord[0] = linearIdx floordiv stride[0]
+      // For innermost: coord[n] = linearIdx mod dim[n]
+      MLIRContext *ctx = b.getContext();
+      AffineExpr idx = getAffineDimExpr(0, ctx);
+
+      for (size_t i = 0; i < dims.size(); ++i) {
+        AffineExpr coordExpr;
+        if (i == 0) {
+          // Outermost: idx floordiv stride[0]
+          coordExpr = idx.floorDiv(strides[0]);
+        } else if (i + 1 == dims.size()) {
+          // Innermost: idx mod dim[n]
+          auto dimConst = dims[i].getDefiningOp<arith::ConstantIndexOp>();
+          int64_t dimVal = dimConst ? dimConst.value() : 1;
+          coordExpr = idx % dimVal;
+        } else {
+          // Middle: (idx floordiv stride[i]) mod dim[i]
+          auto dimConst = dims[i].getDefiningOp<arith::ConstantIndexOp>();
+          int64_t dimVal = dimConst ? dimConst.value() : 1;
+          coordExpr = (idx.floorDiv(strides[i])) % dimVal;
+        }
+        AffineMap map = AffineMap::get(1, 0, coordExpr, ctx);
+        SmallVector<OpFoldResult> operands = {linearIdx};
+        OpFoldResult result =
+            affine::makeComposedFoldedAffineApply(b, loc, map, operands);
+        coords.push_back(getValueOrCreateConstantIndexOp(b, loc, result));
+      }
+      return coords;
+    };
+
     bool processingFailed = false;
-    scf::LoopNest loopNest = scf::buildLoopNest(
-        rewriter, loc, lowerBounds, upperBounds, steps, initValues,
-        [&](OpBuilder &b, Location loc, ValueRange ivs,
-            ValueRange iterArgs) -> scf::ValueVector {
-          // Generate unrolled iterations in the loop body.
-          // For each unroll iteration i in [0, unrollFactor), adjust the
-          // innermost IV by +i and process tiles at those indices.
-          SmallVector<Value> currentIterArgs(iterArgs.begin(), iterArgs.end());
-          for (int64_t i = 0; i < unrollFactor; ++i) {
-            // Compute adjusted IVs for this unrolled iteration.
-            SmallVector<Value> adjustedIvs(ivs.begin(), ivs.end());
-            if (!ivs.empty()) {
-              // Adjust the innermost IV: iv + i
-              Value innermostIv = ivs.back();
-              if (i > 0) {
-                Value offset = b.create<arith::ConstantIndexOp>(loc, i);
-                adjustedIvs.back() =
-                    b.create<arith::AddIOp>(loc, innermostIv, offset);
-              }
-            }
 
-            // Generate tile processing for this iteration.
-            auto result = generateTileProcessing(b, loc, op, indexingMaps,
-                                                 adjustedIvs, currentIterArgs);
-            if (failed(result)) {
-              processingFailed = true;
-              // Return valid-sized vector to avoid buildLoopNest assertion;
-              // the failure is handled after the loop nest is built.
-              return scf::ValueVector(iterArgs.begin(), iterArgs.end());
-            }
-            currentIterArgs.assign(result->begin(), result->end());
-          }
-          return currentIterArgs;
-        });
-
-    if (processingFailed) {
-      return rewriter.notifyMatchFailure(
-          op, "copy_tile index computation failed (mismatched rank/IVs)");
-    }
-
-    // Build remainder loop if unrolling and there may be leftover iterations.
-    // Remainder loop: from mainLoopBound to originalBound, step=1.
-    SmallVector<Value> finalResults;
     if (unrollFactor > 1) {
-      // Remainder loop starts where main loop ended (upperBounds.back() is the
-      // floored main loop bound).
-      SmallVector<Value> remLowerBounds = lowerBounds;
-      remLowerBounds.back() = upperBounds.back();
-      SmallVector<Value> remUpperBounds = upperBounds;
-      remUpperBounds.back() = originalUpperBound;
-      SmallVector<Value> remSteps = steps;
-      remSteps.back() = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      // Linearized unrolling: iterate over linearized tile indices.
+      // Main loop: [0, floor(total/unroll)*unroll) step unroll
+      // Remainder loop: [floor(total/unroll)*unroll, total) step 1
+      Value unrollVal =
+          rewriter.create<arith::ConstantIndexOp>(loc, unrollFactor);
+      Value divided =
+          rewriter.create<arith::DivUIOp>(loc, totalTiles, unrollVal);
+      Value mainBound =
+          rewriter.create<arith::MulIOp>(loc, divided, unrollVal);
 
-      // Use main loop results as initial values for remainder loop.
-      SmallVector<Value> remInitValues(loopNest.results.begin(),
-                                       loopNest.results.end());
-
-      bool remProcessingFailed = false;
-      scf::LoopNest remLoopNest = scf::buildLoopNest(
-          rewriter, loc, remLowerBounds, remUpperBounds, remSteps,
-          remInitValues,
+      // Main loop with unrolling
+      scf::LoopNest mainLoop = scf::buildLoopNest(
+          rewriter, loc, {c0}, {mainBound}, {unrollVal}, currentResults,
           [&](OpBuilder &b, Location loc, ValueRange ivs,
               ValueRange iterArgs) -> scf::ValueVector {
-            // Generate single iteration (no unrolling) for remainder.
+            Value baseIdx = ivs[0];
+            SmallVector<Value> loopIterArgs(iterArgs.begin(), iterArgs.end());
+
+            for (int64_t i = 0; i < unrollFactor; ++i) {
+              Value offset = b.create<arith::ConstantIndexOp>(loc, i);
+              Value linearIdx = b.create<arith::AddIOp>(loc, baseIdx, offset);
+              SmallVector<Value> coords = delinearize(b, loc, linearIdx, dimSizes);
+
+              auto result = generateTileProcessing(b, loc, op, indexingMaps,
+                                                   coords, loopIterArgs);
+              if (failed(result)) {
+                processingFailed = true;
+                return scf::ValueVector(iterArgs.begin(), iterArgs.end());
+              }
+              loopIterArgs.assign(result->begin(), result->end());
+            }
+            return loopIterArgs;
+          });
+
+      if (processingFailed) {
+        return rewriter.notifyMatchFailure(
+            op, "copy_tile index computation failed in main loop");
+      }
+
+      currentResults.assign(mainLoop.results.begin(), mainLoop.results.end());
+
+      // Check if remainder loop is needed: only if total % unroll != 0.
+      // When total is statically known, we can skip generating the loop entirely.
+      bool needsRemainder = true;
+      if (auto totalConst = totalTiles.getDefiningOp<arith::ConstantIndexOp>()) {
+        int64_t total = totalConst.value();
+        needsRemainder = (total % unrollFactor) != 0;
+      }
+
+      if (needsRemainder) {
+        // Remainder loop (step 1, no unrolling)
+        scf::LoopNest remLoop = scf::buildLoopNest(
+            rewriter, loc, {mainBound}, {totalTiles}, {c1}, currentResults,
+            [&](OpBuilder &b, Location loc, ValueRange ivs,
+                ValueRange iterArgs) -> scf::ValueVector {
+              Value linearIdx = ivs[0];
+              SmallVector<Value> coords =
+                  delinearize(b, loc, linearIdx, dimSizes);
+
+              auto result = generateTileProcessing(b, loc, op, indexingMaps,
+                                                   coords, iterArgs);
+              if (failed(result)) {
+                processingFailed = true;
+                return scf::ValueVector(iterArgs.begin(), iterArgs.end());
+              }
+              return *result;
+            });
+
+        if (processingFailed) {
+          return rewriter.notifyMatchFailure(
+              op, "copy_tile index computation failed in remainder loop");
+        }
+
+        currentResults.assign(remLoop.results.begin(), remLoop.results.end());
+      }
+    } else {
+      // No unrolling: standard nested loop structure
+      SmallVector<Value> lowerBounds, upperBounds, steps;
+      for (size_t i = 0; i < iterDomain.size(); ++i) {
+        lowerBounds.push_back(c0);
+        upperBounds.push_back(dimSizes[i]);
+        steps.push_back(c1);
+      }
+
+      scf::LoopNest loopNest = scf::buildLoopNest(
+          rewriter, loc, lowerBounds, upperBounds, steps, currentResults,
+          [&](OpBuilder &b, Location loc, ValueRange ivs,
+              ValueRange iterArgs) -> scf::ValueVector {
             auto result =
                 generateTileProcessing(b, loc, op, indexingMaps, ivs, iterArgs);
             if (failed(result)) {
-              remProcessingFailed = true;
-              // Return valid-sized vector to avoid buildLoopNest assertion;
-              // the failure is handled after the loop nest is built.
+              processingFailed = true;
               return scf::ValueVector(iterArgs.begin(), iterArgs.end());
             }
             return *result;
           });
 
-      if (remProcessingFailed) {
+      if (processingFailed) {
         return rewriter.notifyMatchFailure(
-            op, "copy_tile index computation failed in remainder (mismatched "
-                "rank/IVs)");
+            op, "copy_tile index computation failed");
       }
 
-      finalResults.assign(remLoopNest.results.begin(),
-                          remLoopNest.results.end());
-    } else {
-      finalResults.assign(loopNest.results.begin(), loopNest.results.end());
+      currentResults.assign(loopNest.results.begin(), loopNest.results.end());
     }
 
-    rewriter.replaceOp(op, finalResults);
+    rewriter.replaceOp(op, currentResults);
     return success();
   }
 };

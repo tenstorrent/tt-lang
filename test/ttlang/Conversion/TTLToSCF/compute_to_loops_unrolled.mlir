@@ -129,10 +129,9 @@ func.func @unroll_1d_binary_remainder(%a: tensor<5x!ttcore.tile<32x32, f32>>,
 
 #map2d = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: 2D loop with 2x2 tiles, unroll_factor=2 on innermost dimension.
-// Expected: inner loop has step=2, outer loop has step=1.
-// Remainder loop nest with inner loop: 2 to 2, step=1 (zero iterations).
-// CB tile index must be linearized for StoreOp.
+// Purpose: 2D loop with 2x2 tiles (4 total), unroll_factor=2.
+// Uses linearized iteration: single loop over [0, 4) with affine.apply for delinearization.
+// Expected: Main loop from 0 to 4 step 2, remainder from 4 to 4 step 1 (zero iterations).
 // CHECK-LABEL: func.func @unroll_2d_binary
 // CHECK-SAME: (%[[A:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[B:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
 func.func @unroll_2d_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -141,6 +140,7 @@ func.func @unroll_2d_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
   // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
   // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+  // CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
   %cba = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cbb = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
@@ -149,35 +149,31 @@ func.func @unroll_2d_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_att = ttl.attach_cb %b, %cbb : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_att = ttl.attach_cb %init, %cbout : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // Main loop nest: outer loop step=1, inner loop step=2 (unrolled)
-  // CHECK: %[[OUTER:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[OUTER_ACC:.*]] = %{{.*}}) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
+  // Main loop: linearized iteration from 0 to 4 step 2
+  // CHECK: %[[MAIN:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C4]] step %[[C2]] iter_args(%[[ACC:.*]] = %{{.*}}) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
 
-  // Inner main loop: step=2 (unrolled), bound=floor(2/2)*2=2
-  // CHECK-NEXT: %[[INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C2]] iter_args(%[[INNER_ACC:.*]] = %[[OUTER_ACC]]) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
+  // First unrolled iteration: delinearize i to [row, col]
+  // CHECK: affine.apply {{.*}}(%[[I]])
+  // CHECK: affine.apply {{.*}}(%[[I]])
+  // CHECK: tensor.extract %{{.*}}[%{{.*}}, %{{.*}}] : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // CHECK: ttl.tile_add
+  // CHECK: tensor.insert
 
-  // First iteration: [i, j]
-  // CHECK-NEXT: %[[EXT_A_0:.*]] = tensor.extract %{{.*}}[%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[EXT_B_0:.*]] = tensor.extract %{{.*}}[%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[SUM_0:.*]] = ttl.tile_add %[[EXT_A_0]], %[[EXT_B_0]] : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: %[[INS_0:.*]] = tensor.insert %[[SUM_0]] into %[[INNER_ACC]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // Second unrolled iteration: delinearize i+1 to [row, col]
+  // CHECK: arith.addi %[[I]], %[[C1]] : index
+  // CHECK: affine.apply
+  // CHECK: affine.apply
+  // CHECK: tensor.extract
+  // CHECK: ttl.tile_add
+  // CHECK: tensor.insert
 
-  // Second iteration: [i, j+1]
-  // CHECK-NEXT: %[[J_PLUS_1:.*]] = arith.addi %[[J]], %[[C1]] : index
-  // CHECK-NEXT: %[[EXT_A_1:.*]] = tensor.extract %{{.*}}[%[[I]], %[[J_PLUS_1]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[EXT_B_1:.*]] = tensor.extract %{{.*}}[%[[I]], %[[J_PLUS_1]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[SUM_1:.*]] = ttl.tile_add %[[EXT_A_1]], %[[EXT_B_1]] : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT: %[[INS_1:.*]] = tensor.insert %[[SUM_1]] into %[[INS_0]][%[[I]], %[[J_PLUS_1]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
-
-  // CHECK-NEXT: scf.yield %[[INS_1]] : tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK: scf.yield %[[INNER]] : tensor<2x2x!ttcore.tile<32x32, f32>>
-
-  // Remainder loop nest: outer loop processes all rows again, inner loop 2 to 2 (zero iterations)
-  // CHECK: %[[REM_OUTER:.*]] = scf.for %{{.*}} = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%{{.*}} = %[[OUTER]]) -> (tensor<2x2x!ttcore.tile<32x32, f32>>)
-  // CHECK-NEXT: %[[REM_INNER:.*]] = scf.for %{{.*}} = %[[C2]] to %[[C2]] step %[[C1]]
   // CHECK: scf.yield
-  // CHECK: scf.yield %[[REM_INNER]]
 
-  // CHECK: return %[[REM_OUTER]] : tensor<2x2x!ttcore.tile<32x32, f32>>
+  // Remainder loop: from 4 to 4, step 1 (zero iterations for evenly divisible)
+  // CHECK: %[[REM:.*]] = scf.for %{{.*}} = %[[C4]] to %[[C4]] step %[[C1]]
+  // CHECK: scf.yield
+
+  // CHECK: return %[[REM]] : tensor<2x2x!ttcore.tile<32x32, f32>>
 
   %0 = ttl.compute ins(%a_att, %b_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map2d, #map2d, #map2d], iterator_types = ["parallel", "parallel"], ttl.unroll_factor = 2 : i32} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
@@ -347,4 +343,128 @@ func.func @no_unroll_attr(%a: tensor<4x!ttcore.tile<32x32, f32>>)
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<4x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<4x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+#map2d_2x3 = affine_map<(d0, d1) -> (d0, d1)>
+
+// Purpose: 2D loop with 2x3 tiles (6 total, odd inner dimension), unroll_factor=2.
+// Uses linearized iteration: single loop over [0, 6) with affine.apply for delinearization.
+// Expected: Main loop from 0 to 6 step 2, remainder from 6 to 6 step 1 (zero iterations).
+// This tests correct linearization when inner dimension is odd (not evenly divisible by unroll).
+// CHECK-LABEL: func.func @unroll_2d_odd_inner
+// CHECK-SAME: (%[[A:.*]]: tensor<2x3x!ttcore.tile<32x32, f32>>, %[[B:.*]]: tensor<2x3x!ttcore.tile<32x32, f32>>)
+func.func @unroll_2d_odd_inner(%a: tensor<2x3x!ttcore.tile<32x32, f32>>,
+                                %b: tensor<2x3x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x3x!ttcore.tile<32x32, f32>> {
+  // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+  // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+  // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+  // CHECK-DAG: %[[C6:.*]] = arith.constant 6 : index
+  %init = tensor.empty() : tensor<2x3x!ttcore.tile<32x32, f32>>
+  %cba = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
+  %cbb = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
+  %cbout = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
+  %a_att = ttl.attach_cb %a, %cba : (tensor<2x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x3x!ttcore.tile<32x32, f32>>
+  %b_att = ttl.attach_cb %b, %cbb : (tensor<2x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x3x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout : (tensor<2x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x3x!ttcore.tile<32x32, f32>>
+
+  // Main loop: linearized iteration from 0 to 6 step 2
+  // CHECK: %[[MAIN:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C6]] step %[[C2]] iter_args(%[[ACC:.*]] = %{{.*}}) -> (tensor<2x3x!ttcore.tile<32x32, f32>>)
+
+  // Delinearization uses affine.apply with floordiv 3 and mod 3 (inner dim = 3)
+  // CHECK: affine.apply {{.*}}(%[[I]])
+  // CHECK: affine.apply {{.*}}(%[[I]])
+  // CHECK: tensor.extract
+  // CHECK: ttl.tile_add
+  // CHECK: tensor.insert
+
+  // Second unrolled iteration at i+1
+  // CHECK: arith.addi %[[I]], %[[C1]] : index
+  // CHECK: affine.apply
+  // CHECK: affine.apply
+  // CHECK: tensor.extract
+  // CHECK: ttl.tile_add
+  // CHECK: tensor.insert
+
+  // CHECK: scf.yield
+
+  // Remainder loop: from 6 to 6, step 1 (zero iterations)
+  // CHECK: %[[REM:.*]] = scf.for %{{.*}} = %[[C6]] to %[[C6]] step %[[C1]]
+  // CHECK: scf.yield
+
+  // CHECK: return %[[REM]] : tensor<2x3x!ttcore.tile<32x32, f32>>
+
+  %0 = ttl.compute ins(%a_att, %b_att : tensor<2x3x!ttcore.tile<32x32, f32>>, tensor<2x3x!ttcore.tile<32x32, f32>>) outs(%init_att : tensor<2x3x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map2d_2x3, #map2d_2x3, #map2d_2x3], iterator_types = ["parallel", "parallel"], ttl.unroll_factor = 2 : i32} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
+    %sum = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
+    ttl.yield %sum : !ttcore.tile<32x32, f32>
+  } -> tensor<2x3x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x3x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+#map2d_3x3 = affine_map<(d0, d1) -> (d0, d1)>
+
+// Purpose: 2D loop with 3x3 tiles (9 total, odd inner dimension AND remainder), unroll_factor=2.
+// Uses linearized iteration: single loop over [0, 9) with affine.apply for delinearization.
+// Expected: Main loop from 0 to 8 step 2, remainder from 8 to 9 step 1 (1 iteration).
+// This tests both odd inner dimension and non-zero remainder loop execution.
+// CHECK-LABEL: func.func @unroll_2d_odd_with_remainder
+// CHECK-SAME: (%[[A:.*]]: tensor<3x3x!ttcore.tile<32x32, f32>>, %[[B:.*]]: tensor<3x3x!ttcore.tile<32x32, f32>>)
+func.func @unroll_2d_odd_with_remainder(%a: tensor<3x3x!ttcore.tile<32x32, f32>>,
+                                         %b: tensor<3x3x!ttcore.tile<32x32, f32>>)
+    -> tensor<3x3x!ttcore.tile<32x32, f32>> {
+  // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+  // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+  // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+  // CHECK-DAG: %[[C8:.*]] = arith.constant 8 : index
+  // CHECK-DAG: %[[C9:.*]] = arith.constant 9 : index
+  %init = tensor.empty() : tensor<3x3x!ttcore.tile<32x32, f32>>
+  %cba = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 2>
+  %cbb = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 2>
+  %cbout = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 2>
+  %a_att = ttl.attach_cb %a, %cba : (tensor<3x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<3x3x!ttcore.tile<32x32, f32>>
+  %b_att = ttl.attach_cb %b, %cbb : (tensor<3x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<3x3x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout : (tensor<3x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<3x3x!ttcore.tile<32x32, f32>>
+
+  // Main loop: linearized iteration from 0 to 8 step 2 (floor(9/2)*2 = 8)
+  // CHECK: %[[MAIN:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C8]] step %[[C2]] iter_args(%[[ACC:.*]] = %{{.*}}) -> (tensor<3x3x!ttcore.tile<32x32, f32>>)
+
+  // Delinearization uses affine.apply with floordiv 3 and mod 3 (inner dim = 3)
+  // CHECK: affine.apply {{.*}}(%[[I]])
+  // CHECK: affine.apply {{.*}}(%[[I]])
+  // CHECK: tensor.extract
+  // CHECK: ttl.tile_add
+  // CHECK: tensor.insert
+
+  // Second unrolled iteration at i+1
+  // CHECK: arith.addi %[[I]], %[[C1]] : index
+  // CHECK: affine.apply
+  // CHECK: affine.apply
+  // CHECK: tensor.extract
+  // CHECK: ttl.tile_add
+  // CHECK: tensor.insert
+
+  // CHECK: scf.yield
+
+  // Remainder loop: from 8 to 9, step 1 (1 iteration for tile index 8)
+  // CHECK: %[[REM:.*]] = scf.for %[[I_REM:.*]] = %[[C8]] to %[[C9]] step %[[C1]] iter_args(%[[REM_ACC:.*]] = %[[MAIN]]) -> (tensor<3x3x!ttcore.tile<32x32, f32>>)
+  // CHECK: affine.apply {{.*}}(%[[I_REM]])
+  // CHECK: affine.apply {{.*}}(%[[I_REM]])
+  // CHECK: tensor.extract
+  // CHECK: ttl.tile_add
+  // CHECK: tensor.insert
+  // CHECK: scf.yield
+
+  // CHECK: return %[[REM]] : tensor<3x3x!ttcore.tile<32x32, f32>>
+
+  %0 = ttl.compute ins(%a_att, %b_att : tensor<3x3x!ttcore.tile<32x32, f32>>, tensor<3x3x!ttcore.tile<32x32, f32>>) outs(%init_att : tensor<3x3x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map2d_3x3, #map2d_3x3, #map2d_3x3], iterator_types = ["parallel", "parallel"], ttl.unroll_factor = 2 : i32} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
+    %sum = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
+    ttl.yield %sum : !ttcore.tile<32x32, f32>
+  } -> tensor<3x3x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<3x3x!ttcore.tile<32x32, f32>>
 }
