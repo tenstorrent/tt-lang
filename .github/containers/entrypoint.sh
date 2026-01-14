@@ -16,9 +16,5 @@ if [ -d "${TTLANG_INSTALL_DIR}" ]; then
     export PYTHONPATH="${TTLANG_INSTALL_DIR}/python_packages:${TTLANG_INSTALL_DIR}/python:$PYTHONPATH"
 fi
 
-# If command is bash or sh, run it; otherwise wrap in bash to preserve environment
-if [[ "$1" == "bash" ]] || [[ "$1" == "/bin/bash" ]] || [[ "$1" == "sh" ]] || [[ "$1" == "/bin/sh" ]]; then
-    exec "$@"
-else
-    exec bash -c "$*"
-fi
+# Execute the command directly (environment is already activated above)
+exec "$@"
