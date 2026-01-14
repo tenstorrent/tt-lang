@@ -96,7 +96,7 @@ def multicore_add(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from utils import require_hardware
+    from test_helpers import require_hardware
 
     print("=== Multicore Add Kernel Test ===")
     require_hardware()
