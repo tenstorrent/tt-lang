@@ -3,17 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Container entrypoint for tt-lang images
-# Activates the toolchain environment and executes the provided command
+# Activates the toolchain and tt-lang environments and executes the provided command
 
-# Activate tt-mlir toolchain venv if available
-if [ -f "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/activate" ]; then
-    source "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/activate"
-fi
-
-# Setup tt-lang paths if installed
-if [ -d "${TTLANG_INSTALL_DIR}" ]; then
-    export PATH="${TTLANG_INSTALL_DIR}/bin:$PATH"
-    export PYTHONPATH="${TTLANG_INSTALL_DIR}/python_packages:${TTLANG_INSTALL_DIR}/python:$PYTHONPATH"
+# Activate tt-lang environment (includes toolchain activation)
+# tt-lang env/activate is installed to the toolchain
+if [ -f "${TTMLIR_TOOLCHAIN_DIR}/env/activate" ]; then
+    source "${TTMLIR_TOOLCHAIN_DIR}/env/activate"
 fi
 
 # Execute the command directly (environment is already activated above)

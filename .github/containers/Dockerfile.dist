@@ -36,13 +36,13 @@ RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
     -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
-# Build tt-lang (activates environment first, like CI)
+# Build and install tt-lang (activates environment first, like CI)
 RUN source build/env/activate && \
-    cmake --build build
+    cmake --build build && \
+    cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
 
-# Clean up tt-mlir build artifacts to reduce image size
-# Keep tt-mlir-install (the installed artifacts) but remove the build/_deps
-RUN rm -rf build/_deps
+# Clean up build directory (no longer needed after install)
+RUN rm -rf build/
 
 # =============================================================================
 # Stage 2: CI/Distribution (pre-built tt-lang for users and CI)
@@ -51,22 +51,18 @@ FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS ci
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
-ENV TTLANG_INSTALL_DIR=/opt/ttlang
 
-# Copy tt-mlir toolchain (installed directly to /opt/ttmlir-toolchain during build)
+# Copy tt-mlir toolchain with installed tt-lang
+# (tt-lang was installed to toolchain via cmake --install)
 COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
-
-# Copy built tt-lang artifacts
-COPY --from=build /home/build/tt-lang/build/python_packages $TTLANG_INSTALL_DIR/python_packages
-COPY --from=build /home/build/tt-lang/build/bin $TTLANG_INSTALL_DIR/bin
-COPY --from=build /home/build/tt-lang/python $TTLANG_INSTALL_DIR/python
 
 # Set write permissions on toolchain for user pip installs
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
 # Setup environment for immediate use
-ENV PATH="$TTLANG_INSTALL_DIR/bin:$TTMLIR_TOOLCHAIN_DIR/bin:$PATH"
-ENV PYTHONPATH="$TTLANG_INSTALL_DIR/python_packages:$TTLANG_INSTALL_DIR/python:$PYTHONPATH"
+# tt-lang is installed in the toolchain at bin/ and python_packages/
+ENV PATH="$TTMLIR_TOOLCHAIN_DIR/bin:$PATH"
+ENV PYTHONPATH="$TTMLIR_TOOLCHAIN_DIR/python_packages:$PYTHONPATH"
 
 # Create python symlink for convenience
 RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
@@ -75,6 +71,10 @@ RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
 # Setup entrypoint to activate environment
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Set working directory to installed examples
+WORKDIR $TTMLIR_TOOLCHAIN_DIR/examples
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
 
@@ -116,6 +116,9 @@ RUN apt-get update && apt-get install -y libmpfr-dev && \
 # Setup entrypoint
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Set working directory to installed examples
+WORKDIR $TTMLIR_TOOLCHAIN_DIR/examples
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]

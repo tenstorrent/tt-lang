@@ -87,3 +87,18 @@ file(GLOB_RECURSE WHEEL_FILES "${CMAKE_BINARY_DIR}/*.whl")
 if(WHEEL_FILES)
   install(FILES ${WHEEL_FILES} DESTINATION wheels)
 endif()
+
+# Install examples, tests, and environment activation script for Docker images
+install(DIRECTORY examples/ DESTINATION examples
+        PATTERN "*.pyc" EXCLUDE
+        PATTERN "__pycache__" EXCLUDE)
+
+install(DIRECTORY test/ DESTINATION test
+        PATTERN "*.pyc" EXCLUDE
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "build" EXCLUDE)
+
+# Install environment activation script if it exists
+if(EXISTS "${CMAKE_BINARY_DIR}/env/activate")
+  install(FILES "${CMAKE_BINARY_DIR}/env/activate" DESTINATION env)
+endif()
