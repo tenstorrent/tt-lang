@@ -23,7 +23,7 @@ The following commands are available for TT-Lang kernel development:
 /ttl-export examples/matmul.py
 /ttl-optimize my_kernel.py
 /ttl-profile my_kernel.py
-/ttl-simulate my_kernel.py input_data.pt
+/ttl-simulate my_kernel.py
 /ttl-test my_kernel.py "test edge cases for small matrices"
 ```
 
