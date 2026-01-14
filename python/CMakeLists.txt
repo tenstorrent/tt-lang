@@ -104,7 +104,6 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     ir.py
     layouts.py
     operators.py
-    semaphore.py
 )
 
 # Add generated elementwise ops file
