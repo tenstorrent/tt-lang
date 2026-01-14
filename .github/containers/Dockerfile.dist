@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+#
+# tt-lang distribution image: Multi-stage build with dist/dev targets
+#
+# Targets:
+#   dist - Pre-built tt-lang for end users (ready to import ttlang)
+#   dev  - Development image with toolchain + debugging tools (gdb, vim, tmux)
+
+ARG FROM_TAG=latest
+ARG MLIR_TAG=latest
+
+# =============================================================================
+# Stage 1: Build tt-lang
+# =============================================================================
+FROM ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG} AS build
+SHELL ["/bin/bash", "-c"]
+
+ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+
+ADD . /home/build/tt-lang
+WORKDIR /home/build/tt-lang
+
+# Show commit info for traceability
+RUN git log -1 || echo "Git info not available"
+
+# Build tt-lang using FetchContent (builds tt-mlir from pinned commit)
+# This matches the FetchContent workflow that works in CI
+# Read the pinned commit from third-party/tt-mlir.commit
+RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
+    cmake -G Ninja -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=clang++-17 \
+    -DCMAKE_C_COMPILER=clang-17 \
+    -DTTMLIR_CMAKE_BUILD_TYPE=Release \
+    -DTTMLIR_INSTALL_PREFIX=/home/build/tt-lang/tt-mlir-install \
+    -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
+    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+
+# Build tt-lang (activates environment first, like CI)
+RUN source build/env/activate && \
+    cmake --build build
+
+# Clean up tt-mlir build artifacts to reduce image size
+# Keep tt-mlir-install (the installed artifacts) but remove the build/_deps
+RUN rm -rf build/_deps
+
+# =============================================================================
+# Stage 2: Distribution (pre-built tt-lang for users)
+# =============================================================================
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS dist
+SHELL ["/bin/bash", "-c"]
+
+ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+ENV TTLANG_INSTALL_DIR=/opt/ttlang
+
+# Copy tt-mlir toolchain from build stage
+COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
+
+# Copy built tt-lang artifacts
+COPY --from=build /home/build/tt-lang/build/python_packages $TTLANG_INSTALL_DIR/python_packages
+COPY --from=build /home/build/tt-lang/build/bin $TTLANG_INSTALL_DIR/bin
+COPY --from=build /home/build/tt-lang/python $TTLANG_INSTALL_DIR/python
+
+# Setup environment for immediate use
+ENV PATH="$TTLANG_INSTALL_DIR/bin:$TTMLIR_TOOLCHAIN_DIR/bin:$PATH"
+ENV PYTHONPATH="$TTLANG_INSTALL_DIR/python_packages:$TTLANG_INSTALL_DIR/python:$PYTHONPATH"
+
+# Setup entrypoint to activate environment
+COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]
+
+# =============================================================================
+# Stage 3: Development (toolchain + debugging tools for building from source)
+# =============================================================================
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS dev
+SHELL ["/bin/bash", "-c"]
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+
+# Copy tt-mlir toolchain from build stage
+COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
+
+# Install debugging and development tools
+RUN apt-get update && apt-get install -y \
+    ssh \
+    sudo \
+    vim \
+    nano \
+    tmux \
+    psmisc \
+    bash-completion \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build GDB from source (newer version than Ubuntu packages)
+RUN apt-get update && apt-get install -y libmpfr-dev && \
+    wget https://mirror.csclub.uwaterloo.ca/gnu/gdb/gdb-16.3.tar.gz && \
+    tar -xzf gdb-16.3.tar.gz && \
+    cd gdb-16.3 && \
+    ./configure && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && \
+    rm -rf gdb-16.3 gdb-16.3.tar.gz && \
+    gdb --version
+
+# Setup entrypoint
+COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]

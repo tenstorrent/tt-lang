@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+#
+# tt-lang base image: Extends tt-mlir base with tt-lang Python dependencies
+
+ARG MLIR_TAG=latest
+FROM ghcr.io/tenstorrent/tt-mlir/tt-mlir-base-ubuntu-22-04:${MLIR_TAG}
+SHELL ["/bin/bash", "-c"]
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Copy Python requirements
+COPY requirements.txt /tmp/requirements.txt
+COPY dev-requirements.txt /tmp/dev-requirements.txt
+
+# Install tt-lang Python dependencies
+# Use Python 3.11 from tt-mlir base image
+# Install PyTorch CPU variant from official index
+RUN python3.11 -m pip install --upgrade pip --no-cache-dir && \
+    python3.11 -m pip install --index-url https://download.pytorch.org/whl/cpu \
+        torch && \
+    python3.11 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
+    python3.11 -m pip install -r /tmp/dev-requirements.txt --no-cache-dir && \
+    rm /tmp/requirements.txt /tmp/dev-requirements.txt
