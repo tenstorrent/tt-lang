@@ -219,7 +219,7 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Ca
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = tile_rows * tile_cols
+    buffer_factor = 2
     code = BINARY_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
@@ -256,7 +256,7 @@ def make_binary_fn_kernel(
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = tile_rows * tile_cols
+    buffer_factor = 2
     code = BINARY_FN_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
@@ -291,7 +291,7 @@ def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Cal
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = tile_rows * tile_cols
+    buffer_factor = 2
     code = UNARY_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
