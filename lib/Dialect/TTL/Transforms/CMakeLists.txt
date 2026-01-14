@@ -6,6 +6,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLAnnotateCBAssociations.cpp
   TTLInsertTileRegsSync.cpp
   TTLTileAndAssignDST.cpp
+  TTLUnrollComputeLoops.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen

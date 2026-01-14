@@ -137,4 +137,22 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLUnrollComputeLoops
+    : Pass<"ttl-unroll-compute-loops", "::mlir::func::FuncOp"> {
+  let summary = "Unroll tile loops to maximize DST register utilization";
+  let description = [{
+    Unrolls scf.for loops generated from ttl.compute operations to maximize
+    DST register utilization. Uses MLIR's loopUnrollByFactor utility with
+    a separate epilogue loop for handling remainders.
+
+    The unroll factor is computed by TTLTileAndAssignDST and propagated via
+    the ttl.unroll_factor attribute on the loop.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD
