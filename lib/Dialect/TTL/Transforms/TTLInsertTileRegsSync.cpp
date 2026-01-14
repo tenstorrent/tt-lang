@@ -32,6 +32,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -211,7 +212,10 @@ struct TTLInsertTileRegsSyncPass
         }
 
         builder.setInsertionPointAfter(tail);
-        auto newStore = builder.create<StoreOp>(loc, tile, view);
+        // Use placeholder index 0. ConvertTTLComputeToSCF will compute the
+        // proper linearized CB index from loop IVs when lowering to scf.for.
+        Value zeroIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
+        auto newStore = builder.create<StoreOp>(loc, tile, view, zeroIdx);
         tail = newStore.getOperation();
         storeForOutput.try_emplace(idx, newStore);
       }
