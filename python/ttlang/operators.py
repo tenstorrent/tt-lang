@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Tuple, Union
 
+from ttmlir.dialects import arith
 from ttmlir.ir import RankedTensorType, Type
 
 # Re-export generated elementwise operations
@@ -16,9 +17,34 @@ from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
 from .dialects import ttl
 
+
+def _get_constant_int(val):
+    """Extract Python int from MLIR arith.ConstantOp or return as-is if already int."""
+    if isinstance(val, int):
+        return val
+    if isinstance(val, arith.ConstantOp):
+        return val.literal_value
+    raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
+
+
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
+
+# Module-level grid storage for grid_size() function
+# Sentinel value (-1, -1) makes uninitialized reads obvious
+_current_grid: Tuple[int, int] = (-1, -1)
+
+
+def _set_current_grid(grid: Tuple[int, int]) -> None:
+    """Set the current grid dimensions. Called before compiling threads."""
+    global _current_grid
+    _current_grid = grid
+
+
+def _get_current_grid() -> Tuple[int, int]:
+    """Get the current grid dimensions."""
+    return _current_grid
 
 
 @syntax("!tensor")
@@ -235,9 +261,68 @@ def copy(src, dst) -> CopyTransferHandler:
         )
 
 
+@syntax("core")
+def core(*, dims):
+    """
+    Get the coordinates of the current core.
+
+    Currently only dims=2 is supported (temporary restriction).
+
+    Args:
+        dims: Number of dimensions to return (must be 2)
+
+    Returns:
+        For dims=2: Tuple (x, y) where x is column coordinate and y is row coordinate
+
+    Raises:
+        ValueError: If dims is not 2
+
+    Example:
+        x, y = ttl.core(dims=2)
+    """
+    dims_val = _get_constant_int(dims)
+    if dims_val != 2:
+        raise ValueError(
+            f"core() currently only supports dims=2, got dims={dims_val}. "
+            "Multi-dimensional grids are not yet supported."
+        )
+    return (ttl.core_x(), ttl.core_y())
+
+
+def grid_size(*, dims):
+    """
+    Get the size of the grid.
+
+    Currently only dims=2 is supported (temporary restriction).
+
+    Args:
+        dims: Number of dimensions to return (must be 2)
+
+    Returns:
+        For dims=2: Tuple (x_size, y_size) where x_size is columns and y_size is rows
+
+    Raises:
+        ValueError: If dims is not 2
+
+    Example:
+        x_size, y_size = ttl.grid_size(dims=2)
+    """
+    dims_val = _get_constant_int(dims)
+    if dims_val != 2:
+        raise ValueError(
+            f"grid_size() currently only supports dims=2, got dims={dims_val}. "
+            "Multi-dimensional grids are not yet supported."
+        )
+    # grid is stored as (rows, cols), spec returns (x, y) = (cols, rows)
+    rows, cols = _get_current_grid()
+    return (cols, rows)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
     "copy",
+    "core",
+    "grid_size",
     *_generated_all,
 ]

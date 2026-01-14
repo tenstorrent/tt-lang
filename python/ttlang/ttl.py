@@ -17,6 +17,8 @@ Classes:
 Functions:
     ttl.make_circular_buffer_like() - Create a circular buffer
     ttl.copy() - Asynchronous data transfer
+    ttl.core(dims=2) - Get current core's coordinates as (x, y) tuple
+    ttl.grid_size(dims=2) - Get grid size as (x_size, y_size) tuple
 
 Math operations:
     ttl.math.sqrt(), ttl.math.exp(), etc.
@@ -24,7 +26,7 @@ Math operations:
 
 from .ttl_api import pykernel_gen as kernel, compute, datamovement, Program
 from .circular_buffer import make_circular_buffer_like
-from .operators import copy
+from .operators import copy, core, grid_size
 from .semaphore import Semaphore
 
 # Math operations namespace
@@ -37,6 +39,8 @@ __all__ = [
     "Program",
     "make_circular_buffer_like",
     "copy",
+    "core",
+    "grid_size",
     "Semaphore",
     "math",
 ]

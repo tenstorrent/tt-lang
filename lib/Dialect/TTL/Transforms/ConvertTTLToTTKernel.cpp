@@ -593,6 +593,7 @@ getTileGridShape(const RankedTensorType &tensorTy) {
 /// Extract tile grid shape from a Value if it's a static tensor.
 /// Handles both rank-2 tensors (logical shape) and rank-4 tensors
 /// (device shape: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]).
+/// Returns the TOTAL tile grid shape (grid * shard) for linearization.
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
   assert(tensorTy && "expected RankedTensorType");
@@ -603,8 +604,9 @@ static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
     return getTileGridShape(tensorTy);
   } else if (dims.size() == 4) {
     // Rank-4 tensor: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
-    // The last two dimensions are already tile counts, not element counts.
-    return {dims[2], dims[3]};
+    // Return total tile grid: grid_y * shard_y, grid_x * shard_x
+    // This is needed for correct linearization across multi-core grids.
+    return {dims[0] * dims[2], dims[1] * dims[3]};
   }
 
   llvm_unreachable("expected rank-2 or rank-4 tensor");
@@ -932,6 +934,34 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Core indexing operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+struct CoreXLowering : OpConversionPattern<CoreXOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CoreXOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Use logical coordinates (grid position), not virtual NOC coordinates
+    rewriter.replaceOpWithNewOp<ttk::MyLogicalXOp>(op, rewriter.getIndexType());
+    return success();
+  }
+};
+
+struct CoreYLowering : OpConversionPattern<CoreYOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CoreYOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Use logical coordinates (grid position), not virtual NOC coordinates
+    rewriter.replaceOpWithNewOp<ttk::MyLogicalYOp>(op, rewriter.getIndexType());
+    return success();
+  }
+};
+
 struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1031,7 +1061,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering>(typeConverter, &ctx);
+               StoreLowering, CoreXLowering, CoreYLowering>(typeConverter,
+                                                            &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
