@@ -20,7 +20,12 @@ import ttnn
 from ttlang import ttl
 
 
-# CHECK: TTNN interop only supports single-core grid (1, 1), got (2, 3)
+# CHECK: ValueError: Logical dim 1 (32) must be divisible by grid dim 1 (3)
+# CHECK-NEXT:   --> {{.*}}invalid_grid_divisibility.py:[[LINE:[0-9]+]]:1
+# CHECK-NEXT:    |
+# CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(2, 3))
+# CHECK-NEXT:    | ^
+# CHECK-NEXT:    |
 @ttl.kernel(grid=(2, 3))
 def invalid_divisibility_kernel(lhs, rhs, out):
     """This kernel should fail because 32 is not divisible by 3."""

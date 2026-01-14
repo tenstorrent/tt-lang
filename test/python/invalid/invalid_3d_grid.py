@@ -19,7 +19,7 @@ import ttnn
 from ttlang import ttl
 
 
-# CHECK: ValueError: TTNN interop only supports single-core grid (1, 1), got (1, 1, 1)
+# CHECK: ValueError: Only 2D grids supported, got grid (1, 1, 1)
 # CHECK-NEXT:   --> {{.*}}invalid_3d_grid.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
 # CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(1, 1, 1))

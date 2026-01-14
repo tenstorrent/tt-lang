@@ -125,6 +125,27 @@ class TTLGenericCompiler(TTCompilerBase):
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
 
+    def visit_Assign(self, node):
+        """Handle tuple unpacking for TTL functions like core(dims=2)."""
+        if not isinstance(node.targets[0], ast.Tuple):
+            return super().visit_Assign(node)
+
+        value = self.visit(node.value)
+        if not isinstance(value, tuple):
+            return super().visit_Assign(node)
+
+        targets = node.targets[0].elts
+        if len(value) != len(targets):
+            raise ValueError(
+                f"Cannot unpack {len(value)} values into {len(targets)} variables"
+            )
+
+        sym_table = self.symbol_tables[-1]
+        for elt, val in zip(targets, value):
+            if not isinstance(elt, ast.Name):
+                raise ValueError("Tuple unpacking requires simple variable names")
+            sym_table[elt.id] = val
+
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
         if self.debug_locations and hasattr(node, "lineno"):
