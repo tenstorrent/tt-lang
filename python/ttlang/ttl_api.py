@@ -160,6 +160,7 @@ class CompiledTTNNKernel:
         num_tensors,
         core_ranges,
         kernel_tensor_indices,
+        cb_configs=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -171,6 +172,7 @@ class CompiledTTNNKernel:
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
             kernel_tensor_indices: List of global tensor indices used by each kernel
+            cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -178,6 +180,7 @@ class CompiledTTNNKernel:
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
         self.kernel_tensor_indices = kernel_tensor_indices
+        self.cb_configs = cb_configs or []
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -235,10 +238,14 @@ class CompiledTTNNKernel:
                 data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
 
             page_size = tile_bytes_from_dtype(data_format)
-            if hasattr(tensor, "volume"):
-                num_tiles = max(1, tensor.volume() // 1024)
-            else:
-                num_tiles = 1
+
+            if i >= len(self.cb_configs) or self.cb_configs[i] is None:
+                raise ValueError(
+                    f"Missing CB config for tensor {i}. "
+                    f"All tensors must have associated CircularBuffer configurations."
+                )
+            shape, buffer_factor = self.cb_configs[i]
+            num_tiles = shape[0] * shape[1] * buffer_factor
             total_size = num_tiles * page_size
 
             cb_format = ttnn.CBFormatDescriptor(
@@ -283,7 +290,7 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
 
 
 def _compile_ttnn_kernel(
-    module, args, grid, num_outs, thread_tensor_indices, verbose=True
+    module, args, grid, num_outs, thread_tensor_indices, cb_configs=None, verbose=True
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -404,6 +411,7 @@ def _compile_ttnn_kernel(
         num_tensors=len(args),
         core_ranges=core_ranges,
         kernel_tensor_indices=thread_tensor_indices,
+        cb_configs=cb_configs,
     )
 
     if verbose:
@@ -445,6 +453,25 @@ def _collect_captures(
         n: convert(n, c.cell_contents)
         for n, c in zip(f.__code__.co_freevars, f.__closure__)
     }
+
+
+def _collect_cb_configs(threads):
+    """Extract CB configs from thread closures, indexed by cb_index."""
+    cb_configs_dict = {}
+    for thread_fn in threads:
+        wrapped = getattr(thread_fn, "__wrapped__", None)
+        closure = getattr(wrapped, "__closure__", None) if wrapped else None
+        if not closure:
+            continue
+        for cell in closure:
+            val = cell.cell_contents
+            if isinstance(val, CircularBuffer):
+                cb_configs_dict[val._cb_index] = (val.shape, val.buffer_factor)
+
+    if not cb_configs_dict:
+        return []
+    max_idx = max(cb_configs_dict.keys())
+    return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
 
 
 def _compile(
@@ -663,7 +690,7 @@ def _compile_and_run_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    from .circular_buffer import _reset_cb_counter
+    from .circular_buffer import _reset_cb_counter, CircularBuffer
 
     _reset_cb_counter()
     program = f(*args, **kwargs)
@@ -671,6 +698,8 @@ def _compile_and_run_kernel(
         raise TypeError(
             f"Kernel function must return a Program, got {type(program).__name__}"
         )
+
+    cb_configs = _collect_cb_configs(program.threads)
 
     injected_program_kwargs = {
         "grid": grid,
@@ -821,7 +850,7 @@ def _compile_and_run_kernel(
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(
-            module, args, grid, num_outs, thread_tensor_indices
+            module, args, grid, num_outs, thread_tensor_indices, cb_configs
         )
         if compiled_kernel is not None and config.should_execute():
             compiled_kernel(*args)
