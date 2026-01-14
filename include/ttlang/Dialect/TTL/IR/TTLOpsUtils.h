@@ -62,6 +62,14 @@ inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }
 
+inline bool isTileUnaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileUnaryOpTrait>();
+}
+
+inline bool isTileBinaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileBinaryOpTrait>();
+}
+
 /// Check if an operation is a unary elementwise tensor op.
 inline bool isUnaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLUnaryElementwiseOpTrait>();
