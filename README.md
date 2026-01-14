@@ -123,7 +123,7 @@ For more information on testing, including how to write new tests and interpret 
 The `ttlang` Python package provides a DSL for authoring custom data movement and compute kernels:
 
 ```
-python/ttlang/
+python/ttl/
 ├── __init__.py           # Main package exports
 ├── d2m_api.py            # Core decorator and compilation orchestration
 ├── operators.py          # TensorBlock, MemTx, DMA operations

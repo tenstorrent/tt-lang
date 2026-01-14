@@ -163,7 +163,7 @@ grep -A 200 "Before D2MAllocate" /tmp/full_pipeline.log
 
 ### Pass Pipeline Configuration
 
-Located in `python/ttlang/d2m_api.py` lines 302-332:
+Located in `python/ttl/d2m_api.py` lines 302-332:
 - `TTLANG_VERBOSE_PASSES` - Enable verbose output (line 322)
 - `TTLANG_INITIAL_MLIR` - Save initial IR (line 296)
 - `TTLANG_FINAL_MLIR` - Save final IR (line 334)
