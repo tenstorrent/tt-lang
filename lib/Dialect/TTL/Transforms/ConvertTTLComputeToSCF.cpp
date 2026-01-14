@@ -250,8 +250,10 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
 
     // Build loop bounds from iteration domain.
-    // If unrolling, adjust the innermost loop step.
+    // If unrolling, adjust the innermost loop step and compute floor division
+    // for the main loop bound.
     SmallVector<Value> lowerBounds, upperBounds, steps;
+    Value originalUpperBound; // Save original bound for remainder loop
     for (auto [idx, range] : llvm::enumerate(iterDomain)) {
       Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
       Value ub = getValueOrCreateConstantIndexOp(rewriter, loc, range.size);
@@ -261,6 +263,18 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       lowerBounds.push_back(lb);
       upperBounds.push_back(ub);
       steps.push_back(step);
+    }
+
+    // If unrolling, split into main loop (fully unrolled) + remainder loop.
+    // Main loop bound = floor(numTiles / unrollFactor) * unrollFactor
+    if (unrollFactor > 1) {
+      originalUpperBound = upperBounds.back();
+      Value unrollVal =
+          rewriter.create<arith::ConstantIndexOp>(loc, unrollFactor);
+      Value divided =
+          rewriter.create<arith::DivUIOp>(loc, originalUpperBound, unrollVal);
+      Value floored = rewriter.create<arith::MulIOp>(loc, divided, unrollVal);
+      upperBounds.back() = floored;
     }
 
     // Initial values for iter_args are the output tensors.
@@ -294,7 +308,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
                                                  adjustedIvs, currentIterArgs);
             if (failed(result)) {
               processingFailed = true;
-              return {};
+              // Return valid-sized vector to avoid buildLoopNest assertion;
+              // the failure is handled after the loop nest is built.
+              return scf::ValueVector(iterArgs.begin(), iterArgs.end());
             }
             currentIterArgs.assign(result->begin(), result->end());
           }
@@ -306,7 +322,54 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
-    rewriter.replaceOp(op, loopNest.results);
+    // Build remainder loop if unrolling and there may be leftover iterations.
+    // Remainder loop: from mainLoopBound to originalBound, step=1.
+    SmallVector<Value> finalResults;
+    if (unrollFactor > 1) {
+      // Remainder loop starts where main loop ended (upperBounds.back() is the
+      // floored main loop bound).
+      SmallVector<Value> remLowerBounds = lowerBounds;
+      remLowerBounds.back() = upperBounds.back();
+      SmallVector<Value> remUpperBounds = upperBounds;
+      remUpperBounds.back() = originalUpperBound;
+      SmallVector<Value> remSteps = steps;
+      remSteps.back() = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+      // Use main loop results as initial values for remainder loop.
+      SmallVector<Value> remInitValues(loopNest.results.begin(),
+                                       loopNest.results.end());
+
+      bool remProcessingFailed = false;
+      scf::LoopNest remLoopNest = scf::buildLoopNest(
+          rewriter, loc, remLowerBounds, remUpperBounds, remSteps, remInitValues,
+          [&](OpBuilder &b, Location loc, ValueRange ivs,
+              ValueRange iterArgs) -> scf::ValueVector {
+            // Generate single iteration (no unrolling) for remainder.
+            auto result = generateTileProcessing(b, loc, op, indexingMaps, ivs,
+                                                 iterArgs);
+            if (failed(result)) {
+              remProcessingFailed = true;
+              // Return valid-sized vector to avoid buildLoopNest assertion;
+              // the failure is handled after the loop nest is built.
+              return scf::ValueVector(iterArgs.begin(), iterArgs.end());
+            }
+            return *result;
+          });
+
+      if (remProcessingFailed) {
+        return rewriter.notifyMatchFailure(
+            op,
+            "copy_tile index computation failed in remainder (mismatched "
+            "rank/IVs)");
+      }
+
+      finalResults.assign(remLoopNest.results.begin(),
+                          remLoopNest.results.end());
+    } else {
+      finalResults.assign(loopNest.results.begin(), loopNest.results.end());
+    }
+
+    rewriter.replaceOp(op, finalResults);
     return success();
   }
 };
