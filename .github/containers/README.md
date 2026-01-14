@@ -14,8 +14,9 @@ docker build --build-arg MLIR_TAG=latest \
     -f .github/containers/Dockerfile.base .
 ```
 
-### `tt-lang-ubuntu-22-04` (dist target)
-Distribution image for end users with pre-built tt-lang, ready to `import ttlang`.
+### `tt-lang-ci-ubuntu-22-04` (ci target) / `tt-lang-dist-ubuntu-22-04` (alias)
+CI and distribution image for end users with pre-built tt-lang, ready to `import ttlang`.
+The same image is tagged as both `ci` (for CI workflows) and `dist` (for clarity).
 
 **Build:**
 ```bash
@@ -38,8 +39,8 @@ docker run -it \
     tt-lang:local python my_kernel.py
 ```
 
-### `tt-lang-dev-ubuntu-22-04` (dev target)
-Development image with toolchain and debugging tools (gdb, vim, tmux) for building tt-lang from source.
+### `tt-lang-ird-ubuntu-22-04` (ird target)
+Interactive Research & Development image with toolchain and debugging tools (gdb, vim, tmux) for building tt-lang from source.
 
 **Build:**
 ```bash

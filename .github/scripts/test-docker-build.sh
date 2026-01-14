@@ -17,50 +17,56 @@ echo ""
 
 # Pull the base tt-mlir images
 echo "--- Pulling tt-mlir images ---"
-docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-base-ubuntu-22-04:${MLIR_TAG}
-docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG}
+sudo docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-base-ubuntu-22-04:${MLIR_TAG}
+sudo docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG}
 echo ""
 
 # Build base image
 echo "--- Building tt-lang-base ---"
-docker build \
+sudo docker build \
     --build-arg MLIR_TAG=${MLIR_TAG} \
     -t tt-lang-base:local \
     -f .github/containers/Dockerfile.base .
+
+# Tag with full registry path so dist/dev builds can find it locally
+sudo docker tag tt-lang-base:local ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:local
+
 echo "✓ Base image built"
 echo ""
 
-# Build dist image (pre-built tt-lang)
-echo "--- Building tt-lang dist image ---"
-docker build \
+# Build CI image (pre-built tt-lang for users and CI)
+echo "--- Building tt-lang CI image ---"
+sudo docker build \
     --build-arg FROM_TAG=local \
     --build-arg MLIR_TAG=${MLIR_TAG} \
-    --target dist \
-    -t tt-lang:local \
+    --target ci \
+    -t tt-lang-ci:local \
+    -t tt-lang-dist:local \
     -f .github/containers/Dockerfile.dist .
-echo "✓ Dist image built"
+echo "✓ CI image built (also tagged as dist)"
 echo ""
 
-# Build dev image (development)
-echo "--- Building tt-lang dev image ---"
-docker build \
+# Build IRD image (interactive development)
+echo "--- Building tt-lang IRD image ---"
+sudo docker build \
     --build-arg FROM_TAG=local \
     --build-arg MLIR_TAG=${MLIR_TAG} \
-    --target dev \
-    -t tt-lang-dev:local \
+    --target ird \
+    -t tt-lang-ird:local \
     -f .github/containers/Dockerfile.dist .
-echo "✓ Dev image built"
+echo "✓ IRD image built"
 echo ""
 
 echo "=== Build Complete ==="
 echo ""
 echo "Images created:"
 echo "  - tt-lang-base:local"
-echo "  - tt-lang:local (dist)"
-echo "  - tt-lang-dev:local (dev)"
+echo "  - tt-lang-ci:local (also tagged as tt-lang-dist:local)"
+echo "  - tt-lang-ird:local"
 echo ""
-echo "Test the dist image:"
-echo "  docker run -it tt-lang:local python -c \"import ttlang\""
+echo "Test the CI/dist image:"
+echo "  sudo docker run -it tt-lang-ci:local python -c \"import ttlang\""
+echo "  sudo docker run -it tt-lang-dist:local python -c \"import ttlang\""
 echo ""
-echo "Test the dev image:"
-echo "  docker run -it tt-lang-dev:local gdb --version"
+echo "Test the IRD image:"
+echo "  sudo docker run -it tt-lang-ird:local gdb --version"

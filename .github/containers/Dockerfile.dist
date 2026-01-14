@@ -25,15 +25,14 @@ WORKDIR /home/build/tt-lang
 RUN git log -1 || echo "Git info not available"
 
 # Build tt-lang using FetchContent (builds tt-mlir from pinned commit)
-# This matches the FetchContent workflow that works in CI
-# Read the pinned commit from third-party/tt-mlir.commit
+# Install tt-mlir directly to /opt/ttmlir-toolchain
 RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     cmake -G Ninja -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER=clang++-17 \
     -DCMAKE_C_COMPILER=clang-17 \
     -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-    -DTTMLIR_INSTALL_PREFIX=/home/build/tt-lang/tt-mlir-install \
+    -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
     -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
     -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
@@ -46,21 +45,24 @@ RUN source build/env/activate && \
 RUN rm -rf build/_deps
 
 # =============================================================================
-# Stage 2: Distribution (pre-built tt-lang for users)
+# Stage 2: CI/Distribution (pre-built tt-lang for users and CI)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS dist
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS ci
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 ENV TTLANG_INSTALL_DIR=/opt/ttlang
 
-# Copy tt-mlir toolchain from build stage
+# Copy tt-mlir toolchain (installed directly to /opt/ttmlir-toolchain during build)
 COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 
 # Copy built tt-lang artifacts
 COPY --from=build /home/build/tt-lang/build/python_packages $TTLANG_INSTALL_DIR/python_packages
 COPY --from=build /home/build/tt-lang/build/bin $TTLANG_INSTALL_DIR/bin
 COPY --from=build /home/build/tt-lang/python $TTLANG_INSTALL_DIR/python
+
+# Set write permissions on toolchain for user pip installs
+RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
 # Setup environment for immediate use
 ENV PATH="$TTLANG_INSTALL_DIR/bin:$TTMLIR_TOOLCHAIN_DIR/bin:$PATH"
@@ -77,9 +79,9 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
 
 # =============================================================================
-# Stage 3: Development (toolchain + debugging tools for building from source)
+# Stage 3: IRD (Interactive Research & Development with debugging tools)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS dev
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS ird
 SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive

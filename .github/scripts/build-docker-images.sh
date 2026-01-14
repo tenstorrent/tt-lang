@@ -135,15 +135,22 @@ build_image() {
 
 # Build images in dependency order
 build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
-build_image "tt-lang-ubuntu-22-04" .github/containers/Dockerfile.dist dist
-build_image "tt-lang-dev-ubuntu-22-04" .github/containers/Dockerfile.dist dev
+build_image "tt-lang-ci-ubuntu-22-04" .github/containers/Dockerfile.dist ci
+build_image "tt-lang-ird-ubuntu-22-04" .github/containers/Dockerfile.dist ird
+
+# Tag ci image as dist for clarity (same image, two names)
+echo "--- Creating dist alias for ci image ---"
+docker tag "ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG" "ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+docker tag "ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:latest" "ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:latest"
+echo "✓ Dist alias created"
+echo ""
 
 echo "=== Build Complete ==="
 echo ""
 echo "Images built:"
 echo "  - ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-echo "  - ghcr.io/$REPO/tt-lang-ubuntu-22-04:$DOCKER_TAG (dist)"
-echo "  - ghcr.io/$REPO/tt-lang-dev-ubuntu-22-04:$DOCKER_TAG (dev)"
+echo "  - ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (also tagged as dist)"
+echo "  - ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
 echo ""
-echo "DIST_IMAGE_NAME:"
-echo "ghcr.io/$REPO/tt-lang-ubuntu-22-04:$DOCKER_TAG"
+echo "CI_IMAGE_NAME:"
+echo "ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG"
