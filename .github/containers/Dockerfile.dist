@@ -66,6 +66,10 @@ COPY --from=build /home/build/tt-lang/python $TTLANG_INSTALL_DIR/python
 ENV PATH="$TTLANG_INSTALL_DIR/bin:$TTMLIR_TOOLCHAIN_DIR/bin:$PATH"
 ENV PYTHONPATH="$TTLANG_INSTALL_DIR/python_packages:$TTLANG_INSTALL_DIR/python:$PYTHONPATH"
 
+# Create python symlink for convenience
+RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+
 # Setup entrypoint to activate environment
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
