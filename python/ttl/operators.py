@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Tuple, Union
 
 from ttmlir.dialects import arith
-from ttmlir.ir import RankedTensorType, Type
+from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType, Type
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -381,6 +381,72 @@ def where(
     return ttl.where(condition, true_val, false_val, results=[true_val.type])
 
 
+@syntax("reduce_sum")
+def reduce_sum(input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dim: str = "scalar") -> TensorBlock:
+    """
+    Reduce tensor by summing along a dimension.
+
+    Args:
+        input: Input tensor tile
+        scaler: Scaler tensor tile (typically initialized with 1.0 for simple sum)
+        output: Output tensor tile (used to track output CB for init)
+        dim: Reduction dimension - "row", "col", or "scalar" (default)
+
+    Returns:
+        Result tile with reduced values
+    """
+    # Map string to integer value (Row=0, Col=1, Scalar=2)
+    dim_map = {"row": 0, "col": 1, "scalar": 2}
+    reduce_dim_val = dim_map.get(dim, 2)  # Default to scalar
+    # Create an IntegerAttr for the reduce_dim
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce_sum(output.type, input, scaler, output, reduce_dim_attr)
+
+
+@syntax("reduce_max")
+def reduce_max(input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dim: str = "scalar") -> TensorBlock:
+    """
+    Reduce tensor by taking maximum along a dimension.
+
+    Args:
+        input: Input tensor tile
+        scaler: Scaler tensor tile (typically initialized with 1.0)
+        output: Output tensor tile (used to track output CB for init)
+        dim: Reduction dimension - "row", "col", or "scalar" (default)
+
+    Returns:
+        Result tile with reduced values (max of each row/col/all)
+    """
+    # Map string to integer value (Row=0, Col=1, Scalar=2)
+    dim_map = {"row": 0, "col": 1, "scalar": 2}
+    reduce_dim_val = dim_map.get(dim, 2)  # Default to scalar
+    # Create an IntegerAttr for the reduce_dim
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce_max(output.type, input, scaler, output, reduce_dim_attr)
+
+
+@syntax("transpose")
+def transpose(input: TensorBlock, output: TensorBlock) -> TensorBlock:
+    """
+    Transpose a 32x32 tile (width-height swap).
+
+    Swaps the last two dimensions of the tile, effectively rotating the data.
+    This is a tile-level transpose operation (32x32 only).
+
+    Args:
+        input: Input tensor tile
+        output: Output tensor tile (used to track output CB for init)
+
+    Returns:
+        Result tile with transposed values
+    """
+    return ttl.transpose(output.type, input, output)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -390,5 +456,8 @@ __all__ = [
     "matmul",
     "power",
     "where",
+    "reduce_sum",
+    "reduce_max",
+    "transpose",
     *_generated_all,
 ]

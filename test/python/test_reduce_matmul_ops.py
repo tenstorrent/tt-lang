@@ -94,9 +94,9 @@ def make_matmul_kernel():
 # =============================================================================
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def device():
-    """Open device once per module."""
+    """Open device for each test (simulator requires fresh device per test)."""
     dev = ttnn.open_device(device_id=0)
     yield dev
     ttnn.close_device(dev)
@@ -158,31 +158,340 @@ def test_matmul_op(device):
 
 
 # =============================================================================
-# Reduce Tests (placeholder - to be implemented)
+# Reduce Sum Kernel Template
+# =============================================================================
+
+REDUCE_SUM_KERNEL_TEMPLATE = '''
+from ttlang import ttl
+
+@ttl.kernel(grid=(1, 1))
+def reduce_sum_kernel(input, scaler, out):
+    """Single-tile reduce sum kernel: out = reduce_sum(input, dim='scalar')."""
+    in_cb = ttl.make_circular_buffer_like(input, shape=(1, 1), buffer_factor=2)
+    scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        in_tile = in_cb.wait()
+        scaler_tile = scaler_cb.wait()
+        o = out_cb.reserve()
+        result = ttl.reduce_sum(in_tile, scaler_tile, o)
+        o.store(result)
+        in_cb.pop()
+        out_cb.push()
+
+    @ttl.datamovement()
+    def dm_read():
+        # Load scaler first (must be ready before reduce)
+        scaler_blk = scaler_cb.reserve()
+        tx_s = ttl.copy(scaler[0, 0], scaler_blk)
+        tx_s.wait()
+        scaler_cb.push()
+
+        in_blk = in_cb.reserve()
+        tx = ttl.copy(input[0, 0], in_blk)
+        tx.wait()
+        in_cb.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+    return ttl.Program(compute_fn, dm_read, dm_write)(input, scaler, out)
+'''
+
+
+def make_reduce_sum_kernel():
+    """Generate reduce_sum kernel by writing to temp file and importing."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="kernel_reduce_sum_"
+    ) as f:
+        f.write(REDUCE_SUM_KERNEL_TEMPLATE)
+        temp_path = f.name
+
+    spec = importlib.util.spec_from_file_location("reduce_sum_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return getattr(module, "reduce_sum_kernel")
+
+
+# =============================================================================
+# Reduce Max Kernel Template
+# =============================================================================
+
+REDUCE_MAX_KERNEL_TEMPLATE = '''
+from ttlang import ttl
+
+@ttl.kernel(grid=(1, 1))
+def reduce_max_kernel(input, scaler, out):
+    """Single-tile reduce max kernel: out = reduce_max(input, dim='scalar')."""
+    in_cb = ttl.make_circular_buffer_like(input, shape=(1, 1), buffer_factor=2)
+    scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        in_tile = in_cb.wait()
+        scaler_tile = scaler_cb.wait()
+        o = out_cb.reserve()
+        result = ttl.reduce_max(in_tile, scaler_tile, o)
+        o.store(result)
+        in_cb.pop()
+        out_cb.push()
+
+    @ttl.datamovement()
+    def dm_read():
+        # Load scaler first (must be ready before reduce)
+        scaler_blk = scaler_cb.reserve()
+        tx_s = ttl.copy(scaler[0, 0], scaler_blk)
+        tx_s.wait()
+        scaler_cb.push()
+
+        in_blk = in_cb.reserve()
+        tx = ttl.copy(input[0, 0], in_blk)
+        tx.wait()
+        in_cb.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+    return ttl.Program(compute_fn, dm_read, dm_write)(input, scaler, out)
+'''
+
+
+def make_reduce_max_kernel():
+    """Generate reduce_max kernel by writing to temp file and importing."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="kernel_reduce_max_"
+    ) as f:
+        f.write(REDUCE_MAX_KERNEL_TEMPLATE)
+        temp_path = f.name
+
+    spec = importlib.util.spec_from_file_location("reduce_max_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return getattr(module, "reduce_max_kernel")
+
+
+# =============================================================================
+# Transpose Kernel Template
+# =============================================================================
+
+TRANSPOSE_KERNEL_TEMPLATE = '''
+from ttlang import ttl
+
+@ttl.kernel(grid=(1, 1))
+def transpose_kernel(input, out):
+    """Single-tile transpose kernel: out = transpose(input)."""
+    in_cb = ttl.make_circular_buffer_like(input, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        in_tile = in_cb.wait()
+        o = out_cb.reserve()
+        result = ttl.transpose(in_tile, o)
+        o.store(result)
+        in_cb.pop()
+        out_cb.push()
+
+    @ttl.datamovement()
+    def dm_read():
+        in_blk = in_cb.reserve()
+        tx = ttl.copy(input[0, 0], in_blk)
+        tx.wait()
+        in_cb.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+    return ttl.Program(compute_fn, dm_read, dm_write)(input, out)
+'''
+
+
+def make_transpose_kernel():
+    """Generate transpose kernel by writing to temp file and importing."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="kernel_transpose_"
+    ) as f:
+        f.write(TRANSPOSE_KERNEL_TEMPLATE)
+        temp_path = f.name
+
+    spec = importlib.util.spec_from_file_location("transpose_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return getattr(module, "transpose_kernel")
+
+
+# =============================================================================
+# Reduce Tests
 # =============================================================================
 
 
-@pytest.mark.skip(reason="reduce_sum not yet implemented")
 def test_reduce_sum_op(device):
-    """Test reduce_sum operation."""
-    pass
+    """Test reduce_sum operation (scalar reduction)."""
+    kernel = make_reduce_sum_kernel()
+
+    # Single tile: 32x32, sum to scalar (result is 32x32 with sum in [0,0])
+    in_torch = torch.randn((32, 32), dtype=torch.bfloat16)
+    scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)  # Scaler with 1.0 for simple sum
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+
+    # Compute expected result - scalar sum
+    expected_sum = in_torch.float().sum().item()
+
+    # Create device tensors
+    input_tensor = ttnn.from_torch(
+        in_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    scaler_tensor = ttnn.from_torch(
+        scaler_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out = ttnn.from_torch(
+        out_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+    # Move to L1
+    input_tensor = ttnn.to_memory_config(input_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
+    scaler_tensor = ttnn.to_memory_config(scaler_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
+
+    # Run kernel
+    kernel(input_tensor, scaler_tensor, out)
+
+    # Get result - scalar sum should be in position [0,0]
+    result = ttnn.to_torch(out)
+    result_sum = result[0, 0].float().item()
+
+    # Compare with relaxed tolerance for reduction
+    assert abs(result_sum - expected_sum) < abs(expected_sum) * 0.1 + 1.0, \
+        f"reduce_sum mismatch: got {result_sum}, expected {expected_sum}"
 
 
-@pytest.mark.skip(reason="reduce_max not yet implemented")
+@pytest.mark.skip(reason="reduce_max uses tensix_execute_gmpool not implemented in simulator - test hangs")
 def test_reduce_max_op(device):
-    """Test reduce_max operation."""
-    pass
+    """Test reduce_max operation (scalar reduction)."""
+    kernel = make_reduce_max_kernel()
+
+    # Single tile: 32x32, max to scalar (result is 32x32 with max in [0,0])
+    in_torch = torch.randn((32, 32), dtype=torch.bfloat16)
+    scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)  # Scaler with 1.0
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+
+    # Compute expected result - scalar max
+    expected_max = in_torch.float().max().item()
+
+    # Create device tensors
+    input_tensor = ttnn.from_torch(
+        in_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    scaler_tensor = ttnn.from_torch(
+        scaler_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out = ttnn.from_torch(
+        out_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+    # Move to L1
+    input_tensor = ttnn.to_memory_config(input_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
+    scaler_tensor = ttnn.to_memory_config(scaler_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
+
+    # Run kernel
+    kernel(input_tensor, scaler_tensor, out)
+
+    # Get result - scalar max should be in position [0,0]
+    result = ttnn.to_torch(out)
+    result_max = result[0, 0].float().item()
+
+    # Compare with relaxed tolerance for reduction
+    assert abs(result_max - expected_max) < abs(expected_max) * 0.1 + 0.1, \
+        f"reduce_max mismatch: got {result_max}, expected {expected_max}"
 
 
 # =============================================================================
-# Transpose Test (placeholder - to be implemented)
+# Transpose Test
 # =============================================================================
 
 
-@pytest.mark.skip(reason="transpose not yet implemented")
 def test_transpose_op(device):
     """Test transpose operation."""
-    pass
+    kernel = make_transpose_kernel()
+
+    # Single tile: 32x32 transpose
+    in_torch = torch.randn((32, 32), dtype=torch.bfloat16)
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+
+    # Compute expected result
+    expected = in_torch.T.contiguous()
+
+    # Create device tensors
+    input_tensor = ttnn.from_torch(
+        in_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out = ttnn.from_torch(
+        out_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+    # Move to L1
+    input_tensor = ttnn.to_memory_config(input_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
+    out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
+
+    # Run kernel
+    kernel(input_tensor, out)
+
+    # Get result
+    result = ttnn.to_torch(out)
+
+    # Compare
+    assert_allclose(result.float(), expected.float(), rtol=1e-3, atol=1e-3)
 
 
 # =============================================================================

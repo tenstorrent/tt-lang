@@ -29,7 +29,7 @@ from ttl.ttl_api import (
     CopyTransferHandler,
     TensorBlock,
 )
-from ttlang.operators import matmul, power, where
+from ttlang.operators import matmul, power, reduce_max, reduce_sum, transpose, where
 
 __all__ = [
     "kernel",
@@ -46,6 +46,9 @@ __all__ = [
     "math",
     "matmul",
     "power",
+    "reduce_max",
+    "reduce_sum",
+    "transpose",
     "where",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,

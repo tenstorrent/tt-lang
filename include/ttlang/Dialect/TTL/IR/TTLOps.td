@@ -673,6 +673,136 @@ def TTL_TileWhereOp : TTL_TileOp<"tile_where", [SameOperandsAndResultType]> {
   let assemblyFormat = "$condition `,` $true_val `,` $false_val attr-dict `:` type($result)";
 }
 
+//===----------------------------------------------------------------------===//
+// Reduce Operations
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceSumOp : TTL_Op<"reduce_sum", [Pure]> {
+  let summary = "Reduce tensor by summing along a dimension";
+  let description = [{
+    Reduces the input tensor by summing elements along the specified dimension.
+
+    reduce_dim can be:
+    - Row: sum across rows (reduce width)
+    - Col: sum across columns (reduce height)
+    - Scalar: sum all elements to a single value
+
+    The scaler tensor provides scaling factors (typically 1.0 for simple sum).
+
+    Example:
+    ```mlir
+    %result = ttl.reduce_sum %input, %scaler, %output <row> : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32>) -> tensor<32x1xf32>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output, TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileReduceSumOp : TTL_TileOp<"tile_reduce_sum", []> {
+  let summary = "Tile-level reduce sum operation";
+  let description = [{
+    Reduces a tile by summing along the specified dimension.
+    Maps to ttkernel.reduce_tile with reduce_type=Sum.
+
+    Reads from CB (like matmul), writes result to DST.
+    The scaler tile provides scaling factors (typically 1.0 for simple sum).
+
+    Example:
+    ```mlir
+    %result = ttl.tile_reduce_sum %tile, %scaler, %out <row> : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output, TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_ReduceMaxOp : TTL_Op<"reduce_max", [Pure]> {
+  let summary = "Reduce tensor by taking maximum along a dimension";
+  let description = [{
+    Reduces the input tensor by taking the maximum element along the specified dimension.
+
+    reduce_dim can be:
+    - Row: max across rows (reduce width)
+    - Col: max across columns (reduce height)
+    - Scalar: max of all elements to a single value
+
+    The scaler tensor provides scaling factors (typically 1.0).
+
+    Example:
+    ```mlir
+    %result = ttl.reduce_max %input, %scaler, %output <col> : (tensor<32x32xf32>, tensor<32x32xf32>, tensor<32x32xf32>) -> tensor<1x32xf32>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output, TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileReduceMaxOp : TTL_TileOp<"tile_reduce_max", []> {
+  let summary = "Tile-level reduce max operation";
+  let description = [{
+    Reduces a tile by taking the maximum along the specified dimension.
+    Maps to ttkernel.reduce_tile with reduce_type=Max.
+
+    Reads from CB (like matmul), writes result to DST.
+    The scaler tile provides scaling factors (typically 1.0).
+
+    Example:
+    ```mlir
+    %result = ttl.tile_reduce_max %tile, %scaler, %out <col> : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output, TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Transpose Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_TransposeOp : TTL_Op<"transpose", [Pure]> {
+  let summary = "Transpose a 32x32 tile (width-height swap)";
+  let description = [{
+    Transposes a tile by swapping width and height dimensions.
+    This is a 32x32 tile transpose, not a full tensor transpose.
+
+    The operation swaps the last two dimensions of the tile,
+    effectively rotating the data 90 degrees.
+
+    The output parameter is used to track the output CB for init.
+
+    Example:
+    ```mlir
+    %result = ttl.transpose %input, %output : tensor<32x32xf32> -> tensor<32x32xf32>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [SameOperandsAndResultType]> {
+  let summary = "Tile-level transpose operation";
+  let description = [{
+    Transposes a 32x32 tile (width-height swap).
+    Maps to ttkernel.transpose_wh_tile.
+
+    Reads from input CB, writes result to DST.
+    The output parameter is used to track the output CB for init.
+
+    Example:
+    ```mlir
+    %result = ttl.tile_transpose %input, %output : !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 

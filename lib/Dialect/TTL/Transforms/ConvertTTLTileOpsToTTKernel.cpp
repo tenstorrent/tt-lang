@@ -617,6 +617,209 @@ struct TTLTileWhereToTTKernel : OpConversionPattern<TileWhereOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Reduce Tile Op Lowerings
+//===----------------------------------------------------------------------===//
+
+/// Convert TTL ReduceDim to TTKernel ReduceDim.
+static ttk::ReduceDim convertReduceDim(ReduceDim ttlDim) {
+  switch (ttlDim) {
+  case ReduceDim::Row:
+    return ttk::ReduceDim::Row;
+  case ReduceDim::Col:
+    return ttk::ReduceDim::Col;
+  case ReduceDim::Scalar:
+    return ttk::ReduceDim::Scalar;
+  }
+  llvm_unreachable("unknown ReduceDim");
+}
+
+/// Generic pattern for lowering TTL tile reduce ops to TTKernel reduce ops.
+/// Reduce reads from CB (not DST), writes result to DST.
+template <typename SourceOp, ttk::ReduceType reduceType>
+struct TTLTileReduceToTTKernel : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->template getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "tile_reduce not in function");
+    }
+
+    // Look up CB for input operand
+    Value inCB = lookupCBByIndex(op.getInput(), funcOp);
+    if (!inCB) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for reduce input");
+    }
+
+    // Look up CB for scaler operand
+    Value scalingCB = lookupCBByIndex(op.getScaler(), funcOp);
+    if (!scalingCB) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for reduce scaler");
+    }
+
+    // Look up CB for output operand
+    Value outCB = lookupCBByIndex(op.getOutput(), funcOp);
+    if (!outCB) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for reduce output");
+    }
+
+    // Convert CBs to ttkernel.cb type.
+    auto *typeConverter = this->getTypeConverter();
+    if (!typeConverter) {
+      return rewriter.notifyMatchFailure(op, "no type converter available");
+    }
+
+    auto convertCB = [&](Value cb) -> FailureOr<Value> {
+      Type targetCbTy;
+      if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
+        targetCbTy = ttkCb;
+      } else if (auto ttlCb =
+                     mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+        targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
+                                      ttlCb.getElementType());
+      }
+      if (!targetCbTy) {
+        return failure();
+      }
+      Value converted = typeConverter->materializeTargetConversion(
+          rewriter, loc, targetCbTy, cb);
+      if (!converted || converted.getType() != targetCbTy) {
+        return failure();
+      }
+      return converted;
+    };
+
+    auto inCBConverted = convertCB(inCB);
+    auto scalingCBConverted = convertCB(scalingCB);
+    auto outCBConverted = convertCB(outCB);
+    if (failed(inCBConverted) || failed(scalingCBConverted) ||
+        failed(outCBConverted)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
+    }
+
+    // Get DST index for output
+    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    int64_t dstIdx = dstIdxAttr ? dstIdxAttr.getInt() : 0;
+
+    // Convert reduce dimension
+    ttk::ReduceDim ttkReduceDim = convertReduceDim(op.getReduceDim());
+
+    // Tile indices within CBs
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+
+    // Emit reduce_init, reduce_tile, reduce_uninit
+    rewriter.create<ttk::ReduceInitOp>(loc, *inCBConverted, *scalingCBConverted,
+                                       *outCBConverted, reduceType, ttkReduceDim,
+                                       /*full_fp32=*/false);
+    rewriter.create<ttk::ReduceTileOp>(loc, *inCBConverted, *scalingCBConverted,
+                                       zero, zero, dstIdxVal, reduceType,
+                                       ttkReduceDim, /*full_fp32=*/false);
+    rewriter.create<ttk::ReduceUninitOp>(loc);
+
+    // Replace with the input operand (result is in DST)
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+// Generate type aliases for reduce tile op lowerings
+#define TTL_REDUCE_TILE_OP(TTL_OP, TILE_OP, REDUCE_TYPE)                        \
+  using TTL_OP##TileLowering =                                                  \
+      TTLTileReduceToTTKernel<TILE_OP, ttk::ReduceType::REDUCE_TYPE>;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+//===----------------------------------------------------------------------===//
+// Transpose Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_transpose to TTKernel transpose_wh_init + transpose_wh_tile.
+/// Transpose reads from CB (not DST), writes result to DST.
+struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
+  using OpConversionPattern<TileTransposeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTransposeOp op, TileTransposeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "tile_transpose not in function");
+    }
+
+    // Look up CB for input operand
+    Value inCB = lookupCBByIndex(op.getInput(), funcOp);
+    if (!inCB) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for transpose input");
+    }
+
+    // Look up CB for output operand
+    Value outCB = lookupCBByIndex(op.getOutput(), funcOp);
+    if (!outCB) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for transpose output");
+    }
+
+    // Convert CBs to ttkernel.cb type
+    auto *typeConverter = this->getTypeConverter();
+    if (!typeConverter) {
+      return rewriter.notifyMatchFailure(op, "no type converter available");
+    }
+
+    auto convertCB = [&](Value cb) -> FailureOr<Value> {
+      Type targetCbTy;
+      if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
+        targetCbTy = ttkCb;
+      } else if (auto ttlCb =
+                     mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+        targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
+                                      ttlCb.getElementType());
+      }
+      if (!targetCbTy) {
+        return failure();
+      }
+      Value converted = typeConverter->materializeTargetConversion(
+          rewriter, loc, targetCbTy, cb);
+      if (!converted || converted.getType() != targetCbTy) {
+        return failure();
+      }
+      return converted;
+    };
+
+    auto inCBConverted = convertCB(inCB);
+    auto outCBConverted = convertCB(outCB);
+    if (failed(inCBConverted) || failed(outCBConverted)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
+    }
+
+    // Get DST index for output
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    int64_t dstIdx = dstIdxAttr ? dstIdxAttr.getInt() : 0;
+
+    // Tile index within CB (currently always 0 for single-tile CBs)
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+
+    // Emit transpose_wh_init with input and output CBs, then transpose_wh_tile
+    rewriter.create<ttk::TransposeInitOp>(loc, *inCBConverted, *outCBConverted);
+    rewriter.create<ttk::TransposeTileOp>(loc, *inCBConverted, zero, dstIdxVal);
+
+    // Replace with the input operand (result is in DST)
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -656,6 +859,14 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Where op (ternary conditional selection).
   patterns.add<TTLTileWhereToTTKernel>(ctx);
+
+  // Reduce ops need type converter for CB conversion.
+#define TTL_REDUCE_TILE_OP(TTL_OP, TILE_OP, REDUCE_TYPE)                        \
+  patterns.add<TTL_OP##TileLowering>(*typeConverter, ctx);
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // Transpose op needs type converter for CB conversion.
+  patterns.add<TTLTileTransposeToTTKernel>(*typeConverter, ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
