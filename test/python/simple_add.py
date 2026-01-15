@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
+# REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -18,16 +18,14 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+import ttl
 
 
 @ttl.kernel(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -43,25 +41,25 @@ def add_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         # Reserve CB space before reading into it
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
         # Wait for data to be ready, then write out
-        out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================
@@ -111,32 +109,35 @@ def add_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Bind CBs (alphabetical order: lhs_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
-# First input: reserve, copy, wait, push
+# First input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB0]]
-# CHECK: %[[TX1:.+]] = ttl.copy %arg0, %[[CB0]] : {{.*}} -> !ttl.transfer_handle<read>
+# CHECK: %[[SLICE0:.+]] = ttl.tensor_slice %arg0
+# CHECK: %[[TX1:.+]] = ttl.copy %[[SLICE0]], %[[CB0]] : {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait %[[TX1]]
 # CHECK: ttl.cb_push %[[CB0]]
 
-# Second input: reserve, copy, wait, push
+# Second input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB1]]
-# CHECK: %[[TX2:.+]] = ttl.copy %arg1, %[[CB1]] : {{.*}} -> !ttl.transfer_handle<read>
+# CHECK: %[[SLICE1:.+]] = ttl.tensor_slice %arg1
+# CHECK: %[[TX2:.+]] = ttl.copy %[[SLICE1]], %[[CB1]] : {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait %[[TX2]]
 # CHECK: ttl.cb_push %[[CB1]]
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Wait for output CB, copy to device, pop
+# Wait for output CB, slice, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: ttl.cb_wait %[[CB2]]
-# CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %arg0 : {{.*}} -> !ttl.transfer_handle<write>
+# CHECK: %[[SLICE2:.+]] = ttl.tensor_slice %arg0
+# CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %[[SLICE2]] : {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait %[[TX]]
 # CHECK: ttl.cb_pop %[[CB2]]
 
@@ -230,7 +231,7 @@ def add_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from utils import require_hardware
+    from test_helpers import require_hardware
 
     print("=== Add Kernel Test ===")
     require_hardware()

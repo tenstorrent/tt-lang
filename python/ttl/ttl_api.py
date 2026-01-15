@@ -17,7 +17,7 @@ try:
 except ModuleNotFoundError:
     ttnn = None
 
-import ttlang._mlir_libs._ttlang  # Register tt-lang passes
+import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code
 from ttmlir.dialects import ttkernel
 from ttmlir.ir import *
@@ -35,7 +35,7 @@ from ._src.tensor_registry import (
     register_tensor_source,
 )
 from ._src.ttl_ast import TTLGenericCompiler
-from .circular_buffer import CircularBuffer
+from .circular_buffer import CircularBuffer, get_cb_count
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
@@ -49,7 +49,6 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
-from .semaphore import Semaphore
 from .ttl_utils import get_thread_type_string
 
 
@@ -160,6 +159,7 @@ class CompiledTTNNKernel:
         num_tensors,
         core_ranges,
         kernel_tensor_indices,
+        cb_configs=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -171,6 +171,7 @@ class CompiledTTNNKernel:
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
             kernel_tensor_indices: List of global tensor indices used by each kernel
+            cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -178,6 +179,7 @@ class CompiledTTNNKernel:
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
         self.kernel_tensor_indices = kernel_tensor_indices
+        self.cb_configs = cb_configs or []
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -193,13 +195,18 @@ class CompiledTTNNKernel:
         # Build kernel descriptors with current tensor addresses
         kernel_descriptors = []
 
+        # Compute grid dimensions from core_ranges for runtime_args structure
+        # runtime_args structure: [x][y][args_per_core] where x=cols, y=rows
+        grid_size = self.core_ranges.bounding_box().grid_size()
+        grid_cols = grid_size.x
+        grid_rows = grid_size.y
+
         for kernel_idx, ((kernel_path, thread_type), config, rt_args) in enumerate(
             zip(self.kernel_paths, self.kernel_configs, self.kernel_arg_specs)
         ):
-            # runtime_args structure: [cores][core_ranges][args_per_core]
-            # For single-core execution, this is one empty list per core range.
-            # TODO: Support per-core runtime args for multi-core grids
-            runtime_args = [[[]]]
+            # runtime_args structure: [x][y][args_per_core]
+            # Each core gets an empty arg list (we use my_x/my_y for indexing)
+            runtime_args = [[[] for _ in range(grid_rows)] for _ in range(grid_cols)]
 
             # Build common_runtime_args using kernel_tensor_indices
             # C++ indexes by function-local position, we provide addresses in that order
@@ -235,10 +242,14 @@ class CompiledTTNNKernel:
                 data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
 
             page_size = tile_bytes_from_dtype(data_format)
-            if hasattr(tensor, "volume"):
-                num_tiles = max(1, tensor.volume() // 1024)
-            else:
-                num_tiles = 1
+
+            if i >= len(self.cb_configs) or self.cb_configs[i] is None:
+                raise ValueError(
+                    f"Missing CB config for tensor {i}. "
+                    f"All tensors must have associated CircularBuffer configurations."
+                )
+            shape, buffer_factor = self.cb_configs[i]
+            num_tiles = shape[0] * shape[1] * buffer_factor
             total_size = num_tiles * page_size
 
             cb_format = ttnn.CBFormatDescriptor(
@@ -268,9 +279,12 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
     """Write kernel source to /tmp and return the file path."""
     import hashlib
     import re
+    import os
 
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
-    path = f"/tmp/ttlang_kernel_{name}_{content_hash}.cpp"
+    user = os.environ.get("USER", "default")
+    path = f"/tmp/{user}/ttlang_kernel_{name}_{content_hash}.cpp"
+    os.makedirs(f"/tmp/{user}", exist_ok=True)
     with open(path, "w") as f:
         f.write(source)
     print(f"=== {name} kernel written to {path} ===")
@@ -280,7 +294,7 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
 
 
 def _compile_ttnn_kernel(
-    module, args, grid, num_outs, thread_tensor_indices, verbose=True
+    module, args, grid, num_outs, thread_tensor_indices, cb_configs=None, verbose=True
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -356,9 +370,12 @@ def _compile_ttnn_kernel(
         print("\nttnn not available - cannot compile for ttnn.generic_op")
         return None
 
-    # TODO: Support multi-core grids. Currently hardcoded to single core (0,0).
-    core = ttnn.CoreCoord(0, 0)
-    core_range = ttnn.CoreRange(core, core)
+    # Build CoreRangeSet from grid dimensions
+    # Grid is (rows, cols), CoreCoord is (x=col, y=row)
+    grid_rows, grid_cols = grid
+    core_start = ttnn.CoreCoord(0, 0)
+    core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
+    core_range = ttnn.CoreRange(core_start, core_end)
     core_ranges = ttnn.CoreRangeSet([core_range])
 
     if verbose:
@@ -401,6 +418,7 @@ def _compile_ttnn_kernel(
         num_tensors=len(args),
         core_ranges=core_ranges,
         kernel_tensor_indices=thread_tensor_indices,
+        cb_configs=cb_configs,
     )
 
     if verbose:
@@ -442,6 +460,25 @@ def _collect_captures(
         n: convert(n, c.cell_contents)
         for n, c in zip(f.__code__.co_freevars, f.__closure__)
     }
+
+
+def _collect_cb_configs(threads):
+    """Extract CB configs from thread closures, indexed by cb_index."""
+    cb_configs_dict = {}
+    for thread_fn in threads:
+        wrapped = getattr(thread_fn, "__wrapped__", None)
+        closure = getattr(wrapped, "__closure__", None) if wrapped else None
+        if not closure:
+            continue
+        for cell in closure:
+            val = cell.cell_contents
+            if isinstance(val, CircularBuffer):
+                cb_configs_dict[val._cb_index] = (val.shape, val.buffer_factor)
+
+    if not cb_configs_dict:
+        return []
+    max_idx = max(cb_configs_dict.keys())
+    return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
 
 
 def _compile(
@@ -629,15 +666,6 @@ def _compile_and_run_kernel(
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
     if has_ttnn_tensors:
-        # Validate grid is single core - multi-core requires sharded layout support
-        # (see GH issue #118)
-        if grid != (1, 1) and grid != [1, 1]:
-            msg = f"TTNN interop only supports single-core grid (1, 1), got {grid}"
-            formatted = format_python_error(
-                ValueError(msg), kernel_source_file, kernel_line_offset
-            )
-            raise ValueError(formatted) from None
-
         first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
         if first_ttnn_tensor is not None:
             memory_space = _detect_memory_space_from_tensor(
@@ -660,14 +688,18 @@ def _compile_and_run_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    from .circular_buffer import _reset_cb_counter
+    from .circular_buffer import _reset_cb_counter, CircularBuffer
+    from .operators import _set_current_grid
 
     _reset_cb_counter()
+    _set_current_grid(grid)
     program = f(*args, **kwargs)
     if not isinstance(program, Program):
         raise TypeError(
             f"Kernel function must return a Program, got {type(program).__name__}"
         )
+
+    cb_configs = _collect_cb_configs(program.threads)
 
     injected_program_kwargs = {
         "grid": grid,
@@ -818,7 +850,7 @@ def _compile_and_run_kernel(
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(
-            module, args, grid, num_outs, thread_tensor_indices
+            module, args, grid, num_outs, thread_tensor_indices, cb_configs
         )
         if compiled_kernel is not None and config.should_execute():
             compiled_kernel(*args)
@@ -946,7 +978,6 @@ __all__ = [
     "TensorBlock",
     "CircularBuffer",
     "CopyTransferHandler",
-    "Semaphore",
     "copy",
     "CompiledTTNNKernel",
 ]

@@ -11,17 +11,15 @@
 
 import torch
 import ttnn
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+import ttl
 
 
 @ttl.kernel(grid=(1, 1))
 def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -37,25 +35,25 @@ def test_ttnn_interop_add(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         # Read both inputs - reserve CB and copy directly from tensor to CB
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_out():
         # Write output - wait for data in CB and copy directly from CB to device
-        out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_out)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_out)(lhs, rhs, out)
 
 
 # CHECK: TTNN INTEROP

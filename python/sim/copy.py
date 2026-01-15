@@ -53,15 +53,8 @@ class CopyTransaction:
         handler = self._lookup_handler(type(src), type(dst))
         self._handler = handler
 
-        # Validate immediately
-        try:
-            handler.validate(src, dst)
-        except Exception as e:
-            src_type = type(src).__name__
-            dst_type = type(dst).__name__
-            raise ValueError(
-                f"Unsupported or invalid copy transfer from {src_type} to {dst_type}: {e}"
-            ) from e
+        # Validate immediately - let exceptions propagate to scheduler for context
+        handler.validate(src, dst)
 
     @staticmethod
     def _lookup_handler(
@@ -85,7 +78,7 @@ class CopyTransaction:
         except KeyError:
             raise ValueError(
                 f"No copy handler registered for ({src_type.__name__}, {dst_type.__name__})"
-            )
+            ) from None
 
     def wait(self) -> None:
         """
@@ -102,11 +95,8 @@ class CopyTransaction:
         if self._completed:
             return
 
-        try:
-            self._handler.transfer(self._src, self._dst)
-        except Exception as e:
-            raise ValueError(f"Copy transfer failed: {e}") from e
-
+        # Transfer - let exceptions propagate to scheduler for context
+        self._handler.transfer(self._src, self._dst)
         self._completed = True
 
     def can_wait(self) -> bool:

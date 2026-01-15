@@ -125,6 +125,27 @@ class TTLGenericCompiler(TTCompilerBase):
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
 
+    def visit_Assign(self, node):
+        """Handle tuple unpacking for TTL functions like core(dims=2)."""
+        if not isinstance(node.targets[0], ast.Tuple):
+            return super().visit_Assign(node)
+
+        value = self.visit(node.value)
+        if not isinstance(value, tuple):
+            return super().visit_Assign(node)
+
+        targets = node.targets[0].elts
+        if len(value) != len(targets):
+            raise ValueError(
+                f"Cannot unpack {len(value)} values into {len(targets)} variables"
+            )
+
+        sym_table = self.symbol_tables[-1]
+        for elt, val in zip(targets, value):
+            if not isinstance(elt, ast.Name):
+                raise ValueError("Tuple unpacking requires simple variable names")
+            sym_table[elt.id] = val
+
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
         if self.debug_locations and hasattr(node, "lineno"):
@@ -152,15 +173,89 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def _is_ttl_module_access(self, node):
+        """Check if node is ttl.XXX access pattern."""
+        return isinstance(node.value, ast.Name) and node.value.id == "ttl"
+
+    def _is_ttl_math_access(self, node):
+        """Check if node is ttl.math.XXX access pattern."""
+        return (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "ttl"
+            and node.value.attr == "math"
+        )
+
+    def _resolve_ttl_function(self, node, func_args, kwargs):
+        """Resolve and call a ttl.XXX or ttl.math.XXX function."""
+        if self._is_ttl_module_access(node):
+            namespace = "ttl"
+        elif self._is_ttl_math_access(node):
+            namespace = "ttl.math"
+        else:
+            return None
+
+        fn = self._fn_map.get(node.attr)
+        if fn is None:
+            self._raise_error(node, f"Unknown function: {namespace}.{node.attr}")
+        return fn(*func_args, **kwargs)
+
     def visit_Attribute(self, node, func_args=[], kwargs={}):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
             try:
+                # Handle ttl.XXX and ttl.math.XXX attribute access
+                if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
+                    return self._resolve_ttl_function(node, func_args, kwargs)
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def visit_Subscript(self, node):
+        """Handle tensor[row, col] or tensor[r0:r1, c0:c1] indexing."""
+        tbl = self._var_exists(node.value.id)
+        if not tbl:
+            self._raise_error(node, f"Unknown variable: {node.value.id}")
+
+        tensor = tbl[node.value.id]
+        if not isinstance(getattr(tensor, "type", None), RankedTensorType):
+            self._raise_error(node, "TTL only supports subscripting tensors")
+
+        if isinstance(node.slice, ast.Tuple):
+            indices = [self._build_index_or_range(elt) for elt in node.slice.elts]
+        else:
+            indices = [self._build_index_or_range(node.slice)]
+
+        return (tensor, indices)
+
+    def _to_index_value(self, node):
+        """Convert AST node to MLIR index Value."""
+        if isinstance(node, ast.Constant):
+            return arith.ConstantOp(IndexType.get(self.ctx), node.value)
+        val = self.visit(node)
+        if isinstance(val.type, IndexType):
+            return val
+        return arith.IndexCastOp(IndexType.get(self.ctx), val)
+
+    def _build_index_or_range(self, node):
+        """Convert AST node to (start_value, is_range) tuple.
+
+        For slice syntax (start:end), returns (start_value, True).
+        For index syntax (value), returns (value, False).
+        """
+        if isinstance(node, ast.Slice):
+            if node.lower is None:
+                self._raise_error(node, "Slice must have explicit start index")
+            if node.upper is None:
+                self._raise_error(node, "Slice must have explicit stop index")
+            if node.step is not None:
+                self._raise_error(node, "Slice step is not supported")
+            start_val = self._to_index_value(node.lower)
+            return (start_val, True)
+        else:
+            return (self._to_index_value(node), False)
 
     # Override to use i64 for all integer constants (attributes or not)
     # D2M ops require i64, and this reduces casts throughout the pipeline

@@ -6,7 +6,7 @@
 # Verify ttl site-init registers the dialect so SliceAttr works without
 # calling ensure_dialects_registered explicitly.
 
-from ttlang.dialects import ttl
+from ttl.dialects import ttl
 from ttmlir import ir as tmlir_ir
 
 with tmlir_ir.Context() as ctx, tmlir_ir.Location.unknown():

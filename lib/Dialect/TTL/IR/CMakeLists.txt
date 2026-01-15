@@ -3,6 +3,7 @@ add_mlir_dialect_library(MLIRTTLDialect
     TTLOps.cpp
     TTLOpsEnums.cpp
     TTLOpsTypes.cpp
+    TTLOpsUtils.cpp
     TTLOpsVerifyUtils.cpp
 
     ADDITIONAL_HEADER_DIRS

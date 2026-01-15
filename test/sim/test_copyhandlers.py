@@ -54,7 +54,7 @@ class TestTensorToBlockHandler:
         handler = TensorToBlockHandler()
         tensor = make_rand_tensor(64, 32)  # 2 tiles
         buf: List[CBSlot] = [None, None]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
 
         # Should not raise
         handler.validate(tensor, block)
@@ -68,7 +68,7 @@ class TestTensorToBlockHandler:
         torch_3d = torch.ones(32, 32, 32)
         tensor = ttnn.Tensor(torch_3d)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
             handler.validate(tensor, block)
@@ -78,10 +78,10 @@ class TestTensorToBlockHandler:
         handler = TensorToBlockHandler()
         tensor = make_rand_tensor(96, 32)  # 3 tiles
         buf: List[CBSlot] = [None, None]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
 
         with pytest.raises(
-            ValueError, match="Tensor contains 3 tiles but Block has 2 slots"
+            ValueError, match="Tensor shape.*does not match.*Block shape"
         ):
             handler.validate(tensor, block)
 
@@ -90,7 +90,7 @@ class TestTensorToBlockHandler:
         handler = TensorToBlockHandler()
         tensor = make_full_tile(42.0)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         handler.transfer(tensor, block)
 
@@ -103,7 +103,7 @@ class TestTensorToBlockHandler:
         # Create a 2x2 tile tensor (64x64)
         tensor = make_arange_tensor(64, 64)
         buf: List[CBSlot] = [None, None, None, None]
-        block = Block(buf, 4, Span(0, 4))
+        block = Block(buf, 4, Span(0, 4), shape=(2, 2))
 
         handler.transfer(tensor, block)
 
@@ -123,7 +123,7 @@ class TestBlockToTensorHandler:
         tile1 = make_ones_tile()
         tile2 = make_zeros_tile()
         buf: List[CBSlot] = [tile1, tile2]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
         tensor = make_rand_tensor(64, 32)
 
         # Should not raise
@@ -136,7 +136,7 @@ class TestBlockToTensorHandler:
         handler = BlockToTensorHandler()
         tile1 = make_ones_tile()
         buf: List[CBSlot] = [tile1]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
         # Create a 3D torch tensor and wrap it
         torch_3d = torch.zeros(32, 32, 32)
         tensor = ttnn.Tensor(torch_3d)
@@ -150,10 +150,12 @@ class TestBlockToTensorHandler:
         tile1 = make_ones_tile()
         tile2 = make_zeros_tile()
         buf: List[CBSlot] = [tile1, tile2]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
         tensor = make_rand_tensor(96, 32)  # 3 tiles
 
-        with pytest.raises(ValueError, match="Expected 2 tiles but found 3"):
+        with pytest.raises(
+            ValueError, match="Tensor shape.*does not match.*Block shape"
+        ):
             handler.validate(block, tensor)
 
     def test_transfer_single_tile(self):
@@ -161,7 +163,7 @@ class TestBlockToTensorHandler:
         handler = BlockToTensorHandler()
         tile = make_full_tile(3.14)
         buf: List[CBSlot] = [tile]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
         tensor = make_zeros_tile()
 
         handler.transfer(block, tensor)
@@ -174,7 +176,7 @@ class TestBlockToTensorHandler:
         tile1 = make_full_tile(1.0)
         tile2 = make_full_tile(2.0)
         buf: List[CBSlot] = [tile1, tile2]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
         tensor = make_rand_tensor(64, 32)
 
         handler.transfer(block, tensor)
@@ -194,7 +196,7 @@ class TestBlockToPipeHandler:
         handler = BlockToPipeHandler()
         tile = make_ones_tile()
         buf: List[CBSlot] = [tile]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
         pipe = Pipe(0, (1, 2))
 
         # Should not raise
@@ -208,7 +210,7 @@ class TestBlockToPipeHandler:
         # Sender prepares data
         tile = make_full_tile(42.0)
         src_buf: List[CBSlot] = [tile]
-        src_block = Block(src_buf, 1, Span(0, 1))
+        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
         pipe = Pipe(0, 1)
 
         # Send via pipe
@@ -216,7 +218,7 @@ class TestBlockToPipeHandler:
 
         # Receiver retrieves data
         dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1))
+        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
         recv_handler.transfer(pipe, dst_block)
 
         # Verify data was received correctly
@@ -232,7 +234,7 @@ class TestBlockToPipeHandler:
         tile1 = make_full_tile(1.0)
         tile2 = make_full_tile(2.0)
         src_buf: List[CBSlot] = [tile1, tile2]
-        src_block = Block(src_buf, 2, Span(0, 2))
+        src_block = Block(src_buf, 2, Span(0, 2), shape=(2, 1))
         pipe = Pipe(0, 1)
 
         # Send via pipe
@@ -240,7 +242,7 @@ class TestBlockToPipeHandler:
 
         # Receiver retrieves data
         dst_buf: List[CBSlot] = [None, None]
-        dst_block = Block(dst_buf, 2, Span(0, 2))
+        dst_block = Block(dst_buf, 2, Span(0, 2), shape=(2, 1))
         recv_handler.transfer(pipe, dst_block)
 
         # Verify data was received correctly
@@ -258,7 +260,7 @@ class TestPipeToBlockHandler:
         handler = PipeToBlockHandler()
         pipe = Pipe(0, 1)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         # Should not raise
         handler.validate(pipe, block)
@@ -269,7 +271,7 @@ class TestPipeToBlockHandler:
         # Use a unique address to avoid interference from other tests
         pipe = Pipe(99, 100)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
             recv_handler.transfer(pipe, block)
@@ -283,12 +285,12 @@ class TestPipeToBlockHandler:
         # Sender: send data
         tile = make_full_tile(99.0)
         src_buf: List[CBSlot] = [tile]
-        src_block = Block(src_buf, 1, Span(0, 1))
+        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
         send_handler.transfer(src_block, pipe)
 
         # Receiver: consume from pipe buffer
         dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1))
+        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
         recv_handler.transfer(pipe, dst_block)
 
         # Verify data was transferred
@@ -305,19 +307,19 @@ class TestPipeToBlockHandler:
         # Sender: send data for 2 receivers
         tile = make_full_tile(77.0)
         src_buf: List[CBSlot] = [tile]
-        src_block = Block(src_buf, 1, Span(0, 1))
+        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
         send_handler.transfer(src_block, pipe)
 
         # First receiver
         buf1: List[CBSlot] = [None]
-        block1 = Block(buf1, 1, Span(0, 1))
+        block1 = Block(buf1, 1, Span(0, 1), shape=(1, 1))
         recv_handler.transfer(pipe, block1)
         assert block1[0] is not None
         assert tensors_equal(block1[0], tile)
 
         # Second receiver
         buf2: List[CBSlot] = [None]
-        block2 = Block(buf2, 1, Span(0, 1))
+        block2 = Block(buf2, 1, Span(0, 1), shape=(1, 1))
         recv_handler.transfer(pipe, block2)
         assert block2[0] is not None
         assert tensors_equal(block2[0], tile)
@@ -333,12 +335,12 @@ class TestPipeToBlockHandler:
         tile1 = make_ones_tile()
         tile2 = make_zeros_tile()
         src_buf: List[CBSlot] = [tile1, tile2]
-        src_block = Block(src_buf, 2, Span(0, 2))
+        src_block = Block(src_buf, 2, Span(0, 2), shape=(2, 1))
         send_handler.transfer(src_block, pipe)
 
         # Receiver: try to receive into 1-tile Block
         dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1))
+        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
 
         with pytest.raises(
             ValueError,

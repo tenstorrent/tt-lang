@@ -37,7 +37,7 @@ except ImportError:
     TTNN_AVAILABLE = False
 
 import torch
-from utils import assert_allclose
+from test_helpers import assert_allclose
 
 # Skip all tests if ttnn not available
 pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
@@ -48,9 +48,7 @@ pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
 
 TILE_SIZE = 32
 
-# TODO: right now I'm seeing resource errors with shape > 3 tiles (2x2 or 4x1),
-# so limiting to max 3x1 or 1x3.
-TILE_SHAPES = [(r, c) for r in range(1, 4) for c in range(1, 4) if r == 1 or c == 1]
+TILE_SHAPES = [(r, c) for r in range(1, 5) for c in range(1, 5)]
 
 
 def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
@@ -63,16 +61,14 @@ def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
 # =============================================================================
 
 BINARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_cb = make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_cb = make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_cb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
@@ -87,45 +83,42 @@ def {name}_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[{slice_syntax}], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[{slice_syntax}], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[{slice_syntax}])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
-from ttlang import {op}
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call) for {tile_rows}x{tile_cols} tiles."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_cb = make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_cb = make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_cb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
-        result = {op}(l, r)
+        result = ttl.math.{op}(l, r)
         o.store(result)
         lhs_cb.pop()
         rhs_cb.pop()
@@ -133,68 +126,73 @@ def {name}_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[{slice_syntax}], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[{slice_syntax}], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[{slice_syntax}])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
-from ttlang import {op}
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    inp_cb = make_circular_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_cb = make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_cb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
         x = inp_cb.wait()
         o = out_cb.reserve()
-        result = {op}(x)
+        result = ttl.math.{op}(x)
         o.store(result)
         inp_cb.pop()
         out_cb.push()
 
     @ttl.datamovement()
     def dm_read():
-        inp_cb.reserve()
-        tx_inp = copy(inp[0, 0], inp_cb)
+        inp_blk = inp_cb.reserve()
+        tx_inp = ttl.copy(inp[{slice_syntax}], inp_blk)
         tx_inp.wait()
         inp_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[{slice_syntax}])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_fn, dm_read, dm_write)(inp, out)
+    return ttl.Program(compute_fn, dm_read, dm_write)(inp, out)
 '''
 
 
 # =============================================================================
 # Kernel Factories - generate kernels with specific shapes
 # =============================================================================
+
+
+def _get_slice_syntax(tile_rows: int, tile_cols: int) -> str:
+    """Return slice syntax for tensor indexing based on tile shape."""
+    if tile_rows == 1 and tile_cols == 1:
+        return "0, 0"
+    return f"0:{tile_rows}, 0:{tile_cols}"
+
 
 # Cache for generated kernels: (name, op, tile_rows, tile_cols) -> kernel
 _kernel_cache: dict[tuple, Callable] = {}
@@ -221,13 +219,14 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Ca
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = tile_rows * tile_cols
+    buffer_factor = 2
     code = BINARY_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
         tile_rows=tile_rows,
         tile_cols=tile_cols,
         buffer_factor=buffer_factor,
+        slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
     with tempfile.NamedTemporaryFile(
@@ -257,13 +256,14 @@ def make_binary_fn_kernel(
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = tile_rows * tile_cols
+    buffer_factor = 2
     code = BINARY_FN_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
         tile_rows=tile_rows,
         tile_cols=tile_cols,
         buffer_factor=buffer_factor,
+        slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
     with tempfile.NamedTemporaryFile(
@@ -291,13 +291,14 @@ def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Cal
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = tile_rows * tile_cols
+    buffer_factor = 2
     code = UNARY_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
         tile_rows=tile_rows,
         tile_cols=tile_cols,
         buffer_factor=buffer_factor,
+        slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
     with tempfile.NamedTemporaryFile(
@@ -374,8 +375,8 @@ def test_binary_op(device, op_name, tile_shape):
     kernel = make_binary_kernel(op_name, op_str, tile_rows, tile_cols)
 
     # Generate inputs
-    lhs_torch = torch.full(tensor_shape, 2.0, dtype=torch.bfloat16)
-    rhs_torch = torch.full(tensor_shape, 3.0, dtype=torch.bfloat16)
+    lhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
+    rhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     out_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
 
     # Compute expected result
@@ -423,8 +424,8 @@ def test_binary_fn_op(device, op_name, tile_shape):
     kernel = make_binary_fn_kernel(op_name, op_str, tile_rows, tile_cols)
 
     # Generate inputs
-    lhs_torch = torch.full(tensor_shape, 2.0, dtype=torch.bfloat16)
-    rhs_torch = torch.full(tensor_shape, 3.0, dtype=torch.bfloat16)
+    lhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
+    rhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     out_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
 
     # Compute expected result

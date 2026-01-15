@@ -32,7 +32,7 @@ class TestCopyTransaction:
         """Test creating a copy transaction from tensor to Block."""
         tensor = make_rand_tensor(64, 32)  # 2x1 tile block
         buf: List[CBSlot] = [None, None]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
 
         tx = CopyTransaction(tensor, block)
         assert not tx.is_completed
@@ -40,7 +40,7 @@ class TestCopyTransaction:
     def test_copy_transaction_creation_block_to_tensor(self) -> None:
         """Test creating a copy transaction from Block to tensor."""
         buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
         tensor = make_rand_tensor(64, 32)  # 2 tiles to match block size
 
         tx = CopyTransaction(block, tensor)
@@ -59,8 +59,8 @@ class TestCopyTransaction:
 
         # Block → Block not supported
         buf: List[CBSlot] = [None, None]
-        block1 = Block(buf, 2, Span(0, 2))
-        block2 = Block(buf, 2, Span(0, 2))
+        block1 = Block(buf, 2, Span(0, 2), shape=(2, 1))
+        block2 = Block(buf, 2, Span(0, 2), shape=(2, 1))
         with pytest.raises(
             ValueError, match="No copy handler registered for \\(Block, Block\\)"
         ):
@@ -74,7 +74,7 @@ class TestTensorToBlockCopy:
         """Test transferring a single tile tensor to Block."""
         source = make_ones_tile()  # Single tile
         buf: List[CBSlot] = [None]  # Single slot for single tile
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         tx = copy(source, block)
         tx.wait()
@@ -92,7 +92,7 @@ class TestTensorToBlockCopy:
         source = make_rand_tensor(64, 32)
 
         buf: List[CBSlot] = [None, None, None, None]
-        block = Block(buf, 4, Span(0, 2))
+        block = Block(buf, 4, Span(0, 2), shape=(2, 1))
 
         tx = copy(source, block)
         tx.wait()
@@ -104,13 +104,13 @@ class TestTensorToBlockCopy:
 
     def test_transfer_mismatched_tile_count(self) -> None:
         """Test that mismatched tile count raises ValueError."""
-        # 3 tiles in tensor but 2 slots in Block
-        source = make_rand_tensor(96, 32)  # 3 tiles
+        # 3 tiles in tensor but block expects 2 tiles
+        source = make_rand_tensor(96, 32)  # 3x1 tiles
         buf: List[CBSlot] = [None, None, None]
-        block = Block(buf, 3, Span(0, 2))  # Only 2 slots
+        block = Block(buf, 3, Span(0, 2), shape=(2, 1))  # Expects 2x1 tiles
 
         with pytest.raises(
-            ValueError, match="Tensor contains 3 tiles but Block has 2 slots"
+            ValueError, match="Tensor shape .* does not match Block shape"
         ):
             copy(source, block)
 
@@ -118,7 +118,7 @@ class TestTensorToBlockCopy:
         """Test transferring to a Block with a single slot."""
         source = make_full_tile(42.0)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         tx = copy(source, block)
         tx.wait()
@@ -136,7 +136,7 @@ class TestBlockToTensorCopy:
         tile0 = make_full_tile(3.14)
         tile1 = make_full_tile(2.71)
         buf: List[CBSlot] = [tile0, tile1]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
 
         destination = make_rand_tensor(64, 32)
 
@@ -154,7 +154,7 @@ class TestBlockToTensorCopy:
         """Test transferring multiple tiles from Block to tensor."""
         tiles = [make_full_tile(float(i)) for i in range(4)]
         buf: List[CBSlot] = list(tiles)  # Cast to CBSlot list
-        block = Block(buf, 4, Span(0, 4))
+        block = Block(buf, 4, Span(0, 4), shape=(4, 1))
 
         destination = make_rand_tensor(128, 32)  # 4 tiles
 
@@ -172,19 +172,21 @@ class TestBlockToTensorCopy:
         tile0 = make_ones_tile()
         tile1 = make_zeros_tile()
         buf: List[CBSlot] = [tile0, tile1]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
 
         # Wrong destination shape
-        destination = make_rand_tensor(96, 32)  # 3 tiles, but Block has 2
+        destination = make_rand_tensor(96, 32)  # 3x1 tiles, but Block is 2x1
 
-        with pytest.raises(ValueError, match="Expected 2 tiles but found 3"):
+        with pytest.raises(
+            ValueError, match="Tensor shape .* does not match Block shape"
+        ):
             copy(block, destination)
 
     def test_transfer_from_single_slot_block(self) -> None:
         """Test transferring from a Block with a single slot."""
         tile = make_full_tile(9.99)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
         block[0] = tile
 
         destination = make_zeros_tile()
@@ -203,7 +205,7 @@ class TestCopyConvenienceFunction:
         """Test that copy() function creates and returns a CopyTransaction."""
         source = make_rand_tensor(64, 32)  # 2 tiles to match Block size
         buf: List[CBSlot] = [None, None]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
 
         tx = copy(source, block)
 
@@ -222,7 +224,7 @@ class TestCopyComplexOperations:
 
         # Intermediate Block buffer
         buf: List[CBSlot] = [None, None, None, None]
-        block = Block(buf, 4, Span(0, 2))
+        block = Block(buf, 4, Span(0, 2), shape=(2, 1))
 
         # Stage 1: Load first tensor to Block (as 2 tiles)
         tx1 = copy(source_2tiles, block)
@@ -235,13 +237,13 @@ class TestCopyComplexOperations:
         assert block[1] is not None
         processed_tiles = [block[0] * 10.0, block[1] * 10.0]
         processed_buf: List[CBSlot] = list(processed_tiles)
-        block2 = Block(processed_buf, 2, Span(0, 2))
+        block2 = Block(processed_buf, 2, Span(0, 2), shape=(2, 1))
 
         # Stage 3: Extract processed data back to tensor
         result = make_zeros_tile()
         # Copy first tile only for simplicity
         result_buf: List[CBSlot] = [None]
-        result_block = Block(result_buf, 1, Span(0, 1))
+        result_block = Block(result_buf, 1, Span(0, 1), shape=(1, 1))
         result_block[0] = block2[0]
         tx2 = copy(result_block, result)
         tx2.wait()
@@ -251,7 +253,7 @@ class TestCopyComplexOperations:
         """Test copy with minimal Block (single element)."""
         source = make_full_tile(123.456)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         # Transfer to Block
         tx1 = copy(source, block)
@@ -272,7 +274,7 @@ class TestCopyErrorHandling:
         """Test copy behavior with zero-length Block."""
         source = make_ones_tile()
         buf: List[CBSlot] = []
-        block = Block(buf, 0, Span(0, 0))
+        block = Block(buf, 0, Span(0, 0), shape=(0, 0))
 
         # Should fail when trying to create copy to empty Block
         with pytest.raises(ValueError):
@@ -286,10 +288,10 @@ class TestMulticastCopy:
         """Send a single tile via pipe and receive it."""
         tile = make_full_tile(123.0)
         src_buf: List[CBSlot] = [tile]
-        src_block = Block(src_buf, 1, Span(0, 1))
+        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
 
         dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1))
+        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
 
         pipe = Pipe(210, 211)
 
@@ -307,7 +309,7 @@ class TestMulticastCopy:
         tile1 = make_full_tile(1.0)
         tile2 = make_full_tile(2.0)
         src_buf: List[CBSlot] = [tile1, tile2]
-        src_block = Block(src_buf, 2, Span(0, 2))
+        src_block = Block(src_buf, 2, Span(0, 2), shape=(2, 1))
 
         # Cores 212 and 213 form a rectangular range in row 26: (26,4) to (26,5)
         pipe = Pipe((26, 3), ((26, 4), (26, 5)))
@@ -317,7 +319,7 @@ class TestMulticastCopy:
 
         # First receiver
         dst1: List[CBSlot] = [None, None]
-        dst_ring1 = Block(dst1, 2, Span(0, 2))
+        dst_ring1 = Block(dst1, 2, Span(0, 2), shape=(2, 1))
         tx_r1 = copy(pipe, dst_ring1)
         tx_r1.wait()
         assert dst_ring1[0] is not None
@@ -327,7 +329,7 @@ class TestMulticastCopy:
 
         # Second receiver
         dst2: List[CBSlot] = [None, None]
-        dst_ring2 = Block(dst2, 2, Span(0, 2))
+        dst_ring2 = Block(dst2, 2, Span(0, 2), shape=(2, 1))
         tx_r2 = copy(pipe, dst_ring2)
         tx_r2.wait()
         assert dst_ring2[0] is not None
@@ -340,7 +342,7 @@ class TestMulticastCopy:
         tile1 = make_ones_tile()
         tile2 = make_zeros_tile()
         src_buf: List[CBSlot] = [tile1, tile2]
-        src_block = Block(src_buf, 2, Span(0, 2))
+        src_block = Block(src_buf, 2, Span(0, 2), shape=(2, 1))
 
         # Single core unicast using 2D coordinates
         pipe = Pipe((26, 4), (26, 5))
@@ -350,7 +352,7 @@ class TestMulticastCopy:
 
         # Receiver with wrong length
         dst_buf: List[CBSlot] = [None]
-        dst_ring = Block(dst_buf, 1, Span(0, 1))
+        dst_ring = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
         tx_recv = copy(pipe, dst_ring)
         with pytest.raises(
             ValueError,
@@ -362,10 +364,10 @@ class TestMulticastCopy:
         """Receiving on an address with no send should timeout."""
         pipe = Pipe(99, 100)
         dst_buf: List[CBSlot] = [None]
-        dst_ring = Block(dst_buf, 1, Span(0, 1))
+        dst_ring = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
 
         tx_recv = copy(pipe, dst_ring)
-        with pytest.raises(ValueError, match="Timeout waiting for pipe data"):
+        with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
             tx_recv.wait()
 
 
@@ -376,7 +378,7 @@ class TestCopyTransactionCanWait:
         """Test that can_wait() returns True for synchronous Tensor→Block copies."""
         source = make_ones_tile()
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         tx = copy(source, block)
         # Tensor→Block is synchronous, can_wait() returns True immediately
@@ -387,7 +389,7 @@ class TestCopyTransactionCanWait:
         """Test that can_wait() returns True after wait() completes."""
         source = make_ones_tile()
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         tx = copy(source, block)
         tx.wait()
@@ -399,7 +401,7 @@ class TestCopyTransactionCanWait:
         """Test that can_wait() can be called multiple times."""
         source = make_full_tile(3.14)
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         tx = copy(source, block)
 
@@ -418,7 +420,7 @@ class TestCopyTransactionCanWait:
         """Test that wait() can be called multiple times after completion."""
         source = make_ones_tile()
         buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1))
+        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
         tx = copy(source, block)
         # Tensor→Block is synchronous
@@ -441,7 +443,7 @@ class TestCopyTransactionCanWait:
         # Create 2x2 tile tensor
         source = make_rand_tensor(64, 64)  # 2x2 tiles
         buf: List[CBSlot] = [None, None, None, None]
-        block = Block(buf, 4, Span(0, 4))
+        block = Block(buf, 4, Span(0, 4), shape=(2, 2))
 
         tx = copy(source, block)
         # Tensor→Block is synchronous
@@ -456,7 +458,7 @@ class TestCopyTransactionCanWait:
         """Test can_wait() with Block to tensor transfer."""
         # Create source Block
         buf: List[CBSlot] = [make_ones_tile(), make_full_tile(2.0)]
-        block = Block(buf, 2, Span(0, 2))
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
 
         # Create destination tensor
         dst = make_rand_tensor(64, 32)  # 2x1 tiles
@@ -476,14 +478,14 @@ class TestCopyTransactionCanWait:
 
         # Pipe→Block without data returns False
         dst_buf_empty: List[CBSlot] = [None]
-        dst_block_empty = Block(dst_buf_empty, 1, Span(0, 1))
+        dst_block_empty = Block(dst_buf_empty, 1, Span(0, 1), shape=(1, 1))
         tx_recv_empty = copy(pipe, dst_block_empty)
         # Pipe has no data yet
         assert tx_recv_empty.can_wait() is False
 
         # Source (Block to Pipe) - synchronous
         src_buf: List[CBSlot] = [make_full_tile(5.0)]
-        src_block = Block(src_buf, 1, Span(0, 1))
+        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
         tx_send = copy(src_block, pipe)
 
         # Block→Pipe is synchronous
@@ -496,7 +498,7 @@ class TestCopyTransactionCanWait:
 
         # Destination (Pipe to Block) - asynchronous, data now available
         dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1))
+        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
         tx_recv = copy(pipe, dst_block)
 
         # Pipe→Block can proceed because pipe has data (from tx_send)

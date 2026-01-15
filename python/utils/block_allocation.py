@@ -8,6 +8,8 @@ from typing import List, Tuple
 from collections import namedtuple
 
 
+
+
 def remove_leading_ones(grid: Tuple[int, ...]) -> Tuple[int, ...]:
     return tuple(itertools.dropwhile(lambda x: x == 1, grid))
 

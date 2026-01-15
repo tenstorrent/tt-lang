@@ -8,8 +8,9 @@
 Validation test: CB buffer_factor must be in range [1, 32].
 """
 
-from ttlang import make_circular_buffer_like
 
 # CHECK: buffer_factor must be in range [1, 32]
 # Validation happens in CircularBuffer.__init__, no ttnn needed
-make_circular_buffer_like(None, shape=(1, 1), buffer_factor=0)
+import ttl
+
+ttl.make_circular_buffer_like(None, shape=(1, 1), buffer_factor=0)

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: tt-device
 # Test 1: Pretty error output (default, no verbose errors)
 # RUN: not %python %s 2>&1 | FileCheck %s --check-prefix=PRETTY
 
@@ -19,9 +20,7 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+import ttl
 
 try:
     import ttnn
@@ -33,8 +32,8 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def copy_no_wait_kernel(lhs, out):
     """Kernel that forgets to wait on a copy - should fail MLIR verification."""
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_thread():
@@ -46,25 +45,25 @@ def copy_no_wait_kernel(lhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_cb.reserve()
-        tx = copy(lhs[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx = ttl.copy(lhs[0, 0], lhs_blk)
         # BUG: Forgot to call tx.wait() - this should be caught by MLIR verifier
         lhs_cb.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_cb.wait()
-        tx = copy(out_cb, out[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(compute_thread, dm_read, dm_write)(lhs, out)
+    return ttl.Program(compute_thread, dm_read, dm_write)(lhs, out)
 
 
 # PRETTY: error: expects transfer handle to be synchronized with ttl.wait
-# PRETTY-NEXT:   --> {{.*}}invalid_copy_no_wait.py:50:10
+# PRETTY-NEXT:   --> {{.*}}invalid_copy_no_wait.py:[[LINE:[0-9]+]]:10
 # PRETTY-NEXT:    |
-# PRETTY-NEXT: 50 |         tx = copy(lhs[0, 0], lhs_cb)
+# PRETTY-NEXT: [[LINE]] |         tx = ttl.copy(lhs[0, 0], lhs_blk)
 # PRETTY-NEXT:    |          ^
 # PRETTY-NEXT:    |
 

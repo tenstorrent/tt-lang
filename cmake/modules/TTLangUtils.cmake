@@ -214,3 +214,12 @@ function(ttlang_check_device_available OUTPUT_VAR)
     message(STATUS "No Tenstorrent device detected")
   endif()
 endfunction()
+
+# ttlang_debug_message(MESSAGE)
+# Prints a STATUS message only if TTLANG_CMAKE_DEBUG environment variable is defined.
+# Useful for verbose debug output during CMake configuration.
+macro(ttlang_debug_message MESSAGE)
+  if(DEFINED ENV{TTLANG_CMAKE_DEBUG})
+    message(STATUS "${MESSAGE}")
+  endif()
+endmacro()

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: tt-device
 # RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 
@@ -16,9 +17,7 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang import make_circular_buffer_like, ttl
-from ttlang.operators import copy
-from ttlang.ttl_api import Program
+import ttl
 
 try:
     import ttnn
@@ -29,9 +28,9 @@ except ImportError:
 
 @ttl.kernel(grid=(1, 1))
 def add_kernel_f32(lhs, rhs, out):
-    lhs_cb = make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -41,21 +40,21 @@ def add_kernel_f32(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        with lhs_cb.reserve():
-            tx_lhs = copy(lhs[0, 0], lhs_cb)
+        with lhs_cb.reserve() as lhs_blk:
+            tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
 
-        with rhs_cb.reserve():
-            tx_rhs = copy(rhs[0, 0], rhs_cb)
+        with rhs_cb.reserve() as rhs_blk:
+            tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait():
-            tx = copy(out_cb, out[0, 0])
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================
@@ -71,11 +70,11 @@ def add_kernel_f32(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
 # CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 
 if __name__ == "__main__":

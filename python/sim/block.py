@@ -13,7 +13,7 @@ from pydantic import validate_call
 
 from .cbstate import CBSlot
 from .ttnnsim import Tensor
-from .typedefs import Index, Size, Span
+from .typedefs import Index, Shape, Size, Span
 
 
 # Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not
@@ -28,7 +28,7 @@ class Block:
     Provides list-like access to elements while respecting wrap-around.
     """
 
-    __slots__ = ("_buf", "_capacity", "_span")
+    __slots__ = ("_buf", "_capacity", "_span", "_shape")
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
     #       copies the arguments to validate them and returns the copies to the decorated
@@ -36,10 +36,11 @@ class Block:
     #       original list as is. This is a limitation of pydantic's validate_call, and
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
     # @validate_call
-    def __init__(self, buf: List[CBSlot], capacity: Size, span: Span):
+    def __init__(self, buf: List[CBSlot], capacity: Size, span: Span, shape: Shape):
         self._buf = buf
         self._capacity = capacity
         self._span = span
+        self._shape = shape
 
     def __len__(self) -> Size:
         return self._span.length
@@ -186,3 +187,8 @@ class Block:
 
     def __rpow__(self, other: List[Tensor]) -> List[Tensor]:
         return self._rbinary_op(other, _op.pow)
+
+    @property
+    def shape(self) -> Shape:
+        """Get the shape (rows, cols in tiles) of this block from its associated CB."""
+        return self._shape

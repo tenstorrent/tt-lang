@@ -60,6 +60,22 @@ To generate the Sphinx documentation, configure with `-DTTLANG_ENABLE_DOCS`.
 
 **Note:** The `third-party/tt-mlir.commit` file contains the reference tt-mlir version. The build system ensures version compatibility automatically.
 
+## Simulator-Only Setup
+
+For users who want to run simulator examples without building the full compiler stack:
+
+```bash
+./setup_simulator.sh
+source .venv/bin/activate
+./bin/ttlsim examples/eltwise_add.py
+pytest test/sim/
+```
+
+The simulator setup script creates a lightweight Python environment with only the dependencies needed to run the functional simulator. This is ideal for:
+- Learning the TT-Lang kernel API through examples
+- Validating kernel correctness before hardware deployment
+- Running CI tests without compiler dependencies
+
 ## Example
 
 See the `examples/` and `tests/` directory for complete working examples, including:
@@ -71,6 +87,7 @@ Note: this project is currently in early prototype phase, examples are not final
 ## Documentation
 
 - [Build System](docs/BUILD_SYSTEM.md) - Detailed build configuration options and integration scenarios
+- [Simulator Quick Start](docs/SIMULATOR.md) - Run kernels in simulation without building the compiler
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
 - [Sphinx docs](docs/README.md) - How to build, view, and extend the documentation (docs are disabled by default; enable with `-DTTLANG_ENABLE_DOCS=ON` and build with `cmake --build build --target ttlang-docs`)
 
@@ -106,9 +123,9 @@ For more information on testing, including how to write new tests and interpret 
 The `ttlang` Python package provides a DSL for authoring custom data movement and compute kernels:
 
 ```
-python/ttlang/
+python/ttl/
 ├── __init__.py           # Main package exports
-├── d2m_api.py            # Core decorator and compilation orchestration
+├── ttl_api.py            # Core decorator and compilation orchestration
 ├── operators.py          # TensorBlock, MemTx, DMA operations
 ├── circular_buffer.py    # CircularBuffer for inter-thread communication
 ├── semaphore.py          # Semaphore for multi-core synchronization
@@ -116,7 +133,7 @@ python/ttlang/
 ├── dtype_utils.py        # PyTorch/runtime data type conversions
 ├── constants.py          # Shared constants (tile sizes, memory spaces)
 └── _src/                 # Internal implementation modules
-    ├── d2m_ast.py        # D2M dialect AST compiler
+    ├── ttl_ast.py        # TTL dialect AST compiler
     ├── kernel_ast.py     # Base kernel compilation infrastructure
     ├── kernel_types.py   # CircularBuffer, Kernel, and other types
     ├── base_ast.py       # AST base classes

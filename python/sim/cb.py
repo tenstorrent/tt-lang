@@ -206,7 +206,7 @@ class CircularBuffer:
         # If None, this will be done when the CB is copied by Program
         if self._api is not None:
             self._cb_id: Optional[CBID] = self._api.allocate_cb_id()
-            self._api.host_configure_cb(self._cb_id, self._capacity_tiles)
+            self._api.host_configure_cb(self._cb_id, self._capacity_tiles, self._shape)
             # Reset the buffer to initialize with zero entries
             self._api.host_reset_cb(self._cb_id)
         else:
