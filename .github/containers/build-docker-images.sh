@@ -70,15 +70,9 @@ DOCKER_TAG=$("$SCRIPT_DIR/get-docker-tag.sh" "$MLIR_TAG")
 echo "tt-lang Docker tag: $DOCKER_TAG"
 echo ""
 
-# Verify tt-mlir CI image exists
-MLIR_CI_IMAGE="ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:$MLIR_TAG"
-echo "Checking for tt-mlir CI image: $MLIR_CI_IMAGE"
-if ! docker manifest inspect "$MLIR_CI_IMAGE" > /dev/null 2>&1; then
-    echo "Error: Required tt-mlir CI image not found: $MLIR_CI_IMAGE"
-    echo "The tt-mlir CI image must be built and pushed before building tt-lang images."
-    exit 1
-fi
-echo "✓ tt-mlir CI image found"
+# Note: tt-lang builds tt-mlir via FetchContent, so we don't require
+# a pre-existing tt-mlir Docker image (unlike tt-xla which layers on top)
+echo "Note: tt-lang uses FetchContent to build tt-mlir from source"
 echo ""
 
 # Build function
