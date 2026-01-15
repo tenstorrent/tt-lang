@@ -41,6 +41,21 @@ RUN source build/env/activate && \
     cmake --build build && \
     cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
 
+# Copy tt-mlir Python packages that aren't included in install
+# Use -L to dereference symlinks (copy actual files, not symlink paths)
+# TODO: Remove when tt-mlir install is fixed
+RUN mkdir -p $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime && \
+    cp -prL build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/ 2>/dev/null || true
+
+# Copy ttmlir Python bindings (dereference symlinks with -L)
+RUN if [ -d "build/_deps/tt-mlir-build/python_packages/ttmlir" ]; then \
+      cp -prL build/_deps/tt-mlir-build/python_packages/ttmlir/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttmlir/ 2>/dev/null || true; \
+    fi
+
+# Normalize tt-mlir installation (replace any remaining symlinks with actual files)
+COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
+RUN bash /tmp/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/normalize-ttmlir-install.sh
+
 # Clean up build directory (no longer needed after install)
 RUN rm -rf build/
 
@@ -59,6 +74,9 @@ COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 # Set write permissions on toolchain for user pip installs
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
+# Install text editors for convenience (vim and nano)
+RUN apt-get update && apt-get install -y vim nano && rm -rf /var/lib/apt/lists/*
+
 # Setup environment for immediate use
 # tt-lang is installed in the toolchain at bin/ and python_packages/
 ENV PATH="$TTMLIR_TOOLCHAIN_DIR/bin:$PATH"
@@ -72,8 +90,10 @@ RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Set working directory to installed examples
-WORKDIR $TTMLIR_TOOLCHAIN_DIR/examples
+# Set working directory to /root and copy tt-lang examples there
+WORKDIR /root
+RUN cp -r $TTMLIR_TOOLCHAIN_DIR/examples .
+COPY .github/containers/CONTAINER_README.md /root/README.md
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -117,8 +137,10 @@ RUN apt-get update && apt-get install -y libmpfr-dev && \
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Set working directory to installed examples
-WORKDIR $TTMLIR_TOOLCHAIN_DIR/examples
+# Set working directory to /root and copy tt-lang examples there
+WORKDIR /root
+RUN cp -r $TTMLIR_TOOLCHAIN_DIR/examples .
+COPY .github/containers/CONTAINER_README.md /root/README.md
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]

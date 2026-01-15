@@ -98,7 +98,7 @@ install(DIRECTORY test/ DESTINATION test
         PATTERN "__pycache__" EXCLUDE
         PATTERN "build" EXCLUDE)
 
-# Install environment activation script if it exists
-if(EXISTS "${CMAKE_BINARY_DIR}/env/activate")
-  install(FILES "${CMAKE_BINARY_DIR}/env/activate" DESTINATION env)
-endif()
+# Install environment activation script for installed location
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
+        DESTINATION env
+        RENAME activate)

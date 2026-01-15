@@ -116,11 +116,13 @@ setup(
     install_requires=[
         "pydantic<3",
     ],
-    # Include ttlang as top-level packages
-    packages=["ttlang", "ttlang._src", "sim", "utils"],
+    # Include ttlang and pykernel as top-level packages
+    packages=["ttlang", "ttlang._src", "pykernel", "pykernel._src", "sim", "utils"],
     package_dir={
         "ttlang": "ttlang",
         "ttlang._src": "ttlang/_src",
+        "pykernel": "pykernel",
+        "pykernel._src": "pykernel/_src",
         "sim": "sim",
         "utils": "utils",
     },
