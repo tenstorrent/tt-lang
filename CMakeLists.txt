@@ -102,3 +102,8 @@ install(DIRECTORY test/ DESTINATION test
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
         DESTINATION env
         RENAME activate)
+
+# Install pure Python packages (sim, pykernel) - simple copy
+install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
+        FILES_MATCHING PATTERN "*.py"
+        PATTERN "__pycache__" EXCLUDE)
