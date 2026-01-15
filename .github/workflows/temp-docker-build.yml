@@ -1,0 +1,147 @@
+name: Build Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      ttlang_sha_override:
+        description: "tt-lang SHA/branch override (optional, defaults to current commit)"
+        type: string
+        required: false
+      mlir_override:
+        description: "tt-mlir SHA override (optional, defaults to third-party/tt-mlir.commit)"
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      mlir_override:
+        description: "tt-mlir SHA override (optional, defaults to third-party/tt-mlir.commit)"
+        type: string
+        required: false
+    outputs:
+      docker-image:
+        description: "Built Docker image name with tag"
+        value: ${{ jobs.check-if-docker-exist.outputs.docker-image || jobs.build-image.outputs.docker-image }}
+      docker-image-base:
+        description: "Base Docker image name with tag"
+        value: ${{ jobs.check-if-docker-exist.outputs.docker-image-base || jobs.build-image.outputs.docker-image-base }}
+
+permissions:
+  packages: write
+  checks: write
+
+jobs:
+  check-if-docker-exist:
+    runs-on: ubuntu-latest
+    outputs:
+      docker-image: ${{ steps.check.outputs.docker-image }}
+      docker-image-base: ${{ steps.check.outputs.docker-image-base }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+
+      - name: Determine tt-mlir commit
+        id: mlir-commit
+        run: |
+          if [ -n "${{ inputs.mlir_override }}" ]; then
+            echo "commit=${{ inputs.mlir_override }}" >> $GITHUB_OUTPUT
+          else
+            COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+            echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if Docker image exists
+        id: check
+        run: |
+          set +e
+          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" --check-only | tee docker.log
+          EXIT_CODE=$?
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            # Extract image name from last line
+            DOCKER_IMAGE=$(tail -n 1 docker.log)
+            echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
+
+            # Create base variant by replacing -ubuntu- with -base-ubuntu-
+            DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
+            echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
+
+            echo "✓ Docker images already exist"
+          else
+            echo "✗ Docker images need to be built"
+          fi
+
+  build-image:
+    needs: check-if-docker-exist
+    if: needs.check-if-docker-exist.outputs.docker-image == ''
+    runs-on: ubuntu-latest
+    outputs:
+      docker-image: ${{ steps.build.outputs.docker-image }}
+      docker-image-base: ${{ steps.build.outputs.docker-image-base }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Determine tt-mlir commit
+        id: mlir-commit
+        run: |
+          if [ -n "${{ inputs.mlir_override }}" ]; then
+            echo "commit=${{ inputs.mlir_override }}" >> $GITHUB_OUTPUT
+          else
+            COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+            echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker images
+        id: build
+        run: |
+          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
+
+          # Extract image name from last line
+          DOCKER_IMAGE=$(tail -n 1 docker.log)
+          echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
+
+          # Create base variant
+          DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
+          echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
+
+          echo "✓ Docker images built successfully"
+
+  set-latest-tag:
+    needs: [check-if-docker-exist, build-image]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure()
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Set latest tag
+        run: |
+          # Get the image name (from either check or build job)
+          DOCKER_IMAGE="${{ needs.check-if-docker-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
+
+          # Extract the tag from the full image name
+          TAG="${DOCKER_IMAGE##*:}"
+
+          echo "Setting latest tag for Docker images with tag: $TAG"
+
+          # Tag all image variants as latest
+          for IMAGE_SUFFIX in "-base" "-ci" "-ird" "-dist"; do
+            IMAGE_NAME="ghcr.io/tenstorrent/tt-lang/tt-lang${IMAGE_SUFFIX}-ubuntu-22-04"
+            echo "Tagging ${IMAGE_NAME}:${TAG} as latest"
+            skopeo copy "docker://${IMAGE_NAME}:${TAG}" "docker://${IMAGE_NAME}:latest"
+          done
+
+          echo "✓ Latest tags set successfully"
