@@ -513,6 +513,7 @@ multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp> {
 defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
 defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
 defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
+defm TTL_Div : TTL_BinaryElementwisePair<"div", "div_binary_tile">;
 defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles">;
 defm TTL_Min : TTL_BinaryElementwisePair<"min", "min_tiles">;
 
@@ -544,6 +545,7 @@ defm TTL_Neg : TTL_UnaryElementwisePair<"neg", "neg_tile">;
 defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile">;
 defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
 defm TTL_Floor : TTL_UnaryElementwisePair<"floor", "floor_tile">;
+defm TTL_Recip : TTL_UnaryElementwisePair<"recip", "recip_tile">;
 
 //===----------------------------------------------------------------------===//
 // Matrix Multiplication Operation

@@ -395,7 +395,7 @@ def test_reduce_sum_op(device):
         f"reduce_sum mismatch: got {result_sum}, expected {expected_sum}"
 
 
-@pytest.mark.skip(reason="reduce_max uses tensix_execute_gmpool not implemented in simulator - test hangs")
+# @pytest.mark.skip(reason="reduce_max uses tensix_execute_gmpool not implemented in simulator - test hangs")
 def test_reduce_max_op(device):
     """Test reduce_max operation (scalar reduction)."""
     kernel = make_reduce_max_kernel()

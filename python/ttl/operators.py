@@ -81,6 +81,10 @@ class TensorBlock:
         """Element-wise multiplication using ttl.mul."""
         return ttl.mul(ast_self.type, ast_self, rhs)
 
+    def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise division using ttl.div."""
+        return ttl.div(ast_self.type, ast_self, rhs)
+
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Matrix multiplication via @ operator is not supported. Use matmul(a, b, c) instead."""
         raise NotImplementedError(

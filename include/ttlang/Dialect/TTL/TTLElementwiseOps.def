@@ -64,6 +64,7 @@
 TTL_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
 TTL_BINARY_TILE_OP(Sub, SubTileOp, SubBinaryTilesInitOp, SubBinaryTilesOp)
 TTL_BINARY_TILE_OP(Mul, MulTileOp, MulBinaryTilesInitOp, MulBinaryTilesOp)
+TTL_BINARY_TILE_OP(Div, DivTileOp, DivBinaryTilesInitOp, DivBinaryTilesOp)
 
 // Min/Max binary ops with non-standard lowering
 // These use 2-arg in-place form (TTLTileMaxToTTKernel template)
@@ -82,6 +83,7 @@ TTL_UNARY_TILE_OP(Neg, NegTileOp, NegativeTileInitOp, NegativeTileOp)
 TTL_UNARY_TILE_OP(Relu, ReluTileOp, ReluTileInitOp, ReluTileOp)
 TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp, SigmoidTileInitOp, SigmoidTileOp)
 TTL_UNARY_TILE_OP(Floor, FloorTileOp, RoundingTileInitOp, FloorTileOp)
+TTL_UNARY_TILE_OP(Recip, RecipTileOp, RecipTileInitOp, RecipTileOp)
 
 // Reduce operations: TTL tensor op -> TTL tile op -> TTKernel reduce ops
 // These read directly from CB and write to DST
