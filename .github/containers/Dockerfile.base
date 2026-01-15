@@ -11,14 +11,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Copy Python requirements
 COPY requirements.txt /tmp/requirements.txt
-COPY dev-requirements.txt /tmp/dev-requirements.txt
 
-# Install tt-lang Python dependencies
+# Install tt-lang Python dependencies (runtime + pytest for tests)
 # Use Python 3.11 from tt-mlir base image
 # Install PyTorch CPU variant from official index
 RUN python3.11 -m pip install --upgrade pip --no-cache-dir && \
     python3.11 -m pip install --index-url https://download.pytorch.org/whl/cpu \
         torch && \
     python3.11 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
-    python3.11 -m pip install -r /tmp/dev-requirements.txt --no-cache-dir && \
-    rm /tmp/requirements.txt /tmp/dev-requirements.txt
+    rm /tmp/requirements.txt
