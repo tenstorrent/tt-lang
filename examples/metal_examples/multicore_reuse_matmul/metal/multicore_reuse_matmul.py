@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import torch
 import ttnn
-from ttlang.utils.block_allocation import get_large_matmul_params
-from ttlang.utils.correctness import assert_with_ulp
+from ttl.utils.block_allocation import get_large_matmul_params
+from ttl.utils.correctness import assert_with_ulp
 
 
 @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])

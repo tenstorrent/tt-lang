@@ -5,9 +5,9 @@ This document traces the lowering of a 2x2 multi-tile add operation from Python 
 ## Python Input
 
 ```python
-from ttlang import ttl, make_circular_buffer_like
-from ttlang.ttl_api import Program
-from ttlang.operators import copy
+from ttl import ttl, make_circular_buffer_like
+from ttl.ttl_api import Program
+from ttl.operators import copy
 
 @ttl.kernel(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):

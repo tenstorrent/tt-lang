@@ -123,9 +123,9 @@ For more information on testing, including how to write new tests and interpret 
 The `ttlang` Python package provides a DSL for authoring custom data movement and compute kernels:
 
 ```
-python/ttlang/
+python/ttl/
 ├── __init__.py           # Main package exports
-├── d2m_api.py            # Core decorator and compilation orchestration
+├── ttl_api.py            # Core decorator and compilation orchestration
 ├── operators.py          # TensorBlock, MemTx, DMA operations
 ├── circular_buffer.py    # CircularBuffer for inter-thread communication
 ├── semaphore.py          # Semaphore for multi-core synchronization
@@ -133,7 +133,7 @@ python/ttlang/
 ├── dtype_utils.py        # PyTorch/runtime data type conversions
 ├── constants.py          # Shared constants (tile sizes, memory spaces)
 └── _src/                 # Internal implementation modules
-    ├── d2m_ast.py        # D2M dialect AST compiler
+    ├── ttl_ast.py        # TTL dialect AST compiler
     ├── kernel_ast.py     # Base kernel compilation infrastructure
     ├── kernel_types.py   # CircularBuffer, Kernel, and other types
     ├── base_ast.py       # AST base classes

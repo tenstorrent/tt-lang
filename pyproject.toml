@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "cmake", "nanobind", "wheel", "pip", "ninja"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ttlang"
+name = "ttl"
 description = "Python Bindings and Package for TT-Lang Compiler Project"
 requires-python = ">=3.11"
 keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]

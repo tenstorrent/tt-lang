@@ -12,7 +12,6 @@ Decorators:
 
 Classes:
     ttl.Program - Kernel program executor
-    ttl.Semaphore - Multi-core synchronization primitive
 
 Functions:
     ttl.make_circular_buffer_like() - Create a circular buffer
@@ -27,7 +26,6 @@ Math operations:
 from .ttl_api import pykernel_gen as kernel, compute, datamovement, Program
 from .circular_buffer import make_circular_buffer_like
 from .operators import copy, core, grid_size
-from .semaphore import Semaphore
 
 # Math operations namespace
 from . import ttl_math as math
@@ -41,6 +39,5 @@ __all__ = [
     "copy",
     "core",
     "grid_size",
-    "Semaphore",
     "math",
 ]

@@ -61,7 +61,7 @@ def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
 # =============================================================================
 
 BINARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
@@ -104,7 +104,7 @@ def {name}_kernel(lhs, rhs, out):
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
@@ -147,7 +147,7 @@ def {name}_kernel(lhs, rhs, out):
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(inp, out):

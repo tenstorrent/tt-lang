@@ -25,7 +25,7 @@ class TTLangExtension(Extension):
 class CMakeBuild(build_ext):
     def run(self):
         for ext in self.extensions:
-            if "ttlang" in ext.name:
+            if "ttl" in ext.name:
                 self.build_(ext)
             else:
                 raise Exception("Unknown extension")
@@ -103,7 +103,7 @@ date = datetime.now().strftime("%y.%m.%d")
 version = "0.1." + date + ".dev0"
 
 # Only the ttlang package relies on the CMake build process
-ttlang_c = TTLangExtension("ttlang")
+ttlang_c = TTLangExtension("ttl")
 
 # Read README.md file from project root
 readme_path = pathlib.Path(__file__).absolute().parent.parent / "README.md"
@@ -111,16 +111,16 @@ with open(str(readme_path), "r", encoding="utf-8") as f:
     readme = f.read()
 
 setup(
-    name="ttlang",
+    name="ttl",
     version=version,
     install_requires=[
         "pydantic<3",
     ],
     # Include ttlang and pykernel as top-level packages
-    packages=["ttlang", "ttlang._src", "pykernel", "pykernel._src", "sim", "utils"],
+    packages=["ttl", "ttl._src", "pykernel", "pykernel._src", "sim", "utils"],
     package_dir={
-        "ttlang": "ttlang",
-        "ttlang._src": "ttlang/_src",
+        "ttl": "ttl",
+        "ttl._src": "ttl/_src",
         "pykernel": "pykernel",
         "pykernel._src": "pykernel/_src",
         "sim": "sim",
