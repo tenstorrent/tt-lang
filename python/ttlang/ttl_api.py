@@ -786,8 +786,9 @@ def _compile_and_run_kernel(
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-tile-and-assign-dst)",
-            "func.func(ttl-insert-tile-regs-sync)",
-            "func.func(ttl-lower-to-loops)",  # Handles unrolling via --unroll-compute
+            "func.func(ttl-lower-to-loops)",  # Lower ttl.compute to scf.for loops
+            "func.func(ttl-unroll-compute-loops)",  # Unroll loops based on DST footprint
+            "func.func(ttl-insert-tile-regs-sync)",  # Insert sync ops around unrolled batches
             "func.func(ttl-annotate-cb-associations)",
             "convert-ttl-to-ttkernel",
             "canonicalize",

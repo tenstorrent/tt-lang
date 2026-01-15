@@ -19,16 +19,19 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToCompute());
-  // DST register assignment and synchronization (strict ordering required):
-  // 1. ttl-tile-and-assign-dst: Assigns DST indices via copy_tile insertion
-  // 2. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops
-  // (acquire/commit/wait/release) These must run before TTKernel lowering and
-  // in this specific order.
+
+  // DST register allocation and loop transformation pipeline:
+  // 1. ttl-tile-and-assign-dst: Assigns DST indices, adds ttl.unroll_factor attribute
+  // 2. ttl-lower-to-loops: Converts ttl.compute to scf.for loops (no sync ops yet)
+  // 3. ttl-unroll-compute-loops: Unrolls loops based on ttl.unroll_factor
+  // 4. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops (acquire/commit/wait/release)
+  //    - Runs AFTER unrolling so sync ops wrap batches of tiles correctly
+  //    - Works on both ttl.compute (if present) and scf.for loops
   pm.addPass(createTTLTileAndAssignDST());
-  pm.addPass(createTTLInsertTileRegsSync());
-  // ttl-lower-to-loops generates unrolled loops directly if unrollCompute is
-  // enabled.
   pm.addPass(createTTLLowerToLoops());
+  pm.addPass(createTTLUnrollComputeLoops());
+  pm.addPass(createTTLInsertTileRegsSync());
+
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());

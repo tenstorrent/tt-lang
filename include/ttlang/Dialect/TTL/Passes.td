@@ -59,16 +59,24 @@ def TTLTileAndAssignDST
 
 def TTLInsertTileRegsSync
     : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
-  let summary = "Insert tile_regs_* synchronization ops around ttl.compute";
+  let summary = "Insert tile_regs_* synchronization ops around ttl.compute or scf.for loops";
   let description = [{
-    Inserts DST register synchronization ops mirroring the TTKernel reg API:
+    Inserts DST register synchronization ops mirroring the TTKernel reg API.
+
+    When run before ttl-lower-to-loops:
     - Inside ttl.compute: tile_regs_acquire at entry, tile_regs_commit before yield.
     - Around ttl.compute: tile_regs_wait and tile_regs_release immediately after
       the compute op in the parent block.
+
+    When run after ttl-lower-to-loops (and optionally ttl-unroll-compute-loops):
+    - Inside scf.for loop bodies: tile_regs_acquire at entry, tile_regs_commit/wait
+      before stores, tile_regs_release before yield.
+    - Works correctly with unrolled loops where each iteration processes multiple tiles.
   }];
 
   let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect"
+    "::mlir::tt::ttl::TTLDialect",
+    "::mlir::scf::SCFDialect"
   ];
 }
 
@@ -118,10 +126,21 @@ def TTLLowerToLoops
     "::mlir::scf::SCFDialect",
     "::mlir::tensor::TensorDialect"
   ];
+}
 
-  let options = [
-    Option<"unrollCompute", "unroll-compute", "bool", /*default=*/"true",
-           "Enable loop unrolling for DST optimization">
+def TTLUnrollComputeLoops
+    : Pass<"ttl-unroll-compute-loops", "::mlir::func::FuncOp"> {
+  let summary = "Unroll linearized ttl.compute loops to maximize DST utilization";
+  let description = [{
+    Unrolls linearized scf.for loops produced from ttl.compute operations when
+    annotated with ttl.unroll_factor. Uses MLIR's loopUnrollByFactor utility and
+    updates DST indices for each unrolled copy, emitting a clean epilogue loop
+    for remainders.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
   ];
 }
 

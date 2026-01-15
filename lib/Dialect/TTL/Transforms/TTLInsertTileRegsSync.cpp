@@ -34,6 +34,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -230,7 +231,104 @@ struct TTLInsertTileRegsSyncPass
 
     if (result.wasInterrupted()) {
       signalPassFailure();
+      return;
     }
+
+    // Also handle scf.for loops (for when this pass runs after ttl-lower-to-loops)
+    funcOp.walk([&](scf::ForOp forOp) {
+      // Only process loops that came from ttl.compute (have ttl operations inside)
+      bool hasTTLOps = false;
+      forOp.walk([&](Operation *op) {
+        if (op->getDialect() &&
+            op->getDialect()->getNamespace() == "ttl") {
+          hasTTLOps = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+
+      if (!hasTTLOps) {
+        return;
+      }
+
+      Block &body = forOp.getRegion().front();
+      Location loc = forOp.getLoc();
+      OpBuilder builder(forOp);
+
+      // Check if acquire already exists
+      TileRegsAcquireOp existingAcquire = nullptr;
+      for (Operation &op : body.without_terminator()) {
+        if (auto acquire = dyn_cast<TileRegsAcquireOp>(&op)) {
+          existingAcquire = acquire;
+          break;
+        }
+      }
+
+      // Insert acquire at start of loop body if not present
+      if (!existingAcquire) {
+        builder.setInsertionPointToStart(&body);
+        builder.create<TileRegsAcquireOp>(loc);
+      }
+
+      auto *terminator = body.getTerminator();
+
+      // Find stores, tensor.insert ops, and existing sync ops
+      SmallVector<Operation *> storeOps;
+      SmallVector<Operation *> tensorInsertOps;
+      TileRegsCommitOp commitOp = nullptr;
+      TileRegsWaitOp waitOp = nullptr;
+
+      for (Operation &op : body.without_terminator()) {
+        if (isa<StoreOp>(&op)) {
+          storeOps.push_back(&op);
+        } else if (op.getName().getStringRef() == "tensor.insert") {
+          tensorInsertOps.push_back(&op);
+        } else if (auto commit = dyn_cast<TileRegsCommitOp>(&op)) {
+          commitOp = commit;
+        } else if (auto wait = dyn_cast<TileRegsWaitOp>(&op)) {
+          waitOp = wait;
+        }
+      }
+
+      // Insert commit and wait before tensor.insert ops (they cluster at the end)
+      // If stores exist, use those instead (stores should come after commit/wait)
+      Operation *insertBefore;
+      if (!storeOps.empty()) {
+        insertBefore = storeOps.front();
+      } else if (!tensorInsertOps.empty()) {
+        insertBefore = tensorInsertOps.front();
+      } else {
+        insertBefore = terminator;
+      }
+
+      if (!commitOp) {
+        builder.setInsertionPoint(insertBefore);
+        commitOp = builder.create<TileRegsCommitOp>(loc);
+      }
+      if (!waitOp) {
+        builder.setInsertionPoint(insertBefore);
+        waitOp = builder.create<TileRegsWaitOp>(loc);
+      }
+
+      // Ensure commit comes before wait
+      if (!commitOp->isBeforeInBlock(waitOp)) {
+        commitOp->moveBefore(waitOp);
+      }
+
+      // Insert release at end of loop body (before yield) if not present
+      bool hasRelease = false;
+      for (Operation &op : body.without_terminator()) {
+        if (isa<TileRegsReleaseOp>(&op)) {
+          hasRelease = true;
+          break;
+        }
+      }
+
+      if (!hasRelease) {
+        builder.setInsertionPoint(terminator);
+        builder.create<TileRegsReleaseOp>(loc);
+      }
+    });
   }
 };
 
