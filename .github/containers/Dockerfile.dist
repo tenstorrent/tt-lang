@@ -4,7 +4,7 @@
 # tt-lang distribution image: Multi-stage build with dist/dev targets
 #
 # Targets:
-#   dist - Pre-built tt-lang for end users (ready to import ttlang)
+#   dist - Pre-built tt-lang for end users (ready to import ttl)
 #   dev  - Development image with toolchain + debugging tools (gdb, vim, tmux)
 
 ARG FROM_TAG=latest

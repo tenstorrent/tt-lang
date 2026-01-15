@@ -14,7 +14,7 @@ echo ""
 echo "Test 1: Basic imports (no hardware)"
 sudo docker run --rm tt-lang-dist:local python -c "
 import pykernel
-import ttlang
+import ttl
 from ttmlir.dialects import ttkernel
 print('✓ All imports successful')
 " && echo "✓ PASS: Imports work" || echo "✗ FAIL: Import error"
@@ -23,8 +23,8 @@ echo ""
 # Test 2: Example without hardware
 echo "Test 2: Run example (no hardware, will fail at runtime but imports should work)"
 sudo docker run --rm tt-lang-dist:local python -c "
-from ttlang import ttl
-print('✓ ttlang.ttl imported successfully')
+from ttl import ttl
+print('✓ ttl.ttl imported successfully')
 " && echo "✓ PASS: ttl module works" || echo "✗ FAIL: ttl import failed"
 echo ""
 

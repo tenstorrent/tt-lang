@@ -15,7 +15,7 @@ docker build --build-arg MLIR_TAG=latest \
 ```
 
 ### `tt-lang-ci-ubuntu-22-04` (ci target) / `tt-lang-dist-ubuntu-22-04` (alias)
-CI and distribution image for end users with pre-built tt-lang, ready to `import ttlang`.
+CI and distribution image for end users with pre-built tt-lang, ready to `import ttl`.
 The same image is tagged as both `ci` (for CI workflows) and `dist` (for clarity).
 
 **Build:**
@@ -29,7 +29,7 @@ docker build --build-arg FROM_TAG=local --build-arg MLIR_TAG=latest \
 **Usage:**
 ```bash
 # Run without hardware
-docker run -it tt-lang:local python -c "import ttlang"
+docker run -it tt-lang:local python -c "import ttl"
 
 # Run with Tenstorrent hardware
 docker run -it \
