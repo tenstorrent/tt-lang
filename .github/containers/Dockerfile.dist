@@ -56,6 +56,10 @@ RUN if [ -d "build/_deps/tt-mlir-build/python_packages/ttmlir" ]; then \
 COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
 RUN bash /tmp/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/normalize-ttmlir-install.sh
 
+# Remove unnecessary LLVM/MLIR tools to reduce image size
+COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
+RUN bash /tmp/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/cleanup-toolchain.sh
+
 # Clean up build directory (no longer needed after install)
 RUN rm -rf build/
 
