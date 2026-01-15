@@ -2,66 +2,83 @@
 
 ## Overview
 
-Multi-tile blocks now use dynamic DST indices to prevent tile result overwrites. Previously all tiles computed into fixed DST slots (e.g., DST[2]), causing only the last tile's result to survive.
+DST (destination) registers are hardware registers used for tile computations. This pass (`TTLTileAndAssignDST.cpp`) assigns DST indices to tile operations based on whether they are unary or binary operations.
 
-## DST for separate compute and pack_tile loops
+## Core Principle: Unary vs Binary Operations
 
-### 1. Two-Loop Structure (`ConvertTTLComputeToSCF.cpp`)
+**Binary operations** (e.g., `add`, `mul`, `max`) require separate DST slots for inputs and output:
+- Each input gets its own DST slot
+- Output gets a fresh DST slot
+- `inputs_footprint = number of tile inputs`
 
-**Before**: Single loop with compute + pack interleaved per tile.
+**Unary operations** (e.g., `exp`, `abs`, `neg`) operate in-place:
+- Output reuses the input's DST slot
+- No additional DST allocation needed
+- `inputs_footprint = 0` for standalone unary ops
 
-**After**: Separate loops matching tt-metal pattern:
-```
-tile_regs_acquire
-Loop 1: compute all tiles → `DST[inputs_footprint + tile_idx]`
-tile_regs_commit / tile_regs_wait
-Loop 2: pack all tiles from `DST[inputs_footprint + tile_idx]` → CB
-tile_regs_release
-```
+## DST Allocation Algorithm
 
-### 2. Dynamic DST Index Computation (`ConvertTTLTileOpsToTTKernel.cpp`)
+The algorithm consists of three phases.
 
-**Before**: `loops.back()` checked only outermost loop for `dst_footprint`.
+Phase 1. Estimate the input DST footprint based on liveness analysis.
+for each binary tile_compute_op:
+  for each input:
+    free_reg = find_first_unset()
+    dstIndexForValue[input] = free_reg
+    if there are any users of the input value, set the inUse bit for the register
 
-**After**: Search all enclosing loops for `dst_footprint` attribute. Only tile loops (not outer block loops) contribute to linearization.
+max_unary_fanout = find the maximum number of unary ops that consume the same value
+inputs_footprint = max(dstIndexForValue.values()) + 1 + (max_unary_fanout - 1)
 
-Formula: `DST_index = inputs_footprint + (i * cols + j)` for 2x2 block → DST[2,3,4,5]
+Phase 2. Backward pass: Assign DST indices to *outputs*.
 
-### 3. Pack DST Index (`ConvertTTLToTTKernel.cpp`)
+Available output dst registers start at base_out_dst_index = max(dstIndexForValue.values()) + 1.
+for each output of the compute operation (out block argument), assign the next available output dst register:
+  dstIndexForOutput[output] = base_out_dst_index + i
+  i++
+Go backwards through the operations in the compute operation:
+  if (is_unary and the result is yielded to an output block argument):
+    # Both the input and output use the dst register assigned to that block argument
+  else:
+    # Binary: allocate fresh DST for output
+    if the result is consumed only by unary ops, then assign the result DST register
+    to be the input/output dst register of the first user unary op.
 
-**Before**: `loops.back()` missed `dst_footprint` when block loops existed above tile loops.
+Phase 3. Forward pass: Assign DST indices to all operands that have not yet been assigned, 
+reuse based on liveness analysis, do not overwrite any already assigned dst registers.
 
-**After**: Search all loops for `dst_footprint`, compute `inputs_footprint + cbTileIndex`.
+Do the original DST assignment pass from origin/main, except don't overwrite any already assigned dst registers.
 
-### 4. DST Footprint Attribute (`TTLTileAndAssignDST.cpp`)
 
-Sets `ttl.dst_footprint` on ComputeOp, propagated to outermost tile loop during lowering.
+## Pipeline Integration
 
-**Footprint Computation:**
+The DST allocation pass runs in this order:
+
+1. `ttl-tile-and-assign-dst`: Assigns DST indices, adds `ttl.unroll_factor` attribute
+2. `ttl-lower-to-loops`: Converts `ttl.compute` to `scf.for` loops
+3. `ttl-unroll-compute-loops`: Unrolls loops (optional, controlled by `--enable-unroll`)
+4. `ttl-insert-tile-regs-sync`: Inserts DST lifecycle ops (acquire/commit/wait/release)
+
+## Generated Code Example (2x2 block with binary op)
 
 ```cpp
-// Phase 1: Allocate DST slots only for inputs that need separate registers
-// - Binary op inputs: need their own DST slots
-// - Unary-only inputs: share DST with output, don't count
-// - Track maxInputDstIndex across all actually allocated inputs
-
-// inputs_footprint = maxInputDstIndex + 1 (or 0 if no inputs need slots)
-std::uint32_t inputs_footprint = hasInputs ? (maxInputDstIndex + 1) : 0;
+tile_regs_acquire();
+for (i = 0..2) {
+  for (j = 0..2) {
+    copy_tile(CB0, i*2+j, DST[0]);
+    copy_tile(CB1, i*2+j, DST[1]);
+    mul_binary_tile(DST[0], DST[1], DST[2+i*2+j]);  // Dynamic output index
+  }
+}
+tile_regs_commit();
+tile_regs_wait();
+for (i = 0..2) {
+  for (j = 0..2) {
+    pack_tile(DST[2+i*2+j], CB_out, i*2+j);
+  }
+}
+tile_regs_release();
 ```
-
-For a binary op like `mul(a, b)`:
-- `a` → DST[0], `b` → DST[1] (both need separate slots)
-- `inputs_footprint = 2`
-- Outputs start at DST[2]: `result[i,j]` → `DST[2 + i*cols + j]`
-
-For a unary op like `exp(a)`:
-- `a` shares DST with output (no separate slot needed)
-- `inputs_footprint = 0`
-- Outputs start at DST[0]: `result[i,j]` → `DST[i*cols + j]`
-
-Note that in the case of pack_tile ops in the same loops
-as compute ops, the `dst_footprint` would be simply 
-`inputs_footprint + numbuer_of_outputs`.
 
 ## Generated Code Example (2x2 block)
 
@@ -89,3 +106,4 @@ tile_regs_release();
 ## Future Work
 
 * Pack multiple contiguous tiles in a single `pack_tile` call. Requires analysis to determine when output tiles are contiguous in DST (e.g., `DST[2,3,4,5]` for a 2x2 block with row-major layout). Currently each tile is packed individually.
+* Register spilling for complex operation chains that exceed DST capacity.

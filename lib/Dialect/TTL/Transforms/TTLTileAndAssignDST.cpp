@@ -286,34 +286,60 @@ struct TTLTileAndAssignDSTPass
         }
 
         // Allocate DST registers for tile compute operations.
-        // ALWAYS allocate outputs BEFORE freeing inputs, even when not unrolling.
-        // This ensures output indices are >= numInputs, which is required for:
-        // 1. Correct unrolling: inputs stay fixed, outputs increment
-        // 2. Correct non-unrolled binary ops: hardware seems to require separate output slots
+        // - Unary ops: output reuses input's DST (in-place operation)
+        // - Binary ops: allocate fresh DST for output (inputs stay separate)
         if (tt::ttl::isTileComputeOp(&op)) {
-          // First: allocate registers for results
-          for (Value res : op.getResults()) {
-            if (!isTileValue(res)) {
-              continue;
+          bool isUnary = tt::ttl::isTileUnaryOp(&op);
+
+          if (isUnary) {
+            // Unary ops are in-place: output reuses input's DST slot.
+            // Find the tile input and use its DST index for the output.
+            Value inputTile;
+            for (Value operand : op.getOperands()) {
+              if (isTileValue(operand)) {
+                inputTile = operand;
+                break;
+              }
             }
-            int freeReg = inUse.find_first_unset();
-            if (freeReg < 0) {
-              op.emitOpError("insufficient DST registers for results");
-              signalPassFailure();
-              return;
+
+            if (inputTile) {
+              auto it = dstIndexForValue.find(inputTile);
+              if (it != dstIndexForValue.end()) {
+                std::uint32_t inputDstIdx = it->second;
+                // Assign output to same DST index as input (in-place)
+                for (Value res : op.getResults()) {
+                  if (!isTileValue(res)) {
+                    continue;
+                  }
+                  dstIndexForValue[res] = inputDstIdx;
+                  OpBuilder attrBuilder(res.getContext());
+                  op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
+                                                  static_cast<int32_t>(inputDstIdx)));
+                }
+                // Register stays in use - output now owns it
+              }
             }
-            dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
-            inUse.set(freeReg);
-            // NOTE: Sets single dst_idx on the operation. All tile ops
-            // currently produce exactly one tile result, so this is safe. If
-            // multi-result tile ops are added, this will need per-result
-            // attributes.
-            OpBuilder attrBuilder(res.getContext());
-            op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
-                                            static_cast<int32_t>(freeReg)));
+          } else {
+            // Binary ops: allocate fresh DST for output
+            for (Value res : op.getResults()) {
+              if (!isTileValue(res)) {
+                continue;
+              }
+              int freeReg = inUse.find_first_unset();
+              if (freeReg < 0) {
+                op.emitOpError("insufficient DST registers for results");
+                signalPassFailure();
+                return;
+              }
+              dstIndexForValue[res] = static_cast<std::uint32_t>(freeReg);
+              inUse.set(freeReg);
+              OpBuilder attrBuilder(res.getContext());
+              op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
+                                              static_cast<int32_t>(freeReg)));
+            }
           }
 
-          // Second: free operands at their last use (after allocating outputs)
+          // Free operands at their last use
           for (Value operand : op.getOperands()) {
             if (!isTileValue(operand)) {
               continue;
@@ -321,7 +347,21 @@ struct TTLTileAndAssignDSTPass
             if (isLastUse(op, operand)) {
               auto it = dstIndexForValue.find(operand);
               if (it != dstIndexForValue.end()) {
-                inUse.reset(it->second);
+                // For unary, check if output still uses this slot before freeing
+                bool outputUsesSlot = false;
+                if (isUnary) {
+                  for (Value res : op.getResults()) {
+                    auto resIt = dstIndexForValue.find(res);
+                    if (resIt != dstIndexForValue.end() &&
+                        resIt->second == it->second) {
+                      outputUsesSlot = true;
+                      break;
+                    }
+                  }
+                }
+                if (!outputUsesSlot) {
+                  inUse.reset(it->second);
+                }
               }
             }
           }
