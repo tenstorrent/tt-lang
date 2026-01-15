@@ -203,6 +203,10 @@ struct TTLTileAndAssignDSTPass
         OpBuilder attrBuilder(computeOp.getContext());
         computeOp->setAttr(kUnrollFactorAttrName,
                            attrBuilder.getI32IntegerAttr(unrollFactor));
+        // Store numInputs for use by the unroll pass to determine which DST
+        // indices should stay fixed (inputs) vs increment (outputs).
+        computeOp->setAttr("ttl.num_inputs",
+                           attrBuilder.getI32IntegerAttr(numInputs));
       }
 
       // Insert copy_tile immediately before the first use of each block
@@ -281,25 +285,13 @@ struct TTLTileAndAssignDSTPass
           });
         }
 
-        // Combined pass: free operands at last use, then allocate results
-        // atomically. This prevents register conflicts within a single
-        // operation (e.g., freeing and reallocating the same register).
+        // Allocate DST registers for tile compute operations.
+        // ALWAYS allocate outputs BEFORE freeing inputs, even when not unrolling.
+        // This ensures output indices are >= numInputs, which is required for:
+        // 1. Correct unrolling: inputs stay fixed, outputs increment
+        // 2. Correct non-unrolled binary ops: hardware seems to require separate output slots
         if (tt::ttl::isTileComputeOp(&op)) {
-          // First: free operands at their last use
-          for (Value operand : op.getOperands()) {
-            if (!isTileValue(operand)) {
-              continue;
-            }
-            if (isLastUse(op, operand)) {
-              auto it = dstIndexForValue.find(operand);
-              if (it != dstIndexForValue.end()) {
-                inUse.reset(it->second);
-              }
-            }
-          }
-
-          // Second: allocate registers for results (can now safely reuse
-          // freed regs)
+          // First: allocate registers for results
           for (Value res : op.getResults()) {
             if (!isTileValue(res)) {
               continue;
@@ -319,6 +311,19 @@ struct TTLTileAndAssignDSTPass
             OpBuilder attrBuilder(res.getContext());
             op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
                                             static_cast<int32_t>(freeReg)));
+          }
+
+          // Second: free operands at their last use (after allocating outputs)
+          for (Value operand : op.getOperands()) {
+            if (!isTileValue(operand)) {
+              continue;
+            }
+            if (isLastUse(op, operand)) {
+              auto it = dstIndexForValue.find(operand);
+              if (it != dstIndexForValue.end()) {
+                inUse.reset(it->second);
+              }
+            }
           }
         } else {
           // For non-compute ops, still free operands at last use

@@ -35,19 +35,42 @@ static uint32_t countDSTSlotsInLoop(scf::ForOp forOp) {
 }
 
 /// Update dst_idx attribute and copy_tile dst_index operand for an unrolled copy.
+/// Input DST registers (idx < numInputs) stay fixed across iterations.
+/// Output DST registers (idx >= numInputs) increment per iteration.
 static void updateDSTIndices(Operation *op, unsigned unrollIdx,
-                             uint32_t slotsPerIteration, OpBuilder &b) {
+                             uint32_t numInputs, uint32_t numOutputs,
+                             OpBuilder &b) {
   Location loc = op->getLoc();
 
   if (auto dstIdx = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-    int32_t newIdx = dstIdx.getInt() + unrollIdx * slotsPerIteration;
+    int32_t oldIdx = dstIdx.getInt();
+    int32_t newIdx;
+
+    if (oldIdx < static_cast<int32_t>(numInputs)) {
+      // Input DST: keep fixed across iterations (A always uses DST[0], B uses DST[1])
+      newIdx = oldIdx;
+    } else {
+      // Output DST: increment by iteration (iteration k uses DST[numInputs + k])
+      newIdx = numInputs + (oldIdx - numInputs) + unrollIdx * numOutputs;
+    }
+
     op->setAttr(kDstIdxAttrName, b.getI32IntegerAttr(newIdx));
   }
 
   if (auto copyOp = dyn_cast<CopyTileOp>(op)) {
     Value oldDstIdx = copyOp.getDstIndex();
     if (auto constOp = oldDstIdx.getDefiningOp<arith::ConstantIndexOp>()) {
-      int64_t newIdx = constOp.value() + unrollIdx * slotsPerIteration;
+      int64_t oldIdx = constOp.value();
+      int64_t newIdx;
+
+      if (oldIdx < static_cast<int64_t>(numInputs)) {
+        // Input DST: keep fixed
+        newIdx = oldIdx;
+      } else {
+        // Output DST: increment per iteration
+        newIdx = numInputs + (oldIdx - numInputs) + unrollIdx * numOutputs;
+      }
+
       // Set insertion point right before the copy_tile op to ensure domination
       b.setInsertionPoint(op);
       Value newDstIdxVal = b.create<arith::ConstantIndexOp>(loc, newIdx);
@@ -79,11 +102,19 @@ struct TTLUnrollComputeLoopsPass
       if (factor <= 1)
         continue;
 
-      uint32_t slotsPerIteration = countDSTSlotsInLoop(forOp);
+      // Get numInputs from the loop attribute (set by DST assignment pass).
+      // Input DST registers stay fixed across unrolled iterations.
+      auto numInputsAttr = forOp->getAttrOfType<IntegerAttr>("ttl.num_inputs");
+      uint32_t numInputs = numInputsAttr ? numInputsAttr.getInt() : 0;
 
-      auto annotateFn = [slotsPerIteration](unsigned unrollIdx, Operation *op,
-                                            OpBuilder b) {
-        updateDSTIndices(op, unrollIdx, slotsPerIteration, b);
+      // Compute total slots and outputs.
+      uint32_t slotsPerIteration = countDSTSlotsInLoop(forOp);
+      uint32_t numOutputs =
+          (slotsPerIteration > numInputs) ? (slotsPerIteration - numInputs) : 0;
+
+      auto annotateFn = [numInputs, numOutputs](unsigned unrollIdx,
+                                                Operation *op, OpBuilder b) {
+        updateDSTIndices(op, unrollIdx, numInputs, numOutputs, b);
       };
 
       LogicalResult unrollResult = loopUnrollByFactor(forOp, factor, annotateFn);

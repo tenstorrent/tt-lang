@@ -87,10 +87,12 @@ static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
 /// Generate loop body that processes tiles at given indices.
 /// Extracts tiles from inputs, clones compute body, inserts results back.
 /// Returns failure if copy_tile encounters unsupported tensor rank/shape.
+/// @param linearIV Optional linear induction variable for flattened loops.
+///                 When provided, used directly for ttl.linearized_index operations.
 static FailureOr<scf::ValueVector>
 generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
                        ArrayRef<AffineMap> indexingMaps, ValueRange ivs,
-                       ValueRange iterArgs) {
+                       ValueRange iterArgs, Value linearIV = Value()) {
   // Extract tiles from inputs at current mapped indices.
   SmallVector<Value> extractedInputs;
   for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
@@ -127,26 +129,29 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
         idx, cast<RankedTensorType>(input.getType())};
   }
 
-  // Pre-pass: materialize ttl.linearized_index ops as affine.apply
+  // Pre-pass: materialize ttl.linearized_index ops as affine.apply.
+  // For flattened loops, use the linear IV directly to avoid complex composed maps.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
-      AffineMap indexMap = linIdx.getIndexMap();
+      Value computedLinearIdx;
 
-      // Check rank matches
-      if (static_cast<int64_t>(ivs.size()) != indexMap.getNumDims()) {
-        return failure();
+      if (linearIV) {
+        // Flattened loop: use the linear IV directly (already linearized)
+        computedLinearIdx = linearIV;
+      } else {
+        // Nested loops: apply linearization map to multi-dimensional IVs
+        AffineMap indexMap = linIdx.getIndexMap();
+        if (static_cast<int64_t>(ivs.size()) != indexMap.getNumDims()) {
+          return failure();
+        }
+        SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
+        OpFoldResult result =
+            affine::makeComposedFoldedAffineApply(b, loc, indexMap, operands);
+        computedLinearIdx = getValueOrCreateConstantIndexOp(b, loc, result);
       }
 
-      // Apply the index_map to IVs to get linear index
-      // TODO: Add symbol handling for dynamic dimensions using getMixedSizes()
-      // to query tensor dimensions and pass as affine map symbols
-      SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
-      OpFoldResult result =
-          affine::makeComposedFoldedAffineApply(b, loc, indexMap, operands);
-      Value linearIdx = getValueOrCreateConstantIndexOp(b, loc, result);
-
       // Add to mapping so cloning will use the computed value
-      mapping.map(linIdx.getResult(), linearIdx);
+      mapping.map(linIdx.getResult(), computedLinearIdx);
     }
   }
 
@@ -190,33 +195,70 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       return failure();
     }
 
-    // Build loop bounds from iteration domain.
-    SmallVector<Value> lowerBounds, upperBounds, steps;
-    for (auto [idx, range] : llvm::enumerate(iterDomain)) {
-      Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
-      Value ub = getValueOrCreateConstantIndexOp(rewriter, loc, range.size);
-      Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      lowerBounds.push_back(lb);
-      upperBounds.push_back(ub);
-      steps.push_back(step);
+    // Flatten multi-dimensional iteration into a single loop following the
+    // upstream MLIR affine-loop-coalescing approach. Calculate total iterations
+    // as the product of all dimension sizes, then delinearize inside the loop.
+    int64_t totalIterations = 1;
+    SmallVector<int64_t> dimSizes;
+    for (auto range : iterDomain) {
+      auto sizeAttr = dyn_cast_if_present<IntegerAttr>(range.size.dyn_cast<Attribute>());
+      if (!sizeAttr) {
+        return rewriter.notifyMatchFailure(
+            op, "dynamic iteration bounds not yet supported for flattened loops");
+      }
+      int64_t dimSize = sizeAttr.getInt();
+      dimSizes.push_back(dimSize);
+      totalIterations *= dimSize;
     }
 
-    // Initial values for iter_args are the output tensors.
+    // Create single flattened loop: for %iv = 0 to totalIterations step 1
+    Value lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value upperBound = rewriter.create<arith::ConstantIndexOp>(loc, totalIterations);
+    Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     SmallVector<Value> initValues(op.getOutputs());
 
-    // Track whether generateTileProcessing fails inside the lambda.
     bool processingFailed = false;
-    scf::LoopNest loopNest = scf::buildLoopNest(
-        rewriter, loc, lowerBounds, upperBounds, steps, initValues,
-        [&](OpBuilder &b, Location loc, ValueRange ivs,
-            ValueRange iterArgs) -> scf::ValueVector {
-          auto result =
-              generateTileProcessing(b, loc, op, indexingMaps, ivs, iterArgs);
+    auto forOp = rewriter.create<scf::ForOp>(
+        loc, lowerBound, upperBound, step, initValues,
+        [&](OpBuilder &b, Location loc, Value linearIV, ValueRange iterArgs) {
+          // Delinearize the linear IV into multi-dimensional indices following
+          // upstream MLIR formula: iv_i = (linearIV floordiv stride_i) mod range_i
+          // where stride_i = product of ranges for dimensions [i+1, ..., n-1]
+          SmallVector<Value> delinearizedIVs;
+
+          for (size_t i = 0; i < dimSizes.size(); ++i) {
+            // Calculate stride = product of all inner dimension sizes
+            int64_t stride = 1;
+            for (size_t j = i + 1; j < dimSizes.size(); ++j) {
+              stride *= dimSizes[j];
+            }
+
+            // For the last dimension, stride=1, so just use: iv_i = linearIV mod range_i
+            // For other dimensions: iv_i = (linearIV floordiv stride) mod range_i
+            AffineExpr d0 = b.getAffineDimExpr(0);
+            AffineMap map;
+
+            if (stride == 1) {
+              // Innermost dimension: iv = linearIV mod range
+              map = AffineMap::get(1, 0, d0 % dimSizes[i]);
+            } else {
+              // Outer dimensions: iv = (linearIV floordiv stride) mod range
+              map = AffineMap::get(1, 0, (d0.floorDiv(stride)) % dimSizes[i]);
+            }
+
+            Value dimIndex = b.create<affine::AffineApplyOp>(loc, map, ValueRange{linearIV});
+            delinearizedIVs.push_back(dimIndex);
+          }
+
+          auto result = generateTileProcessing(b, loc, op, indexingMaps,
+                                               delinearizedIVs, iterArgs,
+                                               linearIV);  // Pass linear IV for flattened loop
           if (failed(result)) {
             processingFailed = true;
-            return {};
+            b.create<scf::YieldOp>(loc, ValueRange{});
+            return;
           }
-          return *result;
+          b.create<scf::YieldOp>(loc, *result);
         });
 
     if (processingFailed) {
@@ -224,14 +266,17 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
-    // Transfer ttl.unroll_factor attribute from ttl.compute to innermost scf.for
+    // Transfer ttl.unroll_factor attribute from ttl.compute to the flattened loop
     if (auto unrollFactor = op->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName)) {
-      // Get innermost loop from the nest
-      scf::ForOp innermostLoop = loopNest.loops.back();
-      innermostLoop->setAttr(kUnrollFactorAttrName, unrollFactor);
+      forOp->setAttr(kUnrollFactorAttrName, unrollFactor);
     }
 
-    rewriter.replaceOp(op, loopNest.results);
+    // Transfer ttl.num_inputs attribute (needed by unroll pass for DST allocation)
+    if (auto numInputs = op->getAttrOfType<IntegerAttr>("ttl.num_inputs")) {
+      forOp->setAttr("ttl.num_inputs", numInputs);
+    }
+
+    rewriter.replaceOp(op, forOp.getResults());
     return success();
   }
 };

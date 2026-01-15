@@ -236,22 +236,29 @@ struct TTLInsertTileRegsSyncPass
 
     // Also handle scf.for loops (for when this pass runs after ttl-lower-to-loops)
     funcOp.walk([&](scf::ForOp forOp) {
-      // Only process loops that came from ttl.compute (have ttl operations inside)
+      // Only process innermost loops that contain ttl operations directly
+      // (not nested inside another loop)
       bool hasTTLOps = false;
-      forOp.walk([&](Operation *op) {
-        if (op->getDialect() &&
-            op->getDialect()->getNamespace() == "ttl") {
-          hasTTLOps = true;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
+      bool hasNestedLoop = false;
 
-      if (!hasTTLOps) {
+      Block &body = forOp.getRegion().front();
+      for (Operation &op : body.without_terminator()) {
+        // Check for nested scf.for
+        if (isa<scf::ForOp>(&op)) {
+          hasNestedLoop = true;
+        }
+        // Check for direct ttl operations (not inside nested blocks)
+        if (op.getDialect() &&
+            op.getDialect()->getNamespace() == "ttl") {
+          hasTTLOps = true;
+        }
+      }
+
+      // Skip if this loop has nested loops (not innermost) or no TTL ops
+      if (hasNestedLoop || !hasTTLOps) {
         return;
       }
 
-      Block &body = forOp.getRegion().front();
       Location loc = forOp.getLoc();
       OpBuilder builder(forOp);
 
