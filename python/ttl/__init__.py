@@ -14,6 +14,8 @@ from ttl.ttl import (
     Program,
     make_circular_buffer_like,
     copy,
+    core,
+    grid_size,
     math,
 )
 
@@ -38,6 +40,8 @@ __all__ = [
     "CopyTransferHandler",
     "make_circular_buffer_like",
     "copy",
+    "core",
+    "grid_size",
     "math",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,
