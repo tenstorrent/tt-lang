@@ -41,7 +41,7 @@ def grid_to_tensor_shape(grid_rows: int, grid_cols: int) -> tuple[int, int]:
 
 # Multicore kernel template: each core processes 2x2 tiles via nested loop
 MULTICORE_LOOP_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=({grid_rows}, {grid_cols}))
 def multicore_loop(lhs, rhs, out):
@@ -174,7 +174,7 @@ def test_multicore_loop(device, grid_shape):
     result = ttnn.to_torch(out)
 
     # Verify grid_size returns correct values (set during kernel compilation)
-    from ttlang import ttl
+    import ttl
 
     x_size, y_size = ttl.grid_size(dims=2)
     assert (x_size, y_size) == (

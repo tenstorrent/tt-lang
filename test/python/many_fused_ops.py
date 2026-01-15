@@ -17,7 +17,7 @@ Sequential chain avoids multiple uses of intermediate values.
 
 import os
 
-from ttlang import ttl
+import ttl
 
 try:
     import ttnn

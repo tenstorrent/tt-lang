@@ -17,7 +17,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import ttl
+import ttl
 
 
 # CHECK: error: CB shape [2, 2] requires range syntax (e.g., tensor[0:2, 0:2]), but got index syntax (e.g., tensor[0, 0])

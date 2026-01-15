@@ -9,7 +9,7 @@ Tests the complete data path: host → L1 → compute → L1 → host
 """
 
 import torch
-from ttlang.ttl_api import *
+from ttl.ttl_api import *
 
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])

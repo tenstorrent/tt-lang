@@ -18,7 +18,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import ttl
+import ttl
 
 
 # CHECK: error: Thread functions must have no parameters

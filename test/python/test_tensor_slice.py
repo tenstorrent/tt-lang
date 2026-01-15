@@ -37,7 +37,7 @@ def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
 
 
 ADD_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def tile_loop_kernel(inp, bias, out):
@@ -77,7 +77,7 @@ def tile_loop_kernel(inp, bias, out):
 '''
 
 FUSED_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def fused_kernel(inp, bias, out):

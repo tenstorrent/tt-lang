@@ -4,7 +4,7 @@ include(AddMLIRPython)
 set(CMAKE_PLATFORM_NO_VERSIONED_SONAME ON)
 
 # The directory at which the Python import tree begins
-set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang")
+set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl")
 
 # Align package prefix with ttmlir so bound types match upstream core.
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ttmlir.")
@@ -70,7 +70,7 @@ set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttmlir")
 # ###############################################################################
 set(TTL_ELEMENTWISE_DEF "${CMAKE_SOURCE_DIR}/include/ttlang/Dialect/TTL/TTLElementwiseOps.def")
 set(GEN_ELEMENTWISE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/gen_elementwise.py")
-set(GENERATED_ELEMENTWISE_PY "${CMAKE_CURRENT_BINARY_DIR}/ttlang/_generated_elementwise.py")
+set(GENERATED_ELEMENTWISE_PY "${CMAKE_CURRENT_BINARY_DIR}/ttl/_generated_elementwise.py")
 
 add_custom_command(
   OUTPUT ${GENERATED_ELEMENTWISE_PY}
@@ -89,7 +89,7 @@ add_custom_target(TTLangGeneratedElementwise DEPENDS ${GENERATED_ELEMENTWISE_PY}
 declare_mlir_python_sources(TTLangPythonCommon)
 
 declare_mlir_python_sources(TTLangPythonCommon.Main
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
@@ -104,19 +104,18 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     ir.py
     layouts.py
     operators.py
-    semaphore.py
 )
 
 # Add generated elementwise ops file
 declare_mlir_python_sources(TTLangPythonCommon.Generated
-  ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ttlang"
+  ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _generated_elementwise.py
 )
 
 declare_mlir_python_sources(TTLangPythonCommon.Src
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
@@ -173,8 +172,8 @@ set(TTLANG_PYTHON_SOURCES
 )
 
 add_mlir_python_modules(TTLangPythonModules
-  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttlang"
-  INSTALL_PREFIX "python_packages/ttlang"
+  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttl"
+  INSTALL_PREFIX "python_packages/ttl"
   DECLARED_SOURCES
     TTLangPythonSources
     TTLangPythonExtensions

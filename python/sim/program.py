@@ -31,18 +31,16 @@ def _get_ttlang_compile_error():
     import sys
     from pathlib import Path
 
-    # Direct import of diagnostics module without going through ttlang package
+    # Direct import of diagnostics module without going through ttl package
     # This avoids importing the full compiler infrastructure
-    diagnostics_path = Path(__file__).parent.parent / "ttlang" / "diagnostics.py"
-    spec = importlib.util.spec_from_file_location(
-        "ttlang.diagnostics", diagnostics_path
-    )
+    diagnostics_path = Path(__file__).parent.parent / "ttl" / "diagnostics.py"
+    spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
     if spec and spec.loader:
         diagnostics = importlib.util.module_from_spec(spec)
-        sys.modules["ttlang.diagnostics"] = diagnostics
+        sys.modules["ttl.diagnostics"] = diagnostics
         spec.loader.exec_module(diagnostics)
         return diagnostics.TTLangCompileError
-    raise ImportError("Could not load ttlang.diagnostics")
+    raise ImportError("Could not load ttl.diagnostics")
 
 
 # Protocol for templates that have a bind method

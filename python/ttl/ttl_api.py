@@ -17,7 +17,7 @@ try:
 except ModuleNotFoundError:
     ttnn = None
 
-import ttlang._mlir_libs._ttlang  # Register tt-lang passes
+import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code
 from ttmlir.dialects import ttkernel
 from ttmlir.ir import *
@@ -49,7 +49,6 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
-from .semaphore import Semaphore
 from .ttl_utils import get_thread_type_string
 
 
@@ -979,7 +978,6 @@ __all__ = [
     "TensorBlock",
     "CircularBuffer",
     "CopyTransferHandler",
-    "Semaphore",
     "copy",
     "CompiledTTNNKernel",
 ]

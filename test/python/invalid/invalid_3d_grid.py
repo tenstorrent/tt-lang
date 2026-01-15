@@ -16,7 +16,7 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttnn
-from ttlang import ttl
+import ttl
 
 
 # CHECK: ValueError: Only 2D grids supported, got grid (1, 1, 1)

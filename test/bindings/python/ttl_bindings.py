@@ -6,7 +6,7 @@
 
 # Tests for TTL dialect Python bindings, using both ttmlir and ttlang modules
 
-from ttlang.dialects import ttl
+from ttl.dialects import ttl
 from ttmlir.dialects import ttcore
 from ttmlir.ir import *
 

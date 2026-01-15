@@ -130,7 +130,7 @@ if hasattr(config, "ttmlir_path") and config.ttmlir_path:
 # Include existing PYTHONPATH last
 python_paths.append(os.environ.get("PYTHONPATH", ""))
 
-# Prefer built bindings so ttlang._mlir_libs is found.
+# Prefer built bindings so ttl._mlir_libs is found.
 config.environment["PYTHONPATH"] = os.path.pathsep.join([p for p in python_paths if p])
 
 # Enable FileCheck variable scoping (MLIR default)
