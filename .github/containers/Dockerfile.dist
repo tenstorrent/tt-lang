@@ -5,7 +5,7 @@
 #
 # Targets:
 #   dist - Pre-built tt-lang for end users (ready to import ttl)
-#   dev  - Development image with toolchain + debugging tools (gdb, vim, tmux)
+#   dev  - Development image with toolchain + extra tools (vim, tmux, nano)
 
 ARG FROM_TAG=latest
 ARG MLIR_TAG=latest
@@ -79,7 +79,8 @@ COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
 # Install text editors for convenience (vim and nano)
-RUN apt-get update && apt-get install -y vim nano && rm -rf /var/lib/apt/lists/*
+RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
+    apt-get update && apt-get install -y vim nano && rm -rf /var/lib/apt/lists/*
 
 # Setup environment for immediate use
 # tt-lang is installed in the toolchain at bin/ and python_packages/
@@ -103,36 +104,24 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
 
 # =============================================================================
-# Stage 3: IRD (Interactive Research & Development with debugging tools)
+# Stage 3: IRD and Dist container
+# Extends CI image and adds development tools
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS ird
-SHELL ["/bin/bash", "-c"]
+FROM ci AS ird
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
-# Copy tt-mlir toolchain from build stage
-COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
+# Install Python dev dependencies (black, sphinx, etc.)
+COPY dev-requirements.txt /tmp/dev-requirements.txt
+RUN python3.11 -m pip install -r /tmp/dev-requirements.txt --no-cache-dir && \
+    rm /tmp/dev-requirements.txt
 
-# Install debugging and development tools
-RUN apt-get update && apt-get install -y \
+# Install additional development tools (vim/nano already in CI)
+RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
+    apt-get update && apt-get install -y \
     ssh \
     sudo \
-    vim \
-    nano \
     tmux \
     psmisc \
     bash-completion \
     && rm -rf /var/lib/apt/lists/*
-
-# Setup entrypoint
-COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Set working directory to /root and copy tt-lang examples there
-WORKDIR /root
-RUN cp -r $TTMLIR_TOOLCHAIN_DIR/examples .
-COPY .github/containers/CONTAINER_README.md /root/README.md
-
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["/bin/bash"]
