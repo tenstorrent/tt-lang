@@ -18,6 +18,10 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
+  Option<bool> enableUnroll{
+      *this, "enable-unroll",
+      llvm::cl::desc("Enable loop unrolling for DST utilization."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

@@ -23,13 +23,15 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // DST register allocation and loop transformation pipeline:
   // 1. ttl-tile-and-assign-dst: Assigns DST indices, adds ttl.unroll_factor attribute
   // 2. ttl-lower-to-loops: Converts ttl.compute to scf.for loops (no sync ops yet)
-  // 3. ttl-unroll-compute-loops: Unrolls loops based on ttl.unroll_factor
+  // 3. ttl-unroll-compute-loops: Unrolls loops based on ttl.unroll_factor (optional)
   // 4. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops (acquire/commit/wait/release)
   //    - Runs AFTER unrolling so sync ops wrap batches of tiles correctly
   //    - Works on both ttl.compute (if present) and scf.for loops
   pm.addPass(createTTLTileAndAssignDST());
   pm.addPass(createTTLLowerToLoops());
-  pm.addPass(createTTLUnrollComputeLoops());
+  if (options.enableUnroll) {
+    pm.addPass(createTTLUnrollComputeLoops());
+  }
   pm.addPass(createTTLInsertTileRegsSync());
 
   pm.addPass(createTTLAnnotateCBAssociations());

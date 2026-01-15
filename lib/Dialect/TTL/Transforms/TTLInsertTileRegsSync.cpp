@@ -35,6 +35,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -262,6 +263,37 @@ struct TTLInsertTileRegsSyncPass
       Location loc = forOp.getLoc();
       OpBuilder builder(forOp);
 
+      // Find input and output CBs for init_sfpu.
+      // Input: from tensor.extract sources, Output: from iter_args init values
+      Value inputCB, outputCB;
+      for (Operation &op : body.without_terminator()) {
+        if (op.getName().getStringRef() == "tensor.extract") {
+          auto extractOp = cast<tensor::ExtractOp>(&op);
+          Value cb = getAttachedCB(extractOp.getTensor());
+          if (cb && !inputCB) {
+            inputCB = cb;
+          }
+        }
+      }
+      // Output CB from init_args
+      for (Value initArg : forOp.getInitArgs()) {
+        Value cb = getAttachedCB(initArg);
+        if (cb && !outputCB) {
+          outputCB = cb;
+        }
+      }
+
+      // Insert init_sfpu before the loop if we found both CBs
+      if (inputCB && outputCB) {
+        auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
+        InitSFPUOp existingInitSfpu =
+            findPrecedingOp<InitSFPUOp>(forOp.getOperation(), stopAtLoop);
+        if (!existingInitSfpu) {
+          builder.setInsertionPoint(forOp);
+          builder.create<InitSFPUOp>(loc, inputCB, outputCB);
+        }
+      }
+
       // Check if acquire already exists
       TileRegsAcquireOp existingAcquire = nullptr;
       for (Operation &op : body.without_terminator()) {
@@ -320,6 +352,65 @@ struct TTLInsertTileRegsSyncPass
       // Ensure commit comes before wait
       if (!commitOp->isBeforeInBlock(waitOp)) {
         commitOp->moveBefore(waitOp);
+      }
+
+      // Convert tensor.insert ops to ttl.store ops if no stores exist yet.
+      // This handles the case where ttl-lower-to-loops has converted ComputeOp
+      // to scf.for before this pass runs.
+      if (storeOps.empty() && !tensorInsertOps.empty()) {
+        // Map yield operands to their tensor.insert sources
+        auto yieldOp = cast<scf::YieldOp>(terminator);
+        DenseMap<size_t, tensor::InsertOp> insertForOutput;
+        for (auto [idx, yieldVal] : llvm::enumerate(yieldOp.getOperands())) {
+          if (auto insertOp = yieldVal.getDefiningOp<tensor::InsertOp>()) {
+            insertForOutput.try_emplace(idx, insertOp);
+          }
+        }
+
+        // Helper: find existing cb_reserve view for a CB, scanning backwards
+        // from the for loop in the parent block.
+        auto findReserveView = [&](Value cb) -> Value {
+          for (Operation *curr = forOp->getPrevNode(); curr;
+               curr = curr->getPrevNode()) {
+            if (auto reserve = dyn_cast<CBReserveOp>(curr)) {
+              if (reserve.getCb() == cb) {
+                return reserve.getResult();
+              }
+            }
+          }
+          return Value();
+        };
+
+        // For each output, find existing cb_reserve and create ttl.store
+        ValueRange initArgs = forOp.getInitArgs();
+        Operation *tail = waitOp.getOperation();
+
+        for (auto [outputIdx, insertOp] : insertForOutput) {
+          // Trace iter_arg back to original output tensor to get CB
+          Value outputTensor = initArgs[outputIdx];
+          Value cb = getAttachedCB(outputTensor);
+          if (!cb) {
+            continue; // Skip if no CB attached
+          }
+
+          // Find existing cb_reserve view for this CB
+          Value view = findReserveView(cb);
+          if (!view) {
+            // Create cb_reserve inside the loop if none exists outside
+            builder.setInsertionPointAfter(tail);
+            auto reserveOp =
+                builder.create<CBReserveOp>(loc, outputTensor.getType(), cb);
+            view = reserveOp.getResult();
+            tail = reserveOp.getOperation();
+          }
+
+          // Create ttl.store using loop IV as CB tile index
+          builder.setInsertionPointAfter(tail);
+          Value tile = insertOp.getScalar();
+          Value cbTileIndex = forOp.getInductionVar();
+          auto newStore = builder.create<StoreOp>(loc, tile, view, cbTileIndex);
+          tail = newStore.getOperation();
+        }
       }
 
       // Insert release at end of loop body (before yield) if not present
