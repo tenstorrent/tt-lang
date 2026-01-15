@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Quick test script for Docker builds
-# Run from repository root: .github/scripts/test-docker-build.sh
+# Build Docker images locally for testing
+# Run from repository root: .github/containers/build-docker-local.sh
 
 set -e
 

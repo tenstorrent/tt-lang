@@ -62,6 +62,13 @@ docker run -it -v $(pwd):/workspace tt-lang-dev:local \
 
 ## Build Scripts
 
+### `.github/scripts/build-docker-local.sh`
+Build all images locally for testing.
+
+```bash
+.github/scripts/build-docker-local.sh
+```
+
 ### `.github/scripts/build-docker-images.sh`
 Orchestrates building all images with proper tagging and optional registry push.
 
@@ -76,18 +83,18 @@ Orchestrates building all images with proper tagging and optional registry push.
 .github/scripts/build-docker-images.sh --check-only
 ```
 
+### `.github/scripts/test-docker-smoke.sh`
+Quick smoke test to verify container functionality.
+
+```bash
+.github/scripts/test-docker-smoke.sh
+```
+
 ### `.github/scripts/get-docker-tag.sh`
 Generates deterministic Docker tags from file hashes and tt-mlir version.
 
 ```bash
 .github/scripts/get-docker-tag.sh <MLIR_DOCKER_TAG>
-```
-
-### `.github/scripts/test-docker-build.sh`
-Quick test script for local Docker builds.
-
-```bash
-.github/scripts/test-docker-build.sh
 ```
 
 ## Hardware Access

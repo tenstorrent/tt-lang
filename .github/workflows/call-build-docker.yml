@@ -54,7 +54,7 @@ jobs:
         id: check
         run: |
           set +e
-          .github/scripts/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" --check-only | tee docker.log
+          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" --check-only | tee docker.log
           EXIT_CODE=$?
 
           if [ $EXIT_CODE -eq 0 ]; then
@@ -103,7 +103,7 @@ jobs:
       - name: Build Docker images
         id: build
         run: |
-          .github/scripts/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
+          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
 
           # Extract image name from last line
           DOCKER_IMAGE=$(tail -n 1 docker.log)
