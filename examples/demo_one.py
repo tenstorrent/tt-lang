@@ -15,7 +15,7 @@ def demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
-    grid_x, grid_y = ttl.grid_size(dims = 2)
+    grid_x, grid_y = ttl.grid_size(dims=2)
 
     rows_per_core = a.shape[0] // TILE_SIZE // grid_x // row_tiles_per_block
     cols_per_core = a.shape[1] // TILE_SIZE // grid_y // col_tiles_per_block
@@ -47,7 +47,7 @@ def demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_read():
-        core_x, core_y = ttl.core(dims = 2)
+        core_x, core_y = ttl.core(dims=2)
 
         for core_row in range(rows_per_core):
             row = core_x * rows_per_core + core_row
@@ -92,7 +92,7 @@ def demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_write():
-        core_x, core_y = ttl.core(dims = 2)
+        core_x, core_y = ttl.core(dims=2)
 
         for core_row in range(rows_per_core):
             row = core_x * rows_per_core + core_row
