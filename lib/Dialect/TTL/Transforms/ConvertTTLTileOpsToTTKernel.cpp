@@ -251,7 +251,6 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     }
     int64_t odstIdx = dstIdxAttr.getInt();
 
-    // Extract dst_idx from original (unconverted) operands, not adaptor operands
     auto src0IdxOpt = getDstIndexFromValue(op.getLhs());
     auto src1IdxOpt = getDstIndexFromValue(op.getRhs());
 
@@ -292,7 +291,8 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Extract dst_idx from original (unconverted) operands, not adaptor operands
+    // Extract dst_idx from original (unconverted) operands, not adaptor
+    // operands
     auto dst0IdxOpt = getDstIndexFromValue(op.getLhs());
     auto dst1IdxOpt = getDstIndexFromValue(op.getRhs());
 
