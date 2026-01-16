@@ -78,6 +78,7 @@ def assert_success_output(code: int, out: str) -> None:
         "singlecore_matmul.py",
         "multicore_matmul.py",
         "multistep_op.py",
+        "demo_one.py",
     ],
 )
 def test_example_cli(script_name: str) -> None:
