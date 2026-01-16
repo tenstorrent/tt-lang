@@ -41,9 +41,9 @@ def demo_kernel(a, b, c, y):
                     a_cb.wait() as a_blk,
                     b_cb.wait() as b_blk,
                     c_cb.wait() as c_blk,
-                    y_cb.reserve() as y,
+                    y_cb.reserve() as y_blk,
                 ):
-                    y.store(a_blk * b_blk + c_blk)
+                    y_blk.store(a_blk * b_blk + c_blk)
 
     @ttl.datamovement()
     def demo_read():
