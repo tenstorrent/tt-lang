@@ -33,6 +33,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT: %[[LINIDX1:.*]] = ttl.linearized_index #{{.*}} : index
 // CHECK-NEXT: %[[C1:.*]] = arith.constant 1 : index
 // CHECK-NEXT: %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %[[LINIDX1]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NOT:   ttl.copy_tile
 // CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT: ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
@@ -70,10 +71,12 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:   %[[LIN_IDX_1:.*]] = ttl.linearized_index #{{.*}} : index
 // CHECK-NEXT:   %[[C1:.*]] = arith.constant 1 : index
 // CHECK-NEXT:   %[[DST1:.*]], %[[TILE1:.*]] = ttl.copy_tile %[[ARG1]], %[[LIN_IDX_1]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NOT:    ttl.copy_tile
 // CHECK-NEXT:   %[[X0:.*]] = ttl.tile_add %[[TILE0]], %[[TILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[LIN_IDX_2:.*]] = ttl.linearized_index #{{.*}} : index
 // CHECK-NEXT:   %[[C1_2:.*]] = arith.constant 1 : index
 // CHECK-NEXT:   %[[DST2:.*]], %[[TILE2:.*]] = ttl.copy_tile %[[ARG2]], %[[LIN_IDX_2]], %[[C1_2]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NOT:    ttl.copy_tile
 // CHECK-NEXT:   %[[X1:.*]] = ttl.tile_add %[[X0]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[X2:.*]] = ttl.tile_add %[[X1]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[X3:.*]] = ttl.tile_add %[[X2]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
