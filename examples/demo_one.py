@@ -4,49 +4,72 @@
 import ttnn
 import torch
 
+
+def from_torch(t):
+    return ttnn.from_torch(
+        t,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+
 import ttl
 
+TILE_SIZE = 32
+GRANULARITY = 4
 
-@ttl.kernel(grid=(1, 1))
-def add_with_kernel(a, b, c, y):
-    # row_tiles = 1
-    # col_tiles = 1
 
-    row_tiles = 2
-    col_tiles = 2
+@ttl.kernel(grid=(8, 8))
+def __demo_kernel(a, b, c, y):
+    row_tiles_per_block = GRANULARITY
+    col_tiles_per_block = GRANULARITY
 
-    rows = a.shape[0] // 32 // row_tiles
-    cols = a.shape[1] // 32 // col_tiles
+    grid_x, grid_y = ttl.grid_size(dims=2)
+
+    rows_per_core = a.shape[0] // TILE_SIZE // grid_x // row_tiles_per_block
+    cols_per_core = a.shape[1] // TILE_SIZE // grid_y // col_tiles_per_block
 
     a_cb = ttl.make_circular_buffer_like(
-        a, shape=(row_tiles, col_tiles), buffer_factor=2
+        a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
     b_cb = ttl.make_circular_buffer_like(
-        b, shape=(row_tiles, col_tiles), buffer_factor=2
+        b, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
     c_cb = ttl.make_circular_buffer_like(
-        c, shape=(row_tiles, col_tiles), buffer_factor=2
+        c, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
     y_cb = ttl.make_circular_buffer_like(
-        y, shape=(row_tiles, col_tiles), buffer_factor=2
+        y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 
     @ttl.compute()
-    def add_compute():
-        for _ in range(rows):
-            for _ in range(cols):
+    def demo_compute():
+        for _ in range(rows_per_core):
+            for _ in range(cols_per_core):
                 with (
-                    a_cb.wait() as a_block,
-                    b_cb.wait() as b_block,
-                    c_cb.wait() as c_block,
-                    y_cb.reserve() as y,
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    c_cb.wait() as c_blk,
+                    y_cb.reserve() as y_blk,
                 ):
-                    y.store(a_block * b_block + c_block)
+                    y_blk.store(a_blk * b_blk + c_blk)
 
     @ttl.datamovement()
-    def add_read():
-        for row in range(rows):
-            for col in range(cols):
+    def demo_read():
+        core_x, core_y = ttl.core(dims=2)
+
+        for core_row in range(rows_per_core):
+            row = core_x * rows_per_core + core_row
+            start_row_tile = row * row_tiles_per_block
+            end_row_tile = (row + 1) * row_tiles_per_block
+
+            for core_col in range(cols_per_core):
+                col = core_y * cols_per_core + core_col
+                start_col_tile = col * col_tiles_per_block
+                end_col_tile = (col + 1) * col_tiles_per_block
+
                 with (
                     a_cb.reserve() as a_blk,
                     b_cb.reserve() as b_blk,
@@ -54,22 +77,22 @@ def add_with_kernel(a, b, c, y):
                 ):
                     tx_a = ttl.copy(
                         a[
-                            row * row_tiles : (row + 1) * row_tiles,
-                            col * col_tiles : (col + 1) * col_tiles,
+                            start_row_tile:end_row_tile,
+                            start_col_tile:end_col_tile,
                         ],
                         a_blk,
                     )
                     tx_b = ttl.copy(
                         b[
-                            row * row_tiles : (row + 1) * row_tiles,
-                            col * col_tiles : (col + 1) * col_tiles,
+                            start_row_tile:end_row_tile,
+                            start_col_tile:end_col_tile,
                         ],
                         b_blk,
                     )
                     tx_c = ttl.copy(
                         c[
-                            row * row_tiles : (row + 1) * row_tiles,
-                            col * col_tiles : (col + 1) * col_tiles,
+                            start_row_tile:end_row_tile,
+                            start_col_tile:end_col_tile,
                         ],
                         c_blk,
                     )
@@ -79,63 +102,58 @@ def add_with_kernel(a, b, c, y):
                     tx_c.wait()
 
     @ttl.datamovement()
-    def add_write():
-        for row in range(rows):
-            for col in range(cols):
+    def demo_write():
+        core_x, core_y = ttl.core(dims=2)
+
+        for core_row in range(rows_per_core):
+            row = core_x * rows_per_core + core_row
+            start_row_tile = row * row_tiles_per_block
+            end_row_tile = (row + 1) * row_tiles_per_block
+
+            for core_col in range(cols_per_core):
+                col = core_y * cols_per_core + core_col
+                start_col_tile = col * col_tiles_per_block
+                end_col_tile = (col + 1) * col_tiles_per_block
+
                 with y_cb.wait() as y_blk:
                     tx = ttl.copy(
                         y_blk,
                         y[
-                            row * row_tiles : (row + 1) * row_tiles,
-                            col * col_tiles : (col + 1) * col_tiles,
+                            start_row_tile:end_row_tile,
+                            start_col_tile:end_col_tile,
                         ],
                     )
                     tx.wait()
 
-    return ttl.Program(add_compute, add_read, add_write)(a, b, c, y)
+    return ttl.Program(demo_compute, demo_read, demo_write)(a, b, c, y)
 
+
+def demo_kernel(a, b, c):
+    y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
+    __demo_kernel(a, b, c, y)
+    return y
+
+
+torch.manual_seed(42)
 
 device = ttnn.open_device(device_id=0)
+
 
 try:
     shape = (2048, 2048)
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)
     c = torch.rand(shape, dtype=torch.bfloat16)
-    y = torch.zeros(shape, dtype=torch.bfloat16)
+    d = torch.rand(shape, dtype=torch.bfloat16)
 
-    expected_y = a * b + c
+    expected_y = (a * b + c) * d
 
-    a = ttnn.from_torch(
-        a,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    b = ttnn.from_torch(
-        b,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    c = ttnn.from_torch(
-        c,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    y = ttnn.from_torch(
-        y,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    a = from_torch(a)
+    b = from_torch(b)
+    c = from_torch(c)
+    d = from_torch(d)
 
-    add_with_kernel(a, b, c, y)
+    y = ttnn.multiply(demo_kernel(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

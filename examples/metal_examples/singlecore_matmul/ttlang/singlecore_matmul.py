@@ -83,4 +83,3 @@ def test_singlecore_matmul_tt_lang():
 
 if __name__ == "__main__":
     test_singlecore_matmul_tt_lang()
-    print("PASSED")

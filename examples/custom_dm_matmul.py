@@ -132,4 +132,3 @@ matmul(lhs, rhs, out)
 
 golden = lhs @ rhs
 assert_allclose(out, golden, rtol=1e-2, atol=1e-4)
-print("Passed")
