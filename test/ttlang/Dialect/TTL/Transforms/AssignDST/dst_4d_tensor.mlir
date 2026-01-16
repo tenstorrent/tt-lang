@@ -2,6 +2,9 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 
+// Verify no placeholder copies remain in final IR
+// CHECK-NOT: placeholder
+
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 
 // Purpose: test N-D linearization (4D case: row-major strides [48, 8, 2, 1])

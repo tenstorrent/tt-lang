@@ -1,6 +1,10 @@
 // Summary: three-op chain (add -> mul -> exp) with DST register reuse.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+
+// Verify no placeholder copies remain in final IR
+// CHECK-NOT: placeholder
+
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles,

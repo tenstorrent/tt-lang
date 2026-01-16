@@ -5,6 +5,9 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize)' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 
+// Verify no placeholder copies remain in final IR
+// CHECK-NOT: placeholder
+
 // Test: Diamond dependency pattern with intermediate result reuse.
 // Purpose: Verify that a value used by multiple tile ops is copied once and
 // remains valid across both uses (no clobbering of live DST registers).

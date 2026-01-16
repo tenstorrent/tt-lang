@@ -2,6 +2,9 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-insert-tile-regs-sync))' | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1},ttl-insert-tile-regs-sync))' | FileCheck %s --check-prefix=SEPARATE
 
+// Verify no placeholder copies remain in final IR
+// CHECK-NOT: placeholder
+
 // Purpose: Regression test for DST register allocation bug where operations were
 // dropped in fused chains due to register conflicts. This test verifies that all
 // seven operations in the chain receive dst_idx attributes and appear in output.

@@ -40,6 +40,10 @@
 // CHECK-SAME: (merged set size: 4)
 // CHECK-NOT: Allocated DST
 
+// Verify max DST usage output
+// CHECK: === Final DST Assignment ===
+// CHECK: Max DST usage: 1 / 8 registers
+
 func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -102,8 +106,18 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-SAME: (merged set size: 1)
 // CHECK: Allocated DST[1]
 // CHECK-SAME: (merged set size: 1)
+// Verify register expiry and reuse - block args expire after first use
+// CHECK: Expired interval for
+// CHECK-SAME: freed DST[0]
+// CHECK: Expired interval for
+// CHECK-SAME: freed DST[1]
+// Now the binary→unary merged set gets allocated to the freed DST[0]
 // CHECK: Allocated DST[0]
 // CHECK-SAME: (merged set size: 2)
+
+// Verify max DST usage output
+// CHECK: === Final DST Assignment ===
+// CHECK: Max DST usage: 2 / 8 registers
 
 func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                    %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
