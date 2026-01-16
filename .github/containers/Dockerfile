@@ -36,7 +36,7 @@ RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
     -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
-# Build and install tt-lang (activates environment first, like CI)
+# Build and install tt-lang to toolchain
 RUN source build/env/activate && \
     cmake --build build && \
     cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
@@ -60,42 +60,56 @@ RUN bash /tmp/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/norma
 COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
 RUN bash /tmp/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/cleanup-toolchain.sh
 
-# Clean up build directory (no longer needed after install)
-RUN rm -rf build/
+# Keep build directory - dist stage needs it for installation
 
 # =============================================================================
-# Stage 2: CI/Distribution (pre-built tt-lang for users and CI)
+# Stage 2: CI (tt-mlir toolchain for CI workflows)
 # =============================================================================
 FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS ci
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
-# Copy tt-mlir toolchain with installed tt-lang
-# (tt-lang was installed to toolchain via cmake --install)
+# Copy toolchain (has both tt-mlir and tt-lang)
 COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 
-# Set write permissions on toolchain for user pip installs
+# Remove tt-lang files (CI only needs tt-mlir toolchain)
+RUN rm -rf $TTMLIR_TOOLCHAIN_DIR/bin/ttlang-* \
+           $TTMLIR_TOOLCHAIN_DIR/python_packages/ttl \
+           $TTMLIR_TOOLCHAIN_DIR/python_packages/pykernel \
+           $TTMLIR_TOOLCHAIN_DIR/python_packages/sim \
+           $TTMLIR_TOOLCHAIN_DIR/examples \
+           $TTMLIR_TOOLCHAIN_DIR/test \
+           $TTMLIR_TOOLCHAIN_DIR/env 2>/dev/null || true
+
+# Set write permissions
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
-# Install text editors for convenience (vim and nano)
+WORKDIR /root
+
+# =============================================================================
+# Stage 3: Dist (pre-built tt-lang for users)
+# =============================================================================
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS dist
+SHELL ["/bin/bash", "-c"]
+
+ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+
+# Copy full toolchain with tt-mlir AND tt-lang installed
+COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
+
+# Set write permissions
+RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
+
+# Install text editors
 RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y vim nano && rm -rf /var/lib/apt/lists/*
 
-# Setup environment for immediate use
-# tt-lang is installed in the toolchain at bin/ and python_packages/
-ENV PATH="$TTMLIR_TOOLCHAIN_DIR/bin:$PATH"
-ENV PYTHONPATH="$TTMLIR_TOOLCHAIN_DIR/python_packages:$PYTHONPATH"
-
-# Create python symlink for convenience
-RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
-    ln -sf /usr/bin/python3.11 /usr/local/bin/python3
-
-# Setup entrypoint to activate environment
+# Setup entrypoint
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Set working directory to /root and copy tt-lang examples there
+# Copy examples to /root
 WORKDIR /root
 RUN cp -r $TTMLIR_TOOLCHAIN_DIR/examples .
 COPY .github/containers/CONTAINER_README.md /root/README.md
@@ -104,8 +118,7 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
 
 # =============================================================================
-# Stage 3: IRD and Dist container
-# Extends CI image and adds development tools
+# Stage 4: IRD (primarily for developmers who will clone and build their own tt-lang)
 # =============================================================================
 FROM ci AS ird
 
@@ -116,12 +129,21 @@ COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN python3.11 -m pip install -r /tmp/dev-requirements.txt --no-cache-dir && \
     rm /tmp/dev-requirements.txt
 
-# Install additional development tools (vim/nano already in CI)
+# Install additional development tools
 RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \
+    vim \
+    nano \
     tmux \
     psmisc \
     bash-completion \
     && rm -rf /var/lib/apt/lists/*
+
+# Setup entrypoint (same as dist)
+COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]

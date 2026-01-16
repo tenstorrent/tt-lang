@@ -34,26 +34,36 @@ sudo docker tag tt-lang-base:local ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubun
 echo "✓ Base image built"
 echo ""
 
-# Build CI image (pre-built tt-lang for users and CI)
+# Build CI image (tt-mlir toolchain for CI workflows)
 echo "--- Building tt-lang CI image ---"
 sudo docker build \
     --build-arg FROM_TAG=local \
     --build-arg MLIR_TAG=${MLIR_TAG} \
     --target ci \
     -t tt-lang-ci:local \
-    -t tt-lang-dist:local \
-    -f .github/containers/Dockerfile.dist .
-echo "✓ CI image built (also tagged as dist)"
+    -f .github/containers/Dockerfile .
+echo "✓ CI image built"
 echo ""
 
-# Build IRD image (interactive development)
+# Build Dist image (pre-built tt-lang for users)
+echo "--- Building tt-lang Dist image ---"
+sudo docker build \
+    --build-arg FROM_TAG=local \
+    --build-arg MLIR_TAG=${MLIR_TAG} \
+    --target dist \
+    -t tt-lang-dist:local \
+    -f .github/containers/Dockerfile .
+echo "✓ Dist image built"
+echo ""
+
+# Build IRD image (development tools)
 echo "--- Building tt-lang IRD image ---"
 sudo docker build \
     --build-arg FROM_TAG=local \
     --build-arg MLIR_TAG=${MLIR_TAG} \
     --target ird \
     -t tt-lang-ird:local \
-    -f .github/containers/Dockerfile.dist .
+    -f .github/containers/Dockerfile .
 echo "✓ IRD image built"
 echo ""
 

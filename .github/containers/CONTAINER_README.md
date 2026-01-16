@@ -59,12 +59,13 @@ Your code will be in `~/my-code`.
 ## Available Container Images
 
 **Remote (from ghcr.io):**
-- `ghcr.io/tenstorrent/tt-lang/tt-lang-ci-ubuntu-22-04:latest` - Pre-built tt-lang for users
-- `ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest` - Alias for ci (same image)
-- `ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest` - Development (a few extra tools)
+- `ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest` - Pre-built tt-lang for users (recommended)
+- `ghcr.io/tenstorrent/tt-lang/tt-lang-ci-ubuntu-22-04:latest` - tt-mlir toolchain for CI workflows
+- `ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest` - Development tools for building tt-lang
 
 **Local (if built locally):**
-- `tt-lang-ci:local` or `tt-lang-dist:local` - Pre-built tt-lang
+- `tt-lang-dist:local` - Pre-built tt-lang (recommended for users)
+- `tt-lang-ci:local` - tt-mlir toolchain (for building tt-lang)
 - `tt-lang-ird:local` - Development image
 
 ## Notes

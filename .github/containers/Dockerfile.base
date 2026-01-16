@@ -20,3 +20,7 @@ RUN python3.11 -m pip install --upgrade pip --no-cache-dir && \
         torch && \
     python3.11 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
     rm /tmp/requirements.txt
+
+# Create python symlink for convenience (available in all images)
+RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/local/bin/python3

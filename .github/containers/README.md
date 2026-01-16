@@ -5,96 +5,58 @@ This directory contains Dockerfiles for building tt-lang container images.
 ## Images
 
 ### `tt-lang-base-ubuntu-22-04`
-Base image that extends tt-mlir's base image with tt-lang Python dependencies (pydantic, torch, numpy, dev tools).
+Base image that extends tt-mlir's base image with tt-lang Python dependencies (pydantic, torch, numpy, pytest).
 
-**Build:**
-```bash
-docker build --build-arg MLIR_TAG=latest \
-    -t tt-lang-base:local \
-    -f .github/containers/Dockerfile.base .
-```
+### `tt-lang-ci-ubuntu-22-04`
+CI image with tt-mlir toolchain only (no tt-lang). Used by CI workflows to build and test tt-lang from source.
 
-### `tt-lang-ci-ubuntu-22-04` (ci target) / `tt-lang-dist-ubuntu-22-04` (alias)
-CI and distribution image for end users with pre-built tt-lang, ready to `import ttl`.
-The same image is tagged as both `ci` (for CI workflows) and `dist` (for clarity).
+**Contents:** tt-mlir toolchain, Python venv, build tools
 
-**Build:**
-```bash
-docker build --build-arg FROM_TAG=local --build-arg MLIR_TAG=latest \
-    --target dist \
-    -t tt-lang:local \
-    -f .github/containers/Dockerfile.dist .
-```
+### `tt-lang-dist-ubuntu-22-04`
+Distribution image for end users with pre-built tt-lang, ready to `import ttl`.
 
-**Usage:**
-```bash
-# Run without hardware
-docker run -it tt-lang:local python -c "import ttl"
+**Contents:** tt-mlir + installed tt-lang + examples + tests
 
-# Run with Tenstorrent hardware
-docker run -it \
-    --device /dev/tenstorrent \
-    -v /dev/hugepages:/dev/hugepages \
-    -v /dev/hugepages-1G:/dev/hugepages-1G \
-    tt-lang:local python my_kernel.py
-```
+### `tt-lang-ird-ubuntu-22-04`
+Interactive Research & Development image with dev tools for building tt-lang from source.
 
-### `tt-lang-ird-ubuntu-22-04` (ird target)
-Interactive Research & Development image with toolchain and debugging tools (gdb, vim, tmux) for building tt-lang from source.
-
-**Build:**
-```bash
-docker build --build-arg FROM_TAG=local --build-arg MLIR_TAG=latest \
-    --target dev \
-    -t tt-lang-dev:local \
-    -f .github/containers/Dockerfile.dist .
-```
-
-**Usage:**
-```bash
-# Interactive development
-docker run -it -v $(pwd):/workspace tt-lang-dev:local
-
-# Build tt-lang from source
-docker run -it -v $(pwd):/workspace tt-lang-dev:local \
-    bash -c "cd /workspace && cmake -GNinja -Bbuild && cmake --build build"
-```
+**Contents:** tt-mlir toolchain + dev tools (ssh, tmux, vim, black, sphinx)
 
 ## Build Scripts
 
-### `.github/scripts/build-docker-local.sh`
+### `.github/containers/build-docker-local.sh`
 Build all images locally for testing.
 
 ```bash
-.github/scripts/build-docker-local.sh
+.github/containers/build-docker-local.sh
 ```
 
-### `.github/scripts/build-docker-images.sh`
+### `.github/containers/build-docker-images.sh`
 Orchestrates building all images with proper tagging and optional registry push.
 
 ```bash
 # Build locally (no push)
-.github/scripts/build-docker-images.sh --no-push
+.github/containers/build-docker-images.sh --no-push
 
 # Build and push to registry
-.github/scripts/build-docker-images.sh
+.github/containers/build-docker-images.sh
 
 # Check if images exist without building
-.github/scripts/build-docker-images.sh --check-only
+.github/containers/build-docker-images.sh --check-only
 ```
 
-### `.github/scripts/test-docker-smoke.sh`
+### `.github/containers/test-docker-smoke.sh`
 Quick smoke test to verify container functionality.
 
 ```bash
-.github/scripts/test-docker-smoke.sh
+.github/containers/test-docker-smoke.sh
 ```
 
-### `.github/scripts/get-docker-tag.sh`
+### `.github/containers/get-docker-tag.sh`
 Generates deterministic Docker tags from file hashes and tt-mlir version.
 
 ```bash
-.github/scripts/get-docker-tag.sh <MLIR_DOCKER_TAG>
+.github/containers/get-docker-tag.sh <MLIR_DOCKER_TAG>
 ```
 
 ## Hardware Access
@@ -103,17 +65,7 @@ To access Tenstorrent hardware from containers, use:
 
 ```bash
 docker run -it \
-    --device /dev/tenstorrent \
-    -v /dev/hugepages:/dev/hugepages \
-    -v /dev/hugepages-1G:/dev/hugepages-1G \
-    <image> <command>
-```
-
-To isolate a specific card:
-```bash
-# Map card 3 to card 0 inside container
-docker run -it \
-    --device=/dev/tenstorrent/3:/dev/tenstorrent/0 \
+    --device=/dev/tenstorrent/0:/dev/tenstorrent/0 \
     -v /dev/hugepages:/dev/hugepages \
     -v /dev/hugepages-1G:/dev/hugepages-1G \
     <image> <command>
@@ -128,24 +80,42 @@ tt-mlir-base-ubuntu-22-04 (upstream)
 tt-lang-base-ubuntu-22-04
     (adds Python deps)
          |
-    +----+----+
-    |         |
-    v         v
-  dist       dev
-(pre-built) (toolchain + tools)
+         v
+      build stage
+    (builds tt-mlir + tt-lang)
+         |
+         v
+        ci
+   (toolchain only)
+      /    \
+     /      \
+   dist    ird
+(+ttlang) (+devtools)
 ```
 
 ## Build Strategy
 
-The dist/dev images use a multi-stage build:
+The images use a multi-stage build:
 
-1. **Build stage**: Uses tt-mlir CI image to build tt-lang via FetchContent (builds tt-mlir from pinned commit in `third-party/tt-mlir.commit`)
-2. **Dist stage**: Copies pre-built tt-lang artifacts for immediate use
-3. **Dev stage**: Copies tt-mlir toolchain and adds development tools
+1. **Base stage**: tt-mlir base + Python deps (pydantic, torch, pytest)
+2. **Build stage**: Builds tt-mlir (FetchContent) + tt-lang
+3. **CI stage**: Copies tt-mlir toolchain only (no tt-lang)
+4. **Dist stage**: Extends CI, installs tt-lang
+5. **IRD stage**: Extends CI, adds dev tools
+
+## Image Sizes (Approximate)
+
+- `tt-lang-base`: ~1.7GB
+- `tt-lang-ci`: ~4-5GB (tt-mlir toolchain)
+- `tt-lang-dist`: ~6-7GB (tt-mlir + tt-lang)
+- `tt-lang-ird`: ~5-6GB (tt-mlir + dev tools)
 
 ## Files
 
 - `Dockerfile.base` - Base image with Python dependencies
-- `Dockerfile.dist` - Multi-stage build (dist/dev targets)
+- `Dockerfile` - Multi-stage build (ci/dist/ird targets)
 - `entrypoint.sh` - Container entrypoint that activates environments
+- `activate-install.sh` - Environment activation for installed tt-lang
+- `CONTAINER_README.md` - Welcome message shown to users inside container
+- `cleanup-toolchain.sh` - Removes unnecessary LLVM tools to reduce size
 - `.dockerignore` - Excludes build directories from Docker context

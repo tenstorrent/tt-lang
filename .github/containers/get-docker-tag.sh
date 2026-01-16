@@ -20,7 +20,7 @@ fi
 # Changes to any of these files will result in a new Docker tag
 FILES="\
 .github/containers/Dockerfile.base \
-.github/containers/Dockerfile.dist \
+.github/containers/Dockerfile \
 requirements.txt \
 dev-requirements.txt \
 third-party/tt-mlir.commit"
