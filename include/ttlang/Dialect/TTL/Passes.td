@@ -68,7 +68,9 @@ def TTLAssignDST
 
   let options = [
     Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
-           "Override DST register capacity (testing only, default auto-computed).">
+           "Override DST register capacity (testing only, default auto-computed).">,
+    Option<"separateOutputRegion", "separate-output-region", "bool", "false",
+           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
   ];
 
   let dependentDialects = [

@@ -8,7 +8,7 @@
 //
 // This pass performs DST (destination) register assignment for ttl.compute
 // operations using interval-based linear scan allocation with unary operation
-// merging. The algorithm is based on DST_Allocation.md:
+// merging. The algorithm is based on docs/development/DST_Allocation.md:
 //
 // Phase 1: Copy Insertion
 //   - For values with multiple consumers where any consumer is unary
@@ -25,9 +25,14 @@
 //   - Process intervals by start position (Wimmer & Franz, CGO'10)
 //   - Expire intervals when their last use passes
 //   - Reuse freed registers for new values
+//   - Optional: Separate output region (--separate-output-region flag)
 //
 // This pass also inserts ttl.copy_tile ops for block arguments and assigns
 // dst_idx attributes to all tile compute operations.
+//
+// Testing: LLVM_DEBUG messages are used extensively for lit test verification.
+// Tests use -debug-only=ttl-assign-dst to check intervals, allocations, and
+// phase transitions (see *_debug.mlir tests).
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,6 +45,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/Debug.h"
@@ -68,50 +74,26 @@ static std::uint32_t computeDSTCapacity(ComputeOp /*computeOp*/) {
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
 //===----------------------------------------------------------------------===//
-// Union-Find for Merged Intervals
+// Equivalence Classes for Merged Intervals
 //===----------------------------------------------------------------------===//
 
-/// Union-find data structure to track merged values (unary chains).
-/// Values in the same set share the same DST register.
-class UnionFind {
-public:
-  /// Find the representative for a value (with path compression).
-  Value find(Value v) {
-    auto it = parent.find(v);
-    if (it == parent.end()) {
-      parent[v] = v;
-      return v;
-    }
-    if (it->second != v) {
-      it->second = find(it->second); // Path compression
-    }
-    return it->second;
-  }
+using MergedClasses = llvm::EquivalenceClasses<Value>;
 
-  /// Unite two values into the same set.
-  void unite(Value a, Value b) {
-    Value rootA = find(a);
-    Value rootB = find(b);
-    if (rootA != rootB) {
-      parent[rootA] = rootB;
-    }
-  }
+static Value getLeaderOrInsert(MergedClasses &merged, Value v) {
+  return merged.getOrInsertLeaderValue(v);
+}
 
-  /// Get all values in the same set as v.
-  SmallVector<Value> getAllMerged(Value v) {
-    Value root = find(v);
-    SmallVector<Value> result;
-    for (auto &[val, par] : parent) {
-      if (find(val) == root) {
-        result.push_back(val);
-      }
-    }
+static SmallVector<Value> getAllMerged(MergedClasses &merged, Value v) {
+  SmallVector<Value> result;
+  if (!merged.contains(v)) {
+    result.push_back(v);
     return result;
   }
-
-private:
-  DenseMap<Value, Value> parent;
-};
+  for (Value member : merged.members(v)) {
+    result.push_back(member);
+  }
+  return result;
+}
 
 //===----------------------------------------------------------------------===//
 // Live Interval
@@ -204,7 +186,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 /// Also performs unary merging: unary op input and output share DST.
 static void buildLiveIntervals(Block *body, YieldOp yieldOp,
                                llvm::MapVector<Value, Interval> &intervals,
-                               UnionFind &merged,
+                               MergedClasses &merged,
                                DenseMap<Operation *, int64_t> &opIndex) {
   // Number operations
   int64_t idx = 0;
@@ -223,9 +205,9 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
         continue;
       }
       if (intervals.find(operand) == intervals.end()) {
-        // Block argument - start at (first_use - 1) so it sorts before outputs
-        // at first_use position This allows outputs at earlier positions to
-        // reuse registers from args used later
+        // Block argument: start at (first_use - 1) to enable register reuse.
+        // Args consumed at position N get allocated before outputs produced at N,
+        // allowing outputs to reuse the consumed args' registers.
         intervals[operand] = {currentIdx - 1, currentIdx, operand};
       } else {
         intervals[operand].end = std::max(intervals[operand].end, currentIdx);
@@ -277,7 +259,11 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     }
 
     if (shouldMerge) {
-      merged.unite(input, output);
+      auto itA = merged.findLeader(merged.insert(input));
+      auto itB = merged.findLeader(merged.insert(output));
+      if (itA != itB) {
+        merged.unionSets(itA, itB);
+      }
 
       LLVM_DEBUG({
         llvm::dbgs() << "Phase 2: Merged " << input << " and " << output
@@ -290,14 +276,14 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   // interval (the union of all their individual intervals).
   DenseSet<Value> processed;
   for (auto &[value, interval] : intervals) {
-    Value root = merged.find(value);
+    Value root = getLeaderOrInsert(merged, value);
     if (processed.contains(root)) {
       continue;
     }
     processed.insert(root);
 
     // Find all values in this merged set and compute the union interval
-    auto allMerged = merged.getAllMerged(value);
+    auto allMerged = getAllMerged(merged, value);
     if (allMerged.size() <= 1) {
       continue;
     }
@@ -331,16 +317,22 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
 }
 
 //===----------------------------------------------------------------------===//
-// Phase 3: Linear Scan Allocation
+// Phase 3: Linear Scan Allocation for Inputs/Intermediates
 //===----------------------------------------------------------------------===//
 
-/// Linear scan allocation with register reuse.
-/// Processes intervals by start position, expires old intervals, and allocates
-/// from freed registers when possible.
-static bool linearScanAllocate(llvm::MapVector<Value, Interval> &intervals,
-                               UnionFind &merged, std::uint32_t capacity,
-                               DenseMap<Value, std::uint32_t> &assignment,
-                               ComputeOp computeOp) {
+/// Helper to check if a value is yielded by the compute operation.
+static bool isYieldedValue(Value val, YieldOp yieldOp) {
+  return llvm::is_contained(yieldOp.getValues(), val);
+}
+
+/// Core linear scan allocation logic (shared by Phase 3 and Phase 4).
+/// filterFn determines which intervals to process.
+/// Returns the maximum DST index used + 1 (footprint).
+template <typename FilterFn>
+static FailureOr<std::uint32_t> linearScanAllocateFiltered(
+    llvm::MapVector<Value, Interval> &intervals, MergedClasses &merged,
+    llvm::SmallBitVector &freeRegs, DenseMap<Value, std::uint32_t> &assignment,
+    FilterFn &&shouldProcess, ComputeOp computeOp, StringRef phaseName) {
   // Sort intervals by start position
   SmallVector<Interval *> sortedIntervals;
   for (auto &[val, interval] : intervals) {
@@ -349,28 +341,27 @@ static bool linearScanAllocate(llvm::MapVector<Value, Interval> &intervals,
   llvm::sort(sortedIntervals,
              [](Interval *a, Interval *b) { return a->start < b->start; });
 
-  llvm::SmallBitVector freeRegs(capacity);
-  freeRegs.set(); // All registers initially free
-
-  SmallVector<Interval *> active; // Currently live intervals
-  DenseSet<Value> processedRoots; // Track which merged sets we've allocated
+  SmallVector<Interval *> active;
+  DenseSet<Value> processedRoots;
+  std::uint32_t maxDstUsed = 0;
 
   for (Interval *interval : sortedIntervals) {
-    // Skip if already assigned (from merged set)
+    if (!shouldProcess(interval->value)) {
+      continue;
+    }
+
+    // Skip if already assigned
     if (assignment.count(interval->value)) {
       continue;
     }
 
     // Skip if merged set already processed
-    Value root = merged.find(interval->value);
+    Value root = getLeaderOrInsert(merged, interval->value);
     if (processedRoots.contains(root)) {
       continue;
     }
 
-    // Expire old intervals - free registers whose intervals have ended.
-    // Use <= because inputs consumed at position N can have their registers
-    // reused by outputs produced at position N (block args start at -1, so
-    // outputs at position 0 naturally come after all inputs).
+    // Expire old intervals
     SmallVector<Interval *> toRemove;
     for (Interval *activeInterval : active) {
       if (activeInterval->end <= interval->start) {
@@ -388,16 +379,16 @@ static bool linearScanAllocate(llvm::MapVector<Value, Interval> &intervals,
     // Find first free register
     int freeReg = freeRegs.find_first();
     if (freeReg < 0) {
-      computeOp.emitOpError() << "insufficient DST registers: all " << capacity
-                              << " registers are in use";
-      return false;
+      // TODO: Implement spilling or compute fission for high register pressure
+      return failure();
     }
 
     freeRegs.reset(freeReg);
     std::uint32_t regIdx = static_cast<std::uint32_t>(freeReg);
+    maxDstUsed = std::max(maxDstUsed, regIdx);
 
     // Assign to all values in the merged set
-    auto allMerged = merged.getAllMerged(interval->value);
+    auto allMerged = getAllMerged(merged, interval->value);
     for (Value mergedVal : allMerged) {
       if (!assignment.count(mergedVal)) {
         assignment[mergedVal] = regIdx;
@@ -408,13 +399,15 @@ static bool linearScanAllocate(llvm::MapVector<Value, Interval> &intervals,
     processedRoots.insert(root);
 
     LLVM_DEBUG({
-      llvm::dbgs() << "Allocated DST[" << regIdx << "] for " << interval->value
+      llvm::dbgs() << phaseName << ": Allocated DST[" << regIdx << "] for "
+                   << interval->value
                    << " (merged set size: " << allMerged.size() << ")\n";
     });
   }
 
-  return true;
+  return maxDstUsed + 1; // Return footprint
 }
+
 
 //===----------------------------------------------------------------------===//
 // Main Pass Implementation
@@ -450,17 +443,65 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       //=== Phase 2: Build Live Intervals ===
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 2: Build Live Intervals ===\n");
       llvm::MapVector<Value, Interval> intervals;
-      UnionFind merged;
+      MergedClasses merged;
       DenseMap<Operation *, int64_t> opIndex;
       buildLiveIntervals(body, yieldOp, intervals, merged, opIndex);
 
-      //=== Phase 3: Linear Scan Allocation ===
-      LLVM_DEBUG(llvm::dbgs() << "=== Phase 3: Linear Scan Allocation ===\n");
+      //=== Phase 3 & 4: Linear Scan Allocation ===
       DenseMap<Value, std::uint32_t> dstAssignment;
-      if (!linearScanAllocate(intervals, merged, capacity, dstAssignment,
-                              computeOp)) {
-        signalPassFailure();
-        return;
+
+      if (separateOutputRegion) {
+        // Phase 3: Allocate inputs/intermediates (non-yielded values)
+        LLVM_DEBUG(llvm::dbgs() << "Using separate output region mode\n");
+        LLVM_DEBUG(llvm::dbgs() << "=== Phase 3: Linear Scan Allocation ===\n");
+        llvm::SmallBitVector freeRegs(capacity);
+        freeRegs.set();
+        auto inputsFootprint = linearScanAllocateFiltered(
+            intervals, merged, freeRegs, dstAssignment,
+            [&](Value val) { return !isYieldedValue(val, yieldOp); }, computeOp,
+            "Phase 3");
+        if (failed(inputsFootprint)) {
+          computeOp.emitOpError()
+              << "insufficient DST registers: all " << capacity
+              << " registers in use (spilling not yet implemented)";
+          signalPassFailure();
+          return;
+        }
+        LLVM_DEBUG({
+          llvm::dbgs() << "Phase 3 footprint: " << *inputsFootprint
+                       << " registers\n";
+        });
+
+        // Phase 4: Allocate outputs (yielded values) starting at inputsFootprint
+        LLVM_DEBUG(llvm::dbgs() << "=== Phase 4: Linear Scan Allocation ===\n");
+        llvm::SmallBitVector outputRegs(capacity);
+        for (std::uint32_t i = *inputsFootprint; i < capacity; ++i) {
+          outputRegs.set(i);
+        }
+        if (failed(linearScanAllocateFiltered(
+                intervals, merged, outputRegs, dstAssignment,
+                [&](Value val) { return isYieldedValue(val, yieldOp); },
+                computeOp, "Phase 4"))) {
+          computeOp.emitOpError()
+              << "insufficient DST registers for outputs: all " << capacity
+              << " registers in use (spilling not yet implemented)";
+          signalPassFailure();
+          return;
+        }
+      } else {
+        // Single-pass allocation: Outputs can reuse input registers (default)
+        LLVM_DEBUG(llvm::dbgs() << "=== Phase 3: Linear Scan Allocation ===\n");
+        llvm::SmallBitVector freeRegs(capacity);
+        freeRegs.set();
+        if (failed(linearScanAllocateFiltered(
+                intervals, merged, freeRegs, dstAssignment,
+                [](Value) { return true; }, computeOp, "Phase 3"))) {
+          computeOp.emitOpError()
+              << "insufficient DST registers: all " << capacity
+              << " registers in use (spilling not yet implemented)";
+          signalPassFailure();
+          return;
+        }
       }
 
       LLVM_DEBUG({

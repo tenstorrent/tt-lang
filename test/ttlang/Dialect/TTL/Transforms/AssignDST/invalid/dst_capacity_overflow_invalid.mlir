@@ -19,7 +19,7 @@ func.func @capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %c_cb = ttl.attach_cb %c, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // expected-error @+1 {{insufficient DST registers}}
+  // expected-error @+1 {{insufficient DST registers: all 2 registers in use (spilling not yet implemented)}}
   %result = ttl.compute
       ins(%a_cb, %b_cb, %c_cb :
           tensor<2x2x!ttcore.tile<32x32, f32>>,
