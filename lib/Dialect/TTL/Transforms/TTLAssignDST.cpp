@@ -206,8 +206,8 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
       }
       if (intervals.find(operand) == intervals.end()) {
         // Block argument: start at (first_use - 1) to enable register reuse.
-        // Args consumed at position N get allocated before outputs produced at N,
-        // allowing outputs to reuse the consumed args' registers.
+        // Args consumed at position N get allocated before outputs produced at
+        // N, allowing outputs to reuse the consumed args' registers.
         intervals[operand] = {currentIdx - 1, currentIdx, operand};
       } else {
         intervals[operand].end = std::max(intervals[operand].end, currentIdx);
@@ -408,7 +408,6 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
   return maxDstUsed + 1; // Return footprint
 }
 
-
 //===----------------------------------------------------------------------===//
 // Main Pass Implementation
 //===----------------------------------------------------------------------===//
@@ -472,7 +471,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
                        << " registers\n";
         });
 
-        // Phase 4: Allocate outputs (yielded values) starting at inputsFootprint
+        // Phase 4: Allocate outputs (yielded values) starting at
+        // inputsFootprint
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 4: Linear Scan Allocation ===\n");
         llvm::SmallBitVector outputRegs(capacity);
         for (std::uint32_t i = *inputsFootprint; i < capacity; ++i) {

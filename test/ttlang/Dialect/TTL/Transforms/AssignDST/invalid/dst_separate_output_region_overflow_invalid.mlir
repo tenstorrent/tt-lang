@@ -58,7 +58,7 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
     // Intermediate operation keeps them live.
     // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 0 : i32}
     %intermediate = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    
+
     // Three outputs that need to be live simultaneously.
     // With separate-output-region, outputs start at inputsFootprint (2),
     // so only registers 2 and 3 are available. Three outputs exceed this.
@@ -68,7 +68,7 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
     %out1 = ttl.tile_mul %intermediate, %c_tile : !ttcore.tile<32x32, f32>
     // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 1 : i32}
     %out2 = ttl.tile_add %out0, %out1 : !ttcore.tile<32x32, f32>
-    
+
     // CHECK: ttl.yield
     ttl.yield %out0, %out1, %out2 : !ttcore.tile<32x32, f32>,
                                     !ttcore.tile<32x32, f32>,
