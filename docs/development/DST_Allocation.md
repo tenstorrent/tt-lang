@@ -2,7 +2,7 @@
 
 ## Overview
 
-DST (destination) registers are hardware registers used for tile computations. This pass (`TTLTileAndAssignDST.cpp`) assigns DST indices to tile operations based on whether they are unary or binary operations.
+DST (destination) registers are hardware registers used for tile computations. This pass (`TTLAssignDST.cpp`) assigns DST indices to tile operations based on whether they are unary or binary operations.
 
 ## Core Principle: Unary vs Binary Operations
 
