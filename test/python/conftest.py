@@ -15,6 +15,7 @@ collect_ignore = [
     "conftest.py",
     "test_ttnn_interop_add.py",
     "test_dram_interleaved_add.py",
+    "test_large_dram_streaming.py",
     "utils.py",
 ]
 
@@ -86,3 +87,10 @@ def ttnn_device():
     device = ttnn.open_device(device_id=0)
     yield device
     ttnn.close_device(device)
+
+
+# Alias for convenience - most tests use 'device' as the fixture name
+@pytest.fixture
+def device(ttnn_device):
+    """Alias for ttnn_device fixture."""
+    return ttnn_device

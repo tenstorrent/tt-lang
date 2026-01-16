@@ -11,19 +11,15 @@ within multi-tile tensors using loops over tile indices.
 Parameterized over tensor shapes from 1x1 to 16x16 tiles.
 """
 
+import importlib.util
+import tempfile
+
 import pytest
 import torch
-import tempfile
-import importlib.util
+import ttnn
+from test_helpers import to_dram
 
-try:
-    import ttnn
-
-    TTNN_AVAILABLE = True
-except ImportError:
-    TTNN_AVAILABLE = False
-
-pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
+pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 
@@ -172,13 +168,6 @@ def make_fused_kernel(tile_rows: int, tile_cols: int):
     return kernel
 
 
-@pytest.fixture(scope="function")
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
 def make_test_id(shape):
     return f"{shape[0]}x{shape[1]}tiles"
 
@@ -192,7 +181,6 @@ def test_tensor_slice_add(device, tensor_shape):
     """Test looping over all tiles with add operation."""
     tile_rows, tile_cols = tensor_shape
     height, width = tiles_to_tensor_shape(tile_rows, tile_cols)
-
     kernel = make_add_kernel(tile_rows, tile_cols)
 
     # Input tensor with unique value per tile for verification
@@ -205,35 +193,14 @@ def test_tensor_slice_add(device, tensor_shape):
                 c * TILE_SIZE : (c + 1) * TILE_SIZE,
             ] = tile_value
 
-    # Bias tensor - constant value
     bias_torch = torch.full((height, width), 100.0, dtype=torch.bfloat16)
-
     out_torch = torch.zeros((height, width), dtype=torch.bfloat16)
 
-    inp = ttnn.from_torch(
-        inp_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    bias = ttnn.from_torch(
-        bias_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    inp = to_dram(inp_torch, device)
+    bias = to_dram(bias_torch, device)
+    out = to_dram(out_torch, device)
 
     kernel(inp, bias, out)
-
     result = ttnn.to_torch(out)
 
     # Verify each tile was correctly processed (inp + bias)
@@ -245,10 +212,7 @@ def test_tensor_slice_add(device, tensor_shape):
                 c * TILE_SIZE : (c + 1) * TILE_SIZE,
             ]
             expected_tile = torch.full((TILE_SIZE, TILE_SIZE), expected_value)
-
-            assert torch.allclose(
-                result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2
-            ), f"Tile at [{r}, {c}] mismatch: expected {expected_value}, got {result_tile[0,0].item()}"
+            assert torch.allclose(result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize(
@@ -257,56 +221,33 @@ def test_tensor_slice_add(device, tensor_shape):
     ids=[make_test_id(s) for s in TENSOR_TILE_SHAPES_SHORT],
 )
 def test_tensor_slice_fused(device, tensor_shape):
-    """Test looping over all tiles with fused ttl.math.exp(inp) + ttl.math.sqrt(bias) operation."""
+    """Test looping over all tiles with fused exp(inp) + sqrt(bias) operation."""
     tile_rows, tile_cols = tensor_shape
     height, width = tiles_to_tensor_shape(tile_rows, tile_cols)
-
     kernel = make_fused_kernel(tile_rows, tile_cols)
 
     # Input tensor with small values to avoid exp overflow
     inp_torch = torch.zeros((height, width), dtype=torch.bfloat16)
     for r in range(tile_rows):
         for c in range(tile_cols):
-            # Use small values (0.1, 0.2, ...) to keep exp() reasonable
             tile_value = float(r * tile_cols + c + 1) * 0.1
             inp_torch[
                 r * TILE_SIZE : (r + 1) * TILE_SIZE,
                 c * TILE_SIZE : (c + 1) * TILE_SIZE,
             ] = tile_value
 
-    # Bias tensor - constant positive value for sqrt
     bias_torch = torch.full((height, width), 4.0, dtype=torch.bfloat16)
-
     out_torch = torch.zeros((height, width), dtype=torch.bfloat16)
 
-    inp = ttnn.from_torch(
-        inp_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    bias = ttnn.from_torch(
-        bias_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    inp = to_dram(inp_torch, device)
+    bias = to_dram(bias_torch, device)
+    out = to_dram(out_torch, device)
 
     kernel(inp, bias, out)
-
     result = ttnn.to_torch(out)
 
-    # Verify each tile: ttl.math.exp(inp) + ttl.math.sqrt(bias) = ttl.math.exp(tile_value) + sqrt(4.0)
-    sqrt_bias = 2.0  # sqrt(4.0)
+    # Verify each tile: exp(inp) + sqrt(bias) = exp(tile_value) + sqrt(4.0)
+    sqrt_bias = 2.0
     for r in range(tile_rows):
         for c in range(tile_cols):
             tile_value = float(r * tile_cols + c + 1) * 0.1
@@ -316,20 +257,10 @@ def test_tensor_slice_fused(device, tensor_shape):
                 c * TILE_SIZE : (c + 1) * TILE_SIZE,
             ]
             expected_tile = torch.full((TILE_SIZE, TILE_SIZE), expected_value)
-
-            assert torch.allclose(
-                result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2
-            ), f"Tile at [{r}, {c}] mismatch: expected {expected_value}, got {result_tile[0,0].item()}"
+            assert torch.allclose(result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":
     import sys
-
-    if not TTNN_AVAILABLE:
-        print("TTNN not available - skipping tests")
-        sys.exit(0)
-
-    print("=== Tensor Slice Loop Test ===")
-    print(f"Tensor shapes: {TENSOR_TILE_SHAPES}")
 
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

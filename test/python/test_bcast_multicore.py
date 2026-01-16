@@ -21,17 +21,12 @@ Features:
 
 import pytest
 import torch
-
-try:
-    import ttnn
-
-    TTNN_AVAILABLE = True
-except ImportError:
-    TTNN_AVAILABLE = False
-
-pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
+import ttnn
+from test_helpers import to_dram, to_l1
 
 from ttlang import ttl
+
+pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 GRID_ROWS = 8
@@ -207,22 +202,9 @@ def compute_expected_l1(c):
     return exp3
 
 
-@pytest.fixture(scope="function")
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
 def test_bcast_multicore(device):
     """Test scoping-based broadcast: L1 tile reused across DRAM iterations."""
-    dram_size_mb = DRAM_SHAPE[0] * DRAM_SHAPE[1] * 2 / (1024 * 1024)
-    l1_size_kb = L1_SHAPE[0] * L1_SHAPE[1] * 2 / 1024
-
-    print(f"DRAM tensor shape: {DRAM_SHAPE} ({dram_size_mb:.1f} MB)")
-    print(f"L1 tensor shape: {L1_SHAPE} ({l1_size_kb:.1f} KB)")
-
-    # Random DRAM inputs (small values for bounded ops)
+    # Random DRAM inputs
     a_torch = torch.rand(DRAM_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
     b_torch = torch.rand(DRAM_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
     out1_torch = torch.zeros(DRAM_SHAPE, dtype=torch.bfloat16)
@@ -232,94 +214,36 @@ def test_bcast_multicore(device):
     c_torch = torch.rand(L1_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
     out3_torch = torch.zeros(L1_SHAPE, dtype=torch.bfloat16)
 
-    # Compute expected results
     exp1, exp2 = compute_expected_dram(a_torch, b_torch, c_torch)
     exp3 = compute_expected_l1(c_torch)
 
-    # DRAM inputs: a, b
-    a = ttnn.from_torch(
-        a_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    b = ttnn.from_torch(
-        b_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    # DRAM tensors
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out1 = to_dram(out1_torch, device)
+    out2 = to_dram(out2_torch, device)
 
-    # L1 input: c (smaller tensor)
-    c = ttnn.from_torch(
-        c_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    c = ttnn.to_memory_config(c, memory_config=ttnn.L1_MEMORY_CONFIG)
+    # L1 tensors
+    c = to_l1(c_torch, device)
+    out3 = to_l1(out3_torch, device)
 
-    # DRAM outputs: out1, out2
-    out1 = ttnn.from_torch(
-        out1_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out2 = ttnn.from_torch(
-        out2_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-
-    # L1 output: out3 (smaller tensor)
-    out3 = ttnn.from_torch(
-        out3_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out3 = ttnn.to_memory_config(out3, memory_config=ttnn.L1_MEMORY_CONFIG)
-
-    # Run kernel
     bcast_kernel(a, b, c, out1, out2, out3)
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)
-    assert (x_size, y_size) == (
-        GRID_COLS,
-        GRID_ROWS,
-    ), f"grid_size mismatch: got ({x_size}, {y_size}), expected ({GRID_COLS}, {GRID_ROWS})"
+    assert (x_size, y_size) == (GRID_COLS, GRID_ROWS)
 
-    # Verify DRAM results
+    # Verify results
     result1 = ttnn.to_torch(out1)
     result2 = ttnn.to_torch(out2)
-    assert torch.allclose(
-        result1.float(), exp1, rtol=0.05, atol=0.1
-    ), f"out1 mismatch: max diff = {(result1.float() - exp1).abs().max().item()}"
-    assert torch.allclose(
-        result2.float(), exp2, rtol=0.05, atol=0.1
-    ), f"out2 mismatch: max diff = {(result2.float() - exp2).abs().max().item()}"
-
-    # Verify L1 result
     result3 = ttnn.to_torch(out3)
-    assert torch.allclose(
-        result3.float(), exp3, rtol=0.05, atol=0.1
-    ), f"out3 mismatch: max diff = {(result3.float() - exp3).abs().max().item()}"
+
+    assert torch.allclose(result1.float(), exp1, rtol=0.05, atol=0.1)
+    assert torch.allclose(result2.float(), exp2, rtol=0.05, atol=0.1)
+    assert torch.allclose(result3.float(), exp3, rtol=0.05, atol=0.1)
 
 
 if __name__ == "__main__":
     import sys
-
-    if not TTNN_AVAILABLE:
-        print("TTNN not available - skipping tests")
-        sys.exit(0)
 
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

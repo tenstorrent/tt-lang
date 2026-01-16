@@ -19,9 +19,8 @@ import tempfile
 import pytest
 import torch
 import ttnn
-from test_helpers import assert_allclose
+from test_helpers import assert_allclose, to_l1
 
-# Skip all tests if ttnn not available
 pytestmark = pytest.mark.requires_ttnn
 
 
@@ -233,20 +232,7 @@ UNARY_OPS = {
 
 
 # =============================================================================
-# Fixtures
-# =============================================================================
-
-
-@pytest.fixture(scope="module")
-def device():
-    """Open device once per module."""
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
-# =============================================================================
-# Parametrized Test
+# Parametrized Tests
 # =============================================================================
 
 
@@ -255,49 +241,18 @@ def test_binary_op(device, op_name):
     """Test binary elementwise operation with L1 memory."""
     kernel, torch_fn = BINARY_OPS[op_name]
 
-    # Generate inputs
     lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
     rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
-
-    # Compute expected result
     expected = torch_fn(lhs_torch, rhs_torch)
 
-    # Create device tensors - start in DRAM, move to L1
-    lhs = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    rhs = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    lhs = to_l1(lhs_torch, device)
+    rhs = to_l1(rhs_torch, device)
+    out = to_l1(out_torch, device)
 
-    # Move to L1
-    lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
-    rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
-    out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
-
-    # Run kernel
     kernel(lhs, rhs, out)
-
-    # Get result
     result = ttnn.to_torch(out)
 
-    # Compare with tolerance appropriate for bfloat16
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
@@ -306,57 +261,21 @@ def test_unary_op(device, op_name):
     """Test unary elementwise operation with L1 memory."""
     kernel, torch_fn = UNARY_OPS[op_name]
 
-    # Generate inputs - use values appropriate for all ops
-    # (positive values for log/sqrt, avoid extremes for exp)
+    # Use values appropriate for all ops (positive for log/sqrt, bounded for exp)
     inp_torch = torch.full((32, 32), 0.5, dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
-
-    # Compute expected result
     expected = torch_fn(inp_torch)
 
-    # Create device tensors - start in DRAM, move to L1
-    inp = ttnn.from_torch(
-        inp_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    inp = to_l1(inp_torch, device)
+    out = to_l1(out_torch, device)
 
-    # Move to L1
-    inp = ttnn.to_memory_config(inp, memory_config=ttnn.L1_MEMORY_CONFIG)
-    out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
-
-    # Run kernel
     kernel(inp, out)
-
-    # Get result
     result = ttnn.to_torch(out)
 
-    # Compare with tolerance appropriate for bfloat16
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
-
-# =============================================================================
-# Main - for running outside pytest
-# =============================================================================
 
 if __name__ == "__main__":
     import sys
 
-    # Check if ttnn is available
-    if importlib.util.find_spec("ttnn") is None:
-        print("TTNN not available - skipping tests")
-        sys.exit(0)
-
-    print("=== Elementwise Ops Test ===\n")
-
-    # Run with pytest
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

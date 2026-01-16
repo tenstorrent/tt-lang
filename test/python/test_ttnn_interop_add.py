@@ -12,6 +12,7 @@
 import torch
 import ttnn
 import ttl
+from test_helpers import to_l1
 
 
 @ttl.kernel(grid=(1, 1))
@@ -60,64 +61,26 @@ def test_ttnn_interop_add(lhs, rhs, out):
 # CHECK: Created ProgramDescriptor
 
 print("=== Testing TTNN Interop Path ===")
-print("Opening device and creating ttnn.Tensors...")
 
-# Open device
 device = ttnn.open_device(device_id=0)
 
 try:
-    # Create torch tensors first
     lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
     rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
     out_torch = torch.full((32, 32), -999.0, dtype=torch.bfloat16)
     expected = lhs_torch + rhs_torch
 
-    # Convert to TTNN tensors on device - start in DRAM, then move to L1
-    # This avoids bank-aware DRAM addressing complexity for now
-    lhs_dram = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    rhs_dram = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out_dram = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    # Create tensors in L1
+    lhs = to_l1(lhs_torch, device)
+    rhs = to_l1(rhs_torch, device)
+    out = to_l1(out_torch, device)
 
-    # Move to L1 with interleaved layout
-    print("\nMoving tensors from DRAM to L1 (interleaved)...")
-    lhs = ttnn.to_memory_config(lhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
-    rhs = ttnn.to_memory_config(rhs_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
-    out = ttnn.to_memory_config(out_dram, memory_config=ttnn.L1_MEMORY_CONFIG)
-
-    print(f"\nttnn.Tensors in L1:")
-    print(f"  lhs: {lhs.shape}, dtype={lhs.dtype}, memory_config={lhs.memory_config()}")
-    print(f"  rhs: {rhs.shape}, dtype={rhs.dtype}, memory_config={rhs.memory_config()}")
-    print(f"  out: {out.shape}, dtype={out.dtype}, memory_config={out.memory_config()}")
-
-    print("\n=== Running tt-lang kernel with ttnn.Tensors ===")
     test_ttnn_interop_add(lhs, rhs, out)
-
-    # Copy result back to host for verification
     out_result = ttnn.to_torch(out)
 
-    print("\n=== AFTER KERNEL ===")
-    print(f"out[0:3, 0:3] =\n{out_result[0:3, 0:3]}")
-    print(f"expected[0:3, 0:3] =\n{expected[0:3, 0:3]}")
+    print(f"\nResult[0,0] = {out_result[0, 0].item()}")
+    print(f"Expected[0,0] = {expected[0, 0].item()}")
 
-    # Verify results
     if torch.allclose(out_result.float(), expected.float(), rtol=1e-2, atol=1e-2):
         print("\nPASS: Output matches expected!")
         # CHECK: PASS
