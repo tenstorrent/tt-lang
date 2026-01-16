@@ -212,7 +212,9 @@ def test_tensor_slice_add(device, tensor_shape):
                 c * TILE_SIZE : (c + 1) * TILE_SIZE,
             ]
             expected_tile = torch.full((TILE_SIZE, TILE_SIZE), expected_value)
-            assert torch.allclose(result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2)
+            assert torch.allclose(
+                result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2
+            )
 
 
 @pytest.mark.parametrize(
@@ -257,7 +259,9 @@ def test_tensor_slice_fused(device, tensor_shape):
                 c * TILE_SIZE : (c + 1) * TILE_SIZE,
             ]
             expected_tile = torch.full((TILE_SIZE, TILE_SIZE), expected_value)
-            assert torch.allclose(result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2)
+            assert torch.allclose(
+                result_tile.float(), expected_tile.float(), rtol=1e-2, atol=1e-2
+            )
 
 
 if __name__ == "__main__":
