@@ -1,6 +1,7 @@
 // Summary: Test ttl.copy_dst insertion for multi-consumer values with unary consumers.
 // RUN: ttlang-opt %s --ttl-assign-dst -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s --check-prefix=DEBUG
-// RUN: ttlang-opt %s --ttl-assign-dst --canonicalize --split-input-file | FileCheck %s --check-prefix=IR
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize)' --split-input-file | FileCheck %s --check-prefix=IR
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -28,6 +29,7 @@
 // IR: %[[ABS:.*]] = ttl.tile_abs %[[COPY]]
 // Last consumer (exp) uses original
 // IR: %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
+// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
 // IR: ttl.yield %[[ABS]], %[[EXP]]
 
 func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -80,7 +82,9 @@ func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // No copy_dst should be inserted - all consumers are binary
 // CHECK-NOT: ttl.copy_dst
 // CHECK: %[[ADD1:.*]] = ttl.tile_add %[[MUL]], %{{.*}}
+// SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
 // CHECK: %[[SUB:.*]] = ttl.tile_sub %[[MUL]], %{{.*}}
+// SEPARATE: ttl.tile_sub {{.*}} {dst_idx = 3 : i32}
 // CHECK: ttl.yield
 
 func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,

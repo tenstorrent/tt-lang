@@ -1,4 +1,57 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4 separate-output-region=1}))' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+
+#map = affine_map<(d0, d1) -> (d0, d1)>
+
+// Purpose: verify copy_tile insertion, dst token + tile results, and that tile
+// ops consume the copied tiles with dst_idx annotations.
+// CHECK: #[[IDXMAP:.*]] = affine_map<(d0, d1) -> (d0 * 2 + d1)>
+// CHECK-LABEL: func.func @simple_add
+func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                      %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // Bind circular buffers.
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 16, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+
+  // Attach CBs to tensors.
+  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // Simple add operation that fits in DST (needs ~3 registers: 2 inputs + 1 result).
+// CHECK: ttl.compute
+// CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT: %[[LINIDX0:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-NEXT: %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %[[LINIDX0]], %[[C0]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT: %[[LINIDX1:.*]] = ttl.linearized_index #{{.*}} : index
+// CHECK-NEXT: %[[C1:.*]] = arith.constant 1 : index
+// CHECK-NEXT: %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %[[LINIDX1]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
+// CHECK-NEXT: ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK: }
+  %result = ttl.compute
+      ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                         tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [#map, #map, #map],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+       %b_tile: !ttcore.tile<32x32, f32>,
+       %out_tile: !ttcore.tile<32x32, f32>):
+    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    ttl.yield %sum : !ttcore.tile<32x32, f32>
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
 
 // Capacity is 4.
 // We chain 5 adds (3 inputs). With capacity 4, reuse must succeed.
@@ -22,6 +75,7 @@
 // CHECK-NEXT:   %[[X2:.*]] = ttl.tile_add %[[X1]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[X3:.*]] = ttl.tile_add %[[X2]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[X4:.*]] = ttl.tile_add %[[X3]], %[[TILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT:   ttl.yield %[[X4]]
 
 func.func @chain_reuse(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>,
@@ -77,6 +131,7 @@ func.func @chain_reuse(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>,
 // CHECK-NEXT:   %[[ADD0:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[ADD1:.*]] = ttl.tile_add %[[COPY0]], %[[ADD0]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[ADD2:.*]] = ttl.tile_add %[[COPY0]], %[[ADD1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT:   ttl.yield %[[ADD2]]
 
 func.func @block_arg_multi_use(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>)

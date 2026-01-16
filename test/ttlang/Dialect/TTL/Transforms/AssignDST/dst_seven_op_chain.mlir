@@ -1,5 +1,6 @@
 // Summary: Seven-operation fused chain to verify DST allocation handles long chains.
-// RUN: ttlang-opt %s --ttl-assign-dst --ttl-insert-tile-regs-sync | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-insert-tile-regs-sync))' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1},ttl-insert-tile-regs-sync))' | FileCheck %s --check-prefix=SEPARATE
 
 // Purpose: Regression test for DST register allocation bug where operations were
 // dropped in fused chains due to register conflicts. This test verifies that all
@@ -26,6 +27,7 @@
 // CHECK-NEXT:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] {dst_idx = 0 : i32}
+// SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 0 : i32}
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]

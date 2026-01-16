@@ -1,5 +1,6 @@
 // Summary: three-op chain (add -> mul -> exp) with DST register reuse.
-// RUN: ttlang-opt %s --ttl-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify copy_tile emits token+tile, tile ops consume copied tiles,
@@ -28,6 +29,7 @@
 // CHECK-NEXT:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]], %[[LINIDX]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
 // CHECK-NEXT:   ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK: return %[[RES]]
