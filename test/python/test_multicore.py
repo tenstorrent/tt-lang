@@ -9,19 +9,15 @@ Each core processes 2x2 tiles using dynamic indices based on its grid position.
 Parameterized over grid shapes up to 8x8 cores (hardware limit).
 """
 
+import importlib.util
+import tempfile
+
 import pytest
 import torch
-import tempfile
-import importlib.util
+import ttnn
+from test_helpers import to_dram
 
-try:
-    import ttnn
-
-    TTNN_AVAILABLE = True
-except ImportError:
-    TTNN_AVAILABLE = False
-
-pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
+pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 TILES_PER_CORE_ROW = 2  # Each core processes 2x2 tiles
@@ -121,13 +117,6 @@ def make_kernel(grid_rows: int, grid_cols: int):
     return kernel
 
 
-@pytest.fixture(scope="function")
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
 @pytest.mark.parametrize(
     "grid_shape",
     GRID_SHAPES,
@@ -143,56 +132,25 @@ def test_multicore_loop(device, grid_shape):
     lhs_torch = torch.rand((height, width), dtype=torch.bfloat16) * 0.5
     rhs_torch = torch.rand((height, width), dtype=torch.bfloat16) * 4.0 + 0.1
     out_torch = torch.zeros((height, width), dtype=torch.bfloat16)
-
-    # Compute expected result using torch
     expected = torch.exp(lhs_torch) + torch.sqrt(rhs_torch)
 
-    lhs = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    rhs = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    lhs = to_dram(lhs_torch, device)
+    rhs = to_dram(rhs_torch, device)
+    out = to_dram(out_torch, device)
 
     kernel(lhs, rhs, out)
-
     result = ttnn.to_torch(out)
 
-    # Verify grid_size returns correct values (set during kernel compilation)
+    # Verify grid_size returns correct values
     import ttl
 
     x_size, y_size = ttl.grid_size(dims=2)
-    assert (x_size, y_size) == (
-        grid_cols,
-        grid_rows,
-    ), f"grid_size mismatch: got ({x_size}, {y_size}), expected ({grid_cols}, {grid_rows})"
+    assert (x_size, y_size) == (grid_cols, grid_rows)
 
-    # Verify result matches expected: exp(lhs) + sqrt(rhs)
-    assert torch.allclose(
-        result.float(), expected.float(), rtol=0.02, atol=0.5
-    ), f"Result mismatch for grid {grid_rows}x{grid_cols}"
+    assert torch.allclose(result.float(), expected.float(), rtol=0.02, atol=0.5)
 
 
 if __name__ == "__main__":
     import sys
-
-    if not TTNN_AVAILABLE:
-        print("TTNN not available - skipping tests")
-        sys.exit(0)
 
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

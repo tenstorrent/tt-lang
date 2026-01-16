@@ -30,8 +30,9 @@ computing (a*x) * b instead of b * y, resulting in 30 instead of 26.
 import pytest
 import torch
 import ttnn
+from test_helpers import assert_allclose, to_dram
+
 from ttl import ttl
-from test_helpers import assert_allclose
 
 pytestmark = pytest.mark.requires_ttnn
 
@@ -84,61 +85,25 @@ def axby_fused_kernel(a, x, b, y, out):
     return ttl.Program(compute, dm_read, dm_write)(a, x, b, y, out)
 
 
-def test_axby_fused_multiply_add():
+def test_axby_fused_multiply_add(device):
     """Test a*x + b*y pattern with 4 separate circular buffers."""
-    device = ttnn.open_device(device_id=0)
+    # Test values: a=2, x=3, b=4, y=5
+    # Expected: 2*3 + 4*5 = 6 + 20 = 26
+    a_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
+    x_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
+    b_torch = torch.full((32, 32), 4.0, dtype=torch.bfloat16)
+    y_torch = torch.full((32, 32), 5.0, dtype=torch.bfloat16)
+    out_torch = torch.zeros(32, 32, dtype=torch.bfloat16)
 
-    try:
-        # Test values: a=2, x=3, b=4, y=5
-        # Expected: 2*3 + 4*5 = 6 + 20 = 26
-        a_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
-        x_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
-        b_torch = torch.full((32, 32), 4.0, dtype=torch.bfloat16)
-        y_torch = torch.full((32, 32), 5.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros(32, 32, dtype=torch.bfloat16)
+    expected = a_torch * x_torch + b_torch * y_torch
 
-        a_t = ttnn.from_torch(
-            a_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        x_t = ttnn.from_torch(
-            x_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        b_t = ttnn.from_torch(
-            b_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        y_t = ttnn.from_torch(
-            y_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        out_t = ttnn.from_torch(
-            out_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+    a_t = to_dram(a_torch, device)
+    x_t = to_dram(x_torch, device)
+    b_t = to_dram(b_torch, device)
+    y_t = to_dram(y_torch, device)
+    out_t = to_dram(out_torch, device)
 
-        expected = a_torch * x_torch + b_torch * y_torch
+    axby_fused_kernel(a_t, x_t, b_t, y_t, out_t)
+    result = ttnn.to_torch(out_t)
 
-        axby_fused_kernel(a_t, x_t, b_t, y_t, out_t)
-        result = ttnn.to_torch(out_t)
-
-        assert_allclose(result, expected, rtol=0.01, atol=0.1)
-
-    finally:
-        ttnn.close_device(device)
+    assert_allclose(result, expected, rtol=0.01, atol=0.1)

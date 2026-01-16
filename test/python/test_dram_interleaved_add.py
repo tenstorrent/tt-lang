@@ -14,6 +14,7 @@
 import torch
 import ttnn
 import ttl
+from test_helpers import to_dram
 
 
 @ttl.kernel(grid=(1, 1))
@@ -70,39 +71,17 @@ try:
     lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
     rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
-    expected = lhs_torch + rhs_torch  # 5.0
+    expected = lhs_torch + rhs_torch
 
     # Create DRAM interleaved tensors - NO move to L1!
-    lhs = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,  # Stay in DRAM
-    )
-    rhs = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    lhs = to_dram(lhs_torch, device)
+    rhs = to_dram(rhs_torch, device)
+    out = to_dram(out_torch, device)
 
     print(f"lhs memory_config: {lhs.memory_config()}")
-    print(f"rhs memory_config: {rhs.memory_config()}")
-    print(f"out memory_config: {out.memory_config()}")
     # CHECK: DRAM
 
-    print("\n=== Running kernel with DRAM tensors directly ===")
     add_dram_direct(lhs, rhs, out)
-
     result = ttnn.to_torch(out)
 
     print(f"\nResult[0,0] = {result[0, 0].item()}")

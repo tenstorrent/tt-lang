@@ -15,6 +15,7 @@
 import torch
 import ttnn
 import ttl
+from test_helpers import to_dram
 
 
 @ttl.kernel(grid=(1, 1))
@@ -112,54 +113,22 @@ device = ttnn.open_device(device_id=0)
 try:
     # 10240 x 10240 = 104,857,600 elements * 2 bytes = ~200MB per tensor
     shape = (10240, 10240)
-    total_elements = shape[0] * shape[1]
-    tensor_size_mb = total_elements * 2 / (1024 * 1024)
-
-    print(f"Tensor shape: {shape}")
-    print(f"Elements per tensor: {total_elements:,}")
+    tensor_size_mb = shape[0] * shape[1] * 2 / (1024 * 1024)
     print(f"Size per tensor: {tensor_size_mb:.1f} MB")
-    print(f"Total data (4 tensors): {tensor_size_mb * 4:.1f} MB")
     # CHECK: Size per tensor: 200.0 MB
 
-    a = torch.rand(shape, dtype=torch.bfloat16)
-    b = torch.rand(shape, dtype=torch.bfloat16)
-    c = torch.rand(shape, dtype=torch.bfloat16)
-    y = torch.zeros(shape, dtype=torch.bfloat16)
+    a_torch = torch.rand(shape, dtype=torch.bfloat16)
+    b_torch = torch.rand(shape, dtype=torch.bfloat16)
+    c_torch = torch.rand(shape, dtype=torch.bfloat16)
+    y_torch = torch.zeros(shape, dtype=torch.bfloat16)
+    expected = a_torch * b_torch + c_torch
 
-    expected = a * b + c
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    c = to_dram(c_torch, device)
+    y = to_dram(y_torch, device)
 
-    a = ttnn.from_torch(
-        a,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    b = ttnn.from_torch(
-        b,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    c = ttnn.from_torch(
-        c,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    y = ttnn.from_torch(
-        y,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-
-    print("\n=== Running kernel ===")
     fused_mul_add_streaming(a, b, c, y)
-
     result = ttnn.to_torch(y)
 
     if torch.allclose(result, expected, rtol=1e-2, atol=1e-2):
