@@ -4,6 +4,17 @@
 import ttnn
 import torch
 
+
+def from_torch(t):
+    return ttnn.from_torch(
+        t,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+
 import ttl
 
 TILE_SIZE = 32
@@ -11,7 +22,7 @@ GRANULARITY = 4
 
 
 @ttl.kernel(grid=(8, 8))
-def demo_kernel(a, b, c, y):
+def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
@@ -117,19 +128,15 @@ def demo_kernel(a, b, c, y):
     return ttl.Program(demo_compute, demo_read, demo_write)(a, b, c, y)
 
 
+def demo_kernel(a, b, c):
+    y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
+    __demo_kernel(a, b, c, y)
+    return y
+
+
 torch.manual_seed(42)
 
 device = ttnn.open_device(device_id=0)
-
-
-def from_torch(t):
-    return ttnn.from_torch(
-        t,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
 
 
 try:
@@ -145,11 +152,8 @@ try:
     b = from_torch(b)
     c = from_torch(c)
     d = from_torch(d)
-    t = from_torch(torch.zeros(shape, dtype=torch.bfloat16))
-    y = from_torch(torch.zeros(shape, dtype=torch.bfloat16))
 
-    demo_kernel(a, b, c, t)
-    y = ttnn.multiply(t, d)
+    y = ttnn.multiply(demo_kernel(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)
