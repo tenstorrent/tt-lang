@@ -24,7 +24,7 @@ import torch
 import ttnn
 from test_helpers import to_dram, to_l1
 
-from ttlang import ttl
+import ttl
 
 pytestmark = pytest.mark.requires_ttnn
 
