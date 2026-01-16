@@ -33,7 +33,6 @@ import ttnn
 from ttl import ttl
 from test_helpers import assert_allclose
 
-# Skip all tests if ttnn not available
 pytestmark = pytest.mark.requires_ttnn
 
 
@@ -134,14 +133,11 @@ def test_axby_fused_multiply_add():
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-        # Expected: a*x + b*y
         expected = a_torch * x_torch + b_torch * y_torch
 
-        # Run kernel
         axby_fused_kernel(a_t, x_t, b_t, y_t, out_t)
         result = ttnn.to_torch(out_t)
 
-        # Verify correctness
         assert_allclose(result, expected, rtol=0.01, atol=0.1)
 
     finally:
