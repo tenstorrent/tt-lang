@@ -1,5 +1,5 @@
 // Summary: Seven-operation fused chain to verify DST allocation handles long chains.
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --ttl-insert-tile-regs-sync | FileCheck %s
+// RUN: ttlang-opt %s --ttl-assign-dst --ttl-insert-tile-regs-sync | FileCheck %s
 
 // Purpose: Regression test for DST register allocation bug where operations were
 // dropped in fused chains due to register conflicts. This test verifies that all

@@ -2,7 +2,7 @@
 // and fan-out scenarios to ensure the DST allocator correctly handles values
 // used by multiple operations without clobbering live registers.
 
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --ttl-assign-dst --canonicalize --split-input-file | FileCheck %s
 
 // Test: Diamond dependency pattern with intermediate result reuse.
 // Purpose: Verify that a value used by multiple tile ops is copied once and
@@ -112,10 +112,13 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:   %[[LIN_IDX_1:.*]] = ttl.linearized_index #{{.*}} : index
 // CHECK-NEXT:   %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]], %[[LIN_IDX_1]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[INTERMEDIATE:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// INTERMEDIATE has unary consumer (exp), so copy_dst is inserted for non-last consumers
+// CHECK-NEXT:   %[[COPY_INT1:.*]] = ttl.copy_dst %[[INTERMEDIATE]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[LIN_IDX_2:.*]] = ttl.linearized_index #{{.*}} : index
-// CHECK-NEXT:   %[[COPY2TOK:.*]], %[[COPY2:.*]] = ttl.copy_tile %[[ARG2]], %[[LIN_IDX_2]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[USE1:.*]] = ttl.tile_mul %[[INTERMEDIATE]], %[[COPY2]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   %[[USE2:.*]] = ttl.tile_exp %[[INTERMEDIATE]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[COPY2TOK:.*]], %[[COPY2:.*]] = ttl.copy_tile %[[ARG2]], %[[LIN_IDX_2]], %[[C2:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[USE1:.*]] = ttl.tile_mul %[[COPY_INT1]], %[[COPY2]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[COPY_INT2:.*]] = ttl.copy_dst %[[INTERMEDIATE]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[USE2:.*]] = ttl.tile_exp %[[COPY_INT2]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[USE3:.*]] = ttl.tile_add %[[INTERMEDIATE]], %[[USE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[FINAL:.*]] = ttl.tile_add %[[USE3]], %[[USE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.yield %[[FINAL]]

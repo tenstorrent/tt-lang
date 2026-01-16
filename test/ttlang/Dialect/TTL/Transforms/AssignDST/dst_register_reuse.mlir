@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst{dst-capacity=4}))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4}))' --split-input-file | FileCheck %s
 
 // Capacity is 4.
 // We chain 5 adds (3 inputs). With capacity 4, reuse must succeed.

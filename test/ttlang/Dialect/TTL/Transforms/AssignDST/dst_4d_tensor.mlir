@@ -1,5 +1,5 @@
 // Summary: verify linearized_index works with 4D tensors
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --ttl-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 
