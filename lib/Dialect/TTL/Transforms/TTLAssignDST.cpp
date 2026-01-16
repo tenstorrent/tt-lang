@@ -173,7 +173,8 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
   }
 
   // Insert copies based on value type:
-  // - Block arguments: up to and including last unary (remaining binary share a copy)
+  // - Block arguments: up to and including last unary (remaining binary share a
+  // copy)
   // - Operation results: all but last consumer (last can use original)
   for (auto &[value, consumers] : valuesToCopy) {
     size_t numCopiesToInsert;
@@ -201,7 +202,8 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
       Value copyResult;
       if (isa<BlockArgument>(value)) {
         // Block argument: insert copy_tile (CB-to-DST)
-        // Use a placeholder DST index (0); will be fixed later with proper indices
+        // Use a placeholder DST index (0); will be fixed later with proper
+        // indices
         Value srcIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
         Value dstIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
         auto copyOp = builder.create<CopyTileOp>(
@@ -210,8 +212,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
                       value.getType()},
             ValueRange{value, srcIndex, dstIndex});
         // Mark this as a placeholder copy that needs index fixup
-        copyOp->setAttr("placeholder_copy",
-                       builder.getUnitAttr());
+        copyOp->setAttr("placeholder_copy", builder.getUnitAttr());
         copyResult = copyOp.getDstTile();
         LLVM_DEBUG({
           llvm::dbgs() << "Phase 1: Inserted copy_tile for consumer " << i
@@ -605,7 +606,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           continue;
         }
 
-        // Get assigned DST index from allocation (look up the copy result, not the arg)
+        // Get assigned DST index from allocation (look up the copy result, not
+        // the arg)
         std::uint32_t assignedDstIndex = 0;
         auto it = dstAssignment.find(copyOp.getDstTile());
         if (it != dstAssignment.end()) {
@@ -662,7 +664,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         dstIndexForValue[copyOp.getDstTile()] = assignedDstIndex;
       }
 
-      // Second pass: Insert copy_tile for block arguments that don't have copies yet
+      // Second pass: Insert copy_tile for block arguments that don't have
+      // copies yet
       for (Operation &op : *body) {
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
