@@ -19,6 +19,10 @@
 // DEBUG: === Phase 1: Copy Insertion ===
 // DEBUG: Phase 1: Inserted copy_dst for consumer 0
 
+// Verify max DST usage (2 inputs expire, then mul+exp merged + copy+abs merged = 2 registers)
+// DEBUG: === Final DST Assignment ===
+// DEBUG: Max DST usage: 2 / 8 registers
+
 // Verify final IR has copy_dst
 // IR-LABEL: func.func @multi_consumer_two_unary
 // IR: ttl.compute
@@ -74,6 +78,7 @@ func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Test: Multi-consumer value with only binary consumers - NO copy should be inserted.
 // Binary ops don't modify their inputs, so no protection needed.
+// DEBUG: Max DST usage: 3 / 8 registers
 
 // CHECK-LABEL: func.func @multi_consumer_all_binary
 // CHECK: ttl.compute

@@ -127,8 +127,13 @@ static bool hasUnaryConsumer(ArrayRef<Operation *> consumers) {
                       [](Operation *op) { return isTileUnaryOp(op); });
 }
 
-/// Phase 1: Insert copy_dst operations for multi-consumer values where any
+/// Phase 1: Insert copy operations for multi-consumer values where any
 /// consumer is unary. Copies are inserted for all but the last consumer.
+/// Unary ops overwrite their input in-place, so if other ops need that
+/// value before the last unary consumer, we must copy it first.
+///
+/// For block arguments: Insert copy_tile (CB-to-DST copy).
+/// For operation results: Insert copy_dst (DST-to-DST copy).
 static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
                                                OpBuilder &builder) {
   Block *body = &computeOp.getRegion().front();
@@ -136,44 +141,72 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
   // Collect values that need copy insertion (avoid modifying while iterating)
   SmallVector<std::pair<Value, SmallVector<Operation *>>> valuesToCopy;
 
+  // Helper to check a value and add it to the list if needed
+  auto checkValue = [&](Value v) {
+    if (!isTileValue(v)) {
+      return;
+    }
+
+    auto consumers = getSortedConsumers(v);
+    if (consumers.size() <= 1) {
+      return; // No multi-consumer
+    }
+
+    // Check if any consumer is unary - unary ops overwrite their input
+    if (!hasUnaryConsumer(consumers)) {
+      return; // All binary consumers - no copies needed
+    }
+
+    valuesToCopy.push_back({v, consumers});
+  };
+
+  // Check block arguments (e.g., x in "x * sigmoid(x)" pattern)
+  for (Value blockArg : body->getArguments()) {
+    checkValue(blockArg);
+  }
+
+  // Check operation results
   for (Operation &op : *body) {
     for (Value result : op.getResults()) {
-      if (!isTileValue(result)) {
-        continue;
-      }
-
-      auto consumers = getSortedConsumers(result);
-      if (consumers.size() <= 1) {
-        continue; // No multi-consumer
-      }
-
-      // Check if any consumer is unary
-      if (!hasUnaryConsumer(consumers)) {
-        continue; // All binary consumers - no copies needed
-      }
-
-      valuesToCopy.push_back({result, consumers});
+      checkValue(result);
     }
   }
 
-  // Insert copies
+  // Insert copies for all but the last consumer
   for (auto &[value, consumers] : valuesToCopy) {
-    // Insert copies for all but the last consumer
     for (size_t i = 0; i < consumers.size() - 1; ++i) {
       Operation *consumer = consumers[i];
-
-      // Insert copy_dst immediately before the consumer
       builder.setInsertionPoint(consumer);
-      auto copyOp =
-          builder.create<CopyDstOp>(consumer->getLoc(), value.getType(), value);
+      Location loc = consumer->getLoc();
+
+      Value copyResult;
+      if (isa<BlockArgument>(value)) {
+        // Block argument: insert copy_tile (CB-to-DST)
+        // Use a placeholder DST index (0); will be assigned later
+        Value srcIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
+        Value dstIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
+        auto copyOp = builder.create<CopyTileOp>(
+            loc,
+            TypeRange{DSTRegisterType::get(value.getContext()),
+                      value.getType()},
+            ValueRange{value, srcIndex, dstIndex});
+        copyResult = copyOp.getDstTile();
+        LLVM_DEBUG({
+          llvm::dbgs() << "Phase 1: Inserted copy_tile for consumer " << i
+                       << " of block arg " << value << "\n";
+        });
+      } else {
+        // Operation result: insert copy_dst (DST-to-DST)
+        auto copyOp = builder.create<CopyDstOp>(loc, value.getType(), value);
+        copyResult = copyOp.getResult();
+        LLVM_DEBUG({
+          llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i
+                       << " of value " << value << "\n";
+        });
+      }
 
       // Replace this consumer's use of value with the copy
-      consumer->replaceUsesOfWith(value, copyOp.getResult());
-
-      LLVM_DEBUG({
-        llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i
-                     << " of value " << value << "\n";
-      });
+      consumer->replaceUsesOfWith(value, copyResult);
     }
   }
 }
@@ -343,7 +376,7 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
 
   SmallVector<Interval *> active;
   DenseSet<Value> processedRoots;
-  std::uint32_t maxDstUsed = 0;
+  std::optional<std::uint32_t> maxDstUsed; // Track highest DST index allocated
 
   for (Interval *interval : sortedIntervals) {
     if (!shouldProcess(interval->value)) {
@@ -361,12 +394,17 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
       continue;
     }
 
-    // Expire old intervals
+    // Expire old intervals (free registers for reuse)
     SmallVector<Interval *> toRemove;
     for (Interval *activeInterval : active) {
       if (activeInterval->end <= interval->start) {
         auto it = assignment.find(activeInterval->value);
         if (it != assignment.end()) {
+          LLVM_DEBUG({
+            llvm::dbgs() << phaseName << ": Expired interval for "
+                         << activeInterval->value << ", freed DST["
+                         << it->second << "]\n";
+          });
           freeRegs.set(it->second);
         }
         toRemove.push_back(activeInterval);
@@ -385,7 +423,7 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
 
     freeRegs.reset(freeReg);
     std::uint32_t regIdx = static_cast<std::uint32_t>(freeReg);
-    maxDstUsed = std::max(maxDstUsed, regIdx);
+    maxDstUsed = maxDstUsed ? std::max(*maxDstUsed, regIdx) : regIdx;
 
     // Assign to all values in the merged set
     auto allMerged = getAllMerged(merged, interval->value);
@@ -405,7 +443,8 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
     });
   }
 
-  return maxDstUsed + 1; // Return footprint
+  // Return footprint: 0 if nothing allocated, otherwise maxDstUsed + 1
+  return maxDstUsed ? *maxDstUsed + 1 : 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -504,10 +543,20 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
+      // Compute max DST usage for debug output / testing
+      std::uint32_t maxDstUsed = 0;
+      for (auto &[val, reg] : dstAssignment) {
+        maxDstUsed = std::max(maxDstUsed, reg);
+      }
+
       LLVM_DEBUG({
         llvm::dbgs() << "=== Final DST Assignment ===\n";
         for (auto &[val, reg] : dstAssignment) {
           llvm::dbgs() << "  " << val << " -> DST[" << reg << "]\n";
+        }
+        if (!dstAssignment.empty()) {
+          llvm::dbgs() << "Max DST usage: " << (maxDstUsed + 1) << " / "
+                       << capacity << " registers\n";
         }
       });
 
@@ -590,7 +639,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
 
           arg.replaceUsesWithIf(copy.getDstTile(), [&](OpOperand &use) {
-            return use.getOwner() != copy;
+            // Don't replace in copy_tile ops - they need the original block arg
+            return use.getOwner() != copy && !isa<CopyTileOp>(use.getOwner());
           });
         }
       }

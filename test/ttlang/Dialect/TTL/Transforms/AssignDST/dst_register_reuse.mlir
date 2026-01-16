@@ -1,10 +1,12 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4}))' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4 separate-output-region=1}))' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4}))' -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s --check-prefix=DEBUG
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify copy_tile insertion, dst token + tile results, and that tile
 // ops consume the copied tiles with dst_idx annotations.
+// DEBUG: Max DST usage: 2 / 4 registers
 // CHECK: #[[IDXMAP:.*]] = affine_map<(d0, d1) -> (d0 * 2 + d1)>
 // CHECK-LABEL: func.func @simple_add
 func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -55,6 +57,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Capacity is 4.
 // We chain 5 adds (3 inputs). With capacity 4, reuse must succeed.
+// DEBUG: Max DST usage: 2 / 4 registers
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -116,6 +119,7 @@ func.func @chain_reuse(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>,
 // -----
 
 // Test that multiple uses of the same block argument share a single copy_tile operation.
+// DEBUG: Max DST usage: 2 / 4 registers
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -158,6 +162,49 @@ func.func @block_arg_multi_use(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>)
     %x2 = ttl.tile_add %arg0, %x1 : !ttcore.tile<32x32, f32>
 
     ttl.yield %x2 : !ttcore.tile<32x32, f32>
+  } -> tensor<32x32xf32>
+
+  func.return %res : tensor<32x32xf32>
+}
+
+// -----
+
+// Test SiLU pattern: x * sigmoid(x) where x is a block arg with 2 consumers.
+// This requires copy insertion to prevent sigmoid from clobbering x.
+// DEBUG: Phase 1: Inserted copy_tile for consumer 0 of block arg
+// DEBUG: Max DST usage: 2 / 4 registers
+
+#map = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @silu_pattern
+// CHECK: ttl.compute
+// CHECK: ^bb0(%[[X:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// Two copy_tile ops for the same block arg (one for sigmoid, one for mul)
+// CHECK:       ttl.copy_tile %[[X]]
+// CHECK:       ttl.copy_tile %[[X]]
+// CHECK:       %[[SIG:.*]] = ttl.tile_sigmoid %{{.*}} {dst_idx =
+// CHECK:       %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %[[SIG]] {dst_idx =
+// CHECK:       ttl.yield %[[MUL]]
+
+func.func @silu_pattern(%i0: tensor<32x32xf32>) -> tensor<32x32xf32> {
+  %init = tensor.empty() : tensor<32x32xf32>
+
+  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+
+  %t0 = ttl.attach_cb %i0, %cb : (tensor<32x32xf32>, !ttl.cb<[1, 1], f32, 2>) -> tensor<32x32xf32>
+  %t_init = ttl.attach_cb %init, %cb : (tensor<32x32xf32>, !ttl.cb<[1, 1], f32, 2>) -> tensor<32x32xf32>
+
+  %res = ttl.compute
+    ins(%t0 : tensor<32x32xf32>)
+    outs(%t_init : tensor<32x32xf32>)
+    {indexing_maps = [#map, #map],
+     iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%x: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+    // x is used by both sigmoid AND mul -> multi-consumer with unary
+    // Phase 1 should insert copy_tile so sigmoid doesn't clobber x
+    %sig = ttl.tile_sigmoid %x : !ttcore.tile<32x32, f32>
+    %prod = ttl.tile_mul %x, %sig : !ttcore.tile<32x32, f32>
+    ttl.yield %prod : !ttcore.tile<32x32, f32>
   } -> tensor<32x32xf32>
 
   func.return %res : tensor<32x32xf32>
