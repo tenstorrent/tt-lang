@@ -33,7 +33,7 @@
 // CHECK-NEXT:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]], %[[LINIDX]], %[[C1]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
+// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT:   ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
 // CHECK: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK: return %[[RES]]

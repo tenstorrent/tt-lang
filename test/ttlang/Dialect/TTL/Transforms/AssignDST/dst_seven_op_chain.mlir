@@ -30,7 +30,7 @@
 // CHECK-NEXT:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] {dst_idx = 0 : i32}
-// SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 0 : i32}
+// SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
