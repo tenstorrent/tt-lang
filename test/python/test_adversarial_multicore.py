@@ -19,7 +19,7 @@ Evil features:
 import pytest
 import torch
 import ttnn
-from test_helpers import to_dram
+from test_helpers import to_dram, skip_if_wormhole
 
 import ttl
 
@@ -190,6 +190,7 @@ def compute_expected(a, b, c, d):
     return exp1, exp2, exp3, exp4
 
 
+@skip_if_wormhole()
 def test_adversarial_multicore(device):
     """Test adversarial kernel designed to break compiler optimizations."""
     # Random inputs

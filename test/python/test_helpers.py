@@ -15,6 +15,7 @@ Device availability is determined at CMake configure time by checking for
 
 import os
 import sys
+from typing import Optional
 
 # Check device availability from CMake-generated config (fast path)
 # Falls back to checking environment if config not available
@@ -82,6 +83,58 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
     if not _hardware_available:
         print(message)
         sys.exit(0)
+
+
+def is_wormhole_b0(device: Optional[object] = None) -> bool:
+    """Check if running on Wormhole B0 architecture.
+
+    Args:
+        device: Optional TTNN device object. If None, checks the default architecture.
+
+    Returns:
+        bool: True if running on Wormhole B0, False otherwise.
+        Returns False if TTNN is not available or if architecture cannot be determined.
+    """
+    if not _ttnn_available:
+        return False
+
+    try:
+        from ttnn.device import is_wormhole_b0 as _is_wormhole_b0
+
+        return _is_wormhole_b0(device)
+    except (ImportError, AttributeError):
+        return False
+
+
+# =============================================================================
+# Pytest decorators
+# =============================================================================
+
+
+def skip_if_wormhole(reason: str = "Test skipped on Wormhole B0"):
+    """Pytest decorator to skip tests when running on Wormhole B0.
+
+    Usage:
+        @skip_if_wormhole()
+        def test_something():
+            ...
+
+        @skip_if_wormhole("Feature not supported on Wormhole")
+        def test_feature():
+            ...
+
+    Args:
+        reason: Optional reason message for skipping the test.
+
+    Returns:
+        pytest.mark.skipif decorator that skips when on Wormhole B0.
+    """
+    import pytest
+
+    return pytest.mark.skipif(
+        is_wormhole_b0(),
+        reason=reason,
+    )
 
 
 # =============================================================================

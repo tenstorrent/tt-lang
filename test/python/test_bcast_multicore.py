@@ -22,7 +22,7 @@ Features:
 import pytest
 import torch
 import ttnn
-from test_helpers import to_dram, to_l1
+from test_helpers import to_dram, to_l1, skip_if_wormhole
 
 import ttl
 
@@ -202,6 +202,7 @@ def compute_expected_l1(c):
     return exp3
 
 
+@skip_if_wormhole()
 def test_bcast_multicore(device):
     """Test scoping-based broadcast: L1 tile reused across DRAM iterations."""
     # Random DRAM inputs

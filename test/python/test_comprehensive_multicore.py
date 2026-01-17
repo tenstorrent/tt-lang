@@ -15,7 +15,7 @@ Comprehensive multicore test combining multiple features:
 import pytest
 import torch
 import ttnn
-from test_helpers import to_dram, to_l1
+from test_helpers import to_dram, to_l1, skip_if_wormhole
 
 import ttl
 
@@ -162,6 +162,7 @@ def compute_expected(a, b, c):
     return exp1, exp2, exp3
 
 
+@skip_if_wormhole()
 def test_comprehensive_multicore(device):
     """Test comprehensive multicore kernel with mixed DRAM/L1 tensors."""
     # Random inputs

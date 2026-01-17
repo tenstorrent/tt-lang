@@ -55,6 +55,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_device: skip test if no TT device is available"
     )
+    config.addinivalue_line(
+        "markers", "skip_if_wormhole: skip test if running on Wormhole B0"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -62,11 +65,26 @@ def pytest_collection_modifyitems(config, items):
     skip_ttnn = pytest.mark.skip(reason="TTNN not available")
     skip_device = pytest.mark.skip(reason="No Tenstorrent device available")
 
+    # Import here to avoid circular imports and only when needed
+    try:
+        from test_helpers import is_wormhole_b0
+
+        skip_wormhole = pytest.mark.skip(reason="Test skipped on Wormhole B0")
+    except ImportError:
+        is_wormhole_b0 = None
+        skip_wormhole = None
+
     for item in items:
         if "requires_ttnn" in item.keywords and not _ttnn_available:
             item.add_marker(skip_ttnn)
         if "requires_device" in item.keywords and not _hardware_available:
             item.add_marker(skip_device)
+        if (
+            "skip_if_wormhole" in item.keywords
+            and is_wormhole_b0 is not None
+            and is_wormhole_b0()
+        ):
+            item.add_marker(skip_wormhole)
 
 
 # =============================================================================
