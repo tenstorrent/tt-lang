@@ -180,7 +180,6 @@ def main() -> None:
 
     golden = a_in * b_in + c_in
     assert_pcc(golden, out)
-    print("PASSED")
 
 
 if __name__ == "__main__":

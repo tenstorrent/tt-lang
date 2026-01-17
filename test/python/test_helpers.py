@@ -5,8 +5,9 @@
 """
 Common test utilities for tt-lang Python tests.
 
-Provides consistent TTNN import handling and device availability checking.
-When no hardware is available, TTLANG_COMPILE_ONLY is set automatically.
+Provides consistent TTNN import handling, device availability checking,
+and tensor creation helpers. When no hardware is available,
+TTLANG_COMPILE_ONLY is set automatically.
 
 Device availability is determined at CMake configure time by checking for
 /dev/tenstorrent* files, avoiding the slow ttnn.GetNumAvailableDevices() call.
@@ -81,6 +82,56 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
     if not _hardware_available:
         print(message)
         sys.exit(0)
+
+
+# =============================================================================
+# Tensor creation utilities
+# =============================================================================
+
+
+def to_dram(torch_tensor, device):
+    """Create a TTNN tensor in DRAM from a torch tensor.
+
+    Args:
+        torch_tensor: Source torch tensor (typically bfloat16)
+        device: TTNN device handle
+
+    Returns:
+        TTNN tensor in DRAM with TILE_LAYOUT
+    """
+    if not _ttnn_available:
+        raise RuntimeError("TTNN not available")
+    return ttnn.from_torch(
+        torch_tensor,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+
+
+def to_l1(torch_tensor, device):
+    """Create a TTNN tensor in L1 from a torch tensor.
+
+    Creates in DRAM first then moves to L1 (required by TTNN).
+
+    Args:
+        torch_tensor: Source torch tensor (typically bfloat16)
+        device: TTNN device handle
+
+    Returns:
+        TTNN tensor in L1 with TILE_LAYOUT
+    """
+    if not _ttnn_available:
+        raise RuntimeError("TTNN not available")
+    dram_tensor = ttnn.from_torch(
+        torch_tensor,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 
 # =============================================================================

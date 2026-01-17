@@ -21,26 +21,15 @@ Total test cases: 13 ops x 5 shapes = 65 tests
 import atexit
 import importlib.util
 import os
-import sys
 import tempfile
-from pathlib import Path
 from typing import Callable
 
 import pytest
-
-# Import ttnn BEFORE torch to avoid nanobind initialization issues
-try:
-    import ttnn
-
-    TTNN_AVAILABLE = True
-except ImportError:
-    TTNN_AVAILABLE = False
-
+import ttnn
 import torch
-from test_helpers import assert_allclose
+from test_helpers import assert_allclose, to_dram
 
-# Skip all tests if ttnn not available
-pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
+pytestmark = pytest.mark.requires_ttnn
 
 # =============================================================================
 # Shape Configurations - 1D tile configurations (row or column vectors)
@@ -348,18 +337,6 @@ UNARY_OPS = {
 
 
 # =============================================================================
-# Fixtures
-# =============================================================================
-
-
-@pytest.fixture(scope="function")
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
-# =============================================================================
 # Parametrized Tests - ops x shapes cross-product
 # =============================================================================
 
@@ -374,42 +351,18 @@ def test_binary_op(device, op_name, tile_shape):
     op_str, torch_fn = BINARY_OPS[op_name]
     kernel = make_binary_kernel(op_name, op_str, tile_rows, tile_cols)
 
-    # Generate inputs
     lhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     rhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     out_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
-
-    # Compute expected result
     expected = torch_fn(lhs_torch, rhs_torch)
 
-    # Create device tensors
-    lhs = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    rhs = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    lhs = to_dram(lhs_torch, device)
+    rhs = to_dram(rhs_torch, device)
+    out = to_dram(out_torch, device)
 
-    # Run kernel
     kernel(lhs, rhs, out)
-
-    # Get result and compare
     result = ttnn.to_torch(out)
+
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
@@ -423,42 +376,18 @@ def test_binary_fn_op(device, op_name, tile_shape):
     op_str, torch_fn = BINARY_FN_OPS[op_name]
     kernel = make_binary_fn_kernel(op_name, op_str, tile_rows, tile_cols)
 
-    # Generate inputs
     lhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     rhs_torch = torch.rand(tensor_shape, dtype=torch.bfloat16)
     out_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
-
-    # Compute expected result
     expected = torch_fn(lhs_torch, rhs_torch)
 
-    # Create device tensors in DRAM
-    lhs = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    rhs = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    lhs = to_dram(lhs_torch, device)
+    rhs = to_dram(rhs_torch, device)
+    out = to_dram(out_torch, device)
 
-    # Run kernel
     kernel(lhs, rhs, out)
-
-    # Get result and compare
     result = ttnn.to_torch(out)
+
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
@@ -472,55 +401,21 @@ def test_unary_op(device, op_name, tile_shape):
     op_str, torch_fn = UNARY_OPS[op_name]
     kernel = make_unary_kernel(op_name, op_str, tile_rows, tile_cols)
 
-    # Generate inputs - use values appropriate for all ops
-    # (positive values for log/sqrt, avoid extremes for exp)
+    # Use values appropriate for all ops (positive for log/sqrt, bounded for exp)
     inp_torch = torch.full(tensor_shape, 0.5, dtype=torch.bfloat16)
     out_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
-
-    # Compute expected result
     expected = torch_fn(inp_torch)
 
-    # Create device tensors in DRAM
-    inp = ttnn.from_torch(
-        inp_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
 
-    # Run kernel
     kernel(inp, out)
-
-    # Get result and compare
     result = ttnn.to_torch(out)
+
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
-# =============================================================================
-# Main - for running outside pytest
-# =============================================================================
-
 if __name__ == "__main__":
-    if not TTNN_AVAILABLE:
-        print("TTNN not available - skipping tests")
-        sys.exit(0)
+    import sys
 
-    print("=== Elementwise Ops Shape Sweep Test ===")
-    print(f"Shapes: {len(TILE_SHAPES)} configurations (1D tile vectors)")
-    print(f"Binary ops: {list(BINARY_OPS.keys()) + list(BINARY_FN_OPS.keys())}")
-    print(f"Unary ops: {list(UNARY_OPS.keys())}")
-    print(
-        f"Total tests: {len(TILE_SHAPES) * (len(BINARY_OPS) + len(BINARY_FN_OPS) + len(UNARY_OPS))}"
-    )
-    print()
-
-    # Run with pytest
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

@@ -89,7 +89,6 @@ def main() -> None:
 
     # Verify correctness with relaxed tolerance for matmul
     assert_pcc(golden, out, rtol=1e-4, atol=1e-4)
-    print("PASSED")
 
 
 if __name__ == "__main__":
