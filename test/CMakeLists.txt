@@ -90,6 +90,7 @@ add_custom_target(check-ttlang-pytest
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
   COMMENT "Running ttlang pytest tests"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
+  USES_TERMINAL
 )
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
