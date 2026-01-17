@@ -1,0 +1,149 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lima VM configuration template for tt-lang ttsim testing.
+# This file is processed by setup-vm.sh to generate lima.yaml with
+# substituted configuration values.
+#
+# Placeholders use @VARIABLE@ syntax and are replaced at generation time.
+
+# Minimum Lima version required
+minimumLimaVersion: "1.0.0"
+
+# VM images - Ubuntu ARM64 for Apple Silicon
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/@UBUNTU_VERSION@/release/ubuntu-@UBUNTU_VERSION@-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# Resource allocation
+cpus: @VM_CPUS@
+memory: "@VM_MEMORY@"
+disk: "@VM_DISK@"
+
+# Use Apple Virtualization framework for better performance on macOS
+vmType: "vz"
+
+# VZ-specific options
+vmOpts:
+  vz:
+    # Enable Rosetta for x86_64 binary translation (optional, for compatibility)
+    rosetta:
+      enabled: true
+      binfmt: true
+
+# Mount the TT repositories directory into the VM
+mounts:
+  # Mount TT_ROOT as writable for builds
+  - location: "@TT_ROOT@"
+    mountPoint: "@VM_MOUNT_POINT@"
+    writable: true
+    # Use virtiofs for better performance (requires vmType: vz)
+    9p:
+      securityModel: mapped-xattr
+      cache: mmap
+
+# SSH configuration
+ssh:
+  localPort: 0  # Auto-assign port
+  loadDotSSHPubKeys: true
+
+# Provisioning scripts run on first boot
+provision:
+  # System-level provisioning (runs as root)
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      # Update package lists
+      apt-get update
+
+      # Install essential build tools
+      apt-get install -y \
+        build-essential \
+        ninja-build \
+        git \
+        wget \
+        curl \
+        pkg-config \
+        libhwloc-dev \
+        libyaml-cpp-dev \
+        libgtest-dev \
+        libcapstone-dev \
+        software-properties-common
+
+      # Install Python 3.11 (required for tt-mlir toolchain)
+      add-apt-repository -y ppa:deadsnakes/ppa
+      apt-get update
+      apt-get install -y python3.11 python3.11-venv python3.11-dev
+
+      # Install CMake 3.28+ (required for tt-lang)
+      wget -qO- https://apt.kitware.com/keys/kitware-archive-latest.asc | tee /etc/apt/trusted.gpg.d/kitware.asc
+      add-apt-repository -y "deb https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main"
+      apt-get update
+      apt-get install -y cmake
+
+      # Install Clang 17 (must match toolchain's LLVM version to avoid LTO ABI issues)
+      wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+      add-apt-repository -y "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-17 main"
+      apt-get update
+      apt-get install -y clang-17 lld-17
+
+      # Set up alternatives for clang and lld
+      update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 100
+      update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-17 100
+      update-alternatives --install /usr/bin/lld lld /usr/bin/lld-17 100
+      update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-17 100
+
+      # Install GCC 13 (required for C++20 ranges support in libstdc++)
+      add-apt-repository -y ppa:ubuntu-toolchain-r/test
+      apt-get update
+      apt-get install -y gcc-13 g++-13 libstdc++-13-dev
+      update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 --slave /usr/bin/g++ g++ /usr/bin/g++-13
+
+      # Extend swap for large builds (tt-mlir can be memory-hungry)
+      if [ -f /swap.img ]; then
+        swapoff /swap.img || true
+        rm -f /swap.img
+      fi
+      fallocate -l 16G /swap.img
+      chmod 600 /swap.img
+      mkswap /swap.img
+      swapon /swap.img
+      echo '/swap.img none swap sw 0 0' >> /etc/fstab
+
+      # Create marker file to indicate system provisioning is complete
+      touch /var/lib/tt-system-provisioned
+
+  # User-level provisioning
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      # Create simulator directory
+      mkdir -p ~/sim
+
+      # Create convenience symlinks if mount point differs from ~/tt
+      VM_MOUNT="@VM_MOUNT_POINT@"
+      if [[ "$VM_MOUNT" != "$HOME/tt" ]] && [[ ! -e "$HOME/tt" ]]; then
+        ln -sf "$VM_MOUNT" "$HOME/tt"
+      fi
+
+      echo "User provisioning complete. Run provision-vm.sh to build tt-mlir and tt-lang."
+
+# Network configuration
+networks:
+  # Use shared network for host-guest communication
+  - vzNAT: true
+
+# Host resolver for DNS
+hostResolver:
+  enabled: true
+  hosts:
+    host.lima.internal: host.lima.internal
+
+# Environment variables passed to the VM
+env:
+  # These can be overridden but provide sensible defaults
+  CHIP_TYPE: "@CHIP_TYPE@"
