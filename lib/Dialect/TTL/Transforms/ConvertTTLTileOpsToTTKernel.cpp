@@ -386,6 +386,51 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   }
 };
 
+/// Lower ttl.copy_dst to TTKernel copy_dest_values_init + copy_dest_values.
+/// This copies a tile from one DST register to another.
+struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
+  using OpConversionPattern<CopyDstOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CopyDstOp op, CopyDstOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Get the source DST index from the input tile's producing operation.
+    auto srcDstIdx = getDstIndexFromValue(op.getSrcTile());
+    if (!srcDstIdx) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine src DST index from input tile");
+    }
+
+    // Get the destination DST index from this op's dst_idx attribute.
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstDstIdx = dstIdxAttr.getInt();
+
+    // Create index constants for src and dst DST registers.
+    Value srcIdx = rewriter.create<arith::ConstantIndexOp>(loc, *srcDstIdx);
+    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstDstIdx);
+
+    // Emit copy_dest_values_init + copy_dest_values.
+    // copy_dest_values(dst0, dst1) copies DST[dst1] → DST[dst0].
+    rewriter.create<ttk::CopyDestValuesInitOp>(loc);
+    rewriter.create<ttk::CopyDestValuesOp>(loc, dstIdx, srcIdx);
+
+    // Replace with an unrealized conversion cast to preserve the tile value.
+    // The tile is now in DST[dstIdx].
+    auto tile = rewriter
+                    .create<mlir::UnrealizedConversionCastOp>(
+                        loc, TypeRange{op.getResult().getType()},
+                        ValueRange{adaptor.getSrcTile()})
+                    .getResult(0);
+    rewriter.replaceOp(op, tile);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
@@ -439,8 +484,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // Copy op needs the type converter.
+  // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLCopyDstToTTKernel>(ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)

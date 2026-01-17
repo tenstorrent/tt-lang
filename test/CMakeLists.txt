@@ -90,11 +90,24 @@ add_custom_target(check-ttlang-pytest
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
   COMMENT "Running ttlang pytest tests"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
+  USES_TERMINAL
 )
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
-# All lit tests (including Python tests that require a TT device).
+# All tests including those requiring TT device.
+# Uses sequential COMMAND invocations to ensure device-accessing tests
+# (python-lit and pytest) don't run concurrently and cause TLB allocation failures.
+# Uses USES_TERMINAL to show real-time progress output from each test suite.
 add_custom_target(check-ttlang-all
-  DEPENDS check-ttlang-mlir check-ttlang-python-bindings check-ttlang-python-lit check-ttlang-pytest
-  COMMENT "Running all ttlang tests (lit and pytest)"
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-mlir ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-mlir
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-bindings ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-bindings
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-lit ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-lit
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-pytest ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-pytest
+  COMMAND ${CMAKE_COMMAND} -E echo "=== All ttlang tests completed ==="
+  USES_TERMINAL
+  COMMENT "Running all ttlang tests sequentially"
 )

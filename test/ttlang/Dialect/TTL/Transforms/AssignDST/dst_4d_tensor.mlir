@@ -1,5 +1,9 @@
 // Summary: verify linearized_index works with 4D tensors
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+
+// Verify no placeholder copies remain in final IR
+// CHECK-NOT: placeholder
 
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 
@@ -26,6 +30,7 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // CHECK: ttl.copy_tile
 // CHECK: ttl.copy_tile
 // CHECK: ttl.tile_add
+// SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
 // CHECK: ttl.yield
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,

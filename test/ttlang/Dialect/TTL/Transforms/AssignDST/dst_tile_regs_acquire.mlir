@@ -1,5 +1,8 @@
 // Summary: ensure ttl.acquire_dst is inserted ahead of DST copies in ttl.compute.
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --ttl-insert-tile-regs-sync --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --ttl-assign-dst --ttl-insert-tile-regs-sync --canonicalize --cse --split-input-file | FileCheck %s
+
+// Verify no placeholder copies remain in final IR
+// CHECK-NOT: placeholder
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
