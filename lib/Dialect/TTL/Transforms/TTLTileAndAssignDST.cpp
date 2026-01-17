@@ -309,8 +309,9 @@ struct TTLTileAndAssignDSTPass
                   }
                   dstIndexForValue[res] = inputDstIdx;
                   OpBuilder attrBuilder(res.getContext());
-                  op.setAttr(kDstIdxAttrName, attrBuilder.getI32IntegerAttr(
-                                                  static_cast<int32_t>(inputDstIdx)));
+                  op.setAttr(kDstIdxAttrName,
+                             attrBuilder.getI32IntegerAttr(
+                                 static_cast<int32_t>(inputDstIdx)));
                 }
                 // Register stays in use - output now owns it
               }
@@ -343,7 +344,8 @@ struct TTLTileAndAssignDSTPass
             if (isLastUse(op, operand)) {
               auto it = dstIndexForValue.find(operand);
               if (it != dstIndexForValue.end()) {
-                // For unary, check if output still uses this slot before freeing
+                // For unary, check if output still uses this slot before
+                // freeing
                 bool outputUsesSlot = false;
                 if (isUnary) {
                   for (Value res : op.getResults()) {

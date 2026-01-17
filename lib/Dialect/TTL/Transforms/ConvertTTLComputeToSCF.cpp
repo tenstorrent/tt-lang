@@ -88,7 +88,8 @@ static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
 /// Extracts tiles from inputs, clones compute body, inserts results back.
 /// Returns failure if copy_tile encounters unsupported tensor rank/shape.
 /// @param linearIV Optional linear induction variable for flattened loops.
-///                 When provided, used directly for ttl.linearized_index operations.
+///                 When provided, used directly for ttl.linearized_index
+///                 operations.
 static FailureOr<scf::ValueVector>
 generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
                        ArrayRef<AffineMap> indexingMaps, ValueRange ivs,
@@ -130,7 +131,8 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
   }
 
   // Pre-pass: materialize ttl.linearized_index ops as affine.apply.
-  // For flattened loops, use the linear IV directly to avoid complex composed maps.
+  // For flattened loops, use the linear IV directly to avoid complex composed
+  // maps.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
       Value computedLinearIdx;
@@ -250,10 +252,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     int64_t totalIterations = 1;
     SmallVector<int64_t> dimSizes;
     for (auto range : iterDomain) {
-      auto sizeAttr = dyn_cast_if_present<IntegerAttr>(range.size.dyn_cast<Attribute>());
+      auto sizeAttr =
+          dyn_cast_if_present<IntegerAttr>(range.size.dyn_cast<Attribute>());
       if (!sizeAttr) {
         return rewriter.notifyMatchFailure(
-            op, "dynamic iteration bounds not yet supported for flattened loops");
+            op,
+            "dynamic iteration bounds not yet supported for flattened loops");
       }
       int64_t dimSize = sizeAttr.getInt();
       dimSizes.push_back(dimSize);
@@ -262,7 +266,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
     // Create single flattened loop: for %iv = 0 to totalIterations step 1
     Value lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value upperBound = rewriter.create<arith::ConstantIndexOp>(loc, totalIterations);
+    Value upperBound =
+        rewriter.create<arith::ConstantIndexOp>(loc, totalIterations);
     Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     SmallVector<Value> initValues(op.getOutputs());
 
@@ -271,8 +276,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         loc, lowerBound, upperBound, step, initValues,
         [&](OpBuilder &b, Location loc, Value linearIV, ValueRange iterArgs) {
           // Delinearize the linear IV into multi-dimensional indices following
-          // upstream MLIR formula: iv_i = (linearIV floordiv stride_i) mod range_i
-          // where stride_i = product of ranges for dimensions [i+1, ..., n-1]
+          // upstream MLIR formula: iv_i = (linearIV floordiv stride_i) mod
+          // range_i where stride_i = product of ranges for dimensions [i+1,
+          // ..., n-1]
           SmallVector<Value> delinearizedIVs;
 
           for (size_t i = 0; i < dimSizes.size(); ++i) {
@@ -282,8 +288,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
               stride *= dimSizes[j];
             }
 
-            // For the last dimension, stride=1, so just use: iv_i = linearIV mod range_i
-            // For other dimensions: iv_i = (linearIV floordiv stride) mod range_i
+            // For the last dimension, stride=1, so just use: iv_i = linearIV
+            // mod range_i For other dimensions: iv_i = (linearIV floordiv
+            // stride) mod range_i
             AffineExpr d0 = b.getAffineDimExpr(0);
             AffineMap map;
 
@@ -295,13 +302,14 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
               map = AffineMap::get(1, 0, (d0.floorDiv(stride)) % dimSizes[i]);
             }
 
-            Value dimIndex = b.create<affine::AffineApplyOp>(loc, map, ValueRange{linearIV});
+            Value dimIndex =
+                b.create<affine::AffineApplyOp>(loc, map, ValueRange{linearIV});
             delinearizedIVs.push_back(dimIndex);
           }
 
-          auto result = generateTileProcessing(b, loc, op, indexingMaps,
-                                               delinearizedIVs, iterArgs,
-                                               linearIV);  // Pass linear IV for flattened loop
+          auto result = generateTileProcessing(
+              b, loc, op, indexingMaps, delinearizedIVs, iterArgs,
+              linearIV); // Pass linear IV for flattened loop
           if (failed(result)) {
             processingFailed = true;
             b.create<scf::YieldOp>(loc, ValueRange{});
@@ -315,12 +323,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
-    // Transfer ttl.unroll_factor attribute from ttl.compute to the flattened loop
-    if (auto unrollFactor = op->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName)) {
+    // Transfer ttl.unroll_factor attribute from ttl.compute to the flattened
+    // loop
+    if (auto unrollFactor =
+            op->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName)) {
       forOp->setAttr(kUnrollFactorAttrName, unrollFactor);
     }
 
-    // Transfer ttl.num_inputs attribute (needed by unroll pass for DST allocation)
+    // Transfer ttl.num_inputs attribute (needed by unroll pass for DST
+    // allocation)
     if (auto numInputs = op->getAttrOfType<IntegerAttr>("ttl.num_inputs")) {
       forOp->setAttr("ttl.num_inputs", numInputs);
     }

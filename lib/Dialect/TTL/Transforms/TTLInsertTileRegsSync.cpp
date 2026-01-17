@@ -235,7 +235,8 @@ struct TTLInsertTileRegsSyncPass
       return;
     }
 
-    // Also handle scf.for loops (for when this pass runs after ttl-lower-to-loops)
+    // Also handle scf.for loops (for when this pass runs after
+    // ttl-lower-to-loops)
     funcOp.walk([&](scf::ForOp forOp) {
       // Only process innermost loops that contain ttl operations directly
       // (not nested inside another loop)
@@ -249,8 +250,7 @@ struct TTLInsertTileRegsSyncPass
           hasNestedLoop = true;
         }
         // Check for direct ttl operations (not inside nested blocks)
-        if (op.getDialect() &&
-            op.getDialect()->getNamespace() == "ttl") {
+        if (op.getDialect() && op.getDialect()->getNamespace() == "ttl") {
           hasTTLOps = true;
         }
       }
@@ -329,8 +329,9 @@ struct TTLInsertTileRegsSyncPass
         }
       }
 
-      // Insert commit and wait before tensor.insert ops (they cluster at the end)
-      // If stores exist, use those instead (stores should come after commit/wait)
+      // Insert commit and wait before tensor.insert ops (they cluster at the
+      // end) If stores exist, use those instead (stores should come after
+      // commit/wait)
       Operation *insertBefore;
       if (!storeOps.empty()) {
         insertBefore = storeOps.front();

@@ -44,7 +44,7 @@ Go backwards through the operations in the compute operation:
     if the result is consumed only by unary ops, then assign the result DST register
     to be the input/output dst register of the first user unary op.
 
-Phase 3. Forward pass: Assign DST indices to all operands that have not yet been assigned, 
+Phase 3. Forward pass: Assign DST indices to all operands that have not yet been assigned,
 reuse based on liveness analysis, do not overwrite any already assigned dst registers.
 
 Do the original DST assignment pass from origin/main, except don't overwrite any already assigned dst registers.
@@ -93,7 +93,7 @@ for (i = 0..2) {
     add_binary_tile(DST[2+i*2+j], DST[0], DST[2+i*2+j]);
   }
 }
-tile_regs_commit(); 
+tile_regs_commit();
 tile_regs_wait();
 for (i = 0..2) {
   for (j = 0..2) {

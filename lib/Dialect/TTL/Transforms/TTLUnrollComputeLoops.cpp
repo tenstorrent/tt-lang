@@ -34,8 +34,8 @@ static uint32_t countDSTSlotsInLoop(scf::ForOp forOp) {
   return maxDstIdx;
 }
 
-/// Update dst_idx attribute and copy_tile dst_index operand for an unrolled copy.
-/// Input DST registers (idx < numInputs) stay fixed across iterations.
+/// Update dst_idx attribute and copy_tile dst_index operand for an unrolled
+/// copy. Input DST registers (idx < numInputs) stay fixed across iterations.
 /// Output DST registers (idx >= numInputs) increment per iteration.
 static void updateDSTIndices(Operation *op, unsigned unrollIdx,
                              uint32_t numInputs, uint32_t numOutputs,
@@ -47,10 +47,12 @@ static void updateDSTIndices(Operation *op, unsigned unrollIdx,
     int32_t newIdx;
 
     if (oldIdx < static_cast<int32_t>(numInputs)) {
-      // Input DST: keep fixed across iterations (A always uses DST[0], B uses DST[1])
+      // Input DST: keep fixed across iterations (A always uses DST[0], B uses
+      // DST[1])
       newIdx = oldIdx;
     } else {
-      // Output DST: increment by iteration (iteration k uses DST[numInputs + k])
+      // Output DST: increment by iteration (iteration k uses DST[numInputs +
+      // k])
       newIdx = numInputs + (oldIdx - numInputs) + unrollIdx * numOutputs;
     }
 
@@ -88,19 +90,22 @@ struct TTLUnrollComputeLoopsPass
     SmallVector<scf::ForOp> loopsToUnroll;
 
     func.walk([&](scf::ForOp forOp) {
-      if (forOp->hasAttr(kUnrollFactorAttrName))
+      if (forOp->hasAttr(kUnrollFactorAttrName)) {
         loopsToUnroll.push_back(forOp);
+      }
     });
 
     for (scf::ForOp forOp : loopsToUnroll) {
       auto unrollAttr =
           forOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
-      if (!unrollAttr)
+      if (!unrollAttr) {
         continue;
+      }
 
       uint64_t factor = unrollAttr.getInt();
-      if (factor <= 1)
+      if (factor <= 1) {
         continue;
+      }
 
       // Get numInputs from the loop attribute (set by DST assignment pass).
       // Input DST registers stay fixed across unrolled iterations.
@@ -117,7 +122,8 @@ struct TTLUnrollComputeLoopsPass
         updateDSTIndices(op, unrollIdx, numInputs, numOutputs, b);
       };
 
-      LogicalResult unrollResult = loopUnrollByFactor(forOp, factor, annotateFn);
+      LogicalResult unrollResult =
+          loopUnrollByFactor(forOp, factor, annotateFn);
 
       // After unrolling, group all tensor.insert operations at the end
       // (before the terminator) so sync ops can be inserted before them.
