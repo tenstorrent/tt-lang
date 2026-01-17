@@ -736,6 +736,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
               TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
               ValueRange{arg, srcIndex, dstIndex});
           dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
+          // Mark this arg as processed so we don't create duplicate copies
+          dstIndexForValue[arg] = assignedDstIndex;
 
           arg.replaceUsesWithIf(copy.getDstTile(), [&](OpOperand &use) {
             // Don't replace in copy_tile ops - they need the original block arg
