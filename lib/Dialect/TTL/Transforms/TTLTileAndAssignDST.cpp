@@ -203,10 +203,6 @@ struct TTLTileAndAssignDSTPass
         OpBuilder attrBuilder(computeOp.getContext());
         computeOp->setAttr(kUnrollFactorAttrName,
                            attrBuilder.getI32IntegerAttr(unrollFactor));
-        // Store numInputs for use by the unroll pass to determine which DST
-        // indices should stay fixed (inputs) vs increment (outputs).
-        computeOp->setAttr("ttl.num_inputs",
-                           attrBuilder.getI32IntegerAttr(numInputs));
       }
 
       // Insert copy_tile immediately before the first use of each block

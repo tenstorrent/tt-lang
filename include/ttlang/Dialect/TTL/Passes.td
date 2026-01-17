@@ -126,6 +126,11 @@ def TTLLowerToLoops
     "::mlir::scf::SCFDialect",
     "::mlir::tensor::TensorDialect"
   ];
+
+  let options = [
+    Option<"unrollCompute", "unroll-compute", "bool", /*default=*/"true",
+           "Enable loop unrolling for DST optimization">
+  ];
 }
 
 def TTLUnrollComputeLoops

@@ -155,10 +155,56 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
     }
   }
 
+  // Compute linearized CB tile index from IVs for StoreOp.
+  // For output indexing map (d0, d1) -> (d0, d1), linearize to d0 * cols + d1.
+  // We use the first output's indexing map since all outputs should have
+  // compatible shapes within a compute block.
+  Value cbTileIndex;
+  if (!indexingMaps.empty() && numInputs < indexingMaps.size()) {
+    AffineMap outputMap = indexingMaps[numInputs]; // First output's map
+    SmallVector<Value> outputIndices = applyIndexingMap(b, loc, outputMap, ivs);
+
+    // Linearize: for 2D, idx = row * numCols + col
+    if (outputIndices.size() == 2) {
+      // Get CB shape from the output tensor type (it matches CB shape).
+      auto outputTy = cast<RankedTensorType>(iterArgs.front().getType());
+      int64_t numCols = outputTy.getDimSize(1);
+      Value numColsVal = b.create<arith::ConstantIndexOp>(loc, numCols);
+      Value rowOffset =
+          b.create<arith::MulIOp>(loc, outputIndices[0], numColsVal);
+      cbTileIndex = b.create<arith::AddIOp>(loc, rowOffset, outputIndices[1]);
+    } else if (outputIndices.size() == 1) {
+      cbTileIndex = outputIndices[0];
+    } else {
+      // Fallback for higher-rank: just use 0 (shouldn't happen for CBs).
+      cbTileIndex = b.create<arith::ConstantIndexOp>(loc, 0);
+    }
+  } else {
+    cbTileIndex = b.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
   // Clone body operations (skip linearized_index since it's already
-  // materialized)
+  // materialized). Force-clone constants into the loop body to enable
+  // per-iteration updates during unrolling.
+  // For StoreOp, update the cb_tile_index to the computed linearized index.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (!isa<LinearizedIndexOp>(&bodyOp)) {
+    if (isa<LinearizedIndexOp>(&bodyOp)) {
+      continue;
+    }
+
+    if (isa<arith::ConstantOp>(&bodyOp)) {
+      Operation *cloned = b.clone(bodyOp);
+      mapping.map(&bodyOp, cloned);
+      for (auto [origResult, clonedResult] :
+           llvm::zip(bodyOp.getResults(), cloned->getResults())) {
+        mapping.map(origResult, clonedResult);
+      }
+    } else if (auto storeOp = dyn_cast<StoreOp>(&bodyOp)) {
+      // Clone StoreOp with updated cb_tile_index from adjusted IVs.
+      Value mappedTile = mapping.lookupOrDefault(storeOp.getTile());
+      Value mappedView = mapping.lookupOrDefault(storeOp.getView());
+      b.create<StoreOp>(loc, mappedTile, mappedView, cbTileIndex);
+    } else {
       b.clone(bodyOp, mapping);
     }
   }
@@ -179,7 +225,10 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
 }
 
 struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
-  using OpRewritePattern<ComputeOp>::OpRewritePattern;
+  bool enableUnroll;
+
+  LowerComputeToLoops(MLIRContext *context, bool enableUnroll)
+      : OpRewritePattern<ComputeOp>(context), enableUnroll(enableUnroll) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -291,11 +340,42 @@ struct TTLLowerToLoopsPass
                     tensor::TensorDialect>();
   }
 
+  /// Validate that all linearized_index ops have index_map dimensions matching
+  /// their enclosing compute op's iteration domain rank.
+  static LogicalResult validateLinearizedIndexRanks(ComputeOp computeOp) {
+    int64_t iterDomainRank = 0;
+    for (Value operand :
+         llvm::concat<Value>(computeOp.getInputs(), computeOp.getOutputs())) {
+      int64_t rank = cast<RankedTensorType>(operand.getType()).getRank();
+      iterDomainRank = std::max(iterDomainRank, rank);
+    }
+
+    Block &bodyBlock = computeOp.getBody().front();
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
+        AffineMap indexMap = linIdx.getIndexMap();
+        if (static_cast<int64_t>(indexMap.getNumDims()) != iterDomainRank) {
+          return linIdx.emitOpError()
+                 << "index_map has " << indexMap.getNumDims()
+                 << " dimensions but iteration domain has " << iterDomainRank;
+        }
+      }
+    }
+    return success();
+  }
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
+    // Pre-validate linearized_index ranks before running patterns.
+    for (auto computeOp : func.getOps<ComputeOp>()) {
+      if (failed(validateLinearizedIndexRanks(computeOp))) {
+        return signalPassFailure();
+      }
+    }
+
     RewritePatternSet patterns(func.getContext());
-    patterns.add<LowerComputeToLoops>(func.getContext());
+    patterns.add<LowerComputeToLoops>(func.getContext(), unrollCompute);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();
