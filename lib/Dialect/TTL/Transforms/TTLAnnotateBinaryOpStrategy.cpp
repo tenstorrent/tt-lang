@@ -11,11 +11,12 @@
 //
 // Execution target labeling strategies:
 //
-// | Annotation    | Condition           | TTKernel Operation                      | HW Unit | 
+// | Annotation    | Condition           | TTKernel Operation | HW Unit |
 // |---------------|---------------------|-----------------------------------------|---------|
-// | "fpu"         | Both block args     | add_tiles(cb, cb, ...)                  | FPU     |
-// | "dest_reuse"  | One block arg       | binary_dest_reuse_tiles(cb, dst, ...)   | FPU     |
-// | "sfpu"        | Both DST (tile ops) | add_binary_tile(dst, dst, ...)          | SFPU    |
+// | "fpu"         | Both block args     | add_tiles(cb, cb, ...) | FPU     | |
+// "dest_reuse"  | One block arg       | binary_dest_reuse_tiles(cb, dst, ...)
+// | FPU     | | "sfpu"        | Both DST (tile ops) | add_binary_tile(dst, dst,
+// ...)          | SFPU    |
 //
 // This means FPU optimization applies to most cases:
 // - Simple binary ops: a + b -> FPU
@@ -25,12 +26,12 @@
 //   FPU utilization).
 //===----------------------------------------------------------------------===//
 
-#include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttlang/Dialect/TTL/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Passes.h"
 
 #define GEN_PASS_DEF_TTLANNOTATEBINARYOPSTRATEGY
 #include "ttlang/Dialect/TTL/Passes.h.inc"

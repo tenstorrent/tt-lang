@@ -239,4 +239,3 @@ func.func @chained_fpu_via_dest_reuse(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>
 
   func.return %sum2 : tensor<1x1x!ttcore.tile<32x32, f32>>
 }
-
