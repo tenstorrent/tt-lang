@@ -570,18 +570,22 @@ def test_repeat():
     """Test repeat function."""
     a = ttnn.Tensor(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))  # 2x2
 
-    # Repeat 2x in each dimension
-    b = ttnn.repeat(a, (2, 2))
+    # Repeat 2x in each dimension (4D vector required)
+    b = ttnn.repeat(a, (1, 1, 2, 2))
     assert isinstance(b, ttnn.Tensor)
-    assert b.shape == (4, 4)
+    assert b.shape == (1, 1, 4, 4)
 
     # Check pattern
     expected = torch.tensor(
         [
-            [1.0, 2.0, 1.0, 2.0],
-            [3.0, 4.0, 3.0, 4.0],
-            [1.0, 2.0, 1.0, 2.0],
-            [3.0, 4.0, 3.0, 4.0],
+            [
+                [
+                    [1.0, 2.0, 1.0, 2.0],
+                    [3.0, 4.0, 3.0, 4.0],
+                    [1.0, 2.0, 1.0, 2.0],
+                    [3.0, 4.0, 3.0, 4.0],
+                ]
+            ]
         ]
     )
     assert torch.allclose(b.to_torch(), expected)
@@ -591,11 +595,11 @@ def test_repeat_single_dimension():
     """Test repeat with repetition in only one dimension."""
     a = ttnn.Tensor(torch.tensor([[1.0, 2.0]]))  # 1x2
 
-    # Repeat 3x in rows, 1x in columns
-    b = ttnn.repeat(a, (3, 1))
-    assert b.shape == (3, 2)
+    # Repeat 3x in rows, 1x in columns (4D vector required)
+    b = ttnn.repeat(a, (1, 1, 3, 1))
+    assert b.shape == (1, 1, 3, 2)
 
-    expected = torch.tensor([[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]])
+    expected = torch.tensor([[[[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]]]])
     assert torch.allclose(b.to_torch(), expected)
 
 
@@ -741,3 +745,148 @@ def test_from_torch_large_tensor():
 
     assert tensor.shape == (512, 512)
     assert torch.equal(ttnn.to_torch(tensor), t)
+
+
+# ---- Golden function wrapper tests ----
+
+
+def test_golden_function_wrappers_arithmetic():
+    """Test dynamically generated golden function wrappers for arithmetic operations."""
+    a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32))
+    b = ttnn.from_torch(torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.float32))
+
+    # Test add
+    c = ttnn.add(a, b)
+    assert isinstance(c, ttnn.Tensor)
+    expected = torch.tensor([[6.0, 8.0], [10.0, 12.0]], dtype=torch.float32)
+    assert torch.allclose(c.to_torch(), expected)
+
+    # Test subtract
+    d = ttnn.subtract(b, a)
+    assert isinstance(d, ttnn.Tensor)
+    expected = torch.tensor([[4.0, 4.0], [4.0, 4.0]], dtype=torch.float32)
+    assert torch.allclose(d.to_torch(), expected)
+
+    # Test multiply
+    e = ttnn.multiply(a, b)
+    assert isinstance(e, ttnn.Tensor)
+    expected = torch.tensor([[5.0, 12.0], [21.0, 32.0]], dtype=torch.float32)
+    assert torch.allclose(e.to_torch(), expected)
+
+
+def test_golden_function_wrappers_comparisons():
+    """Test dynamically generated golden function wrappers for comparison operations."""
+    a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32))
+    b = ttnn.from_torch(torch.tensor([[2.0, 2.0], [2.0, 5.0]], dtype=torch.float32))
+
+    # Test eq
+    result = ttnn.eq(a, b)
+    assert isinstance(result, ttnn.Tensor)
+    expected = torch.tensor([[False, True], [False, False]])
+    assert torch.equal(result.to_torch(), expected)
+
+    # Test ne
+    result = ttnn.ne(a, b)
+    expected = torch.tensor([[True, False], [True, True]])
+    assert torch.equal(result.to_torch(), expected)
+
+    # Test gt
+    result = ttnn.gt(a, b)
+    expected = torch.tensor([[False, False], [True, False]])
+    assert torch.equal(result.to_torch(), expected)
+
+    # Test lt
+    result = ttnn.lt(a, b)
+    expected = torch.tensor([[True, False], [False, True]])
+    assert torch.equal(result.to_torch(), expected)
+
+
+def test_golden_function_wrappers_unary():
+    """Test dynamically generated golden function wrappers for unary operations."""
+    a = ttnn.from_torch(torch.tensor([[1.0, 4.0], [9.0, 16.0]], dtype=torch.float32))
+
+    # Test sqrt
+    result = ttnn.sqrt(a)
+    assert isinstance(result, ttnn.Tensor)
+    expected = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+    assert torch.allclose(result.to_torch(), expected)
+
+    # Test abs (test with negative values)
+    b = ttnn.from_torch(torch.tensor([[-1.0, 2.0], [-3.0, 4.0]], dtype=torch.float32))
+    result = ttnn.abs(b)
+    expected = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+    assert torch.allclose(result.to_torch(), expected)
+
+    # Test exp
+    c = ttnn.from_torch(torch.tensor([[0.0, 1.0]], dtype=torch.float32))
+    result = ttnn.exp(c)
+    expected = torch.exp(torch.tensor([[0.0, 1.0]], dtype=torch.float32))
+    assert torch.allclose(result.to_torch(), expected)
+
+
+def test_golden_function_wrappers_trigonometric():
+    """Test dynamically generated golden function wrappers for trigonometric operations."""
+    import math
+
+    a = ttnn.from_torch(
+        torch.tensor(
+            [[0.0, math.pi / 2], [math.pi, 3 * math.pi / 2]], dtype=torch.float32
+        )
+    )
+
+    # Test sin
+    result = ttnn.sin(a)
+    assert isinstance(result, ttnn.Tensor)
+    expected = torch.sin(a.to_torch())
+    assert torch.allclose(result.to_torch(), expected, atol=1e-6)
+
+    # Test cos
+    result = ttnn.cos(a)
+    expected = torch.cos(a.to_torch())
+    assert torch.allclose(result.to_torch(), expected, atol=1e-6)
+
+    # Test tan
+    b = ttnn.from_torch(torch.tensor([[0.0, math.pi / 4]], dtype=torch.float32))
+    result = ttnn.tan(b)
+    expected = torch.tan(b.to_torch())
+    assert torch.allclose(result.to_torch(), expected, atol=1e-6)
+
+
+def test_golden_function_wrappers_activation():
+    """Test dynamically generated golden function wrappers for activation functions."""
+    a = ttnn.from_torch(
+        torch.tensor([[-2.0, -1.0], [0.0, 1.0], [2.0, 3.0]], dtype=torch.float32)
+    )
+
+    # Test relu
+    result = ttnn.relu(a)
+    assert isinstance(result, ttnn.Tensor)
+    expected = torch.tensor([[0.0, 0.0], [0.0, 1.0], [2.0, 3.0]], dtype=torch.float32)
+    assert torch.allclose(result.to_torch(), expected)
+
+    # Test sigmoid
+    result = ttnn.sigmoid(a)
+    expected = torch.sigmoid(a.to_torch())
+    assert torch.allclose(result.to_torch(), expected)
+
+    # Test gelu
+    result = ttnn.gelu(a)
+    expected = torch.nn.functional.gelu(a.to_torch())
+    assert torch.allclose(result.to_torch(), expected, atol=1e-5)
+
+
+def test_golden_function_wrappers_logical():
+    """Test dynamically generated golden function wrappers for logical operations."""
+    a = ttnn.from_torch(torch.tensor([[True, True], [False, False]]))
+    b = ttnn.from_torch(torch.tensor([[True, False], [True, False]]))
+
+    # Test logical_and
+    result = ttnn.logical_and(a, b)
+    assert isinstance(result, ttnn.Tensor)
+    expected = torch.tensor([[True, False], [False, False]])
+    assert torch.equal(result.to_torch(), expected)
+
+    # Test logical_or
+    result = ttnn.logical_or(a, b)
+    expected = torch.tensor([[True, True], [True, False]])
+    assert torch.equal(result.to_torch(), expected)

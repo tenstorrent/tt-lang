@@ -18,9 +18,10 @@ Scope:
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import torch
+import ttnn
 
 from .constants import TILE_SHAPE
 from .tensoraccessor import TensorAccessor
@@ -512,87 +513,6 @@ def from_torch(
     return Tensor(tensor)
 
 
-def isclose(
-    a: Tensor,
-    b: Tensor,
-    rtol: float = 1e-05,
-    atol: float = 1e-08,
-    equal_nan: bool = False,
-) -> Tensor:
-    """
-    Element-wise comparison of two tensors, returning a boolean tensor indicating
-    whether |a - b| <= atol + rtol * |b|.
-
-    Accepts either sim.ttnnsim.Tensor or torch.Tensor (or objects coercible to
-    torch tensors). Returns a sim.ttnnsim.Tensor wrapping a torch.bool tensor.
-
-    Args:
-        a, b: operands to compare (ttnn.Tensor or torch.Tensor or array-like)
-        rtol: relative tolerance
-        atol: absolute tolerance
-        equal_nan: if True, NaNs in the same position are treated as equal
-
-    Behavior follows numpy/torch isclose semantics.
-    """
-
-    # Normalize inputs to torch.Tensor
-    ta = a.to_torch()
-    tb = b.to_torch()
-
-    # Promote to a floating dtype for safe relative comparison if needed
-    if not ta.is_floating_point() or not tb.is_floating_point():
-        promoted = torch.float32
-    else:
-        promoted = torch.promote_types(ta.dtype, tb.dtype)
-
-    ta = ta.to(promoted)
-    tb = tb.to(promoted)
-
-    # Compute closeness
-    diff = torch.abs(ta - tb)
-    tol = atol + rtol * torch.abs(tb)
-    result = diff <= tol
-
-    if equal_nan:
-        both_nan = torch.isnan(ta) & torch.isnan(tb)
-        result = result | both_nan
-
-    # Wrap result in ttnn.Tensor for public API consistency
-    return Tensor(result)
-
-
-def repeat(input_tensor: Tensor, repetition_vector: Shape) -> Tensor:
-    """Repeat the input tensor according to the repetition vector.
-
-    Returns a new tensor filled with repetition of input_tensor according to
-    the number of times specified in repetition_vector.
-
-    Note: This function is not fully defined after the original TTNN API.
-    The original API includes additional keyword arguments (e.g., memory_config)
-    which are not implemented in this simulator version.
-
-    Args:
-        input_tensor (Tensor): The input tensor to repeat.
-        repetition_vector (Shape): The number of repetitions for each dimension.
-
-    Returns:
-        Tensor: The output tensor with repeated values.
-
-    Example:
-        >>> a = ttnn.rand((2, 3), dtype=ttnn.float32)
-        >>> b = ttnn.repeat(a, (2, 3))  # Shape becomes (4, 9)
-    """
-
-    # Convert input tensor to torch
-    t = input_tensor.to_torch()
-
-    # Use torch.repeat to perform the repetition
-    repeated_t = t.repeat(*repetition_vector)
-
-    # Wrap result back in simulator Tensor
-    return Tensor(repeated_t)
-
-
 def split_work_to_cores(
     core_grid: Union[CoreCoord, CoreRangeSet],
     units_to_divide: int,
@@ -765,30 +685,104 @@ def split_work_to_cores(
     )
 
 
-def multiply(input_tensor_a: Tensor, input_tensor_b: Tensor) -> Tensor:
-    """Element-wise multiplication of two tensors.
-
-    Performs element-wise multiplication on two input tensors and returns the result.
+# Dynamically generate wrapper functions for all ttnn operations with golden functions
+def _create_golden_wrapper(operation_name: str, golden_fn: Callable) -> Callable:
+    """Create a wrapper function that calls the golden function and wraps result in Tensor.
 
     Args:
-        input_tensor_a: First input tensor
-        input_tensor_b: Second input tensor
+        operation_name: Name of the operation (for documentation)
+        golden_fn: The golden function to wrap
 
     Returns:
-        Tensor: Output tensor with element-wise multiplication result
-
-    Example:
-        >>> a = ttnn.from_torch(torch.tensor([[1, 2], [3, 4]], dtype=torch.bfloat16))
-        >>> b = ttnn.from_torch(torch.tensor([[5, 6], [7, 8]], dtype=torch.bfloat16))
-        >>> c = ttnn.multiply(a, b)
-        >>> # c contains [[5, 12], [21, 32]]
+        Wrapper function that converts inputs/outputs appropriately
     """
-    # Convert both tensors to torch
-    ta = input_tensor_a.to_torch()
-    tb = input_tensor_b.to_torch()
 
-    # Perform element-wise multiplication
-    result = ta * tb
+    def wrapper(*args, **kwargs):
+        # Convert Tensor arguments to torch.Tensor
+        torch_args = tuple(
+            arg.to_torch() if isinstance(arg, Tensor) else arg for arg in args
+        )
+        torch_kwargs = {
+            k: v.to_torch() if isinstance(v, Tensor) else v for k, v in kwargs.items()
+        }
 
-    # Wrap result back in simulator Tensor
-    return Tensor(result)
+        # Call golden function
+        result = golden_fn(*torch_args, **torch_kwargs)
+
+        # Wrap result in Tensor if it's a torch.Tensor
+        if isinstance(result, torch.Tensor):
+            return Tensor(result)
+        return result
+
+    # Set proper function name and docstring
+    wrapper.__name__ = operation_name
+    wrapper.__doc__ = (
+        f"Wrapper for ttnn.{operation_name} using golden function implementation."
+    )
+
+    return wrapper
+
+
+# Functions that should NOT be auto-wrapped (already implemented or would break things)
+_EXCLUDE_FROM_WRAPPING = {
+    # Core infrastructure functions that are already implemented
+    "from_torch",
+    "to_torch",
+    "from_device",
+    "to_device",
+    "to_dtype",
+    "to_layout",
+    "to_memory_config",
+    # Tensor creation functions that are already implemented
+    "empty",
+    "empty_like",
+    "zeros",
+    "zeros_like",
+    "ones",
+    "ones_like",
+    "full",
+    "full_like",
+    "arange",
+    # Built-in functions that shouldn't be wrapped
+    "min",
+    "max",
+    "sum",
+    # Functions that return non-tensor types
+    "clone",
+    "reshape",
+    "permute",
+    "concat",
+    "pad",
+    # Sharding/memory functions
+    "interleaved_to_sharded",
+    "interleaved_to_sharded_partial",
+    "sharded_to_interleaved",
+    "sharded_to_interleaved_partial",
+    "reallocate",
+    "reshard",
+    "tilize",
+    "bitcast",
+    "typecast",
+}
+
+# Get all operations with golden functions and create wrappers at module load time
+_operations_to_wrap = [name for name in dir(ttnn) if not name.startswith("_")]
+
+for _op_name in _operations_to_wrap:
+    # Skip if already in our namespace or in exclude list
+    if _op_name in globals() or _op_name in _EXCLUDE_FROM_WRAPPING:
+        continue
+
+    try:
+        _op = getattr(ttnn, _op_name)
+        _golden_fn = ttnn.get_golden_function(_op)
+
+        # Create wrapper and add to module globals
+        globals()[_op_name] = _create_golden_wrapper(_op_name, _golden_fn)
+
+    except Exception:
+        # Operation doesn't have a golden function or isn't callable, skip it
+        continue
+
+# Clean up temporary variables
+del _operations_to_wrap, _op_name, _op, _golden_fn
