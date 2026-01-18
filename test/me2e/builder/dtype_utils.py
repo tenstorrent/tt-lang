@@ -50,10 +50,3 @@ def torch_dtype_to_ttcore_datatype(dtype: torch.dtype) -> int:
         return int(ttcore.DataType.Float16)
     else:
         raise ValueError(f"Unsupported dtype for tile: {dtype}")
-
-
-
-
-
-
-

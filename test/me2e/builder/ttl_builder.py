@@ -28,7 +28,7 @@ from ttmlir.ir import (
 from ttmlir.dialects import func
 from ttmlir.dialects import ttcore
 
-import ttlang.dialects.ttl as ttl
+import ttl.dialects.ttl as ttl
 
 from ..config import E2EConfig
 from .dm_threads import (

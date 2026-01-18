@@ -34,7 +34,7 @@ class E2ETestBase:
     @pytest.fixture(scope="class", autouse=True)
     def setup(self, request, device, system_desc_path):
         """Initialize test class with output directory."""
-        request.cls.OUTPUT_DIR = Path(f"build/test/e2e/{request.cls.__name__}")
+        request.cls.OUTPUT_DIR = Path(f"build/test/me2e/{request.cls.__name__}")
         request.cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def output_file(self, name: str) -> Path:
@@ -58,7 +58,7 @@ class E2ETestBase:
         """Run TTL-to-TTKernel pass pipeline on the generated module."""
         from .builder.pipeline import compile_ttl_to_ttkernel
 
-        import ttlang.dialects.ttl as ttl
+        import ttl.dialects.ttl as ttl
         from ttmlir.ir import Context, Module
 
         # Load module from file saved by test_build_module.
@@ -88,7 +88,7 @@ class E2ETestBase:
         """Translate TTKernel ops to C++ kernel sources."""
         from .builder.kernels import translate_module_to_kernels, write_kernels
 
-        import ttlang.dialects.ttl as ttl
+        import ttl.dialects.ttl as ttl
         from ttmlir.ir import Context, Module
 
         compiled_file = self.output_file("compiled_module.mlir")

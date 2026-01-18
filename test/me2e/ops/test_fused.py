@@ -30,7 +30,7 @@ from ..base import E2ETestBase
 from ..config import E2EConfig
 from ..builder.dtype_utils import torch_dtype_to_mlir_str
 
-import ttlang.dialects.ttl as ttl
+import ttl.dialects.ttl as ttl
 
 
 class FusedOpTestBase(E2ETestBase):

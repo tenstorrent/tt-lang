@@ -1,6 +1,6 @@
-# E2E Test Framework
+# ME2E Test Framework
 
-End-to-end test framework for TTL MLIR generation and validation. Requires the tt-lang python
+Middle-end to end-to-end test framework for TTL MLIR generation and validation. Requires the tt-lang python
 environment to be activated: `source build/env/activate`.
 
 ## Overview
@@ -20,8 +20,8 @@ This framework provides pytest infrastructure for testing TTL dialect operations
 Programmatically generates TTL dialect MLIR:
 
 ```python
-from test.e2e.ttl_builder import build_ttl_module
-from test.e2e.config import E2EConfig
+from test.me2e.builder.ttl_builder import build_ttl_module
+from test.me2e.config import E2EConfig
 
 config = E2EConfig(grid_shape=(2, 2), dtype=torch.bfloat16)
 inputs = [torch.rand(config.tensor_shape, dtype=config.dtype) for _ in range(2)]
@@ -48,7 +48,7 @@ func.func @compute_add(%arg0: tensor<2x2x!ttcore.tile<32x32, bf16>>,
 ULP-based tensor comparison with automatic dtype-specific thresholds:
 
 ```python
-from test.e2e.utils import compare_tensors
+from test.me2e.utils import compare_tensors
 
 result = compare_tensors(golden, calculated)
 assert result.passed, result.message
@@ -90,20 +90,20 @@ These verbose tests serve as templates and documentation for writing new tests.
 # Activate environment
 source build/env/activate
 
-# All e2e tests
-pytest test/e2e/
+# All me2e tests
+pytest test/me2e/
 
 # Via CMake/Ninja
-ninja -C build check-ttlang-e2e
+ninja -C build check-ttlang-me2e
 
 # Just comparison utils
-pytest test/e2e/test_utils.py
+pytest test/me2e/test_utils.py
 
 # Just MLIR builder validation
-pytest test/e2e/ops/test_simple.py
+pytest test/me2e/ops/test_simple.py
 
 # Demonstration/example tests
-pytest test/e2e/examples/ -v -s
+pytest test/me2e/examples/ -v -s
 ```
 
 ## Auto-Generated Op Tests
@@ -226,17 +226,17 @@ ttkernel.add_binary_tile(%c0, %c1, %c0)
 ttkernel.exp_tile(%c0)
 ```
 
-See `test/e2e/ops/test_fused.py` for complete examples of:
+See `test/me2e/ops/test_fused.py` for complete examples of:
 - `TestExpAddFused`: exp(a + b)
 - `TestReluMulFused`: relu(a * b)
 - `TestSqrtAbsFused`: sqrt(abs(a))
 
 ## Test Artifacts
 
-Test stages save intermediate artifacts to `build/test/e2e/<TestClassName>/`:
+Test stages save intermediate artifacts to `build/test/me2e/<TestClassName>/`:
 
 ```
-build/test/e2e/TestAdd/
+build/test/me2e/TestAdd/
 ├── module.mlir           # High-level TTL ops (from test_build_module)
 ├── compiled_module.mlir  # Lowered to TTKernel ops (from test_compile_to_ttkernel)
 └── inputs.pt             # PyTorch input tensors for golden comparison
@@ -268,7 +268,7 @@ These artifacts are useful for debugging and can be processed manually with
 ## Directory Structure
 
 ```
-test/e2e/
+test/me2e/
 ├── builder/                 # Python bindings-based MLIR construction
 │   ├── __init__.py          # Module exports
 │   ├── ttl_builder.py       # Build TTL modules via Python bindings
@@ -360,7 +360,7 @@ then caching can be added as a performance optimization.
 | Test Suite | Purpose | Tool | What It Tests |
 |------------|---------|------|---------------|
 | `test/ttlang/` | Compiler passes | lit/FileCheck | Pass transformations (MLIR → MLIR) |
-| `test/e2e/` | MLIR builder + execution | pytest | MLIR generation + (future) hardware execution |
+| `test/me2e/` | MLIR builder + execution | pytest | MLIR generation + (future) hardware execution |
 | `test/python/` | DSL front-end | lit/FileCheck | Python DSL → MLIR |
 
 **Key Insight**: Pass testing belongs in lit tests. E2E tests should focus on MLIR builder validation and end-to-end execution, not redundantly testing passes.

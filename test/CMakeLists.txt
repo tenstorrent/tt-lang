@@ -77,17 +77,17 @@ set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")
 
 
 # -----------------------------------------------------------------------------
-# Pytest E2E tests configuration
+# Pytest ME2E tests configuration
 
-add_custom_target(check-ttlang-e2e
-  COMMAND ${Python_EXECUTABLE} -m pytest -v ${PYTEST_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/
+add_custom_target(check-ttlang-me2e
+  COMMAND ${Python_EXECUTABLE} -m pytest -v ${PYTEST_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}/me2e/
   DEPENDS TTLangPythonModules
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Running E2E pytest tests"
+  COMMENT "Running ME2E pytest tests"
   USES_TERMINAL
   VERBATIM
 )
-set_target_properties(check-ttlang-e2e PROPERTIES FOLDER "Tests")
+set_target_properties(check-ttlang-me2e PROPERTIES FOLDER "Tests")
 
 # Lit tests that never require a TT device.
 add_custom_target(check-ttlang
