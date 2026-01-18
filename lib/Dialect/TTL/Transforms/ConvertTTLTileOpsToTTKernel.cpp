@@ -198,6 +198,77 @@ static std::optional<int64_t> getDstIndexFromValue(Value v) {
   return std::nullopt;
 }
 
+/// Determines if a value comes directly from a circular buffer (CB) and is
+/// suitable for FPU operation optimization.
+/// Returns true if the value is:
+/// - The result of a copy_tile operation (CB → DST copy that FPU can replace)
+/// - A block argument in simple test cases (fallback for isolated tests)
+/// Returns false if the value is:
+/// - From a tile operation (unary or binary), which produces DST intermediates
+[[maybe_unused]] static bool isFromCircularBuffer(Value v) {
+  auto opRes = dyn_cast<OpResult>(v);
+  if (!opRes) {
+    // Block arguments: return true for simple test cases without copy_tile
+    if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+      return true;
+    }
+    return false;
+  }
+
+  Operation *owner = opRes.getOwner();
+
+  // If from copy_tile, it's a CB → DST copy that FPU can optimize
+  // FPU can replace: copy_tile(CB) + add_binary_tile → add_tiles(CB)
+  if (isa<CopyTileOp>(owner)) {
+    return true;
+  }
+
+  // If from another tile operation, it's a DST intermediate (not from CB)
+  // Check for tile operations (unary and binary)
+  if (isa<ExpTileOp, SqrtTileOp, RsqrtTileOp, ReluTileOp, SigmoidTileOp,
+          TanhTileOp, LogTileOp, AbsTileOp, NegTileOp, AddTileOp, SubTileOp,
+          MulTileOp, MaxTileOp>(owner)) {
+    return false;
+  }
+
+  // Default: assume not from CB (conservative)
+  return false;
+}
+
+/// Extracts the circular buffer (CB) value for operands that come from CBs.
+/// This is used by FPU operations to get the CB for direct access.
+/// Returns the CB value if the operand is a block argument, nullopt otherwise.
+[[maybe_unused]] static std::optional<Value>
+getCircularBufferSource(Value v, Operation *funcOp) {
+  // Only block arguments directly reference CBs
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+    // Find the parent compute op and read the cb_index attribute
+    auto computeOp = dyn_cast<ComputeOp>(blockArg.getOwner()->getParentOp());
+    if (computeOp) {
+      unsigned argIdx = blockArg.getArgNumber();
+      if (auto cbIndex = getCBIndexAttr(computeOp, argIdx)) {
+        // Validate cb_index is in valid range
+        assert(*cbIndex >= 0 && *cbIndex < kMaxCircularBuffers &&
+               "cb_index must be in range [0, 31]");
+
+        // Find the bind_cb op with matching cb_index in the function
+        Value result;
+        funcOp->walk([&](BindCBOp bindOp) {
+          if (bindOp.getCbIndexAttr().getInt() == *cbIndex) {
+            result = bindOp.getResult();
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        return result;
+      }
+    }
+  }
+
+  // For non-block-argument values, cannot determine CB source
+  return std::nullopt;
+}
+
 //===----------------------------------------------------------------------===//
 // Generic Tile Op Lowering Templates (using ConversionPattern)
 //===----------------------------------------------------------------------===//
@@ -273,6 +344,117 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
 
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
+/// Pattern for lowering TTL binary tile ops to TTKernel FPU ops.
+/// FPU binary ops: DST[odst] = op(CB[in0_cb][idx0], CB[in1_cb][idx1])
+///
+/// This pattern matches binary operations where BOTH operands come from
+/// circular buffers (block arguments). FPU operations read directly from
+/// CBs without requiring copy_tile, making them ~2x faster than SFPU.
+///
+/// Pattern priority: HIGH (benefit=2) - matches before SFPU pattern
+template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
+struct TTLTileBinaryToTTKernelFPU : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Check if both operands are from circular buffers
+    if (!isFromCircularBuffer(op.getLhs()) ||
+        !isFromCircularBuffer(op.getRhs())) {
+      return failure(); // Let lower-priority pattern handle it
+    }
+
+    // Get the function context for CB lookup
+    auto funcOp = op->template getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "operation not in function");
+    }
+
+    // Extract CB sources for both operands
+    auto lhsCBOpt = getCircularBufferSource(op.getLhs(), funcOp);
+    auto rhsCBOpt = getCircularBufferSource(op.getRhs(), funcOp);
+
+    if (!lhsCBOpt || !rhsCBOpt) {
+      return failure(); // Cannot extract CB - let SFPU pattern handle
+    }
+
+    Value lhsCB = *lhsCBOpt;
+    Value rhsCB = *rhsCBOpt;
+
+    // Convert CB types to !ttkernel.cb
+    auto *typeConverter = this->getTypeConverter();
+    if (!typeConverter) {
+      return rewriter.notifyMatchFailure(op, "no type converter available");
+    }
+
+    // Convert LHS CB
+    Type targetLhsCbTy;
+    if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(lhsCB.getType())) {
+      targetLhsCbTy = ttkCb;
+    } else if (auto ttlCb =
+                   mlir::dyn_cast<CircularBufferType>(lhsCB.getType())) {
+      targetLhsCbTy = ttk::CBType::get(lhsCB.getContext(),
+                                       ttlCb.getTotalElements(),
+                                       ttlCb.getElementType());
+    }
+    if (!targetLhsCbTy) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to determine lhs cb target type");
+    }
+    lhsCB = typeConverter->materializeTargetConversion(rewriter, loc,
+                                                       targetLhsCbTy, lhsCB);
+    if (!lhsCB || lhsCB.getType() != targetLhsCbTy) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to materialize lhs ttkernel.cb");
+    }
+
+    // Convert RHS CB
+    Type targetRhsCbTy;
+    if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(rhsCB.getType())) {
+      targetRhsCbTy = ttkCb;
+    } else if (auto ttlCb =
+                   mlir::dyn_cast<CircularBufferType>(rhsCB.getType())) {
+      targetRhsCbTy = ttk::CBType::get(rhsCB.getContext(),
+                                       ttlCb.getTotalElements(),
+                                       ttlCb.getElementType());
+    }
+    if (!targetRhsCbTy) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to determine rhs cb target type");
+    }
+    rhsCB = typeConverter->materializeTargetConversion(rewriter, loc,
+                                                       targetRhsCbTy, rhsCB);
+    if (!rhsCB || rhsCB.getType() != targetRhsCbTy) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to materialize rhs ttkernel.cb");
+    }
+
+    // Extract output DST index
+    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t odstIdx = dstIdxAttr.getInt();
+
+    // Create index constants
+    // For block arguments, tile index is 0 (could be extended for tensor.extract)
+    Value idx0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value idx1 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
+
+    // Emit FPU operations
+    rewriter.create<InitOp>(loc, lhsCB, rhsCB);
+    rewriter.create<TTKernelComputeOp>(loc, lhsCB, rhsCB, idx0, idx1, odst);
+
+    // Replace op with LHS operand (result is now in DST register)
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
   }
@@ -453,6 +635,13 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
       TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+// Generate type aliases for FPU binary tile op lowerings
+// FPU ops use direct CB access: DST[odst] = op(CB[in0][idx0], CB[in1][idx1])
+#define TTL_BINARY_TILE_OP_FPU(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+  using TTL_OP##TileFPULowering =                                              \
+      TTLTileBinaryToTTKernelFPU<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -474,7 +663,14 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // Binary ops (ttl.tile_* → ttkernel.*_tiles)
+  // FPU binary ops (HIGH PRIORITY: benefit=2)
+  // Use FPU direct CB access when both operands are from CBs
+#define TTL_BINARY_TILE_OP_FPU(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+  patterns.add<TTL_OP##TileFPULowering>(*typeConverter, ctx, 2);
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // SFPU binary ops (DEFAULT PRIORITY: benefit=0)
+  // Fallback when FPU pattern doesn't match (operands from DST)
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"

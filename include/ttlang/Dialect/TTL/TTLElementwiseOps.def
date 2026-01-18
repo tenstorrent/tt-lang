@@ -50,6 +50,12 @@
 #define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
+// FPU macro for binary ops that can use direct CB access (FPU operations).
+// FPU ops: DST[odst] = op(CB[in0_cb][idx0], CB[in1_cb][idx1])
+#ifndef TTL_BINARY_TILE_OP_FPU
+#define TTL_BINARY_TILE_OP_FPU(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#endif
+
 // Binary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
 // These use the standard 3-arg binary template: DST[odst] = op(DST[src0], DST[src1])
 TTL_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
@@ -59,6 +65,12 @@ TTL_BINARY_TILE_OP(Mul, MulTileOp, MulBinaryTilesInitOp, MulBinaryTilesOp)
 // Special binary ops with non-standard lowering
 // Max uses 2-arg in-place form (TTLTileMaxToTTKernel template)
 TTL_BINARY_TILE_OP_SPECIAL(Max, MaxTileOp, BinaryMaxTileInitOp, BinaryMaxTileOp)
+
+// FPU binary operations: TTL tile op -> TTKernel FPU init/compute ops
+// These use FPU direct CB access when both operands are from CBs
+TTL_BINARY_TILE_OP_FPU(Add, AddTileOp, AddTilesInitOp, AddTilesOp)
+TTL_BINARY_TILE_OP_FPU(Sub, SubTileOp, SubTilesInitOp, SubTilesOp)
+TTL_BINARY_TILE_OP_FPU(Mul, MulTileOp, MulTilesInitOp, MulTilesOp)
 
 // Unary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
 // These use the standard unary template: DST[dst_idx] = op(DST[dst_idx])
@@ -75,3 +87,4 @@ TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp, SigmoidTileInitOp, SigmoidTileOp)
 #undef TTL_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
 #undef TTL_BINARY_TILE_OP_SPECIAL
+#undef TTL_BINARY_TILE_OP_FPU
