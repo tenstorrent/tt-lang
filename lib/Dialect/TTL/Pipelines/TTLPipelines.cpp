@@ -19,6 +19,11 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToCompute());
+
+  // Annotate binary operations with execution strategy (FPU vs SFPU).
+  // This must run before ttl-assign-dst which consumes the annotations.
+  pm.addPass(createTTLAnnotateBinaryOpStrategy());
+
   // DST register assignment and synchronization (strict ordering required):
   // 1. ttl-assign-dst: DST allocation with linear scan and unary merging.
   //    Inserts copy_tile for block args, copy_dst for multi-consumer values,

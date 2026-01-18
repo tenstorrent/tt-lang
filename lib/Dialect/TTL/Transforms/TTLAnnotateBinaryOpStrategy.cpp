@@ -58,7 +58,6 @@ struct TTLAnnotateBinaryOpStrategyPass
         return;
       }
 
-      // Get operands (FPU ops are all binary elementwise ops)
       Value lhs = op->getOperand(0);
       Value rhs = op->getOperand(1);
 
