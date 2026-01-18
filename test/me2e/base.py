@@ -32,7 +32,7 @@ class E2ETestBase:
     OUTPUT_DIR: Path
 
     @pytest.fixture(scope="class", autouse=True)
-    def setup(self, request, device):
+    def setup(self, request):
         """Initialize test class with output directory."""
         request.cls.OUTPUT_DIR = Path(f"build/test/me2e/{request.cls.__name__}")
         request.cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -116,15 +116,19 @@ class E2ETestBase:
     @pytest.mark.order(4)
     def test_execute(self, device):
         """Execute kernels on device."""
+        print(f"[DEBUG test_execute] Starting test_execute")
+        print(f"[DEBUG test_execute] Device: {device}")
         from .builder.kernels import KernelSpec, ThreadType
         from .builder.ttnn_runner import run_binary_op, run_unary_op
 
         # Check for kernel files.
+        print(f"[DEBUG test_execute] Checking for kernel files")
         kernel_dir = self.OUTPUT_DIR / "kernels"
         if not kernel_dir.exists():
             pytest.skip(
                 f"Kernel directory not found: {kernel_dir}. Run test_translate_to_cpp first."
             )
+        print(f"[DEBUG test_execute] Kernel dir exists: {kernel_dir}")
 
         # Load kernel specs from files.
         cpp_files = list(kernel_dir.glob("*.cpp"))
@@ -132,18 +136,22 @@ class E2ETestBase:
             pytest.skip("No kernel C++ files found.")
 
         # Load inputs saved by test_build_module.
+        print(f"[DEBUG test_execute] Loading inputs")
         inputs_file = self.output_file("inputs.pt")
         if not inputs_file.exists():
             pytest.skip(f"Inputs file not found: {inputs_file}.")
 
         inputs = torch.load(inputs_file)
+        print(f"[DEBUG test_execute] Loaded {len(inputs)} inputs")
 
         # Build kernel specs from C++ files.
+        print(f"[DEBUG test_execute] Building kernel specs")
         noc_kernels = []
         compute_kernel = None
 
         for cpp_file in cpp_files:
             name = cpp_file.stem
+            print(f"[DEBUG test_execute] Reading kernel: {name}")
             with open(cpp_file) as f:
                 source = f.read()
 
@@ -159,6 +167,9 @@ class E2ETestBase:
 
         if compute_kernel is None:
             pytest.skip("No compute kernel found in kernel files.")
+        print(
+            f"[DEBUG test_execute] Found {len(noc_kernels)} NOC kernels and 1 compute kernel"
+        )
 
         # Run based on arity.
         if len(inputs) == 2:

@@ -13,10 +13,6 @@ TTLElementwiseOps.def. Use this pattern for:
 
 These tests use MLIR string templates to build ttl.compute regions with
 multiple tile operations fused together.
-
-NOTE: Currently, fused ops only test the compute lowering (stages 1-2).
-Full E2E execution (stages 3-5) requires generating reader/writer threads,
-which is not yet implemented for fused ops.
 """
 
 from typing import Tuple
@@ -29,6 +25,12 @@ from ttmlir.ir import Context, Module
 from ..base import E2ETestBase
 from ..config import E2EConfig
 from ..builder.dtype_utils import torch_dtype_to_mlir_str
+from ..builder.dm_threads import (
+    generate_binary_reader_mlir,
+    generate_unary_reader_mlir,
+    generate_writer_mlir,
+    generate_layout_attrs,
+)
 
 import ttl.dialects.ttl as ttl
 
@@ -71,28 +73,20 @@ class FusedOpTestBase(E2ETestBase):
         raise NotImplementedError("Subclasses must implement get_mlir_template()")
 
     @pytest.mark.order(3)
-    @pytest.mark.skip(
-        reason="Fused ops don't generate reader/writer threads - compute only"
-    )
     def test_translate_to_cpp(self) -> None:
-        """Skip translation for fused ops - they don't have reader/writer threads."""
-        pass
+        """Translate fused op TTKernel to C++ kernels."""
+        super().test_translate_to_cpp()
 
     @pytest.mark.order(4)
-    @pytest.mark.skip(
-        reason="Fused ops don't generate reader/writer threads - compute only"
-    )
+    @pytest.mark.requires_device
     def test_execute(self, device) -> None:
-        """Skip execution for fused ops - they don't have reader/writer threads."""
-        pass
+        """Execute fused op kernels on device."""
+        super().test_execute(device)
 
     @pytest.mark.order(5)
-    @pytest.mark.skip(
-        reason="Fused ops don't generate reader/writer threads - compute only"
-    )
     def test_validate_golden(self) -> None:
-        """Skip validation for fused ops - they don't have reader/writer threads."""
-        pass
+        """Validate fused op result against golden."""
+        super().test_validate_golden()
 
     @pytest.mark.order(1)
     def test_build_module(self, config: E2EConfig) -> None:
@@ -147,48 +141,55 @@ class TestExpAddFused(FusedOpTestBase):
         Build MLIR with ttl.compute region containing tile_add + tile_exp.
 
         Pattern: reader → CB0, CB1 → compute(add, exp) → CB2 → writer
+        Uses helper functions from dm_threads to ensure correct attributes.
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
-        return f"""
-#map = affine_map<(d0, d1) -> (d0, d1)>
+        # Generate layout attributes (includes #dram and #layout)
+        layout_attrs = generate_layout_attrs(config.grid_shape, config.dtype)
+
+        # Generate reader and writer using helper functions
+        reader_mlir = generate_binary_reader_mlir(config.grid_shape, config.dtype, bf)
+        writer_mlir = generate_writer_mlir(
+            config.grid_shape, config.dtype, bf, output_cb_index=2
+        )
+
+        # Manually write the compute function with custom fused operations
+        compute_mlir = f"""
+// Compute thread for exp(a + b) fused operation.
+func.func @compute_exp_add(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>,
+                            %arg1: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
+    -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+    attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+  %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+
+  // Wait for data from reader.
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %output_cb = ttl.attach_cb %output, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+
+  // Fused: add then exp
+  %sum = ttl.add %a, %b : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %result = ttl.exp %sum : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+
+  func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+}}
+"""
+
+        return f"""{layout_attrs}
 
 module {{
-  // Compute thread: exp(a + b) fused operation.
-  func.func @compute_exp_add(
-      %a: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>,
-      %b: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-      -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> {{
-    %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+{reader_mlir}
 
-    %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-    %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-    %cb2 = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+{compute_mlir}
 
-    %a_cb = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-    %b_cb = ttl.attach_cb %b, %cb1 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-    %out_cb = ttl.attach_cb %output, %cb2 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-
-    // Fused computation: exp(a + b)
-    %result = ttl.compute
-        ins(%a_cb, %b_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>,
-                          tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-        outs(%out_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-        {{indexing_maps = [#map, #map, #map],
-         iterator_types = ["parallel", "parallel"]}} {{
-    ^bb0(%a_tile: !ttcore.tile<32x32, {dtype}>,
-         %b_tile: !ttcore.tile<32x32, {dtype}>,
-         %out_tile: !ttcore.tile<32x32, {dtype}>):
-      // Fused: add then exp
-      %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, {dtype}>
-      %exp_result = ttl.tile_exp %sum : !ttcore.tile<32x32, {dtype}>
-      ttl.yield %exp_result : !ttcore.tile<32x32, {dtype}>
-    }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-
-    func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  }}
+{writer_mlir}
 }}
 """
 
@@ -208,48 +209,59 @@ class TestReluMulFused(FusedOpTestBase):
         return torch.relu(a * b)
 
     def get_mlir_template(self, config: E2EConfig) -> str:
-        """Build MLIR with ttl.compute region containing tile_mul + tile_relu."""
+        """
+        Build MLIR with ttl.compute region containing tile_mul + tile_relu.
+
+        Pattern: reader → CB0, CB1 → compute(mul, relu) → CB2 → writer
+        Uses helper functions from dm_threads to ensure correct attributes.
+        """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
-        return f"""
-#map = affine_map<(d0, d1) -> (d0, d1)>
+        # Generate layout attributes (includes #dram and #layout)
+        layout_attrs = generate_layout_attrs(config.grid_shape, config.dtype)
+
+        # Generate reader and writer using helper functions
+        reader_mlir = generate_binary_reader_mlir(config.grid_shape, config.dtype, bf)
+        writer_mlir = generate_writer_mlir(
+            config.grid_shape, config.dtype, bf, output_cb_index=2
+        )
+
+        # Manually write the compute function with custom fused operations
+        compute_mlir = f"""
+// Compute thread for relu(a * b) fused operation.
+func.func @compute_relu_mul(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>,
+                             %arg1: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
+    -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+    attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+  %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+
+  // Wait for data from reader.
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %output_cb = ttl.attach_cb %output, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+
+  // Fused: mul then relu
+  %prod = ttl.mul %a, %b : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %result = ttl.relu %prod : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+
+  func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+}}
+"""
+
+        return f"""{layout_attrs}
 
 module {{
-  // Compute thread: relu(a * b) fused operation.
-  func.func @compute_relu_mul(
-      %a: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>,
-      %b: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-      -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> {{
-    %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+{reader_mlir}
 
-    %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-    %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-    %cb2 = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+{compute_mlir}
 
-    %a_cb = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-    %b_cb = ttl.attach_cb %b, %cb1 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-    %out_cb = ttl.attach_cb %output, %cb2 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-
-    // Fused computation: relu(a * b)
-    %result = ttl.compute
-        ins(%a_cb, %b_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>,
-                          tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-        outs(%out_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-        {{indexing_maps = [#map, #map, #map],
-         iterator_types = ["parallel", "parallel"]}} {{
-    ^bb0(%a_tile: !ttcore.tile<32x32, {dtype}>,
-         %b_tile: !ttcore.tile<32x32, {dtype}>,
-         %out_tile: !ttcore.tile<32x32, {dtype}>):
-      // Fused: mul then relu
-      %prod = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, {dtype}>
-      %relu_result = ttl.tile_relu %prod : !ttcore.tile<32x32, {dtype}>
-      ttl.yield %relu_result : !ttcore.tile<32x32, {dtype}>
-    }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-
-    func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  }}
+{writer_mlir}
 }}
 """
 
@@ -270,42 +282,58 @@ class TestSqrtAbsFused(FusedOpTestBase):
         return torch.sqrt(torch.abs(a))
 
     def get_mlir_template(self, config: E2EConfig) -> str:
-        """Build MLIR with ttl.compute region containing tile_abs + tile_sqrt."""
+        """
+        Build MLIR with ttl.compute region containing tile_abs + tile_sqrt.
+
+        Pattern: reader → CB0 → compute(abs, sqrt) → CB1 → writer
+        Uses helper functions from dm_threads to ensure correct attributes.
+        """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
-        return f"""
-#map = affine_map<(d0, d1) -> (d0, d1)>
+        # Generate layout attributes (includes #dram and #layout)
+        layout_attrs = generate_layout_attrs(config.grid_shape, config.dtype)
 
-module {{
-  // Compute thread: sqrt(abs(a)) fused operation.
-  func.func @compute_sqrt_abs(
-      %a: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-      -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> {{
-    %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+        # Generate reader and writer using helper functions
+        reader_mlir = generate_unary_reader_mlir(config.grid_shape, config.dtype, bf)
+        writer_mlir = generate_writer_mlir(
+            config.grid_shape, config.dtype, bf, output_cb_index=1
+        )
 
-    %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-    %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+        # Manually write the compute function with custom fused operations
+        compute_mlir = f"""
+// Compute thread for sqrt(abs(a)) fused operation.
+func.func @compute_sqrt_abs(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
+    -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+    attributes {{ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+  %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
-    %a_cb = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-    %out_cb = ttl.attach_cb %output, %cb1 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb_out = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
 
-    // Fused computation: sqrt(abs(a))
-    %result = ttl.compute
-        ins(%a_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-        outs(%out_cb : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
-        {{indexing_maps = [#map, #map],
-         iterator_types = ["parallel", "parallel"]}} {{
-    ^bb0(%a_tile: !ttcore.tile<32x32, {dtype}>,
-         %out_tile: !ttcore.tile<32x32, {dtype}>):
-      // Fused: abs then sqrt
-      %abs_result = ttl.tile_abs %a_tile : !ttcore.tile<32x32, {dtype}>
-      %sqrt_result = ttl.tile_sqrt %abs_result : !ttcore.tile<32x32, {dtype}>
-      ttl.yield %sqrt_result : !ttcore.tile<32x32, {dtype}>
-    }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  // Wait for data from reader.
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %output_cb = ttl.attach_cb %output, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
-    func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  }}
+  // Fused: abs then sqrt
+  %abs_result = ttl.abs %a : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %result = ttl.sqrt %abs_result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+
+  func.return %result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 }}
 """
+
+        return f"""{layout_attrs}
+
+module {{
+{reader_mlir}
+
+{compute_mlir}
+
+{writer_mlir}
+}}
+"""
+
+
+1
