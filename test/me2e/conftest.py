@@ -22,10 +22,6 @@ except ImportError:
     TTNN_AVAILABLE = False
     ttnn = None
 
-# Device caching for efficiency.
-_current_device = None
-_current_system_type: Optional[str] = None
-
 
 def pytest_configure(config):
     """Register custom markers."""
@@ -49,43 +45,11 @@ def pytest_configure(config):
 def pytest_addoption(parser):
     """Add custom command line options."""
     parser.addoption(
-        "--sys-desc",
-        action="store",
-        default=None,
-        help="Path to system descriptor file",
-    )
-    parser.addoption(
         "--dump-mlir",
         action="store_true",
         default=False,
         help="Save generated MLIR to build directory",
     )
-
-
-def _get_system_type() -> Optional[str]:
-    """
-    Detect the system type from the current device.
-
-    Returns:
-        System type string ('n150', 'n300', 'p150', 'p300', 'llmbox', 'tg') or None.
-    """
-    global _current_system_type
-
-    if _current_system_type is not None:
-        return _current_system_type
-
-    if not TTNN_AVAILABLE:
-        return None
-
-    try:
-        device = ttnn.open_device(device_id=0)
-        # Default to n150 for single device.
-        # Real detection would inspect chip type and count.
-        _current_system_type = "n150"
-        ttnn.close_device(device)
-        return _current_system_type
-    except Exception:
-        return None
 
 
 def pytest_collection_modifyitems(config, items):
@@ -103,66 +67,64 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_ttnn)
         return
 
-    system_type = _get_system_type()
+    # Check for hardware availability (similar to test/python/conftest.py)
+    import glob
+    import os
+
+    hardware_available = False
+    if os.environ.get("TT_METAL_SIMULATOR"):
+        hardware_available = True
+    elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+        hardware_available = True
+    elif glob.glob("/dev/tenstorrent*"):
+        hardware_available = True
+
+    skip_device = pytest.mark.skip(reason="No Tenstorrent device available")
 
     for item in items:
+        # Skip tests requiring device if hardware not available.
+        if "requires_device" in item.keywords and not hardware_available:
+            item.add_marker(skip_device)
+
         # Process skip_target markers.
         for marker in item.iter_markers(name="skip_target"):
-            targets = set(marker.args)
-            if system_type and system_type in targets:
-                reason = marker.kwargs.get("reason", "")
-                item.add_marker(
-                    pytest.mark.skip(reason=f"Skipped for {system_type}. {reason}")
-                )
+            # Would need device to detect system type - skip for now
+            pass
 
         # Process only_target markers.
         for marker in item.iter_markers(name="only_target"):
-            targets = set(marker.args)
-            if system_type and system_type not in targets:
-                reason = marker.kwargs.get("reason", "")
-                item.add_marker(
-                    pytest.mark.skip(reason=f"Only runs on {targets}. {reason}")
-                )
+            # Would need device to detect system type - skip for now
+            pass
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def device():
     """
-    Session-scoped fixture for Tenstorrent device.
+    Fixture that provides a TTNN device, skipping if unavailable.
 
-    Opens the device once for all tests and closes it when done.
+    Matches the pattern from test/python/conftest.py for consistency.
     """
-    global _current_device
-
     if not TTNN_AVAILABLE:
         pytest.skip("ttnn not available")
 
-    if _current_device is not None:
-        yield _current_device
-        return
+    # Check for hardware availability
+    import glob
+    import os
+
+    hardware_available = False
+    if os.environ.get("TT_METAL_SIMULATOR"):
+        hardware_available = True
+    elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+        hardware_available = True
+    elif glob.glob("/dev/tenstorrent*"):
+        hardware_available = True
+
+    if not hardware_available:
+        pytest.skip("No Tenstorrent device available")
 
     dev = ttnn.open_device(device_id=0)
-    _current_device = dev
     yield dev
     ttnn.close_device(dev)
-    _current_device = None
-
-
-@pytest.fixture(scope="session")
-def system_desc_path(request):
-    """
-    Path to the system descriptor file.
-
-    Uses --sys-desc option if provided, SYSTEM_DESC_PATH env var,
-    or generates one from the current device.
-    """
-    from .builder.system_desc import get_system_desc_path
-
-    cli_path = request.config.getoption("--sys-desc")
-    try:
-        return get_system_desc_path(cli_path)
-    except RuntimeError as e:
-        pytest.skip(str(e))
 
 
 @pytest.fixture

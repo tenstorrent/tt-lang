@@ -32,7 +32,7 @@ class E2ETestBase:
     OUTPUT_DIR: Path
 
     @pytest.fixture(scope="class", autouse=True)
-    def setup(self, request, device, system_desc_path):
+    def setup(self, request, device):
         """Initialize test class with output directory."""
         request.cls.OUTPUT_DIR = Path(f"build/test/me2e/{request.cls.__name__}")
         request.cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,9 @@ class E2ETestBase:
                 module = Module.parse(f.read(), ctx)
 
             # Compile through pass pipeline.
-            compiled = compile_ttl_to_ttkernel(module, None)  # Auto-detect system desc.
+            compiled = compile_ttl_to_ttkernel(
+                module, None
+            )  # Use mock arch from device.
 
             # Save compiled module.
             compiled_file = self.output_file("compiled_module.mlir")

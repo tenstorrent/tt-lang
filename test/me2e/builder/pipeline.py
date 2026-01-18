@@ -9,17 +9,15 @@ Provides compilation from TTL dialect to TTKernel dialect.
 """
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from ttmlir.ir import Module
 from ttmlir.passmanager import PassManager
 
-from .system_desc import get_system_desc_path
+from .device_arch import get_mock_arch_from_device
 
 
-def compile_ttl_to_ttkernel(
-    module: Module, system_desc_path: Optional[str] = None
-) -> Module:
+def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Module:
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
 
@@ -27,22 +25,21 @@ def compile_ttl_to_ttkernel(
 
     Args:
         module: TTL MLIR module to compile.
-        system_desc_path: Path to system descriptor (auto-detected if not provided).
+        device: Optional TTNN device for architecture detection.
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
-    if system_desc_path is None:
-        system_desc_path = get_system_desc_path()
+    # Always use mock architecture detected from device.
+    mock_arch = get_mock_arch_from_device(device)
+    device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
 
-    # Build the pass pipeline matching TTLPipelines.cpp.
-    # func.func passes run on each function, module passes run on module.
     pipeline_str = (
         f"builtin.module("
-        f"ttcore-register-device{{system-desc-path={system_desc_path}}},"
+        f"{device_pass},"
         # TTL to compute conversion (runs on each function).
         f"func.func(convert-ttl-to-compute,"
-        f"ttl-tile-and-assign-dst,"
+        f"ttl-assign-dst,"
         f"ttl-insert-tile-regs-sync,"
         f"ttl-lower-to-loops,"
         f"ttl-annotate-cb-associations),"

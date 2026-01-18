@@ -24,7 +24,7 @@ from .pipeline import compile_ttl_to_ttkernel
 from .kernels import translate_module_to_kernels, write_kernels
 from .ttnn_runner import run_binary_op, run_unary_op
 from .dtype_utils import torch_dtype_to_mlir_str, torch_dtype_to_ttcore_datatype
-from .system_desc import get_system_desc_path
+from .device_arch import get_mock_arch_from_device
 
 __all__ = [
     "build_ttl_module",
@@ -37,5 +37,5 @@ __all__ = [
     "run_unary_op",
     "torch_dtype_to_mlir_str",
     "torch_dtype_to_ttcore_datatype",
-    "get_system_desc_path",
+    "get_mock_arch_from_device",
 ]

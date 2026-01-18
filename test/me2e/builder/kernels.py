@@ -86,8 +86,7 @@ def _shim_tensor_accessor_args(source: str, kernel_name: str) -> str:
 
     Temporary workaround until compiler emits correct CTA offsets and CB indices.
 
-    1. Replaces TensorAccessorArgs<42, 0>() and TensorAccessorArgs<43, 0>()
-       with TensorAccessorArgs<0>() and proper chaining for interleaved tensors.
+    1. Replaces TensorAccessorArgs<N, M>() with TensorAccessorArgs<M>() for interleaved tensors.
     2. Rewrites get_compile_time_arg_val indices to be per-kernel (not global).
 
     Args:
@@ -100,21 +99,23 @@ def _shim_tensor_accessor_args(source: str, kernel_name: str) -> str:
     import re
 
     # For interleaved tensors, TensorAccessorArgs should use single template param
-    # (the CTA offset), not <row_stride, col_stride>.
-    # Pattern: TensorAccessorArgs<42, 0>() or TensorAccessorArgs<43, 0>()
+    # (the CRTA index), not <CTA_offset, CRTA_index>.
+    # The compiler generates patterns like TensorAccessorArgs<2, 0>() where
+    # the first number is the CTA offset and the second is the CRTA index.
 
     # Binary reader: two tensors
     if "reader_binary" in kernel_name.lower():
-        # First tensor: TensorAccessorArgs<42, 0>() -> TensorAccessorArgs<0>()
+        # First tensor: TensorAccessorArgs<2, 0>() -> TensorAccessorArgs<0>()
+        # base_cta_index=2, so first tensor is at offset 2
         source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<42,\s*0>\(\);",
+            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<2,\s*0>\(\);",
             r"TensorAccessorArgs \1 = TensorAccessorArgs<0>();",
             source,
         )
-        # Second tensor: TensorAccessorArgs<43, 0>() -> TensorAccessorArgs<1>()
-        # Note: For interleaved, offset is just tensor index since each uses 1 CTA slot
+        # Second tensor: TensorAccessorArgs<3, 1>() -> TensorAccessorArgs<1>()
+        # base_cta_index=2, second tensor is at offset 3, CRTA index 1
         source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<43,\s*0>\(\);",
+            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<3,\s*1>\(\);",
             r"TensorAccessorArgs \1 = TensorAccessorArgs<1>();",
             source,
         )
@@ -122,9 +123,10 @@ def _shim_tensor_accessor_args(source: str, kernel_name: str) -> str:
 
     # Unary reader: single tensor
     elif "reader_unary" in kernel_name.lower():
-        # Single tensor: TensorAccessorArgs<42, 0>() -> TensorAccessorArgs<0>()
+        # Single tensor: TensorAccessorArgs<1, 0>() -> TensorAccessorArgs<0>()
+        # base_cta_index=1, so tensor is at offset 1
         source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<42,\s*0>\(\);",
+            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<1,\s*0>\(\);",
             r"TensorAccessorArgs \1 = TensorAccessorArgs<0>();",
             source,
         )
@@ -132,16 +134,17 @@ def _shim_tensor_accessor_args(source: str, kernel_name: str) -> str:
 
     # Writer: single tensor, but CB index needs adjustment
     elif "writer" in kernel_name.lower():
-        # Single tensor: TensorAccessorArgs<42, 0>() -> TensorAccessorArgs<0>()
+        # Single tensor: TensorAccessorArgs<1, 0>() -> TensorAccessorArgs<0>()
+        # base_cta_index=1, so tensor is at offset 1, CRTA index 0
         source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<42,\s*0>\(\);",
+            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<1,\s*0>\(\);",
             r"TensorAccessorArgs \1 = TensorAccessorArgs<0>();",
             source,
         )
-        # CB index: rewrite get_compile_time_arg_val(1) -> get_compile_time_arg_val(0) for unary
-        # or get_compile_time_arg_val(2) -> get_compile_time_arg_val(0) for binary
+        # CB index: rewrite get_compile_time_arg_val(2) -> get_compile_time_arg_val(0)
+        # The compiler generates index 2 for the output CB (after 2 input CBs for binary)
         source = re.sub(
-            r"get_compile_time_arg_val\(([12])\)",
+            r"get_compile_time_arg_val\(2\)",
             r"get_compile_time_arg_val(0)",
             source,
         )

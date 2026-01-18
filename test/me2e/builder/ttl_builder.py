@@ -201,7 +201,7 @@ def build_e2e_module_mlir(
 func.func @compute_{op_str}(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>,
                             %arg1: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
     -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
-    attributes {{ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+    attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
   %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
 
   %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
@@ -239,7 +239,7 @@ func.func @compute_{op_str}(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dty
 // Compute thread for {op_str} unary operation.
 func.func @compute_{op_str}(%arg0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>)
     -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
-    attributes {{ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+    attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
   %output = tensor.empty() : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
 
   %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>

@@ -21,10 +21,14 @@ import torch
 from .dtype_utils import torch_dtype_to_mlir_str
 
 
-def _get_tensor_size(grid_shape: Tuple[int, int]) -> int:
-    """Get tensor size in elements (assuming 32x32 tiles)."""
+def _get_tensor_type_str(grid_shape: Tuple[int, int], dtype_str: str) -> str:
+    """Get tensor-of-tiles type string for the given grid shape.
+
+    For TTL, tensors are 4D: [grid_row, grid_col, shard_row, shard_col].
+    For single-core per tile (1x1 shard), this is [rows, cols, 1, 1].
+    """
     rows, cols = grid_shape
-    return rows * 32 * cols * 32
+    return f"tensor<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype_str}>, #layout>"
 
 
 def generate_binary_reader_mlir(
@@ -46,23 +50,27 @@ def generate_binary_reader_mlir(
         MLIR string for the reader function.
     """
     rows, cols = grid_shape
-    tensor_size = _get_tensor_size(grid_shape)
     dtype_str = torch_dtype_to_mlir_str(dtype)
+    tensor_type = _get_tensor_type_str(grid_shape, dtype_str)
 
     return f"""
 // Reader data movement thread for binary ops: reads A and B from DRAM into CB0 and CB1.
-func.func @reader_binary(%a: tensor<{tensor_size}x{dtype_str}, #layout>,
-                         %b: tensor<{tensor_size}x{dtype_str}, #layout>)
-    attributes {{ttl.kernel_thread = #ttkernel.thread<noc>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>
-  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>
+func.func @reader_binary(%a: {tensor_type},
+                         %b: {tensor_type})
+    attributes {{ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+  %c0 = arith.constant 0 : index
+  %c0_0 = arith.constant 0 : index
 
-  // Copy A to CB0.
-  %xf_a = ttl.copy %a, %cb0 : (tensor<{tensor_size}x{dtype_str}, #layout>, !ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>) -> !ttl.transfer_handle<read>
+  // Copy entire A tensor to CB0 (CB shape matches tensor tile grid).
+  %slice_a = ttl.tensor_slice %a[%c0, %c0_0] : {tensor_type} -> {tensor_type}
+  %xf_a = ttl.copy %slice_a, %cb0 : ({tensor_type}, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>) -> !ttl.transfer_handle<read>
   ttl.wait %xf_a : !ttl.transfer_handle<read>
 
-  // Copy B to CB1.
-  %xf_b = ttl.copy %b, %cb1 : (tensor<{tensor_size}x{dtype_str}, #layout>, !ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>) -> !ttl.transfer_handle<read>
+  // Copy entire B tensor to CB1.
+  %slice_b = ttl.tensor_slice %b[%c0, %c0_0] : {tensor_type} -> {tensor_type}
+  %xf_b = ttl.copy %slice_b, %cb1 : ({tensor_type}, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>) -> !ttl.transfer_handle<read>
   ttl.wait %xf_b : !ttl.transfer_handle<read>
 
   func.return
@@ -89,17 +97,20 @@ def generate_unary_reader_mlir(
         MLIR string for the reader function.
     """
     rows, cols = grid_shape
-    tensor_size = _get_tensor_size(grid_shape)
     dtype_str = torch_dtype_to_mlir_str(dtype)
+    tensor_type = _get_tensor_type_str(grid_shape, dtype_str)
 
     return f"""
 // Reader data movement thread for unary ops: reads A from DRAM into CB0.
-func.func @reader_unary(%a: tensor<{tensor_size}x{dtype_str}, #layout>)
-    attributes {{ttl.kernel_thread = #ttkernel.thread<noc>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>
+func.func @reader_unary(%a: {tensor_type})
+    attributes {{ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+  %c0 = arith.constant 0 : index
+  %c0_0 = arith.constant 0 : index
 
-  // Copy A to CB0.
-  %xf_a = ttl.copy %a, %cb0 : (tensor<{tensor_size}x{dtype_str}, #layout>, !ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>) -> !ttl.transfer_handle<read>
+  // Copy entire A tensor to CB0 (CB shape matches tensor tile grid).
+  %slice_a = ttl.tensor_slice %a[%c0, %c0_0] : {tensor_type} -> {tensor_type}
+  %xf_a = ttl.copy %slice_a, %cb0 : ({tensor_type}, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>) -> !ttl.transfer_handle<read>
   ttl.wait %xf_a : !ttl.transfer_handle<read>
 
   func.return
@@ -128,20 +139,23 @@ def generate_writer_mlir(
         MLIR string for the writer function.
     """
     rows, cols = grid_shape
-    tensor_size = _get_tensor_size(grid_shape)
     dtype_str = torch_dtype_to_mlir_str(dtype)
+    tensor_type = _get_tensor_type_str(grid_shape, dtype_str)
 
     return f"""
 // Writer data movement thread: writes output from CB{output_cb_index} to DRAM.
-func.func @writer(%out: tensor<{tensor_size}x{dtype_str}, #layout>)
-    attributes {{ttl.kernel_thread = #ttkernel.thread<noc>}} {{
-  %cb_out = ttl.bind_cb {{cb_index = {output_cb_index}, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>
+func.func @writer(%out: {tensor_type})
+    attributes {{ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
+  %cb_out = ttl.bind_cb {{cb_index = {output_cb_index}, buffer_factor = {buffer_factor}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
+  %c0 = arith.constant 0 : index
+  %c0_0 = arith.constant 0 : index
 
   // Wait for data from compute thread.
-  %cb_view = ttl.cb_wait %cb_out : <[{rows}, {cols}], {dtype_str}, {buffer_factor}> -> tensor<{rows}x{cols}x{dtype_str}>
+  %cb_view = ttl.cb_wait %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>
 
-  // Copy from CB to output tensor.
-  %xf_out = ttl.copy %cb_out, %out : (!ttl.cb<[{rows}, {cols}], {dtype_str}, {buffer_factor}>, tensor<{tensor_size}x{dtype_str}, #layout>) -> !ttl.transfer_handle<write>
+  // Copy entire output from CB to tensor (CB shape matches tensor tile grid).
+  %slice_out = ttl.tensor_slice %out[%c0, %c0_0] : {tensor_type} -> {tensor_type}
+  %xf_out = ttl.copy %cb_out, %slice_out : (!ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>, {tensor_type}) -> !ttl.transfer_handle<write>
   ttl.wait %xf_out : !ttl.transfer_handle<write>
 
   func.return
@@ -168,7 +182,7 @@ def generate_layout_attrs(
 
     return f"""
 #dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>, #dram>, <interleaved>>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype_str}>, #dram>, <interleaved>>
 #map = affine_map<(d0, d1) -> (d0, d1)>
 """
 
