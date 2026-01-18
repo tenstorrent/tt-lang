@@ -29,6 +29,14 @@ class TTLTileOpTrait
 /// Attribute names.
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
+inline constexpr llvm::StringRef kExecutionTargetAttrName = "execution_target";
+
+/// Execution target strategy values for binary operations.
+/// Set by TTLAnnotateBinaryOpStrategy pass, consumed by TTLAssignDST and
+/// ConvertTTLToTTKernel passes.
+inline constexpr llvm::StringRef kExecutionTargetFPU = "fpu";
+inline constexpr llvm::StringRef kExecutionTargetDestReuse = "dest_reuse";
+inline constexpr llvm::StringRef kExecutionTargetSFPU = "sfpu";
 
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
