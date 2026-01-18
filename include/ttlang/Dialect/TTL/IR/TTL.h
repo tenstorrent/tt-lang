@@ -65,6 +65,13 @@ template <typename ConcreteType>
 class TTLTileBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileBinaryOpTrait> {};
 
+/// Operations with this trait can optionally have execution_target attribute
+/// set to "fpu" or "dest_reuse" to indicate that they execute on FPU hardware.
+template <typename ConcreteType>
+class TTLFPUElementwiseOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLFPUElementwiseOpTrait> {
+};
+
 //===----------------------------------------------------------------------===//
 // CB Index Attribute Helpers
 //===----------------------------------------------------------------------===//

@@ -11,12 +11,11 @@
 //
 // Execution target labeling strategies:
 //
-// | Annotation    | Condition           | TTKernel Operation | HW Unit |
-// |---------------|---------------------|-----------------------------------------|---------|
-// | "fpu"         | Both block args     | add_tiles(cb, cb, ...) | FPU     | |
-// "dest_reuse"  | One block arg       | binary_dest_reuse_tiles(cb, dst, ...)
-// | FPU     | | "sfpu"        | Both DST (tile ops) | add_binary_tile(dst, dst,
-// ...)          | SFPU    |
+// | Annotation   | Condition           | TTKernel Operation      | HW   |
+// |--------------|---------------------|-------------------------|------|
+// | "fpu"        | Both block args     | add_tiles               | FPU  |
+// | "dest_reuse" | One block arg       | binary_dest_reuse_tiles | FPU  |
+// | "sfpu"       | Both DST (tile ops) | add_binary_tile         | SFPU |
 //
 // This means FPU optimization applies to most cases:
 // - Simple binary ops: a + b -> FPU
@@ -24,6 +23,9 @@
 // - Fused with unary: exp(a) + b -> dest_reuse (FPU)
 // - Only DST + DST falls back to SFPU (rare in practice if fusion considers
 //   FPU utilization).
+// Note that in some cases, such as for a * b + c * d, maximal fusion is not
+// the optimal strategy since it will prevent the use of the FPU for the sum
+// of a*b and c*d.
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -51,14 +53,12 @@ struct TTLAnnotateBinaryOpStrategyPass
     func::FuncOp funcOp = getOperation();
     MLIRContext *ctx = &getContext();
 
-    // Walk all binary tile operations
     funcOp.walk([&](Operation *op) {
-      // Check if this is a binary tile operation (add, sub, mul)
-      if (!isa<AddTileOp, SubTileOp, MulTileOp>(op)) {
+      if (!op->hasTrait<TTLFPUElementwiseOpTrait>()) {
         return;
       }
 
-      // Get operands
+      // Get operands (FPU ops are all binary elementwise ops)
       Value lhs = op->getOperand(0);
       Value rhs = op->getOperand(1);
 
@@ -75,7 +75,6 @@ struct TTLAnnotateBinaryOpStrategyPass
         strategy = kExecutionTargetSFPU; // Both from DST -> SFPU
       }
 
-      // Annotate operation with execution_target attribute
       op->setAttr(kExecutionTargetAttrName, StringAttr::get(ctx, strategy));
     });
   }
