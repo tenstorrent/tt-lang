@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-from ttlang.ttl_api import *
-from utils import assert_allclose
 import torch
+from ttl.ttl_api import *
+from utils.correctness import assert_allclose
 
 
 @pykernel_gen(
@@ -132,4 +132,3 @@ matmul(lhs, rhs, out)
 
 golden = lhs @ rhs
 assert_allclose(out, golden, rtol=1e-2, atol=1e-4)
-print("Passed")

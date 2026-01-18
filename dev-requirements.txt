@@ -1,8 +1,9 @@
 # Development dependencies
-pytest>=7.0
 pytest-order>=1.0.0
 black
-sphinx
 myst-parser
+pre-commit
+pyright
+sphinx
 sphinx-rtd-theme
 sphinxcontrib-mermaid

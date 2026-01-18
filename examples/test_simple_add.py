@@ -8,8 +8,8 @@ Simple add test with data writeback verification.
 Tests the complete data path: host → L1 → compute → L1 → host
 """
 
-from ttlang.ttl_api import *
 import torch
+from ttl.ttl_api import *
 
 
 @pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])

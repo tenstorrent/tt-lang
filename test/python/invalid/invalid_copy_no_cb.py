@@ -2,12 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn, tt-device
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: copy() requires exactly one CB argument.
+Validation test: ttl.copy() requires exactly one CB argument.
 
-This test verifies that calling copy() with two tensor accessors (no CB)
+This test verifies that calling ttl.copy() with two tensor accessors (no CB)
 raises the expected ValueError.
 """
 
@@ -15,35 +16,25 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
-from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
+import ttl
 
 
-# CHECK: ValueError: copy() requires exactly one CB argument
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1), (1, 1), (1, 1)])
+# CHECK: error: copy() with tensor subscript dst requires block src
+# CHECK-NEXT:   --> {{.*}}invalid_copy_no_cb.py:[[LINE:[0-9]+]]:10
+# CHECK-NEXT:    |
+# CHECK-NEXT: [[LINE]] |         tx = ttl.copy(lhs[0, 0], rhs[0, 0])
+# CHECK-NEXT:    |          ^
+# CHECK-NEXT:    |
+@ttl.kernel(grid=(1, 1))
 def invalid_copy_no_cb_kernel(lhs, rhs, out):
-    """This kernel should fail because copy() needs exactly one CB."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    """This kernel should fail because ttl.copy() needs exactly one CB."""
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
-    @compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    @ttl.compute()
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -53,22 +44,20 @@ def invalid_copy_no_cb_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        # INVALID: copy() between two tensor accessors (no CB)
-        tx = copy(lhs_accessor[0, 0], rhs_accessor[0, 0])
+    @ttl.datamovement()
+    def dm_read():
+        # INVALID: ttl.copy() between two tensor accessors (no CB)
+        tx = ttl.copy(lhs[0, 0], rhs[0, 0])
         tx.wait()
 
-    @datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
-        out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 if __name__ == "__main__":

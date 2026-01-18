@@ -37,18 +37,40 @@ def TTLConvertTTLToCompute
   ];
 }
 
-def TTLTileAndAssignDST
-    : Pass<"ttl-tile-and-assign-dst", "::mlir::func::FuncOp"> {
-  let summary = "Analyze DST usage, insert copy_tile, assign dst_idx, check capacity";
+def TTLAssignDST
+    : Pass<"ttl-assign-dst", "::mlir::func::FuncOp"> {
+  let summary = "DST allocation with copy insertion, interval analysis, and linear scan";
   let description = [{
-    Analyzes DST register pressure in ttl.compute bodies, inserts ttl.copy_tile
-    for block arguments, assigns dst_idx attributes to tile math operations, and
-    emits clear diagnostics on overflow. No loop tiling is performed yet.
+    DST register allocator using linear scan allocation with unary operation
+    merging. Implements the algorithm from DST_Allocation.md:
+
+    Phase 1: Copy insertion for multi-consumer values
+    - When a value has multiple consumers and any is unary (overwrites in-place),
+      inserts ttl.copy_dst operations for all but the last consumer
+
+    Phase 2: Build live intervals with unary merging
+    - Builds interval [start, end] for each tile value
+    - Merges intervals for unary ops (input and output share same DST)
+
+    Phase 3: Linear scan allocation for inputs/intermediates
+    - Allocates DST[0..k-1] for input block arguments and intermediate values
+    - Uses interval-based linear scan (Wimmer & Franz, CGO'10)
+
+    Phase 4: Linear scan allocation for outputs
+    - Allocates DST[k..n] for values yielded from the compute body
+    - Separate region ensures outputs aren't overwritten during computation
+
+    This pass also:
+    - Inserts ttl.copy_tile for block arguments
+    - Assigns dst_idx attributes to tile math operations
+    - Checks capacity and emits diagnostics on overflow
   }];
 
   let options = [
     Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
-           "Override DST register capacity (testing only, default auto-computed).">
+           "Override DST register capacity (testing only, default auto-computed).">,
+    Option<"separateOutputRegion", "separate-output-region", "bool", "false",
+           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
   ];
 
   let dependentDialects = [

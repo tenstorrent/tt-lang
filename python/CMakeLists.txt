@@ -4,7 +4,7 @@ include(AddMLIRPython)
 set(CMAKE_PLATFORM_NO_VERSIONED_SONAME ON)
 
 # The directory at which the Python import tree begins
-set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang")
+set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl")
 
 # Align package prefix with ttmlir so bound types match upstream core.
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ttmlir.")
@@ -70,7 +70,7 @@ set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttmlir")
 # ###############################################################################
 set(TTL_ELEMENTWISE_DEF "${CMAKE_SOURCE_DIR}/include/ttlang/Dialect/TTL/TTLElementwiseOps.def")
 set(GEN_ELEMENTWISE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/gen_elementwise.py")
-set(GENERATED_ELEMENTWISE_PY "${CMAKE_CURRENT_BINARY_DIR}/ttlang/_generated_elementwise.py")
+set(GENERATED_ELEMENTWISE_PY "${CMAKE_CURRENT_BINARY_DIR}/ttl/_generated_elementwise.py")
 
 add_custom_command(
   OUTPUT ${GENERATED_ELEMENTWISE_PY}
@@ -89,36 +89,58 @@ add_custom_target(TTLangGeneratedElementwise DEPENDS ${GENERATED_ELEMENTWISE_PY}
 declare_mlir_python_sources(TTLangPythonCommon)
 
 declare_mlir_python_sources(TTLangPythonCommon.Main
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
     circular_buffer.py
     constants.py
+    diagnostics.py
+    ttl.py
     ttl_api.py
+    ttl_math.py
+    ttl_utils.py
     dtype_utils.py
     ir.py
     layouts.py
     operators.py
-    semaphore.py
 )
 
 # Add generated elementwise ops file
 declare_mlir_python_sources(TTLangPythonCommon.Generated
-  ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ttlang"
+  ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _generated_elementwise.py
 )
 
 declare_mlir_python_sources(TTLangPythonCommon.Src
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttlang"
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
     _src/ttl_ast.py
-    _src/tensor_accessor.py
     _src/tensor_registry.py
+)
+
+declare_mlir_python_sources(TTLangPythonCommon.Utils
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    utils/__init__.py
+    utils/block_allocation.py
+    utils/correctness.py
+)
+
+declare_mlir_python_sources(PykernelPythonSources
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pykernel"
+  SOURCES
+    __init__.py
+    _src/__init__.py
+    _src/base_ast.py
+    _src/kernel_ast.py
+    _src/kernel_types.py
+    _src/utils.py
 )
 
 # ###############################################################################
@@ -131,10 +153,11 @@ set(_TTMLIR_PYTHON_CAPI_HINTS)
 if(DEFINED TTMLIR_BUILD_DIR)
   list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
     "${TTMLIR_BUILD_DIR}/python_packages/ttmlir/_mlir_libs")
-endif()
-if(DEFINED TTMLIR_PATH)
-  list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
-    "${TTMLIR_PATH}/python_packages/ttmlir/_mlir_libs")
+else()
+  if(DEFINED TTMLIR_PATH)
+    list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
+      "${TTMLIR_PATH}/python_packages/ttmlir/_mlir_libs")
+  endif()
 endif()
 list(APPEND _TTMLIR_PYTHON_CAPI_HINTS
   "${TTMLIR_TOOLCHAIN_DIR}/python_packages/ttmlir/_mlir_libs"
@@ -159,9 +182,17 @@ set(TTLANG_PYTHON_SOURCES
   TTLangPythonSiteInitialize
 )
 
+# Create pykernel as a separate top-level package
+add_mlir_python_modules(PykernelPythonModules
+  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/pykernel"
+  INSTALL_PREFIX "python_packages/pykernel"
+  DECLARED_SOURCES
+    PykernelPythonSources
+)
+
 add_mlir_python_modules(TTLangPythonModules
-  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttlang"
-  INSTALL_PREFIX "python_packages/ttlang"
+  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttl"
+  INSTALL_PREFIX "python_packages/ttl"
   DECLARED_SOURCES
     TTLangPythonSources
     TTLangPythonExtensions
@@ -178,6 +209,22 @@ add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
 target_link_libraries(TTLangPythonModules.extension._ttlang.dso PRIVATE
   ${TTMLIR_PYTHON_CAPI_LIB}
 )
+
+# Ensure we do not accidentally resolve libTTMLIRPythonCAPI.so from a different
+# tt-mlir install tree at runtime. Mixed CAPI builds in one Python process can
+# lead to MLIRContext registry mismatches.
+#
+# Constrain RUNPATH to the configured tt-mlir build tree.
+if(DEFINED TTMLIR_BUILD_DIR)
+  set(_TTMLIR_PYTHON_LIBDIR "${TTMLIR_BUILD_DIR}/python_packages/ttmlir/_mlir_libs")
+  set(_TTMLIR_LIBDIR "${TTMLIR_BUILD_DIR}/lib")
+  if(EXISTS "${_TTMLIR_PYTHON_LIBDIR}" AND EXISTS "${_TTMLIR_LIBDIR}")
+    set_target_properties(TTLangPythonModules.extension._ttlang.dso PROPERTIES
+      BUILD_RPATH "\$ORIGIN:${_TTMLIR_LIBDIR}:${_TTMLIR_PYTHON_LIBDIR}"
+      INSTALL_RPATH "\$ORIGIN:${_TTMLIR_LIBDIR}:${_TTMLIR_PYTHON_LIBDIR}"
+    )
+  endif()
+endif()
 
 # ###############################################################################
 # Install

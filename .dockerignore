@@ -1,0 +1,34 @@
+# Build directories
+build/
+.build/
+*.build/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments (but keep env/ source templates)
+venv/
+ENV/
+build/env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker temp
+.tmp/
+
+# Documentation build
+docs/_build/
+docs/sphinx/_build/

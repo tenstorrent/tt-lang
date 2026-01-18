@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
@@ -11,33 +12,23 @@
 # directly from DRAM into CBs.
 
 import torch
-from ttlang.ttl_api import *
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - this test requires ttnn")
-    print("=== DRAM Interleaved Test Complete ===")
-    exit(0)
+import ttnn
+import ttl
+from test_helpers import to_dram
 
 
-@pykernel_gen(
-    grid=(1, 1),
-    block_factors=[(1, 1), (1, 1), (1, 1)],
-)
+@ttl.kernel(grid=(1, 1))
 def add_dram_direct(lhs, rhs, out):
     """
     Add kernel that reads directly from DRAM interleaved tensors.
     No L1 sharding required - DMA pulls from DRAM into CBs.
     """
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
-    @compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    @ttl.compute()
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -47,30 +38,28 @@ def add_dram_direct(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
+    @ttl.datamovement()
+    def dm_read():
         # Read from DRAM directly (no L1 intermediate!)
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    @ttl.datamovement()
+    def dm_write():
         # Write result back to DRAM directly
-        out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # CHECK: Testing DRAM Interleaved
@@ -82,39 +71,17 @@ try:
     lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
     rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
-    expected = lhs_torch + rhs_torch  # 5.0
+    expected = lhs_torch + rhs_torch
 
     # Create DRAM interleaved tensors - NO move to L1!
-    lhs = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,  # Stay in DRAM
-    )
-    rhs = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    lhs = to_dram(lhs_torch, device)
+    rhs = to_dram(rhs_torch, device)
+    out = to_dram(out_torch, device)
 
     print(f"lhs memory_config: {lhs.memory_config()}")
-    print(f"rhs memory_config: {rhs.memory_config()}")
-    print(f"out memory_config: {out.memory_config()}")
     # CHECK: DRAM
 
-    print("\n=== Running kernel with DRAM tensors directly ===")
     add_dram_direct(lhs, rhs, out)
-
     result = ttnn.to_torch(out)
 
     print(f"\nResult[0,0] = {result[0, 0].item()}")

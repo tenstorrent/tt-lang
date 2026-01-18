@@ -8,6 +8,8 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
+#include "llvm/ADT/SetVector.h"
+
 namespace mlir::tt::ttl {
 
 /// Trace through unrealized conversion casts to find the original value.
@@ -59,6 +61,74 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
 inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }
+
+/// Check if an operation is a unary elementwise tensor op.
+inline bool isUnaryElementwiseOp(mlir::Operation *op) {
+  return op->hasTrait<TTLUnaryElementwiseOpTrait>();
+}
+
+/// Check if an operation is a binary elementwise tensor op.
+inline bool isBinaryElementwiseOp(mlir::Operation *op) {
+  return op->hasTrait<TTLBinaryElementwiseOpTrait>();
+}
+
+/// Check if an operation is a tile-level unary op (executes in-place on DST).
+inline bool isTileUnaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileUnaryOpTrait>();
+}
+
+/// Check if an operation is a tile-level binary op (writes to fresh DST slot).
+inline bool isTileBinaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileBinaryOpTrait>();
+}
+
+/// Check if an operation is any elementwise tensor op (unary or binary).
+inline bool isElementwiseOp(mlir::Operation *op) {
+  return isUnaryElementwiseOp(op) || isBinaryElementwiseOp(op);
+}
+
+/// Get the operands of an elementwise op (1 for unary, 2 for binary).
+inline mlir::SmallVector<mlir::Value, 2>
+getElementwiseOperands(mlir::Operation *op) {
+  if (isUnaryElementwiseOp(op)) {
+    return {op->getOperand(0)};
+  }
+  if (isBinaryElementwiseOp(op)) {
+    return {op->getOperand(0), op->getOperand(1)};
+  }
+  return {};
+}
+
+/// Reason why elementwise tracing failed.
+enum class TraceFailureReason {
+  Success,
+  NotCBAttached,
+  NotElementwiseOp,
+  MultipleUses,
+};
+
+/// Result of tracing through elementwise ops to CB-attached roots.
+struct ElementwiseTraceResult {
+  /// CB-attached input values that form the roots of the chain.
+  llvm::SmallSetVector<mlir::Value, 2> rootInputs;
+  /// Operations in the chain, topologically ordered (roots first, sink last).
+  llvm::SmallSetVector<mlir::Operation *, 4> opsInOrder;
+  /// Failure reason (Success if tracing succeeded).
+  TraceFailureReason failureReason = TraceFailureReason::Success;
+  /// The value where tracing failed (only set on failure).
+  mlir::Value failedValue;
+};
+
+/// Trace a value through elementwise ops to find CB-attached roots.
+/// Recursively traces through arbitrary depth elementwise chains.
+///
+/// On failure, sets failureReason and failedValue in the result.
+/// Check failureReason == TraceFailureReason::Success to determine success.
+ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value);
+
+/// Emit diagnostics explaining why elementwise fusion failed.
+void emitFusionFailureDiagnostics(mlir::Operation *op,
+                                  const ElementwiseTraceResult &trace);
 
 /// Find the first operation of type OpTy in the block preceding the given
 /// operation. Scans backwards from the operation, stopping at block start or

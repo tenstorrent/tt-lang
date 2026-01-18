@@ -2,36 +2,32 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
-from typing import TYPE_CHECKING
-import torch
 import math
-
-from sim import ttl
+import ttl
+import ttnn
 from sim.typedefs import Pipe
-
-if TYPE_CHECKING:
-    from sim.pykernel_env import granularity
+from sim.testing import assert_pcc
 
 
 @ttl.kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
-    granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
 def eltwise_pipe_core3(
-    a_in: torch.Tensor,
-    b_in: torch.Tensor,
-    c_in: torch.Tensor,
-    out: torch.Tensor,
-    mode=None,  # Optional execution mode
+    a_in: ttnn.Tensor,
+    b_in: ttnn.Tensor,
+    c_in: ttnn.Tensor,
+    out: ttnn.Tensor,
 ) -> None:
+    # Set granularity
+    granularity = 2
+
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
-    assert all(ttl.is_tiled(tensor, ttl.TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
 
     # Check that c_in is 1x1 and expand it to ttl.TILE_SHAPE
     assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
-    c_expanded = c_in.expand(ttl.TILE_SHAPE[0], ttl.TILE_SHAPE[1])
+    c_expanded = ttnn.repeat(c_in, ttl.TILE_SHAPE)
 
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
@@ -43,11 +39,6 @@ def eltwise_pipe_core3(
         2  # TODO: Should buffer factor be tunable by the user? Or tuned by kernel?
     )
 
-    a_accessor = ttl.TensorAccessor(a_in, index_type=ttl.IndexType.TILE)
-    b_accessor = ttl.TensorAccessor(b_in, index_type=ttl.IndexType.TILE)
-    c_accessor = ttl.TensorAccessor(c_expanded, index_type=ttl.IndexType.TILE)
-    out_accessor = ttl.TensorAccessor(out, index_type=ttl.IndexType.TILE)
-
     # Create circular buffers
     a_in_cb = ttl.make_circular_buffer_like(
         a_in, shape=(granularity, 1), buffer_factor=buffer_factor
@@ -56,7 +47,7 @@ def eltwise_pipe_core3(
         b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
     c_in_cb = ttl.make_circular_buffer_like(
-        c_in, shape=(1, 1), buffer_factor=buffer_factor
+        c_expanded, shape=(1, 1), buffer_factor=buffer_factor
     )
     out_cb = ttl.make_circular_buffer_like(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
@@ -112,7 +103,7 @@ def eltwise_pipe_core3(
             print("dm0 (C multicast SRC): ", f"core={core_num}")
             # C is only 1 tile
             c_block = c_in_cb.reserve()
-            tx = ttl.copy(c_accessor[slice(0, 1), slice(0, 1)], c_block)
+            tx = ttl.copy(c_expanded[slice(0, 1), slice(0, 1)], c_block)
             tx.wait()
             tx2 = ttl.copy(
                 c_block, p
@@ -146,11 +137,11 @@ def eltwise_pipe_core3(
                 col_slice = slice(ct, ct + 1)
                 # Write the cbs just as above
                 a_block = a_in_cb.reserve()
-                tx = ttl.copy(a_accessor[row_slice, col_slice], a_block)
+                tx = ttl.copy(a_in[row_slice, col_slice], a_block)
                 tx.wait()
                 a_in_cb.push()
                 b_block = b_in_cb.reserve()
-                tx = ttl.copy(b_accessor[row_slice, col_slice], b_block)
+                tx = ttl.copy(b_in[row_slice, col_slice], b_block)
                 tx.wait()
                 b_in_cb.push()
 
@@ -170,12 +161,26 @@ def eltwise_pipe_core3(
 
                 out_block = out_cb.wait()
 
-                tx = ttl.copy(out_block, out_accessor[row_slice, col_slice])
+                tx = ttl.copy(out_block, out[row_slice, col_slice])
                 tx.wait()
                 out_cb.pop()
 
     # Execute the program across all cores
-    if mode is not None:
-        ttl.Program(compute_func, dm0, dm1, execution_mode=mode)(a_in, b_in, out)
-    else:
-        ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
+    ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
+
+
+def main() -> None:
+    dim = 128
+    a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
+    b_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
+    c_in = ttnn.rand((1, 1), dtype=ttnn.float32)
+    out = ttnn.empty((dim, dim), dtype=ttnn.float32)
+
+    eltwise_pipe_core3(a_in, b_in, c_in, out)
+
+    golden = a_in * b_in + c_in
+    assert_pcc(golden, out)
+
+
+if __name__ == "__main__":
+    main()

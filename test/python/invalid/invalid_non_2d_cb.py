@@ -2,48 +2,39 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn, tt-device
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: only 2D CBs are supported.
+Validation test: only 2D tensors are supported.
 
-This test verifies that using a 3D tensor (which creates 3D CB) raises ValueError.
-The CB shape validation check comes before tensor validation in the code path.
+This test verifies that using a 3D tensor raises ValueError.
+The tensor shape validation happens when building the MLIR type.
 """
 
 import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
-from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
+import ttl
 
 
-# CHECK: ValueError: Only 2D CBs supported, got shape
-@pykernel_gen(grid=(1, 1), block_factors=[(1, 1, 1), (1, 1, 1), (1, 1, 1)])
-def invalid_3d_cb_kernel(lhs, rhs, out):
-    """This kernel should fail because 3D tensors create 3D CBs which are not supported."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+# CHECK: error: Only 2D tensors supported, got shape
+# CHECK-NEXT:   --> {{.*}}invalid_non_2d_cb.py:[[LINE:[0-9]+]]:1
+# CHECK-NEXT:    |
+# CHECK-NEXT: [[LINE]] |         lhs = ttnn.to_memory_config(lhs, memory_config=ttnn.L1_MEMORY_CONFIG)
+# CHECK-NEXT:     |     ^
+# CHECK-NEXT:     |
+@ttl.kernel(grid=(1, 1))
+def invalid_3d_tensor_kernel(lhs, rhs, out):
+    """This kernel should fail because 3D tensors are not supported."""
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
-    @compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    @ttl.compute()
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -53,34 +44,32 @@ def invalid_3d_cb_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+    @ttl.datamovement()
+    def dm_read():
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
-        out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 if __name__ == "__main__":
     import torch
 
-    print("=== Non-2D CB Validation Test ===")
+    print("=== Non-2D Tensor Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 
@@ -117,7 +106,7 @@ if __name__ == "__main__":
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         # This should raise ValueError
-        invalid_3d_cb_kernel(lhs, rhs, out)
+        invalid_3d_tensor_kernel(lhs, rhs, out)
 
         print("ERROR: Expected ValueError was not raised!")
         exit(1)

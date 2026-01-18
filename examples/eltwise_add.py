@@ -2,29 +2,27 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
-from typing import TYPE_CHECKING
-import torch
 import math
 
-from sim import ttl
-
-if TYPE_CHECKING:
-    from sim.pykernel_env import granularity
+import ttl
+import ttnn
+from sim.testing import assert_pcc
 
 
 @ttl.kernel(
     grid="auto",  # NOTE: allow compiler to choose grid
-    granularity=2,  # compute granularity. could be passed by user, or left for auto-tuning
 )
 def eltwise_add(
-    a_in: torch.Tensor,
-    b_in: torch.Tensor,
-    out: torch.Tensor,
-    mode=None,  # Optional execution mode
+    a_in: ttnn.Tensor,
+    b_in: ttnn.Tensor,
+    out: ttnn.Tensor,
 ) -> None:
+
+    # Set granularity
+    granularity = 2
+
     # Assuming lightweight op input validation should be here
     assert a_in.shape == b_in.shape == out.shape
-    assert all(ttl.is_tiled(tensor, ttl.TILE_SHAPE) for tensor in [a_in, b_in, out])
     assert a_in.shape[0] % granularity == 0
 
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
@@ -34,10 +32,6 @@ def eltwise_add(
     grid_h, grid_w = ttl.grid_size()
     cols_per_core = math.ceil(col_tiles / (grid_h * grid_w))
     buffer_factor = 2
-
-    a_accessor = ttl.TensorAccessor(a_in, index_type=ttl.IndexType.TILE)
-    b_accessor = ttl.TensorAccessor(b_in, index_type=ttl.IndexType.TILE)
-    out_accessor = ttl.TensorAccessor(out, index_type=ttl.IndexType.TILE)
 
     # Create circular buffers
     a_in_cb = ttl.make_circular_buffer_like(
@@ -93,11 +87,11 @@ def eltwise_add(
                 col_slice = slice(ct, ct + 1)
                 # Write the cbs just as above
                 a_block = a_in_cb.reserve()
-                tx = ttl.copy(a_accessor[row_slice, col_slice], a_block)
+                tx = ttl.copy(a_in[row_slice, col_slice], a_block)
                 tx.wait()
                 a_in_cb.push()
                 b_block = b_in_cb.reserve()
-                tx = ttl.copy(b_accessor[row_slice, col_slice], b_block)
+                tx = ttl.copy(b_in[row_slice, col_slice], b_block)
                 tx.wait()
                 b_in_cb.push()
 
@@ -116,7 +110,7 @@ def eltwise_add(
                 out_block = out_cb.wait()
                 # out_block[100] # accessing out of bounds should fail
 
-                tx = ttl.copy(out_block, out_accessor[row_slice, col_slice])
+                tx = ttl.copy(out_block, out[row_slice, col_slice])
                 tx.wait()
                 out_cb.pop()
                 # TODO: We might want better error messages, most of them come from the underlying CBAPI
@@ -126,7 +120,20 @@ def eltwise_add(
                 # out_cb.pop() # double pop should fail
 
     # Execute the program across all cores
-    if mode is not None:
-        ttl.Program(compute_func, dm0, dm1, execution_mode=mode)(a_in, b_in, out)
-    else:
-        ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
+    ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
+
+
+def main() -> None:
+    dim = 256
+    a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
+    b_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
+    out = ttnn.empty((dim, dim), dtype=ttnn.float32)
+
+    eltwise_add(a_in, b_in, out)
+
+    golden = a_in + b_in
+    assert_pcc(golden, out)
+
+
+if __name__ == "__main__":
+    main()

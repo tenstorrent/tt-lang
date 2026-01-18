@@ -6,15 +6,11 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from typing import Annotated, TypeVar, Tuple, Optional, NamedTuple, Union
-from pydantic import Field
-from enum import Enum, auto
 from dataclasses import dataclass
-import torch
+from enum import Enum, auto
+from typing import Annotated, NamedTuple, Tuple, Union
 
-CBElemTypeVar = TypeVar("CBElemTypeVar", int, torch.Tensor)
-# Type alias for circular buffer slots
-CBSlot = Optional[CBElemTypeVar]
+from pydantic import Field
 
 
 # TODO: Expand IndexType as needed, see relevant issue:

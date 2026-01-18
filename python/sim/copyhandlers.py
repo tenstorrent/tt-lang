@@ -9,19 +9,33 @@ New transfer types can be added by creating a new handler and decorating it with
 @register_copy_handler.
 """
 
-from typing import Any, Dict, Protocol, Tuple, Type, Deque, List, Union, TypedDict
-from collections import deque
 import threading
 import time
-import torch
-from .torch_utils import tile_count
+from collections import deque
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Deque,
+    Dict,
+    List,
+    Protocol,
+    Tuple,
+    Type,
+    TypedDict,
+    Union,
+)
+
 from .block import Block
-from .constants import TILE_SHAPE, COPY_PIPE_TIMEOUT
-from .typedefs import Pipe, Count
+from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
+from .ttnnsim import Tensor, tensor_shape_in_tiles
+from .typedefs import Count, Pipe, Shape
+
+if TYPE_CHECKING:
+    from .cb import ReserveContext, WaitContext
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
-# CopyEndpointTypes: List[type] = [torch.Tensor, Block[torch.Tensor], Pipe]
+# CopyEndpointTypes: List[type] = [torch.Tensor, Block, Pipe]
 # CopyEndpoint = Union[*CopyEndpointTypes]
 # CopyEndpointType = Union[*[Type[x] for x in CopyEndpointTypes]]
 #
@@ -31,8 +45,46 @@ from .typedefs import Pipe, Count
 
 # Copy endpoint types - these are the valid types for copy transfers
 # To add a new endpoint type, add it to the Unions and implement a handler for it
-CopyEndpoint = Union[torch.Tensor, Block[torch.Tensor], Pipe]
-CopyEndpointType = Union[Type[torch.Tensor], Type[Block[torch.Tensor]], Type[Pipe]]
+CopyEndpoint = Union[Tensor, Block, Pipe, "ReserveContext", "WaitContext"]
+CopyEndpointType = Union[
+    Type[Tensor],
+    Type[Block],
+    Type[Pipe],
+    Type["ReserveContext"],
+    Type["WaitContext"],
+]
+
+
+# Tile calculation utilities
+def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
+    """
+    Calculate the total number of tiles in a tensor.
+
+    Args:
+        tensor_shape: Shape of the tensor (height, width, ...)
+        tile_shape: Shape of each tile (height, width, ...)
+
+    Returns:
+        Total number of tiles needed to represent the tensor
+
+    Example:
+        For a (64, 128) tensor with tile_shape=(32, 32):
+        tile_count((64, 128), (32, 32)) = (64//32) * (128//32) = 2 * 4 = 8 tiles
+    """
+    from numpy import prod
+
+    if len(tensor_shape) != len(tile_shape):
+        raise ValueError(
+            f"tensor_shape and tile_shape must have same dimensions: {len(tensor_shape)} vs {len(tile_shape)}"
+        )
+    return int(
+        prod(
+            [
+                tensor_dim // tile_dim
+                for tensor_dim, tile_dim in zip(tensor_shape, tile_shape)
+            ]
+        )
+    )
 
 
 # Global pipe state for simulating NoC pipe communication
@@ -42,7 +94,7 @@ CopyEndpointType = Union[Type[torch.Tensor], Type[Block[torch.Tensor]], Type[Pip
 # - lock: threading.Lock to guard queue and receiver count updates
 # In a real implementation this would be handled by NoC hardware.
 class _PipeEntry(TypedDict):
-    queue: Deque[Tuple[List[torch.Tensor], Count]]
+    queue: Deque[Tuple[List[Tensor], Count]]
     event: threading.Event
     lock: threading.Lock
 
@@ -116,7 +168,7 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
         Decorator function
 
     Example:
-        @register_copy_handler(torch.Tensor, Block)
+        @register_copy_handler(Tensor, Block)
         class TensorToBlockHandler:
             def validate(self, src, dst): ...
             def transfer(self, src, dst): ...
@@ -129,98 +181,15 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
     return decorator
 
 
-@register_copy_handler(torch.Tensor, Block)
-class TensorToBlockHandler:
-    """Handler for Tensor → Block transfers."""
-
-    def validate(self, src: torch.Tensor, dst: Block[torch.Tensor]) -> None:
-        """Validate tensor to Block transfer."""
-        if len(src.shape) != 2:
-            raise ValueError(
-                f"Copy only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
-            )
-
-        num_tiles = tile_count(src.shape, TILE_SHAPE)
-        expected_tiles = len(dst)
-
-        if num_tiles != expected_tiles:
-            raise ValueError(
-                f"Tensor contains {num_tiles} tiles but Block has {expected_tiles} slots"
-            )
-
-    def transfer(self, src: torch.Tensor, dst: Block[torch.Tensor]) -> None:
-        """Transfer tensor data to Block by splitting into tiles."""
-        num_tiles = tile_count(src.shape, TILE_SHAPE)
-        width_tiles = src.shape[1] // TILE_SHAPE[1]
-
-        # Extract tiles in row-major order
-        for tile_idx in range(num_tiles):
-            # Convert linear index to 2D tile coordinates
-            h_tile = tile_idx // width_tiles
-            w_tile = tile_idx % width_tiles
-
-            # Calculate tensor slice coordinates
-            start_row = h_tile * TILE_SHAPE[0]
-            end_row = (h_tile + 1) * TILE_SHAPE[0]
-            start_col = w_tile * TILE_SHAPE[1]
-            end_col = (w_tile + 1) * TILE_SHAPE[1]
-
-            tile = src[start_row:end_row, start_col:end_col]
-            dst[tile_idx] = tile
-
-    def can_wait(self, src: torch.Tensor, dst: Block[torch.Tensor]) -> bool:
-        """Tensor to Block copy completes immediately on wait()."""
-        return True
-
-
-@register_copy_handler(Block, torch.Tensor)
-class BlockToTensorHandler:
-    """Handler for Block → Tensor transfers."""
-
-    def validate(self, src: Block[torch.Tensor], dst: torch.Tensor) -> None:
-        """Validate Block to tensor transfer."""
-        if len(dst.shape) != 2:
-            raise ValueError(
-                f"Copy only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
-            )
-
-        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
-        if len(src) != dst_tiles:
-            raise ValueError(f"Expected {len(src)} tiles but found {dst_tiles}")
-
-    def transfer(self, src: Block[torch.Tensor], dst: torch.Tensor) -> None:
-        """Transfer Block data to tensor by combining tiles."""
-        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
-        width_tiles = dst.shape[1] // TILE_SHAPE[1]
-
-        # Reconstruct tensor by placing tiles in their proper 2D positions
-        for tile_idx in range(dst_tiles):
-            # Convert linear index to 2D tile coordinates
-            h_tile = tile_idx // width_tiles
-            w_tile = tile_idx % width_tiles
-
-            start_row = h_tile * TILE_SHAPE[0]
-            end_row = (h_tile + 1) * TILE_SHAPE[0]
-            start_col = w_tile * TILE_SHAPE[1]
-            end_col = (w_tile + 1) * TILE_SHAPE[1]
-
-            tile = src[tile_idx]
-            dst[start_row:end_row, start_col:end_col] = tile
-
-    def can_wait(self, src: Block[torch.Tensor], dst: torch.Tensor) -> bool:
-        """Block to Tensor copy completes immediately on wait()."""
-        return True
-
-
 @register_copy_handler(Block, Pipe)
 class BlockToPipeHandler:
     """Handler for Block → Pipe (pipe send)."""
 
-    def validate(self, src: Block[torch.Tensor], dst: Pipe) -> None:
+    def validate(self, src: Block, dst: Pipe) -> None:
         """Validate pipe send - no specific validation needed."""
         pass
 
-    def transfer(self, src: Block[torch.Tensor], dst: Pipe) -> None:
+    def transfer(self, src: Block, dst: Pipe) -> None:
         """Pipe send: store data in shared buffer accessible by all cores."""
         src_data = [src[i] for i in range(len(src))]
         # Initialize per-pipe state atomically so all threads see the
@@ -259,8 +228,93 @@ class BlockToPipeHandler:
             # Signal that data is available
             entry["event"].set()
 
-    def can_wait(self, src: Block[torch.Tensor], dst: Pipe) -> bool:
+    def can_wait(self, src: Block, dst: Pipe) -> bool:
         """Block to Pipe copy completes immediately on wait()."""
+        return True
+
+
+@register_copy_handler(Tensor, Block)
+class TensorToBlockHandler:
+    """Handler for TTNN.Tensor → Block transfers using tile-level indexing."""
+
+    def validate(self, src: Tensor, dst: Block) -> None:
+        if len(src.shape) != 2:
+            raise ValueError(
+                f"Copy only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
+            )
+
+        # Validate tensor shape matches block shape (in tiles)
+        block_shape = dst.shape
+        src_shape_in_tiles = tensor_shape_in_tiles(src, TILE_SHAPE)
+        if src_shape_in_tiles != block_shape:
+            raise ValueError(
+                f"Tensor shape {src.shape} (={src_shape_in_tiles} tiles) does not match "
+                f"Block shape {block_shape} tiles (={tuple(d * t for d, t in zip(block_shape, TILE_SHAPE))} elements)"
+            )
+
+    def transfer(self, src: Tensor, dst: Block) -> None:
+        """Transfer tensor data to Block using tile-level indexing.
+
+        Extracts tiles from src using tile coordinates and stores them as
+        ttnn.Tensor objects in the Block slots.
+        """
+        num_tiles = tile_count(src.shape, TILE_SHAPE)
+        width_tiles = src.shape[1] // TILE_SHAPE[1]
+
+        for tile_idx in range(num_tiles):
+            # Convert linear index to 2D tile coordinates
+            h_tile = tile_idx // width_tiles
+            w_tile = tile_idx % width_tiles
+
+            # Extract single tile using tile coordinates [h:h+1, w:w+1]
+            # This returns a ttnn.Tensor with shape (TILE_HEIGHT, TILE_WIDTH)
+            tile = src[h_tile : h_tile + 1, w_tile : w_tile + 1]
+            dst[tile_idx] = tile
+
+    def can_wait(self, src: Tensor, dst: Block) -> bool:
+        return True
+
+
+@register_copy_handler(Block, Tensor)
+class BlockToTensorHandler:
+    """Handler for Block → TTNN.Tensor transfers using tile-level indexing."""
+
+    def validate(self, src: Block, dst: Tensor) -> None:
+        if len(dst.shape) != 2:
+            raise ValueError(
+                f"Copy only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
+            )
+
+        # Validate tensor shape matches block shape (in tiles)
+        block_shape = src.shape
+        dst_shape_in_tiles = tensor_shape_in_tiles(dst, TILE_SHAPE)
+        if dst_shape_in_tiles != block_shape:
+            raise ValueError(
+                f"Tensor shape {dst.shape} (={dst_shape_in_tiles} tiles) does not match "
+                f"Block shape {block_shape} tiles (={tuple(d * t for d, t in zip(block_shape, TILE_SHAPE))} elements)"
+            )
+
+    def transfer(self, src: Block, dst: Tensor) -> None:
+        """Transfer Block data to tensor using tile-level indexing.
+
+        Retrieves ttnn.Tensor objects from Block slots and places them into
+        the destination tensor using tile coordinates.
+        """
+        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
+        width_tiles = dst.shape[1] // TILE_SHAPE[1]
+
+        for tile_idx in range(dst_tiles):
+            # Convert linear index to 2D tile coordinates
+            h_tile = tile_idx // width_tiles
+            w_tile = tile_idx % width_tiles
+
+            # Get tile from Block (this is a ttnn.Tensor)
+            tile = src[tile_idx]
+
+            # Place tile into destination using tile coordinates [h:h+1, w:w+1]
+            dst[h_tile : h_tile + 1, w_tile : w_tile + 1] = tile
+
+    def can_wait(self, src: Block, dst: Tensor) -> bool:
         return True
 
 
@@ -268,11 +322,11 @@ class BlockToPipeHandler:
 class PipeToBlockHandler:
     """Handler for Pipe → Block (pipe receive)."""
 
-    def validate(self, src: Pipe, dst: Block[torch.Tensor]) -> None:
+    def validate(self, src: Pipe, dst: Block) -> None:
         """Validate pipe receive - validation happens during transfer when data is available."""
         pass
 
-    def can_wait(self, src: Pipe, dst: Block[torch.Tensor]) -> bool:
+    def can_wait(self, src: Pipe, dst: Block) -> bool:
         """Pipe to Block copy can only proceed when pipe has data."""
         # Check if pipe has data available without blocking
         with _pipe_registry_lock:
@@ -283,7 +337,7 @@ class PipeToBlockHandler:
         with entry["lock"]:
             return len(entry["queue"]) > 0
 
-    def transfer(self, src: Pipe, dst: Block[torch.Tensor]) -> None:
+    def transfer(self, src: Pipe, dst: Block) -> None:
         """Pipe receive: retrieve data from shared pipe buffer."""
         # Use an event to wait for data instead of polling. This reduces CPU
         # usage and provides a cleaner synchronization primitive for tests.
@@ -301,7 +355,7 @@ class PipeToBlockHandler:
                 _pipe_buffer[src] = new_entry
                 entry = new_entry
         event: threading.Event = entry["event"]
-        queue: Deque[Tuple[List[torch.Tensor], Count]] = entry["queue"]
+        queue: Deque[Tuple[List[Tensor], Count]] = entry["queue"]
         lock: threading.Lock = entry["lock"]
 
         while True:
@@ -352,3 +406,101 @@ class PipeToBlockHandler:
                     queue[0] = (src_data, remaining_receivers)
 
                 return
+
+
+# ===== Context Manager Wrapper Handlers =====
+# These handlers delegate to the underlying Block handlers for _ReserveContext and _WaitContext
+
+
+# Import here to avoid circular dependency
+from .cb import ReserveContext, WaitContext
+
+
+# Tensor → ReserveContext (delegates to Tensor → Block)
+@register_copy_handler(Tensor, ReserveContext)
+class TensorToReserveContextHandler:
+    """Handler for Tensor → ReserveContext (delegates to Tensor → Block)."""
+
+    def validate(self, src: Tensor, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        TensorToBlockHandler().validate(src, dst.block())
+
+    def transfer(self, src: Tensor, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        TensorToBlockHandler().transfer(src, dst.block())
+
+    def can_wait(self, src: Tensor, dst: "ReserveContext") -> bool:
+        # Delegate to the Block handler
+        return TensorToBlockHandler().can_wait(src, dst.block())
+
+
+# WaitContext → Tensor (delegates to Block → Tensor)
+@register_copy_handler(WaitContext, Tensor)
+class WaitContextToTensorHandler:
+    """Handler for WaitContext → Tensor (delegates to Block → Tensor)."""
+
+    def validate(self, src: "WaitContext", dst: Tensor) -> None:
+        # Delegate to the Block handler
+        BlockToTensorHandler().validate(src.block(), dst)
+
+    def transfer(self, src: "WaitContext", dst: Tensor) -> None:
+        # Delegate to the Block handler
+        BlockToTensorHandler().transfer(src.block(), dst)
+
+    def can_wait(self, src: "WaitContext", dst: Tensor) -> bool:
+        # Delegate to the Block handler
+        return BlockToTensorHandler().can_wait(src.block(), dst)
+
+
+# WaitContext → Pipe (delegates to Block → Pipe)
+@register_copy_handler(WaitContext, Pipe)
+class WaitContextToPipeHandler:
+    """Handler for WaitContext → Pipe (delegates to Block → Pipe)."""
+
+    def validate(self, src: "WaitContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().validate(src.block(), dst)
+
+    def transfer(self, src: "WaitContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().transfer(src.block(), dst)
+
+    def can_wait(self, src: "WaitContext", dst: Pipe) -> bool:
+        # Delegate to the Block handler
+        return BlockToPipeHandler().can_wait(src.block(), dst)
+
+
+# Pipe → ReserveContext (delegates to Pipe → Block)
+@register_copy_handler(Pipe, ReserveContext)
+class PipeToReserveContextHandler:
+    """Handler for Pipe → ReserveContext (delegates to Pipe → Block)."""
+
+    def validate(self, src: Pipe, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        PipeToBlockHandler().validate(src, dst.block())
+
+    def transfer(self, src: Pipe, dst: "ReserveContext") -> None:
+        # Delegate to the Block handler
+        PipeToBlockHandler().transfer(src, dst.block())
+
+    def can_wait(self, src: Pipe, dst: "ReserveContext") -> bool:
+        # Delegate to the Block handler
+        return PipeToBlockHandler().can_wait(src, dst.block())
+
+
+# ReserveContext → Pipe (delegates to Block → Pipe)
+@register_copy_handler(ReserveContext, Pipe)
+class ReserveContextToPipeHandler:
+    """Handler for ReserveContext → Pipe (delegates to Block → Pipe)."""
+
+    def validate(self, src: "ReserveContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().validate(src.block(), dst)
+
+    def transfer(self, src: "ReserveContext", dst: Pipe) -> None:
+        # Delegate to the Block handler
+        BlockToPipeHandler().transfer(src.block(), dst)
+
+    def can_wait(self, src: "ReserveContext", dst: Pipe) -> bool:
+        # Delegate to the Block handler
+        return BlockToPipeHandler().can_wait(src.block(), dst)

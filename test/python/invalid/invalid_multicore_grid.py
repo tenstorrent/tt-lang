@@ -2,90 +2,66 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn, tt-device
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: TTNN interop only supports single-core grid (1, 1).
+Validation test: core(dims=N) only supports dims=2.
 
-This test verifies that using a multi-core grid raises ValueError.
-Uses grid=(2, 2) with shape=(64, 64) which is divisible, but grid != (1,1).
+This test verifies that using dims=3 with core() raises ValueError.
 """
 
 import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
-from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
+import ttl
 
 
-# CHECK: TTNN interop only supports single-core grid (1, 1)
-@pykernel_gen(grid=(2, 2), block_factors=[(1, 1), (1, 1), (1, 1)])
-def invalid_multicore_kernel(lhs, rhs, out):
-    """This kernel should fail because multi-core grids are not supported."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+# CHECK: core() currently only supports dims=2, got dims=3
+@ttl.kernel(grid=(2, 2))
+def invalid_core_dims_kernel(lhs, rhs, out):
+    """This kernel should fail because core(dims=3) is not supported."""
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
-    @compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
-        result = l + r
-        o.store(result)
-        lhs_cb.pop()
-        rhs_cb.pop()
-        out_cb.push()
+    @ttl.compute()
+    def add_compute():
+        with lhs_cb.wait() as lhs_tile, rhs_cb.wait() as rhs_tile:
+            with out_cb.reserve() as out_tile:
+                result = lhs_tile + rhs_tile
+                out_tile.store(result)
 
-    @datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
-        tx_lhs.wait()
-        lhs_cb.push()
+    @ttl.datamovement()
+    def dm_read():
+        with lhs_cb.reserve() as lhs_blk, rhs_cb.reserve() as rhs_blk:
+            # This should fail - dims=3 not supported
+            x, y, z = ttl.core(dims=3)
+            tx_lhs = ttl.copy(lhs[y, x], lhs_blk)
+            tx_rhs = ttl.copy(rhs[y, x], rhs_blk)
+            tx_lhs.wait()
+            tx_rhs.wait()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
-        tx_rhs.wait()
-        rhs_cb.push()
+    @ttl.datamovement()
+    def dm_write():
+        with out_cb.wait() as out_blk:
+            x, y = ttl.core(dims=2)
+            tx = ttl.copy(out_blk, out[y, x])
+            tx.wait()
 
-    @datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
-        out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
-        tx.wait()
-        out_cb.pop()
-
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 if __name__ == "__main__":
     import torch
 
-    print("=== Multi-core Grid Validation Test ===")
+    print("=== Invalid core(dims=3) Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 
     try:
-        # 64x64 tensor with grid (2, 2) - shapes are divisible but grid != (1,1)
         lhs_torch = torch.full((64, 64), 2.0, dtype=torch.bfloat16)
         rhs_torch = torch.full((64, 64), 3.0, dtype=torch.bfloat16)
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
@@ -117,7 +93,7 @@ if __name__ == "__main__":
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         # This should raise ValueError
-        invalid_multicore_kernel(lhs, rhs, out)
+        invalid_core_dims_kernel(lhs, rhs, out)
 
         print("ERROR: Expected ValueError was not raised!")
         exit(1)

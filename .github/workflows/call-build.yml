@@ -87,15 +87,11 @@ jobs:
           toolchain-hash: ${{ steps.toolchain-hash.outputs.hash }}
 
       # Common steps (MacOS and Ubuntu) from here down
-      - name: Compute tt-mlir commit hash
-        id: ttmlir-commit-hash
+      - name: Read tt-mlir commit
+        id: ttmlir-commit
         run: |
-          HASH=$(shasum third-party/tt-mlir.commit | awk '{print $1}')
-          echo "hash=$HASH" >> $GITHUB_OUTPUT
-
-      - name: Get LLVM version
-        id: llvm-version
-        uses: ./.github/actions/get-llvm-version
+          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
 
       - name: Cache tt-mlir installation
         id: cache-ttmlir
@@ -104,7 +100,7 @@ jobs:
           path: |
             ${{ env.TT_MLIR_HOME }}
             ${{ env.TT_MLIR_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit-hash.outputs.hash }}-llvm-${{ steps.llvm-version.outputs.version }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
 
       - name: Configure and build tt-mlir
         if: steps.cache-ttmlir.outputs.cache-hit != 'true'
@@ -116,7 +112,6 @@ jobs:
             -B build -DCMAKE_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DTTMLIR_ENABLE_SHARED_LIB=ON \
-            -DTTMLIR_ENABLE_PYKERNEL=ON \
             -DTTMLIR_ENABLE_RUNTIME=OFF \
             -DTTMLIR_ENABLE_RUNTIME_TESTS=OFF \
             -DTTMLIR_ENABLE_STABLEHLO=OFF \
@@ -134,7 +129,7 @@ jobs:
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-ttlang-llvm${{ steps.llvm-version.outputs.version }}
+          key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ steps.ttmlir-commit.outputs.commit }}
           max-size: 200M
 
       - name: Configure tt-lang

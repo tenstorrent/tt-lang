@@ -1,8 +1,8 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-tile-and-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
-// RUN: ttmlir-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
-// RUN: ttmlir-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // Purpose: end-to-end TTL -> TTKernel -> emitc -> C++ for fused chain.
@@ -18,17 +18,17 @@
 // CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // CHECK-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// --- DST register lifecycle (acquire before loops) ---
-// CHECK:       tile_regs_acquire();
-
 // --- Nested loops over 2x2 tile grid ---
-// CHECK-NEXT:  for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
+// CHECK:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
 // CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
 
 // --- Compute linear tile index: i * cols + j ---
 // CHECK:           size_t [[COL_SIZE:.*]] = 2;
 // CHECK-NEXT:      size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
 // CHECK-NEXT:      size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
+
+// --- DST register lifecycle (acquire inside loop) ---
+// CHECK-NEXT:      tile_regs_acquire();
 
 // --- Load tile from CB0 (input A) into DST[0] ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
@@ -57,18 +57,22 @@
 // --- Reserve output CB2 for packing ---
 // CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
+// --- Compute CB tile index: i * 2 + j (linearized row-major index) ---
+// CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
+// CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+
 // --- Pack DST[0] to output CB2 ---
-// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[ZERO]]);
+// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // --- Push to signal data ready ---
 // CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 
+// --- DST register lifecycle (release inside loop) ---
+// CHECK-NEXT:      tile_regs_release();
+
 // --- End of inner and outer loops ---
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
-
-// --- DST register lifecycle (release after loops) ---
-// CHECK-NEXT:  tile_regs_release();
 // CHECK-NEXT:  return;
 
 // --- Verify no tensor operations remain ---

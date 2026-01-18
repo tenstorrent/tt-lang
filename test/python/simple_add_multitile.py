@@ -2,9 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# XFAIL: *
-# https://github.com/tenstorrent/tt-lang/issues/163
-# RUN: %python %s > %t.output 2>&1
+# REQUIRES: ttnn, tt-device
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
@@ -19,34 +18,19 @@ import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-from ttlang.ttl_api import (
-    pykernel_gen,
-    Program,
-    CircularBuffer,
-    TensorAccessor,
-    compute,
-    datamovement,
-)
-from ttlang.operators import copy
-
-try:
-    import ttnn
-except ImportError:
-    print("TTNN not available - exiting")
-    exit(0)
+import ttnn
+import ttl
 
 
-@pykernel_gen(grid=(1, 1), block_factors=[(2, 2), (2, 2), (2, 2)])
+@ttl.kernel(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
     """Add kernel processing 2x2 tile grid (4 tiles total)."""
-    lhs_accessor = TensorAccessor(lhs)
-    rhs_accessor = TensorAccessor(rhs)
-    out_accessor = TensorAccessor(out)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
-    @compute()
-    def add_compute(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
+    @ttl.compute()
+    def add_compute():
         l = lhs_cb.wait()
         r = rhs_cb.wait()
         o = out_cb.reserve()
@@ -56,58 +40,62 @@ def add_multitile_kernel(lhs, rhs, out):
         rhs_cb.pop()
         out_cb.push()
 
-    @datamovement()
-    def dm_read(lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer):
-        lhs_cb.reserve()
-        tx_lhs = copy(lhs_accessor[0, 0], lhs_cb)
+    @ttl.datamovement()
+    def dm_read():
+        lhs_blk = lhs_cb.reserve()
+        tx_lhs = ttl.copy(lhs[0:2, 0:2], lhs_blk)
         tx_lhs.wait()
         lhs_cb.push()
 
-        rhs_cb.reserve()
-        tx_rhs = copy(rhs_accessor[0, 0], rhs_cb)
+        rhs_blk = rhs_cb.reserve()
+        tx_rhs = ttl.copy(rhs[0:2, 0:2], rhs_blk)
         tx_rhs.wait()
         rhs_cb.push()
 
-    @datamovement()
-    def dm_write(
-        lhs_cb: CircularBuffer, rhs_cb: CircularBuffer, out_cb: CircularBuffer
-    ):
-        out_cb.wait()
-        tx = copy(out_cb, out_accessor[0, 0])
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
         out_cb.pop()
 
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
+    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================
-# Initial IR Checks - Verify 2x2 block factors in tensor shapes
+# Initial IR Checks - Verify tensor layout (64x64 = 4 tiles on single core)
 # =============================================================================
 
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<2x2x!ttcore.tile<32x32, bf16>{{.*}}>
+# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x4x!ttcore.tile<32x32, bf16>{{.*}}>
 
 # =============================================================================
 # Initial IR Checks - Verify compute kernel with multi-tile support
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB operations
+# CB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
-# CHECK: ttl.cb_wait %[[CB0]]
-# CHECK: ttl.cb_wait %[[CB1]]
+# Wait operations
+# CHECK-DAG: ttl.cb_wait %[[CB0]]
+# CHECK-DAG: ttl.cb_wait %[[CB1]]
+
+# Reserve operation
 # CHECK: ttl.cb_reserve %[[CB2]]
 
 # Add operation
 # CHECK: ttl.add
 
-# CHECK: ttl.cb_pop %[[CB0]]
-# CHECK: ttl.cb_pop %[[CB1]]
+# Pop/push operations
+# CHECK-DAG: ttl.cb_pop %[[CB0]]
+# CHECK-DAG: ttl.cb_pop %[[CB1]]
 # CHECK: ttl.cb_push %[[CB2]]
+
+# CHECK-LABEL: func.func @dm_read
 
 # =============================================================================
 # C++ Kernel Checks - Verify loops are generated for multi-tile
@@ -116,14 +104,26 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
 
-# Nested loops for 2x2 tile grid
-# CHECK-CPP: for (size_t {{.*}} = 0; {{.*}} < 2;
-# CHECK-CPP: for (size_t {{.*}} = 0; {{.*}} < 2;
+# Loop bound constant for 2x2 tile grid
+# CHECK-CPP: size_t [[BOUND:v[0-9]+]] = 2;
 
-# CB operations inside loop
+# CB operations before loops
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
+
+# Nested loops for 2x2 tile grid
+# CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[BOUND]]; [[I]] += {{.*}}) {
+# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
+
+# Linearized index calculation: i * 2 + j
+# CHECK-CPP: size_t [[COLS:v[0-9]+]] = 2;
+# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
+# CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
+
+# Copy tiles using linearized index
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[LIN_IDX]],
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[LIN_IDX]],
 
 # Add operation
 # CHECK-CPP: add_binary_tile_init();
@@ -136,8 +136,10 @@ def add_multitile_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from test_helpers import require_hardware
 
     print("=== Multi-tile Add Kernel Test ===")
+    require_hardware()
 
     device = ttnn.open_device(device_id=0)
 

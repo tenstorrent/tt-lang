@@ -244,7 +244,7 @@ After building, Python packages are available via PYTHONPATH:
 
 ```bash
 # Already set by env/activate
-python3 -c "import ttlang; print(ttlang.__version__)"
+python3 -c "import ttl; print(ttl.__version__)"
 ```
 
 Or install as an editable package:
@@ -464,7 +464,7 @@ which python3
 python3 -c "import sys; print(sys.prefix)"  # Should show TTMLIR_TOOLCHAIN_DIR/venv
 
 # Test imports
-python3 -c "import ttmlir; import ttlang"
+python3 -c "import ttmlir; import ttl"
 ```
 
 If imports fail, verify the build completed successfully and Python packages were installed.

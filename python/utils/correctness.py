@@ -1,0 +1,293 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Utilities for comparing tensor outputs in tests."""
+
+import math
+
+import torch
+
+
+def assert_pcc(golden, actual, threshold=0.99):
+    """
+    Assert Pearson correlation coefficient is above threshold.
+
+    Args:
+        golden: Expected tensor
+        actual: Actual output tensor
+        threshold: Minimum acceptable PCC (default 0.99)
+
+    Raises:
+        AssertionError: If PCC < threshold
+    """
+    combined = torch.stack([golden.flatten(), actual.flatten()])
+    pcc = torch.corrcoef(combined)[0, 1].item()
+    assert (
+        pcc >= threshold
+    ), f"Expected pcc {pcc} >= {threshold}\ngolden:\n{golden}\nactual:\n{actual}"
+
+
+def assert_allclose(
+    actual,
+    expected,
+    rtol=1e-5,
+    atol=1e-8,
+    verbose=True,
+):
+    """
+    Assert tensors are close with detailed error reporting.
+
+    Computes both absolute and relative errors with informative failure messages
+    showing error statistics and worst-case locations.
+
+
+    Args:
+        actual: Actual output tensor
+        expected: Expected tensor
+        rtol: Relative tolerance (default 1e-5)
+        atol: Absolute tolerance (default 1e-8)
+        verbose: Show detailed error statistics on failure (default True)
+
+    Raises:
+        AssertionError: If tensors don't match within tolerance
+
+    Examples:
+        >>> out = model(input)
+        >>> assert_allclose(out, expected, rtol=1e-4, atol=1e-6)
+    """
+    if actual.shape != expected.shape:
+        raise AssertionError(
+            f"Shape mismatch: actual {actual.shape} vs expected {expected.shape}"
+        )
+
+    # Compute element-wise absolute error
+    abs_diff = torch.abs(actual - expected)
+    max_abs_error = abs_diff.max().item()
+    mean_abs_error = abs_diff.mean().item()
+
+    # Compute element-wise relative error with epsilon for numerical stability
+    eps = 1e-10
+    rel_error = abs_diff / (torch.abs(expected) + eps)
+    max_rel_error = rel_error.max().item()
+    mean_rel_error = rel_error.mean().item()
+
+    # Check if within tolerance
+    is_close = torch.allclose(actual, expected, rtol=rtol, atol=atol)
+
+    if not is_close and verbose:
+        # Find locations of worst errors
+        abs_error_flat = abs_diff.flatten()
+        rel_error_flat = rel_error.flatten()
+
+        worst_abs_idx = abs_error_flat.argmax()
+        worst_rel_idx = rel_error_flat.argmax()
+
+        # Convert flat indices to coordinates
+        worst_abs_coord = torch.unravel_index(worst_abs_idx, actual.shape)
+        worst_rel_coord = torch.unravel_index(worst_rel_idx, actual.shape)
+
+        error_msg = f"""
+Tensor comparison failed!
+
+Error Statistics:
+  Absolute Error:
+    Mean: {mean_abs_error:.6e}
+    Max:  {max_abs_error:.6e} at {tuple(c.item() for c in worst_abs_coord)}
+          actual={actual[worst_abs_coord].item():.6f}, expected={expected[worst_abs_coord].item():.6f}
+
+  Relative Error:
+    Mean: {mean_rel_error:.6e}
+    Max:  {max_rel_error:.6e} at {tuple(c.item() for c in worst_rel_coord)}
+          actual={actual[worst_rel_coord].item():.6f}, expected={expected[worst_rel_coord].item():.6f}
+
+Thresholds:
+  rtol: {rtol}
+  atol: {atol}
+
+Shape: {actual.shape}
+Mismatched elements: {(abs_diff > atol + rtol * torch.abs(expected)).sum().item()} / {actual.numel()}
+"""
+        raise AssertionError(error_msg)
+
+    if not is_close:
+        raise AssertionError(
+            f"Tensors not close: max_abs_error={max_abs_error:.6e}, "
+            f"max_rel_error={max_rel_error:.6e}, rtol={rtol}, atol={atol}"
+        )
+
+
+def _comp_nonfinite(golden, calculated):
+    """
+    Returns True if tensors contain the same non-finite values (nan, inf, -inf) at the same positions. Also returns True if all elements are finite.
+    Returns False if non-finite values differ between both tensors.
+    """
+
+    # torch.equal(['nan'], ['nan']] => False
+    # For this reason, we check for nan and inf separately
+    if torch.not_equal(torch.isnan(golden), torch.isnan(calculated)).any():
+        return False
+
+    golden_inf_mask = torch.isinf(golden)
+    calculated_inf_mask = torch.isinf(calculated)
+
+    if torch.not_equal(golden_inf_mask, calculated_inf_mask).any():
+        return False
+
+    golden_inf = golden[golden_inf_mask]
+    calculated_inf = calculated[calculated_inf_mask]
+    return torch.equal(golden_inf, calculated_inf)
+
+
+def ulp(x: torch.Tensor) -> torch.Tensor:
+    "Return Unit of Least Precision for each element of a given tensor"
+    # Notes:
+    # - This should be identical to the definition of ULP by Goldberg
+    #   "What every computer scientist should know about floating-point arithmetic"
+    #   https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+    # - We use torch.abs(x) to ensure symmetry ULP(-x) == ULP(x)
+    # - For x powers of 2, x + ULP(x) is not closest number but second closest (previous number is 2x closer)
+    #   However, this avoids rounding-to-nearest-tie-to-even issues on addition (i.e. x + ULP(x) != x)
+    abs_x = torch.abs(x)
+    next = torch.nextafter(
+        abs_x, torch.tensor(math.inf, dtype=x.dtype)
+    )  # 1 ULP ~ Difference between two consecutive floating point numbers
+    ulp_value = next - abs_x
+
+    # Special case: if abs_x == torch.finfo(x.dtype).max, then next == math.inf, which leads to ULP(x) == inf rather than finite number
+    # We fix this problem by manually calculating ULP at max value, and masking tensor when input == max
+    dtype_max = torch.finfo(x.dtype).max
+    max_epsilon = dtype_max - torch.nextafter(
+        torch.tensor(dtype_max, dtype=x.dtype), torch.tensor(-math.inf, dtype=x.dtype)
+    )
+    ulp_value = torch.where(abs_x == dtype_max, max_epsilon, ulp_value)
+
+    return ulp_value
+
+
+def comp_ulp(golden, calculated, ulp_threshold, allow_nonfinite=True):
+    """
+    Compute absolute error between two tensors in Units of Least Precision (ULP)
+    """
+
+    # If both tensors are empty, then we can return True
+    if torch.numel(golden) == 0 and torch.numel(calculated) == 0:
+        return True, "Both tensors are empty"
+
+    if not allow_nonfinite and not torch.all(torch.isfinite(calculated)):
+        return False, "Calculated tensor contains non-finite values"
+
+    if not _comp_nonfinite(golden, calculated):
+        return False, "Tensors are not finite at the same positions"
+    # nonfinite elements can interfere with ULP error calculation
+    # To avoid this, replace nan, +inf, -inf with 0
+    # (we have already checked that both tensors have the same nonfinite elements)
+    mask_finite = ~torch.isfinite(golden)
+    golden = golden.clone()
+    calculated = calculated.clone()
+    golden[mask_finite] = 0
+    calculated[mask_finite] = 0
+
+    # ULP is measured according to the golden tensor
+    # In most cases, data type of golden tensor should be the same as calculated tensor.
+    # However, in some cases, we may want to measure < 1 ULP differences, which requires golden tensor
+    # to have higher precision than calculated tensor.
+    # If we passed golden tensor to ulp() as is, we would get ULP of higher precision.
+    # e.g. ulp of float32 rather bfloat16 calculation, which would give us a wrong value.
+    ulp_value = ulp(golden.type(calculated.dtype))
+
+    if (
+        golden.dtype != calculated.dtype
+    ):  # Note: assumes that golden has higher precision than calculated tensor
+        calculated = calculated.type(golden.dtype)
+        ulp_value = ulp_value.type(
+            golden.dtype
+        )  # Convert ULP to higher precision (for sub-1 ULP measurements)
+
+    ulp_delta = torch.max(torch.abs(calculated - golden) / ulp_value)
+
+    return (ulp_delta <= ulp_threshold, f"Max ULP Delta: {ulp_delta}")
+
+
+# TODO: add support for ttnn.Tensor inputs when ttnn module is part of tt-lang dependencies
+def assert_with_ulp(
+    expected_result: torch.Tensor,
+    actual_result: torch.Tensor,
+    ulp_threshold=10,
+    allow_nonfinite=False,
+):
+    """
+    Assert that two tensors are similar within a given distance expressed in Units of Least Precision (ULP)
+
+    The error is measured using the following formula:
+    ``
+        | expected - actual | / ULP(expected)
+    ``
+
+    Where ULP(expected) returns, for each element, the length of a single Unit of Least Precision (ULP).
+
+
+    Args:
+        expected_result (Union[ttnn.Tensor, torch.Tensor]): The expected reference tensor
+        actual_result (Union[ttnn.Tensor, torch.Tensor]): The actual tensor to compare against the reference
+        ulp_threshold (float, optional): Maximum tolerated ULP distance. Defaults to 10.
+        allow_nonfinite (bool, optional): If disabled, any non-finite value (NaN, +inf, -inf) will trigger an assertion. If enabled, differences between non-finite values at the same positions will trigger an assertion.
+
+    Notes:
+        The length of a single ULP is measured using the difference between two consecutive floating point numbers.
+
+        ULP should be preferred when errors between `calculated` and `golden` outputs are known to be small (difference < 10s of ULPs).
+        This is typically the case for element-wise operations that approximate common numerical functions (e.g. exp, pow, log, ...).
+
+        For more significant differences, where `calculated` and `golden` differ by orders of magnitude, ULPs may be harder to compare
+        Indeed, with current definition, on bfloat16:
+        - ULP-Delta(4, 0) = 128
+        - ULP-Delta(0, 4) = 4.36e+40
+
+        Generally, if the ULP error exceeds the 2**(#mantissa bits) (128-ULP for bfloat16, 8388608 for float32), then it means that both outputs are different by more than an order of magnitude.
+        For these cases, functions such as `assert_allclose(golden, calculated, rtol, atol)` should be used instead.
+
+        To measure the accuracy in ULP of operations on bfloat8_b data type, the ttnn bfloat8_b tensor should be either passed directly to the
+        function, or converted to bfloat16 beforehand (bfloat16 has the 'same' resolution as bfloat8_b).
+        Indeed, ttnn.to_torch() converts bfloat8_b to float32 by default, which would lead to assert_with_ulp() measuring ULP error as if
+        data type was computed as float32.
+
+        This should be identical to the definition of ULP by Goldberg
+        "What every computer scientist should know about floating-point arithmetic"
+        https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+
+    Returns:
+        tuple: A tuple containing:
+            - ulp_passed (bool): True if ulp check passed, False otherwise
+            - ulp_message (str): A message describing comparison result
+
+    Raises:
+        AssertionError: If the tensor shapes don't match or if tensor difference is greater than ulp_threshold.
+    """
+
+    assert list(expected_result.shape) == list(
+        actual_result.shape
+    ), f"list(expected_result.shape)={list(expected_result.shape)} vs list(actual_result.shape)={list(actual_result.shape)}"
+
+    maximum_meaningful_ulp_thresholds = {
+        torch.float64: 2**52,
+        torch.float32: 2**23,
+        torch.float16: 2**10,
+        torch.bfloat16: 2**7,
+    }
+    maximum_meaningful_ulp_threshold = (
+        maximum_meaningful_ulp_thresholds[torch.float32]
+        if expected_result.dtype in maximum_meaningful_ulp_thresholds
+        else maximum_meaningful_ulp_thresholds[expected_result.dtype]
+    )
+
+    if ulp_threshold > maximum_meaningful_ulp_threshold:
+        print(
+            f"ULP threshold {ulp_threshold} is greater than the maximum meaningful ULP threshold of {maximum_meaningful_ulp_threshold} for dtype {expected_result.dtype}"
+        )
+
+    ulp_passed, ulp_message = comp_ulp(
+        expected_result, actual_result, ulp_threshold, allow_nonfinite
+    )
+    assert ulp_passed, ulp_message
+    return ulp_passed, ulp_message

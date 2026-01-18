@@ -35,6 +35,28 @@ template <typename ConcreteType>
 class TTLTileComputeOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileComputeOpTrait> {};
 
+/// Trait for unary elementwise tensor operations (exp, sqrt, etc.).
+template <typename ConcreteType>
+class TTLUnaryElementwiseOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTLUnaryElementwiseOpTrait> {};
+
+/// Trait for binary elementwise tensor operations (add, mul, etc.).
+template <typename ConcreteType>
+class TTLBinaryElementwiseOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTLBinaryElementwiseOpTrait> {};
+
+/// Trait for tile-level unary operations (execute in-place on DST).
+template <typename ConcreteType>
+class TTLTileUnaryOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileUnaryOpTrait> {};
+
+/// Trait for tile-level binary operations (write to fresh DST slot).
+template <typename ConcreteType>
+class TTLTileBinaryOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileBinaryOpTrait> {};
+
 //===----------------------------------------------------------------------===//
 // CB Index Attribute Helpers
 //===----------------------------------------------------------------------===//

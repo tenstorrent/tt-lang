@@ -8,29 +8,39 @@ This module provides the core execution framework for running compute and data m
 functions across multiple cores with proper context binding and error handling.
 """
 
-import types
 import copy
-import threading
-import traceback
+import ast
 import inspect
 import textwrap
-from typing import Any, Callable, Dict, List, Tuple, Protocol, Generator
+import traceback
+import types
 from types import CellType, FunctionType
-from enum import Enum
-
-import torch
+from typing import Any, Callable, Dict, Generator, List, Protocol, Tuple
 
 from .cb import CircularBuffer
 from .cbapi import CBAPI
-from .tensoraccessor import TensorAccessor
-from .xformyield import transform_wait_reserve_to_yield
+from .ttnnsim import Tensor
+from .xformyield import transform_wait_reserve_to_yield_ast
 
 
-class ExecutionMode(Enum):
-    """Execution mode for Program."""
+# TODO: Pretty printing should be moved to utils maybe?
+# Import at runtime to avoid circular dependency
+def _get_ttlang_compile_error():
+    """Lazy import of TTLangCompileError to avoid circular dependency."""
+    import importlib.util
+    import sys
+    from pathlib import Path
 
-    THREADED = "threaded"  # Original concurrent execution with threads
-    COOPERATIVE = "cooperative"  # Round-robin cooperative scheduling with yields
+    # Direct import of diagnostics module without going through ttl package
+    # This avoids importing the full compiler infrastructure
+    diagnostics_path = Path(__file__).parent.parent / "ttl" / "diagnostics.py"
+    spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
+    if spec and spec.loader:
+        diagnostics = importlib.util.module_from_spec(spec)
+        sys.modules["ttl.diagnostics"] = diagnostics
+        spec.loader.exec_module(diagnostics)
+        return diagnostics.TTLangCompileError
+    raise ImportError("Could not load ttl.diagnostics")
 
 
 # Protocol for templates that have a bind method
@@ -85,25 +95,20 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def Program(
-    *funcs: BindableTemplate, execution_mode: ExecutionMode = ExecutionMode.THREADED
-) -> Any:
+def Program(*funcs: BindableTemplate) -> Any:
     """Program class that combines compute and data movement functions.
 
     Args:
         *funcs: Compute and data movement function templates
-        execution_mode: Execution mode (THREADED or COOPERATIVE)
     """
 
     class ProgramImpl:
         def __init__(
             self,
             *functions: BindableTemplate,
-            execution_mode: ExecutionMode = ExecutionMode.THREADED,
         ):
             self.functions = functions
             self.context: Dict[str, Any] = {}
-            self.mode = execution_mode
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
@@ -127,13 +132,8 @@ def Program(
 
             compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
 
-            # Choose execution strategy based on mode
-            if self.mode == ExecutionMode.COOPERATIVE:
-                self._run_cooperative(
-                    total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl
-                )
-            else:
-                self._run_threaded(total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
+            # Run in cooperative mode
+            self._run_cooperative(total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
 
         def _build_core_context(self, core: int) -> Dict[str, Any]:
             """Build per-core context with copied circular buffers and other state.
@@ -149,13 +149,19 @@ def Program(
             api = CBAPI()  # new CBAPI per core
 
             for key, value in self.context.items():
+                # Skip module objects (e.g., local imports like `from python.sim import ttnn`)
+                if isinstance(value, types.ModuleType):
+                    core_context[key] = value
+                    continue
+
                 match value:
-                    case torch.Tensor() | TensorAccessor():
+                    case Tensor():
                         core_context[key] = value
                         memo[id(value)] = value
                     case CircularBuffer():
                         # create a fresh CB for this core
                         core_context[key] = CircularBuffer(
+                            element=value.element,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
                             api=api,
@@ -165,78 +171,10 @@ def Program(
 
             # also make the core number visible
             core_context["_core"] = core
+            # Also inject grid into core context for grid_size() function
+            core_context["grid"] = self.context.get("grid", (1, 1))
 
             return core_context
-
-        def _run_threaded(
-            self,
-            total_cores: int,
-            compute_func_tmpl: BindableTemplate,
-            dm0_tmpl: BindableTemplate,
-            dm1_tmpl: BindableTemplate,
-        ) -> None:
-            """Original threaded execution mode - all cores run in parallel."""
-            # collect user-facing errors here
-            thread_results: List[Tuple[str, Exception, str]] = []
-            all_threads: List[threading.Thread] = []
-
-            def run_func_in_thread(name: str, func_factory: Callable[[], Any]) -> None:
-                try:
-                    func_factory()  # Execute the function factory directly
-                except Exception as e:
-                    tb_str = traceback.format_exc()
-                    thread_results.append((name, e, tb_str))
-
-            # Create and start threads for all cores
-            for core in range(total_cores):
-                # build per-core context
-                core_context = self._build_core_context(core)
-
-                # bind per-core
-                core_dm0 = dm0_tmpl.bind(core_context)
-                core_compute = compute_func_tmpl.bind(core_context)
-                core_dm1 = dm1_tmpl.bind(core_context)
-
-                # Create threads for this core's functions
-                t_dm0 = threading.Thread(
-                    target=run_func_in_thread, args=(f"core{core}-dm0", core_dm0)
-                )
-                t_comp = threading.Thread(
-                    target=run_func_in_thread,
-                    args=(f"core{core}-compute", core_compute),
-                )
-                t_dm1 = threading.Thread(
-                    target=run_func_in_thread, args=(f"core{core}-dm1", core_dm1)
-                )
-
-                all_threads.extend([t_dm0, t_comp, t_dm1])
-
-            # Start all threads across all cores
-            for t in all_threads:
-                t.start()
-
-            # Wait for all threads to finish
-            for t in all_threads:
-                t.join()
-
-            # Check if any failed
-            if thread_results:
-                errors: List[str] = []
-                for name, e, tb_str in thread_results:
-                    # print a user-readable header
-                    print(f"\n❌ {name} failed")
-                    print(f"   error type   : {type(e).__name__}")
-                    print(f"   error message: {e}")
-                    print("   traceback:")
-                    print(tb_str)
-                    print("-" * 50)
-
-                    # add to final aggregation (short)
-                    errors.append(f"{name}: {type(e).__name__}: {e}")
-
-                raise RuntimeError("One or more threads failed:\n" + "\n".join(errors))
-
-            return None
 
         def _run_cooperative(
             self,
@@ -248,7 +186,9 @@ def Program(
             """Cooperative scheduling execution mode - all cores run in round-robin."""
 
             # Create transformed sources for all cores
-            all_sources: List[Tuple[str, str, str, Dict[str, Any]]] = []
+            all_sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]] = (
+                []
+            )
 
             for core in range(total_cores):
                 # build per-core context
@@ -271,10 +211,10 @@ def Program(
             compute_func_tmpl: BindableTemplate,
             dm0_tmpl: BindableTemplate,
             dm1_tmpl: BindableTemplate,
-        ) -> List[Tuple[str, str, str, Dict[str, Any]]]:
+        ) -> List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]]:
             """Transform function sources for cooperative execution.
 
-            Returns list of (name, func_name, transformed_source, namespace) tuples
+            Returns list of (name, func_name, transformed_ast, namespace, orig_file, orig_lineno) tuples
             that the scheduler will compile and execute.
 
             The transformation inserts `yield (cb, operation)` before each wait()/reserve(),
@@ -284,7 +224,7 @@ def Program(
             3. Continue generator if unblocked, or switch to another if blocked
             4. Detect deadlock when all generators are blocked
             """
-            sources: List[Tuple[str, str, str, Dict[str, Any]]] = []
+            sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]] = []
 
             for name, tmpl in [
                 ("compute", compute_func_tmpl),
@@ -298,6 +238,10 @@ def Program(
                 func = inspect.unwrap(bound_func)
                 source = textwrap.dedent(inspect.getsource(func))
 
+                # Capture original file and line number for error reporting
+                orig_file = inspect.getsourcefile(func) or "<unknown>"
+                orig_lineno = inspect.getsourcelines(func)[1]
+
                 # Strip decorators from source (lines starting with @)
                 source_lines = source.split("\n")
                 func_start_idx = 0
@@ -305,27 +249,38 @@ def Program(
                     if line.strip().startswith("def "):
                         func_start_idx = i
                         break
+
+                # Adjust orig_lineno to point to the def line, not the decorator
+                orig_lineno += func_start_idx
+
                 source = "\n".join(source_lines[func_start_idx:])
 
-                # Transform: add yields before wait()/reserve() calls
-                transformed_source = transform_wait_reserve_to_yield(source)
+                # Transform: add yields before wait()/reserve() calls, returning AST
+                transformed_ast = transform_wait_reserve_to_yield_ast(source)
 
                 # Prepare namespace with core context and function's globals
                 # Use original function's globals to get imports like 'ttl', 'copy', etc.
                 func_globals = func.__globals__
                 namespace = {**func_globals, **core_context}
 
-                # Return transformed source and context for scheduler to execute
+                # Return transformed AST and context for scheduler to execute
                 # Use the original function's name (compute, dm0, dm1), not the wrapper's name (runner)
                 func_name = func.__name__
                 sources.append(
-                    (f"core{core}-{name}", func_name, transformed_source, namespace)
+                    (
+                        f"core{core}-{name}",
+                        func_name,
+                        transformed_ast,
+                        namespace,
+                        orig_file,
+                        orig_lineno,
+                    )
                 )
 
             return sources
 
         def _run_round_robin_scheduler(
-            self, sources: List[Tuple[str, str, str, Dict[str, Any]]]
+            self, sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]]
         ) -> None:
             """Compile sources into generators and run them in round-robin.
 
@@ -339,12 +294,107 @@ def Program(
             - If all generators are blocked, raise deadlock error
             """
 
-            # First, compile and execute all sources to create generators
-            active: Dict[str, Generator[None, None, None]] = {}
+            # Build mapping of generator names to original source locations
+            orig_source_map: Dict[str, Tuple[str, int]] = {
+                name: (orig_file, orig_lineno)
+                for name, _, _, _, orig_file, orig_lineno in sources
+            }
 
-            for name, func_name, transformed_source, namespace in sources:
-                # Compile transformed source to bytecode
-                code_obj = compile(transformed_source, f"<{name}_transformed>", "exec")
+            def _advance_generator(
+                name: str,
+                gen: Generator[None, None, None],
+                allow_completion: bool = False,
+            ) -> Tuple[Any, bool]:
+                """Advance a generator one step.
+
+                Args:
+                    name: Generator name for error messages
+                    gen: Generator to advance
+                    allow_completion: If False, StopIteration is an error
+
+                Returns:
+                    (result, completed) where completed=True if generator finished
+                """
+                try:
+                    result: Any = next(gen)
+                    return (result, False)
+                except StopIteration:
+                    if allow_completion:
+                        return (None, True)
+                    else:
+                        raise RuntimeError(
+                            f"{name}: Generator completed without yielding any operation. "
+                            f"Transformed code should always yield before completing."
+                        )
+                except Exception as e:
+                    # Generator raised an error - add source context
+                    # Add original source location if available
+                    if name in orig_source_map:
+                        orig_file, func_def_line = orig_source_map[name]
+
+                        # Extract line number and column from traceback
+                        # Since we preserve original line numbers in AST, the traceback line
+                        # is relative to the function definition
+                        tb = traceback.extract_tb(e.__traceback__)
+                        for frame in tb:
+                            # Find the frame in the transformed code
+                            if f"<{name}_transformed>" in frame.filename:
+                                # frame.lineno is the line number within the transformed function
+                                # which has line numbers preserved from the original source
+                                # Adjust to absolute line in file: (func_def_line - 1) + frame.lineno
+                                if frame.lineno is not None:
+                                    actual_line = func_def_line - 1 + frame.lineno
+                                    actual_col = getattr(frame, "colno", None) or 1
+
+                                    # Use TTLangCompileError for pretty formatting
+                                    TTLangCompileError = _get_ttlang_compile_error()
+                                    compile_error = TTLangCompileError(
+                                        f"{type(e).__name__}: {e}",
+                                        source_file=orig_file,
+                                        line=actual_line,
+                                        col=actual_col,
+                                    )
+                                    print(f"\n❌ Error in {name}:")
+                                    print(compile_error.format())
+                                    print("-" * 50)
+                                    raise RuntimeError(str(compile_error))
+
+                                break
+                        else:
+                            # Fallback if we can't find the transformed frame
+                            error_msg = f"{name}: {type(e).__name__}: {e}"
+                            error_msg += f"\n  In function defined at: {orig_file}:{func_def_line}"
+                            print(f"\n❌ {error_msg}")
+                            tb_str = traceback.format_exc()
+                            print("   traceback:")
+                            print(tb_str)
+                            print("-" * 50)
+                            raise RuntimeError(error_msg)
+                    else:
+                        # No source mapping - print full traceback
+                        error_msg = f"{name}: {type(e).__name__}: {e}"
+                        print(f"\n❌ {error_msg}")
+                        tb_str = traceback.format_exc()
+                        print("   traceback:")
+                        print(tb_str)
+                        print("-" * 50)
+                        raise RuntimeError(error_msg)
+
+            # First, compile and execute all sources to create generators
+            # active[name] = (generator, blocking_object, operation)
+            # blocking_object can be CircularBuffer or CopyTransaction - both support can_wait()/can_reserve()
+            active: Dict[str, Tuple[Generator[None, None, None], Any, str]] = {}
+
+            for (
+                name,
+                func_name,
+                transformed_ast,
+                namespace,
+                _orig_file,
+                _orig_lineno,
+            ) in sources:
+                # Compile transformed AST to bytecode (preserves line numbers)
+                code_obj = compile(transformed_ast, f"<{name}_transformed>", "exec")
 
                 # Execute to define the function in the namespace
                 try:
@@ -366,78 +416,93 @@ def Program(
                 if gen is None:
                     continue
 
-                active[name] = gen
+                # Run generator once until it yields (must yield at least once)
+                result, _ = _advance_generator(name, gen, allow_completion=True)
 
-            # Track blocked generators: {name: (generator, cb_object, operation)}
-            blocked: Dict[str, Tuple[Generator[Any, None, None], Any, str]] = {}
+                # If generator completed immediately without yielding, skip it
+                if result is None:
+                    continue
 
-            while active or blocked:
-                # First, check if any blocked generators can now proceed
-                unblocked: List[str] = []
-                for name, (gen, cb_obj, operation) in list(blocked.items()):
-                    can_method = getattr(cb_obj, f"can_{operation}")
-                    if can_method():
-                        unblocked.append(name)
-                        active[name] = gen
+                # Generator yielded - check what it yielded
+                match result:
+                    case (blocking_obj, operation):
+                        # Store (gen, blocking_obj, operation) in active
+                        # blocking_obj can be CircularBuffer or CopyTransaction
+                        active[name] = (gen, blocking_obj, operation)
+                    case _:
+                        # Unexpected yield value
+                        raise RuntimeError(
+                            f"{name}: Generator yielded unexpected value: {result!r}. "
+                            f"Expected (blocking_object, operation) tuple."
+                        )
 
-                # Remove unblocked from blocked dict
-                for name in unblocked:
-                    del blocked[name]
+            while active:
+                # Track if any generator made progress in this iteration
+                any_progress: bool = False
+                # Track which generators have completed
+                to_remove: List[str] = []
 
-                # Check for deadlock: all generators blocked and none can proceed
-                if not active and blocked:
-                    blocked_info = [
-                        f"{name}: {op}()" for name, (_, _, op) in blocked.items()
+                # Try to advance each active generator
+                for name in list(active.keys()):
+                    gen, blocking_obj, blocked_op = active[name]
+
+                    # Check if operation can proceed
+                    # blocking_obj supports can_wait() or can_reserve() depending on blocked_op
+                    can_method = getattr(blocking_obj, f"can_{blocked_op}")
+                    if not can_method():
+                        # Still blocked, skip for now
+                        continue
+
+                    # Unblocked! Mark progress and continue running
+                    any_progress = True
+
+                    # Run this generator until it blocks or completes
+                    while True:
+                        result, completed = _advance_generator(
+                            name, gen, allow_completion=True
+                        )
+
+                        if completed:
+                            # Generator completed successfully
+                            to_remove.append(name)
+                            break  # Exit inner while loop, try next generator
+
+                        any_progress = True
+
+                        # Check if generator yielded blocking operation info (blocking_obj, operation)
+                        match result:
+                            case (blocking_obj, operation):
+                                # Check if operation can proceed
+                                # blocking_obj can be CircularBuffer or CopyTransaction
+                                can_method = getattr(
+                                    blocking_obj, f"can_{operation}", None
+                                )
+                                if can_method and not can_method():
+                                    # Operation would block - update state in active
+                                    active[name] = (gen, blocking_obj, operation)
+                                    break  # Exit inner while loop, try next generator
+                                # else: operation can proceed, continue this generator
+                            case _:
+                                # Unexpected yield value
+                                raise RuntimeError(
+                                    f"{name}: Generator yielded unexpected value: {result!r}. "
+                                    f"Expected (blocking_object, operation) tuple."
+                                )
+
+                        # If we get here, operation can proceed, continue this generator
+
+                # Remove completed generators
+                for name in to_remove:
+                    del active[name]
+
+                # Deadlock detection: no progress made and generators still active
+                if not any_progress and active:
+                    blocked_info: List[str] = [
+                        f"{k}: {op}()" for k, (_, _, op) in active.items()
                     ]
                     raise RuntimeError(
                         f"Deadlock detected: all generators blocked\n"
                         + "\n".join(blocked_info)
                     )
 
-                # Try to advance each active generator
-                # Run each generator until it blocks or completes
-                for name in list(active.keys()):
-                    gen = active[name]
-
-                    # Keep advancing this generator until it blocks or completes
-                    while True:
-                        try:
-                            # Try to advance the generator one step
-                            result: Any = next(gen)
-
-                            # Check if generator yielded blocking operation info (cb, operation)
-                            match result:
-                                case (cb_obj, operation):
-                                    # Check if operation can proceed
-                                    can_method = getattr(
-                                        cb_obj, f"can_{operation}", None
-                                    )
-                                    if can_method and not can_method():
-                                        # Operation would block - mark as blocked and move to next generator
-                                        blocked[name] = (gen, cb_obj, operation)
-                                        del active[name]
-                                        break  # Exit inner while loop, try next generator
-                                    # else: operation can proceed, continue this generator
-                                case _:
-                                    # Not a 2-tuple or None, treat as normal yield
-                                    pass
-
-                            # If we get here, either it didn't yield blocking info or it can proceed
-                            # Continue running this generator
-
-                        except StopIteration:
-                            # Generator completed successfully
-                            del active[name]
-                            break  # Exit inner while loop, try next generator
-
-                        except Exception as e:
-                            # Generator raised an error
-                            tb_str = traceback.format_exc()
-                            error_msg = f"{name}: {type(e).__name__}: {e}"
-                            print(f"\n❌ {error_msg}")
-                            print("   traceback:")
-                            print(tb_str)
-                            print("-" * 50)
-                            raise RuntimeError(error_msg)
-
-    return ProgramImpl(*funcs, execution_mode=execution_mode)
+    return ProgramImpl(*funcs)

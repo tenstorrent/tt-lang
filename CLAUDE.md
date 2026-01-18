@@ -35,12 +35,6 @@ IMPORTANT: the compiler currently has many bugs and limitations, read the issues
 
 ## Environment Setup and Building
 
-### System Descriptor File
-
-A `.ttsys` file is required for running SOME examples and tests (describes hardware configuration).
-
-**IMPORTANT**: The system descriptor is NOT in the repository. When you need one for running examples/tests, **ask the user** to provide the path. Do not search for it in the repo or common locations - let the user tell you where it is. Only prompt the user if you actually need this.
-
 ### Detecting Repository Layout
 
 Before building, determine where tt-lang and tt-mlir are located relative to each other:
@@ -59,7 +53,7 @@ If tt-mlir is not in the default sibling location, the user will need to set `TT
 
 ```bash
 cd <tt-mlir-directory>
-source env/activate
+source build/env/activate
 
 # Configure and build tt-mlir
 # Follow instructions in MACOS_BUILD.md (macOS) or README.md (Linux)
@@ -79,20 +73,8 @@ Then retry the build 2-3 times. This is a known issue with nanobind and parallel
 # Navigate to tt-lang root
 cd <tt-lang-directory>
 
-# If tt-mlir is not at ../tt-mlir, set TT_MLIR_HOME first
-export TT_MLIR_HOME=/path/to/tt-mlir  # Optional, only if not sibling dir
-
-# Activate environment (automatically sources tt-mlir's environment)
-source env/activate
-
-# Only set when running examples/tests - ask user for path when needed
-# export SYSTEM_DESC_PATH=/path/to/system_desc.ttsys
-
-# Verify activation
-echo $TTLANG_ENV_ACTIVATED  # Should be 1
-echo $TT_LANG_HOME         # Should be tt-lang root
-echo $TT_MLIR_HOME         # Should be tt-mlir root
-```
+# Activate environment
+source build/env/activate
 
 ### Building tt-lang
 
@@ -126,7 +108,6 @@ See `docs/TESTING.md` for complete testing documentation including:
 ```bash
 cd <tt-lang-directory>
 source env/activate
-export SYSTEM_DESC_PATH=/path/to/system_desc.ttsys  # Ask user for path
 
 # Run all tests
 llvm-lit -sv test/python/
@@ -173,7 +154,7 @@ grep -A 200 "Before D2MAllocate" /tmp/full_pipeline.log
 
 ### Pass Pipeline Configuration
 
-Located in `python/ttlang/d2m_api.py` lines 302-332:
+Located in `python/ttl/ttl_api.py` lines 302-332:
 - `TTLANG_VERBOSE_PASSES` - Enable verbose output (line 322)
 - `TTLANG_INITIAL_MLIR` - Save initial IR (line 296)
 - `TTLANG_FINAL_MLIR` - Save final IR (line 334)
@@ -431,7 +412,6 @@ sed -n '/After D2MAllocate/,/^\/\/ -----\/\/ IR Dump Before/p' /tmp/full_pipelin
 
 ### Environment Management
 - Always source `env/activate` before running commands
-- Only set `SYSTEM_DESC_PATH` when running examples/tests (ask user for path when needed)
 - Check `$TTLANG_ENV_ACTIVATED` to verify environment is active
 - Detect OS and reference appropriate build docs (MACOS_BUILD.md for macOS)
 
@@ -457,7 +437,6 @@ sed -n '/After D2MAllocate/,/^\/\/ -----\/\/ IR Dump Before/p' /tmp/full_pipelin
 - Compare IR before and after the failing pass to identify the problem
 
 ### When to Ask User
-- When SYSTEM_DESC_PATH is needed for running examples/tests
 - If example/test is unclear which to run
 - If multiple possible approaches exist for solving a problem
 - If error is ambiguous and user context would help

@@ -65,5 +65,9 @@ def TTL_DataMovementOpTrait : TTL_Trait<"TTLDataMovementOpTrait", []>;
 def TTL_SynchronizationOpTrait : TTL_Trait<"TTLSynchronizationOpTrait", []>;
 def TTL_CircularBufferOpTrait : TTL_Trait<"TTLCircularBufferOpTrait", []>;
 def TTL_TileComputeOpTrait : TTL_Trait<"TTLTileComputeOpTrait", []>;
+def TTL_UnaryElementwiseOpTrait : TTL_Trait<"TTLUnaryElementwiseOpTrait", []>;
+def TTL_BinaryElementwiseOpTrait : TTL_Trait<"TTLBinaryElementwiseOpTrait", []>;
+def TTL_TileUnaryOpTrait : TTL_Trait<"TTLTileUnaryOpTrait", []>;
+def TTL_TileBinaryOpTrait : TTL_Trait<"TTLTileBinaryOpTrait", []>;
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLBASE_TD

@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import sys
 import platform
+import sys
 
 import lit.formats
 import lit.util
@@ -48,12 +48,21 @@ config.ttlang_source_dir = getattr(
 
 config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
 
+# Create Output directories for lit temp files (%t substitution).
+# This is needed when running from pre-built artifacts where the build
+# directory may not have the Output subdirectories created.
+for subdir in ["python", "ttlang", "bindings/python"]:
+    output_dir = os.path.join(config.test_exec_root, subdir, "Output")
+    os.makedirs(output_dir, exist_ok=True)
+
 config.excludes = [
     "Inputs",
     "lit.cfg.py",
     "lit.site.cfg.py",
     "sim",
     "e2e",  # E2E tests are run via pytest, not lit.
+    "conftest.py",
+    "utils.py",
 ]
 
 # Exclude pytest-style tests (test_*.py) from lit collection.
@@ -91,19 +100,17 @@ if llvm_config is not None:
     for dirs in tool_dirs:
         llvm_config.with_environment("PATH", dirs, append_path=True)
 
-# Add ttlang-opt, ttmlir-opt, and ttmlir-translate tools
-tools = ["ttlang-opt", "ttmlir-opt", "ttmlir-translate"]
+# Add ttlang-opt, and ttlang-translate tools
+tools = ["ttlang-opt", "ttlang-translate"]
 
 if llvm_config is not None:
     llvm_config.add_tool_substitutions(tools, tool_dirs)
 
 # Python test configuration
-config.substitutions.append(
-    (
-        "%python",
-        f"env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir {sys.executable}",
-    )
-)
+# Note: We cannot use %t directly in env var values because lit doesn't expand
+# substitutions recursively. Instead, tests should use %t explicitly:
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s
+config.substitutions.append(("%python", sys.executable))
 
 # Get Python packages directory from site config, or fall back to default build location.
 build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)
@@ -114,10 +121,18 @@ if build_python is None or not build_python:
 python_paths = [
     build_python,
     os.path.join(config.ttlang_source_dir, "python"),
-    os.environ.get("PYTHONPATH", ""),
 ]
 
-# Prefer built bindings so ttlang._mlir_libs is found.
+# Add tt-mlir Python packages if available
+if hasattr(config, "ttmlir_path") and config.ttmlir_path:
+    ttmlir_python = os.path.join(config.ttmlir_path, "python_packages")
+    if os.path.exists(ttmlir_python):
+        python_paths.append(ttmlir_python)
+
+# Include existing PYTHONPATH last
+python_paths.append(os.environ.get("PYTHONPATH", ""))
+
+# Prefer built bindings so ttl._mlir_libs is found.
 config.environment["PYTHONPATH"] = os.path.pathsep.join([p for p in python_paths if p])
 
 # Enable FileCheck variable scoping (MLIR default)
@@ -132,7 +147,7 @@ for env_var in [
     "TT_METAL_BUILD_HOME",
     "TT_METAL_RUNTIME_ROOT",
     "TT_MLIR_HOME",
-    "SYSTEM_DESC_PATH",
+    "TTLANG_COMPILE_ONLY",
 ]:
     if env_var in os.environ:
         config.environment[env_var] = os.environ[env_var]
@@ -140,3 +155,16 @@ for env_var in [
 # Add system platform feature for UNSUPPORTED directives
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
+
+# Add TTNN feature if available
+try:
+    import ttnn
+
+    config.available_features.add("ttnn")
+except ImportError:
+    pass
+
+# Add tt-device feature if hardware is available (detected by CMake at configure time)
+# Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)
+if getattr(config, "ttlang_has_device", False) or os.environ.get("TT_METAL_SIMULATOR"):
+    config.available_features.add("tt-device")
