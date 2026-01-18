@@ -3,6 +3,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
+  TTLAnnotateBinaryOpStrategy.cpp
   TTLAnnotateCBAssociations.cpp
   TTLInsertTileRegsSync.cpp
   TTLAssignDST.cpp
