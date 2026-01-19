@@ -9,14 +9,12 @@ Defines ComputeOpSpec dataclass and COMPUTE_OPS registry for all elementwise ope
 COMPUTE_OPS is auto-generated from TTLElementwiseOps.def to keep tests in sync with the dialect.
 """
 
-import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import torch
 
-from .ops import OP_INPUT_RANGES, OP_TORCH_MAP
+from .ops import ELEMENTWISE_OPS, OP_INPUT_RANGES, OP_TORCH_MAP
 
 
 @dataclass(frozen=True)
@@ -84,38 +82,8 @@ class ComputeOpSpec:
     input_range: Optional[Tuple[float, float]] = None
 
 
-def _parse_elementwise_ops_def() -> Dict[str, int]:
-    """
-    Parse TTLElementwiseOps.def to get op name -> arity.
-
-    Returns:
-        Dict mapping op name (lowercase) to arity (1 or 2).
-    """
-    def_path = (
-        Path(__file__).parent.parent.parent.parent
-        / "include/ttlang/Dialect/TTL/TTLElementwiseOps.def"
-    )
-
-    if not def_path.exists():
-        return {}
-
-    ops: Dict[str, int] = {}
-    with open(def_path) as f:
-        for line in f:
-            # Match TTL_BINARY_TILE_OP(Add, AddTileOp, ...) or TTL_BINARY_TILE_OP_SPECIAL(Max, ...)
-            if match := re.match(
-                r"TTL_BINARY_TILE_OP(?:_SPECIAL)?\((\w+),\s*\w+", line
-            ):
-                ops[match.group(1).lower()] = 2
-            # Match TTL_UNARY_TILE_OP(Exp, ExpTileOp, ...)
-            elif match := re.match(r"TTL_UNARY_TILE_OP\((\w+),\s*\w+", line):
-                ops[match.group(1).lower()] = 1
-
-    return ops
-
-
 # Special cases for ops that need custom golden functions (not in OP_TORCH_MAP or need different implementation).
-SPECIAL_GOLDEN_FUNCTIONS: Dict[str, Callable[..., Any]] = {
+SPECIAL_GOLDEN_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "rsqrt": lambda x: 1.0 / torch.sqrt(x),  # type: ignore[misc]  # Use lambda instead of torch.rsqrt for consistency
 }
 
@@ -131,10 +99,9 @@ def _generate_compute_ops() -> list[ComputeOpSpec]:
     Returns:
         List of ComputeOpSpec instances for all elementwise operations.
     """
-    elementwise_ops = _parse_elementwise_ops_def()
     compute_ops: list[ComputeOpSpec] = []
 
-    for op_name, arity in elementwise_ops.items():
+    for op_name, arity in ELEMENTWISE_OPS.items():
         # Get golden function from special cases, OP_TORCH_MAP, or skip if not found.
         if op_name in SPECIAL_GOLDEN_FUNCTIONS:
             golden = SPECIAL_GOLDEN_FUNCTIONS[op_name]
