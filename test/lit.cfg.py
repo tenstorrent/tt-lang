@@ -119,6 +119,7 @@ if build_python is None or not build_python:
 python_paths = [
     build_python,
     os.path.join(config.ttlang_source_dir, "python"),
+    config.test_source_root,  # For ttlang_test_utils and other test utilities
 ]
 
 # Add tt-mlir Python packages if available
@@ -154,13 +155,14 @@ for env_var in [
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
 
-# Add TTNN feature if available
-try:
-    import ttnn
+# Add TTNN feature if available (lightweight check without importing)
+import sys
 
+sys.path.insert(0, os.path.join(config.test_source_root))
+from ttlang_test_utils import is_ttnn_available
+
+if is_ttnn_available():
     config.available_features.add("ttnn")
-except ImportError:
-    pass
 
 # Add tt-device feature if hardware is available (detected by CMake at configure time)
 # Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)

@@ -19,7 +19,7 @@ import tempfile
 import pytest
 import torch
 import ttnn
-from test_helpers import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_l1
 
 pytestmark = pytest.mark.requires_ttnn
 

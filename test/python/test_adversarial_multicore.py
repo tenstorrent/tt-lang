@@ -19,7 +19,7 @@ Evil features:
 import pytest
 import torch
 import ttnn
-from test_helpers import to_dram
+from ttlang_test_utils import to_dram
 
 import ttl
 
