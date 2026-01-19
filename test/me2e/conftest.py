@@ -8,9 +8,6 @@ Pytest fixtures for E2E tests.
 Provides device management, skip conditions, and test metadata extraction.
 """
 
-import os
-from typing import Optional
-
 import pytest
 
 # Check for ttnn availability.

@@ -94,6 +94,27 @@ class TestConfig:
     buffer_factor: int = 1
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
 
+    def __str__(self) -> str:
+        """
+        Compact string representation for test output.
+
+        Format: block_h x block_w_dtype_buf{buffer_factor}_layout
+        Examples:
+            - 2x2_bf16_buf1_interleaved (2x2 grid, bfloat16, single buffer, interleaved)
+            - 8x8_f32_buf2_interleaved (8x8 grid, float32, double buffer, interleaved)
+            - 2x2_bf16_buf1_height_sharded (2x2 grid, bfloat16, single buffer, height_sharded)
+        """
+        # Short dtype name (bf16, f32, etc.)
+        dtype_str = str(self.dtype).split(".")[-1]
+
+        # Buffer factor (always explicit)
+        buffer_str = f"_buf{self.buffer_factor}"
+
+        # Layout indicator (always explicit, using enum value)
+        layout_str = f"_{self.memory_layout.value}"
+
+        return f"{self.block_h}x{self.block_w}_{dtype_str}{buffer_str}{layout_str}"
+
     def to_e2e_config(self) -> E2EConfig:
         """
         Convert to E2EConfig for use with existing infrastructure.
