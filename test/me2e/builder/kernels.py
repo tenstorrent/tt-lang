@@ -176,20 +176,16 @@ def write_kernels(
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
 
-    debug_kernels = os.environ.get("TTLANG_DEBUG_KERNELS", "0") == "1"
+    # Environment variable to disable shims for debugging.
+    # Shims are needed because compiler-generated C++ uses TensorAccessorArgs
+    # which require specific compile-time arg formats that the runner doesn't provide.
+    use_shims = os.environ.get("TTLANG_NO_SHIMS", "0") != "1"
 
     for kernel in noc_kernels + [compute_kernel]:
-        # Apply TensorAccessorArgs shim for NOC kernels (reader/writer).
-        # TODO: Remove this shim once compiler emits correct CTA offsets.
         source = kernel.source
-        if kernel.thread_type == ThreadType.NOC:
-            if debug_kernels:
-                print(f"\n[DEBUG kernels] Original {kernel.name}.cpp:")
-                print(source[:2000])
+        # Apply TensorAccessorArgs shim for NOC kernels (reader/writer).
+        if use_shims and kernel.thread_type == ThreadType.NOC:
             source = _shim_tensor_accessor_args(source, kernel.name)
-            if debug_kernels:
-                print(f"\n[DEBUG kernels] After shim {kernel.name}.cpp:")
-                print(source[:2000])
 
         path = output_dir / f"{kernel.name}.cpp"
         with open(path, "w") as f:
