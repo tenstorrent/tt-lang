@@ -223,9 +223,10 @@ def build_e2e_module_mlir(
 
     # Use DMThreadBuilder for reader and writer.
     dm_builder = DMThreadBuilder(config)
-    reader_mlir = dm_builder.build_reader(arity)
+    total_cbs = arity + 1  # Input CBs + 1 output CB.
+    reader_mlir = dm_builder.build_reader(arity, total_cbs=total_cbs)
     output_cb_index = arity  # Output CB follows input CBs.
-    writer_mlir = dm_builder.build_writer([output_cb_index])
+    writer_mlir = dm_builder.build_writer([output_cb_index], total_cbs=total_cbs)
 
     # Generate compute with ComputeThreadBuilder.
     compute_mlir = _generate_compute_mlir(op_str, arity, config)
@@ -271,9 +272,10 @@ def build_e2e_module_mlir_custom(
 
     # Use DMThreadBuilder for reader and writer.
     dm_builder = DMThreadBuilder(config)
-    reader_mlir = dm_builder.build_reader(arity)
+    total_cbs = arity + num_outputs
+    reader_mlir = dm_builder.build_reader(arity, total_cbs=total_cbs)
     output_cbs = list(range(arity, arity + num_outputs))
-    writer_mlir = dm_builder.build_writer(output_cbs)
+    writer_mlir = dm_builder.build_writer(output_cbs, total_cbs=total_cbs)
 
     # Generate custom compute.
     ctx = Context()

@@ -65,10 +65,11 @@ The declarative tests (`test_compute_ops.py`) execute all stages in a single fun
 3. test_translate_to_cpp (order=3)
    ├─ Input: compiled_module.mlir
    ├─ Output: kernels/*.cpp (reader, compute, writer)
+   │          kernels/kernel_metadata.json (tensor indices)
    └─ Validates: TTKernel -> C++ codegen
 
 4. test_execute (order=4)
-   ├─ Input: kernels/*.cpp, inputs.pt
+   ├─ Input: kernels/*.cpp, kernels/kernel_metadata.json, inputs.pt
    ├─ Output: result.pt
    └─ Validates: TTNN JIT execution
 
@@ -110,14 +111,16 @@ The declarative tests (`test_compute_ops.py`) execute all stages in a single fun
 │ Stage 3: Translate to C++                                   │
 │ - Load compiled_module.mlir                                 │
 │ - Extract reader/writer/compute kernels                     │
-│ - Generate C++ source code                                  │
-│ - Save: kernels/*.cpp                                       │
+│ - Extract tensor indices from ttl.crta_indices attributes   │
+│ - Generate C++ source code (unmodified compiler output)     │
+│ - Save: kernels/*.cpp, kernels/kernel_metadata.json         │
 └─────────────────────────────────────────────────────────────┘
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Stage 4: Execute on Device                                  │
-│ - Load kernels/*.cpp and inputs.pt                          │
+│ - Load kernels/*.cpp, kernel_metadata.json, inputs.pt       │
+│ - Build kernel descriptors using shared kernel_runner       │
 │ - Compile kernels via TTNN JIT                              │
 │ - Execute using ttnn.generic_op                             │
 │ - Save: result.pt                                           │
@@ -259,9 +262,16 @@ Test stages save intermediate artifacts to `build/test/me2e/<TestClassName>/`:
 
 ```
 build/test/me2e/TestAdd/
-├── module.mlir           # High-level TTL ops (from test_build_module)
-├── compiled_module.mlir  # Lowered to TTKernel ops (from test_compile_to_ttkernel)
-└── inputs.pt             # PyTorch input tensors for golden comparison
+├── module.mlir                      # High-level TTL ops (from test_build_module)
+├── compiled_module.mlir             # Lowered to TTKernel ops (from test_compile_to_ttkernel)
+├── inputs.pt                        # PyTorch input tensors for golden comparison
+├── golden.pt                        # Expected output from PyTorch reference
+├── result.pt                        # Actual output from device execution
+└── kernels/                         # Generated C++ kernels (from test_translate_to_cpp)
+    ├── reader_binary.cpp            # Data movement reader kernel
+    ├── writer.cpp                   # Data movement writer kernel
+    ├── compute_add.cpp              # Compute kernel
+    └── kernel_metadata.json         # Kernel metadata (tensor indices)
 ```
 
 **Example `module.mlir`** (before passes):
@@ -286,6 +296,31 @@ func.func @compute_add(...) {
 
 These artifacts are useful for debugging and can be processed manually with
 `ttlang-opt` or other tools.
+
+## Kernel Execution Architecture
+
+### Shared Kernel Runner
+
+The ME2E tests use the same kernel execution infrastructure as the Python DSL, ensuring that compiler-generated C++ runs unmodified on device. The shared `kernel_runner` module (`python/ttl/kernel_runner.py`) provides:
+
+- **Single source of truth**: Both Python DSL (`CompiledTTNNKernel`) and ME2E tests use the same argument-building logic
+- **No shimming required**: Generated C++ is written unmodified - no regex transformations or post-processing
+- **Metadata-driven execution**: Tensor indices extracted from MLIR attributes (`ttl.crta_indices`) drive argument construction
+
+**Key components**:
+- `KernelSpec`: Dataclass specifying kernel path, thread type, and tensor indices
+- `build_tensor_accessor_args()`: Builds compile-time args for tensor accessors
+- `build_kernel_descriptors()`: Builds kernel descriptors with proper arguments
+- `build_cb_descriptors()`: Builds circular buffer descriptors
+- `run_kernel_on_device()`: Main entry point for kernel execution
+
+**Execution flow**:
+1. Extract `ttl.crta_indices` from compiled MLIR (which tensors each kernel accesses)
+2. Save metadata to `kernel_metadata.json` alongside generated C++
+3. Load metadata during execution to build proper `common_runtime_args`
+4. Use shared `kernel_runner` to execute via `ttnn.generic_op`
+
+This architecture eliminates the previous regex-based shimming approach (73 lines removed) and ensures ME2E tests validate the same code path as production.
 
 ## Builder Architecture
 
@@ -372,8 +407,8 @@ test/me2e/
 │   ├── compute_builder.py   # Compute thread builder
 │   ├── ttl_builder.py       # Build TTL modules via Python bindings
 │   ├── pipeline.py          # Pass pipeline execution
-│   ├── kernels.py           # Kernel translation utilities
-│   ├── ttnn_runner.py       # TTNN device execution harness
+│   ├── kernels.py           # Kernel translation and metadata extraction
+│   ├── ttnn_runner.py       # TTNN device execution (uses shared kernel_runner)
 │   ├── dtype_utils.py       # Dtype conversion utilities
 │   └── device_arch.py       # Device architecture utilities
 ├── ops/                     # Operation tests
@@ -442,17 +477,6 @@ config = E2EConfig(
 ```
 
 The builder automatically generates appropriate MLIR layout attributes based on these settings.
-
-### Test Result Caching (Optional Optimization)
-
-A caching mechanism can be added to avoid recomputing intermediate results:
-- Cache MLIR modules, compiled modules, execution results between test stages
-- Allow running later stages (e.g., `test_compile`) without re-running earlier stages
-- Class-scoped cache shared across test methods within each test class
-- Improves iteration speed during development
-
-**Design Note**: Caching is optional. Tests should work independently first,
-then caching can be added as a performance optimization.
 
 ## Relationship to Other Tests
 

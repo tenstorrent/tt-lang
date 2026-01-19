@@ -10,7 +10,7 @@ between DRAM and circular buffers. These are minimal wrappers around the
 base StringBasedThreadBuilder.
 """
 
-from typing import List
+from typing import List, Optional
 
 from .thread_builder import StringBasedThreadBuilder
 
@@ -23,16 +23,21 @@ class DMThreadBuilder(StringBasedThreadBuilder):
     Uses string-based generation due to DRAM tensor layout attributes.
     """
 
-    def build_reader(self, num_inputs: int) -> str:
+    def build_reader(self, num_inputs: int, total_cbs: Optional[int] = None) -> str:
         """
         Build reader thread: DRAM tensors -> CBs 0..num_inputs-1.
 
         Args:
             num_inputs: Number of input tensors (1 for unary, 2 for binary).
+            total_cbs: Total number of CBs in the module (for base_cta_index).
+                      If None, defaults to num_inputs + 1 (assumes 1 output CB).
 
         Returns:
             MLIR string for the reader function.
         """
+        if total_cbs is None:
+            total_cbs = num_inputs + 1
+
         # Generate function signature.
         name = "reader_binary" if num_inputs == 2 else "reader_unary"
         args = ", ".join(
@@ -70,7 +75,7 @@ class DMThreadBuilder(StringBasedThreadBuilder):
         return f"""
 // Reader data movement thread: reads {num_inputs} tensor(s) from DRAM into CBs.
 func.func @{name}({args})
-    attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [{crta}], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
+    attributes {{ttl.base_cta_index = {total_cbs} : i32, ttl.crta_indices = [{crta}], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
 {cb_binds}
 {loop_start}
 
@@ -80,16 +85,23 @@ func.func @{name}({args})
 }}
 """
 
-    def build_writer(self, output_cbs: List[int]) -> str:
+    def build_writer(
+        self, output_cbs: List[int], total_cbs: Optional[int] = None
+    ) -> str:
         """
         Build writer thread: CBs -> DRAM tensors.
 
         Args:
             output_cbs: List of output CB indices.
+            total_cbs: Total number of CBs in the module (for base_cta_index).
+                      If None, defaults to max(output_cbs) + 1.
 
         Returns:
             MLIR string for the writer function.
         """
+        if total_cbs is None:
+            total_cbs = max(output_cbs) + 1 if output_cbs else 1
+
         num_outputs = len(output_cbs)
 
         # Generate function signature.
@@ -128,7 +140,7 @@ func.func @{name}({args})
         return f"""
 // Writer data movement thread: writes {num_outputs} output(s) from CBs to DRAM.
 func.func @writer({args})
-    attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [{crta}], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
+    attributes {{ttl.base_cta_index = {total_cbs} : i32, ttl.crta_indices = [{crta}], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
 {cb_binds}
 {loop_start}
 

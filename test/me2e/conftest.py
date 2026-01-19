@@ -8,17 +8,16 @@ Pytest fixtures for E2E tests.
 Provides device management, skip conditions, and test metadata extraction.
 """
 
+import os
+import sys
+
 import pytest
 
-# Check for ttnn availability.
-try:
-    import importlib.util
+# Add test root to path for shared utilities.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from ttlang_test_utils import is_hardware_available, is_ttnn_available
 
-    TTNN_AVAILABLE = importlib.util.find_spec("ttnn") is not None
-    ttnn = None  # Don't import at module level
-except Exception:
-    TTNN_AVAILABLE = False
-    ttnn = None
+TTNN_AVAILABLE = is_ttnn_available()
 
 
 def pytest_configure(config):
@@ -65,18 +64,8 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_ttnn)
         return
 
-    # Check for hardware availability (similar to test/python/conftest.py)
-    import glob
-    import os
-
-    hardware_available = False
-    if os.environ.get("TT_METAL_SIMULATOR"):
-        hardware_available = True
-    elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
-        hardware_available = True
-    elif glob.glob("/dev/tenstorrent*"):
-        hardware_available = True
-
+    # Check for hardware availability.
+    hardware_available = is_hardware_available()
     skip_device = pytest.mark.skip(reason="No Tenstorrent device available")
 
     for item in items:
@@ -105,19 +94,7 @@ def device():
     if not TTNN_AVAILABLE:
         pytest.skip("ttnn not available")
 
-    # Check for hardware availability
-    import glob
-    import os
-
-    hardware_available = False
-    if os.environ.get("TT_METAL_SIMULATOR"):
-        hardware_available = True
-    elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
-        hardware_available = True
-    elif glob.glob("/dev/tenstorrent*"):
-        hardware_available = True
-
-    if not hardware_available:
+    if not is_hardware_available():
         pytest.skip("No Tenstorrent device available")
 
     # Import ttnn here (not at module level)

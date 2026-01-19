@@ -223,6 +223,7 @@ class ThreadBuilder(ABC):
         result_types: List,
         thread_type: ThreadType,
         crta_indices: List[int],
+        base_cta_index: Optional[int] = None,
     ) -> Tuple[func.FuncOp, List]:
         """
         Create a function with thread attributes.
@@ -233,6 +234,8 @@ class ThreadBuilder(ABC):
             result_types: List of result types.
             thread_type: NOC or COMPUTE thread type.
             crta_indices: CB runtime argument indices.
+            base_cta_index: Index where TensorAccessorArgs start in compile_time_args.
+                           If None, uses total CB count from config.
 
         Returns:
             Tuple of (FuncOp, list of entry block arguments).
@@ -242,7 +245,11 @@ class ThreadBuilder(ABC):
 
         # Set thread attributes.
         i32_type = IntegerType.get_signless(32, self.ctx)
-        fn.attributes["ttl.base_cta_index"] = IntegerAttr.get(i32_type, 3)
+        if base_cta_index is None:
+            # Calculate from CB count: num_inputs + num_outputs.
+            # For E2E tests, this is typically arity + 1 (inputs + 1 output).
+            base_cta_index = getattr(self, "_total_cb_count", 3)
+        fn.attributes["ttl.base_cta_index"] = IntegerAttr.get(i32_type, base_cta_index)
         fn.attributes["ttl.crta_indices"] = ArrayAttr.get(
             [IntegerAttr.get(i32_type, idx) for idx in crta_indices], self.ctx
         )

@@ -116,7 +116,7 @@ class E2ETestBase:
     @pytest.mark.order(4)
     def test_execute(self, device):
         """Execute kernels on device."""
-        from .builder.kernels import KernelSpec, ThreadType
+        from .builder.kernels import KernelSpec, ThreadType, load_kernel_metadata
         from .builder.ttnn_runner import run_binary_op, run_unary_op
 
         # Check for kernel files.
@@ -138,7 +138,10 @@ class E2ETestBase:
 
         inputs = torch.load(inputs_file)
 
-        # Build kernel specs from C++ files.
+        # Load kernel metadata (includes tensor_indices).
+        metadata = load_kernel_metadata(kernel_dir)
+
+        # Build kernel specs from C++ files and metadata.
         noc_kernels = []
         compute_kernel = None
 
@@ -147,14 +150,27 @@ class E2ETestBase:
             with open(cpp_file) as f:
                 source = f.read()
 
-            # Determine thread type from name.
-            if "compute" in name.lower():
+            # Get metadata for this kernel (includes tensor_indices).
+            kernel_meta = metadata.get(name, {})
+            tensor_indices = kernel_meta.get("tensor_indices", [])
+
+            # Determine thread type from metadata or name fallback.
+            thread_type_str = kernel_meta.get("thread_type", "")
+            if thread_type_str == "compute" or "compute" in name.lower():
                 compute_kernel = KernelSpec(
-                    name=name, thread_type=ThreadType.COMPUTE, source=source
+                    name=name,
+                    thread_type=ThreadType.COMPUTE,
+                    source=source,
+                    tensor_indices=tensor_indices,
                 )
             else:
                 noc_kernels.append(
-                    KernelSpec(name=name, thread_type=ThreadType.NOC, source=source)
+                    KernelSpec(
+                        name=name,
+                        thread_type=ThreadType.NOC,
+                        source=source,
+                        tensor_indices=tensor_indices,
+                    )
                 )
 
         if compute_kernel is None:

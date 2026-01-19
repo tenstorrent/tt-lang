@@ -36,6 +36,9 @@ class ComputeThreadBuilder(ThreadBuilder):
             arity: Number of inputs (1 for unary, 2 for binary).
             num_outputs: Number of outputs (default 1).
         """
+        # Set total CB count for base_cta_index calculation.
+        self._total_cb_count = arity + num_outputs
+
         input_cbs = list(range(arity))
         output_cbs = list(range(arity, arity + num_outputs))
 
@@ -92,6 +95,10 @@ class ComputeThreadBuilder(ThreadBuilder):
                 ],
             )
         """
+        # Set total CB count for base_cta_index calculation.
+        all_cbs = set(input_cbs + output_cbs)
+        self._total_cb_count = max(all_cbs) + 1 if all_cbs else 0
+
         self._build_compute_thread(
             name=name,
             input_cbs=input_cbs,
