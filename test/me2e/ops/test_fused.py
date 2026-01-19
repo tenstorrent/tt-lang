@@ -74,6 +74,11 @@ class FusedOpTestBase(E2ETestBase):
         """
         raise NotImplementedError("Subclasses must implement get_mlir_template()")
 
+    @pytest.mark.order(2)
+    def test_compile_to_ttkernel(self) -> None:
+        """Run TTL-to-TTKernel pass pipeline on the generated module."""
+        super().test_compile_to_ttkernel()
+
     @pytest.mark.order(3)
     def test_translate_to_cpp(self) -> None:
         """Translate fused op TTKernel to C++ kernels."""
