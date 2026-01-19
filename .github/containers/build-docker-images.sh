@@ -51,23 +51,14 @@ echo "Check only: $CHECK_ONLY"
 echo "No push: $NO_PUSH"
 echo ""
 
-# Get tt-mlir Docker tag
-# We need to fetch tt-mlir to use its get-docker-tag.sh script
-TMP_DIR=".tmp/tt-mlir"
-if [ ! -d "$TMP_DIR" ]; then
-    echo "Cloning tt-mlir to get Docker tag..."
-    git clone --depth 1 https://github.com/tenstorrent/tt-mlir.git "$TMP_DIR"
-fi
+# Get version from git tags (e.g., v0.1.0 or v0.1.0-5-gabc1234 for dev builds)
+TTLANG_VERSION=$(git describe --tags --match "v[0-9]*" --always --dirty 2>/dev/null || echo "v0.0.0-unknown")
+echo "tt-lang version: $TTLANG_VERSION"
+echo "tt-mlir SHA: ${MLIR_SHA:0:12}"
 
-echo "Checking out tt-mlir at $MLIR_SHA..."
-(cd "$TMP_DIR" && git fetch origin "$MLIR_SHA" && git checkout "$MLIR_SHA" --quiet)
-
-MLIR_TAG=$("$TMP_DIR/.github/get-docker-tag.sh")
-echo "tt-mlir Docker tag: $MLIR_TAG"
-
-# Get tt-lang Docker tag
-DOCKER_TAG=$("$SCRIPT_DIR/get-docker-tag.sh" "$MLIR_TAG")
-echo "tt-lang Docker tag: $DOCKER_TAG"
+# Docker tag is the git version (sanitized for Docker - replace / and : with -)
+DOCKER_TAG=$(echo "$TTLANG_VERSION" | sed 's/[\/:]/-/g')
+echo "Docker tag: $DOCKER_TAG"
 echo ""
 
 # Note: tt-lang builds tt-mlir via FetchContent, so we don't require

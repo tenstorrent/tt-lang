@@ -1,6 +1,9 @@
 name: Build Docker Image
 
 on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       ttlang_sha_override:
