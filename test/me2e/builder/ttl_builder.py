@@ -24,8 +24,14 @@ from ttmlir.ir import (
     FunctionType,
     RankedTensorType,
     Type as MLIRType,
+    IndexType,
+    IntegerType,
+    IntegerAttr,
+    ArrayAttr,
+    StringAttr,
+    Attribute,
 )
-from ttmlir.dialects import func
+from ttmlir.dialects import func, scf, arith, ttkernel
 from ttmlir.dialects import ttcore
 
 import ttl.dialects.ttl as ttl
@@ -157,131 +163,182 @@ def build_ttl_module(
     return module
 
 
-def _generate_binary_compute_mlir(
+def _build_compute_func(
+    module: Module,
+    ctx: Context,
+    loc: Location,
     op_str: str,
+    arity: int,
     rows: int,
     cols: int,
-    dtype_str: str,
+    dtype: torch.dtype,
+    buffer_factor: int,
+    num_iterations: int,
+) -> None:
+    """
+    Build compute thread function using the Python builder API.
+
+    Creates a func.func with CB operations and optional scf.for loop for
+    multi-tile iteration. Uses high-level tensor ops (ttl.add, ttl.exp, etc.)
+    with proper CB lifecycle: cb_wait -> compute -> cb_reserve -> cb_push -> cb_pop.
+
+    Args:
+        module: The MLIR module to add the function to.
+        ctx: The MLIR context.
+        loc: The location for operations.
+        op_str: Operation name (e.g., "add", "exp").
+        arity: Number of inputs (1 or 2).
+        rows: Number of tile rows per iteration.
+        cols: Number of tile columns per iteration.
+        dtype: Data type for tiles.
+        buffer_factor: Circular buffer factor.
+        num_iterations: Number of loop iterations (1 = no loop).
+    """
+    # Get types.
+    dtype_int = torch_dtype_to_ttcore_datatype(dtype)
+    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, dtype_int)
+    tensor_type = RankedTensorType.get([rows, cols], tile_type)
+    cb_type = ttl.CircularBufferType.get(ctx, [rows, cols], tile_type, buffer_factor)
+
+    with InsertionPoint(module.body):
+        # Create function with no arguments and no results.
+        func_type = FunctionType.get([], [])
+        func_name = f"compute_{op_str}"
+        compute_func = func.FuncOp(func_name, func_type, loc=loc)
+
+        # Set kernel thread attributes.
+        i32_type = IntegerType.get_signless(32, ctx)
+        compute_func.attributes["ttl.base_cta_index"] = IntegerAttr.get(i32_type, 3)
+        compute_func.attributes["ttl.crta_indices"] = ArrayAttr.get([], ctx)
+        compute_func.attributes["ttl.kernel_thread"] = Attribute.parse(
+            "#ttkernel.thread<compute>", ctx
+        )
+
+        entry_block = compute_func.add_entry_block()
+
+        with InsertionPoint(entry_block):
+            # Bind circular buffers.
+            cb0 = ttl.bind_cb(cb_type, cb_index=0, buffer_factor=buffer_factor, loc=loc)
+            if arity == 2:
+                cb1 = ttl.bind_cb(
+                    cb_type, cb_index=1, buffer_factor=buffer_factor, loc=loc
+                )
+                output_cb_index = 2
+            else:
+                output_cb_index = 1
+            cb_out = ttl.bind_cb(
+                cb_type, cb_index=output_cb_index, buffer_factor=buffer_factor, loc=loc
+            )
+
+            def build_loop_body():
+                """Build the compute operations for one iteration."""
+                # Wait for input data from reader.
+                a = ttl.cb_wait(tensor_type, cb0, loc=loc)
+                a_attached = ttl.attach_cb(tensor_type, a, cb0, loc=loc)
+
+                if arity == 2:
+                    b = ttl.cb_wait(tensor_type, cb1, loc=loc)
+                    b_attached = ttl.attach_cb(tensor_type, b, cb1, loc=loc)
+
+                # Reserve output CB.
+                out_reserved = ttl.cb_reserve(tensor_type, cb_out, loc=loc)
+                out_attached = ttl.attach_cb(tensor_type, out_reserved, cb_out, loc=loc)
+
+                # Apply the operation.
+                op_func = getattr(ttl, op_str, None)
+                if op_func is None:
+                    raise ValueError(f"Unknown TTL op: ttl.{op_str}")
+
+                if arity == 1:
+                    result = op_func(tensor_type, a_attached, loc=loc)
+                else:
+                    result = op_func(tensor_type, a_attached, b_attached, loc=loc)
+
+                # Attach result to output CB (for data flow tracking).
+                ttl.attach_cb(tensor_type, result, cb_out, loc=loc)
+
+                # Push output, pop inputs.
+                ttl.cb_push(cb_out, loc=loc)
+                if arity == 2:
+                    ttl.cb_pop(cb1, loc=loc)
+                ttl.cb_pop(cb0, loc=loc)
+
+            if num_iterations > 1:
+                # Create loop bounds.
+                c0 = arith.ConstantOp(IndexType.get(ctx), 0).result
+                c1 = arith.ConstantOp(IndexType.get(ctx), 1).result
+                num_iters = arith.ConstantOp(IndexType.get(ctx), num_iterations).result
+
+                # Create scf.for loop.
+                for_op = scf.ForOp(c0, num_iters, c1)
+                with InsertionPoint(for_op.body):
+                    build_loop_body()
+                    scf.YieldOp([])
+            else:
+                # Single iteration - no loop needed.
+                build_loop_body()
+
+            func.ReturnOp([], loc=loc)
+
+
+def _generate_compute_mlir(
+    op_str: str,
+    arity: int,
+    rows: int,
+    cols: int,
+    dtype: torch.dtype,
     buffer_factor: int,
     num_iterations: int,
 ) -> str:
     """
-    Generate compute thread MLIR for binary operations.
+    Generate compute thread MLIR using the Python builder API.
 
-    Uses high-level tensor ops (ttl.add, ttl.mul) with proper CB lifecycle:
-    cb_wait -> compute -> cb_reserve -> attach_cb -> cb_push -> cb_pop (inputs).
+    Builds the compute function programmatically and returns it as a string.
+    This ensures type safety and consistency with the rest of the codebase.
+
+    Args:
+        op_str: Operation name (e.g., "add", "exp").
+        arity: Number of inputs (1 or 2).
+        rows: Number of tile rows per iteration.
+        cols: Number of tile columns per iteration.
+        dtype: Data type for tiles.
+        buffer_factor: Circular buffer factor.
+        num_iterations: Number of loop iterations (1 = no loop).
+
+    Returns:
+        MLIR string for the compute function.
     """
-    cb_type = (
-        f"!ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>"
-    )
-    tensor_type = f"tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>"
+    ctx = Context()
+    ttl.ensure_dialects_registered(ctx)
+    loc = Location.unknown(ctx)
 
-    # Build loop body or single iteration.
-    if num_iterations > 1:
-        loop_start = f"""
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c{num_iterations} = arith.constant {num_iterations} : index
-  scf.for %iter = %c0 to %c{num_iterations} step %c1 {{"""
-        loop_end = """
-  }"""
-        indent = "    "
-    else:
-        loop_start = ""
-        loop_end = ""
-        indent = "  "
+    with ctx, loc:
+        module = Module.create(loc)
+        _build_compute_func(
+            module,
+            ctx,
+            loc,
+            op_str,
+            arity,
+            rows,
+            cols,
+            dtype,
+            buffer_factor,
+            num_iterations,
+        )
+        module.operation.verify()
 
-    return f"""
-// Compute thread for {op_str} binary operation.
-// Uses high-level tensor ops with proper CB lifecycle (wait/push/pop).
-func.func @compute_{op_str}() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : {cb_type}
-  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {buffer_factor}}} : {cb_type}
-  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {buffer_factor}}} : {cb_type}
-{loop_start}
-{indent}// Wait for input data from reader.
-{indent}%a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> {tensor_type}
-{indent}%a_attached = ttl.attach_cb %a, %cb0 : ({tensor_type}, {cb_type}) -> {tensor_type}
-{indent}%b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> {tensor_type}
-{indent}%b_attached = ttl.attach_cb %b, %cb1 : ({tensor_type}, {cb_type}) -> {tensor_type}
-
-{indent}// Reserve output CB.
-{indent}%out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> {tensor_type}
-{indent}%out_attached = ttl.attach_cb %out_reserved, %cb_out : ({tensor_type}, {cb_type}) -> {tensor_type}
-
-{indent}// Compute: apply {op_str} operation.
-{indent}%result = ttl.{op_str} %a_attached, %b_attached : {tensor_type}, {tensor_type} -> {tensor_type}
-{indent}%result_attached = ttl.attach_cb %result, %cb_out : ({tensor_type}, {cb_type}) -> {tensor_type}
-
-{indent}// Push output, pop inputs.
-{indent}ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
-{indent}ttl.cb_pop %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
-{indent}ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
-{loop_end}
-  return
-}}
-"""
-
-
-def _generate_unary_compute_mlir(
-    op_str: str,
-    rows: int,
-    cols: int,
-    dtype_str: str,
-    buffer_factor: int,
-    num_iterations: int,
-) -> str:
-    """
-    Generate compute thread MLIR for unary operations.
-
-    Uses high-level tensor ops (ttl.exp, ttl.sqrt) with proper CB lifecycle.
-    """
-    cb_type = (
-        f"!ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>"
-    )
-    tensor_type = f"tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>>"
-
-    # Build loop body or single iteration.
-    if num_iterations > 1:
-        loop_start = f"""
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c{num_iterations} = arith.constant {num_iterations} : index
-  scf.for %iter = %c0 to %c{num_iterations} step %c1 {{"""
-        loop_end = """
-  }"""
-        indent = "    "
-    else:
-        loop_start = ""
-        loop_end = ""
-        indent = "  "
-
-    return f"""
-// Compute thread for {op_str} unary operation.
-// Uses high-level tensor ops with proper CB lifecycle (wait/push/pop).
-func.func @compute_{op_str}() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {buffer_factor}}} : {cb_type}
-  %cb_out = ttl.bind_cb {{cb_index = 1, buffer_factor = {buffer_factor}}} : {cb_type}
-{loop_start}
-{indent}// Wait for input data from reader.
-{indent}%a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> {tensor_type}
-{indent}%a_attached = ttl.attach_cb %a, %cb0 : ({tensor_type}, {cb_type}) -> {tensor_type}
-
-{indent}// Reserve output CB.
-{indent}%out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}> -> {tensor_type}
-{indent}%out_attached = ttl.attach_cb %out_reserved, %cb_out : ({tensor_type}, {cb_type}) -> {tensor_type}
-
-{indent}// Compute: apply {op_str} operation.
-{indent}%result = ttl.{op_str} %a_attached : {tensor_type} -> {tensor_type}
-{indent}%result_attached = ttl.attach_cb %result, %cb_out : ({tensor_type}, {cb_type}) -> {tensor_type}
-
-{indent}// Push output, pop input.
-{indent}ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
-{indent}ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {buffer_factor}>
-{loop_end}
-  return
-}}
-"""
+    # Extract just the function from the module string.
+    # The module wrapper will be added by build_e2e_module_mlir.
+    module_str = str(module)
+    # Remove module wrapper to get just the function.
+    lines = module_str.strip().split("\n")
+    # Skip first line ('module {') and last line ('}')
+    if lines[0].strip().startswith("module"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "}":
+        lines = lines[:-1]
+    return "\n".join(lines)
 
 
 def build_e2e_module_mlir(
@@ -332,18 +389,12 @@ def build_e2e_module_mlir(
     # Generate compute with high-level ops (not ttl.compute regions).
     # Use 1x1 CB shape for simplicity - one tile per iteration.
     rows, cols = 1, 1
-    dtype_str = torch_dtype_to_mlir_str(dtype)
 
-    if arity == 2:
-        compute_mlir = _generate_binary_compute_mlir(
-            op_str, rows, cols, dtype_str, buffer_factor, num_iterations
-        )
-        output_cb_index = 2
-    else:
-        compute_mlir = _generate_unary_compute_mlir(
-            op_str, rows, cols, dtype_str, buffer_factor, num_iterations
-        )
-        output_cb_index = 1
+    # Use builder API to generate compute function.
+    compute_mlir = _generate_compute_mlir(
+        op_str, arity, rows, cols, dtype, buffer_factor, num_iterations
+    )
+    output_cb_index = arity  # Output CB follows input CBs.
 
     # Generate writer with loop support.
     writer_mlir = generate_writer_mlir(
