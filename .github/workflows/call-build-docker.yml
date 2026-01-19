@@ -51,15 +51,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Determine tt-mlir commit
-        id: mlir-commit
+      - name: Read tt-mlir commit
+        id: ttmlir-commit
         run: |
-          if [ -n "${{ inputs.mlir_override }}" ]; then
-            echo "commit=${{ inputs.mlir_override }}" >> $GITHUB_OUTPUT
-          else
-            COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-            echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-          fi
+          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
 
       - name: Check if Docker image exists
         id: check
@@ -69,11 +65,21 @@ jobs:
   build-image:
     needs: check-if-docker-exist
     if: needs.check-if-docker-exist.outputs.docker-image == ''
-    runs-on: test1-large-runner-lang
+    runs-on: ubuntu-latest
+
+    env:
+      TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
+      TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
+
+    container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
+
     outputs:
       docker-image: ${{ steps.build.outputs.docker-image }}
       docker-image-base: ${{ steps.build.outputs.docker-image-base }}
     steps:
+      - name: Maximize space
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
@@ -87,27 +93,44 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      - name: Determine tt-mlir commit
-        id: mlir-commit
+      - name: Read tt-mlir commit
+        id: ttmlir-commit
         run: |
-          if [ -n "${{ inputs.mlir_override }}" ]; then
-            echo "commit=${{ inputs.mlir_override }}" >> $GITHUB_OUTPUT
-          else
-            COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-            echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-          fi
+          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+
+      - name: Restore tt-mlir from cache
+        id: cache-ttmlir
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.TT_MLIR_DIR }}
+          key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+          fail-on-cache-miss: false
+
+      - name: Check if cache was restored
+        if: steps.cache-ttmlir.outputs.cache-hit != 'true'
+        run: |
+          echo "::warning::tt-mlir cache key ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }} not found for commit ${{ steps.ttmlir-commit.outputs.commit }}"
+          echo "::warning::Skipping Docker build - run on-push workflow first to populate cache"
+          exit 1
 
       - name: Build Docker images
         id: build
         run: |
-          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
+          .github/containers/build-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}" --tt-mlir-dir "${{ env.TT_MLIR_DIR }}"
 
-          # Extract image name from last line
-          DOCKER_IMAGE=$(tail -n 1 docker.log)
+      - name: Read Docker image name
+        id: image-name
+        run: |
+          if [ ! -f .docker-image-name ]; then
+            echo "Error: .docker-image-name file not found"
+            exit 1
+          fi
+          DOCKER_IMAGE=$(cat .docker-image-name)
           echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
 
           # Create base variant
-          DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
+          DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-dist-ubuntu/tt-lang-base-ubuntu}"
           echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
 
           echo "✓ Docker images built successfully"

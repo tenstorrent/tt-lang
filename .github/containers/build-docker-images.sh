@@ -5,34 +5,46 @@
 # Build and optionally push tt-lang Docker images
 #
 # Usage:
-#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push]
+#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push] [--tt-mlir-dir DIR]
 #
 # Arguments:
 #   MLIR_SHA     - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
 #   --check-only - Only check if images exist, don't build
 #   --no-push    - Build locally but don't push to registry
+#   --tt-mlir-dir DIR - Path to pre-built tt-mlir installation (uses Dockerfile.ci)
 #
 # Must be run from the repository root directory
 
 set -e
 
+# Track if we created tt-mlir-install in build context
+TTMLIR_INSTALL_COPIED=false
+
 # Parse arguments
 MLIR_SHA=""
 CHECK_ONLY=false
 NO_PUSH=false
+TT_MLIR_DIR=""
 
-for arg in "$@"; do
-    case $arg in
+while [[ $# -gt 0 ]]; do
+    case $1 in
         --check-only)
             CHECK_ONLY=true
+            shift
             ;;
         --no-push)
             NO_PUSH=true
+            shift
+            ;;
+        --tt-mlir-dir)
+            TT_MLIR_DIR="$2"
+            shift 2
             ;;
         *)
             if [ -z "$MLIR_SHA" ]; then
-                MLIR_SHA="$arg"
+                MLIR_SHA="$1"
             fi
+            shift
             ;;
     esac
 done
@@ -97,11 +109,18 @@ build_image() {
         target_arg="--target $target"
     fi
 
+    local build_args="--build-arg FROM_TAG=$DOCKER_TAG"
+    if [ -n "$TT_MLIR_DIR" ]; then
+        build_args="$build_args --build-arg TT_MLIR_DIR=$TT_MLIR_DIR"
+    fi
+    if [ -n "$MLIR_TAG" ]; then
+        build_args="$build_args --build-arg MLIR_TAG=$MLIR_TAG"
+    fi
+
     docker build \
         --progress=plain \
         $target_arg \
-        --build-arg FROM_TAG="$DOCKER_TAG" \
-        --build-arg MLIR_TAG="$MLIR_TAG" \
+        $build_args \
         -t "$image" \
         -t "ghcr.io/$REPO/$name:latest" \
         -f "$dockerfile" .
@@ -118,11 +137,28 @@ build_image() {
     echo ""
 }
 
+# If TT_MLIR_DIR is provided, copy it into build context for Docker
+if [ -n "$TT_MLIR_DIR" ]; then
+    if [ ! -d "$TT_MLIR_DIR" ]; then
+        echo "Error: TT_MLIR_DIR does not exist: $TT_MLIR_DIR"
+        exit 1
+    fi
+    # Copy tt-mlir installation into build context
+    echo "Copying tt-mlir installation from $TT_MLIR_DIR to build context..."
+    cp -r "$TT_MLIR_DIR" ./tt-mlir-install
+    DOCKERFILE=".github/containers/Dockerfile.ci"
+    # Update TT_MLIR_DIR to point to the copied location
+    TT_MLIR_DIR="./tt-mlir-install"
+else
+    DOCKERFILE=".github/containers/Dockerfile.local"
+fi
+
 # Build images in dependency order
 build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
-build_image "tt-lang-ci-ubuntu-22-04" .github/containers/Dockerfile ci
-build_image "tt-lang-dist-ubuntu-22-04" .github/containers/Dockerfile dist
-build_image "tt-lang-ird-ubuntu-22-04" .github/containers/Dockerfile ird
+build_image "tt-lang-ci-ubuntu-22-04" "$DOCKERFILE" ci
+build_image "tt-lang-dist-ubuntu-22-04" "$DOCKERFILE" dist
+build_image "tt-lang-ird-ubuntu-22-04" "$DOCKERFILE" ird
+
 
 echo "=== Build Complete ==="
 echo ""
@@ -132,5 +168,9 @@ echo "  - ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
 echo "  - ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
 echo "  - ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
 echo ""
+
+# Write dist image name to file for workflow consumption
+DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+echo "$DIST_IMAGE" > .docker-image-name
 echo "DIST_IMAGE_NAME:"
-echo "ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+echo "$DIST_IMAGE"
