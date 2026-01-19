@@ -181,10 +181,8 @@ def _run_op(
     Returns:
         Output tensor as torch tensor.
     """
-    print(f"[DEBUG ttnn_runner] _run_op: Starting with {len(inputs)} inputs")
     num_inputs = len(inputs)
     shape = list(inputs[0].shape)
-    print(f"[DEBUG ttnn_runner] Input shape: {shape}")
 
     # Calculate number of tiles.
     # Assume shape is [N, H, W] where H and W are tile multiples.
@@ -194,55 +192,40 @@ def _run_op(
     num_tiles *= (shape[-2] // TILE_HEIGHT) * (shape[-1] // TILE_WIDTH)
 
     # Create device tensors using to_dram (like test_axby.py).
-    print(f"[DEBUG ttnn_runner] Creating device tensors")
     device_inputs = []
 
     for i, inp in enumerate(inputs):
-        print(f"[DEBUG ttnn_runner] Converting input {i} to device tensor")
         device_inp = to_dram(inp.to(torch.bfloat16), device)
         device_inputs.append(device_inp)
-    print(f"[DEBUG ttnn_runner] All inputs converted")
 
     # Create output tensor in DRAM using to_dram (like test_axby.py).
-    print(f"[DEBUG ttnn_runner] Creating output tensor in DRAM")
     output_torch = torch.zeros(shape, dtype=torch.bfloat16)
     output_tensor = to_dram(output_torch, device)
 
     io_tensors = device_inputs + [output_tensor]
-    print(f"[DEBUG ttnn_runner] Output tensor allocated")
 
     # Configure core grid (single core for simplicity).
-    print(f"[DEBUG ttnn_runner] Configuring core grid")
     max_core = ttnn.CoreCoord(0, 0)
     core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), max_core)])
 
     # Get tile size.
-    print(f"[DEBUG ttnn_runner] Getting tile size")
     tile_size_bytes = _get_tile_size_bytes(ttnn.bfloat16)
-    print(f"[DEBUG ttnn_runner] Tile size: {tile_size_bytes} bytes")
 
     # Create CB descriptors.
-    print(f"[DEBUG ttnn_runner] Creating CB descriptors")
     cb_descriptors = _create_cb_descriptors(
         core_grid=core_grid,
         num_inputs=num_inputs,
         tile_size_bytes=tile_size_bytes,
         num_tiles=1,  # Single buffering.
     )
-    print(f"[DEBUG ttnn_runner] Created {len(cb_descriptors)} CB descriptors")
 
     # Build kernel descriptors.
-    print(f"[DEBUG ttnn_runner] Building kernel descriptors")
     kernel_descriptors = []
 
     # Find reader and writer kernels.
-    print(
-        f"[DEBUG ttnn_runner] Finding reader and writer kernels from {len(noc_kernels)} NOC kernels"
-    )
     reader_kernel = None
     writer_kernel = None
     for kernel in noc_kernels:
-        print(f"[DEBUG ttnn_runner]   NOC kernel: {kernel.name}")
         if "reader" in kernel.name.lower():
             reader_kernel = kernel
         elif "writer" in kernel.name.lower():
@@ -250,9 +233,6 @@ def _run_op(
 
     if reader_kernel is None or writer_kernel is None:
         raise ValueError("Could not find reader and writer kernels")
-    print(
-        f"[DEBUG ttnn_runner] Found reader: {reader_kernel.name}, writer: {writer_kernel.name}"
-    )
 
     # Reader kernel descriptor.
     reader_rt_args = [[[num_tiles, 0]]]
@@ -315,24 +295,18 @@ def _run_op(
     kernel_descriptors.append(compute_descriptor)
 
     # Create program descriptor.
-    print(f"[DEBUG ttnn_runner] Creating program descriptor")
     program_descriptor = ttnn.ProgramDescriptor(
         kernels=kernel_descriptors,
         semaphores=[],
         cbs=cb_descriptors,
     )
-    print(f"[DEBUG ttnn_runner] Program descriptor created")
 
     # Execute.
-    print(f"[DEBUG ttnn_runner] Executing ttnn.generic_op")
     ttnn.generic_op(io_tensors, program_descriptor)
-    print(f"[DEBUG ttnn_runner] Execution complete")
 
     # Use the original output_tensor (like test_axby.py uses out_t directly).
     # generic_op writes to the last tensor in io_tensors, which is output_tensor.
-    print(f"[DEBUG ttnn_runner] Converting output to torch")
     result = ttnn.to_torch(output_tensor)
-    print(f"[DEBUG ttnn_runner] Conversion complete")
     return result
 
 

@@ -18,7 +18,7 @@ to create specific thread types with minimal boilerplate.
 from abc import ABC
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import torch
 from ttmlir.ir import (
@@ -54,8 +54,8 @@ class ThreadType(Enum):
 class LoopContext:
     """Context for tile loop iteration."""
 
-    row_idx: any  # SSA value for row index
-    col_idx: any  # SSA value for column index
+    row_idx: Any  # SSA value for row index
+    col_idx: Any  # SSA value for column index
 
 
 class ThreadBuilder(ABC):

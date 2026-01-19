@@ -60,7 +60,7 @@ config.excludes = [
     "lit.cfg.py",
     "lit.site.cfg.py",
     "sim",
-    "e2e",  # E2E tests are run via pytest, not lit.
+    "me2e",  # ME2E tests are run via pytest, not lit.
     "conftest.py",
     "utils.py",
 ]

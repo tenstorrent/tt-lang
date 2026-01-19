@@ -85,6 +85,10 @@ def run_compute_test(
     Raises:
         AssertionError: If the computed result doesn't match the golden reference.
     """
+    # Set seed for reproducible test inputs.
+    seed = int(os.environ.get("TTLANG_TEST_SEED", "42"))
+    torch.manual_seed(seed)
+
     e2e_config = config.to_e2e_config()
 
     # 1. Create tensors on device (following elementwise pattern).
