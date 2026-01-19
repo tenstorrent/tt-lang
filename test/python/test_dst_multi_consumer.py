@@ -24,7 +24,7 @@ Test patterns:
 import pytest
 import torch
 import ttnn
-from test_helpers import assert_allclose, to_dram
+from ttlang_test_utils import assert_allclose, to_dram
 
 from ttl import ttl
 

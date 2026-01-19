@@ -27,7 +27,7 @@ from typing import Callable
 import pytest
 import ttnn
 import torch
-from test_helpers import assert_allclose, to_dram
+from ttlang_test_utils import assert_allclose, to_dram
 
 pytestmark = pytest.mark.requires_ttnn
 

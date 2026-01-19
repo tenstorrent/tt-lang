@@ -22,7 +22,7 @@ Features:
 import pytest
 import torch
 import ttnn
-from test_helpers import to_dram, to_l1
+from ttlang_test_utils import to_dram, to_l1
 
 import ttl
 

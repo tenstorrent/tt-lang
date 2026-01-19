@@ -48,6 +48,10 @@ from .dtype_utils import (
     tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
+from .kernel_runner import (
+    KernelSpec,
+    run_kernel_on_device,
+)
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .ttl_utils import get_thread_type_string
 
@@ -186,93 +190,24 @@ class CompiledTTNNKernel:
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
-        # Build TensorAccessorArgs config for each tensor
-        tensor_accessor_args = []
-        for tensor in args:
-            tensor_args = ttnn.TensorAccessorArgs(tensor).get_compile_time_args()
-            tensor_accessor_args.extend(tensor_args)
-
-        # Build kernel descriptors with current tensor addresses
-        kernel_descriptors = []
-
-        # Compute grid dimensions from core_ranges for runtime_args structure
-        # runtime_args structure: [x][y][args_per_core] where x=cols, y=rows
-        grid_size = self.core_ranges.bounding_box().grid_size()
-        grid_cols = grid_size.x
-        grid_rows = grid_size.y
-
-        for kernel_idx, ((kernel_path, thread_type), config, rt_args) in enumerate(
-            zip(self.kernel_paths, self.kernel_configs, self.kernel_arg_specs)
-        ):
-            # runtime_args structure: [x][y][args_per_core]
-            # Each core gets an empty arg list (we use my_x/my_y for indexing)
-            runtime_args = [[[] for _ in range(grid_rows)] for _ in range(grid_cols)]
-
-            # Build common_runtime_args using kernel_tensor_indices
-            # C++ indexes by function-local position, we provide addresses in that order
+        # Build kernel specs from stored kernel info.
+        kernel_specs = []
+        for kernel_idx, (kernel_path, thread_type) in enumerate(self.kernel_paths):
             tensor_indices = self.kernel_tensor_indices[kernel_idx]
-            common_runtime_args = [args[idx].buffer_address() for idx in tensor_indices]
-
-            # CB indices are 0, 1, 2, ... for each tensor
-            cb_indices = list(range(len(args)))
-
-            # Compute kernels only need CB indices
-            # DM kernels need CB indices + TensorAccessorArgs config
-            if thread_type == "compute":
-                kernel_compile_time_args = cb_indices
-            else:
-                kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
-
-            kernel_desc = ttnn.KernelDescriptor(
-                kernel_source=kernel_path,
-                core_ranges=self.core_ranges,
-                compile_time_args=kernel_compile_time_args,
-                runtime_args=runtime_args,
-                common_runtime_args=common_runtime_args,
-                config=config,
+            spec = KernelSpec(
+                path=kernel_path,
+                thread_type=thread_type,
+                tensor_indices=tensor_indices,
             )
-            kernel_descriptors.append(kernel_desc)
+            kernel_specs.append(spec)
 
-        # Build CB descriptors
-        cb_descriptors = []
-        for i, tensor in enumerate(args):
-            if hasattr(tensor, "dtype") and hasattr(tensor.dtype, "name"):
-                data_format = tensor.dtype
-            else:
-                data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
-
-            page_size = tile_bytes_from_dtype(data_format)
-
-            if i >= len(self.cb_configs) or self.cb_configs[i] is None:
-                raise ValueError(
-                    f"Missing CB config for tensor {i}. "
-                    f"All tensors must have associated CircularBuffer configurations."
-                )
-            shape, buffer_factor = self.cb_configs[i]
-            num_tiles = shape[0] * shape[1] * buffer_factor
-            total_size = num_tiles * page_size
-
-            cb_format = ttnn.CBFormatDescriptor(
-                buffer_index=i,
-                data_format=data_format,
-                page_size=page_size,
-            )
-            cb_desc = ttnn.CBDescriptor(
-                total_size=total_size,
-                core_ranges=self.core_ranges,
-                format_descriptors=[cb_format],
-            )
-            cb_descriptors.append(cb_desc)
-
-        # Build and execute program
-        # TODO: Extract semaphore info from kernel IR for synchronization
-        program = ttnn.ProgramDescriptor(
-            kernels=kernel_descriptors,
-            cbs=cb_descriptors,
-            semaphores=[],
+        # Use shared kernel execution logic.
+        return run_kernel_on_device(
+            kernel_specs=kernel_specs,
+            tensors=list(args),
+            cb_configs=self.cb_configs,
+            core_ranges=self.core_ranges,
         )
-
-        return ttnn.generic_op(list(args), program)
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
