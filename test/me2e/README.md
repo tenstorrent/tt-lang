@@ -21,8 +21,8 @@ The framework provides four types of tests:
 
 1. Declarative parametrized tests (`test_compute_ops.py`):
    - Single parametrized test function covering all elementwise operations
-   - Operations defined declaratively in `op_specs.py` as `ComputeOpSpec` entries
-   - Tests 13 operations (add, sub, mul, max, exp, log, sqrt, rsqrt, tanh, abs, neg, relu, sigmoid)
+   - Operations auto-generated from `TTLElementwiseOps.def` in `op_specs.py`
+   - Tests all operations defined in the `.def` file (currently 13: add, sub, mul, max, exp, log, sqrt, rsqrt, tanh, abs, neg, relu, sigmoid)
    - Each operation tested with multiple configurations from `config_specs.py` (1x1, 2x2 grids)
    - All pipeline stages (build -> compile -> translate -> execute -> validate) executed in a single test function via `runner.py`
    - Uses temporary directories for kernel artifacts
@@ -166,24 +166,26 @@ pytest test/me2e/examples/ -v -s
 To add a new elementwise operation to `test_compute_ops.py`:
 
 1. Add the op to `TTLElementwiseOps.def` (compiler side)
-2. Add a `ComputeOpSpec` entry to `op_specs.py`:
+2. Add the torch reference to `OP_TORCH_MAP` in `ops/__init__.py` (if not already present)
+3. Optionally add input range constraints to `OP_INPUT_RANGES` in `ops/__init__.py` (for ops with domain constraints)
 
+The operation will automatically be tested with all configurations in `config_specs.py`. The `COMPUTE_OPS` list in `op_specs.py` is auto-generated from the `.def` file, so no manual `ComputeOpSpec` entry is needed.
+
+**Example**:
 ```python
-# In op_specs.py
-COMPUTE_OPS = [
-    # Add your new op
-    ComputeOpSpec(
-        name="my_op",                    # Operation name
-        ttl_op="tile_my_op",            # TTL dialect op name
-        arity=1,                         # 1 for unary, 2 for binary
-        golden=torch.my_op,              # PyTorch reference function
-        reader_type="unary",             # "unary" or "binary"
-        input_range=(0.01, 10.0),       # Optional: constrain input domain
-    ),
-]
+# In ops/__init__.py
+OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
+    # ... existing ops ...
+    "my_op": torch.my_op,  # Add torch reference
+}
+
+OP_INPUT_RANGES: Dict[str, Tuple[float, float]] = {
+    # ... existing constraints ...
+    "my_op": (0.01, 10.0),  # Optional: if domain constraints are needed
+}
 ```
 
-The operation will automatically be tested with all configurations in `config_specs.py`.
+The `ttl_op` name (e.g., `tile_my_op`) and `reader_type` (unary/binary) are automatically derived from the `.def` file.
 
 ### Custom Fused Operations
 
@@ -280,7 +282,7 @@ test/me2e/
 ├── base.py                  # E2ETestBase defining pipeline stages
 ├── runner.py                # Declarative test runner (executes full pipeline)
 ├── test_compute_ops.py      # Declarative parametrized tests (main test suite)
-├── op_specs.py              # Operation specifications (ComputeOpSpec entries)
+├── op_specs.py              # Operation specifications (auto-generated from .def file)
 ├── config_specs.py          # Test configuration specifications (TestConfig entries)
 ├── config.py                # E2EConfig dataclass
 ├── utils.py                 # ULP comparison utilities

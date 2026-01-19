@@ -6,13 +6,17 @@
 Operation specifications for declarative E2E tests.
 
 Defines ComputeOpSpec dataclass and COMPUTE_OPS registry for all elementwise operations.
-This enables declarative testing where operations are specified as data rather than code.
+COMPUTE_OPS is auto-generated from TTLElementwiseOps.def to keep tests in sync with the dialect.
 """
 
+import re
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import torch
+
+from .ops import OP_INPUT_RANGES, OP_TORCH_MAP
 
 
 @dataclass(frozen=True)
@@ -75,35 +79,104 @@ class ComputeOpSpec:
     name: str
     ttl_op: str
     arity: int
-    golden: Callable
+    golden: Callable[..., Any]
     reader_type: str
     input_range: Optional[Tuple[float, float]] = None
 
 
-# All ops - add one line to test a new op
-COMPUTE_OPS = [
-    # Binary ops
-    ComputeOpSpec("add", "tile_add", 2, lambda a, b: a + b, "binary"),
-    ComputeOpSpec("sub", "tile_sub", 2, lambda a, b: a - b, "binary"),
-    ComputeOpSpec("mul", "tile_mul", 2, lambda a, b: a * b, "binary"),
-    ComputeOpSpec("max", "tile_max", 2, torch.maximum, "binary"),
-    # Unary ops
-    ComputeOpSpec("exp", "tile_exp", 1, torch.exp, "unary"),
-    ComputeOpSpec("log", "tile_log", 1, torch.log, "unary", input_range=(0.01, 10.0)),
-    ComputeOpSpec(
-        "sqrt", "tile_sqrt", 1, torch.sqrt, "unary", input_range=(0.01, 10.0)
-    ),
-    ComputeOpSpec(
-        "rsqrt",
-        "tile_rsqrt",
-        1,
-        lambda x: 1.0 / torch.sqrt(x),
-        "unary",
-        input_range=(0.01, 10.0),
-    ),
-    ComputeOpSpec("tanh", "tile_tanh", 1, torch.tanh, "unary"),
-    ComputeOpSpec("abs", "tile_abs", 1, torch.abs, "unary"),
-    ComputeOpSpec("neg", "tile_neg", 1, torch.neg, "unary"),
-    ComputeOpSpec("relu", "tile_relu", 1, torch.relu, "unary"),
-    ComputeOpSpec("sigmoid", "tile_sigmoid", 1, torch.sigmoid, "unary"),
-]
+def _parse_elementwise_ops_def() -> Dict[str, int]:
+    """
+    Parse TTLElementwiseOps.def to get op name -> arity.
+
+    Returns:
+        Dict mapping op name (lowercase) to arity (1 or 2).
+    """
+    def_path = (
+        Path(__file__).parent.parent.parent.parent
+        / "include/ttlang/Dialect/TTL/TTLElementwiseOps.def"
+    )
+
+    if not def_path.exists():
+        return {}
+
+    ops: Dict[str, int] = {}
+    with open(def_path) as f:
+        for line in f:
+            # Match TTL_BINARY_TILE_OP(Add, AddTileOp, ...) or TTL_BINARY_TILE_OP_SPECIAL(Max, ...)
+            if match := re.match(
+                r"TTL_BINARY_TILE_OP(?:_SPECIAL)?\((\w+),\s*\w+", line
+            ):
+                ops[match.group(1).lower()] = 2
+            # Match TTL_UNARY_TILE_OP(Exp, ExpTileOp, ...)
+            elif match := re.match(r"TTL_UNARY_TILE_OP\((\w+),\s*\w+", line):
+                ops[match.group(1).lower()] = 1
+
+    return ops
+
+
+# Special cases for ops that need custom golden functions (not in OP_TORCH_MAP or need different implementation).
+SPECIAL_GOLDEN_FUNCTIONS: Dict[str, Callable[..., Any]] = {
+    "rsqrt": lambda x: 1.0 / torch.sqrt(x),  # type: ignore[misc]  # Use lambda instead of torch.rsqrt for consistency
+}
+
+
+def _generate_compute_ops() -> list[ComputeOpSpec]:
+    """
+    Auto-generate COMPUTE_OPS from TTLElementwiseOps.def.
+
+    Operations are parsed from the .def file, and golden functions/input ranges
+    are looked up from OP_TORCH_MAP and OP_INPUT_RANGES. Special cases can be
+    handled via SPECIAL_GOLDEN_FUNCTIONS.
+
+    Returns:
+        List of ComputeOpSpec instances for all elementwise operations.
+    """
+    elementwise_ops = _parse_elementwise_ops_def()
+    compute_ops: list[ComputeOpSpec] = []
+
+    for op_name, arity in elementwise_ops.items():
+        # Get golden function from special cases, OP_TORCH_MAP, or skip if not found.
+        if op_name in SPECIAL_GOLDEN_FUNCTIONS:
+            golden = SPECIAL_GOLDEN_FUNCTIONS[op_name]
+        elif op_name in OP_TORCH_MAP:
+            golden = OP_TORCH_MAP[op_name]
+        else:
+            # Skip ops without torch reference (shouldn't happen for elementwise ops).
+            continue
+
+        # Derive ttl_op name from op name.
+        ttl_op = f"tile_{op_name}"
+
+        # Derive reader_type from arity.
+        reader_type = "unary" if arity == 1 else "binary"
+
+        # Get input range if specified.
+        input_range = OP_INPUT_RANGES.get(op_name)
+
+        compute_ops.append(
+            ComputeOpSpec(
+                name=op_name,
+                ttl_op=ttl_op,
+                arity=arity,
+                golden=golden,
+                reader_type=reader_type,
+                input_range=input_range,
+            )
+        )
+
+    return compute_ops
+
+
+# Auto-generated from TTLElementwiseOps.def.
+# Adding a new op to the .def file automatically creates a test here.
+COMPUTE_OPS = _generate_compute_ops()
+
+# Validate that ops were generated.
+if not COMPUTE_OPS:
+    import warnings
+
+    warnings.warn(
+        "COMPUTE_OPS is empty. Check that TTLElementwiseOps.def exists and contains operations, "
+        "and that OP_TORCH_MAP in ops/__init__.py has entries for all operations.",
+        UserWarning,
+    )

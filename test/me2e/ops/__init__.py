@@ -66,11 +66,13 @@ def _parse_elementwise_ops_def() -> Dict[str, int]:
     ops: Dict[str, int] = {}
     with open(def_path) as f:
         for line in f:
-            # Match TTL_BINARY_TILE_OP(Add, AddTileOp)
-            if match := re.match(r"TTL_BINARY_TILE_OP\((\w+),\s*\w+\)", line):
+            # Match TTL_BINARY_TILE_OP(Add, AddTileOp, ...) or TTL_BINARY_TILE_OP_SPECIAL(Max, ...)
+            if match := re.match(
+                r"TTL_BINARY_TILE_OP(?:_SPECIAL)?\((\w+),\s*\w+", line
+            ):
                 ops[match.group(1).lower()] = 2
-            # Match TTL_UNARY_TILE_OP(Exp, ExpTileOp)
-            elif match := re.match(r"TTL_UNARY_TILE_OP\((\w+),\s*\w+\)", line):
+            # Match TTL_UNARY_TILE_OP(Exp, ExpTileOp, ...)
+            elif match := re.match(r"TTL_UNARY_TILE_OP\((\w+),\s*\w+", line):
                 ops[match.group(1).lower()] = 1
 
     return ops

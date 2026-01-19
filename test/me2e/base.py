@@ -221,7 +221,7 @@ class E2ETestBase:
         max_ulp, _ = compare_tensors_ulp(result, golden)
 
         # Default threshold - subclasses can override.
-        ulp_threshold = getattr(self, "ULP_THRESHOLD", 10.0)
+        ulp_threshold = getattr(self, "ULP_THRESHOLD", None) or 10.0
         assert (
             max_ulp <= ulp_threshold
         ), f"Max ULP {max_ulp} exceeds threshold {ulp_threshold}"
