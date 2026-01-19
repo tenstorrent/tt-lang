@@ -79,6 +79,9 @@ jobs:
 
             echo "✓ Docker images already exist"
           else
+            # Image doesn't exist - set empty outputs so build job runs
+            echo "docker-image=" >> $GITHUB_OUTPUT
+            echo "docker-image-base=" >> $GITHUB_OUTPUT
             echo "✗ Docker images need to be built"
           fi
 
