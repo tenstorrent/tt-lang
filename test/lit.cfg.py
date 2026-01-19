@@ -121,6 +121,7 @@ if build_python is None or not build_python:
 python_paths = [
     build_python,
     os.path.join(config.ttlang_source_dir, "python"),
+    config.test_source_root,  # For ttlang_test_utils and other test utilities
 ]
 
 # Add tt-mlir Python packages if available
