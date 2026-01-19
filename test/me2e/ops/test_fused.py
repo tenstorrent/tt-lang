@@ -25,12 +25,8 @@ from ttmlir.ir import Context, Module
 from ..base import E2ETestBase
 from ..config import E2EConfig
 from ..builder.dtype_utils import torch_dtype_to_mlir_str
-from ..builder.dm_threads import (
-    generate_binary_reader_mlir,
-    generate_unary_reader_mlir,
-    generate_writer_mlir,
-    generate_layout_attrs,
-)
+from ..builder.thread_builder import generate_layout_attrs
+from ..builder.dm_builder import DMThreadBuilder
 
 import ttl.dialects.ttl as ttl
 
@@ -148,20 +144,19 @@ class TestExpAddFused(FusedOpTestBase):
         Build MLIR with ttl.compute region containing tile_add + tile_exp.
 
         Pattern: reader → CB0, CB1 → compute(add, exp) → CB2 → writer
-        Uses helper functions from dm_threads to ensure correct attributes.
+        Uses DMThreadBuilder to generate reader and writer threads.
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
         # Generate layout attributes (includes #dram and #layout)
-        layout_attrs = generate_layout_attrs(config.grid_shape, config.dtype)
+        layout_attrs = generate_layout_attrs(config)
 
-        # Generate reader and writer using helper functions
-        reader_mlir = generate_binary_reader_mlir(config.grid_shape, config.dtype, bf)
-        writer_mlir = generate_writer_mlir(
-            config.grid_shape, config.dtype, bf, output_cb_index=2
-        )
+        # Generate reader and writer using DMThreadBuilder
+        dm_builder = DMThreadBuilder(config)
+        reader_mlir = dm_builder.build_reader(num_inputs=2)
+        writer_mlir = dm_builder.build_writer(output_cbs=[2])
 
         # Manually write the compute function with custom fused operations.
         # Uses proper CB lifecycle: cb_wait -> compute -> cb_reserve -> cb_push -> cb_pop.
@@ -226,20 +221,19 @@ class TestReluMulFused(FusedOpTestBase):
         Build MLIR with ttl.compute region containing tile_mul + tile_relu.
 
         Pattern: reader → CB0, CB1 → compute(mul, relu) → CB2 → writer
-        Uses helper functions from dm_threads to ensure correct attributes.
+        Uses DMThreadBuilder to generate reader and writer threads.
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
         # Generate layout attributes (includes #dram and #layout)
-        layout_attrs = generate_layout_attrs(config.grid_shape, config.dtype)
+        layout_attrs = generate_layout_attrs(config)
 
-        # Generate reader and writer using helper functions
-        reader_mlir = generate_binary_reader_mlir(config.grid_shape, config.dtype, bf)
-        writer_mlir = generate_writer_mlir(
-            config.grid_shape, config.dtype, bf, output_cb_index=2
-        )
+        # Generate reader and writer using DMThreadBuilder
+        dm_builder = DMThreadBuilder(config)
+        reader_mlir = dm_builder.build_reader(num_inputs=2)
+        writer_mlir = dm_builder.build_writer(output_cbs=[2])
 
         # Manually write the compute function with custom fused operations.
         # Uses proper CB lifecycle: cb_wait -> compute -> cb_reserve -> cb_push -> cb_pop.
@@ -305,20 +299,19 @@ class TestSqrtAbsFused(FusedOpTestBase):
         Build MLIR with ttl.compute region containing tile_abs + tile_sqrt.
 
         Pattern: reader → CB0 → compute(abs, sqrt) → CB1 → writer
-        Uses helper functions from dm_threads to ensure correct attributes.
+        Uses DMThreadBuilder to generate reader and writer threads.
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
         bf = config.buffer_factor
 
         # Generate layout attributes (includes #dram and #layout)
-        layout_attrs = generate_layout_attrs(config.grid_shape, config.dtype)
+        layout_attrs = generate_layout_attrs(config)
 
-        # Generate reader and writer using helper functions
-        reader_mlir = generate_unary_reader_mlir(config.grid_shape, config.dtype, bf)
-        writer_mlir = generate_writer_mlir(
-            config.grid_shape, config.dtype, bf, output_cb_index=1
-        )
+        # Generate reader and writer using DMThreadBuilder
+        dm_builder = DMThreadBuilder(config)
+        reader_mlir = dm_builder.build_reader(num_inputs=1)
+        writer_mlir = dm_builder.build_writer(output_cbs=[1])
 
         # Manually write the compute function with custom fused operations.
         # Uses proper CB lifecycle: cb_wait -> compute -> cb_reserve -> cb_push -> cb_pop.

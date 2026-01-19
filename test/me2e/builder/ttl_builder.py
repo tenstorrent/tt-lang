@@ -13,7 +13,7 @@ Two modes:
 2. Full E2E: Reader, compute, and writer functions (for device execution).
 """
 
-from typing import List
+from typing import Callable, List
 
 import torch
 from ttmlir.ir import (
@@ -24,25 +24,16 @@ from ttmlir.ir import (
     FunctionType,
     RankedTensorType,
     Type as MLIRType,
-    IndexType,
-    IntegerType,
-    IntegerAttr,
-    ArrayAttr,
-    StringAttr,
-    Attribute,
 )
-from ttmlir.dialects import func, scf, arith, ttkernel
+from ttmlir.dialects import func
 from ttmlir.dialects import ttcore
 
 import ttl.dialects.ttl as ttl
 
 from ..config import E2EConfig
-from .dm_threads import (
-    generate_binary_reader_mlir,
-    generate_unary_reader_mlir,
-    generate_writer_mlir,
-    generate_layout_attrs,
-)
+from .thread_builder import generate_layout_attrs
+from .dm_builder import DMThreadBuilder
+from .compute_builder import ComputeThreadBuilder
 from .dtype_utils import torch_dtype_to_mlir_str, torch_dtype_to_ttcore_datatype
 
 
@@ -163,147 +154,20 @@ def build_ttl_module(
     return module
 
 
-def _build_compute_func(
-    module: Module,
-    ctx: Context,
-    loc: Location,
-    op_str: str,
-    arity: int,
-    rows: int,
-    cols: int,
-    dtype: torch.dtype,
-    buffer_factor: int,
-    num_iterations: int,
-) -> None:
-    """
-    Build compute thread function using the Python builder API.
-
-    Creates a func.func with CB operations and optional scf.for loop for
-    multi-tile iteration. Uses high-level tensor ops (ttl.add, ttl.exp, etc.)
-    with proper CB lifecycle: cb_wait -> compute -> cb_reserve -> cb_push -> cb_pop.
-
-    Args:
-        module: The MLIR module to add the function to.
-        ctx: The MLIR context.
-        loc: The location for operations.
-        op_str: Operation name (e.g., "add", "exp").
-        arity: Number of inputs (1 or 2).
-        rows: Number of tile rows per iteration.
-        cols: Number of tile columns per iteration.
-        dtype: Data type for tiles.
-        buffer_factor: Circular buffer factor.
-        num_iterations: Number of loop iterations (1 = no loop).
-    """
-    # Get types.
-    dtype_int = torch_dtype_to_ttcore_datatype(dtype)
-    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, dtype_int)
-    tensor_type = RankedTensorType.get([rows, cols], tile_type)
-    cb_type = ttl.CircularBufferType.get(ctx, [rows, cols], tile_type, buffer_factor)
-
-    with InsertionPoint(module.body):
-        # Create function with no arguments and no results.
-        func_type = FunctionType.get([], [])
-        func_name = f"compute_{op_str}"
-        compute_func = func.FuncOp(func_name, func_type, loc=loc)
-
-        # Set kernel thread attributes.
-        i32_type = IntegerType.get_signless(32, ctx)
-        compute_func.attributes["ttl.base_cta_index"] = IntegerAttr.get(i32_type, 3)
-        compute_func.attributes["ttl.crta_indices"] = ArrayAttr.get([], ctx)
-        compute_func.attributes["ttl.kernel_thread"] = Attribute.parse(
-            "#ttkernel.thread<compute>", ctx
-        )
-
-        entry_block = compute_func.add_entry_block()
-
-        with InsertionPoint(entry_block):
-            # Bind circular buffers.
-            cb0 = ttl.bind_cb(cb_type, cb_index=0, buffer_factor=buffer_factor, loc=loc)
-            if arity == 2:
-                cb1 = ttl.bind_cb(
-                    cb_type, cb_index=1, buffer_factor=buffer_factor, loc=loc
-                )
-                output_cb_index = 2
-            else:
-                output_cb_index = 1
-            cb_out = ttl.bind_cb(
-                cb_type, cb_index=output_cb_index, buffer_factor=buffer_factor, loc=loc
-            )
-
-            def build_loop_body():
-                """Build the compute operations for one iteration."""
-                # Wait for input data from reader.
-                a = ttl.cb_wait(tensor_type, cb0, loc=loc)
-                a_attached = ttl.attach_cb(tensor_type, a, cb0, loc=loc)
-
-                if arity == 2:
-                    b = ttl.cb_wait(tensor_type, cb1, loc=loc)
-                    b_attached = ttl.attach_cb(tensor_type, b, cb1, loc=loc)
-
-                # Reserve output CB.
-                out_reserved = ttl.cb_reserve(tensor_type, cb_out, loc=loc)
-                out_attached = ttl.attach_cb(tensor_type, out_reserved, cb_out, loc=loc)
-
-                # Apply the operation.
-                op_func = getattr(ttl, op_str, None)
-                if op_func is None:
-                    raise ValueError(f"Unknown TTL op: ttl.{op_str}")
-
-                if arity == 1:
-                    result = op_func(tensor_type, a_attached, loc=loc)
-                else:
-                    result = op_func(tensor_type, a_attached, b_attached, loc=loc)
-
-                # Attach result to output CB (for data flow tracking).
-                ttl.attach_cb(tensor_type, result, cb_out, loc=loc)
-
-                # Push output, pop inputs.
-                ttl.cb_push(cb_out, loc=loc)
-                if arity == 2:
-                    ttl.cb_pop(cb1, loc=loc)
-                ttl.cb_pop(cb0, loc=loc)
-
-            if num_iterations > 1:
-                # Create loop bounds.
-                c0 = arith.ConstantOp(IndexType.get(ctx), 0).result
-                c1 = arith.ConstantOp(IndexType.get(ctx), 1).result
-                num_iters = arith.ConstantOp(IndexType.get(ctx), num_iterations).result
-
-                # Create scf.for loop.
-                for_op = scf.ForOp(c0, num_iters, c1)
-                with InsertionPoint(for_op.body):
-                    build_loop_body()
-                    scf.YieldOp([])
-            else:
-                # Single iteration - no loop needed.
-                build_loop_body()
-
-            func.ReturnOp([], loc=loc)
-
-
 def _generate_compute_mlir(
     op_str: str,
     arity: int,
-    rows: int,
-    cols: int,
-    dtype: torch.dtype,
-    buffer_factor: int,
-    num_iterations: int,
+    config: E2EConfig,
 ) -> str:
     """
-    Generate compute thread MLIR using the Python builder API.
+    Generate compute thread MLIR using the ComputeThreadBuilder.
 
     Builds the compute function programmatically and returns it as a string.
-    This ensures type safety and consistency with the rest of the codebase.
 
     Args:
         op_str: Operation name (e.g., "add", "exp").
         arity: Number of inputs (1 or 2).
-        rows: Number of tile rows per iteration.
-        cols: Number of tile columns per iteration.
-        dtype: Data type for tiles.
-        buffer_factor: Circular buffer factor.
-        num_iterations: Number of loop iterations (1 = no loop).
+        config: Test configuration.
 
     Returns:
         MLIR string for the compute function.
@@ -314,24 +178,15 @@ def _generate_compute_mlir(
 
     with ctx, loc:
         module = Module.create(loc)
-        _build_compute_func(
-            module,
-            ctx,
-            loc,
-            op_str,
-            arity,
-            rows,
-            cols,
-            dtype,
-            buffer_factor,
-            num_iterations,
-        )
+
+        # Use ComputeThreadBuilder to build the function.
+        builder = ComputeThreadBuilder(module, ctx, loc, config)
+        builder.build_compute(op_str, arity)
+
         module.operation.verify()
 
     # Extract just the function from the module string.
-    # The module wrapper will be added by build_e2e_module_mlir.
     module_str = str(module)
-    # Remove module wrapper to get just the function.
     lines = module_str.strip().split("\n")
     # Skip first line ('module {') and last line ('}')
     if lines[0].strip().startswith("module"):
@@ -363,47 +218,96 @@ def build_e2e_module_mlir(
     Returns:
         MLIR source string with all three thread functions.
     """
-    grid_shape = config.grid_shape
-    dtype = config.dtype
-    buffer_factor = config.buffer_factor
-
     # Generate layout attributes.
-    layout_attrs = generate_layout_attrs(grid_shape, dtype)
+    layout_attrs = generate_layout_attrs(config)
 
-    # Total tiles and iterations needed.
-    total_tiles = config.num_tiles
-    # For now, process 1 tile per iteration (CB shape 1x1).
-    # TODO: Support blocking (process multiple tiles per iteration).
-    num_iterations = total_tiles
-
-    # Generate reader with loop support.
-    if arity == 2:
-        reader_mlir = generate_binary_reader_mlir(
-            grid_shape, dtype, buffer_factor, num_iterations
-        )
-    else:
-        reader_mlir = generate_unary_reader_mlir(
-            grid_shape, dtype, buffer_factor, num_iterations
-        )
-
-    # Generate compute with high-level ops (not ttl.compute regions).
-    # Use 1x1 CB shape for simplicity - one tile per iteration.
-    rows, cols = 1, 1
-
-    # Use builder API to generate compute function.
-    compute_mlir = _generate_compute_mlir(
-        op_str, arity, rows, cols, dtype, buffer_factor, num_iterations
-    )
+    # Use DMThreadBuilder for reader and writer.
+    dm_builder = DMThreadBuilder(config)
+    reader_mlir = dm_builder.build_reader(arity)
     output_cb_index = arity  # Output CB follows input CBs.
+    writer_mlir = dm_builder.build_writer([output_cb_index])
 
-    # Generate writer with loop support.
-    writer_mlir = generate_writer_mlir(
-        grid_shape, dtype, buffer_factor, output_cb_index, num_iterations
-    )
+    # Generate compute with ComputeThreadBuilder.
+    compute_mlir = _generate_compute_mlir(op_str, arity, config)
 
     # Combine into full module.
     return f"""// Auto-generated E2E MLIR module for {op_str} operation.
-// Arity: {arity}, Grid: {grid_shape}, Dtype: {dtype}, Iterations: {num_iterations}
+// Arity: {arity}, Grid: {config.grid_shape}, Dtype: {config.dtype}, Iterations: {config.num_tiles}
+
+{layout_attrs}
+
+module {{
+{reader_mlir}
+{compute_mlir}
+{writer_mlir}
+}}
+"""
+
+
+def build_e2e_module_mlir_custom(
+    name: str,
+    arity: int,
+    num_outputs: int,
+    config: E2EConfig,
+    compute_fn: Callable[[List, "ComputeThreadBuilder"], List],
+) -> str:
+    """
+    Build E2E MLIR module with custom compute function.
+
+    Use this for fused operations like exp(a + b) or sqrt(abs(a)).
+
+    Args:
+        name: Name for the compute function.
+        arity: Number of inputs.
+        num_outputs: Number of outputs.
+        config: Test configuration.
+        compute_fn: Callback that takes (inputs, builder) and returns output tensors.
+
+    Returns:
+        MLIR source string with all three thread functions.
+    """
+    # Generate layout attributes.
+    layout_attrs = generate_layout_attrs(config)
+
+    # Use DMThreadBuilder for reader and writer.
+    dm_builder = DMThreadBuilder(config)
+    reader_mlir = dm_builder.build_reader(arity)
+    output_cbs = list(range(arity, arity + num_outputs))
+    writer_mlir = dm_builder.build_writer(output_cbs)
+
+    # Generate custom compute.
+    ctx = Context()
+    ttl.ensure_dialects_registered(ctx)
+    loc = Location.unknown(ctx)
+
+    with ctx, loc:
+        module = Module.create(loc)
+        builder = ComputeThreadBuilder(module, ctx, loc, config)
+
+        # Wrap the compute_fn to pass the builder for type access.
+        def wrapped_compute_fn(inputs):
+            return compute_fn(inputs, builder)
+
+        builder.build_compute_custom(
+            name=name,
+            input_cbs=list(range(arity)),
+            output_cbs=output_cbs,
+            compute_fn=wrapped_compute_fn,
+        )
+        module.operation.verify()
+
+    # Extract compute function from module.
+    module_str = str(module)
+    lines = module_str.strip().split("\n")
+    if lines[0].strip().startswith("module"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "}":
+        lines = lines[:-1]
+    compute_mlir = "\n".join(lines)
+
+    # Combine into full module.
+    return f"""// Auto-generated E2E MLIR module for {name} operation.
+// Arity: {arity}, Outputs: {num_outputs}, Grid: {config.grid_shape}, Dtype: {config.dtype}
 
 {layout_attrs}
 

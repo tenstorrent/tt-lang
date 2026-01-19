@@ -189,9 +189,35 @@ The `ttl_op` name (e.g., `tile_my_op`) and `reader_type` (unary/binary) are auto
 
 ### Custom Fused Operations
 
-For operations that combine multiple tile ops (not in the `.def` file), use
-`FusedOpTestBase` in `test_fused.py`. These use MLIR string templates to build
-`ttl.compute` regions with multiple fused tile operations:
+For operations that combine multiple tile ops (not in the `.def` file), there
+are two approaches:
+
+**1. Programmatic approach using `build_e2e_module_mlir_custom`:**
+
+```python
+from test.me2e.builder import build_e2e_module_mlir_custom
+import ttl.dialects.ttl as ttl
+
+# exp(a + b) - fused add and exp
+mlir = build_e2e_module_mlir_custom(
+    name="compute_exp_add",
+    arity=2,
+    num_outputs=1,
+    config=config,
+    compute_fn=lambda inputs, builder: [
+        ttl.exp(
+            builder.tile_tensor_type,
+            ttl.add(builder.tile_tensor_type, inputs[0], inputs[1], loc=builder.loc),
+            loc=builder.loc,
+        )
+    ],
+)
+```
+
+**2. Class-based approach using `FusedOpTestBase`:**
+
+For test classes, use `FusedOpTestBase` in `test_fused.py` with MLIR string
+templates to build `ttl.compute` regions:
 
 ```python
 class TestExpAddFused(FusedOpTestBase):
@@ -261,13 +287,90 @@ func.func @compute_add(...) {
 These artifacts are useful for debugging and can be processed manually with
 `ttlang-opt` or other tools.
 
+## Builder Architecture
+
+The MLIR builder uses a layered class hierarchy to eliminate boilerplate and
+provide reusable building blocks for thread construction.
+
+```
+ThreadBuilder (base)              StringBasedThreadBuilder (base)
+    │                                     │
+    └── ComputeThreadBuilder              └── DMThreadBuilder
+```
+
+### Base Classes
+
+**`ThreadBuilder`** - Python MLIR bindings based builder for compute threads:
+- Type factories: `tile_type`, `cb_type`, `tile_tensor_type`
+- CB operations: `_bind_cb`, `_cb_reserve`, `_cb_wait`, `_cb_push`, `_cb_pop`, `_attach_cb`
+- Loop construct: `_with_tile_loop(body_fn)` handles single/multi-tile iteration
+- Thread builder: `_build_compute_thread(name, input_cbs, output_cbs, compute_fn)`
+
+**`StringBasedThreadBuilder`** - String-based builder for DM threads (required for layout types):
+- Type strings: `dram_tensor_type_str`, `cb_type_str`, `slice_type_str` (parameterized by config)
+- Loop generation: `_generate_loop_start()` returns loop code and index variables
+- Transfer helpers: `_read_to_cb_str()`, `_write_from_cb_str()`
+- Layout generation: Uses `config.buffer_type` (DRAM/L1) and `config.memory_layout` (interleaved/sharded)
+
+### Thread Builders
+
+**`DMThreadBuilder`** - Minimal data movement thread builder:
+```python
+dm_builder = DMThreadBuilder(config)
+reader_mlir = dm_builder.build_reader(num_inputs=2)  # Binary reader
+writer_mlir = dm_builder.build_writer(output_cbs=[2])  # Single output
+```
+
+**`ComputeThreadBuilder`** - Minimal compute thread builder:
+```python
+# Single elementwise op
+builder.build_compute("add", arity=2)
+
+# Custom/fused ops via callback
+builder.build_compute_custom(
+    name="compute_exp_add",
+    input_cbs=[0, 1],
+    output_cbs=[2],
+    compute_fn=lambda inputs: [ttl.exp(tt, ttl.add(tt, inputs[0], inputs[1]))],
+)
+```
+
+### Building E2E Modules
+
+Use the high-level `build_e2e_module_mlir()` function:
+```python
+from test.me2e.builder import build_e2e_module_mlir
+from test.me2e.config import E2EConfig
+
+config = E2EConfig(grid_shape=(2, 2))
+mlir = build_e2e_module_mlir("add", arity=2, config=config)
+```
+
+For custom/fused operations:
+```python
+from test.me2e.builder import build_e2e_module_mlir_custom
+
+mlir = build_e2e_module_mlir_custom(
+    name="compute_exp_add",
+    arity=2,
+    num_outputs=1,
+    config=config,
+    compute_fn=lambda inputs, builder: [
+        ttl.exp(builder.tile_tensor_type,
+                ttl.add(builder.tile_tensor_type, inputs[0], inputs[1]))
+    ],
+)
+```
+
 ## Directory Structure
 
 ```
 test/me2e/
 ├── builder/                 # MLIR generation, compilation, and execution utilities
+│   ├── thread_builder.py    # Base class with MLIR building blocks
+│   ├── dm_builder.py        # Data movement thread builder (reader/writer)
+│   ├── compute_builder.py   # Compute thread builder
 │   ├── ttl_builder.py       # Build TTL modules via Python bindings
-│   ├── dm_threads.py        # Data movement thread templates
 │   ├── pipeline.py          # Pass pipeline execution
 │   ├── kernels.py           # Kernel translation utilities
 │   ├── ttnn_runner.py       # TTNN device execution harness
@@ -304,6 +407,41 @@ class E2EConfig:
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
     buffer_type: BufferType = BufferType.DRAM
 ```
+
+### Memory Configuration
+
+The `memory_layout` and `buffer_type` fields control MLIR layout attribute generation:
+
+**Buffer Types** (`BufferType` enum):
+- `DRAM` (default): DRAM buffers
+- `L1`: L1 memory buffers
+
+**Memory Layouts** (`MemoryLayout` enum):
+- `INTERLEAVED` (default): Standard interleaved layout
+- `HEIGHT_SHARDED`: Height-sharded layout
+- `WIDTH_SHARDED`: Width-sharded layout
+- `BLOCK_SHARDED`: Block-sharded layout
+
+**Examples**:
+```python
+# Default: DRAM + interleaved
+config = E2EConfig(grid_shape=(2, 2))
+
+# L1 buffers
+config = E2EConfig(grid_shape=(2, 2), buffer_type=BufferType.L1)
+
+# Height-sharded layout
+config = E2EConfig(grid_shape=(2, 2), memory_layout=MemoryLayout.HEIGHT_SHARDED)
+
+# L1 + block-sharded
+config = E2EConfig(
+    grid_shape=(2, 2),
+    buffer_type=BufferType.L1,
+    memory_layout=MemoryLayout.BLOCK_SHARDED
+)
+```
+
+The builder automatically generates appropriate MLIR layout attributes based on these settings.
 
 ### Test Result Caching (Optional Optimization)
 
