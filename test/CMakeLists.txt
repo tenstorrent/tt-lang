@@ -95,6 +95,7 @@ add_custom_target(check-ttlang-pytest
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
 # Middle end to end tests (test/me2e/).
+# Run 'cmake --build build --target install-dev-deps' if tests fail due to missing pytest-order.
 add_custom_target(check-ttlang-me2e
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/me2e
