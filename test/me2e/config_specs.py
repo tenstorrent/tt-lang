@@ -56,8 +56,8 @@ class TestConfig:
             a derived value - the actual grid shape is determined by block_h and block_w.
 
         buffer_factor: Circular buffer factor for double buffering.
-            - 1: Single buffering (default)
-            - 2: Double buffering (overlaps data movement with compute)
+            - 1: Single buffering
+            - 2: Double buffering (default, overlaps data movement with compute)
             Double buffering can improve performance but uses more L1 memory.
 
         memory_layout: Memory layout type for tensor storage. Must be a MemoryLayout
@@ -91,7 +91,7 @@ class TestConfig:
     block_w: int = 8
     dtype: torch.dtype = torch.bfloat16
     num_tiles: int = 64
-    buffer_factor: int = 1
+    buffer_factor: int = 2
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
 
     def __str__(self) -> str:

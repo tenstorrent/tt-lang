@@ -300,7 +300,7 @@ The `E2EConfig` dataclass defines test parameters:
 class E2EConfig:
     grid_shape: Tuple[int, int] = (2, 2)  # Tiles (rows, cols)
     dtype: torch.dtype = torch.bfloat16
-    buffer_factor: int = 1                 # 1=single, 2=double buffer
+    buffer_factor: int = 2                 # 1=single, 2=double buffer (default)
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
     buffer_type: BufferType = BufferType.DRAM
 ```
