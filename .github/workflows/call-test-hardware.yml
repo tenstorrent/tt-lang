@@ -113,6 +113,11 @@ jobs:
           source build/env/activate
           cmake --build build --target check-ttlang-python-lit
 
+      - name: Install test dependencies
+        run: |
+          source build/env/activate
+          pip install -r dev-requirements.txt
+
       - name: ME2E tests
         run: |
           source build/env/activate
