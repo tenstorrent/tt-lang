@@ -141,6 +141,17 @@ def _shim_tensor_accessor_args(source: str, kernel_name: str) -> str:
             source,
         )
 
+        # CRITICAL FIX: The compiler doesn't emit cb_wait_front before get_read_ptr!
+        # This is a bug in the ttl.cb_wait -> emitc conversion.
+        # We need to add cb_wait_front(cb, 1) before get_read_ptr(cb).
+        # Pattern: get_read_ptr(get_compile_time_arg_val(0))
+        # Insert: cb_wait_front(get_compile_time_arg_val(0), 1); before it.
+        source = re.sub(
+            r"(int32_t \w+ = get_read_ptr\(get_compile_time_arg_val\(0\)\);)",
+            r"cb_wait_front(get_compile_time_arg_val(0), 1);\n  \1",
+            source,
+        )
+
     return source
 
 
