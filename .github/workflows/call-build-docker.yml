@@ -63,27 +63,8 @@ jobs:
 
       - name: Check if Docker image exists
         id: check
-        run: |
-          set +e
-          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" --check-only | tee docker.log
-          EXIT_CODE=$?
-
-          if [ $EXIT_CODE -eq 0 ]; then
-            # Extract image name from last line
-            DOCKER_IMAGE=$(tail -n 1 docker.log)
-            echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
-
-            # Create base variant by replacing -ubuntu- with -base-ubuntu-
-            DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
-            echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
-
-            echo "✓ Docker images already exist"
-          else
-            # Image doesn't exist - set empty outputs so build job runs
-            echo "docker-image=" >> $GITHUB_OUTPUT
-            echo "docker-image-base=" >> $GITHUB_OUTPUT
-            echo "✗ Docker images need to be built"
-          fi
+        run: .github/scripts/check-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}"
+        continue-on-error: true
 
   build-image:
     needs: check-if-docker-exist
