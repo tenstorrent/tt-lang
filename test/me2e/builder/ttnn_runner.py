@@ -12,9 +12,14 @@ code duplication across different op tests.
 
 from pathlib import Path
 from typing import List, Any
+import sys
 
 import torch
 import ttnn
+
+# Import test_helpers from test/python
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "python"))
+from test_helpers import to_dram
 
 from .kernels import KernelSpec
 
@@ -188,32 +193,20 @@ def _run_op(
         num_tiles *= dim
     num_tiles *= (shape[-2] // TILE_HEIGHT) * (shape[-1] // TILE_WIDTH)
 
-    # Create device tensors.
+    # Create device tensors using to_dram (like test_axby.py).
     print(f"[DEBUG ttnn_runner] Creating device tensors")
-    dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
     device_inputs = []
 
     for i, inp in enumerate(inputs):
         print(f"[DEBUG ttnn_runner] Converting input {i} to device tensor")
-        device_inp = ttnn.from_torch(
-            inp.to(torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=dram_memory_config,
-        )
+        device_inp = to_dram(inp.to(torch.bfloat16), device)
         device_inputs.append(device_inp)
     print(f"[DEBUG ttnn_runner] All inputs converted")
 
-    # Allocate output tensor.
-    print(f"[DEBUG ttnn_runner] Allocating output tensor")
-    output_tensor = ttnn.allocate_tensor_on_device(
-        ttnn.Shape(shape),
-        ttnn.bfloat16,
-        ttnn.TILE_LAYOUT,
-        device,
-        dram_memory_config,
-    )
+    # Create output tensor in DRAM using to_dram (like test_axby.py).
+    print(f"[DEBUG ttnn_runner] Creating output tensor in DRAM")
+    output_torch = torch.zeros(shape, dtype=torch.bfloat16)
+    output_tensor = to_dram(output_torch, device)
 
     io_tensors = device_inputs + [output_tensor]
     print(f"[DEBUG ttnn_runner] Output tensor allocated")
@@ -332,12 +325,13 @@ def _run_op(
 
     # Execute.
     print(f"[DEBUG ttnn_runner] Executing ttnn.generic_op")
-    output = ttnn.generic_op(io_tensors, program_descriptor)
+    ttnn.generic_op(io_tensors, program_descriptor)
     print(f"[DEBUG ttnn_runner] Execution complete")
 
-    # Convert back to torch.
+    # Use the original output_tensor (like test_axby.py uses out_t directly).
+    # generic_op writes to the last tensor in io_tensors, which is output_tensor.
     print(f"[DEBUG ttnn_runner] Converting output to torch")
-    result = ttnn.to_torch(output)
+    result = ttnn.to_torch(output_tensor)
     print(f"[DEBUG ttnn_runner] Conversion complete")
     return result
 

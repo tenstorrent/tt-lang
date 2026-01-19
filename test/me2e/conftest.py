@@ -15,10 +15,11 @@ import pytest
 
 # Check for ttnn availability.
 try:
-    import ttnn
+    import importlib.util
 
-    TTNN_AVAILABLE = True
-except ImportError:
+    TTNN_AVAILABLE = importlib.util.find_spec("ttnn") is not None
+    ttnn = None  # Don't import at module level
+except Exception:
     TTNN_AVAILABLE = False
     ttnn = None
 
@@ -121,6 +122,9 @@ def device():
 
     if not hardware_available:
         pytest.skip("No Tenstorrent device available")
+
+    # Import ttnn here (not at module level)
+    import ttnn
 
     dev = ttnn.open_device(device_id=0)
     yield dev

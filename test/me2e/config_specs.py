@@ -115,6 +115,8 @@ class TestConfig:
 
 
 CONFIGS = [
+    # Start with simplest config for debugging.
+    TestConfig(num_tiles=1, block_h=1, block_w=1),  # 1x1 grid (single tile)
     TestConfig(num_tiles=64),  # 8x8 grid (default block_h=8, block_w=8)
     TestConfig(num_tiles=128, block_h=8, block_w=16),  # 8x16 grid = 128 tiles
     TestConfig(num_tiles=64, buffer_factor=2),  # Double buffering

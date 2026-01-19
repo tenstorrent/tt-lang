@@ -82,69 +82,61 @@ def translate_module_to_kernels(
 
 def _shim_tensor_accessor_args(source: str, kernel_name: str) -> str:
     """
-    Shim TensorAccessorArgs and CB indices to use correct pattern.
+    Shim TensorAccessorArgs to use InterleavedAddrGenFast pattern.
 
-    Temporary workaround until compiler emits correct CTA offsets and CB indices.
+    The compiler generates kernels using TensorAccessorArgs which require specific
+    compile-time arg formats. This shim replaces TensorAccessorArgs with the simpler
+    InterleavedAddrGenFast pattern that works with basic CB index + base address args.
 
-    1. Replaces TensorAccessorArgs<N, M>() with TensorAccessorArgs<M>() for interleaved tensors.
-    2. Rewrites get_compile_time_arg_val indices to be per-kernel (not global).
+    This is a temporary workaround until proper kernel generation is implemented.
 
     Args:
         source: C++ kernel source.
         kernel_name: Kernel function name.
 
     Returns:
-        Shimmed source with correct TensorAccessorArgs and CB index pattern.
+        Shimmed source with InterleavedAddrGenFast pattern.
     """
     import re
 
-    # For interleaved tensors, TensorAccessorArgs should use single template param
-    # (the CRTA index), not <CTA_offset, CRTA_index>.
-    # The compiler generates patterns like TensorAccessorArgs<2, 0>() where
-    # the first number is the CTA offset and the second is the CRTA index.
+    # Track which common_arg indices map to which tensors.
+    # The generated code uses get_common_arg_val to get base addresses.
+    # We need to replace TensorAccessorArgs with InterleavedAddrGenFast.
 
-    # Binary reader: two tensors
-    if "reader_binary" in kernel_name.lower():
-        # First tensor: TensorAccessorArgs<2, 0>() -> TensorAccessorArgs<0>()
-        # base_cta_index=2, so first tensor is at offset 2
-        source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<2,\s*0>\(\);",
-            r"TensorAccessorArgs \1 = TensorAccessorArgs<0>();",
-            source,
-        )
-        # Second tensor: TensorAccessorArgs<3, 1>() -> TensorAccessorArgs<1>()
-        # base_cta_index=2, second tensor is at offset 3, CRTA index 1
-        source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<3,\s*1>\(\);",
-            r"TensorAccessorArgs \1 = TensorAccessorArgs<1>();",
-            source,
-        )
-        # CB indices: no change needed (uses 0, 1)
+    # Replace TensorAccessorArgs instantiation and TensorAccessor construction
+    # with InterleavedAddrGenFast pattern.
+    #
+    # Original pattern:
+    #   auto tensor_accessor_args_N = TensorAccessorArgs<X, Y>();
+    #   TensorAccessor vM = TensorAccessor(tensor_accessor_args_N, base_addr, tile_size);
+    #
+    # New pattern:
+    #   // (remove TensorAccessorArgs line)
+    #   InterleavedAddrGenFast<true> vM = {.bank_base_address = base_addr, .page_size = tile_size};
 
-    # Unary reader: single tensor
-    elif "reader_unary" in kernel_name.lower():
-        # Single tensor: TensorAccessorArgs<1, 0>() -> TensorAccessorArgs<0>()
-        # base_cta_index=1, so tensor is at offset 1
-        source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<1,\s*0>\(\);",
-            r"TensorAccessorArgs \1 = TensorAccessorArgs<0>();",
-            source,
-        )
-        # CB index: no change needed (uses 0)
+    # Step 1: Remove TensorAccessorArgs variable declarations.
+    source = re.sub(
+        r"auto\s+tensor_accessor_args_\w+\s*=\s*TensorAccessorArgs<[^>]+>\(\);\s*\n",
+        "",
+        source,
+    )
 
-    # Writer: single tensor, but CB index needs adjustment
-    elif "writer" in kernel_name.lower():
-        # Single tensor: TensorAccessorArgs<1, 0>() -> TensorAccessorArgs<0>()
-        # base_cta_index=1, so tensor is at offset 1, CRTA index 0
+    # Step 2: Replace TensorAccessor construction with InterleavedAddrGenFast.
+    # Pattern: TensorAccessor vN = TensorAccessor(tensor_accessor_args_M, base_addr_var, tile_size_var);
+    # Replace with: InterleavedAddrGenFast<true> vN = {.bank_base_address = (uint32_t)base_addr_var, .page_size = (uint32_t)tile_size_var};
+    # The casts are needed because the generated code uses int32_t but InterleavedAddrGenFast expects uint32_t.
+    source = re.sub(
+        r"TensorAccessor\s+(\w+)\s*=\s*TensorAccessor\(tensor_accessor_args_\w+,\s*(\w+),\s*(\w+)\);",
+        r"InterleavedAddrGenFast<true> \1 = {.bank_base_address = (uint32_t)\2, .page_size = (uint32_t)\3};",
+        source,
+    )
+
+    # Fix CB index for writer: rewrite get_compile_time_arg_val(N) to (0) for single-output writer.
+    if "writer" in kernel_name.lower():
+        # The compiler may emit various CB indices (2, 16, etc.) for the output CB.
+        # For a single-output writer with shimmed code, we want index 0.
         source = re.sub(
-            r"TensorAccessorArgs\s+(\w+)\s*=\s*TensorAccessorArgs<1,\s*0>\(\);",
-            r"TensorAccessorArgs \1 = TensorAccessorArgs<0>();",
-            source,
-        )
-        # CB index: rewrite get_compile_time_arg_val(2) -> get_compile_time_arg_val(0)
-        # The compiler generates index 2 for the output CB (after 2 input CBs for binary)
-        source = re.sub(
-            r"get_compile_time_arg_val\(2\)",
+            r"get_compile_time_arg_val\(\d+\)",
             r"get_compile_time_arg_val(0)",
             source,
         )
@@ -168,15 +160,25 @@ def write_kernels(
     Returns:
         Dict mapping kernel name to file path.
     """
+    import os
+
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
+
+    debug_kernels = os.environ.get("TTLANG_DEBUG_KERNELS", "0") == "1"
 
     for kernel in noc_kernels + [compute_kernel]:
         # Apply TensorAccessorArgs shim for NOC kernels (reader/writer).
         # TODO: Remove this shim once compiler emits correct CTA offsets.
         source = kernel.source
         if kernel.thread_type == ThreadType.NOC:
+            if debug_kernels:
+                print(f"\n[DEBUG kernels] Original {kernel.name}.cpp:")
+                print(source[:2000])
             source = _shim_tensor_accessor_args(source, kernel.name)
+            if debug_kernels:
+                print(f"\n[DEBUG kernels] After shim {kernel.name}.cpp:")
+                print(source[:2000])
 
         path = output_dir / f"{kernel.name}.cpp"
         with open(path, "w") as f:
