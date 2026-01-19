@@ -420,7 +420,7 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
     }
 
     // Get the DST index from the tile value's dst_idx attribute.
-    // The DST assignment pass (ttl-tile-and-assign-dst) should run before this
+    // The DST assignment pass (ttl-assign-dst) should run before this
     // pass and annotates tile-producing operations with DST register indices.
     // If the attribute is missing, we default to DST index 0.
     auto tileValue = adaptor.getTile();

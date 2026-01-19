@@ -113,6 +113,11 @@ jobs:
           source build/env/activate
           cmake --build build --target check-ttlang-python-lit
 
+      - name: ME2E tests
+        run: |
+          source build/env/activate
+          python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
+
       - name: Pytests
         run: |
           source build/env/activate
@@ -126,5 +131,6 @@ jobs:
           name: hardware-test-reports-${{ inputs.runs-on }}
           path: |
             build/test/python-lit-report.xml
+            build/test/me2e-report.xml
             build/test/pytest-report.xml
           retention-days: 7

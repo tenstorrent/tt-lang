@@ -8,7 +8,7 @@
 
 from ttmlir.ir import Context
 from ttmlir.passmanager import PassManager
-from ttlang.dialects import ttl
+from ttl.dialects import ttl
 
 
 def test_ttl_passes_registered():
@@ -30,7 +30,7 @@ def test_ttl_passes_registered():
 
     # Test other TTL passes
     ttl_passes = [
-        "ttl-tile-and-assign-dst",
+        "ttl-assign-dst",
         "ttl-insert-tile-regs-sync",
         "ttl-lower-to-loops",
         "ttl-annotate-cb-associations",
@@ -42,7 +42,7 @@ def test_ttl_passes_registered():
                 f"builtin.module(func.func({pass_name}))", context=ctx
             )
             print(f"✅ {pass_name} pass registered")
-            # CHECK: ttl-tile-and-assign-dst pass registered
+            # CHECK: ttl-assign-dst pass registered
             # CHECK: ttl-insert-tile-regs-sync pass registered
             # CHECK: ttl-lower-to-loops pass registered
             # CHECK: ttl-annotate-cb-associations pass registered

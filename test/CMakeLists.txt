@@ -75,27 +75,13 @@ add_lit_testsuite(check-ttlang-python-bindings "Running ttlang Python binding te
 )
 set_target_properties(check-ttlang-python-bindings PROPERTIES FOLDER "Tests")
 
-
-# -----------------------------------------------------------------------------
-# Pytest ME2E tests configuration
-
-add_custom_target(check-ttlang-me2e
-  COMMAND ${Python_EXECUTABLE} -m pytest -v ${PYTEST_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}/me2e/
-  DEPENDS TTLangPythonModules
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Running ME2E pytest tests"
-  USES_TERMINAL
-  VERBATIM
-)
-set_target_properties(check-ttlang-me2e PROPERTIES FOLDER "Tests")
-
 # Lit tests that never require a TT device.
 add_custom_target(check-ttlang
   DEPENDS check-ttlang-mlir check-ttlang-python-bindings
   COMMENT "Running ttlang lit tests that never require a TT device"
 )
 
-# Pytest tests (test_*.py files).
+# Pytest tests (test/python/test_*.py files).
 add_custom_target(check-ttlang-pytest
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
@@ -108,6 +94,19 @@ add_custom_target(check-ttlang-pytest
 )
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
+# Middle end to end tests (test/me2e/).
+add_custom_target(check-ttlang-me2e
+  COMMAND ${Python3_EXECUTABLE} -m pytest
+    ${CMAKE_CURRENT_SOURCE_DIR}/me2e
+    -v --tb=short
+    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/me2e-report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  COMMENT "Running ttlang me2e tests"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/me2e
+  USES_TERMINAL
+)
+set_target_properties(check-ttlang-me2e PROPERTIES FOLDER "Tests")
+
 # All tests including those requiring TT device.
 # Uses sequential COMMAND invocations to ensure device-accessing tests
 # (python-lit and pytest) don't run concurrently and cause TLB allocation failures.
@@ -119,6 +118,8 @@ add_custom_target(check-ttlang-all
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-bindings
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-lit ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-lit
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-me2e ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-me2e
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-pytest ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-pytest
   COMMAND ${CMAKE_COMMAND} -E echo "=== All ttlang tests completed ==="
