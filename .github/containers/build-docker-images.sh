@@ -15,6 +15,7 @@
 # Must be run from the repository root directory
 
 set -e
+set -x  # Enable command tracing for verbose output
 
 # Parse arguments
 MLIR_SHA=""

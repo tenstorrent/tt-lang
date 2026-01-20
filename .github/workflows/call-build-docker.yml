@@ -180,8 +180,11 @@ jobs:
 
       - name: Build Docker images
         id: build
+        env:
+          DOCKER_BUILDKIT: 1
         run: |
           set -o pipefail
+          set -x  # Show all commands
           echo "Space usage: " && df -h
           .github/containers/build-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}" | tee docker.log
 
@@ -201,6 +204,18 @@ jobs:
 
           echo "Space usage after build: " && df -h
           echo "✓ Docker images built successfully"
+
+      - name: Show disk usage on failure
+        if: failure()
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Disk Usage by Directory ==="
+          du -h --max-depth=2 ${{ github.workspace }} 2>/dev/null | sort -hr | head -20 || true
+          echo ""
+          echo "=== Docker Disk Usage ==="
+          docker system df || true
 
   set-latest-tag:
     needs: [check-if-images-already-exist, build-image]
