@@ -51,6 +51,38 @@ from .dtype_utils import (
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .ttl_utils import get_thread_type_string
 
+# Thread registry for automatic collection of @compute and @datamovement threads
+_thread_registry: List[Callable] = []
+
+
+def _register_thread(thread_fn: Callable) -> None:
+    """Register a thread function during decoration."""
+    _thread_registry.append(thread_fn)
+
+
+def _clear_thread_registry() -> None:
+    """Clear the thread registry before kernel execution."""
+    _thread_registry.clear()
+
+
+def _get_registered_threads() -> List[Callable]:
+    """Get all registered threads and clear the registry."""
+    threads = list(_thread_registry)
+    _thread_registry.clear()
+    return threads
+
+
+# Cache for compiled kernels to avoid recompilation
+_kernel_cache: Dict[tuple, "CompiledTTNNKernel"] = {}
+
+
+def _make_cache_key(f: Callable, args: tuple, grid: tuple) -> tuple:
+    """Create a cache key from kernel function, tensor info, and grid."""
+    tensor_info = tuple(
+        (tuple(arg.shape), str(arg.dtype)) for arg in args if is_ttnn_tensor(arg)
+    )
+    return (id(f), grid, tensor_info)
+
 
 class CompilerConfig:
     """
@@ -548,6 +580,8 @@ def _compile(
 
         _wrapper._decorator_name = kernel_type + "_thread"
         _wrapper._source_file = source_file
+        # Register thread for automatic collection
+        _register_thread(_wrapper)
         if inspect.ismethod(f):
             return staticmethod(_wrapper)
         return _wrapper
@@ -661,6 +695,15 @@ def _compile_and_run_kernel(
         kernel_source_file = "<unknown>"
         kernel_line_offset = 0
 
+    # Check cache for previously compiled kernel
+    config = CompilerConfig(compile_only)
+    cache_key = _make_cache_key(f, args, grid)
+    if cache_key in _kernel_cache:
+        compiled_kernel = _kernel_cache[cache_key]
+        if config.should_execute():
+            compiled_kernel(*args)
+        return compiled_kernel
+
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
     # For TTNN tensors, detect memory space from tensor's buffer type.
@@ -694,13 +737,18 @@ def _compile_and_run_kernel(
 
     _reset_cb_counter()
     _set_current_grid(grid)
-    program = f(*args, **kwargs)
-    if not isinstance(program, Program):
-        raise TypeError(
-            f"Kernel function must return a Program, got {type(program).__name__}"
+
+    _clear_thread_registry()
+    f(*args, **kwargs)
+    threads = _get_registered_threads()
+
+    if not threads:
+        raise ValueError(
+            "No threads found. Define at least one @ttl.compute() or "
+            "@ttl.datamovement() function inside your kernel."
         )
 
-    cb_configs = _collect_cb_configs(program.threads)
+    cb_configs = _collect_cb_configs(threads)
 
     injected_program_kwargs = {
         "grid": grid,
@@ -709,9 +757,9 @@ def _compile_and_run_kernel(
         "debug_locations": True,  # Always generate locations for error messages
     }
     program = Program(
-        *program.threads,
-        args=program.args,
-        kwargs={**injected_program_kwargs, **program.kwargs},
+        *threads,
+        args=args,
+        kwargs=injected_program_kwargs,
     )
 
     # Always generate source locations for error messages
@@ -781,7 +829,6 @@ def _compile_and_run_kernel(
             print(f"SAVED INITIAL TO {initial_mlir_path}")
 
         verify = True
-        config = CompilerConfig(compile_only)
 
         # fmt: off
         pipeline_passes = [
@@ -853,8 +900,10 @@ def _compile_and_run_kernel(
         compiled_kernel = _compile_ttnn_kernel(
             module, args, grid, num_outs, thread_tensor_indices, cb_configs
         )
-        if compiled_kernel is not None and config.should_execute():
-            compiled_kernel(*args)
+        if compiled_kernel is not None:
+            _kernel_cache[cache_key] = compiled_kernel
+            if config.should_execute():
+                compiled_kernel(*args)
         return compiled_kernel
 
 

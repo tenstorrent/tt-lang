@@ -89,7 +89,6 @@ def {name}_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
@@ -132,7 +131,6 @@ def {name}_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
@@ -167,7 +165,6 @@ def {name}_kernel(inp, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(inp, out)
 '''
 
 

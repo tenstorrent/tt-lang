@@ -153,8 +153,6 @@ def bcast_kernel(a, b, c, out1, out2, out3):
             tx3 = ttl.copy(o3_blk, out3[y, x])
             tx3.wait()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(a, b, c, out1, out2, out3)
-
 
 def compute_expected_dram(a, b, c):
     """Compute expected DRAM outputs using torch."""

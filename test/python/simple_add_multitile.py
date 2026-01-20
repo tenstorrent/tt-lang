@@ -59,8 +59,6 @@ def add_multitile_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # =============================================================================
 # Initial IR Checks - Verify tensor layout (64x64 = 4 tiles on single core)

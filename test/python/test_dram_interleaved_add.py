@@ -59,8 +59,6 @@ def add_dram_direct(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # CHECK: Testing DRAM Interleaved
 print("=== Testing DRAM Interleaved Direct Access ===")

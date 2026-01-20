@@ -57,8 +57,6 @@ def silu_kernel(x, out):
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
-    return ttl.Program(compute, dm_read, dm_write)(x, out)
-
 
 @ttl.kernel(grid=(1, 1))
 def unary_binary_kernel(x, y, out):
@@ -92,8 +90,6 @@ def unary_binary_kernel(x, y, out):
         with out_cb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
-
-    return ttl.Program(compute, dm_read, dm_write)(x, y, out)
 
 
 def test_silu(device):
@@ -188,8 +184,6 @@ def three_consumers_kernel(a, b, out_sig, out_exp, out_add):
             te.wait()
             ta.wait()
 
-    return ttl.Program(compute, dm_read, dm_write)(a, b, out_sig, out_exp, out_add)
-
 
 def test_three_consumers(device):
     """Test block arg with 2 unary + 1 binary consumers."""
@@ -246,8 +240,6 @@ def square_kernel(x, out):
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
-    return ttl.Program(compute, dm_read, dm_write)(x, out)
-
 
 def test_square_pattern(device):
     """Test square pattern: x * x."""
@@ -300,8 +292,6 @@ def unary_chain_branch_kernel(a, b, out_exp, out_add):
             ta = ttl.copy(add_blk, out_add[0, 0])
             te.wait()
             ta.wait()
-
-    return ttl.Program(compute, dm_read, dm_write)(a, b, out_exp, out_add)
 
 
 def test_unary_chain_branch(device):

@@ -148,10 +148,6 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
             tx = ttl.copy(o4_blk, out4[row : row + 2, col : col + 2])
             tx.wait()
 
-    return ttl.Program(evil_compute, dm_read, dm_write)(
-        a, b, c, d, out1, out2, out3, out4
-    )
-
 
 def compute_expected(a, b, c, d):
     """Compute expected outputs matching the evil kernel."""

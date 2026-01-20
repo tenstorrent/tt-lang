@@ -64,8 +64,6 @@ def add_with_kernel(lhs, rhs, out):
             tx.wait()
         # Automatic: out_cb.pop()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # =============================================================================
 # Initial IR Checks - Verify 'with' generates correct CB ops

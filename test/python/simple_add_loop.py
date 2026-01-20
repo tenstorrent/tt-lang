@@ -71,8 +71,6 @@ def add_loop_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # =============================================================================
 # Initial IR Checks - Verify scf.for loop is generated in compute

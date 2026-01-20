@@ -80,7 +80,6 @@ def multicore_loop(lhs, rhs, out):
                     tx = ttl.copy(out_blk, out[row, col])
                     tx.wait()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 _kernel_cache = {}
