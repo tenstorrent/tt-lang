@@ -18,6 +18,9 @@ SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
+# Install build dependencies required by tt-mlir toolchain
+RUN apt-get update && apt-get install -y libzstd-dev && rm -rf /var/lib/apt/lists/*
+
 # Copy pre-built tt-mlir toolchain from host
 COPY ttmlir-toolchain $TTMLIR_TOOLCHAIN_DIR
 
