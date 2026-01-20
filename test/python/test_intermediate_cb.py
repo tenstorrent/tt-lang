@@ -22,9 +22,9 @@ import pytest
 import torch
 import ttnn
 import ttl
-from test_helpers import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_l1
 
-pytestmark = pytest.mark.requires_ttnn
+pytestmark = pytest.mark.requires_device
 
 
 @ttl.kernel(grid=(1, 1))
