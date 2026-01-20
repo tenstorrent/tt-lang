@@ -29,17 +29,17 @@ on:
     outputs:
       docker-image:
         description: "Built Docker image name with tag"
-        value: ${{ jobs.check-if-docker-exist.outputs.docker-image || jobs.build-image.outputs.docker-image }}
+        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image || jobs.build-image.outputs.docker-image }}
       docker-image-base:
         description: "Base Docker image name with tag"
-        value: ${{ jobs.check-if-docker-exist.outputs.docker-image-base || jobs.build-image.outputs.docker-image-base }}
+        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image-base || jobs.build-image.outputs.docker-image-base }}
 
 permissions:
   packages: write
   checks: write
 
 jobs:
-  check-if-docker-exist:
+  check-if-images-already-exist:
     runs-on: ubuntu-latest
     outputs:
       docker-image: ${{ steps.check.outputs.docker-image }}
@@ -63,8 +63,8 @@ jobs:
         continue-on-error: true
 
   build-toolchain-if-needed:
-    needs: check-if-docker-exist
-    if: needs.check-if-docker-exist.outputs.docker-image == ''
+    needs: check-if-images-already-exist
+    if: needs.check-if-images-already-exist.outputs.docker-image == ''
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -132,8 +132,8 @@ jobs:
           ls -lh ${{ env.TTMLIR_TOOLCHAIN_DIR }}
 
   build-image:
-    needs: [check-if-docker-exist, build-toolchain-if-needed]
-    if: needs.check-if-docker-exist.outputs.docker-image == ''
+    needs: [check-if-images-already-exist, build-toolchain-if-needed]
+    if: needs.check-if-images-already-exist.outputs.docker-image == ''
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
@@ -203,7 +203,7 @@ jobs:
           echo "✓ Docker images built successfully"
 
   set-latest-tag:
-    needs: [check-if-docker-exist, build-image]
+    needs: [check-if-images-already-exist, build-image]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure()
     steps:
@@ -217,7 +217,7 @@ jobs:
       - name: Set latest tag
         run: |
           # Get the image name (from either check or build job)
-          DOCKER_IMAGE="${{ needs.check-if-docker-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
+          DOCKER_IMAGE="${{ needs.check-if-images-already-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
 
           # Extract the tag from the full image name
           TAG="${DOCKER_IMAGE##*:}"
