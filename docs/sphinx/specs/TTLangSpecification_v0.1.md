@@ -7,6 +7,7 @@
 | *Version* | *Date* | *Description of changes* |
 | :---- | :---- | :---- |
 | 0.1 | 12/15/2025 | Initial version |
+| 0.2 | 01/20/2026 | Remove `ttl.Program` |
 
 ## Introduction
 
@@ -16,12 +17,7 @@ The programming model of TT-Lang is centered around explicit specification of da
 
 ## Kernel program
 
-*Kernel function* is a Python function with `ttl.kernel` decorator. This function constructs a `ttl.Program` object by passing up to three *thread functions*. The `ttl.Program` object itself is a callable with input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html). A thread function is a Python function with no arguments annotated by `ttl.compute` or `ttl.datamovement` decorators. Typically thread functions are defined in the scope of the kernel function so that they can capture objects shared by all thread functions.
-
-| Type alias/Function | Description |
-| :---- | :---- |
-| `ttl.Program = Callable[[*tensors: ttnn.Tensor], None]` | A program as a callable object. |
-| `ttl.Program(*threads: Callable[[], None]) -> ttl.Program` | Create a program with provided thread functions.  |
+*Kernel function* is a Python function with `ttl.kernel` decorator. This function takes input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html) as arguments and returns `None`. A kernel function contains definitions of thread functions as well as objects shared by thread functions. A thread function is a Python function with no arguments and returning `None` that is annotated by `ttl.compute` or `ttl.datamovement` decorators.
 
 ## Example
 
@@ -42,8 +38,6 @@ def foo(
     @ttl.datamovement()
     def some_dm1():
         # ...
-
-    return ttl.Program(some_compute, some_dm0, some_dm1)(x, y)
 
 shape = ttnn.Shape([128, 128])
 
