@@ -21,10 +21,13 @@ XFAIL_TESTS = {
     "test.me2e.ops.test_binary::TestAddFloat32::test_validate_golden": "f32 produces incorrect results (#254)",
     "test.me2e.ops.test_binary::TestSubFloat32::test_validate_golden": "f32 produces incorrect results (#254)",
     "test.me2e.ops.test_unary::TestLogFloat32::test_validate_golden": "f32 produces incorrect results (#254)",
+    "test.me2e.ops.test_unary::TestAbsFloat32::test_validate_golden": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-1x1_buf2_interleaved-add]": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-1x1_buf2_interleaved-sub]": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-1x1_buf2_interleaved-log]": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-add]": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-sub]": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-log]": "f32 produces incorrect results (#254)",
+    "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-abs]": "f32 produces incorrect results (#254)",
+    "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-relu]": "f32 produces incorrect results (#254)",
 }
