@@ -96,6 +96,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     circular_buffer.py
     constants.py
     diagnostics.py
+    kernel_runner.py
     ttl.py
     ttl_api.py
     ttl_math.py

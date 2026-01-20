@@ -16,10 +16,10 @@ import tempfile
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
 
