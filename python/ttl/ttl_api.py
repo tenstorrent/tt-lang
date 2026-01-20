@@ -213,8 +213,8 @@ class CompiledTTNNKernel:
             tensor_indices = self.kernel_tensor_indices[kernel_idx]
             common_runtime_args = [args[idx].buffer_address() for idx in tensor_indices]
 
-            # CB indices are 0, 1, 2, ... for each tensor
-            cb_indices = list(range(len(args)))
+            # CB indices are 0, 1, 2, ... for each CB (including intermediate CBs)
+            cb_indices = list(range(len(self.cb_configs)))
 
             # Compute kernels only need CB indices
             # DM kernels need CB indices + TensorAccessorArgs config
@@ -233,23 +233,24 @@ class CompiledTTNNKernel:
             )
             kernel_descriptors.append(kernel_desc)
 
-        # Build CB descriptors
+        # Build CB descriptors for all CBs (including intermediate CBs)
         cb_descriptors = []
-        for i, tensor in enumerate(args):
-            if hasattr(tensor, "dtype") and hasattr(tensor.dtype, "name"):
-                data_format = tensor.dtype
+        for i, cb in enumerate(self.cb_configs):
+            if cb is None:
+                raise ValueError(
+                    f"Missing CB config for index {i}. "
+                    f"All CB indices must have associated CircularBuffer configurations."
+                )
+
+            # Get dtype from CB's reference tensor
+            ref_tensor = cb.tensor
+            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
+                data_format = ref_tensor.dtype
             else:
-                data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
+                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
 
             page_size = tile_bytes_from_dtype(data_format)
-
-            if i >= len(self.cb_configs) or self.cb_configs[i] is None:
-                raise ValueError(
-                    f"Missing CB config for tensor {i}. "
-                    f"All tensors must have associated CircularBuffer configurations."
-                )
-            shape, buffer_factor = self.cb_configs[i]
-            num_tiles = shape[0] * shape[1] * buffer_factor
+            num_tiles = cb.shape[0] * cb.shape[1] * cb.buffer_factor
             total_size = num_tiles * page_size
 
             cb_format = ttnn.CBFormatDescriptor(
@@ -463,7 +464,11 @@ def _collect_captures(
 
 
 def _collect_cb_configs(threads):
-    """Extract CB configs from thread closures, indexed by cb_index."""
+    """Extract CircularBuffer objects from thread closures, indexed by cb_index.
+
+    Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
+    shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
+    """
     cb_configs_dict = {}
     for thread_fn in threads:
         wrapped = getattr(thread_fn, "__wrapped__", None)
@@ -473,7 +478,7 @@ def _collect_cb_configs(threads):
         for cell in closure:
             val = cell.cell_contents
             if isinstance(val, CircularBuffer):
-                cb_configs_dict[val._cb_index] = (val.shape, val.buffer_factor)
+                cb_configs_dict[val._cb_index] = val
 
     if not cb_configs_dict:
         return []
