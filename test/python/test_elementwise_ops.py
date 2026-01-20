@@ -212,7 +212,7 @@ def make_unary_kernel(name: str, op: str):
 # =============================================================================
 
 POWER_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def power_kernel(inp, out):
@@ -269,7 +269,7 @@ def make_power_kernel(exponent: int):
 # =============================================================================
 
 WHERE_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def where_kernel(cond, true_val, false_val, out):

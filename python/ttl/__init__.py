@@ -29,7 +29,7 @@ from ttl.ttl_api import (
     CopyTransferHandler,
     TensorBlock,
 )
-from ttlang.operators import matmul, power, reduce_max, reduce_sum, transpose, where
+from ttl.operators import matmul, power, reduce_max, reduce_sum, transpose, where
 
 __all__ = [
     "kernel",

@@ -29,7 +29,7 @@ pytestmark = pytest.mark.requires_ttnn
 # =============================================================================
 
 MATMUL_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def matmul_kernel(a, b, out):
@@ -162,7 +162,7 @@ def test_matmul_op(device):
 # =============================================================================
 
 REDUCE_SUM_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_kernel(input, scaler, out):
@@ -225,7 +225,7 @@ def make_reduce_sum_kernel():
 # =============================================================================
 
 REDUCE_MAX_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def reduce_max_kernel(input, scaler, out):
@@ -288,7 +288,7 @@ def make_reduce_max_kernel():
 # =============================================================================
 
 TRANSPOSE_KERNEL_TEMPLATE = '''
-from ttlang import ttl
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def transpose_kernel(input, out):
