@@ -106,13 +106,12 @@ jobs:
           COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
           echo "commit=$COMMIT" >> $GITHUB_OUTPUT
 
-      - name: Restore TT-MLIR Toolchain (LLVM) from cache
+      - name: Cache TT-MLIR Toolchain (LLVM)
         id: cache-ttmlir-toolchain
-        uses: actions/cache/restore@v4
+        uses: actions/cache@v4
         with:
           path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
           key: ${{ runner.os }}-ttlang-ttmlir-toolchain-${{ steps.ttmlir-commit.outputs.commit }}
-          fail-on-cache-miss: false
 
       - name: Checkout tt-mlir
         uses: actions/checkout@v4
