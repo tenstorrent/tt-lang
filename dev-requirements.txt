@@ -1,9 +1,8 @@
 # Development dependencies
-pytest
 black
+myst-parser
 pre-commit
 pyright
 sphinx
-myst-parser
 sphinx-rtd-theme
 sphinxcontrib-mermaid

@@ -8,7 +8,7 @@ import torch
 
 try:
     import ttnn
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     ttnn = None
 
 from ttmlir.dialects import ttcore
@@ -69,7 +69,7 @@ def ttnn_dtype_to_ttcore_datatype(ttnn_dtype):
     """
     try:
         import ttnn
-    except ModuleNotFoundError:
+    except (ModuleNotFoundError, ImportError):
         raise ImportError("ttnn module not available")
 
     match ttnn_dtype:
@@ -128,7 +128,7 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
     """
     try:
         import ttnn
-    except ModuleNotFoundError:
+    except (ModuleNotFoundError, ImportError):
         raise ImportError("ttnn module not available")
 
     match torch_dtype:

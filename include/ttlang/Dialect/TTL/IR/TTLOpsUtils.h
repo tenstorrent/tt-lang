@@ -72,6 +72,16 @@ inline bool isBinaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLBinaryElementwiseOpTrait>();
 }
 
+/// Check if an operation is a tile-level unary op (executes in-place on DST).
+inline bool isTileUnaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileUnaryOpTrait>();
+}
+
+/// Check if an operation is a tile-level binary op (writes to fresh DST slot).
+inline bool isTileBinaryOp(mlir::Operation *op) {
+  return op->hasTrait<TTLTileBinaryOpTrait>();
+}
+
 /// Check if an operation is any elementwise tensor op (unary or binary).
 inline bool isElementwiseOp(mlir::Operation *op) {
   return isUnaryElementwiseOp(op) || isBinaryElementwiseOp(op);

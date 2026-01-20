@@ -53,7 +53,7 @@ If tt-mlir is not in the default sibling location, the user will need to set `TT
 
 ```bash
 cd <tt-mlir-directory>
-source env/activate
+source build/env/activate
 
 # Configure and build tt-mlir
 # Follow instructions in MACOS_BUILD.md (macOS) or README.md (Linux)
@@ -73,17 +73,8 @@ Then retry the build 2-3 times. This is a known issue with nanobind and parallel
 # Navigate to tt-lang root
 cd <tt-lang-directory>
 
-# If tt-mlir is not at ../tt-mlir, set TT_MLIR_HOME first
-export TT_MLIR_HOME=/path/to/tt-mlir  # Optional, only if not sibling dir
-
-# Activate environment (automatically sources tt-mlir's environment)
-source env/activate
-
-# Verify activation
-echo $TTLANG_ENV_ACTIVATED  # Should be 1
-echo $TT_LANG_HOME         # Should be tt-lang root
-echo $TT_MLIR_HOME         # Should be tt-mlir root
-```
+# Activate environment
+source build/env/activate
 
 ### Building tt-lang
 

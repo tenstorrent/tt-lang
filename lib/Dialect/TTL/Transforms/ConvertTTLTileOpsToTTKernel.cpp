@@ -172,7 +172,15 @@ struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
 /// Extract the DST register index from a tile value. The index is obtained
 /// from either the copy_tile op that placed the tile in DST, or from the
 /// dst_idx attribute on the producing tile operation.
+///
+/// For block arguments (function parameters), returns the argument number as
+/// a fallback. This supports testing tile ops in isolation without copy_tile.
 static std::optional<int64_t> getDstIndexFromValue(Value v) {
+  // Handle block arguments (function parameters) - use arg number as dst_idx
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+    return blockArg.getArgNumber();
+  }
+
   auto opRes = dyn_cast<OpResult>(v);
   if (!opRes) {
     return std::nullopt;
@@ -243,8 +251,20 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     }
     int64_t odstIdx = dstIdxAttr.getInt();
 
-    int64_t src0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
-    int64_t src1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
+    auto src0IdxOpt = getDstIndexFromValue(op.getLhs());
+    auto src1IdxOpt = getDstIndexFromValue(op.getRhs());
+
+    if (!src0IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from lhs operand");
+    }
+    if (!src1IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from rhs operand");
+    }
+
+    int64_t src0Idx = *src0IdxOpt;
+    int64_t src1Idx = *src1IdxOpt;
 
     Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
     Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
@@ -271,8 +291,22 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    int64_t dst0Idx = getDstIndexFromValue(adaptor.getLhs()).value_or(0);
-    int64_t dst1Idx = getDstIndexFromValue(adaptor.getRhs()).value_or(1);
+    // Extract dst_idx from original (unconverted) operands, not adaptor
+    // operands
+    auto dst0IdxOpt = getDstIndexFromValue(op.getLhs());
+    auto dst1IdxOpt = getDstIndexFromValue(op.getRhs());
+
+    if (!dst0IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from lhs operand");
+    }
+    if (!dst1IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from rhs operand");
+    }
+
+    int64_t dst0Idx = *dst0IdxOpt;
+    int64_t dst1Idx = *dst1IdxOpt;
 
     Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
@@ -352,6 +386,51 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   }
 };
 
+/// Lower ttl.copy_dst to TTKernel copy_dest_values_init + copy_dest_values.
+/// This copies a tile from one DST register to another.
+struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
+  using OpConversionPattern<CopyDstOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CopyDstOp op, CopyDstOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Get the source DST index from the input tile's producing operation.
+    auto srcDstIdx = getDstIndexFromValue(op.getSrcTile());
+    if (!srcDstIdx) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine src DST index from input tile");
+    }
+
+    // Get the destination DST index from this op's dst_idx attribute.
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstDstIdx = dstIdxAttr.getInt();
+
+    // Create index constants for src and dst DST registers.
+    Value srcIdx = rewriter.create<arith::ConstantIndexOp>(loc, *srcDstIdx);
+    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstDstIdx);
+
+    // Emit copy_dest_values_init + copy_dest_values.
+    // copy_dest_values(dst0, dst1) copies DST[dst1] → DST[dst0].
+    rewriter.create<ttk::CopyDestValuesInitOp>(loc);
+    rewriter.create<ttk::CopyDestValuesOp>(loc, dstIdx, srcIdx);
+
+    // Replace with an unrealized conversion cast to preserve the tile value.
+    // The tile is now in DST[dstIdx].
+    auto tile = rewriter
+                    .create<mlir::UnrealizedConversionCastOp>(
+                        loc, TypeRange{op.getResult().getType()},
+                        ValueRange{adaptor.getSrcTile()})
+                    .getResult(0);
+    rewriter.replaceOp(op, tile);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
@@ -405,8 +484,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // Copy op needs the type converter.
+  // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLCopyDstToTTKernel>(ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)

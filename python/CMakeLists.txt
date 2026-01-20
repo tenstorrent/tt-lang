@@ -96,6 +96,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     circular_buffer.py
     constants.py
     diagnostics.py
+    kernel_runner.py
     ttl.py
     ttl_api.py
     ttl_math.py
@@ -130,6 +131,17 @@ declare_mlir_python_sources(TTLangPythonCommon.Utils
     utils/__init__.py
     utils/block_allocation.py
     utils/correctness.py
+)
+
+declare_mlir_python_sources(PykernelPythonSources
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pykernel"
+  SOURCES
+    __init__.py
+    _src/__init__.py
+    _src/base_ast.py
+    _src/kernel_ast.py
+    _src/kernel_types.py
+    _src/utils.py
 )
 
 # ###############################################################################
@@ -169,6 +181,14 @@ set(TTLANG_PYTHON_SOURCES
   TTLangPythonExtensions
   TTLangPythonCommon
   TTLangPythonSiteInitialize
+)
+
+# Create pykernel as a separate top-level package
+add_mlir_python_modules(PykernelPythonModules
+  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/pykernel"
+  INSTALL_PREFIX "python_packages/pykernel"
+  DECLARED_SOURCES
+    PykernelPythonSources
 )
 
 add_mlir_python_modules(TTLangPythonModules

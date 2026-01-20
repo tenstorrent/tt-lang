@@ -28,13 +28,6 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
     return result;
   }
 
-  // Reject if this op's result has multiple uses (would break SSA semantics)
-  if (!value.hasOneUse()) {
-    result.failureReason = TraceFailureReason::MultipleUses;
-    result.failedValue = value;
-    return result;
-  }
-
   // Recursively trace all operands
   for (mlir::Value operand : getElementwiseOperands(defOp)) {
     auto operandTrace = traceElementwiseToRoots(operand);

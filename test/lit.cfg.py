@@ -119,6 +119,7 @@ if build_python is None or not build_python:
 python_paths = [
     build_python,
     os.path.join(config.ttlang_source_dir, "python"),
+    config.test_source_root,  # For ttlang_test_utils and other test utilities
 ]
 
 # Add tt-mlir Python packages if available
@@ -154,12 +155,12 @@ for env_var in [
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
 
-# Add TTNN feature if available
+# Add TTNN feature if available (attempt actual import to detect broken binaries on macOS)
 try:
     import ttnn
 
     config.available_features.add("ttnn")
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     pass
 
 # Add tt-device feature if hardware is available (detected by CMake at configure time)

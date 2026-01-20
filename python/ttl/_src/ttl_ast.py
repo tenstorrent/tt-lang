@@ -118,6 +118,9 @@ class TTLGenericCompiler(TTCompilerBase):
         self.source_lines = kwargs.get("_source_lines", [])
         self.line_offset = kwargs.get("_line_offset", 0)
 
+        # Function globals for resolving module-level constants
+        self.fn_globals = kwargs.get("_globals", {})
+
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
 
@@ -172,6 +175,35 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def visit_BinOp(self, node):
+        """Override to provide better error messages with source location."""
+        with self._loc_for_node(node):
+            try:
+                return super().visit_BinOp(node)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
+
+    def visit_Name(self, node):
+        """Override to check function globals for simple constants."""
+        result = super().visit_Name(node)
+        if result is not None:
+            return result
+
+        # Check if it's a module-level constant
+        var_name = node.id
+        if var_name in self.fn_globals:
+            val = self.fn_globals[var_name]
+            if isinstance(val, int):
+                return arith.ConstantOp(
+                    IntegerType.get_signless(64, self.ctx), val
+                ).result
+            if isinstance(val, float):
+                return arith.ConstantOp(F32Type.get(self.ctx), val).result
+
+        return None
 
     def _is_ttl_module_access(self, node):
         """Check if node is ttl.XXX access pattern."""

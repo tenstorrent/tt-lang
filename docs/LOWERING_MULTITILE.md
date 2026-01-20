@@ -83,7 +83,7 @@ Replaces tensor-level `ttl.add` with `ttl.compute` region containing element-wis
 
 ### Stage 3: `ttl-tile-and-assign-dst`
 
-Pass: [lib/Dialect/TTL/Transforms/TTLTileAndAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLTileAndAssignDST.cpp)
+Pass: [lib/Dialect/TTL/Transforms/TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp)
 
 Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. The `ttl.linearized_index` computes tile position: for 2x2, maps (0,0)->0, (0,1)->1, (1,0)->2, (1,1)->3.
 

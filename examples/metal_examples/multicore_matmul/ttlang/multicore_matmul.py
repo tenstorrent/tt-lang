@@ -135,4 +135,3 @@ def test_multicore_matmul_tt_lang(M, K, N):
 if __name__ == "__main__":
     # TODO: This won't work with 256, 256, 256
     test_multicore_matmul_tt_lang(640, 640, 640)
-    print("PASSED")

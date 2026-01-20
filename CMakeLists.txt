@@ -87,3 +87,23 @@ file(GLOB_RECURSE WHEEL_FILES "${CMAKE_BINARY_DIR}/*.whl")
 if(WHEEL_FILES)
   install(FILES ${WHEEL_FILES} DESTINATION wheels)
 endif()
+
+# Install examples, tests, and environment activation script for Docker images
+install(DIRECTORY examples/ DESTINATION examples
+        PATTERN "*.pyc" EXCLUDE
+        PATTERN "__pycache__" EXCLUDE)
+
+install(DIRECTORY test/ DESTINATION test
+        PATTERN "*.pyc" EXCLUDE
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "build" EXCLUDE)
+
+# Install environment activation script for installed location
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
+        DESTINATION env
+        RENAME activate)
+
+# Install pure Python packages (sim, pykernel) - simple copy
+install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
+        FILES_MATCHING PATTERN "*.py"
+        PATTERN "__pycache__" EXCLUDE)

@@ -1,10 +1,16 @@
 // Summary: SFPU unary chain should flow via tokens with dst_idx attrs.
-// RUN: ttlang-opt %s --ttl-tile-and-assign-dst --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+
+// Verify no placeholder copies remain in final IR
+// CHECK-NOT: placeholder
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: verify copy_tile emits token+tile, unary ops consume copied tile,
-// and dst_idx annotations are added to math ops.
+// and dst_idx annotations are added to math ops. Unary operations are merged
+// into a single equivalence class, so separate-output-region does not change
+// dst_idx (operations remain at dst_idx = 0).
 // CHECK-LABEL: func.func @inplace_unary_chain
 func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -23,6 +29,7 @@ func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[RELU:.*]] = ttl.tile_relu %[[EXP]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[SIG:.*]] = ttl.tile_sigmoid %[[RELU]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// SEPARATE: ttl.tile_sigmoid {{.*}} {dst_idx = 0 : i32}
 // CHECK-NEXT:   ttl.yield %[[SIG]] : !ttcore.tile<32x32, f32>
 // CHECK: }
   %result = ttl.compute

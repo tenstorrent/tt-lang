@@ -450,8 +450,35 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
   let hasVerifier = 1;
 }
 
+def TTL_CopyDstOp : TTL_Op<"copy_dst",
+                           [SameOperandsAndResultType,
+                            MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Copy a tile from one DST register to another";
+  let description = [{
+    Performs DST -> DST copy for multi-consumer value preservation. Used when
+    a value has multiple consumers and at least one is unary (which overwrites
+    in-place). The copy ensures earlier consumers work on independent data.
+
+    The dst_idx attribute specifies the destination DST register index. The
+    source DST register is determined by the src_tile's dst_idx attribute.
+
+    Lowering: ttl.copy_dst -> ttkernel.copy_dest_values(dst_idx, src.dst_idx)
+
+    Example:
+    ```mlir
+    %0 = ttl.tile_mul %a, %b : !ttcore.tile<32x32, f32>
+    %0_copy = ttl.copy_dst %0 {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
+    %1 = ttl.tile_abs %0_copy {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
+    %2 = ttl.tile_exp %0 {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+    ```
+  }];
+  let arguments = (ins TTL_TileType:$src_tile);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = "$src_tile attr-dict `:` type($result)";
+}
+
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileBinaryOpTrait])> {
   let summary = "Binary tile operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs AnyType:$result);
@@ -459,7 +486,7 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
 }
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileUnaryOpTrait])> {
   let summary = "Unary tile operation";
   let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);

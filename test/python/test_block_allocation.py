@@ -8,12 +8,13 @@ Test comparing split_work_to_cores with ttnn.split_work_to_cores
 get_large_matmul_params is compared with hard coded expected values
 """
 import pytest
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
 from ttl.utils.block_allocation import (
     get_large_matmul_params,
     split_work_to_cores,
 )
-
-ttnn = pytest.importorskip("ttnn")
 
 
 def extract_coords_from_ttnn_corerangeset(core_range_set):
