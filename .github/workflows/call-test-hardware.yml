@@ -72,6 +72,7 @@ jobs:
     env:
       RUNS_ON: ${{ inputs.runs-on }}
       PYTHONDONTWRITEBYTECODE: 1
+      TTLANG_TEST_SEED: 42
 
     steps:
       - name: Checkout tt-lang

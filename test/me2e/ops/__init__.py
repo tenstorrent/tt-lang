@@ -134,7 +134,12 @@ class OpTestBase(ME2ETestBase):
         torch_op: Callable[..., Tensor],
     ) -> None:
         """Build full ME2E TTL module (reader, compute, writer) from OP_STR."""
+        import os
         from ..builder.ttl_builder import build_e2e_module_mlir
+
+        # Set seed for reproducible test inputs.
+        seed = int(os.environ.get("TTLANG_TEST_SEED", "42"))
+        torch.manual_seed(seed)
 
         # Generate random inputs.
         lo, hi = input_range

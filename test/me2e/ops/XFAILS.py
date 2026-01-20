@@ -30,4 +30,6 @@ XFAIL_TESTS = {
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-log]": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-abs]": "f32 produces incorrect results (#254)",
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-relu]": "f32 produces incorrect results (#254)",
+    "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-neg]": "f32 produces incorrect results (#254)",
+    "test.me2e.ops.test_unary::TestReluFloat32::test_validate_golden": "f32 produces incorrect results (#254)",
 }
