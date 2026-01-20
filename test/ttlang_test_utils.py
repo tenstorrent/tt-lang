@@ -58,9 +58,13 @@ def _get_ttnn():
     """Lazy import of ttnn module."""
     global ttnn
     if ttnn is None and _ttnn_available:
-        import ttnn as _ttnn
+        try:
+            import ttnn as _ttnn
 
-        ttnn = _ttnn
+            ttnn = _ttnn
+        except (ImportError, ModuleNotFoundError):
+            _ttnn_available = False
+            ttnn = None
     return ttnn
 
 

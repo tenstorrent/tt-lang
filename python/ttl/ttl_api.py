@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional, Union
 
 try:
     import ttnn
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     ttnn = None
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes

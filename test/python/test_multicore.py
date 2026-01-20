@@ -14,10 +14,10 @@ import tempfile
 
 import pytest
 import torch
-import ttnn
-from ttlang_test_utils import to_dram
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
 TILES_PER_CORE_ROW = 2  # Each core processes 2x2 tiles

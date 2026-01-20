@@ -37,6 +37,7 @@ set(TTLANG_TEST_DEPENDS
 set(TTLANG_LIT_COMMON_ARGS
   --verbose
 )
+
 if(DEFINED ENV{TTLANG_CMAKE_DEBUG})
   list(APPEND TTLANG_LIT_COMMON_ARGS --show-all --no-progress-bar)
 endif()
@@ -45,10 +46,10 @@ endif()
 # built before running the full suite (and python-only suites), so imports of
 # `ttlang._mlir_libs._ttlang` do not spuriously fail.
 set(TTLANG_PYTHON_TEST_DEPENDS ${TTLANG_TEST_DEPENDS})
+
 if(TARGET TTLangPythonModules)
   list(APPEND TTLANG_PYTHON_TEST_DEPENDS TTLangPythonModules)
 endif()
-
 
 # MLIR tests only (no TT device required).
 add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
@@ -82,8 +83,12 @@ add_custom_target(check-ttlang
 )
 
 # Pytest tests (test_*.py files).
+# Uses a wrapper script to suppress exit code 5 (no tests collected), which is
+# expected on macOS when TTNN is unavailable. All tests are properly skipped
+# via pytest.importorskip.
 add_custom_target(check-ttlang-pytest
-  COMMAND ${Python3_EXECUTABLE} -m pytest
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_pytest.sh
+    ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
