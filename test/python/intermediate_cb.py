@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
 """
 P3 BUG REPRO: Intermediate CB storage pattern fails to compile
 
@@ -12,6 +15,7 @@ but only allocated indices 0 and 1.
 This pattern is meant to break fusion chains to avoid register clobbering (P1).
 Since it doesn't compile, there's no clean in-kernel workaround for P1.
 """
+
 import ttnn
 import torch
 import ttl
@@ -65,13 +69,25 @@ def test_intermediate_cb():
     print("P3 TEST: Intermediate CB storage pattern")
     print("=" * 60)
 
-    x_torch = torch.tensor([[-1.0, 0.0, 1.0, 2.0, 3.0] + [1.0] * 27] * 32, dtype=torch.bfloat16)
+    x_torch = torch.tensor(
+        [[-1.0, 0.0, 1.0, 2.0, 3.0] + [1.0] * 27] * 32, dtype=torch.bfloat16
+    )
     out_torch = torch.zeros(32, 32, dtype=torch.bfloat16)
 
-    x_t = ttnn.from_torch(x_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                          device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-    out_t = ttnn.from_torch(out_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    x_t = ttnn.from_torch(
+        x_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    out_t = ttnn.from_torch(
+        out_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
 
     # Expected: exp(relu(x))
     expected = torch.exp(torch.relu(x_torch))
