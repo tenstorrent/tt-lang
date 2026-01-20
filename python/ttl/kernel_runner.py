@@ -9,7 +9,8 @@ Provides functions for building kernel descriptors, CB descriptors, and
 executing kernels on device via ttnn.generic_op. Used by both the Python
 DSL (CompiledTTNNKernel) and ME2E tests.
 
-This module ensures a single source of truth for kernel argument building.
+This module provides a single reusable implementation of kernel argument
+building and execution.
 """
 
 from dataclasses import dataclass
@@ -76,7 +77,9 @@ def build_kernel_descriptors(
 
     Args:
         kernel_specs: List of kernel specifications.
-        tensors: List of ttnn.Tensor objects (in global order).
+        tensors: List of ttnn.Tensor objects. Position in this list determines
+            the global tensor index and CB index (0, 1, 2, ...). Individual kernels
+            access subsets via tensor_indices in each KernelSpec.
         tensor_accessor_args: Flattened compile-time args from all tensors.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         grid_cols: Number of grid columns (x dimension).
@@ -133,9 +136,10 @@ def build_cb_descriptors(
     Build circular buffer descriptors for ttnn.generic_op.
 
     Args:
-        tensors: List of ttnn.Tensor objects.
-        cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index.
-            shape is (rows, cols) in tiles.
+        tensors: List of ttnn.Tensor objects. Each tensor's position (0, 1, 2, ...)
+            corresponds to its CB index.
+        cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by
+            tensor position. shape is (rows, cols) in tiles.
         core_ranges: ttnn.CoreRangeSet for CB allocation.
 
     Returns:
@@ -192,8 +196,11 @@ def run_kernel_on_device(
 
     Args:
         kernel_specs: List of kernel specifications (path, thread_type, tensor_indices, config).
-        tensors: List of ttnn.Tensor objects (in global order matching CB indices).
-        cb_configs: List of (shape, buffer_factor) tuples for each CB.
+        tensors: List of ttnn.Tensor objects. Position in this list determines the
+            global tensor index and CB index. Individual kernels access subsets
+            via tensor_indices in each KernelSpec.
+        cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by
+            tensor position.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
 
     Returns:
