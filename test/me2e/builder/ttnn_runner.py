@@ -25,6 +25,7 @@ from ttl.kernel_runner import (
     KernelSpec as RunnerKernelSpec,
     run_kernel_on_device,
 )
+from ttl.circular_buffer import CircularBuffer
 
 from .kernels import KernelSpec
 
@@ -156,23 +157,27 @@ def _run_op(
             path=str(kernel_dir / f"{reader_kernel.name}.cpp"),
             thread_type="noc",
             tensor_indices=reader_kernel.tensor_indices,
+            config=ttnn.ReaderConfigDescriptor(),
         ),
         RunnerKernelSpec(
             path=str(kernel_dir / f"{writer_kernel.name}.cpp"),
             thread_type="noc",
             tensor_indices=writer_kernel.tensor_indices,
+            config=ttnn.WriterConfigDescriptor(),
         ),
         RunnerKernelSpec(
             path=str(kernel_dir / f"{compute_kernel.name}.cpp"),
             thread_type="compute",
             tensor_indices=[],  # Compute kernels don't access tensors directly.
+            config=ttnn.ComputeConfigDescriptor(),
         ),
     ]
 
-    # Build CB configs: (shape, buffer_factor) for each tensor.
+    # Build CB configs: CircularBuffer objects for each tensor.
     # Shape is (1, 1) for single tile, buffer_factor is 1 for single buffering.
-    cb_configs: List[Optional[Tuple[Tuple[int, int], int]]] = [
-        ((1, 1), 1) for _ in io_tensors
+    cb_configs: List[CircularBuffer] = [
+        CircularBuffer(tensor=tensor, shape=(1, 1), buffer_factor=1)
+        for tensor in io_tensors
     ]
 
     # Execute using shared kernel runner.

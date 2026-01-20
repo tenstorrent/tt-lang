@@ -161,11 +161,11 @@ if platform.system() == "Darwin":
 try:
     import ttnn
 
-sys.path.insert(0, os.path.join(config.test_source_root))
-from ttlang_test_utils import is_ttnn_available
+    sys.path.insert(0, os.path.join(config.test_source_root))
+    from ttlang_test_utils import is_ttnn_available
 
-if is_ttnn_available():
-    config.available_features.add("ttnn")
+    if is_ttnn_available():
+        config.available_features.add("ttnn")
 except (ImportError, ModuleNotFoundError):
     pass
 
