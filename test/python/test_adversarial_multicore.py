@@ -18,12 +18,12 @@ Evil features:
 
 import pytest
 import torch
-import ttnn
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
 from ttlang_test_utils import to_dram
 
 import ttl
-
-pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 

@@ -14,12 +14,12 @@ Comprehensive multicore test combining multiple features:
 
 import pytest
 import torch
-import ttnn
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
 from ttlang_test_utils import to_dram, to_l1
 
 import ttl
-
-pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 GRID_ROWS = 8

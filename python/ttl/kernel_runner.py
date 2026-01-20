@@ -18,7 +18,7 @@ from typing import Any, List, Optional, Tuple
 
 try:
     import ttnn
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     ttnn = None
 
 from .dtype_utils import tile_bytes_from_dtype, torch_dtype_to_ttnn_datatype
