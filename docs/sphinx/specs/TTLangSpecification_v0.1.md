@@ -538,8 +538,9 @@ def dm():
             # ...
 
             # then copy from a tensor slice of matching shape:
+            row_slice = slice(rt * g, (rt + 1) * g) # explicit row slice
             a_xf = ttl.copy(
-                A[(rt * g):((rt + 1) * g), ct:ct + 1],
+                A[row_slice, ct:ct + 1], # in-line col slice
                 a_blk)
             a_xf.wait()
 ```
