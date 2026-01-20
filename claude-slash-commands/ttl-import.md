@@ -3,6 +3,22 @@ description: Import and translate a CUDA, Triton, PyTorch kernel, or TTNN progra
 argument-hint: <kernel-file-or-code>
 ---
 
+## Tools Available
+
+```bash
+run-test.sh /path/to/kernel.py    # Run kernel on VM simulator (ONLY way to test)
+copy-file.sh /path/to/file.py     # Copy a file to the VM
+```
+
+**Reading VM logs (output is saved, not streamed):**
+```bash
+limactl shell ttsim -- cat /tmp/ttlang_test_output.log        # Full log
+limactl shell ttsim -- tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
+limactl shell ttsim -- grep -i "error" /tmp/ttlang_test_output.log
+limactl shell ttsim -- cat /tmp/ttlang_initial.mlir           # Initial MLIR
+limactl shell ttsim -- cat /tmp/ttlang_final.mlir             # Final MLIR
+```
+
 ## Task
 
 Translate the provided kernel or TTNN program to a TT-Lang DSL kernel. The primary goal is a working, correct kernel that can be tested and iterated on.
@@ -131,32 +147,98 @@ def dm_read():
 
 ## Available Operations
 
-### Binary Operations (on blocks)
+### Binary Operators
 
 ```python
-result = a + b      # Addition
-result = a - b      # Subtraction
-result = a * b      # Multiplication
-result = a / b      # Division
-result = a @ b      # Matrix multiplication
-result = ttl.math.max(a, b)  # Element-wise maximum
+result = a + b      # Element-wise addition
+result = a - b      # Element-wise subtraction
+result = a * b      # Element-wise multiplication
+result = a / b      # Element-wise division
+# NOTE: a @ b does NOT work! Use ttl.matmul() instead (see below)
 ```
 
-### Unary Operations (ttl.math.*)
+### Binary Functions
+
+```python
+result = ttl.math.max(a, b)  # Element-wise maximum
+result = ttl.math.min(a, b)  # Element-wise minimum
+```
+
+### Unary Functions (ttl.math.*)
 
 ```python
 result = ttl.math.exp(x)      # Exponential
 result = ttl.math.log(x)      # Natural logarithm
 result = ttl.math.sqrt(x)     # Square root
 result = ttl.math.rsqrt(x)    # Reciprocal square root (1/sqrt(x))
+result = ttl.math.recip(x)    # Reciprocal (1/x)
 result = ttl.math.tanh(x)     # Hyperbolic tangent
 result = ttl.math.sigmoid(x)  # Sigmoid (1/(1+exp(-x)))
 result = ttl.math.relu(x)     # ReLU (max(0, x))
 result = ttl.math.abs(x)      # Absolute value
 result = ttl.math.neg(x)      # Negation (-x)
-result = ttl.math.sin(x)      # Sine
-result = ttl.math.cos(x)      # Cosine
-result = ttl.math.recip(x)    # Reciprocal (1/x)
+result = ttl.math.floor(x)    # Floor
+```
+
+### Matrix Multiplication (IMPORTANT: Different semantics!)
+
+```python
+# ttl.matmul is ACCUMULATING: result = a @ b + c
+# The third argument 'c' is both input (accumulator) AND output
+result = ttl.matmul(a, b, c)  # c += a @ b, returns updated c
+
+# Example usage:
+o = out_cb.reserve()
+result = ttl.matmul(a_tile, b_tile, o)  # o is the accumulator
+o.store(result)
+```
+
+### Power (scalar integer exponent)
+
+```python
+# Raises each element to an integer power
+result = ttl.power(x, 2)  # x^2
+result = ttl.power(x, 3)  # x^3
+```
+
+### Transpose (32x32 tile only)
+
+```python
+# Transposes a single 32x32 tile
+# NOTE: Takes output block as second argument
+o = out_cb.reserve()
+result = ttl.transpose(input_tile, o)
+o.store(result)
+```
+
+### Reductions (require scaler tensor)
+
+```python
+# Reductions need a "scaler" tensor (typically all 1.0s)
+# dim options: "scalar" (default), "row", "col"
+# NOTE: Takes output block as third argument
+
+scaler = scaler_cb.wait()  # Tensor of 1.0s
+o = out_cb.reserve()
+
+# Scalar reduction (sum/max of entire tile -> result in [0,0])
+result = ttl.reduce_sum(input_tile, scaler, o)
+result = ttl.reduce_max(input_tile, scaler, o)
+
+# Row reduction (sum/max each row -> result in column 0)
+result = ttl.reduce_sum(input_tile, scaler, o, dim="row")
+
+# Column reduction (sum/max each column -> result in row 0)
+result = ttl.reduce_sum(input_tile, scaler, o, dim="col")
+
+o.store(result)
+```
+
+### Conditional Select (DO NOT USE - has simulator issues)
+
+```python
+# ttl.where exists but has known issues - avoid using it
+# result = ttl.where(condition, true_val, false_val)  # BROKEN
 ```
 
 ### Operation Fusion
@@ -300,6 +382,57 @@ result = ttnn.to_torch(output_tensor)
 ttnn.close_device(device)
 ```
 
+## Semantic Mapping: Think at the Hardware Level
+
+**TT-Lang is a LOW-LEVEL DSL.** Do not expect a 1:1 mapping from PyTorch ops. When translating:
+
+1. **Missing ops don't mean failure** - If `conv2d` doesn't exist, don't stop. Think about what conv2d *actually does* at the hardware level.
+
+2. **Decompose to primitives** - Most "complex" operations are actually:
+   - Simple compute (matmul, elementwise ops)
+   - Complex data movement (gathering, reordering tiles)
+
+3. **Data movement is the magic** - TT-Lang gives you full control over which tiles go where via `ttl.copy()` and tensor slicing. If you can describe WHERE data needs to go, you can implement the operation.
+
+### Example: Conv2d
+
+Conv2d seems like a "high-level op" but it's actually **matmul with clever data arrangement**:
+
+```
+What conv2d does:
+- For each output position, gather a KxK window of input
+- Flatten that window into a vector
+- Dot product with filter weights
+
+How to implement in TT-Lang:
+- Reader kernel: Loop over output positions, DMA the KxK windows into CBs (im2col)
+- Compute kernel: Just do matmul (window @ weights)
+- Writer kernel: Write results back
+
+The "conv2d" is in the data movement, not in a magic instruction.
+```
+
+### Example: Softmax
+
+No `softmax` op? Decompose it:
+```python
+# softmax(x) = exp(x) / sum(exp(x))
+exp_x = ttl.math.exp(x)
+sum_exp = ttl.reduce_sum(exp_x, scaler, o, dim="scalar")  # Needs scaler tensor of 1.0s
+inv_sum = ttl.math.recip(sum_exp)  # 1/sum
+result = exp_x * inv_sum           # Or use division: exp_x / sum_exp
+```
+
+### Key Principle
+
+When you are re-writing a high level operation or kernel:
+1. **What does this kernel or op do at a HW level?** Think about what's actually happening in the HW when this op runs
+2. **What primitives do we have?** matmul, elementwise, DMA with indexing
+3. **Build it from primitives.** A naive O(n²) loop that works is better than giving up. The goal is NOT performance! Just correctness. 
+4. This is not a high level DSL like pytorch or ttnn, it's low level and you have explicit control over all of the HW, memory management, and synchronization. Do not think about direct mappings for high level ops and kernels, think about the best way to represent the kernel in tt-lang at the level it is designed to operate.
+
+Even ops that DO exist may have different semantics (write in place, different numerical behavior). Always test to verify.
+
 ## Translation Guide: GPU → TT-Lang
 
 ### Concept Mapping
@@ -421,15 +554,67 @@ my_kernel(input_transposed, output_tensor)
 @ttl.compute()
 def softmax_compute():
     x = input_cb.wait()
+    scaler = scaler_cb.wait()  # Need a tensor of 1.0s for reduce
     o = output_cb.reserve()
 
     # softmax(x) = exp(x) / sum(exp(x))
     exp_x = ttl.math.exp(x)
-    # Note: reduce_sum requires additional setup - see tests
-    # For now, use store/reload pattern or TTNN for reduction
+
+    # Reduce needs scaler and output block
+    sum_exp = ttl.reduce_sum(exp_x, scaler, o, dim="scalar")
+    # Note: result is in [0,0] only - need broadcast for element-wise ops
+
+    # Option 1: Use recip + multiply
+    inv_sum = ttl.math.recip(sum_exp)
+    result = exp_x * inv_sum
+
+    # Option 2: Use division directly
+    # result = exp_x / sum_exp
 
     o.store(result)
+    # ... pop/push ...
 ```
+
+### Broadcasting a Scalar to a Tile
+
+After `reduce_sum(..., dim="scalar")`, only position [0,0] has the valid result.
+To use it in element-wise ops, you need to broadcast it to all positions.
+
+**Option 1: Pre-create a broadcast tensor (simplest)**
+```python
+# Before the kernel, create a tensor where all elements equal the scalar
+# Use TTNN or torch to fill a 32x32 tensor with the value
+broadcast_tensor = ttnn.full((32, 32), scalar_value, ...)
+```
+
+**Option 2: Use datamovement to replicate**
+```python
+@ttl.datamovement()
+def broadcast_scalar():
+    # Read the single-value tile
+    src_blk = scalar_cb.wait()
+
+    # Write to multiple positions in output (loop over tile positions)
+    for row in range(32):
+        for col in range(32):
+            # Copy [0,0] value to [row, col] in destination
+            # This requires element-level access - may need TTNN
+            pass
+
+    scalar_cb.pop()
+```
+
+**Option 3: Use TTNN for broadcast (recommended for complex cases)**
+```python
+# After your kernel produces the scalar result:
+scalar_tile = ttnn.to_torch(result_tensor)
+scalar_value = scalar_tile[0, 0].item()
+broadcast_tensor = ttnn.full((32, 32), scalar_value, device=device, ...)
+# Then use broadcast_tensor in next operation
+```
+
+**Note:** For row/column reductions (`dim="row"` or `dim="col"`), the result is already
+partially broadcast along one axis, which may be sufficient for some algorithms.
 
 ### Fused Activation
 
@@ -465,18 +650,102 @@ def layernorm_elementwise():
     o.store(result)
 ```
 
+## Iteration Workflow (REQUIRED)
+
+**The VM is the ONLY place to test kernels. You MUST test every kernel you write.**
+
+```
+1. Write kernel to file
+2. Run: run-test.sh /path/to/kernel.py
+3. Read log: limactl shell ttsim -- tail -100 /tmp/ttlang_test_output.log
+4. If errors: fix and go to step 2
+5. If success: verify numerical output is correct
+```
+
+**IMPORTANT:**
+- Exit code 0 does NOT mean success - always read the log
+- The log can be thousands of lines - use `tail`, `head`, `grep` to navigate
+- Look for: `AssertionError`, `Exception`, `error:`, `FAIL`, `mismatch`
+- Never guess at fixes - always read the actual error message
+
+## Compiler Errors: Workaround or Exit Early
+
+**Your goal is NOT to debug the compiler.** If you hit an MLIR error or miscompile:
+
+1. **First: Try a workaround**
+   - Restructure the kernel differently
+   - Use a different op combination
+   - Split into multiple simpler kernels
+   - Use TTNN for the problematic operation
+
+2. **If no workaround exists: Exit early**
+   - Report the error clearly to the user
+   - Include the MLIR snippet that fails (from `/tmp/ttlang_initial.mlir` or `/tmp/ttlang_final.mlir`)
+   - Describe what you tried
+   - Do NOT spend time investigating compiler internals
+
+**Signs of a compiler bug (not your fault):**
+- MLIR verification errors
+- Assertion failures in passes
+- Segfaults during compilation
+- Generated code that doesn't match the input semantics
+
+## Low-Level DSL: Test Everything
+
+**This is NOT PyTorch.** TT-Lang is a low-level DSL where you directly control memory management and synchronization. Operations may have unexpected semantics:
+
+- Ops might write in place
+- Ops might take circular buffers as arguments
+- Ops might have different numerical behavior than PyTorch equivalents
+- Memory layouts matter (tilized, interleaved, etc.)
+
+**Do not assume PyTorch semantics.** If you're unsure how an op behaves, TEST IT.
+
+### Debug Strategy: Isolate and Print
+
+You cannot print or assert inside kernels. Instead:
+
+1. **Test ops in isolation** - Write a minimal kernel with just one op
+2. **Print tensors before/after** - Use `print(ttnn.to_torch(tensor))` after the kernel runs
+3. **Compare against expected** - Compute the expected result in PyTorch and compare
+4. **Build up incrementally** - Once one op works, add the next
+
+```python
+# Example: Testing an op in isolation
+@ttl.kernel(grid=(1, 1))
+def test_single_op(inp, out):
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_cb.wait() as x:
+            with out_cb.reserve() as o:
+                result = ttl.math.exp(x)  # Test just this one op
+                o.store(result)
+    # ... dm_read, dm_write ...
+
+# After running:
+print("Input:", ttnn.to_torch(inp_tensor))
+print("Output:", ttnn.to_torch(out_tensor))
+print("Expected:", torch.exp(inp_torch))
+```
+
+**Iterate as much as you need.** There is no limit on test runs. If behavior is unexpected, simplify further until you understand what's happening.
+
 ## Debugging Tips
 
-1. **Start simple**: Get a single-tile, single-op kernel working first
-2. **Check shapes**: All dimensions must be multiples of 32
-3. **Verify CB balance**: Every `wait()` needs `pop()`, every `reserve()` needs `push()`
-4. **Use COMPILE_ONLY**: Set `TTLANG_COMPILE_ONLY=1` to check compilation without running
-5. **Save MLIR**: Use `TTLANG_INITIAL_MLIR=/tmp/debug.mlir` to inspect generated IR
+1. **Start in isolation**: Test one op at a time before combining
+2. **Print tensors**: Always print input/output to verify behavior
+3. **Check shapes**: All dimensions must be multiples of 32
+4. **Verify CB balance**: Every `wait()` needs `pop()`, every `reserve()` needs `push()`
+5. **Read the log**: Always check `/tmp/ttlang_test_output.log` after each run
+6. **Check MLIR**: Use `/tmp/ttlang_initial.mlir` and `/tmp/ttlang_final.mlir` for compiler issues
 
 ## Output
 
-Provide:
-1. The translated TT-Lang kernel with clear comments (save to file)
-2. A test harness to verify correctness against the original
-3. Notes on any TTNN ops used to fill gaps
-4. Suggestions for further optimization if applicable
+1. Save the translated TT-Lang kernel to a file
+2. Run `run-test.sh` on the kernel and verify it works
+3. Read the log and confirm numerical correctness
+4. Report any TTNN ops used to fill gaps
+5. Only mark complete after the kernel runs successfully on the VM

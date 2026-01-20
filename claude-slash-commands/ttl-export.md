@@ -3,6 +3,20 @@ description: Export TT-Lang kernel to TT-Metal C++ kernel code
 argument-hint: <kernel-file>
 ---
 
+## Tools Available
+
+```bash
+run-test.sh /path/to/kernel.py    # Run kernel on VM simulator (ONLY way to test)
+copy-file.sh /path/to/file.py     # Copy a file to the VM
+```
+
+**Reading VM logs (output is saved, not streamed):**
+```bash
+limactl shell ttsim -- cat /tmp/ttlang_test_output.log        # Full log
+limactl shell ttsim -- tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
+limactl shell ttsim -- grep -i "error" /tmp/ttlang_test_output.log
+```
+
 ## Task
 
 Export a TT-Lang kernel to standalone TT-Metal C++ code with a Python entry point using `ttnn.generic_op`. The primary goal is a working, correct kernel that can run independently of ttlang.
@@ -361,18 +375,69 @@ cb_wait_front(/*lhs*/0, 1);
 - Synchronization patterns (barriers, waits, etc.)
 - Any logic or control flow
 
-### Step 6: Verify the Export Works
+### Step 6: Copy Files to VM and Test
+
+**The VM is the ONLY place to test.** The exported kernel must be copied to the VM and run there.
+
+#### File Structure on VM
+
+When you copy files to the VM, they go to the user's home directory by default.
+The kernel paths in `run_kernel.py` must match where files are on the VM.
 
 ```bash
-cd my_kernel/
-python run_kernel.py
+# Copy all files to VM
+copy-file.sh my_kernel/run_kernel.py
+copy-file.sh my_kernel/kernels/compute.cpp kernels/
+copy-file.sh my_kernel/kernels/reader.cpp kernels/
+copy-file.sh my_kernel/kernels/writer.cpp kernels/
 ```
+
+This creates on the VM:
+```
+/home/<user>/
+├── run_kernel.py
+└── kernels/
+    ├── compute.cpp
+    ├── reader.cpp
+    └── writer.cpp
+```
+
+#### Update Kernel Paths for VM
+
+The `kernel_source` paths in `run_kernel.py` must be **relative to where run_kernel.py is located on the VM**, or use absolute paths:
+
+```python
+# Option 1: Relative paths (if run_kernel.py is in same dir as kernels/)
+reader_kernel = ttnn.KernelDescriptor(
+    kernel_source="kernels/reader.cpp",  # Relative to run_kernel.py location
+    ...
+)
+
+# Option 2: Absolute paths on VM
+reader_kernel = ttnn.KernelDescriptor(
+    kernel_source="/home/user/kernels/reader.cpp",
+    ...
+)
+```
+
+#### Run the Test
+
+```bash
+# Run the exported kernel on VM
+run-test.sh /path/to/my_kernel/run_kernel.py
+
+# Check results
+limactl shell ttsim -- tail -50 /tmp/ttlang_test_output.log
+```
+
+#### Debugging Failures
 
 If it fails, check:
 1. CB indices in compute kernel match the CBDescriptor buffer_index values
 2. Tensor order in `ttnn.generic_op([...])` matches kernel expectations
 3. Grid dimensions match between Python and original TTLang kernel
 4. Compile-time args order matches `get_compile_time_arg_val(N)` usage
+5. **Kernel file paths are correct for the VM filesystem**
 
 ## Key Data Structures Reference
 
@@ -421,12 +486,53 @@ runtime_args = [
 ]
 ```
 
+## Workflow
+
+### Step A: Verify the TT-Lang Kernel Works First
+
+Before exporting, confirm the original TT-Lang kernel runs correctly:
+```bash
+run-test.sh /path/to/original_kernel.py
+limactl shell ttsim -- tail -50 /tmp/ttlang_test_output.log
+```
+
+**If the TT-Lang kernel doesn't work: STOP.** Ask the user to fix the original kernel first. Do not proceed with export until the source kernel is working.
+
+### Step B: Extract and Verify Generated C++
+
+The TT-Lang compiler outputs working C++ to `/tmp/`. Extract the three kernel files and verify they work with `ttnn.generic_op` before any beautification.
+
+### Step C: Beautify (Working > Beautiful)
+
+Apply P2 beautification (rename variables, collapse casts, add comments). After each change:
+1. Copy updated files to VM
+2. Run test
+3. If it breaks, **revert the change** - keep what works
+
+**A working kernel with ugly variable names is better than a broken kernel with nice names.**
+
+### Step D: Verify File Locations on VM
+
+Use `limactl` to check file structure on VM:
+```bash
+limactl shell ttsim -- ls -la ~/kernels/          # Check kernel files exist
+limactl shell ttsim -- pwd                         # Confirm working directory
+limactl shell ttsim -- cat ~/kernels/compute.cpp  # Verify file contents
+```
+
+This helps you set correct paths in the KernelDescriptor.
+
 ## Output
 
 Write to the output directory:
 1. `kernels/compute.cpp` - Beautified compute kernel
 2. `kernels/reader.cpp` - Beautified reader kernel
 3. `kernels/writer.cpp` - Beautified writer kernel
-4. `run_kernel.py` - Working Python entry point
+4. `run_kernel.py` - Working Python entry point with correct VM paths
 
-Verify the kernel runs correctly before finishing.
+**You MUST:**
+1. Verify the original TT-Lang kernel works before starting
+2. Copy all files to VM using `copy-file.sh`
+3. Run `run-test.sh` on the exported kernel
+4. Read the log and confirm it runs correctly
+5. Only mark complete after successful VM execution
