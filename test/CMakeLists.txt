@@ -83,19 +83,15 @@ add_custom_target(check-ttlang
 )
 
 # Pytest tests (test_*.py files).
-# Uses a wrapper script to suppress exit code 5 (no tests collected), which is
-# expected on macOS when TTNN is unavailable. All tests are properly skipped
-# via pytest.importorskip.
+# Suppresses exit code 5 (no tests collected), which is expected on macOS when
+# TTNN is unavailable. All tests are properly skipped via pytest.importorskip.
 add_custom_target(check-ttlang-pytest
-  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_pytest.sh
-    ${Python3_EXECUTABLE} -m pytest
-    ${CMAKE_CURRENT_SOURCE_DIR}/python
-    -v --tb=short
-    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
+  COMMAND sh -c "${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/python -v --tb=short --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml || (test $$? -eq 5 && exit 0 || exit $$?)"
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
   COMMENT "Running ttlang pytest tests"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
   USES_TERMINAL
+  VERBATIM
 )
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
