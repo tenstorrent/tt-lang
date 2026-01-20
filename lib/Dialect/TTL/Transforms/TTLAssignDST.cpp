@@ -690,6 +690,25 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Second: Process remaining block arguments - insert copy_tile at first
       // use
       for (Operation &op : *body) {
+        // Special case: tile_matmul reads a and b directly from CBs, not DST.
+        // The c operand is the accumulator output (starts at zero in DST).
+        // Skip copy_tile for ALL operands of tile_matmul.
+        if (isa<TileMatmulOp>(&op)) {
+          continue;
+        }
+
+        // Special case: tile_reduce_* reads from CB directly, writes to DST.
+        // Skip copy_tile for input operand - CB lookup happens in lowering.
+        if (isa<TileReduceSumOp, TileReduceMaxOp>(&op)) {
+          continue;
+        }
+
+        // Special case: tile_transpose reads from CB directly, writes to DST.
+        // Skip copy_tile for input operand - CB lookup happens in lowering.
+        if (isa<TileTransposeOp>(&op)) {
+          continue;
+        }
+
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {

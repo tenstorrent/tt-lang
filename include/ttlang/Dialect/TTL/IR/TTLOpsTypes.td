@@ -66,5 +66,12 @@ def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Enum Attributes
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceDimAttr : EnumAttr<TTL_Dialect, TTL_ReduceDim, "reduce_dim"> {
+  let assemblyFormat = "`<` $value `>`";
+}
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

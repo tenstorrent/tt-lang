@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Tuple, Union
 
 from ttmlir.dialects import arith
-from ttmlir.ir import RankedTensorType, Type
+from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType, Type
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -81,9 +81,16 @@ class TensorBlock:
         """Element-wise multiplication using ttl.mul."""
         return ttl.mul(ast_self.type, ast_self, rhs)
 
+    def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise division using ttl.div."""
+        return ttl.div(ast_self.type, ast_self, rhs)
+
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Matrix multiplication is not yet supported in TTL mode."""
-        raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
+        """Matrix multiplication via @ operator is not supported. Use matmul(a, b, c) instead."""
+        raise NotImplementedError(
+            "Matrix multiplication via @ operator is not supported. "
+            "Use matmul(a, b, c) function instead for accumulating matmul: c += a @ b"
+        )
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to CB by propagating CB association from output view."""
@@ -317,6 +324,132 @@ def grid_size(*, dims):
     rows, cols = _get_current_grid()
     return (cols, rows)
 
+@syntax("matmul")
+def matmul(a: TensorBlock, b: TensorBlock, c: TensorBlock) -> TensorBlock:
+    """
+    Matrix multiplication with accumulation: result = a @ b + c.
+
+    This is a fused multiply-add operation where 'c' is the accumulator.
+    The result is written back, modeling the hardware behavior where
+    matmul accumulates into the DST register.
+
+    Args:
+        a: Left operand matrix tile
+        b: Right operand matrix tile
+        c: Accumulator tile (read and accumulated into)
+
+    Returns:
+        Result tile containing a @ b + c
+    """
+    # Use high-level matmul op (like binary ops use ttl.add, not ttl.tile_add).
+    # This gets lowered to ttl.compute with ttl.tile_matmul in the body.
+    return ttl.matmul(c.type, a, b, c)
+
+
+@syntax("power")
+def power(input: TensorBlock, exponent: int) -> TensorBlock:
+    """
+    Element-wise power with scalar exponent: result = input ^ exponent.
+
+    Raises each element of the input tensor to the given integer power.
+
+    Args:
+        input: Input tensor tile
+        exponent: Integer exponent to raise each element to
+
+    Returns:
+        Result tile containing input ^ exponent (element-wise)
+    """
+    exp_val = _get_constant_int(exponent)
+    return ttl.power(input.type, input, exp_val)
+
+
+@syntax("where")
+def where(
+    condition: TensorBlock, true_val: TensorBlock, false_val: TensorBlock
+) -> TensorBlock:
+    """
+    Element-wise conditional selection: result = condition ? true_val : false_val.
+
+    For each element, if the condition is non-zero, selects from true_val;
+    otherwise selects from false_val.
+
+    Args:
+        condition: Condition tensor (non-zero = true)
+        true_val: Values to select when condition is true
+        false_val: Values to select when condition is false
+
+    Returns:
+        Result tile with selected values
+    """
+    return ttl.where(condition, true_val, false_val, results=[true_val.type])
+
+
+@syntax("reduce_sum")
+def reduce_sum(input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dim: str = "scalar") -> TensorBlock:
+    """
+    Reduce tensor by summing along a dimension.
+
+    Args:
+        input: Input tensor tile
+        scaler: Scaler tensor tile (typically initialized with 1.0 for simple sum)
+        output: Output tensor tile (used to track output CB for init)
+        dim: Reduction dimension - "row", "col", or "scalar" (default)
+
+    Returns:
+        Result tile with reduced values
+    """
+    # Map string to integer value (Row=0, Col=1, Scalar=2)
+    dim_map = {"row": 0, "col": 1, "scalar": 2}
+    reduce_dim_val = dim_map.get(dim, 2)  # Default to scalar
+    # Create an IntegerAttr for the reduce_dim
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce_sum(output.type, input, scaler, output, reduce_dim_attr)
+
+
+@syntax("reduce_max")
+def reduce_max(input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dim: str = "scalar") -> TensorBlock:
+    """
+    Reduce tensor by taking maximum along a dimension.
+
+    Args:
+        input: Input tensor tile
+        scaler: Scaler tensor tile (typically initialized with 1.0)
+        output: Output tensor tile (used to track output CB for init)
+        dim: Reduction dimension - "row", "col", or "scalar" (default)
+
+    Returns:
+        Result tile with reduced values (max of each row/col/all)
+    """
+    # Map string to integer value (Row=0, Col=1, Scalar=2)
+    dim_map = {"row": 0, "col": 1, "scalar": 2}
+    reduce_dim_val = dim_map.get(dim, 2)  # Default to scalar
+    # Create an IntegerAttr for the reduce_dim
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce_max(output.type, input, scaler, output, reduce_dim_attr)
+
+
+@syntax("transpose")
+def transpose(input: TensorBlock, output: TensorBlock) -> TensorBlock:
+    """
+    Transpose a 32x32 tile (width-height swap).
+
+    Swaps the last two dimensions of the tile, effectively rotating the data.
+    This is a tile-level transpose operation (32x32 only).
+
+    Args:
+        input: Input tensor tile
+        output: Output tensor tile (used to track output CB for init)
+
+    Returns:
+        Result tile with transposed values
+    """
+    return ttl.transpose(output.type, input, output)
+
 
 __all__ = [
     "TensorBlock",
@@ -324,5 +457,11 @@ __all__ = [
     "copy",
     "core",
     "grid_size",
+    "matmul",
+    "power",
+    "where",
+    "reduce_sum",
+    "reduce_max",
+    "transpose",
     *_generated_all,
 ]

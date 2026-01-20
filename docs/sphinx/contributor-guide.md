@@ -30,8 +30,8 @@ TTL_BINARY_TILE_OP(NewOp, NewOpTileOp, NewOpBinaryTilesInitOp, NewOpBinaryTilesO
 // Unary op (in-place form: DST[dst_idx] = op(DST[dst_idx]))
 TTL_UNARY_TILE_OP(NewOp, NewOpTileOp, NewOpTileInitOp, NewOpTileOp)
 
-// Special binary op (2-arg in-place form, like Max)
-TTL_BINARY_TILE_OP_SPECIAL(NewOp, NewOpTileOp, NewOpTilesInitOp, NewOpTilesOp)
+// Min/Max binary op (2-arg in-place form)
+TTL_BINARY_TILE_OP_MINMAX(NewOp, NewOpTileOp, NewOpTilesInitOp, NewOpTilesOp)
 ```
 
 This automatically generates:
