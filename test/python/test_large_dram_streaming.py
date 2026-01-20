@@ -15,7 +15,7 @@
 import torch
 import ttnn
 import ttl
-from test_helpers import to_dram
+from ttlang_test_utils import to_dram
 
 
 @ttl.kernel(grid=(1, 1))
