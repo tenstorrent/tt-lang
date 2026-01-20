@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional, Union
 
 try:
     import ttnn
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     ttnn = None
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
@@ -194,10 +194,12 @@ class CompiledTTNNKernel:
         kernel_specs = []
         for kernel_idx, (kernel_path, thread_type) in enumerate(self.kernel_paths):
             tensor_indices = self.kernel_tensor_indices[kernel_idx]
+            config = self.kernel_configs[kernel_idx]
             spec = KernelSpec(
                 path=kernel_path,
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
+                config=config,
             )
             kernel_specs.append(spec)
 
@@ -398,7 +400,11 @@ def _collect_captures(
 
 
 def _collect_cb_configs(threads):
-    """Extract CB configs from thread closures, indexed by cb_index."""
+    """Extract CircularBuffer objects from thread closures, indexed by cb_index.
+
+    Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
+    shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
+    """
     cb_configs_dict = {}
     for thread_fn in threads:
         wrapped = getattr(thread_fn, "__wrapped__", None)
@@ -408,7 +414,7 @@ def _collect_cb_configs(threads):
         for cell in closure:
             val = cell.cell_contents
             if isinstance(val, CircularBuffer):
-                cb_configs_dict[val._cb_index] = (val.shape, val.buffer_factor)
+                cb_configs_dict[val._cb_index] = val
 
     if not cb_configs_dict:
         return []

@@ -56,11 +56,15 @@ ttnn = None  # Lazy import - loaded when first needed
 
 def _get_ttnn():
     """Lazy import of ttnn module."""
-    global ttnn
+    global ttnn, _ttnn_available
     if ttnn is None and _ttnn_available:
-        import ttnn as _ttnn
+        try:
+            import ttnn as _ttnn
 
-        ttnn = _ttnn
+            ttnn = _ttnn
+        except (ImportError, ModuleNotFoundError):
+            _ttnn_available = False
+            ttnn = None
     return ttnn
 
 

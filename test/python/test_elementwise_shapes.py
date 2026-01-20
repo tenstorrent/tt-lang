@@ -25,11 +25,11 @@ import tempfile
 from typing import Callable
 
 import pytest
-import ttnn
 import torch
-from ttlang_test_utils import assert_allclose, to_dram
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import assert_allclose, to_dram
 
 # =============================================================================
 # Shape Configurations - 1D tile configurations (row or column vectors)
