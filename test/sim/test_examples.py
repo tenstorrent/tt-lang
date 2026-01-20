@@ -130,3 +130,35 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
             f"Expected: 'tx_a = copy(a[r, c], a_block)'\n"
             f"Got: {error_line}"
         )
+
+
+def test_copy_lock_error_fails_with_expected_error() -> None:
+    """Test that copy_lock_error.py fails with the expected copy locking error.
+
+    This example demonstrates incorrect block access during copy operations:
+    attempting to write to a block destination before wait() completes. The error
+    message should clearly indicate the locking violation.
+    """
+    code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "copy_lock_error.py")
+    assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
+    # Check for the core error message (copy lock violation)
+    assert (
+        "Cannot write to Block: locked as copy destination until wait() completes"
+        in out
+    ), f"Expected error message not found in output:\n{out}"
+    # Verify source location is shown (line 88 where we attempt to write to a_block)
+    assert (
+        "examples/copy_lock_error.py:88" in out
+    ), f"Expected source location not found in output:\n{out}"
+
+    # Verify the reported line number is correct by checking the actual source
+    source_file = EXAMPLES_DIR / "copy_lock_error.py"
+    with open(source_file) as f:
+        lines = f.readlines()
+        # Line 88 (1-indexed) should contain the problematic write
+        error_line = lines[87].strip()  # 0-indexed
+        assert "a_block[0] = None" in error_line, (
+            f"Line 88 in copy_lock_error.py does not contain expected write.\n"
+            f"Expected: 'a_block[0] = None'\n"
+            f"Got: {error_line}"
+        )

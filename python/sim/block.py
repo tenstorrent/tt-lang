@@ -47,6 +47,11 @@ class Block:
 
     @validate_call
     def __getitem__(self, idx: Index) -> Tensor:
+        """Get item with lock checking."""
+        # Import here to avoid circular dependency
+        from .copy import check_can_read
+
+        check_can_read(self)
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         value = self._buf[(self._span.start + idx) % self._capacity]
@@ -58,6 +63,11 @@ class Block:
     # resolve to tensor which is similar to a list?
     # @validate_call
     def __setitem__(self, idx: Index, value: Tensor) -> None:
+        """Set item with lock checking."""
+        # Import here to avoid circular dependency
+        from .copy import check_can_write
+
+        check_can_write(self)
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         self._buf[(self._span.start + idx) % self._capacity] = value
