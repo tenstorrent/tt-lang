@@ -71,6 +71,7 @@ def build_kernel_descriptors(
     core_ranges: Any,
     grid_cols: int,
     grid_rows: int,
+    num_cbs: int,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -78,12 +79,13 @@ def build_kernel_descriptors(
     Args:
         kernel_specs: List of kernel specifications.
         tensors: List of ttnn.Tensor objects. Position in this list determines
-            the global tensor index and CB index (0, 1, 2, ...). Individual kernels
-            access subsets via tensor_indices in each KernelSpec.
+            the global tensor index. Individual kernels access subsets via
+            tensor_indices in each KernelSpec.
         tensor_accessor_args: Flattened compile-time args from all tensors.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         grid_cols: Number of grid columns (x dimension).
         grid_rows: Number of grid rows (y dimension).
+        num_cbs: Total number of circular buffers (including intermediate CBs).
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -93,8 +95,8 @@ def build_kernel_descriptors(
 
     kernel_descriptors = []
 
-    # CB indices are 0, 1, 2, ... for each tensor.
-    cb_indices = list(range(len(tensors)))
+    # CB indices are 0, 1, 2, ... for each CB (including intermediate CBs).
+    cb_indices = list(range(num_cbs))
 
     for spec in kernel_specs:
         # runtime_args structure: [x][y][args_per_core].
@@ -129,7 +131,7 @@ def build_kernel_descriptors(
 
 def build_cb_descriptors(
     tensors: List[Any],
-    cb_configs: List[Optional[Tuple[Tuple[int, int], int]]],
+    cb_configs: List[Any],
     core_ranges: Any,
 ) -> List[Any]:
     """
@@ -137,9 +139,10 @@ def build_cb_descriptors(
 
     Args:
         tensors: List of ttnn.Tensor objects. Each tensor's position (0, 1, 2, ...)
-            corresponds to its CB index.
-        cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by
-            tensor position. shape is (rows, cols) in tiles.
+            corresponds to its CB index. For intermediate CBs (not backed by
+            input/output tensors), pass None in the corresponding position.
+        cb_configs: List of CircularBuffer objects for each CB, indexed by CB index.
+            Each CB has shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for CB allocation.
 
     Returns:
@@ -149,22 +152,22 @@ def build_cb_descriptors(
         raise RuntimeError("ttnn is not available")
 
     cb_descriptors = []
-    for i, tensor in enumerate(tensors):
-        if hasattr(tensor, "dtype") and hasattr(tensor.dtype, "name"):
-            data_format = tensor.dtype
+    for i, cb in enumerate(cb_configs):
+        if cb is None:
+            raise ValueError(
+                f"Missing CB config for index {i}. "
+                f"All CB indices must have associated CircularBuffer configurations."
+            )
+
+        # Get dtype from CB's reference tensor.
+        ref_tensor = cb.tensor
+        if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
+            data_format = ref_tensor.dtype
         else:
-            data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
+            data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
 
         page_size = tile_bytes_from_dtype(data_format)
-
-        if i >= len(cb_configs) or cb_configs[i] is None:
-            raise ValueError(
-                f"Missing CB config for tensor {i}. "
-                f"Expected {len(tensors)} CB configs, got {len(cb_configs)}. "
-                f"All tensors must have associated CircularBuffer configurations."
-            )
-        shape, buffer_factor = cb_configs[i]
-        num_tiles = shape[0] * shape[1] * buffer_factor
+        num_tiles = cb.shape[0] * cb.shape[1] * cb.buffer_factor
         total_size = num_tiles * page_size
 
         cb_format = ttnn.CBFormatDescriptor(
@@ -185,7 +188,7 @@ def build_cb_descriptors(
 def run_kernel_on_device(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
-    cb_configs: List[Optional[Tuple[Tuple[int, int], int]]],
+    cb_configs: List[Any],
     core_ranges: Any,
 ) -> Any:
     """
@@ -197,10 +200,11 @@ def run_kernel_on_device(
     Args:
         kernel_specs: List of kernel specifications (path, thread_type, tensor_indices, config).
         tensors: List of ttnn.Tensor objects. Position in this list determines the
-            global tensor index and CB index. Individual kernels access subsets
-            via tensor_indices in each KernelSpec.
-        cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by
-            tensor position.
+            global tensor index. Individual kernels access subsets via tensor_indices
+            in each KernelSpec.
+        cb_configs: List of CircularBuffer objects for each CB, indexed by CB index.
+            Includes both tensor-backed CBs and intermediate CBs. Each CB has shape,
+            buffer_factor, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
 
     Returns:
@@ -225,6 +229,7 @@ def run_kernel_on_device(
         core_ranges=core_ranges,
         grid_cols=grid_cols,
         grid_rows=grid_rows,
+        num_cbs=len(cb_configs),
     )
 
     # Build CB descriptors.

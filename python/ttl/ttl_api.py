@@ -400,7 +400,11 @@ def _collect_captures(
 
 
 def _collect_cb_configs(threads):
-    """Extract CB configs from thread closures, indexed by cb_index."""
+    """Extract CircularBuffer objects from thread closures, indexed by cb_index.
+
+    Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
+    shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
+    """
     cb_configs_dict = {}
     for thread_fn in threads:
         wrapped = getattr(thread_fn, "__wrapped__", None)
@@ -410,7 +414,7 @@ def _collect_cb_configs(threads):
         for cell in closure:
             val = cell.cell_contents
             if isinstance(val, CircularBuffer):
-                cb_configs_dict[val._cb_index] = (val.shape, val.buffer_factor)
+                cb_configs_dict[val._cb_index] = val
 
     if not cb_configs_dict:
         return []
