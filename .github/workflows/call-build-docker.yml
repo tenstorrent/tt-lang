@@ -79,19 +79,15 @@ jobs:
       - name: Maximize space
         uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt install software-properties-common
-          sudo add-apt-repository ppa:deadsnakes/ppa
-          sudo apt-get install -y python3.11 python3.11-venv python3.11-dev build-essential ccache ninja-build lld libzstd-dev
-          echo "Disk usage: " && df -h
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Free up some more space
+        run: |
+          .github/scripts/cleanup-ci-space.sh
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -105,21 +101,6 @@ jobs:
         run: |
           COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
           echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-
-      # - name: Restore TT-MLIR Toolchain (LLVM) from cache
-      #   id: restore-ttmlir-toolchain
-      #   uses: actions/cache/restore@v4
-      #   with:
-      #     path: /opt/ttmlir-toolchain
-      #     key: ${{ runner.os }}-ttlang-ttmlir-toolchain-${{ steps.ttmlir-commit.outputs.commit }}
-      #     fail-on-cache-miss: true
-
-      # - name: Move toolchain to build context
-      #   run: |
-      #     mv /opt/ttmlir-toolchain ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-      #     .github/containers/cleanup-toolchain.sh ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-      #     echo "Toolchain moved to build context successfully"
-      #     ls -lh ${{ env.TTMLIR_TOOLCHAIN_DIR }}
 
       - name: Cache TT-MLIR Toolchain (LLVM)
         id: cache-ttmlir-toolchain
@@ -138,6 +119,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt install software-properties-common
+          sudo add-apt-repository ppa:deadsnakes/ppa
+          sudo apt-get install -y python3.11 python3.11-venv python3.11-dev build-essential ninja-build lld libzstd-dev
+          echo "Disk usage: " && df -h
+
       - name: Build tt-mlir toolchain
         if: steps.cache-ttmlir-toolchain.outputs.cache-hit != 'true'
         working-directory: tt-mlir
@@ -147,6 +136,17 @@ jobs:
           cmake --build env/build
           echo "tt-mlir toolchain built successfully and installed in ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
           rm -rf env/build
+
+      - name: Verify toolchain directory exists
+        run: |
+          if [ ! -d "${{ env.TTMLIR_TOOLCHAIN_DIR }}/venv" ]; then
+            echo "ERROR: Toolchain not found at ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
+            echo "Cache hit: ${{ steps.cache-ttmlir-toolchain.outputs.cache-hit }}"
+            exit 1
+          fi
+          echo "✓ Toolchain verified at ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
+          ls -lh ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+          echo "Disk usage: " && df -h
 
       - name: Build Docker images
         id: build
