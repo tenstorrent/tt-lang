@@ -72,9 +72,9 @@ jobs:
       TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
       TT_MLIR_DIR: ${{ github.workspace }}/tt-mlir-install
 
-    # outputs:
-    #   docker-image: ${{ steps.build.outputs.docker-image }}
-    #   docker-image-base: ${{ steps.build.outputs.docker-image-base }}
+    outputs:
+      docker-image: ${{ steps.build.outputs.docker-image }}
+      docker-image-base: ${{ steps.build.outputs.docker-image-base }}
     steps:
       - name: Maximize space
         uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
@@ -131,48 +131,48 @@ jobs:
           cmake -B env/build env
           cmake --build env/build
 
-      # - name: Build Docker images
-      #   id: build
-      #   run: |
-      #     .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
+      - name: Build Docker images
+        id: build
+        run: |
+          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
 
-      #     # Extract image name from last line
-      #     DOCKER_IMAGE=$(tail -n 1 docker.log)
-      #     echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
+          # Extract image name from last line
+          DOCKER_IMAGE=$(tail -n 1 docker.log)
+          echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
 
-      #     # Create base variant
-      #     DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
-      #     echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
+          # Create base variant
+          DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
+          echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
 
-      #     echo "✓ Docker images built successfully"
+          echo "✓ Docker images built successfully"
 
-  # set-latest-tag:
-  #   needs: [check-if-docker-exist, build-image]
-  #   runs-on: ubuntu-latest
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure()
-  #   steps:
-  #     - name: Log in to GitHub Container Registry
-  #       uses: docker/login-action@v3
-  #       with:
-  #         registry: ghcr.io
-  #         username: ${{ github.repository_owner }}
-  #         password: ${{ github.token }}
+  set-latest-tag:
+    needs: [check-if-docker-exist, build-image]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure()
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
 
-  #     - name: Set latest tag
-  #       run: |
-  #         # Get the image name (from either check or build job)
-  #         DOCKER_IMAGE="${{ needs.check-if-docker-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
+      - name: Set latest tag
+        run: |
+          # Get the image name (from either check or build job)
+          DOCKER_IMAGE="${{ needs.check-if-docker-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
 
-  #         # Extract the tag from the full image name
-  #         TAG="${DOCKER_IMAGE##*:}"
+          # Extract the tag from the full image name
+          TAG="${DOCKER_IMAGE##*:}"
 
-  #         echo "Setting latest tag for Docker images with tag: $TAG"
+          echo "Setting latest tag for Docker images with tag: $TAG"
 
-  #         # Tag all image variants as latest
-  #         for IMAGE_SUFFIX in "-base" "-ci" "-ird" "-dist"; do
-  #           IMAGE_NAME="ghcr.io/tenstorrent/tt-lang/tt-lang${IMAGE_SUFFIX}-ubuntu-22-04"
-  #           echo "Tagging ${IMAGE_NAME}:${TAG} as latest"
-  #           skopeo copy "docker://${IMAGE_NAME}:${TAG}" "docker://${IMAGE_NAME}:latest"
-  #         done
+          # Tag all image variants as latest
+          for IMAGE_SUFFIX in "-base" "-ci" "-ird" "-dist"; do
+            IMAGE_NAME="ghcr.io/tenstorrent/tt-lang/tt-lang${IMAGE_SUFFIX}-ubuntu-22-04"
+            echo "Tagging ${IMAGE_NAME}:${TAG} as latest"
+            skopeo copy "docker://${IMAGE_NAME}:${TAG}" "docker://${IMAGE_NAME}:latest"
+          done
 
-  #         echo "✓ Latest tags set successfully"
+          echo "✓ Latest tags set successfully"
