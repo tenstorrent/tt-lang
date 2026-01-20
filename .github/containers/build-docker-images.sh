@@ -5,26 +5,21 @@
 # Build and optionally push tt-lang Docker images
 #
 # Usage:
-#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push] [--tt-mlir-dir DIR]
+#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push]
 #
 # Arguments:
 #   MLIR_SHA     - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
 #   --check-only - Only check if images exist, don't build
 #   --no-push    - Build locally but don't push to registry
-#   --tt-mlir-dir DIR - Path to pre-built tt-mlir installation (uses Dockerfile.ci)
 #
 # Must be run from the repository root directory
 
 set -e
 
-# Track if we created tt-mlir-install in build context
-TTMLIR_INSTALL_COPIED=false
-
 # Parse arguments
 MLIR_SHA=""
 CHECK_ONLY=false
 NO_PUSH=false
-TT_MLIR_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -35,10 +30,6 @@ while [[ $# -gt 0 ]]; do
         --no-push)
             NO_PUSH=true
             shift
-            ;;
-        --tt-mlir-dir)
-            TT_MLIR_DIR="$2"
-            shift 2
             ;;
         *)
             if [ -z "$MLIR_SHA" ]; then
@@ -110,9 +101,6 @@ build_image() {
     fi
 
     local build_args="--build-arg FROM_TAG=$DOCKER_TAG"
-    if [ -n "$TT_MLIR_DIR" ]; then
-        build_args="$build_args --build-arg TT_MLIR_DIR=$TT_MLIR_DIR"
-    fi
     if [ -n "$MLIR_TAG" ]; then
         build_args="$build_args --build-arg MLIR_TAG=$MLIR_TAG"
     fi
@@ -137,21 +125,8 @@ build_image() {
     echo ""
 }
 
-# If TT_MLIR_DIR is provided, copy it into build context for Docker
-if [ -n "$TT_MLIR_DIR" ]; then
-    if [ ! -d "$TT_MLIR_DIR" ]; then
-        echo "Error: TT_MLIR_DIR does not exist: $TT_MLIR_DIR"
-        exit 1
-    fi
-    # Copy tt-mlir installation into build context
-    echo "Copying tt-mlir installation from $TT_MLIR_DIR to build context..."
-    cp -r "$TT_MLIR_DIR" ./tt-mlir-install
-    DOCKERFILE=".github/containers/Dockerfile.ci"
-    # Update TT_MLIR_DIR to point to the copied location
-    TT_MLIR_DIR="./tt-mlir-install"
-else
-    DOCKERFILE=".github/containers/Dockerfile.local"
-fi
+# Always use the same Dockerfile (builds tt-mlir via FetchContent against pre-built toolchain)
+DOCKERFILE=".github/containers/Dockerfile"
 
 # Build images in dependency order
 build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
