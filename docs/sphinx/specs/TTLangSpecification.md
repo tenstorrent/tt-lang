@@ -524,7 +524,7 @@ a_cb = ttl.make_circular_buffer_like(A, shape = (g, 1))
 
 row_tiles = A.shape[0] // ttl.TILE_SHAPE[0]
 col_tiles = A.shape[1] // ttl.TILE_SHAPE[1]
-cols_per_core = math.ceil(col_tiles / (grid_size(dim = 1)))
+cols_per_core = math.ceil(col_tiles / (grid_size(dims = 1)))
 
 core_num = core(dims = 1)
 start_ct = core_num * cols_per_core
@@ -538,8 +538,9 @@ def dm():
             # ...
 
             # then copy from a tensor slice of matching shape:
+            row_slice = slice(rt * g, (rt + 1) * g) # explicit row slice
             a_xf = ttl.copy(
-                A[(rt * g):((rt + 1) * g), ct:ct + 1],
+                A[row_slice, ct:ct + 1], # in-line col slice
                 a_blk)
             a_xf.wait()
 ```
@@ -582,7 +583,7 @@ def dm():
 core_num = core(dims = 1)
 my_barrier = ttl.Semaphore()
 core_0_barrier = my_barrier.get_remote((0, 0))
-non_0_core_count = grid_size(dim = 1) - 1
+non_0_core_count = grid_size(dims = 1) - 1
 
 @ttl.datamovement()
 def dm():
