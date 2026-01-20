@@ -36,7 +36,7 @@ The framework provides four types of tests:
    - Provides class-based alternative to declarative tests
 
 3. Custom MLIR tests (`ops/test_fused.py`):
-   - Class-based tests using `FusedOpTestBase` (extends `E2ETestBase`)
+   - Class-based tests using `FusedOpTestBase` (extends `ME2ETestBase`)
    - Provides custom MLIR templates as strings for fused operations
    - Examples: exp(a+b), relu(a*b), sqrt(abs(a))
    - 5 separate test methods with `@pytest.mark.order()` decorators
@@ -370,7 +370,7 @@ builder.build_compute_custom(
 )
 ```
 
-### Building E2E Modules
+### Building ME2E Modules
 
 Use the high-level `build_e2e_module_mlir()` function:
 ```python
@@ -417,7 +417,7 @@ test/me2e/
 │   ├── test_binary.py       # Auto-generated binary op test classes
 │   ├── test_unary.py        # Auto-generated unary op test classes
 │   └── test_fused.py        # Custom fused operation tests
-├── base.py                  # E2ETestBase defining pipeline stages
+├── base.py                  # ME2ETestBase defining pipeline stages
 ├── runner.py                # Declarative test runner (executes full pipeline)
 ├── test_compute_ops.py      # Declarative parametrized tests (main test suite)
 ├── op_specs.py              # Operation specifications (auto-generated from .def file)

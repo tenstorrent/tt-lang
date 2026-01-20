@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Base class for thread builders in E2E tests.
+Base class for thread builders in ME2E tests.
 
 Provides common building blocks for constructing MLIR thread functions:
 - Type factories (tile, CB, tensor types)
@@ -247,7 +247,7 @@ class ThreadBuilder(ABC):
         i32_type = IntegerType.get_signless(32, self.ctx)
         if base_cta_index is None:
             # Calculate from CB count: num_inputs + num_outputs.
-            # For E2E tests, this is typically arity + 1 (inputs + 1 output).
+            # For ME2E tests, this is typically arity + 1 (inputs + 1 output).
             base_cta_index = getattr(self, "_total_cb_count", 3)
         fn.attributes["ttl.base_cta_index"] = IntegerAttr.get(i32_type, base_cta_index)
         fn.attributes["ttl.crta_indices"] = ArrayAttr.get(

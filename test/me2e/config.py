@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Configuration specifications for E2E tests.
+Configuration specifications for ME2E tests.
 
 Defines test configurations including tile shapes, data types,
 memory layouts, and buffering options.
@@ -34,7 +34,7 @@ class BufferType(Enum):
 
 @dataclass(frozen=True)
 class E2EConfig:
-    """Complete test configuration for E2E tests."""
+    """Complete test configuration for ME2E tests."""
 
     # Tile dimensions (fixed for Tenstorrent hardware).
     tile_h: int = 32

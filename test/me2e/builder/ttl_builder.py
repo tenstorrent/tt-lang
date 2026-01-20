@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-TTL MLIR module builder for E2E tests.
+TTL MLIR module builder for ME2E tests.
 
 Generates TTL modules using high-level ops (ttl.add, ttl.exp, etc.) that
 can be lowered through the compiler pipeline to executable kernels.
 
 Two modes:
 1. Compute-only: Just the compute function (for unit testing compiler passes).
-2. Full E2E: Reader, compute, and writer functions (for device execution).
+2. Full ME2E: Reader, compute, and writer functions (for device execution).
 """
 
 from typing import Callable, List
@@ -202,7 +202,7 @@ def build_e2e_module_mlir(
     config: E2EConfig,
 ) -> str:
     """
-    Build complete E2E MLIR module string with reader, compute, and writer threads.
+    Build complete ME2E MLIR module string with reader, compute, and writer threads.
 
     This generates a full module suitable for device execution. The generated MLIR
     uses high-level tensor operations (ttl.add, ttl.exp, etc.) that get lowered
@@ -232,7 +232,7 @@ def build_e2e_module_mlir(
     compute_mlir = _generate_compute_mlir(op_str, arity, config)
 
     # Combine into full module.
-    return f"""// Auto-generated E2E MLIR module for {op_str} operation.
+    return f"""// Auto-generated ME2E MLIR module for {op_str} operation.
 // Arity: {arity}, Grid: {config.grid_shape}, Dtype: {config.dtype}, Iterations: {config.num_tiles}
 
 {layout_attrs}
@@ -253,7 +253,7 @@ def build_e2e_module_mlir_custom(
     compute_fn: Callable[[List, "ComputeThreadBuilder"], List],
 ) -> str:
     """
-    Build E2E MLIR module with custom compute function.
+    Build ME2E MLIR module with custom compute function.
 
     Use this for fused operations like exp(a + b) or sqrt(abs(a)).
 
@@ -308,7 +308,7 @@ def build_e2e_module_mlir_custom(
     compute_mlir = "\n".join(lines)
 
     # Combine into full module.
-    return f"""// Auto-generated E2E MLIR module for {name} operation.
+    return f"""// Auto-generated ME2E MLIR module for {name} operation.
 // Arity: {arity}, Outputs: {num_outputs}, Grid: {config.grid_shape}, Dtype: {config.dtype}
 
 {layout_attrs}
@@ -327,7 +327,7 @@ def build_e2e_module(
     config: E2EConfig,
 ) -> Module:
     """
-    Build complete E2E TTL module with reader, compute, and writer threads.
+    Build complete ME2E TTL module with reader, compute, and writer threads.
 
     This generates a full module suitable for device execution.
 

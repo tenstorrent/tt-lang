@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Operation specifications for declarative E2E tests.
+Operation specifications for declarative ME2E tests.
 
 Defines ComputeOpSpec dataclass and COMPUTE_OPS registry for all elementwise operations.
 COMPUTE_OPS is auto-generated from TTLElementwiseOps.def to keep tests in sync with the dialect.
@@ -23,7 +23,7 @@ class ComputeOpSpec:
     Specification for a compute operation test.
 
     This dataclass encapsulates all information needed to test a single elementwise
-    operation in the declarative E2E test framework. It enables operations to be
+    operation in the declarative ME2E test framework. It enables operations to be
     specified as data rather than code, allowing automatic test generation through
     pytest parametrization.
 

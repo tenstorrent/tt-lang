@@ -22,7 +22,7 @@ import torch
 from torch import Tensor
 from ttmlir.ir import Context, Module
 
-from ..base import E2ETestBase
+from ..base import ME2ETestBase
 from ..config import E2EConfig
 from ..builder.dtype_utils import torch_dtype_to_mlir_str
 from ..builder.thread_builder import generate_layout_attrs
@@ -31,7 +31,7 @@ from ..builder.dm_builder import DMThreadBuilder
 import ttl.dialects.ttl as ttl
 
 
-class FusedOpTestBase(E2ETestBase):
+class FusedOpTestBase(ME2ETestBase):
     """
     Base class for custom fused operation tests.
 

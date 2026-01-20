@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Op test base classes for E2E tests.
+Op test base classes for ME2E tests.
 
 Provides class-based test infrastructure for elementwise operations.
 Test classes are auto-generated from TTLElementwiseOps.def.
@@ -19,7 +19,7 @@ import pytest
 import torch
 from torch import Tensor
 
-from ..base import E2ETestBase
+from ..base import ME2ETestBase
 from ..config import E2EConfig
 
 
@@ -82,7 +82,7 @@ def _parse_elementwise_ops_def() -> Dict[str, int]:
 ELEMENTWISE_OPS: Dict[str, int] = _parse_elementwise_ops_def()
 
 
-class OpTestBase(E2ETestBase):
+class OpTestBase(ME2ETestBase):
     """
     Base for auto-generated op tests.
 
@@ -133,7 +133,7 @@ class OpTestBase(E2ETestBase):
         input_range: Tuple[float, float],
         torch_op: Callable[..., Tensor],
     ) -> None:
-        """Build full E2E TTL module (reader, compute, writer) from OP_STR."""
+        """Build full ME2E TTL module (reader, compute, writer) from OP_STR."""
         from ..builder.ttl_builder import build_e2e_module_mlir
 
         # Generate random inputs.
@@ -149,7 +149,7 @@ class OpTestBase(E2ETestBase):
         else:
             golden = torch_op(torch_inputs[0], torch_inputs[1])
 
-        # Build full E2E module with reader, compute, and writer threads.
+        # Build full ME2E module with reader, compute, and writer threads.
         mlir_str = build_e2e_module_mlir(self.OP_STR, self.ARITY, config)
         assert mlir_str is not None
 

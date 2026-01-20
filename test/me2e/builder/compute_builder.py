@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Compute thread builder for E2E tests.
+Compute thread builder for ME2E tests.
 
 Provides builders for compute threads that execute elementwise operations
 on data in circular buffers. Uses Python MLIR bindings for type safety.

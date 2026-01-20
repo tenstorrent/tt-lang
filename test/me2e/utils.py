@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test utilities for E2E tests.
+Test utilities for ME2E tests.
 
 Provides exception types, comparison functions, and helper utilities.
 """

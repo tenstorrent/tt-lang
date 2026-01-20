@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Device architecture detection for E2E tests.
+Device architecture detection for ME2E tests.
 
 Provides logic for detecting device architecture from ttnn device objects.
 """

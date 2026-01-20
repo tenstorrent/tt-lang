@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Kernel specification and execution for E2E tests.
+Kernel specification and execution for ME2E tests.
 
 Supports N data movement (NOC) threads and single compute thread.
 Extracts tensor indices from compiled MLIR for proper argument building.

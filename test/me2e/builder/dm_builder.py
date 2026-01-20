@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Data movement thread builder for E2E tests.
+Data movement thread builder for ME2E tests.
 
 Provides builders for reader and writer threads that handle NOC data movement
 between DRAM and circular buffers. These are minimal wrappers around the

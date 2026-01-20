@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Dtype conversion utilities for E2E tests.
+Dtype conversion utilities for ME2E tests.
 
 Shared utilities for converting between torch dtypes and MLIR type strings.
 """

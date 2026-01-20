@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Pytest fixtures for E2E tests.
+Pytest fixtures for ME2E tests.
 
 Provides device management, skip conditions, and test metadata extraction.
 """

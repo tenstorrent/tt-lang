@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-MLIR pass pipeline execution for E2E tests.
+MLIR pass pipeline execution for ME2E tests.
 
 Provides compilation from TTL dialect to TTKernel dialect.
 """

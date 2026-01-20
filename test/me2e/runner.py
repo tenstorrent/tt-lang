@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Runner implementation for declarative E2E tests.
+Runner implementation for declarative ME2E tests.
 
 Provides run_compute_test function that executes compute operations using ttnn.generic_op.
 Follows the elementwise example pattern.
@@ -53,7 +53,7 @@ def get_compute_kernel(
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    # Build E2E TTL module.
+    # Build ME2E TTL module.
     e2e_config = config.to_e2e_config()
     module = build_e2e_module(op.name, op.arity, e2e_config)
 
@@ -110,7 +110,7 @@ def run_compute_test(
     # 2. Get or generate compute kernel.
     compute_cpp = get_compute_kernel(op, config, device)
 
-    # 3. Build full E2E module to get reader/writer kernels.
+    # 3. Build full ME2E module to get reader/writer kernels.
     # We need the full module to extract all kernels (reader, compute, writer).
     module = build_e2e_module(op.name, op.arity, e2e_config)
     compiled_module = compile_ttl_to_ttkernel(module, device)

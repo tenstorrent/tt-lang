@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Base classes for E2E tests.
+Base classes for ME2E tests.
 
-Provides E2ETestBase with ordered pipeline stages:
+Provides ME2ETestBase with ordered pipeline stages:
 1. Build MLIR module (with reader, compute, writer threads)
 2. Compile TTL → TTKernel
 3. Translate TTKernel → C++
@@ -19,9 +19,9 @@ import pytest
 import torch
 
 
-class E2ETestBase:
+class ME2ETestBase:
     """
-    Base class for all E2E tests.
+    Base class for all ME2E tests.
 
     Defines ordered pipeline stages. Subclasses override test_build_module()
     and optionally other test methods.

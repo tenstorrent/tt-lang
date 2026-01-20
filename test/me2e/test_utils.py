@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Unit tests for E2E test utilities.
+Unit tests for ME2E test utilities.
 
 Tests ULP computation and comparison functions without requiring hardware.
 """

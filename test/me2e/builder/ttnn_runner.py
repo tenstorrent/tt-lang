@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-TTNN runner for E2E tests.
+TTNN runner for ME2E tests.
 
 Runs compiled kernels on Tenstorrent devices using ttnn.generic_op.
 Uses the shared kernel_runner module to build kernel descriptors and execute kernels.

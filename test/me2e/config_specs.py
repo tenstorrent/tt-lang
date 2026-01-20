@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Configuration specifications for declarative E2E tests.
+Configuration specifications for declarative ME2E tests.
 
 Defines TestConfig dataclass and CONFIGS registry for test configurations.
 This enables declarative testing where configurations are specified as data.
@@ -19,10 +19,10 @@ from .config import E2EConfig, MemoryLayout
 @dataclass(frozen=True)
 class TestConfig:
     """
-    Complete test configuration for declarative E2E tests.
+    Complete test configuration for declarative ME2E tests.
 
     This dataclass encapsulates all configuration parameters needed to run a test
-    case in the declarative E2E test framework. It enables test configurations to
+    case in the declarative ME2E test framework. It enables test configurations to
     be specified as data rather than code, allowing automatic test generation
     through pytest parametrization.
 
