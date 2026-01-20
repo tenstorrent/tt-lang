@@ -18,22 +18,21 @@ SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
+# Copy pre-built tt-mlir toolchain from host
+COPY ttmlir-toolchain $TTMLIR_TOOLCHAIN_DIR
+
 ADD . /home/build/tt-lang
 WORKDIR /home/build/tt-lang
 
 # Show commit info for traceability
 RUN git log -1 || echo "Git info not available"
 
-# Build tt-lang using FetchContent (builds tt-mlir from pinned commit)
-# Install tt-mlir directly to /opt/ttmlir-toolchain
-RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
-    cmake -G Ninja -B build \
+# Build tt-lang using pre-built tt-mlir toolchain
+RUN cmake -G Ninja -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER=clang++-17 \
     -DCMAKE_C_COMPILER=clang-17 \
-    -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-    -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
-    -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
+    -DTTMLIR_DIR=$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir \
     -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
 # Build and install tt-lang to toolchain

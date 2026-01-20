@@ -70,9 +70,13 @@ jobs:
     needs: check-if-docker-exist
     if: needs.check-if-docker-exist.outputs.docker-image == ''
     runs-on: test1-large-runner-lang
-    outputs:
-      docker-image: ${{ steps.build.outputs.docker-image }}
-      docker-image-base: ${{ steps.build.outputs.docker-image-base }}
+
+    env:
+      TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
+
+    # outputs:
+    #   docker-image: ${{ steps.build.outputs.docker-image }}
+    #   docker-image-base: ${{ steps.build.outputs.docker-image-base }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,48 +101,78 @@ jobs:
             echo "commit=$COMMIT" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build Docker images
-        id: build
-        run: |
-          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
-
-          # Extract image name from last line
-          DOCKER_IMAGE=$(tail -n 1 docker.log)
-          echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
-
-          # Create base variant
-          DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
-          echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
-
-          echo "✓ Docker images built successfully"
-
-  set-latest-tag:
-    needs: [check-if-docker-exist, build-image]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure()
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Checkout tt-mlir
+        uses: actions/checkout@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
+          repository: tenstorrent/tt-mlir
+          ref: ${{ steps.mlir-commit.outputs.commit }}
+          path: tt-mlir
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Set latest tag
+      - name: Restore tt-mlir toolchain from cache
+        id: cache-toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+          key: ${{ runner.os }}-ttmlir-toolchain-${{ steps.mlir-commit.outputs.commit }}
+
+      - name: Build tt-mlir toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        working-directory: tt-mlir
         run: |
-          # Get the image name (from either check or build job)
-          DOCKER_IMAGE="${{ needs.check-if-docker-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
+          cmake -B env/build env
+          cmake --build env/build
 
-          # Extract the tag from the full image name
-          TAG="${DOCKER_IMAGE##*:}"
+      - name: Save tt-mlir toolchain to cache
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+          key: ${{ runner.os }}-ttmlir-toolchain-${{ steps.mlir-commit.outputs.commit }}
 
-          echo "Setting latest tag for Docker images with tag: $TAG"
+      # - name: Build Docker images
+      #   id: build
+      #   run: |
+      #     .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
 
-          # Tag all image variants as latest
-          for IMAGE_SUFFIX in "-base" "-ci" "-ird" "-dist"; do
-            IMAGE_NAME="ghcr.io/tenstorrent/tt-lang/tt-lang${IMAGE_SUFFIX}-ubuntu-22-04"
-            echo "Tagging ${IMAGE_NAME}:${TAG} as latest"
-            skopeo copy "docker://${IMAGE_NAME}:${TAG}" "docker://${IMAGE_NAME}:latest"
-          done
+      #     # Extract image name from last line
+      #     DOCKER_IMAGE=$(tail -n 1 docker.log)
+      #     echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
 
-          echo "✓ Latest tags set successfully"
+      #     # Create base variant
+      #     DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
+      #     echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
+
+      #     echo "✓ Docker images built successfully"
+
+  # set-latest-tag:
+  #   needs: [check-if-docker-exist, build-image]
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure()
+  #   steps:
+  #     - name: Log in to GitHub Container Registry
+  #       uses: docker/login-action@v3
+  #       with:
+  #         registry: ghcr.io
+  #         username: ${{ github.repository_owner }}
+  #         password: ${{ github.token }}
+
+  #     - name: Set latest tag
+  #       run: |
+  #         # Get the image name (from either check or build job)
+  #         DOCKER_IMAGE="${{ needs.check-if-docker-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
+
+  #         # Extract the tag from the full image name
+  #         TAG="${DOCKER_IMAGE##*:}"
+
+  #         echo "Setting latest tag for Docker images with tag: $TAG"
+
+  #         # Tag all image variants as latest
+  #         for IMAGE_SUFFIX in "-base" "-ci" "-ird" "-dist"; do
+  #           IMAGE_NAME="ghcr.io/tenstorrent/tt-lang/tt-lang${IMAGE_SUFFIX}-ubuntu-22-04"
+  #           echo "Tagging ${IMAGE_NAME}:${TAG} as latest"
+  #           skopeo copy "docker://${IMAGE_NAME}:${TAG}" "docker://${IMAGE_NAME}:latest"
+  #         done
+
+  #         echo "✓ Latest tags set successfully"
