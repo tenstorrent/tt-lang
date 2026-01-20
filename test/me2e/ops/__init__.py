@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, cast
 
 import pytest
 import torch
@@ -186,23 +186,38 @@ def generate_op_test_classes() -> Dict[str, Type[OpTestBase]]:
     """
     Auto-generate test classes from TTLElementwiseOps.def.
 
+    For each operation, creates test classes for each dtype (bfloat16, float32).
+
     Returns:
-        Dict mapping class name (e.g., "TestAdd") to the generated class.
+        Dict mapping class name (e.g., "TestAddBfloat16", "TestAddFloat32") to the generated class.
     """
     generated: Dict[str, Type[OpTestBase]] = {}
+
+    # Test dtypes.
+    test_dtypes = [
+        (torch.bfloat16, "Bfloat16"),
+        (torch.float32, "Float32"),
+    ]
 
     for op_name, arity in ELEMENTWISE_OPS.items():
         # Determine base class from arity.
         base: Type[OpTestBase] = UnaryOpTestBase if arity == 1 else BinaryOpTestBase
 
-        # Build class attributes.
-        attrs: Dict[str, Any] = {"OP_STR": op_name}
-        if op_name in OP_INPUT_RANGES:
-            attrs["INPUT_RANGE"] = OP_INPUT_RANGES[op_name]
+        # Generate a test class for each dtype.
+        for dtype, dtype_suffix in test_dtypes:
+            # Build class attributes.
+            attrs: Dict[str, Any] = {
+                "OP_STR": op_name,
+                "INPUT_DTYPE": dtype,
+            }
+            if op_name in OP_INPUT_RANGES:
+                attrs["INPUT_RANGE"] = OP_INPUT_RANGES[op_name]
 
-        # Create class dynamically.
-        class_name = f"Test{op_name.capitalize()}"
-        generated[class_name] = type(class_name, (base,), attrs)  # type: ignore[assignment]
+            # Create class dynamically with dtype suffix.
+            class_name = f"Test{op_name.capitalize()}{dtype_suffix}"
+            test_class = type(class_name, (base,), attrs)
+
+            generated[class_name] = cast(Type[OpTestBase], test_class)
 
     return generated
 

@@ -12,7 +12,7 @@ can be built correctly for each operation.
 import pytest
 import torch
 
-from ..config import E2EConfig
+from ..config import DTYPE_TO_MLIR, E2EConfig, get_dtype_ids, get_test_dtypes
 from ..builder.ttl_builder import build_ttl_module
 
 
@@ -20,9 +20,10 @@ class TestMLIRGeneration:
     """Test MLIR module generation for ops."""
 
     @pytest.mark.parametrize("op_name", ["add", "sub", "mul"])
-    def test_binary_ops(self, op_name):
+    @pytest.mark.parametrize("dtype", get_test_dtypes(), ids=get_dtype_ids())
+    def test_binary_ops(self, op_name, dtype):
         """Test binary op MLIR generation."""
-        config = E2EConfig(grid_shape=(1, 1), dtype=torch.bfloat16)
+        config = E2EConfig(grid_shape=(1, 1), dtype=dtype)
         inputs = [torch.rand(config.tensor_shape, dtype=config.dtype) for _ in range(2)]
 
         module = build_ttl_module(op_name, 2, config, inputs)
@@ -38,11 +39,14 @@ class TestMLIRGeneration:
         # Verify two inputs.
         assert "%arg0" in mlir_str
         assert "%arg1" in mlir_str
+        # Verify dtype appears in tile type.
+        assert f"tile<32x32, {DTYPE_TO_MLIR[dtype]}>" in mlir_str
 
     @pytest.mark.parametrize("op_name", ["exp", "sqrt", "neg"])
-    def test_unary_ops(self, op_name):
+    @pytest.mark.parametrize("dtype", get_test_dtypes(), ids=get_dtype_ids())
+    def test_unary_ops(self, op_name, dtype):
         """Test unary op MLIR generation."""
-        config = E2EConfig(grid_shape=(1, 1), dtype=torch.bfloat16)
+        config = E2EConfig(grid_shape=(1, 1), dtype=dtype)
         inputs = [torch.rand(config.tensor_shape, dtype=config.dtype)]
 
         module = build_ttl_module(op_name, 1, config, inputs)
@@ -57,6 +61,8 @@ class TestMLIRGeneration:
         assert "ttl.attach_cb" in mlir_str
         # Verify one input.
         assert "%arg0" in mlir_str
+        # Verify dtype appears in tile type.
+        assert f"tile<32x32, {DTYPE_TO_MLIR[dtype]}>" in mlir_str
 
     def test_different_grid_shapes(self):
         """Test different grid shapes."""
@@ -75,11 +81,7 @@ class TestMLIRGeneration:
 
     def test_different_dtypes(self):
         """Test different data types."""
-        dtype_to_mlir = {
-            torch.bfloat16: "bf16",
-            torch.float32: "f32",
-        }
-        for dtype, mlir_dtype in dtype_to_mlir.items():
+        for dtype, mlir_dtype in DTYPE_TO_MLIR.items():
             config = E2EConfig(grid_shape=(1, 1), dtype=dtype)
             inputs = [torch.rand(config.tensor_shape, dtype=dtype) for _ in range(2)]
 

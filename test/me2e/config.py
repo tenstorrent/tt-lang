@@ -71,3 +71,22 @@ class E2EConfig:
 
 # Minimal configuration for quick smoke tests.
 SMOKE_CONFIGS = [E2EConfig(grid_shape=(1, 1))]
+
+# Standard dtypes for testing.
+TEST_DTYPES = [torch.bfloat16, torch.float32]
+
+# Mapping from torch dtype to MLIR dtype string.
+DTYPE_TO_MLIR = {
+    torch.bfloat16: "bf16",
+    torch.float32: "f32",
+}
+
+
+def get_test_dtypes():
+    """Get list of dtypes for pytest parametrization."""
+    return list(DTYPE_TO_MLIR.keys())
+
+
+def get_dtype_ids():
+    """Get list of dtype IDs for pytest parametrization."""
+    return [str(dt).split(".")[-1] for dt in DTYPE_TO_MLIR.keys()]

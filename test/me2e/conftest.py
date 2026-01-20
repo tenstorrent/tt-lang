@@ -49,6 +49,35 @@ def pytest_addoption(parser):
     )
 
 
+def _normalize_nodeid_to_test_me2e_format(file_path: str) -> str | None:
+    """
+    Normalize a pytest nodeid file path to test.me2e.* format.
+
+    Args:
+        file_path: File path from pytest nodeid (e.g., "ops/test_binary.py",
+                   "test_compute_ops.py", "test/me2e/test_compute_ops.py").
+
+    Returns:
+        Normalized module path in test.me2e.* format, or None if normalization fails.
+    """
+    if file_path.startswith("ops/"):
+        # Relative: ops/test_binary.py -> test.me2e.ops.test_binary
+        return "test.me2e." + file_path.replace("/", ".").replace(".py", "")
+    elif file_path.startswith("test/me2e/"):
+        # Absolute: test/me2e/test_compute_ops.py -> test.me2e.test_compute_ops
+        return file_path.replace("/", ".").replace(".py", "")
+    elif file_path.startswith("me2e/"):
+        # Partial: me2e/test_compute_ops.py -> test.me2e.test_compute_ops
+        return "test." + file_path.replace("/", ".").replace(".py", "")
+    elif "/" not in file_path and file_path.endswith(".py"):
+        # No directory prefix: test_compute_ops.py -> test.me2e.test_compute_ops
+        # Assume it's in test/me2e directory when run from there.
+        return "test.me2e." + file_path.replace(".py", "")
+    else:
+        # Cannot normalize to test.me2e.* format.
+        return None
+
+
 def pytest_collection_modifyitems(config, items):
     """
     Modify test collection based on platform.
@@ -57,12 +86,19 @@ def pytest_collection_modifyitems(config, items):
     - Skipping tests if ttnn unavailable
     - skip_target marker processing
     - only_target marker processing
+    - Marking tests from XFAILS list as xfail
     """
     if not TTNN_AVAILABLE:
         skip_ttnn = pytest.mark.skip(reason="ttnn not available")
         for item in items:
             item.add_marker(skip_ttnn)
         return
+
+    # Import XFAILS dictionary.
+    try:
+        from .ops.XFAILS import XFAIL_TESTS as xfail_dict
+    except ImportError:
+        xfail_dict = {}
 
     # Check for hardware availability.
     hardware_available = is_hardware_available()
@@ -82,6 +118,28 @@ def pytest_collection_modifyitems(config, items):
         for marker in item.iter_markers(name="only_target"):
             # Would need device to detect system type - skip for now
             pass
+
+        # Mark tests from XFAILS list as xfail.
+        # Convert item.nodeid to test.me2e.* format and match against XFAILS dictionary.
+        # XFAILS format: "test.me2e.ops.test_binary::TestAddFloat32::test_validate_golden"
+        nodeid_parts = item.nodeid.split("::")
+        if len(nodeid_parts) >= 2 and xfail_dict:
+            file_path = nodeid_parts[0]
+            test_suffix = "::".join(nodeid_parts[1:])
+
+            # Normalize file path to test.me2e.* format.
+            module_path = _normalize_nodeid_to_test_me2e_format(file_path)
+            if module_path is None:
+                # Skip if we can't normalize to test.me2e.* format.
+                continue
+
+            # Build identifier in test.me2e.* format.
+            test_identifier = "::".join([module_path, test_suffix])
+
+            # Match against XFAILS dictionary.
+            xfail_reason = xfail_dict.get(test_identifier)
+            if xfail_reason:
+                item.add_marker(pytest.mark.xfail(reason=xfail_reason, strict=False))
 
 
 @pytest.fixture
