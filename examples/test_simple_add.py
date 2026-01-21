@@ -50,9 +50,6 @@ def simple_add(lhs, rhs, out):
         tx = dma(rhs_accessor[0, 0], rhs_shard)
         tx.wait()
 
-    return Program(add_compute, dm_lhs, dm_rhs)(lhs, rhs, out)
-
-
 if __name__ == "__main__":
     print("=" * 60)
     print("Simple Add Test - Data Writeback Verification")

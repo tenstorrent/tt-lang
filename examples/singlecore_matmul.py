@@ -68,9 +68,6 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
                     out_wr = ttl.copy(out_blk, out[m, n])
                     out_wr.wait()
 
-    # Execute the program
-
-
 def main() -> None:
     # Test with reasonably sized matrices that are multiples of tile size
     M, K, N = 128, 256, 64
