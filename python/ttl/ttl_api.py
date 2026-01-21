@@ -666,6 +666,8 @@ def _compile_kernel(
     memory_space: str,
     tiled: bool,
     program_hash: int,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -681,6 +683,8 @@ def _compile_kernel(
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
         program_hash: Hash for tt-metal program cache
+        fp32_dest_acc_en: Optional override for fp32_dest_acc_en
+        dst_full_sync_en: Optional override for dst_full_sync_en
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -822,9 +826,26 @@ def _compile_kernel(
         verify = True
 
         # fmt: off
+        set_compute_config_pass = "func.func(ttl-set-compute-kernel-config)"
+        config_options = []
+        if fp32_dest_acc_en is not None:
+            config_options.append(
+                f"fp32-dest-acc-en={1 if fp32_dest_acc_en else 0}"
+            )
+        if dst_full_sync_en is not None:
+            config_options.append(
+                f"dst-full-sync-en={1 if dst_full_sync_en else 0}"
+            )
+        if config_options:
+            set_compute_config_pass = (
+                "func.func(ttl-set-compute-kernel-config{"
+                + " ".join(config_options)
+                + "})"
+            )
+
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
-            "func.func(ttl-set-compute-kernel-config)",
+            set_compute_config_pass,
             "func.func(ttl-assign-dst)",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
@@ -911,6 +932,8 @@ def pykernel_gen(
     num_outs: int = 1,
     memory_space: str = "L1",
     tiled: bool = True,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -926,6 +949,8 @@ def pykernel_gen(
         num_outs: Number of output arguments
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
+        fp32_dest_acc_en: Optional override for fp32_dest_acc_en
+        dst_full_sync_en: Optional override for dst_full_sync_en
 
     Returns:
         Decorated function that compiles and executes the kernel

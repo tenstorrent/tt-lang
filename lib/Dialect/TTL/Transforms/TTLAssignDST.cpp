@@ -73,10 +73,6 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 /// Compute DST capacity based on operation types and device config.
-/// TODO: Add device configuration attributes to TTL dialect operations to
-/// propagate fp32_dest_acc_en and dst_full_sync_en settings from runtime.
-/// SystemDescAttr, when present, provides dst_physical_size_tiles and is used
-/// to compute the logical capacity.
 /// TODO: Handle mixed dtypes - if compute block has both f32 and bf16 tile
 /// arguments, should we use f32 capacity (4 tiles, safer) or error? Consider
 /// emitting warning for mixed dtypes since f32 config reduces available DST
