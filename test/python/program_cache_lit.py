@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
+# REQUIRES: tt-device
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
