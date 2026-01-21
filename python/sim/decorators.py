@@ -9,9 +9,29 @@ operations within the simulation framework.
 """
 
 from types import FunctionType
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
 from .program import BindableTemplate, rebind_func_with_ctx
+
+# Thread registry for automatic collection of @compute and @datamovement threads
+_thread_registry: List[BindableTemplate] = []
+
+
+def _register_thread(thread_template: BindableTemplate) -> None:
+    """Register a thread template during decoration."""
+    _thread_registry.append(thread_template)
+
+
+def _clear_thread_registry() -> None:
+    """Clear the thread registry before kernel execution."""
+    _thread_registry.clear()
+
+
+def _get_registered_threads() -> List[BindableTemplate]:
+    """Get all registered threads and clear the registry."""
+    threads = list(_thread_registry)
+    _thread_registry.clear()
+    return threads
 
 
 def compute() -> Callable[[FunctionType], BindableTemplate]:
@@ -41,7 +61,9 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
                 runner.__wrapped__ = func  # type: ignore[reportFunctionMemberAccess]
                 return runner
 
-        return ComputeTemplate()
+        template = ComputeTemplate()
+        _register_thread(template)
+        return template
 
     return decorator
 
@@ -72,6 +94,8 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
                 runner.__wrapped__ = func  # type: ignore[reportFunctionMemberAccess]
                 return runner
 
-        return DMTemplate()
+        template = DMTemplate()
+        _register_thread(template)
+        return template
 
     return decorator

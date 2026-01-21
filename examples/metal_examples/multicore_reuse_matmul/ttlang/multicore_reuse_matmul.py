@@ -103,8 +103,6 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
                 )
                 out_wr.wait()
 
-    return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
-
 
 @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 def test_multicore_reuse_matmul_tt_lang(M, K, N):
@@ -182,5 +180,3 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                     out[out_row, out_col],
                 )
                 out_wr.wait()
-
-    return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
