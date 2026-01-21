@@ -139,7 +139,6 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
                 out_wr.wait()
 
     # Execute the program
-    ttl.Program(mm_compute, mm_reader, mm_writer)(a, b, out)
 
 
 def main() -> None:

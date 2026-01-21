@@ -95,8 +95,6 @@ def fused_chain_kernel(a, b, c, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(a, b, c, out)
-
 
 # =============================================================================
 # Initial IR Checks - Verify fused TTL ops

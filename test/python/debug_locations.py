@@ -55,8 +55,6 @@ def debug_loc_kernel(lhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_thread, dm_read, dm_write)(lhs, out)
-
 
 # Verify function definitions exist
 # CHECK: func.func @compute_thread

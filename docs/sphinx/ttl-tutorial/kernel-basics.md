@@ -2,7 +2,7 @@
 
 ## Kernel Function
 
-A kernel function is a Python function decorated with `@ttl.kernel()`. It constructs a `ttl.Program` object by passing up to three thread functions and returns a callable that accepts TT-NN tensors.
+A kernel function is a Python function decorated with `@ttl.kernel()`. Thread functions defined inside are automatically collected and compiled into a program.
 
 ```python
 @ttl.kernel()
@@ -18,8 +18,6 @@ def foo(x: ttnn.Tensor, y: ttnn.Tensor) -> None:
     @ttl.datamovement()
     def some_dm1():
         # more data movement logic
-
-    return ttl.Program(some_compute, some_dm0, some_dm1)(x, y)
 
 # Usage
 shape = ttnn.Shape([128, 128])

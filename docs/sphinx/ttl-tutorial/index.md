@@ -8,7 +8,7 @@ TT-Lang provides an expressive middle ground between TT-NN's high-level operatio
 
 ## Key Concepts
 
-- **Kernel function**: Python function decorated with `@ttl.kernel()` that constructs a `ttl.Program`.
+- **Kernel function**: Python function decorated with `@ttl.kernel()` that defines thread functions.
 - **Thread functions**: Decorated with `@ttl.compute()` or `@ttl.datamovement()`, these define compute and data movement logic.
 - **Circular buffers**: Communication primitives for passing data between threads within a core.
 - **Blocks**: Memory acquired from circular buffers, used in compute expressions or copy operations.

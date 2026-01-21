@@ -55,8 +55,6 @@ def multicore_add(lhs, rhs, out):
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # =============================================================================
 # Initial IR Checks - TTL dialect ops with core_x/core_y

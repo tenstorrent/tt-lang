@@ -69,7 +69,6 @@ def tile_loop_kernel(inp, bias, out):
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 FUSED_KERNEL_TEMPLATE = '''
@@ -109,7 +108,6 @@ def fused_kernel(inp, bias, out):
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 _add_kernel_cache = {}
