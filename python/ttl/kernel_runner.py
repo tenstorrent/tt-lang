@@ -190,6 +190,7 @@ def run_kernel_on_device(
     tensors: List[Any],
     cb_configs: List[Any],
     core_ranges: Any,
+    program_hash: int = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -206,6 +207,7 @@ def run_kernel_on_device(
             Includes both tensor-backed CBs and intermediate CBs. Each CB has shape,
             buffer_factor, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
+        program_hash: Hash for tt-metal program cache (not yet used).
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -240,10 +242,14 @@ def run_kernel_on_device(
     )
 
     # Build and execute program.
+    # TODO: Enable custom_program_hash once tt-metal exposes it in Python bindings.
+    # See tt-metal/ttnn/cpp/ttnn-nanobind/program_descriptors.cpp - needs to add
+    # custom_program_hash parameter to ProgramDescriptor binding.
     program = ttnn.ProgramDescriptor(
         kernels=kernel_descriptors,
         cbs=cb_descriptors,
         semaphores=[],
+        # custom_program_hash=program_hash,
     )
 
     return ttnn.generic_op(list(tensors), program)
