@@ -12,11 +12,7 @@ Simple add kernel with float32 data type.
 Tests that float32 tensors are properly handled through the layout derivation
 path (TTNNLayoutAttr -> page size calculation).
 """
-
 import os
-
-# Note: Not setting TTLANG_COMPILE_ONLY so kernel actually executes
-
 import ttl
 
 try:
@@ -26,7 +22,11 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1), fp32_dest_acc_en=True, dst_full_sync_en=False)
+@ttl.kernel(
+    grid=(1, 1),
+    fp32_dest_acc_en=True,
+    dst_full_sync_en=False,
+)
 def add_kernel_f32(lhs, rhs, out):
     lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
@@ -77,7 +77,7 @@ def add_kernel_f32(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from utils import assert_with_ulp
+    from ttlang_test_utils import assert_with_ulp
 
     print("=== Float32 Add Kernel Test ===")
 
@@ -130,9 +130,8 @@ if __name__ == "__main__":
         print(f"Result sample:  {result[0, :5]}")
         print(f"Expected:       {expected[0, :5]}")
 
-        expected = expected.to(result.dtype)
-        assert_with_ulp(result, expected, ulp_threshold=10)
-        print("✓ Results match expected values (ulp_threshold=10)")
+        assert_with_ulp(expected, result)
+        print("✓ Results match expected values (default ULP threshold)")
 
         print("=== Float32 Add Kernel Test Complete ===")
 

@@ -264,6 +264,57 @@ def assert_allclose(actual, expected, rtol=1e-5, atol=1e-8, verbose=True):
         raise AssertionError(msg)
 
 
+def assert_with_ulp(actual, expected, ulp_threshold=None, allow_nonfinite=False):
+    """Assert tensors are similar within a given ULP distance.
+
+    Defaults follow tt-metal tests/ttnn/utils_for_testing.py. Note that there
+    the maximum meaningful ULP thresholds are much higher than typical floating
+    point precision, due to the nature of TT hardware computations.
+    maximum_meaningful_ulp_thresholds = {
+        torch.float64: 2**52,
+        torch.float32: 2**23,
+        torch.float16: 2**10,
+        torch.bfloat16: 2**7,
+    }
+    """
+    import torch
+    from utils import assert_with_ulp as utils_assert_with_ulp
+
+    try:
+        import ttnn
+    except (ModuleNotFoundError, ImportError):
+        ttnn = None
+
+    def to_torch_tensor(value):
+        if ttnn is not None and isinstance(value, ttnn.Tensor):
+            return ttnn.to_torch(value)
+        return value
+
+    expected_t = to_torch_tensor(expected)
+    actual_t = to_torch_tensor(actual)
+
+    if ulp_threshold is None:
+        default_thresholds = {
+            torch.float32: 2**14,
+            torch.float16: 2**8,
+            torch.bfloat16: 2**4,
+        }
+        if expected_t.dtype in default_thresholds:
+            ulp_threshold = default_thresholds[expected_t.dtype]
+        else:
+            raise ValueError(
+                f"No default ULP threshold for dtype {expected_t.dtype}. "
+                f"Please specify ulp_threshold explicitly."
+            )
+
+    return utils_assert_with_ulp(
+        expected_t,
+        actual_t,
+        ulp_threshold=ulp_threshold,
+        allow_nonfinite=allow_nonfinite,
+    )
+
+
 __all__ = [
     "is_ttnn_available",
     "is_hardware_available",
@@ -273,4 +324,5 @@ __all__ = [
     "to_l1",
     "assert_pcc",
     "assert_allclose",
+    "assert_with_ulp",
 ]

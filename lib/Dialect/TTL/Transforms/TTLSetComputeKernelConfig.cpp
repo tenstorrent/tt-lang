@@ -47,8 +47,8 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
 struct TTLSetComputeKernelConfigPass
     : public impl::TTLSetComputeKernelConfigBase<
           TTLSetComputeKernelConfigPass> {
-  using Base = impl::TTLSetComputeKernelConfigBase<
-      TTLSetComputeKernelConfigPass>;
+  using Base =
+      impl::TTLSetComputeKernelConfigBase<TTLSetComputeKernelConfigPass>;
   using Base::Base;
 
   void runOnOperation() override {

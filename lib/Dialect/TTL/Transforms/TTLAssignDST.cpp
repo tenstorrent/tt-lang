@@ -120,11 +120,9 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (auto moduleOp = computeOp->getParentOfType<mlir::ModuleOp>()) {
-    bool hasSystemDesc =
-        moduleOp->hasAttr(ttcore::SystemDescAttr::name);
-    bool hasDevice =
-        static_cast<bool>(moduleOp.lookupSymbol<ttcore::DeviceOp>(
-            ttcore::getDefaultDeviceName()));
+    bool hasSystemDesc = moduleOp->hasAttr(ttcore::SystemDescAttr::name);
+    bool hasDevice = static_cast<bool>(moduleOp.lookupSymbol<ttcore::DeviceOp>(
+        ttcore::getDefaultDeviceName()));
     if (hasSystemDesc && hasDevice) {
       auto chipDesc = ttcore::getOpChipDescAttr(computeOp);
       return chipDesc.getDstLogicalSizeTiles(elementType, fullSyncEn);

@@ -8,7 +8,7 @@
 """
 Precision tests for f32 computation.
 
-Tests stricter f32 validation with tighter tolerances to verify true f32 
+Tests stricter f32 validation with tighter tolerances to verify true f32
 precision is used (not bf16 approximation). Uses precision-sensitive operations
 like exp() and reciprocal to amplify differences between f32 and bf16.
 """
@@ -90,18 +90,20 @@ def mul_kernel_f32(lhs, rhs, out):
 def test_exp_f32_precision():
     """Test exp() with tighter tolerance to verify f32 precision."""
     print("\n=== Testing exp() with f32 precision ===")
-    
+
     device = ttnn.open_device(device_id=0)
 
     try:
         # exp() is precision-sensitive: small input differences lead to larger output differences
         # This helps distinguish f32 from bf16 precision
         torch.manual_seed(42)
-        
+
         # Use small values to keep exp() in reasonable range
-        lhs_torch = torch.linspace(0.1, 2.0, 32 * 32, dtype=torch.float32).reshape(32, 32)
+        lhs_torch = torch.linspace(0.1, 2.0, 32 * 32, dtype=torch.float32).reshape(
+            32, 32
+        )
         out_torch = torch.zeros((32, 32), dtype=torch.float32)
-        
+
         # Compute expected result with torch (full float32 precision)
         expected = torch.exp(lhs_torch)
 
@@ -128,11 +130,11 @@ def test_exp_f32_precision():
 
         # Validate result with tighter tolerance
         result = ttnn.to_torch(out)
-        
+
         print(f"Input sample:    {lhs_torch[0, :5]}")
         print(f"Result sample:   {result[0, :5]}")
         print(f"Expected sample: {expected[0, :5]}")
-        
+
         # Tighter tolerances for f32 (vs loose 1e-2 for bf16)
         # rtol=1e-4, atol=1e-5 should pass for f32 but fail for bf16
         if torch.allclose(result, expected, rtol=1e-4, atol=1e-5):
@@ -146,7 +148,9 @@ def test_exp_f32_precision():
             print(f"  Mean difference: {mean_diff}")
             # Try looser tolerance to see if it's just f32 vs bf16
             if torch.allclose(result, expected, rtol=1e-2, atol=1e-2):
-                print(f"  Note: Passes with loose tolerance (rtol=1e-2) - may indicate bf16 precision used")
+                print(
+                    f"  Note: Passes with loose tolerance (rtol=1e-2) - may indicate bf16 precision used"
+                )
             return False
 
     finally:
@@ -156,7 +160,7 @@ def test_exp_f32_precision():
 def test_mul_f32_dst_capacity():
     """Test multiplication to verify f32 DST capacity (4 tiles) doesn't overflow."""
     print("\n=== Testing mul with f32 DST capacity ===")
-    
+
     device = ttnn.open_device(device_id=0)
 
     try:
@@ -164,7 +168,7 @@ def test_mul_f32_dst_capacity():
         lhs_torch = torch.rand((32, 32), dtype=torch.float32) * 2.0  # [0, 2)
         rhs_torch = torch.rand((32, 32), dtype=torch.float32) * 2.0
         out_torch = torch.zeros((32, 32), dtype=torch.float32)
-        
+
         expected = lhs_torch * rhs_torch
 
         lhs = ttnn.from_torch(
@@ -197,12 +201,12 @@ def test_mul_f32_dst_capacity():
         mul_kernel_f32(lhs, rhs, out)
 
         result = ttnn.to_torch(out)
-        
+
         print(f"Input A sample:  {lhs_torch[0, :5]}")
         print(f"Input B sample:  {rhs_torch[0, :5]}")
         print(f"Result sample:   {result[0, :5]}")
         print(f"Expected sample: {expected[0, :5]}")
-        
+
         # Tighter tolerance for mul
         if torch.allclose(result, expected, rtol=1e-5, atol=1e-5):
             print("✓ mul() results match expected f32 values (tight tolerance)")
@@ -225,7 +229,7 @@ if __name__ == "__main__":
     try:
         exp_passed = test_exp_f32_precision()
         mul_passed = test_mul_f32_dst_capacity()
-        
+
         print("\n" + "=" * 60)
         if exp_passed and mul_passed:
             print("=== All f32 precision tests PASSED ===")
@@ -233,9 +237,10 @@ if __name__ == "__main__":
         else:
             print("=== Some f32 precision tests FAILED ===")
             sys.exit(1)
-            
+
     except Exception as e:
         print(f"ERROR: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
