@@ -1136,7 +1136,7 @@ The DST allocation pass should query the actual capacity from device configurati
 
 The DST allocation pass runs in this order:
 
-1. `ttl-tile-and-assign-dst`: Assigns DST indices, adds `ttl.unroll_factor` attribute
+1. `ttl-assign-dst`: Assigns DST indices, adds `ttl.unroll_factor` attribute
 2. `ttl-lower-to-loops`: Converts `ttl.compute` to `scf.for` loops
 3. `ttl-unroll-compute-loops`: Unrolls loops (optional, controlled by `--enable-unroll`)
 4. `ttl-insert-tile-regs-sync`: Inserts DST lifecycle ops (acquire/commit/wait/release)
