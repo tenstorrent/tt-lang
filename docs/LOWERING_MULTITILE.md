@@ -81,7 +81,7 @@ Replaces tensor-level `ttl.add` with `ttl.compute` region containing element-wis
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 ```
 
-### Stage 3: `ttl-tile-and-assign-dst`
+### Stage 3: `ttl-assign-dst`
 
 Pass: [lib/Dialect/TTL/Transforms/TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp)
 

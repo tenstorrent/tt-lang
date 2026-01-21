@@ -58,7 +58,9 @@ for subdir in ["python", "ttlang", "bindings/python"]:
 config.excludes = [
     "Inputs",
     "lit.cfg.py",
+    "lit.site.cfg.py",
     "sim",
+    "me2e",  # ME2E tests are run via pytest, not lit.
     "conftest.py",
     "utils.py",
 ]
@@ -159,7 +161,11 @@ if platform.system() == "Darwin":
 try:
     import ttnn
 
-    config.available_features.add("ttnn")
+    sys.path.insert(0, os.path.join(config.test_source_root))
+    from ttlang_test_utils import is_ttnn_available
+
+    if is_ttnn_available():
+        config.available_features.add("ttnn")
 except (ImportError, ModuleNotFoundError):
     pass
 
