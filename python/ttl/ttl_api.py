@@ -82,7 +82,9 @@ def _get_tensor_cache_info(tensor) -> tuple:
     shape = tuple(tensor.shape)
     dtype = str(tensor.dtype)
     mem_config = tensor.memory_config()
-    memory_space = str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
+    memory_space = (
+        str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
+    )
     layout = str(tensor.layout) if hasattr(tensor, "layout") else "unknown"
     return (shape, dtype, memory_space, layout)
 
@@ -259,8 +261,14 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
 
 
 def _compile_ttnn_kernel(
-    module, args, grid, num_outs, thread_tensor_indices, cb_configs=None,
-    program_hash=None, verbose=True
+    module,
+    args,
+    grid,
+    num_outs,
+    thread_tensor_indices,
+    cb_configs=None,
+    program_hash=None,
+    verbose=True,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -829,7 +837,12 @@ def _compile_kernel(
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(
-            module, args, grid, num_outs, thread_tensor_indices, cb_configs,
+            module,
+            args,
+            grid,
+            num_outs,
+            thread_tensor_indices,
+            cb_configs,
             program_hash=program_hash,
         )
         return compiled_kernel

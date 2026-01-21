@@ -162,7 +162,9 @@ try:
     add_kernel(lhs3, rhs3, out3)
     result3 = ttnn.to_torch(out3)
     # Kernel only processes first tile, so check first 32x32
-    assert torch.allclose(result3[:32, :32].float(), torch.full((32, 32), 3.0), rtol=1e-2)
+    assert torch.allclose(
+        result3[:32, :32].float(), torch.full((32, 32), 3.0), rtol=1e-2
+    )
     print("Result 3 correct: 1 + 2 = 3 (first tile)")
     # CHECK: Result 3 correct
 
