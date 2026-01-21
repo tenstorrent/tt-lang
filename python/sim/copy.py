@@ -18,10 +18,6 @@ from .copyhandlers import (
     handler_registry,
 )
 
-# Global registries to track Block objects locked by active copy operations
-_read_locked: set = set()  # Blocks locked for reading (copy source)
-_write_locked: set = set()  # Blocks locked for writing (copy destination)
-
 
 def _extract_block(obj: Any) -> Any:
     """Extract the underlying Block from a context manager if applicable.
@@ -36,40 +32,6 @@ def _extract_block(obj: Any) -> Any:
     if hasattr(obj, "block") and callable(obj.block):
         return obj.block()
     return obj
-
-
-def check_can_read(obj: Block) -> None:
-    """Check if a Block can be read from.
-
-    Args:
-        obj: Block to check
-
-    Raises:
-        RuntimeError: If Block is locked for writing by an active copy
-    """
-    if obj in _write_locked:
-        raise RuntimeError(
-            "Cannot read from Block: locked as copy destination until wait() completes"
-        )
-
-
-def check_can_write(obj: Block) -> None:
-    """Check if a Block can be written to.
-
-    Args:
-        obj: Block to check
-
-    Raises:
-        RuntimeError: If Block is locked for reading or writing by an active copy
-    """
-    if obj in _read_locked:
-        raise RuntimeError(
-            "Cannot write to Block: locked as copy source until wait() completes"
-        )
-    if obj in _write_locked:
-        raise RuntimeError(
-            "Cannot write to Block: locked as copy destination until wait() completes"
-        )
 
 
 class CopyTransaction:
@@ -115,27 +77,12 @@ class CopyTransaction:
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
 
-        # Check for locking conflicts before adding locks (Block only)
-        if isinstance(src_block, Block):
-            if src_block in _write_locked:
-                raise RuntimeError(
-                    "Cannot use Block as copy source: locked as copy destination until wait() completes"
-                )
-        if isinstance(dst_block, Block):
-            if dst_block in _read_locked:
-                raise RuntimeError(
-                    "Cannot use Block as copy destination: locked as copy source until wait() completes"
-                )
-            if dst_block in _write_locked:
-                raise RuntimeError(
-                    "Cannot use Block as copy destination: already locked as copy destination until wait() completes"
-                )
-
         # Lock Block source for reading and Block destination for writing
+        # Lock methods will check for conflicts and raise if needed
         if isinstance(src_block, Block):
-            _read_locked.add(src_block)
+            src_block.lock_for_read()
         if isinstance(dst_block, Block):
-            _write_locked.add(dst_block)
+            dst_block.lock_for_write()
 
     @staticmethod
     def _lookup_handler(
@@ -182,9 +129,9 @@ class CopyTransaction:
 
         # Unlock Block source and destination before transfer
         if isinstance(src_block, Block):
-            _read_locked.discard(src_block)
+            src_block.unlock_read()
         if isinstance(dst_block, Block):
-            _write_locked.discard(dst_block)
+            dst_block.unlock_write()
 
         # Transfer - let exceptions propagate to scheduler for context
         self._handler.transfer(self._src, self._dst)

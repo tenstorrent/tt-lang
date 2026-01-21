@@ -12,6 +12,7 @@ New transfer types can be added by creating a new handler and decorating it with
 import threading
 import time
 from collections import deque
+from numpy import prod
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -26,6 +27,7 @@ from typing import (
 )
 
 from .block import Block
+from .cb import ReserveContext, WaitContext
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
 from .ttnnsim import Tensor, tensor_shape_in_tiles
 from .typedefs import Count, Pipe, Shape
@@ -71,7 +73,6 @@ def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
         For a (64, 128) tensor with tile_shape=(32, 32):
         tile_count((64, 128), (32, 32)) = (64//32) * (128//32) = 2 * 4 = 8 tiles
     """
-    from numpy import prod
 
     if len(tensor_shape) != len(tile_shape):
         raise ValueError(
@@ -410,10 +411,6 @@ class PipeToBlockHandler:
 
 # ===== Context Manager Wrapper Handlers =====
 # These handlers delegate to the underlying Block handlers for _ReserveContext and _WaitContext
-
-
-# Import here to avoid circular dependency
-from .cb import ReserveContext, WaitContext
 
 
 # Tensor → ReserveContext (delegates to Tensor → Block)

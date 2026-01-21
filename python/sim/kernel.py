@@ -10,6 +10,7 @@ specified grid configurations and granularity settings.
 
 import inspect
 from typing import Any, Callable, List, Tuple, Union, cast
+import types
 
 from .typedefs import CoreIndex, Index, Shape, Size
 
@@ -220,7 +221,6 @@ def kernel(
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         # Create a new function with grid and granularity in its closure
         # This is achieved by modifying the function's globals to include these variables
-        import types
 
         # Set grid to (8, 8) if 'auto'
         actual_grid = (8, 8) if grid == "auto" else grid
