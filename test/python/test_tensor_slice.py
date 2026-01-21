@@ -16,10 +16,10 @@ import tempfile
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
 
@@ -69,7 +69,6 @@ def tile_loop_kernel(inp, bias, out):
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 FUSED_KERNEL_TEMPLATE = '''
@@ -109,7 +108,6 @@ def fused_kernel(inp, bias, out):
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 _add_kernel_cache = {}

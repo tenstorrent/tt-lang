@@ -14,7 +14,7 @@
 import torch
 import ttnn
 import ttl
-from test_helpers import to_dram
+from ttlang_test_utils import to_dram
 
 
 @ttl.kernel(grid=(1, 1))
@@ -58,8 +58,6 @@ def add_dram_direct(lhs, rhs, out):
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
-
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # CHECK: Testing DRAM Interleaved

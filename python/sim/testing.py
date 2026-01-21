@@ -17,6 +17,5 @@ def assert_pcc(
     # tensors should be equal
     assert tensor_a.shape == tensor_b.shape, "Tensors must have the same shape"
     assert tensor_a.dtype == tensor_b.dtype, "Tensors must have the same dtype"
-    assert isclose(
-        tensor_a, tensor_b, rtol=rtol, atol=atol
-    ), "Tensor values are not close enough"
+    close_result = isclose(tensor_a, tensor_b, rtol=rtol, atol=atol)
+    assert close_result.to_torch().all().item(), "Tensor values are not close enough"

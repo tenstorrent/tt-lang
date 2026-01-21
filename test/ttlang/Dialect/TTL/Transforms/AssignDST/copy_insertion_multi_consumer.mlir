@@ -36,7 +36,7 @@
 // IR: %[[ABS:.*]] = ttl.tile_abs %[[COPY]]
 // Last consumer (exp) uses original
 // IR: %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
-// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
+// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 2 : i32}
 // IR: ttl.yield %[[ABS]], %[[EXP]]
 
 func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,

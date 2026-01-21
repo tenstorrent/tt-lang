@@ -54,8 +54,6 @@ def add_kernel_f32(lhs, rhs, out):
             tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # =============================================================================
 # Initial IR Checks - Verify float32 layout attributes

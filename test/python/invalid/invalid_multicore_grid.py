@@ -51,8 +51,6 @@ def invalid_core_dims_kernel(lhs, rhs, out):
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 if __name__ == "__main__":
     import torch

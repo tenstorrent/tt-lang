@@ -11,6 +11,7 @@ third_party/ttnn-python
 cluster_descriptor.yaml
 .*.swp
 .docker-image-name
+/generated
 
 # ttnn-dylib and ttnn-standalone artifacts
 tools/ttnn-standalone/ttnn-dylib.cpp
