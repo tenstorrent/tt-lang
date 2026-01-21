@@ -165,8 +165,6 @@ def eltwise_pipe_core3(
                 tx.wait()
                 out_cb.pop()
 
-    # Execute the program across all cores
-
 
 def main() -> None:
     dim = 128
