@@ -48,8 +48,6 @@ def add_with_kernel(a, b, y):
                     tx = copy(y_cb, y[r, c])
                     tx.wait()
 
-    return Program(add_compute, add_read, add_write)(a, b, y)
-
 
 device = ttnn.open_device(device_id=0)
 

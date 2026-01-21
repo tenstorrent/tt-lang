@@ -29,7 +29,7 @@ class TestBasicExecution:
     def test_cooperative_mode_basic(self) -> None:
         """Test basic cooperative mode execution."""
 
-        @ttl.kernel(grid=(1, 1), granularity=1)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # Create accessors and circular buffers
             # a already is ttnn.Tensor
@@ -62,7 +62,7 @@ class TestBasicExecution:
                 tx.wait()
                 out_cb.pop()
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 3
         out = make_zeros_tensor(32, 32)
@@ -76,7 +76,7 @@ class TestBasicExecution:
     def test_multi_tile_computation(self) -> None:
         """Test computation with multiple tiles."""
 
-        @ttl.kernel(grid=(1, 1), granularity=2)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(
             a: ttnn.Tensor,
             b: ttnn.Tensor,
@@ -123,7 +123,7 @@ class TestBasicExecution:
                 tx.wait()
                 out_cb.pop()
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         # Create test data
         a = ttnn.rand((TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4))
@@ -143,7 +143,7 @@ class TestMultiCore:
     def test_two_core_execution(self) -> None:
         """Test execution on 2 cores."""
 
-        @ttl.kernel(grid=(2, 1), granularity=1)
+        @ttl.kernel(grid=(2, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -179,7 +179,7 @@ class TestMultiCore:
                 tx.wait()
                 out_cb.pop()
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1]) * 5
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
@@ -202,7 +202,7 @@ class TestMultiCore:
     def test_four_core_2d_grid(self) -> None:
         """Test execution on 2x2 grid (4 cores)."""
 
-        @ttl.kernel(grid=(2, 2), granularity=1)
+        @ttl.kernel(grid=(2, 2))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
             out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=1)
@@ -230,7 +230,7 @@ class TestMultiCore:
                 tx.wait()
                 out_cb.pop()
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
@@ -251,7 +251,7 @@ class TestContextIsolation:
     def test_circular_buffers_isolated(self) -> None:
         """Test that circular buffers are independent per core."""
 
-        @ttl.kernel(grid=(2, 1), granularity=1)
+        @ttl.kernel(grid=(2, 1))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
             # Each core gets its own CB instance
@@ -278,7 +278,7 @@ class TestContextIsolation:
                 tx.wait()
                 cb.pop()
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
@@ -292,7 +292,7 @@ class TestContextIsolation:
     def test_tensors_shared_across_cores(self) -> None:
         """Test that tensors are shared (not copied) across cores."""
 
-        @ttl.kernel(grid=(2, 1), granularity=1)
+        @ttl.kernel(grid=(2, 1))
         def test_kernel(shared: ttnn.Tensor, out: ttnn.Tensor):
             # shared and out already are ttnn.Tensor
             # shared tensor should be the same object in all cores
@@ -319,7 +319,7 @@ class TestContextIsolation:
                 tx.wait()
                 cb.pop()
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         shared = make_ones_tensor(32, 32) * 42
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
@@ -338,7 +338,7 @@ class TestErrorHandling:
     def test_error_in_compute(self) -> None:
         """Test that errors in compute function are properly reported."""
 
-        @ttl.kernel(grid=(1, 1), granularity=1)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -357,7 +357,7 @@ class TestErrorHandling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_zeros_tensor(32, 32)
 
@@ -369,7 +369,7 @@ class TestErrorHandling:
     def test_error_in_dm0(self) -> None:
         """Test that errors in dm0 are properly reported."""
 
-        @ttl.kernel(grid=(1, 1), granularity=1)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
             _ = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -387,7 +387,7 @@ class TestErrorHandling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_zeros_tensor(32, 32)
 
@@ -399,7 +399,7 @@ class TestErrorHandling:
     def test_deadlock_detection(self) -> None:
         """Test that deadlock is detected."""
 
-        @ttl.kernel(grid=(1, 1), granularity=1)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=1)
@@ -420,7 +420,7 @@ class TestErrorHandling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_zeros_tensor(32, 32)
 
@@ -537,7 +537,7 @@ class TestCooperativeScheduling:
     def test_yielding_on_blocking_operations(self) -> None:
         """Test that cooperative mode properly yields on blocking operations."""
 
-        @ttl.kernel(grid=(1, 1), granularity=1)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -562,7 +562,7 @@ class TestCooperativeScheduling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 7
         out = make_zeros_tensor(32, 32)
@@ -575,7 +575,7 @@ class TestCooperativeScheduling:
     def test_multiple_iterations_cooperative(self) -> None:
         """Test multiple iterations in cooperative mode."""
 
-        @ttl.kernel(grid=(1, 1), granularity=3)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -600,7 +600,7 @@ class TestCooperativeScheduling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = ttnn.Tensor(torch.arange(3 * 32 * 32).reshape(3 * 32, 32).float())
         out = ttnn.empty(a.shape, dtype=torch.float32)
@@ -613,7 +613,7 @@ class TestCooperativeScheduling:
     def test_copy_tensor_to_block_cooperative(self) -> None:
         """Test Tensor → Block copy in cooperative mode."""
 
-        @ttl.kernel(grid=(1, 1), granularity=1)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -637,7 +637,7 @@ class TestCooperativeScheduling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 5
         out = make_zeros_tensor(32, 32)
@@ -650,7 +650,7 @@ class TestCooperativeScheduling:
     def test_copy_block_to_tensor_cooperative(self) -> None:
         """Test Block → Tensor copy in cooperative mode."""
 
-        @ttl.kernel(grid=(1, 1), granularity=1)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -675,7 +675,7 @@ class TestCooperativeScheduling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 7
         out = make_zeros_tensor(32, 32)
@@ -688,7 +688,7 @@ class TestCooperativeScheduling:
     def test_copy_block_to_pipe_cooperative(self) -> None:
         """Test Block → Pipe copy in cooperative mode (unicast)."""
 
-        @ttl.kernel(grid=(2, 1), granularity=1)
+        @ttl.kernel(grid=(2, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -720,7 +720,7 @@ class TestCooperativeScheduling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 11
         out = make_zeros_tensor(32, 32)
@@ -760,7 +760,7 @@ class TestCooperativeScheduling:
     def test_copy_mixed_pairs_cooperative(self) -> None:
         """Test mixed copy operations in cooperative mode."""
 
-        @ttl.kernel(grid=(1, 1), granularity=2)
+        @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # b already is ttnn.Tensor
@@ -799,7 +799,7 @@ class TestCooperativeScheduling:
                     tx_b.wait()
                     cb_b.push()
 
-            return Program(compute, dm0, dm1)()
+            return Program(compute, dm0, dm1, grid=grid)()
 
         a = ttnn.Tensor(torch.arange(2 * 32 * 32).reshape(2 * 32, 32).float())
         b = ttnn.Tensor(

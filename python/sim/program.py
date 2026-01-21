@@ -15,11 +15,12 @@ import textwrap
 import traceback
 import types
 from types import CellType, FunctionType
-from typing import Any, Callable, Dict, Generator, List, Protocol, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Protocol, Tuple
 
 from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .ttnnsim import Tensor
+from .typedefs import Shape
 from .xformyield import transform_wait_reserve_to_yield_ast
 
 
@@ -95,11 +96,12 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-def Program(*funcs: BindableTemplate) -> Any:
+def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
     """Program class that combines compute and data movement functions.
 
     Args:
         *funcs: Compute and data movement function templates
+        grid: Grid size tuple
     """
 
     class ProgramImpl:
@@ -108,21 +110,32 @@ def Program(*funcs: BindableTemplate) -> Any:
             *functions: BindableTemplate,
         ):
             self.functions = functions
-            self.context: Dict[str, Any] = {}
+            self.context: Dict[str, Any] = {"grid": grid}
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
             if frame and frame.f_back:
-                # capture locals and globals from the caller (eltwise_add)
-                # Check globals first for decorator-injected variables, then locals
-                self.context = {}
-                # Add relevant items from globals (like grid, granularity from decorators)
-                caller_globals = frame.f_back.f_globals
-                for key in ["grid", "granularity"]:
-                    if key in caller_globals:
-                        self.context[key] = caller_globals[key]
-                # Add locals (which take precedence)
+                # Capture caller's locals for any remaining context variables
+                # Don't reset context - grid was already set in __init__
                 self.context.update(frame.f_back.f_locals)
+
+            # Extract closure variables from thread functions and add to context
+            # This ensures variables like CBs that were defined in the kernel function
+            # are available for per-core copying
+            for tmpl in self.functions:
+                if hasattr(tmpl, "__wrapped__"):
+                    func = tmpl.__wrapped__
+                    if func.__code__.co_freevars and func.__closure__:
+                        for var_name, cell in zip(
+                            func.__code__.co_freevars, func.__closure__
+                        ):
+                            try:
+                                # Only add if not already in context
+                                if var_name not in self.context:
+                                    self.context[var_name] = cell.cell_contents
+                            except ValueError:
+                                # Cell is empty (variable not yet bound)
+                                pass
 
             grid = self.context.get("grid", (1, 1))
             # Calculate total cores for any dimension grid
@@ -260,6 +273,7 @@ def Program(*funcs: BindableTemplate) -> Any:
 
                 # Prepare namespace with core context and function's globals
                 # Use original function's globals to get imports like 'ttl', 'copy', etc.
+                # Closure variables are already in core_context (extracted in __call__)
                 func_globals = func.__globals__
                 namespace = {**func_globals, **core_context}
 
