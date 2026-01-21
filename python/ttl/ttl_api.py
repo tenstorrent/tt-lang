@@ -219,6 +219,17 @@ class CompiledTTNNKernel:
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
+        # Validate grid against device's compute grid.
+        device = args[0].device()
+        device_grid = device.compute_with_storage_grid_size()
+        kernel_grid = self.core_ranges.bounding_box().grid_size()
+        if kernel_grid.x > device_grid.x or kernel_grid.y > device_grid.y:
+            raise ValueError(
+                f"Kernel grid ({kernel_grid.x}, {kernel_grid.y}) exceeds device "
+                f"compute grid ({device_grid.x}, {device_grid.y}). "
+                f"Reduce grid size to fit within available cores."
+            )
+
         # Build kernel specs from stored kernel info.
         kernel_specs = []
         for kernel_idx, (kernel_path, thread_type) in enumerate(self.kernel_paths):
@@ -346,8 +357,8 @@ def _compile_ttnn_kernel(
         return None
 
     # Build CoreRangeSet from grid dimensions
-    # Grid is (rows, cols), CoreCoord is (x=col, y=row)
-    grid_rows, grid_cols = grid
+    # Grid is (cols, rows) = (x, y), matching tt-metal CoreCoord convention
+    grid_cols, grid_rows = grid
     core_start = ttnn.CoreCoord(0, 0)
     core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
     core_range = ttnn.CoreRange(core_start, core_end)
