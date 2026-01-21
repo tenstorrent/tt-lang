@@ -15,7 +15,6 @@
 # Must be run from the repository root directory
 
 set -e
-set -x  # Enable command tracing for verbose output
 
 # Parse arguments
 MLIR_SHA=""
@@ -49,6 +48,14 @@ fi
 REPO=tenstorrent/tt-lang
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Check for uncommitted changes
+if ! git diff-index --quiet HEAD --; then
+    echo "ERROR: There are uncommitted changes in the repository."
+    echo "Please commit or stash your changes before building Docker images."
+    git status --short
+    exit 1
+fi
+
 echo "=== tt-lang Docker Image Builder ==="
 echo "tt-mlir SHA: $MLIR_SHA"
 echo "Check only: $CHECK_ONLY"
@@ -75,26 +82,36 @@ build_image() {
     local name=$1
     local dockerfile=$2
     local target=$3
-    local image="ghcr.io/$REPO/$name:$DOCKER_TAG"
+
+    # Always use registry path for image references (Dockerfile expects this)
+    # Simplified names are just aliases for user convenience
+    local local_image="$name:$DOCKER_TAG"
+    local registry_image="ghcr.io/$REPO/$name:$DOCKER_TAG"
 
     echo "--- Processing: $name ---"
 
-    # Check if image already exists
-    if docker manifest inspect "$image" > /dev/null 2>&1; then
-        echo "✓ Image already exists: $image"
-        if [ "$CHECK_ONLY" = true ]; then
+    # Check if image already exists in registry (only when not using --no-push)
+    if [ "$NO_PUSH" = false ]; then
+        if docker manifest inspect "$registry_image" > /dev/null 2>&1; then
+            echo "✓ Image already exists: $registry_image"
+            if [ "$CHECK_ONLY" = true ]; then
+                return 0
+            fi
+            echo "  Skipping build (image exists)"
             return 0
         fi
-        echo "  Skipping build (image exists)"
-        return 0
+
+        if [ "$CHECK_ONLY" = true ]; then
+            echo "✗ Image does not exist: $registry_image"
+            return 2
+        fi
     fi
 
-    if [ "$CHECK_ONLY" = true ]; then
-        echo "✗ Image does not exist: $image"
-        return 2
+    if [ "$NO_PUSH" = false ]; then
+        echo "Building: $registry_image"
+    else
+        echo "Building: $local_image (also tagged as $registry_image for Dockerfile references)"
     fi
-
-    echo "Building: $image"
 
     local target_arg=""
     if [ -n "$target" ]; then
@@ -106,17 +123,21 @@ build_image() {
         build_args="$build_args --build-arg MLIR_TAG=$MLIR_TAG"
     fi
 
+    # Always tag with registry path (required for Dockerfile FROM references)
+    # Also add simplified name and latest tags
     docker build \
         --progress=plain \
         $target_arg \
         $build_args \
-        -t "$image" \
+        -t "$registry_image" \
+        -t "$local_image" \
+        -t "$name:latest" \
         -t "ghcr.io/$REPO/$name:latest" \
         -f "$dockerfile" .
 
     if [ "$NO_PUSH" = false ]; then
-        echo "Pushing: $image"
-        docker push "$image"
+        echo "Pushing: $registry_image"
+        docker push "$registry_image"
         docker push "ghcr.io/$REPO/$name:latest"
     else
         echo "Skipping push (--no-push specified)"
@@ -138,15 +159,32 @@ build_image "tt-lang-ird-ubuntu-22-04" "$DOCKERFILE" ird
 
 echo "=== Build Complete ==="
 echo ""
-echo "Images built:"
-echo "  - ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-echo "  - ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
-echo "  - ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
-echo "  - ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
-echo ""
 
-# Write dist image name to file for workflow consumption
-DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-echo "$DIST_IMAGE" > .docker-image-name
-echo "DIST_IMAGE_NAME:"
-echo "$DIST_IMAGE"
+if [ "$NO_PUSH" = false ]; then
+    echo "Images built and pushed:"
+    echo "  - ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    echo "  - ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
+    echo "  - ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
+    echo "  - ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
+
+    # Write dist image name to file for workflow consumption
+    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    echo "$DIST_IMAGE" > .docker-image-name
+    echo ""
+    echo "DIST_IMAGE_NAME:"
+    echo "$DIST_IMAGE"
+else
+    echo "Local images built:"
+    echo "  - tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    echo "  - tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
+    echo "  - tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
+    echo "  - tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
+
+    # Write local dist image name to file for workflow consumption
+    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    echo "$DIST_IMAGE" > .docker-image-name
+    echo ""
+    echo "DIST_IMAGE_NAME:"
+    echo "$DIST_IMAGE"
+fi
+echo ""
