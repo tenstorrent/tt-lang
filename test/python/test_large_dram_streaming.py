@@ -102,8 +102,6 @@ def fused_mul_add_streaming(a, b, c, y):
                     )
                     tx.wait()
 
-    return ttl.Program(compute_kernel, read_kernel, write_kernel)(a, b, c, y)
-
 
 # CHECK: Testing Large DRAM Streaming
 print("=== Testing Large DRAM Streaming ===")

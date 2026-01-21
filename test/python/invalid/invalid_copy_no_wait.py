@@ -57,8 +57,6 @@ def copy_no_wait_kernel(lhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_thread, dm_read, dm_write)(lhs, out)
-
 
 # PRETTY: error: expects transfer handle to be synchronized with ttl.wait
 # PRETTY-NEXT:   --> {{.*}}invalid_copy_no_wait.py:[[LINE:[0-9]+]]:10

@@ -126,8 +126,6 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
             tx2.wait()
             tx3.wait()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(a, b, c, out1, out2, out3)
-
 
 def compute_expected(a, b, c):
     """Compute expected outputs using torch (matching kernel ops)."""

@@ -54,8 +54,6 @@ def test_ttnn_interop_add(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(add_compute, dm_read, dm_out)(lhs, rhs, out)
-
 
 # CHECK: TTNN INTEROP
 # CHECK: Created ProgramDescriptor

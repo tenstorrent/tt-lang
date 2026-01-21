@@ -82,8 +82,6 @@ def axby_fused_kernel(a, x, b, y, out):
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
-    return ttl.Program(compute, dm_read, dm_write)(a, x, b, y, out)
-
 
 def test_axby_fused_multiply_add(device):
     """Test a*x + b*y pattern with 4 separate circular buffers."""
