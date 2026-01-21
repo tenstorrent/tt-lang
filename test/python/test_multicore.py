@@ -39,7 +39,8 @@ def grid_to_tensor_shape(grid_rows: int, grid_cols: int) -> tuple[int, int]:
 MULTICORE_LOOP_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+# Grid: {grid_cols} cols x {grid_rows} rows
+@ttl.kernel(grid=({grid_cols}, {grid_rows}))  # (cols, rows)
 def multicore_loop(lhs, rhs, out):
     """Multicore kernel: each core loops over 2x2 tiles computing exp(lhs) + sqrt(rhs)."""
     lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
