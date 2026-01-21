@@ -68,7 +68,9 @@ def TTLAssignDST
 
   let options = [
     Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
-           "Override DST register capacity (testing only, default auto-computed).">,
+           "Override DST register capacity (auto-computed by default). "
+           "For single-buffering mode (dst_full_sync_en=true), use: "
+           "f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8.">,
     Option<"separateOutputRegion", "separate-output-region", "bool", "false",
            "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
   ];

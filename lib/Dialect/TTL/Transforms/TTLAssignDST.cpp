@@ -45,6 +45,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -71,10 +73,73 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 /// Compute DST capacity based on operation types and device config.
-/// TODO(#150): Implement dynamic capacity based on datatype and device.
-/// Current: Returns default capacity (8 for f16/bf16 with double-buffering).
-static std::uint32_t computeDSTCapacity(ComputeOp /*computeOp*/) {
-  return kDefaultDSTCapacity;
+/// TODO: Add device configuration attributes to TTL dialect operations to
+/// propagate fp32_dest_acc_en and dst_full_sync_en settings from runtime.
+/// SystemDescAttr, when present, provides dst_physical_size_tiles and is used
+/// to compute the logical capacity.
+/// TODO: Handle mixed dtypes - if compute block has both f32 and bf16 tile
+/// arguments, should we use f32 capacity (4 tiles, safer) or error? Consider
+/// emitting warning for mixed dtypes since f32 config reduces available DST
+/// capacity and may cause unexpected capacity overflow.
+static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
+  // Capacity by datatype and buffering mode:
+  //   Double-buffering (default):
+  //     - f16/bf16: 8 tiles
+  //     - f32: 4 tiles
+  //   Single-buffering (dst_full_sync_en=true):
+  //     - f16/bf16: 16 tiles
+  //     - f32: 8 tiles
+  bool fullSyncEn = false;
+  if (auto fullSyncAttr =
+          computeOp->getAttrOfType<mlir::BoolAttr>("dst_full_sync_en")) {
+    fullSyncEn = fullSyncAttr.getValue();
+  }
+
+  bool fp32DestAccEn = false;
+  if (auto fp32Attr =
+          computeOp->getAttrOfType<mlir::BoolAttr>("fp32_dest_acc_en")) {
+    fp32DestAccEn = fp32Attr.getValue();
+  }
+
+  Type elementType;
+  Block *body = &computeOp.getRegion().front();
+  if (body) {
+    for (BlockArgument arg : body->getArguments()) {
+      if (auto tileType = dyn_cast<ttcore::TileType>(arg.getType())) {
+        elementType = tileType.getElementType();
+        if (elementType.isF32()) {
+          fp32DestAccEn = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!elementType) {
+    return kDefaultDSTCapacity;
+  }
+
+  if (fp32DestAccEn && !elementType.isF32()) {
+    elementType = mlir::Float32Type::get(computeOp.getContext());
+  }
+
+  if (auto moduleOp = computeOp->getParentOfType<mlir::ModuleOp>()) {
+    if (auto systemDesc =
+            moduleOp->getAttrOfType<ttcore::SystemDescAttr>(
+                ttcore::SystemDescAttr::name)) {
+      auto chipDesc = systemDesc.getChipDesc(/*chipIndex=*/0);
+      return chipDesc.getDstLogicalSizeTiles(elementType, fullSyncEn);
+    }
+  }
+
+  std::uint32_t capacity = kDefaultDSTCapacity;
+  if (fullSyncEn) {
+    capacity *= 2;
+  }
+  if (fp32DestAccEn) {
+    capacity /= 2;
+  }
+  return capacity;
 }
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }

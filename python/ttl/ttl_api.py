@@ -119,6 +119,43 @@ def _is_interleaved_tensor(tensor) -> bool:
     return False
 
 
+def _has_float32_args(args) -> bool:
+    """
+    Check if any input tensor uses float32 dtype.
+
+    Inspects the tensor arguments to detect float32. This is used to
+    automatically enable fp32_dest_acc_en configuration for compute kernels.
+
+    Args:
+        args: List of tensor arguments (torch or ttnn)
+
+    Returns:
+        True if any tensor uses float32 dtype, False otherwise
+    """
+    try:
+        for tensor in args:
+            if tensor is None:
+                continue
+            
+            # Check ttnn tensor
+            if is_ttnn_tensor(tensor):
+                tensor_dtype = tensor.dtype
+                # ttnn.float32
+                if hasattr(tensor_dtype, 'name') and 'float32' in str(tensor_dtype.name).lower():
+                    return True
+                if 'float32' in str(tensor_dtype).lower():
+                    return True
+            # Check torch tensor
+            elif hasattr(tensor, 'dtype'):
+                import torch
+                if tensor.dtype == torch.float32:
+                    return True
+    except (AttributeError, TypeError, ImportError):
+        pass
+
+    return False
+
+
 def _resolve_grid(grid, args, kwargs):
     """Resolve grid, evaluating callable if needed."""
     return grid(*args, **kwargs) if callable(grid) else grid
@@ -285,6 +322,12 @@ def _compile_ttnn_kernel(
 
     Returns:
         CompiledTTNNKernel ready for execution
+
+    TODO: Add optional compute_config parameter to allow manual override of
+    automatically detected configuration. This would enable advanced users to
+    manually tune fp32_dest_acc_en, math_fidelity, and other compute settings
+    while keeping automatic detection as the default behavior.
+    Example: compute_config: Optional[ttnn.ComputeConfigDescriptor] = None
     """
     # Get kernel info from module
     kernel_info = get_ttkernel_names(module)
@@ -352,7 +395,6 @@ def _compile_ttnn_kernel(
     core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
     core_range = ttnn.CoreRange(core_start, core_end)
     core_ranges = ttnn.CoreRangeSet([core_range])
-
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
@@ -361,6 +403,9 @@ def _compile_ttnn_kernel(
     kernel_arg_specs = []
     noc_kernel_idx = 0
 
+    # Check if input args use f32 to auto-configure compute kernels
+    has_f32 = _has_float32_args(args)
+
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
@@ -368,6 +413,12 @@ def _compile_ttnn_kernel(
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
+            if has_f32:
+                config.fp32_dest_acc_en = True
+                if verbose:
+                    print(
+                        "  [fp32 detected] Enabling fp32_dest_acc_en for compute kernel"
+                    )
         elif thread_type == "noc":
             if noc_kernel_idx == 0:
                 config = ttnn.ReaderConfigDescriptor()

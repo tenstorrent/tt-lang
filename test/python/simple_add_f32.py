@@ -15,7 +15,7 @@ path (TTNNLayoutAttr -> page size calculation).
 
 import os
 
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
+# Note: Not setting TTLANG_COMPILE_ONLY so kernel actually executes
 
 import ttl
 
@@ -83,9 +83,14 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        lhs_torch = torch.full((32, 32), 2.0, dtype=torch.float32)
-        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.float32)
+        # Use random inputs for more thorough testing
+        torch.manual_seed(42)
+        lhs_torch = torch.rand((32, 32), dtype=torch.float32)
+        rhs_torch = torch.rand((32, 32), dtype=torch.float32)
         out_torch = torch.zeros((32, 32), dtype=torch.float32)
+
+        # Compute expected result
+        expected = lhs_torch + rhs_torch
 
         lhs = ttnn.from_torch(
             lhs_torch,
@@ -113,8 +118,24 @@ if __name__ == "__main__":
         rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        print("Compiling float32 add kernel...")
+        print("Compiling and executing float32 add kernel...")
         add_kernel_f32(lhs, rhs, out)
+
+        # Validate result
+        result = ttnn.to_torch(out)
+
+        print(f"Input A sample: {lhs_torch[0, :5]}")
+        print(f"Input B sample: {rhs_torch[0, :5]}")
+        print(f"Result sample:  {result[0, :5]}")
+        print(f"Expected:       {expected[0, :5]}")
+
+        # Check if results match (allowing for some numerical error)
+        if torch.allclose(result, expected, rtol=1e-2, atol=1e-2):
+            print("✓ Results match expected values")
+        else:
+            max_diff = torch.max(torch.abs(result - expected)).item()
+            print(f"✗ Results don't match! Max difference: {max_diff}")
+            raise AssertionError(f"Result validation failed: max diff {max_diff}")
 
         print("=== Float32 Add Kernel Test Complete ===")
 
