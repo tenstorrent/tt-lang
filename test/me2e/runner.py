@@ -27,7 +27,7 @@ from .builder.ttl_builder import build_e2e_module
 from .builder.ttnn_runner import run_binary_op, run_unary_op
 from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
-from .utils import compare_tensors_ulp
+from ttlang_test_utils import assert_with_ulp
 
 # Kernel cache to avoid redundant compilation.
 _kernel_cache: Dict[str, str] = {}
@@ -149,13 +149,7 @@ def run_compute_test(
             )
 
         # 6. Validate against golden.
-        max_ulp, mean_ulp = compare_tensors_ulp(result, golden)
-
-        # Default ULP threshold (can be overridden per op).
-        ulp_threshold = 10.0
-        assert (
-            max_ulp <= ulp_threshold
-        ), f"Max ULP {max_ulp} exceeds threshold {ulp_threshold} for {op.name}. Mean ULP: {mean_ulp}"
+        assert_with_ulp(result, golden)
 
     finally:
         # Cleanup temporary kernel directory.

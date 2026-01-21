@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from ttlang_test_utils import assert_with_ulp
+
 
 class ME2ETestBase:
     """
@@ -206,8 +208,6 @@ class ME2ETestBase:
         Default implementation compares result with golden from files.
         Subclasses can override for custom validation logic.
         """
-        from .utils import compare_tensors_ulp
-
         result_file = self.output_file("result.pt")
         golden_file = self.output_file("golden.pt")
 
@@ -222,11 +222,7 @@ class ME2ETestBase:
         result = torch.load(result_file)
         golden = torch.load(golden_file)
 
-        # Compare using ULP.
-        max_ulp, _ = compare_tensors_ulp(result, golden)
-
-        # Default threshold - subclasses can override.
-        ulp_threshold = getattr(self, "ULP_THRESHOLD", None) or 10.0
-        assert (
-            max_ulp <= ulp_threshold
-        ), f"Max ULP {max_ulp} exceeds threshold {ulp_threshold}"
+        # Compare using ULP, specify None to use defaults based on dtype.
+        # Override self.ULP_THRESHOLD in subclasses as needed.
+        ulp_threshold = getattr(self, "ULP_THRESHOLD", None)
+        assert_with_ulp(result, golden, ulp_threshold=ulp_threshold)

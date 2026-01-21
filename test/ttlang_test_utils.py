@@ -267,9 +267,11 @@ def assert_allclose(actual, expected, rtol=1e-5, atol=1e-8, verbose=True):
 def assert_with_ulp(actual, expected, ulp_threshold=None, allow_nonfinite=False):
     """Assert tensors are similar within a given ULP distance.
 
-    Defaults follow tt-metal tests/ttnn/utils_for_testing.py. Note that there
-    the maximum meaningful ULP thresholds are much higher than typical floating
-    point precision, due to the nature of TT hardware computations.
+    Defaults follow tt-metal tests/ttnn/utils_for_testing.py
+    (https://github.com/tenstorrent/tt-metal/blob/main/tests/ttnn/utils_for_testing.py).
+    Note that the maximum meaningful ULP thresholds are much higher than
+    typical floating point precision, due to the nature of TT hardware
+    computations.
     maximum_meaningful_ulp_thresholds = {
         torch.float64: 2**52,
         torch.float32: 2**23,
