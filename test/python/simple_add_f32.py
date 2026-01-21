@@ -26,7 +26,7 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.kernel(grid=(1, 1), fp32_dest_acc_en=True, dst_full_sync_en=False)
 def add_kernel_f32(lhs, rhs, out):
     lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
@@ -77,6 +77,7 @@ def add_kernel_f32(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
+    from utils import assert_with_ulp
 
     print("=== Float32 Add Kernel Test ===")
 
@@ -129,13 +130,9 @@ if __name__ == "__main__":
         print(f"Result sample:  {result[0, :5]}")
         print(f"Expected:       {expected[0, :5]}")
 
-        # Check if results match (allowing for some numerical error)
-        if torch.allclose(result, expected, rtol=1e-2, atol=1e-2):
-            print("✓ Results match expected values")
-        else:
-            max_diff = torch.max(torch.abs(result - expected)).item()
-            print(f"✗ Results don't match! Max difference: {max_diff}")
-            raise AssertionError(f"Result validation failed: max diff {max_diff}")
+        expected = expected.to(result.dtype)
+        assert_with_ulp(result, expected, ulp_threshold=10)
+        print("✓ Results match expected values (ulp_threshold=10)")
 
         print("=== Float32 Add Kernel Test Complete ===")
 

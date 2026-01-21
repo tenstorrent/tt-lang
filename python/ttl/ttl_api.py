@@ -90,9 +90,14 @@ def _get_tensor_cache_info(tensor) -> tuple:
     return (shape, dtype, memory_space, layout)
 
 
-def _make_cache_key(args: tuple) -> tuple:
-    """Create cache key from tensor properties that affect compilation."""
-    return tuple(_get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg))
+def _make_cache_key(
+    args: tuple,
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+) -> tuple:
+    """Create cache key from tensor properties and compute config overrides."""
+    tensor_key = tuple(_get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg))
+    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en)
 
 
 def _should_execute() -> bool:
@@ -513,6 +518,26 @@ def _collect_cb_configs(threads):
     return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
 
 
+def _validate_cb_buffer_factors(
+    cb_configs: List[Optional[CircularBuffer]],
+    dst_full_sync_en: Optional[bool],
+) -> None:
+    """Validate CB buffer_factor against dst_full_sync_en."""
+    if dst_full_sync_en is None:
+        return
+
+    expected = 1 if dst_full_sync_en else 2
+    for cb in cb_configs:
+        if cb is None:
+            continue
+        if cb.buffer_factor != expected:
+            raise ValueError(
+                "dst_full_sync_en="
+                f"{dst_full_sync_en} requires buffer_factor={expected}, "
+                f"got buffer_factor={cb.buffer_factor} for cb_index={cb._cb_index}"
+            )
+
+
 def _compile(
     kernel_type: Optional[str] = None,
     verbose: bool = False,
@@ -744,6 +769,11 @@ def _compile_kernel(
         )
 
     cb_configs = _collect_cb_configs(threads)
+    try:
+        _validate_cb_buffer_factors(cb_configs, dst_full_sync_en)
+    except ValueError as e:
+        formatted = format_python_error(e, kernel_source_file, kernel_line_offset)
+        raise type(e)(formatted) from None
 
     injected_program_kwargs = {
         "grid": grid,
@@ -997,7 +1027,12 @@ def pykernel_gen(
             resolved_grid = _resolve_grid(grid, args, kwargs)
 
             # Build cache key from tensor properties
-            cache_key = _make_cache_key(args)
+            cache_key = _make_cache_key(
+                args,
+                # Runtime options:
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+            )
 
             # Check cache for previously compiled kernel
             if cache_key in cache:
@@ -1018,6 +1053,8 @@ def pykernel_gen(
                     memory_space,
                     tiled,
                     program_hash,
+                    fp32_dest_acc_en,
+                    dst_full_sync_en,
                 )
 
                 if compiled_kernel is not None:
