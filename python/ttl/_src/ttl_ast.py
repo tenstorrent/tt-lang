@@ -63,6 +63,11 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
             tensor, f"Only 2D tensors supported, got shape {tensor.shape}"
         )
 
+    # grid is (cols, rows) from tt-lang API
+    # tensor.shape is (rows, cols) standard convention
+    grid_cols, grid_rows = grid
+    tensor_rows, tensor_cols = tensor.shape
+
     layout = create_ttnn_layout(
         ctx,
         TTNNLayoutConfig(
@@ -77,9 +82,11 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
-    # Device shape: grid dims + shard dims (1x1 tiles per core for single-core)
-    shard_tiles = [tensor.shape[i] // grid[i] // DEFAULT_TILE_SIZE for i in range(2)]
-    device_shape = list(grid) + shard_tiles
+    # Device shape: [grid_rows, grid_cols, shard_row_tiles, shard_col_tiles]
+    # MLIR expects (rows, cols) order
+    shard_row_tiles = tensor_rows // grid_rows // DEFAULT_TILE_SIZE
+    shard_col_tiles = tensor_cols // grid_cols // DEFAULT_TILE_SIZE
+    device_shape = [grid_rows, grid_cols, shard_row_tiles, shard_col_tiles]
 
     return RankedTensorType.get(device_shape, element_type, layout)
 

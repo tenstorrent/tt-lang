@@ -51,19 +51,27 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
     if len(config.grid) != 2:
         raise ValueError(f"Only 2D grids supported, got grid {config.grid}")
 
-    for i in range(2):
-        if config.logical_shape[i] % config.grid[i] != 0:
-            raise ValueError(
-                f"Logical dim {i} ({config.logical_shape[i]}) must be divisible "
-                f"by grid dim {i} ({config.grid[i]})"
-            )
+    # config.grid is (cols, rows) from tt-lang API, but MLIR expects (rows, cols)
+    grid_cols, grid_rows = config.grid
+    mlir_grid = [grid_rows, grid_cols]
+
+    # logical_shape is (rows, cols), mlir_grid is (rows, cols)
+    tensor_rows, tensor_cols = config.logical_shape
+    if tensor_rows % grid_rows != 0:
+        raise ValueError(
+            f"Tensor rows ({tensor_rows}) must be divisible by grid rows ({grid_rows})"
+        )
+    if tensor_cols % grid_cols != 0:
+        raise ValueError(
+            f"Tensor cols ({tensor_cols}) must be divisible by grid cols ({grid_cols})"
+        )
 
     ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
     element_type = ttcore.ir.TileType.get(
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
-    grid_attr = ttcore.ir.GridAttr.get(ctx, config.grid)
+    grid_attr = ttcore.ir.GridAttr.get(ctx, mlir_grid)
 
     return ttnn.ir.TTNNLayoutAttr.get(
         ctx,
