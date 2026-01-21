@@ -40,13 +40,13 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTCore/IR/Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -82,7 +82,7 @@ constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 /// emitting warning for mixed dtypes since f32 config reduces available DST
 /// capacity and may cause unexpected capacity overflow.
 static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
-  // Capacity by datatype and buffering mode:
+  // Capacity by datatype and buffering mode (see )
   //   Double-buffering (default):
   //     - f16/bf16: 8 tiles
   //     - f32: 4 tiles
@@ -124,22 +124,18 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (auto moduleOp = computeOp->getParentOfType<mlir::ModuleOp>()) {
-    if (auto systemDesc =
-            moduleOp->getAttrOfType<ttcore::SystemDescAttr>(
-                ttcore::SystemDescAttr::name)) {
-      auto chipDesc = systemDesc.getChipDesc(/*chipIndex=*/0);
+    bool hasSystemDesc =
+        moduleOp->hasAttr(ttcore::SystemDescAttr::name);
+    bool hasDevice =
+        static_cast<bool>(moduleOp.lookupSymbol<ttcore::DeviceOp>(
+            ttcore::getDefaultDeviceName()));
+    if (hasSystemDesc && hasDevice) {
+      auto chipDesc = ttcore::getOpChipDescAttr(computeOp);
       return chipDesc.getDstLogicalSizeTiles(elementType, fullSyncEn);
     }
   }
 
-  std::uint32_t capacity = kDefaultDSTCapacity;
-  if (fullSyncEn) {
-    capacity *= 2;
-  }
-  if (fp32DestAccEn) {
-    capacity /= 2;
-  }
-  return capacity;
+  return kDefaultDSTCapacity;
 }
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }

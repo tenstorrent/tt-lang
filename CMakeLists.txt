@@ -46,6 +46,19 @@ set(LLVM_TOOLS_DIR "${TTMLIR_TOOLCHAIN_DIR}/bin")
 
 set(TT_LANG_HOME "${CMAKE_CURRENT_LIST_DIR}")
 
+ttlang_check_device_available(TTLANG_HAS_DEVICE)
+if(TTLANG_HAS_DEVICE)
+  set(TTLANG_HAS_DEVICE_INT 1)
+else()
+  set(TTLANG_HAS_DEVICE_INT 0)
+endif()
+
+configure_file(
+  "${PROJECT_SOURCE_DIR}/include/ttlang/Config.h.in"
+  "${PROJECT_BINARY_DIR}/include/ttlang/Config.h"
+  @ONLY
+)
+
 configure_file(
   "${PROJECT_SOURCE_DIR}/env/activate.in"
   "${PROJECT_BINARY_DIR}/env/activate"

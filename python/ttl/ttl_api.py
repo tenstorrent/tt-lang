@@ -55,6 +55,7 @@ from .kernel_runner import (
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .ttl_utils import get_thread_type_string
+from .config import HAS_TT_DEVICE
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -823,6 +824,7 @@ def _compile_kernel(
         # fmt: off
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
+            "func.func(ttl-set-compute-kernel-config)",
             "func.func(ttl-assign-dst)",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
@@ -834,6 +836,9 @@ def _compile_kernel(
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
+
+        if HAS_TT_DEVICE:
+            pipeline_passes.insert(0, "ttcore-register-device")
 
         pipeline = ",".join(pipeline_passes)
 

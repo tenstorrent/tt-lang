@@ -21,12 +21,7 @@ configure_lit_site_cfg(
   CMAKE_CURRENT_SOURCE_DIR
 )
 
-# Generate test config file with device availability
-configure_file(
-  ${CMAKE_CURRENT_SOURCE_DIR}/python/test_config.py.in
-  ${CMAKE_CURRENT_BINARY_DIR}/python/test_config.py
-  @ONLY
-)
+
 
 set(TTLANG_TEST_DEPENDS
   ttlang-opt

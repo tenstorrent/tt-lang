@@ -81,6 +81,27 @@ def TTLAssignDST
   ];
 }
 
+def TTLSetComputeKernelConfig
+    : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
+  let summary = "Set ttl.compute kernel configuration attributes";
+  let description = [{
+    Sets fp32_dest_acc_en and dst_full_sync_en attributes on ttl.compute
+    operations when they are not already configured. This allows downstream
+    passes to use consistent compute kernel configuration decisions.
+  }];
+
+  let options = [
+    Option<"fp32DestAccEn", "fp32-dest-acc-en", "bool", "false",
+           "Set default fp32_dest_acc_en when not already configured.">,
+    Option<"dstFullSyncEn", "dst-full-sync-en", "bool", "false",
+           "Set default dst_full_sync_en when not already configured.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLInsertTileRegsSync
     : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
   let summary = "Insert tile_regs_* synchronization ops around ttl.compute";
