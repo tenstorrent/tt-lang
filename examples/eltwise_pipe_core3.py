@@ -165,6 +165,7 @@ def eltwise_pipe_core3(
                 tx.wait()
                 out_cb.pop()
 
+
 def main() -> None:
     dim = 128
     a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
