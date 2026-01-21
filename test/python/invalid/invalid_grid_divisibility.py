@@ -20,7 +20,7 @@ import ttnn
 import ttl
 
 
-# CHECK: ValueError: Logical dim 1 (32) must be divisible by grid dim 1 (3)
+# CHECK: ValueError: Tensor rows (32) must be divisible by grid rows (3)
 # CHECK-NEXT:   --> {{.*}}invalid_grid_divisibility.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
 # CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(2, 3))
