@@ -119,8 +119,6 @@ def eltwise_add(
                 # out_block[0] # using pointer on stale data should fail
                 # out_cb.pop() # double pop should fail
 
-    # Execute the program across all cores
-
 
 def main() -> None:
     dim = 256

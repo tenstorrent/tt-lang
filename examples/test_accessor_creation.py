@@ -65,8 +65,6 @@ def simple_add_with_accessors(lhs, rhs, out, block_factors=None, grid=None):
         tx = dma(rhs_accessor[0, 0], rhs_shard)
         tx.wait()
 
-    return Program(add_kernel, dm0, dm1)(lhs, rhs, out)
-
 
 # NOTE: The following tests are commented out because the D2M Python DSL
 # does not support directly capturing torch.Tensor objects in nested functions.
