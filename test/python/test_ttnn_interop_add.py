@@ -12,7 +12,7 @@
 import torch
 import ttnn
 import ttl
-from test_helpers import to_l1
+from ttlang_test_utils import to_l1
 
 
 @ttl.kernel(grid=(1, 1))

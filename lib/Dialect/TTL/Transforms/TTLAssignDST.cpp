@@ -534,8 +534,15 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         freeRegs.set();
         auto inputsFootprint = linearScanAllocateFiltered(
             intervals, merged, freeRegs, dstAssignment,
-            [&](Value val) { return !isYieldedValue(val, yieldOp); }, computeOp,
-            "Phase 3");
+            [&](Value val) {
+              // For separate output region mode, check if any member of the
+              // merged set is yielded. If so, defer the entire set to Phase 4.
+              auto allMerged = getAllMerged(merged, val);
+              return llvm::none_of(allMerged, [&](Value member) {
+                return isYieldedValue(member, yieldOp);
+              });
+            },
+            computeOp, "Phase 3");
         if (failed(inputsFootprint)) {
           computeOp.emitOpError()
               << "insufficient DST registers: all " << capacity

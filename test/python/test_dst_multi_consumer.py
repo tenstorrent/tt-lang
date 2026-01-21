@@ -23,12 +23,12 @@ Test patterns:
 
 import pytest
 import torch
-import ttnn
-from test_helpers import assert_allclose, to_dram
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import assert_allclose, to_dram
 
 from ttl import ttl
-
-pytestmark = pytest.mark.requires_ttnn
 
 
 @ttl.kernel(grid=(1, 1))
