@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
+from utils.correctness import assert_with_ulp
 
 from .builder.kernels import (
     KernelSpec,
@@ -152,7 +153,7 @@ def run_compute_test(
 
         # 6. Validate against golden.
         ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
-        assert_with_ulp(result, golden, ulp_threshold=ulp_threshold)
+        assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)
 
     finally:
         # Cleanup temporary kernel directory.

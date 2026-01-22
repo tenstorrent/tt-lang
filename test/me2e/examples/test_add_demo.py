@@ -92,7 +92,7 @@ class TestAddOperation:
         result = torch_add(a, b)
 
         expected = torch.tensor([5.0, 7.0, 9.0])
-        assert_with_ulp(result, expected)
+        assert_with_ulp(expected, result)
 
         print(f"\n✅ Torch reference for add works correctly")
 
