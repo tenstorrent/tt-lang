@@ -29,12 +29,12 @@ computing (a*x) * b instead of b * y, resulting in 30 instead of 26.
 
 import pytest
 import torch
-import ttnn
-from test_helpers import assert_allclose, to_dram
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import assert_allclose, to_dram
 
 from ttl import ttl
-
-pytestmark = pytest.mark.requires_ttnn
 
 
 @ttl.kernel(grid=(1, 1))
@@ -81,8 +81,6 @@ def axby_fused_kernel(a, x, b, y, out):
         with out_cb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
-
-    return ttl.Program(compute, dm_read, dm_write)(a, x, b, y, out)
 
 
 def test_axby_fused_multiply_add(device):

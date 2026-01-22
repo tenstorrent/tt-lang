@@ -12,7 +12,7 @@
 import torch
 import ttnn
 import ttl
-from test_helpers import to_l1
+from ttlang_test_utils import to_l1
 
 
 @ttl.kernel(grid=(1, 1))
@@ -53,8 +53,6 @@ def test_ttnn_interop_add(lhs, rhs, out):
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_cb.pop()
-
-    return ttl.Program(add_compute, dm_read, dm_out)(lhs, rhs, out)
 
 
 # CHECK: TTNN INTEROP

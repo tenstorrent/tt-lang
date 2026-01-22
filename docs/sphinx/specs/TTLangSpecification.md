@@ -7,6 +7,7 @@
 | *Version* | *Date* | *Description of changes* |
 | :---- | :---- | :---- |
 | 0.1 | 12/15/2025 | Initial version |
+| 0.2 | 01/20/2026 | Remove `ttl.Program` |
 
 ## Introduction
 
@@ -16,12 +17,7 @@ The programming model of TT-Lang is centered around explicit specification of da
 
 ## Kernel program
 
-*Kernel function* is a Python function with `ttl.kernel` decorator. This function constructs a `ttl.Program` object by passing up to three *thread functions*. The `ttl.Program` object itself is a callable with input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html). A thread function is a Python function with no arguments annotated by `ttl.compute` or `ttl.datamovement` decorators. Typically thread functions are defined in the scope of the kernel function so that they can capture objects shared by all thread functions.
-
-| Type alias/Function | Description |
-| :---- | :---- |
-| `ttl.Program = Callable[[*tensors: ttnn.Tensor], None]` | A program as a callable object. |
-| `ttl.Program(*threads: Callable[[], None]) -> ttl.Program` | Create a program with provided thread functions.  |
+*Kernel function* is a Python function with `ttl.kernel` decorator. This function takes input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html) as arguments and returns `None`. A kernel function contains definitions of thread functions as well as objects shared by thread functions. A thread function is a Python function with no arguments and returning `None` that is annotated by `ttl.compute` or `ttl.datamovement` decorators.
 
 ## Example
 
@@ -42,8 +38,6 @@ def foo(
     @ttl.datamovement()
     def some_dm1():
         # ...
-
-    return ttl.Program(some_compute, some_dm0, some_dm1)(x, y)
 
 shape = ttnn.Shape([128, 128])
 
@@ -530,7 +524,7 @@ a_cb = ttl.make_circular_buffer_like(A, shape = (g, 1))
 
 row_tiles = A.shape[0] // ttl.TILE_SHAPE[0]
 col_tiles = A.shape[1] // ttl.TILE_SHAPE[1]
-cols_per_core = math.ceil(col_tiles / (grid_size(dim = 1)))
+cols_per_core = math.ceil(col_tiles / (grid_size(dims = 1)))
 
 core_num = core(dims = 1)
 start_ct = core_num * cols_per_core
@@ -544,8 +538,9 @@ def dm():
             # ...
 
             # then copy from a tensor slice of matching shape:
+            row_slice = slice(rt * g, (rt + 1) * g) # explicit row slice
             a_xf = ttl.copy(
-                A[(rt * g):((rt + 1) * g), ct:ct + 1],
+                A[row_slice, ct:ct + 1], # in-line col slice
                 a_blk)
             a_xf.wait()
 ```
@@ -588,7 +583,7 @@ def dm():
 core_num = core(dims = 1)
 my_barrier = ttl.Semaphore()
 core_0_barrier = my_barrier.get_remote((0, 0))
-non_0_core_count = grid_size(dim = 1) - 1
+non_0_core_count = grid_size(dims = 1) - 1
 
 @ttl.datamovement()
 def dm():

@@ -125,8 +125,6 @@ def __demo_kernel(a, b, c, y):
                     )
                     tx.wait()
 
-    return ttl.Program(demo_compute, demo_read, demo_write)(a, b, c, y)
-
 
 def demo_kernel(a, b, c):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))

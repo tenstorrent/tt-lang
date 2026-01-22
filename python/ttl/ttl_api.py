@@ -10,11 +10,12 @@ import ast
 import functools
 import inspect
 import os
+import random
 from typing import Callable, Dict, List, Optional, Union
 
 try:
     import ttnn
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     ttnn = None
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
@@ -48,25 +49,54 @@ from .dtype_utils import (
     tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
+from .kernel_runner import (
+    KernelSpec,
+    run_kernel_on_device,
+)
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .ttl_utils import get_thread_type_string
 
+# Thread registry for automatic collection of @compute and @datamovement threads
+_thread_registry: List[Callable] = []
 
-class CompilerConfig:
-    """
-    Configuration for the compiler pipeline and runtime execution.
 
-    Compiles to C++ for ttnn.generic_op.
-    """
+def _register_thread(thread_fn: Callable) -> None:
+    """Register a thread function during decoration."""
+    _thread_registry.append(thread_fn)
 
-    def __init__(self, compile_only: bool = False):
-        self._compile_only = (
-            compile_only or os.environ.get("TTLANG_COMPILE_ONLY", "0") == "1"
-        )
 
-    def should_execute(self) -> bool:
-        """Check if runtime execution should proceed."""
-        return not self._compile_only
+def _clear_thread_registry() -> None:
+    """Clear the thread registry before kernel execution."""
+    _thread_registry.clear()
+
+
+def _get_registered_threads() -> List[Callable]:
+    """Get all registered threads and clear the registry."""
+    threads = list(_thread_registry)
+    _thread_registry.clear()
+    return threads
+
+
+def _get_tensor_cache_info(tensor) -> tuple:
+    """Extract cache-relevant info from a tensor: (shape, dtype, memory_space, layout)."""
+    shape = tuple(tensor.shape)
+    dtype = str(tensor.dtype)
+    mem_config = tensor.memory_config()
+    memory_space = (
+        str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
+    )
+    layout = str(tensor.layout) if hasattr(tensor, "layout") else "unknown"
+    return (shape, dtype, memory_space, layout)
+
+
+def _make_cache_key(args: tuple) -> tuple:
+    """Create cache key from tensor properties that affect compilation."""
+    return tuple(_get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg))
+
+
+def _should_execute() -> bool:
+    """Check if kernel execution should proceed (not compile-only mode)."""
+    return os.environ.get("TTLANG_COMPILE_ONLY", "0") != "1"
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -160,6 +190,7 @@ class CompiledTTNNKernel:
         core_ranges,
         kernel_tensor_indices,
         cb_configs=None,
+        program_hash=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -172,6 +203,7 @@ class CompiledTTNNKernel:
             core_ranges: CoreRangeSet for kernel execution
             kernel_tensor_indices: List of global tensor indices used by each kernel
             cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index
+            program_hash: Hash for tt-metal program cache
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -180,99 +212,34 @@ class CompiledTTNNKernel:
         self.core_ranges = core_ranges
         self.kernel_tensor_indices = kernel_tensor_indices
         self.cb_configs = cb_configs or []
+        self.program_hash = program_hash
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
-        # Build TensorAccessorArgs config for each tensor
-        tensor_accessor_args = []
-        for tensor in args:
-            tensor_args = ttnn.TensorAccessorArgs(tensor).get_compile_time_args()
-            tensor_accessor_args.extend(tensor_args)
-
-        # Build kernel descriptors with current tensor addresses
-        kernel_descriptors = []
-
-        # Compute grid dimensions from core_ranges for runtime_args structure
-        # runtime_args structure: [x][y][args_per_core] where x=cols, y=rows
-        grid_size = self.core_ranges.bounding_box().grid_size()
-        grid_cols = grid_size.x
-        grid_rows = grid_size.y
-
-        for kernel_idx, ((kernel_path, thread_type), config, rt_args) in enumerate(
-            zip(self.kernel_paths, self.kernel_configs, self.kernel_arg_specs)
-        ):
-            # runtime_args structure: [x][y][args_per_core]
-            # Each core gets an empty arg list (we use my_x/my_y for indexing)
-            runtime_args = [[[] for _ in range(grid_rows)] for _ in range(grid_cols)]
-
-            # Build common_runtime_args using kernel_tensor_indices
-            # C++ indexes by function-local position, we provide addresses in that order
+        # Build kernel specs from stored kernel info.
+        kernel_specs = []
+        for kernel_idx, (kernel_path, thread_type) in enumerate(self.kernel_paths):
             tensor_indices = self.kernel_tensor_indices[kernel_idx]
-            common_runtime_args = [args[idx].buffer_address() for idx in tensor_indices]
-
-            # CB indices are 0, 1, 2, ... for each tensor
-            cb_indices = list(range(len(args)))
-
-            # Compute kernels only need CB indices
-            # DM kernels need CB indices + TensorAccessorArgs config
-            if thread_type == "compute":
-                kernel_compile_time_args = cb_indices
-            else:
-                kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
-
-            kernel_desc = ttnn.KernelDescriptor(
-                kernel_source=kernel_path,
-                core_ranges=self.core_ranges,
-                compile_time_args=kernel_compile_time_args,
-                runtime_args=runtime_args,
-                common_runtime_args=common_runtime_args,
+            config = self.kernel_configs[kernel_idx]
+            spec = KernelSpec(
+                path=kernel_path,
+                thread_type=thread_type,
+                tensor_indices=tensor_indices,
                 config=config,
             )
-            kernel_descriptors.append(kernel_desc)
+            kernel_specs.append(spec)
 
-        # Build CB descriptors
-        cb_descriptors = []
-        for i, tensor in enumerate(args):
-            if hasattr(tensor, "dtype") and hasattr(tensor.dtype, "name"):
-                data_format = tensor.dtype
-            else:
-                data_format = torch_dtype_to_ttnn_datatype(tensor.dtype)
-
-            page_size = tile_bytes_from_dtype(data_format)
-
-            if i >= len(self.cb_configs) or self.cb_configs[i] is None:
-                raise ValueError(
-                    f"Missing CB config for tensor {i}. "
-                    f"All tensors must have associated CircularBuffer configurations."
-                )
-            shape, buffer_factor = self.cb_configs[i]
-            num_tiles = shape[0] * shape[1] * buffer_factor
-            total_size = num_tiles * page_size
-
-            cb_format = ttnn.CBFormatDescriptor(
-                buffer_index=i,
-                data_format=data_format,
-                page_size=page_size,
-            )
-            cb_desc = ttnn.CBDescriptor(
-                total_size=total_size,
-                core_ranges=self.core_ranges,
-                format_descriptors=[cb_format],
-            )
-            cb_descriptors.append(cb_desc)
-
-        # Build and execute program
-        # TODO: Extract semaphore info from kernel IR for synchronization
-        program = ttnn.ProgramDescriptor(
-            kernels=kernel_descriptors,
-            cbs=cb_descriptors,
-            semaphores=[],
+        # Use shared kernel execution logic.
+        return run_kernel_on_device(
+            kernel_specs=kernel_specs,
+            tensors=list(args),
+            cb_configs=self.cb_configs,
+            core_ranges=self.core_ranges,
+            program_hash=self.program_hash,
         )
-
-        return ttnn.generic_op(list(args), program)
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -294,7 +261,14 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
 
 
 def _compile_ttnn_kernel(
-    module, args, grid, num_outs, thread_tensor_indices, cb_configs=None, verbose=True
+    module,
+    args,
+    grid,
+    num_outs,
+    thread_tensor_indices,
+    cb_configs=None,
+    program_hash=None,
+    verbose=True,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -306,6 +280,7 @@ def _compile_ttnn_kernel(
         args: Input/output tensors (used for shape/dtype info)
         grid: Grid dimensions tuple
         num_outs: Number of output tensors
+        program_hash: Hash for tt-metal program cache
         verbose: Print compilation info
 
     Returns:
@@ -419,6 +394,7 @@ def _compile_ttnn_kernel(
         core_ranges=core_ranges,
         kernel_tensor_indices=thread_tensor_indices,
         cb_configs=cb_configs,
+        program_hash=program_hash,
     )
 
     if verbose:
@@ -463,7 +439,11 @@ def _collect_captures(
 
 
 def _collect_cb_configs(threads):
-    """Extract CB configs from thread closures, indexed by cb_index."""
+    """Extract CircularBuffer objects from thread closures, indexed by cb_index.
+
+    Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
+    shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
+    """
     cb_configs_dict = {}
     for thread_fn in threads:
         wrapped = getattr(thread_fn, "__wrapped__", None)
@@ -473,7 +453,7 @@ def _collect_cb_configs(threads):
         for cell in closure:
             val = cell.cell_contents
             if isinstance(val, CircularBuffer):
-                cb_configs_dict[val._cb_index] = (val.shape, val.buffer_factor)
+                cb_configs_dict[val._cb_index] = val
 
     if not cb_configs_dict:
         return []
@@ -548,6 +528,8 @@ def _compile(
 
         _wrapper._decorator_name = kernel_type + "_thread"
         _wrapper._source_file = source_file
+        # Register thread for automatic collection
+        _register_thread(_wrapper)
         if inspect.ismethod(f):
             return staticmethod(_wrapper)
         return _wrapper
@@ -621,7 +603,7 @@ class Program:
         return Program(*self.threads, args=args, kwargs={**self.kwargs, **kwargs})
 
 
-def _compile_and_run_kernel(
+def _compile_kernel(
     f: Callable,
     args: tuple,
     kwargs: dict,
@@ -631,10 +613,10 @@ def _compile_and_run_kernel(
     num_outs: int,
     memory_space: str,
     tiled: bool,
-    compile_only: bool = False,
+    program_hash: int,
 ) -> Optional[CompiledTTNNKernel]:
     """
-    Compile kernel function to MLIR and execute compilation pipeline.
+    Compile kernel function to MLIR and return CompiledTTNNKernel.
 
     Args:
         f: User kernel function
@@ -646,7 +628,7 @@ def _compile_and_run_kernel(
         num_outs: Number of output arguments
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
-        compile_only: If True, return compiled kernel without executing
+        program_hash: Hash for tt-metal program cache
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -694,13 +676,18 @@ def _compile_and_run_kernel(
 
     _reset_cb_counter()
     _set_current_grid(grid)
-    program = f(*args, **kwargs)
-    if not isinstance(program, Program):
-        raise TypeError(
-            f"Kernel function must return a Program, got {type(program).__name__}"
+
+    _clear_thread_registry()
+    f(*args, **kwargs)
+    threads = _get_registered_threads()
+
+    if not threads:
+        raise ValueError(
+            "No threads found. Define at least one @ttl.compute() or "
+            "@ttl.datamovement() function inside your kernel."
         )
 
-    cb_configs = _collect_cb_configs(program.threads)
+    cb_configs = _collect_cb_configs(threads)
 
     injected_program_kwargs = {
         "grid": grid,
@@ -709,9 +696,9 @@ def _compile_and_run_kernel(
         "debug_locations": True,  # Always generate locations for error messages
     }
     program = Program(
-        *program.threads,
-        args=program.args,
-        kwargs={**injected_program_kwargs, **program.kwargs},
+        *threads,
+        args=args,
+        kwargs=injected_program_kwargs,
     )
 
     # Always generate source locations for error messages
@@ -781,7 +768,6 @@ def _compile_and_run_kernel(
             print(f"SAVED INITIAL TO {initial_mlir_path}")
 
         verify = True
-        config = CompilerConfig(compile_only)
 
         # fmt: off
         pipeline_passes = [
@@ -851,10 +837,14 @@ def _compile_and_run_kernel(
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(
-            module, args, grid, num_outs, thread_tensor_indices, cb_configs
+            module,
+            args,
+            grid,
+            num_outs,
+            thread_tensor_indices,
+            cb_configs,
+            program_hash=program_hash,
         )
-        if compiled_kernel is not None and config.should_execute():
-            compiled_kernel(*args)
         return compiled_kernel
 
 
@@ -917,50 +907,45 @@ def pykernel_gen(
         iterator_types = []
 
     def _decorator(f):
+        # Per-kernel state: random ID and cache
+        kernel_id = random.getrandbits(64)
+        cache: Dict[tuple, CompiledTTNNKernel] = {}
+
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             resolved_grid = _resolve_grid(grid, args, kwargs)
 
-            _compile_and_run_kernel(
-                f,
-                args,
-                kwargs,
-                resolved_grid,
-                indexing_maps,
-                iterator_types,
-                num_outs,
-                memory_space,
-                tiled,
-            )
+            # Build cache key from tensor properties
+            cache_key = _make_cache_key(args)
 
-        def _compile(*args, **kwargs):
-            """
-            Compile the kernel without executing, returning a CompiledTTNNKernel.
+            # Check cache for previously compiled kernel
+            if cache_key in cache:
+                compiled_kernel = cache[cache_key]
+            else:
+                # Compute program_hash for tt-metal cache
+                program_hash = hash((kernel_id, cache_key))
 
-            Use this when you want to compile once and execute many times.
+                # Compile kernel
+                compiled_kernel = _compile_kernel(
+                    f,
+                    args,
+                    kwargs,
+                    resolved_grid,
+                    indexing_maps,
+                    iterator_types,
+                    num_outs,
+                    memory_space,
+                    tiled,
+                    program_hash,
+                )
 
-            Args:
-                *args: Sample tensors (same shape/dtype as actual inputs)
+                if compiled_kernel is not None:
+                    cache[cache_key] = compiled_kernel
 
-            Returns:
-                CompiledTTNNKernel that can be called multiple times
-            """
-            resolved_grid = _resolve_grid(grid, args, kwargs)
+            # Execute (unless compile-only mode)
+            if compiled_kernel is not None and _should_execute():
+                return compiled_kernel(*args)
 
-            return _compile_and_run_kernel(
-                f,
-                args,
-                kwargs,
-                resolved_grid,
-                indexing_maps,
-                iterator_types,
-                num_outs,
-                memory_space,
-                tiled,
-                compile_only=True,
-            )
-
-        _wrapper.compile = _compile
         return _wrapper
 
     return _decorator

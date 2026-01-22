@@ -15,7 +15,7 @@
 import torch
 import ttnn
 import ttl
-from test_helpers import to_dram
+from ttlang_test_utils import to_dram
 
 
 @ttl.kernel(grid=(1, 1))
@@ -101,8 +101,6 @@ def fused_mul_add_streaming(a, b, c, y):
                         ],
                     )
                     tx.wait()
-
-    return ttl.Program(compute_kernel, read_kernel, write_kernel)(a, b, c, y)
 
 
 # CHECK: Testing Large DRAM Streaming

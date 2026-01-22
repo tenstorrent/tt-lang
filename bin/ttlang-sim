@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# TT-Lang Simulator launcher (ttlsim)
+# TT-Lang Simulator launcher (ttlang-sim)
 #
 # Runs tt-lang kernels on the simulator backend without code changes.
-# Usage: ttlsim <file.py|module> [args...]
+# Usage: ttlang-sim <file.py|module> [args...]
 
 PYTHON="${PYTHON:-python}"
 
 # Run as module to avoid relative import issues with sim.copy shadowing stdlib copy
-exec "$PYTHON" -m sim.ttlsim "$@"
+exec "$PYTHON" -m sim.ttlang_sim "$@"

@@ -1,4 +1,5 @@
 # Development dependencies
+pytest-order>=1.0.0
 black
 myst-parser
 pre-commit

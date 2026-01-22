@@ -7,11 +7,8 @@ TTL DSL module providing the unified ttl.* API namespace.
 
 Decorators:
     @ttl.kernel() - Define a kernel function
-    @ttl.compute() - Define a compute thread
-    @ttl.datamovement() - Define a data movement thread
-
-Classes:
-    ttl.Program - Kernel program executor
+    @ttl.compute() - Define a compute thread (auto-collected)
+    @ttl.datamovement() - Define a data movement thread (auto-collected)
 
 Functions:
     ttl.make_circular_buffer_like() - Create a circular buffer

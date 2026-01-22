@@ -18,10 +18,10 @@ import tempfile
 
 import pytest
 import torch
-import ttnn
-from test_helpers import assert_allclose, to_l1
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import assert_allclose, to_l1
 
 
 # =============================================================================
@@ -68,7 +68,6 @@ def {name}_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
@@ -111,7 +110,6 @@ def {name}_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
@@ -146,7 +144,6 @@ def {name}_kernel(inp, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(inp, out)
 '''
 
 

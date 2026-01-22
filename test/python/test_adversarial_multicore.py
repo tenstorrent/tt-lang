@@ -18,12 +18,12 @@ Evil features:
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import to_dram
 
 import ttl
-
-pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 
@@ -147,10 +147,6 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
         with out4_cb.wait() as o4_blk:
             tx = ttl.copy(o4_blk, out4[row : row + 2, col : col + 2])
             tx.wait()
-
-    return ttl.Program(evil_compute, dm_read, dm_write)(
-        a, b, c, d, out1, out2, out3, out4
-    )
 
 
 def compute_expected(a, b, c, d):

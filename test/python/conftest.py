@@ -4,11 +4,21 @@
 
 """Pytest configuration and fixtures for tt-lang Python tests."""
 
-import glob
-import importlib.util
 import os
+import sys
 
 import pytest
+
+# Add test root to path for shared utilities.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from ttlang_test_utils import is_hardware_available, is_ttnn_available
+
+# =============================================================================
+# Feature detection
+# =============================================================================
+
+_ttnn_available = is_ttnn_available()
+_hardware_available = is_hardware_available()
 
 # Lit tests that should not be collected by pytest (they have # RUN: directives)
 collect_ignore = [
@@ -19,25 +29,8 @@ collect_ignore = [
     "utils.py",
 ]
 
-# =============================================================================
-# Feature detection
-# =============================================================================
 
-_ttnn_available = False
-if importlib.util.find_spec("ttnn") is not None:
-    _ttnn_available = True
-
-# Check for hardware: simulator, env var, or physical device
-if os.environ.get("TT_METAL_SIMULATOR"):
-    _hardware_available = True
-elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
-    _hardware_available = True
-elif glob.glob("/dev/tenstorrent*"):
-    _hardware_available = True
-else:
-    _hardware_available = False
-
-# Set compile-only mode if no hardware
+# Set compile-only mode if no hardware.
 if not _hardware_available:
     os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
@@ -50,23 +43,8 @@ if not _hardware_available:
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
-        "markers", "requires_ttnn: skip test if ttnn is not available"
-    )
-    config.addinivalue_line(
         "markers", "requires_device: skip test if no TT device is available"
     )
-
-
-def pytest_collection_modifyitems(config, items):
-    """Skip tests based on available features."""
-    skip_ttnn = pytest.mark.skip(reason="TTNN not available")
-    skip_device = pytest.mark.skip(reason="No Tenstorrent device available")
-
-    for item in items:
-        if "requires_ttnn" in item.keywords and not _ttnn_available:
-            item.add_marker(skip_ttnn)
-        if "requires_device" in item.keywords and not _hardware_available:
-            item.add_marker(skip_device)
 
 
 # =============================================================================

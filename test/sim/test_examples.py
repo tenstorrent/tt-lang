@@ -3,9 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # TODO: This could probably be done better with lit tests
-"""CLI tests that invoke ttlsim for simulator examples.
+"""CLI tests that invoke ttlang-sim for simulator examples.
 
-Runs the ttlsim launcher against each script under examples/ and verifies
+Runs the ttlang-sim launcher against each script under examples/ and verifies
 that the output indicates success.
 """
 
@@ -47,11 +47,11 @@ EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
 
 # Use the current Python interpreter to run the launcher module reliably
 PYTHON = sys.executable
-LAUNCHER_MODULE = [PYTHON, "-m", "sim.ttlsim"]
+LAUNCHER_MODULE = [PYTHON, "-m", "sim.ttlang_sim"]
 
 
-def run_ttlsim_and_capture(script_path: Path) -> tuple[int, str]:
-    """Run ttlsim against the provided example script and return (code, output)."""
+def run_ttlang_sim_and_capture(script_path: Path) -> tuple[int, str]:
+    """Run ttlang-sim against the provided example script and return (code, output)."""
     proc = subprocess.run(
         LAUNCHER_MODULE + [str(script_path)],
         cwd=REPO_ROOT,
@@ -64,8 +64,8 @@ def run_ttlsim_and_capture(script_path: Path) -> tuple[int, str]:
 
 
 def assert_success_output(code: int, out: str) -> None:
-    """Assert that ttlsim ran successfully and produced success output."""
-    assert code == 0, f"ttlsim exited with code {code}. Output:\n{out}"
+    """Assert that ttlang-sim ran successfully and produced success output."""
+    assert code == 0, f"ttlang-sim exited with code {code}. Output:\n{out}"
 
 
 @pytest.mark.parametrize(
@@ -80,8 +80,8 @@ def assert_success_output(code: int, out: str) -> None:
     ],
 )
 def test_example_cli(script_name: str) -> None:
-    """Test simulator examples run successfully via ttlsim CLI."""
-    code, out = run_ttlsim_and_capture(EXAMPLES_DIR / script_name)
+    """Test simulator examples run successfully via ttlang-sim CLI."""
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name)
     assert_success_output(code, out)
 
 
@@ -93,8 +93,8 @@ def test_example_cli(script_name: str) -> None:
     ],
 )
 def test_metal_example_cli(example_path: str) -> None:
-    """Test metal examples run successfully via ttlsim CLI."""
-    code, out = run_ttlsim_and_capture(EXAMPLES_METAL_DIR / example_path)
+    """Test metal examples run successfully via ttlang-sim CLI."""
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path)
     assert_success_output(code, out)
 
 
@@ -105,7 +105,7 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
     block that expects multiple tiles. The error message should clearly indicate
     the mismatch and point to the exact line where the error occurs.
     """
-    code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "eltwise_add_error.py")
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / "eltwise_add_error.py")
     assert (
         code != 0
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"

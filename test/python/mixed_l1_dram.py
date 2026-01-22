@@ -62,8 +62,6 @@ def add_mixed_memory(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # CHECK: === Mixed L1/DRAM Test ===
 print("=== Mixed L1/DRAM Test ===")

@@ -58,8 +58,6 @@ def invalid_sharded_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 if __name__ == "__main__":
     import torch

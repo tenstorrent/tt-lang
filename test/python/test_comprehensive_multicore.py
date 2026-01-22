@@ -14,12 +14,12 @@ Comprehensive multicore test combining multiple features:
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram, to_l1
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import to_dram, to_l1
 
 import ttl
-
-pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 GRID_ROWS = 8
@@ -125,8 +125,6 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
             tx1.wait()
             tx2.wait()
             tx3.wait()
-
-    return ttl.Program(fused_compute, dm_read, dm_write)(a, b, c, out1, out2, out3)
 
 
 def compute_expected(a, b, c):
