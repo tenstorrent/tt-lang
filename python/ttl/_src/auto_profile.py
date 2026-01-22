@@ -25,6 +25,7 @@ class Colors:
     GREEN = "\033[92m"
     CYAN = "\033[96m"
     BOLD = "\033[1m"
+    DIM = "\033[2m"
     RESET = "\033[0m"
 
 
@@ -279,20 +280,22 @@ def print_profile_report(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
                             f"{total_line_cycles:<10,} {source_line}{Colors.RESET}"
                         )
-                        for (op_name, implicit), ops in sorted(op_groups.items()):
+                        # Sort: explicit ops first (implicit=False), then implicit
+                        sorted_ops = sorted(op_groups.items(), key=lambda x: (x[0][1], x[0][0] or ""))
+                        for (op_name, implicit), ops in sorted_ops:
                             op_cycles = sum(r.cycles for r in ops)
                             op_label = op_name or "line"
                             if implicit:
                                 op_label = f"{op_label} (implicit)"
                             if len(ops) > 1:
                                 print(
-                                    f"{'':6} {'':7} {'':10}   "
-                                    f"{op_label}: {op_cycles:,} cycles (x{len(ops)})"
+                                    f"{Colors.DIM}{'':6} {'':7} "
+                                    f"{op_cycles:<10,} {op_label} (x{len(ops)}){Colors.RESET}"
                                 )
                             else:
                                 print(
-                                    f"{'':6} {'':7} {'':10}   "
-                                    f"{op_label}: {op_cycles:,} cycles"
+                                    f"{Colors.DIM}{'':6} {'':7} "
+                                    f"{op_cycles:<10,} {op_label}{Colors.RESET}"
                                 )
                     else:
                         cycles_list = [r.cycles for r in line_results]
