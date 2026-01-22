@@ -111,6 +111,8 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
 
     Called after kernel execution when auto-profiling is enabled.
     """
+    import time
+
     if not is_auto_profile_enabled():
         return
 
@@ -119,6 +121,11 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
         return
 
     from pathlib import Path
+
+    # Debug: print environment
+    print(f"[Auto-profile DEBUG] TT_METAL_HOME={os.environ.get('TT_METAL_HOME', '<not set>')}")
+    print(f"[Auto-profile DEBUG] TT_METAL_DEVICE_PROFILER={os.environ.get('TT_METAL_DEVICE_PROFILER', '<not set>')}")
+    print(f"[Auto-profile DEBUG] TTLANG_PROFILE_CSV={os.environ.get('TTLANG_PROFILE_CSV', '<not set>')}")
 
     # Get device from first ttnn tensor
     device = None
@@ -132,8 +139,10 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
         return
 
     # Read profiler data from device
+    print("[Auto-profile DEBUG] Calling ttnn.ReadDeviceProfiler(device)...")
     try:
         ttnn.ReadDeviceProfiler(device)
+        print("[Auto-profile DEBUG] ReadDeviceProfiler returned successfully")
     except Exception as e:
         print(f"[Auto-profile] Failed to read device profiler: {e}")
         return
@@ -148,10 +157,27 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
             return
         csv_path = Path(tt_metal_home) / "generated/profiler/.logs/profile_log_device.csv"
 
+    print(f"[Auto-profile DEBUG] Looking for CSV at: {csv_path}")
+    print(f"[Auto-profile DEBUG] Parent dir exists: {csv_path.parent.exists()}")
+    if csv_path.parent.exists():
+        print(f"[Auto-profile DEBUG] Files in parent dir: {list(csv_path.parent.iterdir())}")
+
+    # The CSV is written asynchronously, so wait for it to appear
+    max_wait_seconds = 5
+    wait_interval = 0.1
+    waited = 0
+    while not csv_path.exists() and waited < max_wait_seconds:
+        time.sleep(wait_interval)
+        waited += wait_interval
+        if waited % 1.0 < wait_interval:
+            print(f"[Auto-profile DEBUG] Waiting for CSV... ({waited:.1f}s)")
+
     if not csv_path.exists():
-        print(f"[Auto-profile] Profile CSV not found at {csv_path}")
+        print(f"[Auto-profile] Profile CSV not found at {csv_path} after {max_wait_seconds}s")
         print("[Auto-profile] Ensure TT_METAL_DEVICE_PROFILER=1 is set before running")
         return
+
+    print(f"[Auto-profile DEBUG] Found CSV after {waited:.1f}s")
 
     # Parse and display results
     line_mapper = get_line_mapper()
