@@ -54,6 +54,31 @@ class SourceLineMapper:
         return self.signpost_to_line.get(signpost_name)
 
 
+def parse_signpost_name(signpost: str) -> Tuple[Optional[str], bool]:
+    """
+    Parse op name and implicit flag from signpost name.
+
+    Returns (op_name, is_implicit) where op_name is None for line-only signposts.
+    Examples:
+      "line_52_before" -> (None, False)
+      "line_52_cb_wait_before" -> ("cb_wait", False)
+      "line_52_implicit_cb_pop_before" -> ("cb_pop", True)
+    """
+    parts = signpost.rsplit("_", 1)  # Split off before/after
+    if len(parts) != 2 or parts[1] not in ("before", "after"):
+        return None, False
+
+    middle = parts[0]  # e.g., "line_52" or "line_52_cb_wait" or "line_52_implicit_cb_pop"
+    line_parts = middle.split("_", 2)  # Split "line", "52", rest
+    if len(line_parts) <= 2:
+        return None, False
+
+    rest = line_parts[2]  # e.g., "cb_wait" or "implicit_cb_pop"
+    if rest.startswith("implicit_"):
+        return rest[9:], True
+    return rest, False
+
+
 class ProfileResult:
     """Represents profiling results for a single signpost."""
 
@@ -65,6 +90,7 @@ class ProfileResult:
         self.cycles = cycles
         self.lineno = lineno
         self.source = source.strip()
+        self.op_name, self.implicit = parse_signpost_name(signpost)
 
 
 def generate_signpost_name(operation: str, lineno: int, col: int) -> Tuple[str, str]:
@@ -230,13 +256,44 @@ def print_profile_report(
                     elif total_line_cycles >= second_hottest and second_hottest > 0:
                         color = Colors.YELLOW
 
-                    if len(line_results) == 1:
+                    # Group by op_name to show breakdown
+                    op_groups = defaultdict(list)
+                    for r in line_results:
+                        key = (r.op_name, r.implicit)
+                        op_groups[key].append(r)
+
+                    # Check if we have multiple distinct ops
+                    has_named_ops = any(r.op_name for r in line_results)
+
+                    if len(line_results) == 1 and not has_named_ops:
                         r = line_results[0]
                         pct = 100.0 * r.cycles / thread_cycles[thread]
                         print(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
                             f"{r.cycles:<10,} {source_line}{Colors.RESET}"
                         )
+                    elif has_named_ops:
+                        # Show line with total, then breakdown per op
+                        pct = 100.0 * total_line_cycles / thread_cycles[thread]
+                        print(
+                            f"{color}{file_lineno:<6} {pct:>5.1f}%  "
+                            f"{total_line_cycles:<10,} {source_line}{Colors.RESET}"
+                        )
+                        for (op_name, implicit), ops in sorted(op_groups.items()):
+                            op_cycles = sum(r.cycles for r in ops)
+                            op_label = op_name or "line"
+                            if implicit:
+                                op_label = f"{op_label} (implicit)"
+                            if len(ops) > 1:
+                                print(
+                                    f"{'':6} {'':7} {'':10}   "
+                                    f"{op_label}: {op_cycles:,} cycles (x{len(ops)})"
+                                )
+                            else:
+                                print(
+                                    f"{'':6} {'':7} {'':10}   "
+                                    f"{op_label}: {op_cycles:,} cycles"
+                                )
                     else:
                         cycles_list = [r.cycles for r in line_results]
                         avg_cycles = sum(cycles_list) / len(cycles_list)

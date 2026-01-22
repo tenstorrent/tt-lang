@@ -230,10 +230,29 @@ class TTLGenericCompiler(TTCompilerBase):
         self._emit_line_signpost_if_needed(node)
         return visit_fn()
 
-    def _emit_op_signposts(self, op_name: str, node, op_fn):
-        """Emit line-based signposts for operations that bypass the visitor."""
-        self._emit_line_signpost_if_needed(node)
-        return op_fn()
+    def _emit_op_signposts(self, op_name: str, node, op_fn, implicit=False):
+        """Emit signposts for CB operations with op name included."""
+        if not self.auto_profile_enabled:
+            return op_fn()
+
+        file_lineno = node.lineno + self.line_offset
+        prefix = "implicit_" if implicit else ""
+        before_name = f"line_{file_lineno}_{prefix}{op_name}_before"
+        after_name = f"line_{file_lineno}_{prefix}{op_name}_after"
+
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {file_lineno}>"
+
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+
+        self._emit_signpost(before_name)
+        result = op_fn()
+        self._emit_signpost(after_name)
+        return result
 
     def visit_Call(self, node):
         """Override to set location context, catch errors, and inject auto-profiling."""
@@ -572,11 +591,12 @@ class TTLGenericCompiler(TTCompilerBase):
             for stmt in node.body:
                 self.visit(stmt)
 
-            # Release in reverse order
+            # Release in reverse order (implicit ops from with statement)
             for op_name, release_op, cb_val, expr_node in reversed(releases):
                 self._emit_op_signposts(
                     op_name, expr_node,
-                    lambda ro=release_op, cv=cb_val: ro(cv)
+                    lambda ro=release_op, cv=cb_val: ro(cv),
+                    implicit=True
                 )
 
 
