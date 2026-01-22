@@ -21,8 +21,8 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-# For BH extended grid: grid=(12, 8) with shape=(3072, 2048)
-@ttl.kernel(grid=(8, 8))  # (cols, rows)
+# BH extended grid: 12 cols x 8 rows, tensor 2048 rows x 3072 cols
+@ttl.kernel(grid=(12, 8))  # (cols, rows)
 def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
@@ -139,7 +139,7 @@ device = ttnn.open_device(device_id=0)
 
 
 try:
-    shape = (2048, 2048)
+    shape = (2048, 3072)  # (rows, cols) matching grid=(12, 8) = 12 cols x 8 rows
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)
     c = torch.rand(shape, dtype=torch.bfloat16)
