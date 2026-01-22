@@ -136,13 +136,21 @@ def parse_device_profile_csv(
 
 def print_profile_report(
     results: List[ProfileResult],
-    source_lines: List[str],
+    all_source_lines: Dict[str, List[str]],
+    thread_to_kernel: Dict[str, str],
     line_mapper: Optional[SourceLineMapper] = None,
 ):
     """
     Print a profile report organized by thread.
 
     Shows full source context with cycle annotations where available.
+    Each thread displays its corresponding kernel's source code.
+
+    Args:
+        results: List of ProfileResult from CSV parsing
+        all_source_lines: Dict mapping kernel name to source lines
+        thread_to_kernel: Dict mapping RISC thread name to kernel name
+        line_mapper: Optional SourceLineMapper with line offset info
     """
     print()
     print("=" * 100)
@@ -175,9 +183,14 @@ def print_profile_report(
     for thread in sorted_threads:
         thread_results = sorted(thread_to_results[thread], key=lambda r: r.lineno)
 
+        # Get the kernel name and source for this thread
+        kernel_name = thread_to_kernel.get(thread, "")
+        source_lines = all_source_lines.get(kernel_name, [])
+
         print("=" * 100)
+        kernel_info = f" [{kernel_name}]" if kernel_name else ""
         print(
-            f"THREAD: {thread:<10} ({thread_ops[thread]} ops, "
+            f"THREAD: {thread:<10}{kernel_info} ({thread_ops[thread]} ops, "
             f"{thread_cycles[thread]:,} cycles, "
             f"{100.0 * thread_cycles[thread] / total_cycles:.1f}% of total)"
         )
@@ -250,6 +263,9 @@ def print_profile_report(
                 else:
                     if source_line.strip():
                         print(f"{file_lineno:<6} {'':7} {'':10} {source_line}")
+        else:
+            # No source available for this thread
+            print(f"       (no source available for kernel '{kernel_name}')")
 
         print()
 
@@ -257,8 +273,10 @@ def print_profile_report(
     print("THREAD SUMMARY")
     print("=" * 100)
     for thread in sorted_threads:
+        kernel_name = thread_to_kernel.get(thread, "")
+        kernel_info = f" [{kernel_name}]" if kernel_name else ""
         print(
-            f"  {thread:<12} {thread_cycles[thread]:>10,} cycles "
+            f"  {thread:<12}{kernel_info:>20} {thread_cycles[thread]:>10,} cycles "
             f"({thread_ops[thread]:>3} ops) "
             f"[{100.0 * thread_cycles[thread] / total_cycles:>5.1f}%]"
         )

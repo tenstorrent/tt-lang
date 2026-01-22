@@ -105,11 +105,20 @@ def _should_execute() -> bool:
     return os.environ.get("TTLANG_COMPILE_ONLY", "0") != "1"
 
 
-def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
+def _run_profiling_pipeline(
+    tensors: tuple,
+    all_source_lines: Dict[str, List[str]],
+    thread_to_kernel: Dict[str, str],
+):
     """
     Read device profiler data and display profile report.
 
     Called after kernel execution when auto-profiling is enabled.
+
+    Args:
+        tensors: Tuple of tensor arguments passed to the kernel
+        all_source_lines: Dict mapping kernel name to source lines
+        thread_to_kernel: Dict mapping RISC thread name to kernel name
     """
     import time
 
@@ -181,12 +190,13 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
 
     # Parse and display results
     line_mapper = get_line_mapper()
-    line_mapper.set_source(source_lines)
 
     try:
         results = parse_device_profile_csv(csv_path, line_mapper)
         if results:
-            print_profile_report(results, source_lines, line_mapper)
+            print_profile_report(
+                results, all_source_lines, thread_to_kernel, line_mapper
+            )
         else:
             print("[Auto-profile] No signpost results found in profile CSV")
     except Exception as e:
@@ -286,6 +296,8 @@ class CompiledTTNNKernel:
         cb_configs=None,
         program_hash=None,
         source_lines=None,
+        all_source_lines=None,
+        thread_to_kernel=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -299,7 +311,9 @@ class CompiledTTNNKernel:
             kernel_tensor_indices: List of global tensor indices used by each kernel
             cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index
             program_hash: Hash for tt-metal program cache
-            source_lines: Source code lines for auto-profiling reports
+            source_lines: Source code lines for auto-profiling reports (deprecated)
+            all_source_lines: Dict mapping kernel name to source lines
+            thread_to_kernel: Dict mapping RISC thread name to kernel name
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -310,6 +324,8 @@ class CompiledTTNNKernel:
         self.cb_configs = cb_configs or []
         self.program_hash = program_hash
         self.source_lines = source_lines
+        self.all_source_lines = all_source_lines or {}
+        self.thread_to_kernel = thread_to_kernel or {}
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -378,6 +394,7 @@ def _compile_ttnn_kernel(
     program_hash=None,
     verbose=True,
     source_lines=None,
+    all_source_lines=None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -471,6 +488,10 @@ def _compile_ttnn_kernel(
     kernel_arg_specs = []
     noc_kernel_idx = 0
 
+    # Build thread-to-kernel mapping for profiling
+    # Maps RISC thread names to kernel names
+    thread_to_kernel = {}
+
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
@@ -478,11 +499,17 @@ def _compile_ttnn_kernel(
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
+            # Compute kernels run on TRISC threads
+            thread_to_kernel["TRISC_0"] = name
+            thread_to_kernel["TRISC_1"] = name
+            thread_to_kernel["TRISC_2"] = name
         elif thread_type == "noc":
             if noc_kernel_idx == 0:
                 config = ttnn.ReaderConfigDescriptor()
+                thread_to_kernel["NCRISC"] = name  # Reader
             else:
                 config = ttnn.WriterConfigDescriptor()
+                thread_to_kernel["BRISC"] = name  # Writer
             noc_kernel_idx += 1
         else:
             config = ttnn.ReaderConfigDescriptor()
@@ -506,6 +533,8 @@ def _compile_ttnn_kernel(
         cb_configs=cb_configs,
         program_hash=program_hash,
         source_lines=source_lines,
+        all_source_lines=all_source_lines,
+        thread_to_kernel=thread_to_kernel,
     )
 
     if verbose:
@@ -962,6 +991,7 @@ def _compile_kernel(
             cb_configs,
             program_hash=program_hash,
             source_lines=profile_source_lines,
+            all_source_lines=all_source_lines,
         )
         return compiled_kernel
 
@@ -1065,8 +1095,12 @@ def pykernel_gen(
                 result = compiled_kernel(*args)
 
                 # Run auto-profiling after execution
-                if is_auto_profile_enabled() and compiled_kernel.source_lines:
-                    _run_profiling_pipeline(args, compiled_kernel.source_lines)
+                if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
+                    _run_profiling_pipeline(
+                        args,
+                        compiled_kernel.all_source_lines,
+                        compiled_kernel.thread_to_kernel,
+                    )
 
                 return result
 
