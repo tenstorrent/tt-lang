@@ -967,6 +967,13 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
 // Profiling operation lowering patterns
 //===----------------------------------------------------------------------===//
 
+static void createEmitCVerbatim(Location loc, StringRef value,
+                                ConversionPatternRewriter &rewriter) {
+  OperationState state(loc, "emitc.verbatim");
+  state.addAttribute("value", rewriter.getStringAttr(value));
+  rewriter.create(state);
+}
+
 struct SignpostLowering : OpConversionPattern<SignpostOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -975,10 +982,11 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
                   ConversionPatternRewriter &rewriter) const override {
     // Emit DeviceZoneScopedN wrapped in braces to avoid variable conflicts.
     auto loc = op.getLoc();
-    rewriter.create<emitc::VerbatimOp>(loc, "{");
-    rewriter.create<emitc::VerbatimOp>(loc, "DeviceZoneScopedN(\"" +
-                                                op.getName().str() + "\");");
-    rewriter.create<emitc::VerbatimOp>(loc, "}");
+    createEmitCVerbatim(loc, "{", rewriter);
+    createEmitCVerbatim(loc,
+                        "DeviceZoneScopedN(\"" + op.getName().str() + "\");",
+                        rewriter);
+    createEmitCVerbatim(loc, "}", rewriter);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1321,8 +1329,8 @@ static void removeTensorDataflowOps(func::FuncOp func) {
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
-    MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
+    MLIRContext &ctx = getContext();
     TTLToTTKernelTypeConverter typeConverter;
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
