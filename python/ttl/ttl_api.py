@@ -103,47 +103,12 @@ def _make_cache_key(
     args: tuple,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
-    compute_config_key: Optional[tuple],
 ) -> tuple:
-    """Create cache key from tensor properties and compute config overrides."""
+    """Create cache key from tensor properties and runtime compute config parameters."""
     tensor_key = tuple(
         _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
     )
-    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en, compute_config_key)
-
-
-def _normalize_compute_config_value(value):
-    if value is None:
-        return None
-    if isinstance(value, (bool, int, float, str)):
-        return value
-    return str(value)
-
-
-def _get_compute_config_key(compute_config) -> Optional[tuple]:
-    if compute_config is None:
-        return None
-    return tuple(
-        (name, _normalize_compute_config_value(getattr(compute_config, name, None)))
-        for name in COMPUTE_CONFIG_FIELDS
-    )
-
-
-def _apply_compute_config_descriptor(config, compute_config) -> None:
-    if ttnn is not None:
-        invalid_math_fidelity = ttnn.MathFidelity.Invalid
-    else:
-        invalid_math_fidelity = None
-
-    for name in COMPUTE_CONFIG_FIELDS:
-        if not hasattr(compute_config, name) or not hasattr(config, name):
-            continue
-        value = getattr(compute_config, name)
-        if value is None:
-            continue
-        if name == "math_fidelity" and value == invalid_math_fidelity:
-            continue
-        setattr(config, name, value)
+    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en)
 
 
 def _should_execute() -> bool:
@@ -361,7 +326,6 @@ def _compile_ttnn_kernel(
     thread_tensor_indices,
     cb_configs=None,
     program_hash=None,
-    compute_config=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     verbose=True,
@@ -466,9 +430,7 @@ def _compile_ttnn_kernel(
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
-            if compute_config is not None:
-                _apply_compute_config_descriptor(config, compute_config)
-            elif fp32_dest_acc_en is not None or dst_full_sync_en is not None:
+            if fp32_dest_acc_en is not None or dst_full_sync_en is not None:
                 if fp32_dest_acc_en is not None:
                     config.fp32_dest_acc_en = fp32_dest_acc_en
                 if dst_full_sync_en is not None:
@@ -747,7 +709,6 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
-    compute_config=None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -765,9 +726,6 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
-        compute_config: Optional compute kernel config override. If provided,
-            fp32_dest_acc_en/dst_full_sync_en must be unset or match
-            compute_config values.
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1009,7 +967,6 @@ def _compile_kernel(
             thread_tensor_indices,
             cb_configs,
             program_hash=program_hash,
-            compute_config=compute_config,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
         )
@@ -1025,7 +982,6 @@ def pykernel_gen(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
-    compute_config=None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -1043,7 +999,6 @@ def pykernel_gen(
         tiled: Whether to use tiled layout
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
-        compute_config: Optional compute kernel config override
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -1088,32 +1043,8 @@ def pykernel_gen(
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             resolved_grid = _resolve_grid(grid, args, kwargs)
-            compute_config_key = _get_compute_config_key(compute_config)
             fp32_override = fp32_dest_acc_en
             dst_sync_override = dst_full_sync_en
-
-            if compute_config is not None:
-                cfg_fp32 = getattr(compute_config, "fp32_dest_acc_en", None)
-                cfg_dst_sync = getattr(compute_config, "dst_full_sync_en", None)
-                if fp32_override is not None and cfg_fp32 is not None:
-                    if fp32_override != cfg_fp32:
-                        raise ValueError(
-                            "fp32_dest_acc_en conflicts with compute_config: "
-                            f"{fp32_override} vs {cfg_fp32}. Set only one or "
-                            "make them match."
-                        )
-                elif fp32_override is None and cfg_fp32 is not None:
-                    fp32_override = cfg_fp32
-
-                if dst_sync_override is not None and cfg_dst_sync is not None:
-                    if dst_sync_override != cfg_dst_sync:
-                        raise ValueError(
-                            "dst_full_sync_en conflicts with compute_config: "
-                            f"{dst_sync_override} vs {cfg_dst_sync}. Set only one "
-                            "or make them match."
-                        )
-                elif dst_sync_override is None and cfg_dst_sync is not None:
-                    dst_sync_override = cfg_dst_sync
 
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
@@ -1121,7 +1052,6 @@ def pykernel_gen(
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
-                compute_config_key=compute_config_key,
             )
 
             # Check cache for previously compiled kernel
@@ -1145,7 +1075,6 @@ def pykernel_gen(
                     program_hash,
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
-                    compute_config=compute_config,
                 )
 
                 if compiled_kernel is not None:
