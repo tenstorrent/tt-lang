@@ -282,21 +282,21 @@ def print_profile_report(
                         )
                         # Sort: explicit ops first (implicit=False), then implicit
                         sorted_ops = sorted(op_groups.items(), key=lambda x: (x[0][1], x[0][0] or ""))
-                        for (op_name, implicit), ops in sorted_ops:
+                        op_list = list(sorted_ops)
+                        for i, ((op_name, implicit), ops) in enumerate(op_list):
                             op_cycles = sum(r.cycles for r in ops)
                             op_label = op_name or "line"
                             if implicit:
                                 op_label = f"{op_label} (implicit)"
                             if len(ops) > 1:
-                                print(
-                                    f"{Colors.DIM}{'':6} {'':7} "
-                                    f"{op_cycles:<10,} {op_label} (x{len(ops)}){Colors.RESET}"
-                                )
-                            else:
-                                print(
-                                    f"{Colors.DIM}{'':6} {'':7} "
-                                    f"{op_cycles:<10,} {op_label}{Colors.RESET}"
-                                )
+                                op_label = f"{op_label} (x{len(ops)})"
+                            # Use box-drawing chars: ├─ for middle items, ╰─ for last
+                            is_last = (i == len(op_list) - 1)
+                            arrow = "╰─" if is_last else "├─"
+                            print(
+                                f"{Colors.DIM}{'':80}"
+                                f"{arrow} {op_cycles:,} {op_label}{Colors.RESET}"
+                            )
                     else:
                         cycles_list = [r.cycles for r in line_results]
                         avg_cycles = sum(cycles_list) / len(cycles_list)
