@@ -141,6 +141,8 @@ class TTLGenericCompiler(TTCompilerBase):
         # Auto-profiling support
         self.auto_profile_enabled = is_auto_profile_enabled()
         self.line_mapper = get_line_mapper() if self.auto_profile_enabled else None
+        if self.line_mapper:
+            self.line_mapper.line_offset = self.line_offset
 
         self._fn_map = {}
         for name, val in TTLGenericCompiler._syntax.items():
@@ -229,23 +231,53 @@ class TTLGenericCompiler(TTCompilerBase):
         if op_name is None:
             return visit_fn()
 
+        # Use actual file line number (node.lineno + line_offset)
+        file_lineno = node.lineno + self.line_offset
         before_name, after_name = generate_signpost_name(
-            op_name, node.lineno, node.col_offset
+            op_name, file_lineno, node.col_offset
         )
 
         # Get source line text for reporting
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
         else:
-            source_line = f"<line {node.lineno}>"
+            source_line = f"<line {file_lineno}>"
 
-        # Register signposts with line mapper
+        # Register signposts with line mapper using actual file line number
         if self.line_mapper:
-            self.line_mapper.register_signpost(before_name, node.lineno, source_line)
-            self.line_mapper.register_signpost(after_name, node.lineno, source_line)
+            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
 
         self._emit_signpost(before_name)
         result = visit_fn()
+        self._emit_signpost(after_name)
+        return result
+
+    def _emit_op_signposts(self, op_name: str, node, op_fn):
+        """
+        Emit signposts around an operation that bypasses normal visitor pattern.
+
+        Used for CB operations in visit_With that call ttl.* directly.
+        """
+        if not self.auto_profile_enabled:
+            return op_fn()
+
+        file_lineno = node.lineno + self.line_offset
+        before_name, after_name = generate_signpost_name(
+            op_name, file_lineno, node.col_offset
+        )
+
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {file_lineno}>"
+
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+
+        self._emit_signpost(before_name)
+        result = op_fn()
         self._emit_signpost(after_name)
         return result
 
@@ -559,11 +591,17 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Get tensor type from CB for reserve/wait result
                 tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
                 if method_name == "reserve":
-                    tensor = ttl.cb_reserve(tensor_type, cb_val)
-                    releases.append((ttl.cb_push, cb_val))
+                    tensor = self._emit_op_signposts(
+                        "cb_reserve", context_expr,
+                        lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv)
+                    )
+                    releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
                 else:  # wait
-                    tensor = ttl.cb_wait(tensor_type, cb_val)
-                    releases.append((ttl.cb_pop, cb_val))
+                    tensor = self._emit_op_signposts(
+                        "cb_wait", context_expr,
+                        lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv)
+                    )
+                    releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
 
                 # Attach CB to tensor so store() can find the CB association
                 acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
@@ -580,8 +618,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 self.visit(stmt)
 
             # Release in reverse order
-            for release_op, cb_val in reversed(releases):
-                release_op(cb_val)
+            for op_name, release_op, cb_val, expr_node in reversed(releases):
+                self._emit_op_signposts(
+                    op_name, expr_node,
+                    lambda ro=release_op, cv=cb_val: ro(cv)
+                )
 
 
 def syntax(syntax_name):
