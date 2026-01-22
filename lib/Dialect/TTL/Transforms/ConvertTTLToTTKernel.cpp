@@ -1329,8 +1329,8 @@ static void removeTensorDataflowOps(func::FuncOp func) {
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   void runOnOperation() override {
-    ModuleOp mod = getOperation();
     MLIRContext &ctx = getContext();
+    ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)

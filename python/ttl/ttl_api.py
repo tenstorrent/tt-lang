@@ -131,11 +131,11 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
         print("[Auto-profile] No device found in tensors, skipping profiling")
         return
 
-    # Dump profiler data from device
+    # Read profiler data from device
     try:
-        ttnn.DumpDeviceProfiler(device)
+        ttnn.ReadDeviceProfiler(device)
     except Exception as e:
-        print(f"[Auto-profile] Failed to dump device profiler: {e}")
+        print(f"[Auto-profile] Failed to read device profiler: {e}")
         return
 
     # Find the profile CSV
