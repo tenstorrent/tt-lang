@@ -18,7 +18,6 @@ from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
 from ..layouts import TTNNLayoutConfig, create_ttnn_layout
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
-    generate_signpost_name,
     get_line_mapper,
     is_auto_profile_enabled,
 )
@@ -143,6 +142,7 @@ class TTLGenericCompiler(TTCompilerBase):
         self.line_mapper = get_line_mapper() if self.auto_profile_enabled else None
         if self.line_mapper:
             self.line_mapper.line_offset = self.line_offset
+        self._current_signpost_line = None
 
         self._fn_map = {}
         for name, val in TTLGenericCompiler._syntax.items():
@@ -186,100 +186,54 @@ class TTLGenericCompiler(TTCompilerBase):
             col=col,
         )
 
-    # Auto-profiling helpers (factored out to keep visitor code clean)
+    # Auto-profiling helpers for line-based signposting
 
     def _emit_signpost(self, name: str):
         """Emit a signpost operation into the MLIR."""
         ttl.signpost(name)
 
-    def _get_operation_name(self, node: ast.AST) -> Optional[str]:
-        """
-        Extract a meaningful operation name from an AST node.
+    def _emit_line_signpost_if_needed(self, node):
+        """Emit signposts at line boundaries for auto-profiling."""
+        if not self.auto_profile_enabled or not hasattr(node, "lineno"):
+            return
 
-        Returns operation name like "copy", "pop", "reserve", etc.
-        Returns None if the node should not be instrumented.
-        """
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name):
-                func_name = node.func.id
-                # Don't instrument signpost calls themselves
-                if func_name == "signpost":
-                    return None
-                return func_name
-            elif isinstance(node.func, ast.Attribute):
-                return node.func.attr
-        elif isinstance(node, ast.BinOp):
-            op_map = {
-                ast.Add: "tile_add",
-                ast.Sub: "tile_sub",
-                ast.Mult: "tile_mul",
-                ast.MatMult: "tile_matmul",
-            }
-            return op_map.get(type(node.op))
-        return None
+        file_lineno = node.lineno + self.line_offset
+        if self._current_signpost_line == file_lineno:
+            return
+
+        if self._current_signpost_line is not None:
+            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {file_lineno}>"
+
+        before_name = f"line_{file_lineno}_before"
+        after_name = f"line_{file_lineno}_after"
+
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+
+        self._emit_signpost(before_name)
+        self._current_signpost_line = file_lineno
+
+    def _close_final_signpost(self):
+        """Close the final signpost at the end of function body."""
+        if self.auto_profile_enabled and self._current_signpost_line is not None:
+            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+            self._current_signpost_line = None
 
     def _try_emit_auto_signposts(self, node, visit_fn):
-        """
-        Wrap a visitor with before/after signposts if auto-profiling is enabled.
-
-        Returns the result of visit_fn() with signposts emitted around it.
-        """
-        if not self.auto_profile_enabled:
-            return visit_fn()
-
-        op_name = self._get_operation_name(node)
-        if op_name is None:
-            return visit_fn()
-
-        # Use actual file line number (node.lineno + line_offset)
-        file_lineno = node.lineno + self.line_offset
-        before_name, after_name = generate_signpost_name(
-            op_name, file_lineno, node.col_offset
-        )
-
-        # Get source line text for reporting
-        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
-            source_line = self.source_lines[node.lineno - 1].strip()
-        else:
-            source_line = f"<line {file_lineno}>"
-
-        # Register signposts with line mapper using actual file line number
-        if self.line_mapper:
-            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
-            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
-
-        self._emit_signpost(before_name)
-        result = visit_fn()
-        self._emit_signpost(after_name)
-        return result
+        """Emit line-based signposts if auto-profiling is enabled."""
+        self._emit_line_signpost_if_needed(node)
+        return visit_fn()
 
     def _emit_op_signposts(self, op_name: str, node, op_fn):
-        """
-        Emit signposts around an operation that bypasses normal visitor pattern.
-
-        Used for CB operations in visit_With that call ttl.* directly.
-        """
-        if not self.auto_profile_enabled:
-            return op_fn()
-
-        file_lineno = node.lineno + self.line_offset
-        before_name, after_name = generate_signpost_name(
-            op_name, file_lineno, node.col_offset
-        )
-
-        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
-            source_line = self.source_lines[node.lineno - 1].strip()
-        else:
-            source_line = f"<line {file_lineno}>"
-
-        if self.line_mapper:
-            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
-            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
-
-        self._emit_signpost(before_name)
-        result = op_fn()
-        self._emit_signpost(after_name)
-        return result
+        """Emit line-based signposts for operations that bypass the visitor."""
+        self._emit_line_signpost_if_needed(node)
+        return op_fn()
 
     def visit_Call(self, node):
         """Override to set location context, catch errors, and inject auto-profiling."""
@@ -515,6 +469,7 @@ class TTLGenericCompiler(TTCompilerBase):
             for target in node.body:
                 self.visit(target)
 
+            self._close_final_signpost()
             func.ReturnOp([])
 
         self.symbol_tables.pop()
