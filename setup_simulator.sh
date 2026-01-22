@@ -13,7 +13,7 @@
 #
 # After setup completes:
 #   source .venv/bin/activate
-#   ./bin/ttlsim examples/eltwise_add.py
+#   ./bin/ttlang-sim examples/eltwise_add.py
 
 set -euo pipefail
 
@@ -161,7 +161,7 @@ echo "PYTHONPATH will be automatically configured to include:"
 echo "  - $REPO_PYTHON_DIR"
 echo ""
 echo "Then you can run simulator examples:"
-echo "  ./bin/ttlsim examples/eltwise_add.py"
+echo "  ./bin/ttlang-sim examples/eltwise_add.py"
 echo ""
 echo "To run simulator tests:"
 echo "  pytest test/sim/"
