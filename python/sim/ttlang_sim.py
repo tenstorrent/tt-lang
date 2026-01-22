@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-TT-Lang Simulator launcher (ttlsim).
+TT-Lang Simulator launcher (ttlang-sim).
 
 Runs tt-lang kernels written for the compiler on the simulator backend
 without requiring any code changes to the kernel files.
 
 Usage:
-    python ttlsim examples/metal_examples/singlecore_matmul/ttlang/singlecore_matmul.py
-    python ttlsim test/sim/my_test.py --verbose
-    python ttlsim -m test.sim.my_kernel
+    python ttlang-sim examples/metal_examples/singlecore_matmul/ttlang/singlecore_matmul.py
+    python ttlang-sim test/sim/my_test.py --verbose
+    python ttlang-sim -m test.sim.my_kernel
 """
 
 import sys
@@ -24,7 +24,7 @@ def setup_simulator_imports() -> None:
     Inject simulator implementations into sys.modules so they shadow the compiler APIs.
 
     This allows kernel code written for the compiler to transparently use simulator
-    implementations when run under ttlsim.
+    implementations when run under ttlang-sim.
     """
     # Import simulator implementations
     from sim import ttl, ttnn
@@ -94,12 +94,12 @@ def run_module(module_name: str, argv: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="ttlsim",
+        prog="ttlang-sim",
         description="Run tt-lang kernels on the simulator backend",
         epilog="Examples:\n"
-        "  python ttlsim examples/metal_examples/singlecore_matmul/ttlang/singlecore_matmul.py\n"
-        "  python ttlsim test/sim/test_add.py -v\n"
-        "  python ttlsim -m test.sim.my_kernel",
+        "  python ttlang-sim examples/metal_examples/singlecore_matmul/ttlang/singlecore_matmul.py\n"
+        "  python ttlang-sim test/sim/test_add.py -v\n"
+        "  python ttlang-sim -m test.sim.my_kernel",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
