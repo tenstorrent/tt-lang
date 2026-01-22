@@ -60,15 +60,6 @@ from .config import HAS_TT_DEVICE
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
 
-COMPUTE_CONFIG_FIELDS = (
-    "math_fidelity",
-    "math_approx_mode",
-    "fp32_dest_acc_en",
-    "dst_full_sync_en",
-    "unpack_to_dest_mode",
-    "bfp8_pack_precise",
-)
-
 
 def _register_thread(thread_fn: Callable) -> None:
     """Register a thread function during decoration."""
