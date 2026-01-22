@@ -18,6 +18,71 @@ Tenstorrent developers today face a choice between TT-NN which provides high-lev
 
 TT-Lang bridges this gap through progressive disclosure: simple kernels require minimal specification where the compiler infers compute API operations, NOC addressing, DST register allocation and more from high-level abstractions, while complex kernels allow developers to open the hood and craft pipelining and synchronization details directly. The primary use case is kernel fusion for model deployment. Engineers porting models through TT-NN quickly encounter operations that need to be fused for performance or patterns that TT-NN cannot express, and today this requires rewriting in TT-Metalium which takes weeks and demands undivided attention and hardware debugging expertise. TT-Lang makes this transition fast and correct: a developer can take a sequence of TT-NN operations, express the fused equivalent with explicit control over intermediate results and memory layout, validate correctness through simulation, and integrate the result as a drop-in replacement in their TT-NN graph.
 
+## Getting Started with TT-Lang
+
+The easiest way to get started is with [Claude Code](https://claude.com/claude-code) and an existing codebase. TT-Lang provides slash commands that guide Claude through kernel translation, testing, profiling, and optimization workflows.
+
+### Example Workflow
+
+```bash
+# Clone a model you want to port
+git clone https://github.com/karpathy/nanoGPT
+cd nanoGPT
+
+# Install TT-Lang slash commands (one-time setup)
+cd /path/to/tt-lang/claude-slash-commands
+./install.sh
+
+# Open Claude Code in your project
+cd /path/to/nanoGPT
+claude
+
+# Now use slash commands to translate kernels to TT-Lang:
+#   /ttl-import model.py    "translate the attention kernel to TT-Lang DSL"
+#   /ttl-test my_kernel.py  "generate tests for edge cases"
+#   /ttl-simulate my_kernel.py
+#   /ttl-optimize my_kernel.py
+```
+
+### Available Commands
+
+Run `/ttl-help` in Claude Code to see all available commands. Here is a summary:
+
+```
+/ttl-import <kernel>
+    Translate a CUDA, Triton, or PyTorch kernel to TT-Lang DSL. Analyzes the
+    source kernel, maps GPU concepts to Tenstorrent equivalents, and iterates
+    on testing until the translated kernel matches the original behavior.
+
+/ttl-export <kernel>
+    Export a TT-Lang kernel to TT-Metal C++ code. Runs the compiler pipeline,
+    extracts the generated C++, and beautifies it by improving variable names
+    and removing unnecessary casts for readable, production-ready output.
+
+/ttl-optimize <kernel>
+    Profile a kernel and apply performance optimizations. Identifies bottlenecks,
+    suggests improvements like tiling, pipelining, and fusion, then validates
+    that optimizations preserve correctness while improving throughput.
+
+/ttl-profile <kernel>
+    Run the profiler and display per-line cycle counts. Shows exactly where time
+    is spent in the kernel with annotated source, hotspot highlighting, and
+    memory vs compute breakdown.
+
+/ttl-simulate <kernel>
+    Execute a kernel in the functional simulator and analyze runtime behavior.
+    Verifies correctness, tracks data flow, identifies inefficient patterns,
+    and suggests concrete improvements based on dynamic analysis.
+
+/ttl-test <kernel>
+    Generate comprehensive test cases and a test runner for a kernel. Creates
+    edge case coverage, reference implementations, and TTNN integration code
+    with proper assertions and reproducible test inputs.
+
+/ttl-help
+    List all available TT-Lang slash commands with descriptions and examples.
+```
+
 ## Prerequisites
 
 * [CMake](https://cmake.org/) 3.28+
