@@ -226,9 +226,6 @@ class ME2ETestBase:
         # Compare using ULP, specify None to use defaults based on dtype.
         # Override self.ULP_THRESHOLD in subclasses as needed.
         ulp_threshold = getattr(self, "ULP_THRESHOLD", None)
-        if golden.dtype in ME2E_MAXIMUM_ULP_THRESHOLDS:
-            if ulp_threshold is None:
-                ulp_threshold = ME2E_MAXIMUM_ULP_THRESHOLDS[golden.dtype]
-        else:
-            raise ValueError(f"Unsupported dtype for ULP comparison: {golden.dtype}")
+        if (not ulp_threshold):
+            ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
         assert_with_ulp(result, golden, ulp_threshold=ulp_threshold)

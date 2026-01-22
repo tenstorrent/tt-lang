@@ -99,9 +99,8 @@ def get_dtype_ids():
 
 
 def get_maximum_ulp_threshold(dtype: torch.dtype) -> int:
-    if golden.dtype in ME2E_MAXIMUM_ULP_THRESHOLDS:
-        if ulp_threshold is None:
-            ulp_threshold = ME2E_MAXIMUM_ULP_THRESHOLDS[dtype]
+    """Get maximum ULP threshold for a given dtype."""
+    if dtype in ME2E_MAXIMUM_ULP_THRESHOLDS:
+         return ME2E_MAXIMUM_ULP_THRESHOLDS[dtype]
     else:
         raise ValueError(f"Unsupported dtype for ULP comparison: {dtype}")
-    return ulp_threshold
