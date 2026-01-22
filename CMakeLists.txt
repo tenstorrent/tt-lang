@@ -36,6 +36,9 @@ endif()
 include(TTLangCompilerSetup)
 include(ExternTTMLIR)
 
+# Find Python3 after ExternTTMLIR to use the toolchain Python.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. Please make a new directory (called a build directory) and run CMake from there.")
 endif()

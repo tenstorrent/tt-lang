@@ -13,19 +13,15 @@ precision is used (not bf16 approximation). Uses precision-sensitive operations
 like exp() and reciprocal to amplify differences between f32 and bf16.
 """
 
-import os
 import sys
 
 # Note: Not setting TTLANG_COMPILE_ONLY so kernel actually executes
 
 import ttl
+import torch
+import pytest
 
-try:
-    import ttnn
-    import torch
-except ImportError as e:
-    print(f"TTNN or torch not available - exiting: {e}")
-    exit(0)
+pytestmark = pytest.mark.requires_device
 
 
 @ttl.kernel(grid=(1, 1))
@@ -89,6 +85,11 @@ def mul_kernel_f32(lhs, rhs, out):
 
 def test_exp_f32_precision():
     """Test exp() with tighter tolerance to verify f32 precision."""
+    try:
+        import ttnn
+    except ImportError:
+        pytest.skip("TTNN not available")
+
     print("\n=== Testing exp() with f32 precision ===")
 
     device = ttnn.open_device(device_id=0)
@@ -159,6 +160,11 @@ def test_exp_f32_precision():
 
 def test_mul_f32_dst_capacity():
     """Test multiplication to verify f32 DST capacity (4 tiles) doesn't overflow."""
+    try:
+        import ttnn
+    except ImportError:
+        pytest.skip("TTNN not available")
+
     print("\n=== Testing mul with f32 DST capacity ===")
 
     device = ttnn.open_device(device_id=0)

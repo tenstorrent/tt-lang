@@ -24,7 +24,6 @@ from .builder.kernels import (
 )
 from .builder.pipeline import compile_ttl_to_ttkernel
 from .builder.ttl_builder import build_e2e_module
-from .builder.ttnn_runner import run_binary_op, run_unary_op
 from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
 from ttlang_test_utils import assert_with_ulp
@@ -129,6 +128,9 @@ def run_compute_test(
     write_kernels(noc_kernels, compute_kernel_spec, kernel_dir)
 
     # 5. Execute on device.
+    # Import here to avoid module-level dependency on ttnn.
+    from .builder.ttnn_runner import run_binary_op, run_unary_op
+
     try:
         if op.arity == 2:
             result = run_binary_op(
