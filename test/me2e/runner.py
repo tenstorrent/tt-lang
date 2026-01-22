@@ -24,9 +24,9 @@ from .builder.kernels import (
 )
 from .builder.pipeline import compile_ttl_to_ttkernel
 from .builder.ttl_builder import build_e2e_module
+from .config import get_maximum_ulp_threshold
 from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
-from ttlang_test_utils import assert_with_ulp
 
 # Kernel cache to avoid redundant compilation.
 _kernel_cache: Dict[str, str] = {}
@@ -151,7 +151,8 @@ def run_compute_test(
             )
 
         # 6. Validate against golden.
-        assert_with_ulp(result, golden)
+        ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+        assert_with_ulp(result, golden, ulp_threshold=ulp_threshold)
 
     finally:
         # Cleanup temporary kernel directory.

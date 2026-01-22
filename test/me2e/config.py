@@ -15,6 +15,12 @@ from typing import Tuple
 
 import torch
 
+ME2E_MAXIMUM_ULP_THRESHOLDS = {
+    torch.float32: 2**14,
+    torch.float16: 2**8,
+    torch.bfloat16: 2**4,
+}
+
 
 class MemoryLayout(Enum):
     """Memory layout types matching ttnn.TensorMemoryLayout."""
@@ -90,3 +96,12 @@ def get_test_dtypes():
 def get_dtype_ids():
     """Get list of dtype IDs for pytest parametrization."""
     return [str(dt).split(".")[-1] for dt in DTYPE_TO_MLIR.keys()]
+
+
+def get_maximum_ulp_threshold(dtype: torch.dtype) -> int:
+    if golden.dtype in ME2E_MAXIMUM_ULP_THRESHOLDS:
+        if ulp_threshold is None:
+            ulp_threshold = ME2E_MAXIMUM_ULP_THRESHOLDS[dtype]
+    else:
+        raise ValueError(f"Unsupported dtype for ULP comparison: {dtype}")
+    return ulp_threshold

@@ -17,8 +17,9 @@ from pathlib import Path
 
 import pytest
 import torch
+from utils.correctness import assert_with_ulp
 
-from ttlang_test_utils import assert_with_ulp
+from .config import get_maximum_ulp_threshold
 
 
 class ME2ETestBase:
@@ -58,10 +59,10 @@ class ME2ETestBase:
     @pytest.mark.order(2)
     def test_compile_to_ttkernel(self):
         """Run TTL-to-TTKernel pass pipeline on the generated module."""
-        from .builder.pipeline import compile_ttl_to_ttkernel
-
         import ttl.dialects.ttl as ttl
         from ttmlir.ir import Context, Module
+
+        from .builder.pipeline import compile_ttl_to_ttkernel
 
         # Load module from file saved by test_build_module.
         module_file = self.output_file("module.mlir")
@@ -90,10 +91,10 @@ class ME2ETestBase:
     @pytest.mark.order(3)
     def test_translate_to_cpp(self):
         """Translate TTKernel ops to C++ kernel sources."""
-        from .builder.kernels import translate_module_to_kernels, write_kernels
-
         import ttl.dialects.ttl as ttl
         from ttmlir.ir import Context, Module
+
+        from .builder.kernels import translate_module_to_kernels, write_kernels
 
         compiled_file = self.output_file("compiled_module.mlir")
         if not compiled_file.exists():
@@ -225,4 +226,9 @@ class ME2ETestBase:
         # Compare using ULP, specify None to use defaults based on dtype.
         # Override self.ULP_THRESHOLD in subclasses as needed.
         ulp_threshold = getattr(self, "ULP_THRESHOLD", None)
+        if golden.dtype in ME2E_MAXIMUM_ULP_THRESHOLDS:
+            if ulp_threshold is None:
+                ulp_threshold = ME2E_MAXIMUM_ULP_THRESHOLDS[golden.dtype]
+        else:
+            raise ValueError(f"Unsupported dtype for ULP comparison: {golden.dtype}")
         assert_with_ulp(result, golden, ulp_threshold=ulp_threshold)

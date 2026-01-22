@@ -12,7 +12,6 @@ Simple add kernel with float32 data type.
 Tests that float32 tensors are properly handled through the layout derivation
 path (TTNNLayoutAttr -> page size calculation).
 """
-import os
 import ttl
 
 try:
@@ -77,7 +76,7 @@ def add_kernel_f32(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from ttlang_test_utils import assert_with_ulp
+    from utils.correctness import assert_with_ulp
 
     print("=== Float32 Add Kernel Test ===")
 
