@@ -1085,7 +1085,6 @@ kernel = pykernel_gen
 
 
 __all__ = [
-    "ComputeConfig",
     "pykernel_gen",
     "kernel",
     "Program",
