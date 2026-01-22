@@ -59,15 +59,15 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_read():
-        col_idx, row_idx = ttl.core(dims=2)
+        core_col, core_row = ttl.core(dims=2)
 
         for local_row in range(rows_per_core):
-            row = row_idx * rows_per_core + local_row
+            row = core_row * rows_per_core + local_row
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
 
             for local_col in range(cols_per_core):
-                col = col_idx * cols_per_core + local_col
+                col = core_col * cols_per_core + local_col
                 start_col_tile = col * col_tiles_per_block
                 end_col_tile = (col + 1) * col_tiles_per_block
 
@@ -104,15 +104,15 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_write():
-        col_idx, row_idx = ttl.core(dims=2)
+        core_col, core_row = ttl.core(dims=2)
 
         for local_row in range(rows_per_core):
-            row = row_idx * rows_per_core + local_row
+            row = core_row * rows_per_core + local_row
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
 
             for local_col in range(cols_per_core):
-                col = col_idx * cols_per_core + local_col
+                col = core_col * cols_per_core + local_col
                 start_col_tile = col * col_tiles_per_block
                 end_col_tile = (col + 1) * col_tiles_per_block
 
