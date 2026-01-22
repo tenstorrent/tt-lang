@@ -280,6 +280,9 @@ def print_profile_report(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
                             f"{total_line_cycles:<10,} {source_line}{Colors.RESET}"
                         )
+                        # Calculate indent to align arrows at end of source line
+                        # Format: "%-6s %-7s %-10s %s" = 6 + 1 + 7 + 2 + 10 + 1 = 27 + source
+                        indent = 27 + len(source_line)
                         # Sort: explicit ops first (implicit=False), then implicit
                         sorted_ops = sorted(op_groups.items(), key=lambda x: (x[0][1], x[0][0] or ""))
                         op_list = list(sorted_ops)
@@ -290,11 +293,10 @@ def print_profile_report(
                                 op_label = f"{op_label} (implicit)"
                             if len(ops) > 1:
                                 op_label = f"{op_label} (x{len(ops)})"
-                            # Use box-drawing chars: ├─ for middle items, ╰─ for last
                             is_last = (i == len(op_list) - 1)
                             arrow = "╰─" if is_last else "├─"
                             print(
-                                f"{Colors.DIM}{'':80}"
+                                f"{Colors.DIM}{' ' * indent}"
                                 f"{arrow} {op_cycles:,} {op_label}{Colors.RESET}"
                             )
                     else:
