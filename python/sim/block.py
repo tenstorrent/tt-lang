@@ -28,7 +28,14 @@ class Block:
     Provides list-like access to elements while respecting wrap-around.
     """
 
-    __slots__ = ("_buf", "_capacity", "_span", "_shape")
+    __slots__ = (
+        "_buf",
+        "_capacity",
+        "_span",
+        "_shape",
+        "_read_locked",
+        "_write_locked",
+    )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
     #       copies the arguments to validate them and returns the copies to the decorated
@@ -41,12 +48,78 @@ class Block:
         self._capacity = capacity
         self._span = span
         self._shape = shape
+        self._read_locked = False
+        self._write_locked = False
 
     def __len__(self) -> Size:
         return self._span.length
 
+    def _check_can_read(self) -> None:
+        """Check if this Block can be read from.
+
+        Raises:
+            RuntimeError: If Block is locked for writing by an active copy
+        """
+        if self._write_locked:
+            raise RuntimeError(
+                "Cannot read from Block: locked as copy destination until wait() completes"
+            )
+
+    def _check_can_write(self) -> None:
+        """Check if this Block can be written to.
+
+        Raises:
+            RuntimeError: If Block is locked for reading or writing by an active copy
+        """
+        if self._read_locked:
+            raise RuntimeError(
+                "Cannot write to Block: locked as copy source until wait() completes"
+            )
+        if self._write_locked:
+            raise RuntimeError(
+                "Cannot write to Block: locked as copy destination until wait() completes"
+            )
+
+    def lock_for_read(self) -> None:
+        """Lock this Block for reading (used as copy source).
+
+        Raises:
+            RuntimeError: If Block is already locked for writing
+        """
+        if self._write_locked:
+            raise RuntimeError(
+                "Cannot use Block as copy source: locked as copy destination until wait() completes"
+            )
+        self._read_locked = True
+
+    def lock_for_write(self) -> None:
+        """Lock this Block for writing (used as copy destination).
+
+        Raises:
+            RuntimeError: If Block is already locked for reading or writing
+        """
+        if self._read_locked:
+            raise RuntimeError(
+                "Cannot use Block as copy destination: locked as copy source until wait() completes"
+            )
+        if self._write_locked:
+            raise RuntimeError(
+                "Cannot use Block as copy destination: already locked as copy destination until wait() completes"
+            )
+        self._write_locked = True
+
+    def unlock_read(self) -> None:
+        """Unlock this Block from reading."""
+        self._read_locked = False
+
+    def unlock_write(self) -> None:
+        """Unlock this Block from writing."""
+        self._write_locked = False
+
     @validate_call
     def __getitem__(self, idx: Index) -> Tensor:
+        """Get item with lock checking."""
+        self._check_can_read()
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         value = self._buf[(self._span.start + idx) % self._capacity]
@@ -58,6 +131,8 @@ class Block:
     # resolve to tensor which is similar to a list?
     # @validate_call
     def __setitem__(self, idx: Index, value: Tensor) -> None:
+        """Set item with lock checking."""
+        self._check_can_write()
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         self._buf[(self._span.start + idx) % self._capacity] = value
