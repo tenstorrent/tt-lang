@@ -43,7 +43,9 @@ func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
   return %res : tensor<1x1x!ttcore.tile<32x32, f32>>
 }
 
-// --split-input-file
+// -----
+
+#idx_map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: Mixed f32/bf16 still uses f32 capacity.
 // CHECK-LABEL: func.func @mixed_f32_bf16
@@ -84,7 +86,9 @@ func.func @mixed_f32_bf16(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
   return %res : tensor<1x1x!ttcore.tile<32x32, f32>>
 }
 
-// --split-input-file
+// -----
+
+#idx_map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: Single-buffer override allows dst_idx in [0-7].
 // SINGLE-BUFFER-LABEL: func.func @f32_single_buffer
