@@ -64,8 +64,6 @@ def intermediate_cb_kernel(x, out):
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
-    return ttl.Program(compute, dm_read, dm_write)(x, out)
-
 
 def test_intermediate_cb(device):
     """Test intermediate CB pattern computes exp(relu(x)) correctly."""
