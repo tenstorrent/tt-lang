@@ -313,9 +313,8 @@ def grid_size(*, dims):
             f"grid_size() currently only supports dims=2, got dims={dims_val}. "
             "Multi-dimensional grids are not yet supported."
         )
-    # grid is stored as (rows, cols), spec returns (x, y) = (cols, rows)
-    rows, cols = _get_current_grid()
-    return (cols, rows)
+    # grid is stored as (cols, rows) = (x, y), matching tt-metal convention
+    return _get_current_grid()
 
 
 __all__ = [

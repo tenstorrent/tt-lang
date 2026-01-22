@@ -27,20 +27,20 @@ import ttl
 
 TILE_SIZE = 32
 
-# Non-square grid
-GRID_ROWS = 8
+# Non-square grid: 6 cols x 8 rows
 GRID_COLS = 6
+GRID_ROWS = 8
 
 # All tensors same size: 2x2 tiles per core = 512x384 total
 CB_ROWS = 2
 CB_COLS = 2
 TENSOR_SHAPE = (
-    GRID_ROWS * CB_ROWS * TILE_SIZE,  # 512
-    GRID_COLS * CB_COLS * TILE_SIZE,  # 384
+    GRID_ROWS * CB_ROWS * TILE_SIZE,  # 512 rows
+    GRID_COLS * CB_COLS * TILE_SIZE,  # 384 cols
 )
 
 
-@ttl.kernel(grid=(8, 6))
+@ttl.kernel(grid=(6, 8))  # (cols, rows)
 def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     Adversarial kernel with 4 inputs and 4 outputs.
