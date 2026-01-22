@@ -25,6 +25,9 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+// TODO(#264): This function returns true if ANY arg is f32, enabling
+// fp32_dest_acc_en for the entire compute op. Consider emitting a diagnostic
+// when mixed dtypes are detected, or allowing per-operation fp32 control.
 static bool hasF32TileArgs(ComputeOp computeOp) {
   Block *body = &computeOp.getRegion().front();
   if (!body) {

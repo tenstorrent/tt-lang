@@ -73,10 +73,10 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 /// Compute DST capacity based on operation types and device config.
-/// TODO: Handle mixed dtypes - if compute block has both f32 and bf16 tile
-/// arguments, should we use f32 capacity (4 tiles, safer) or error? Consider
-/// emitting warning for mixed dtypes since f32 config reduces available DST
-/// capacity and may cause unexpected capacity overflow.
+/// TODO(#264): Handle mixed dtypes - if compute block has both f32 and bf16
+/// tile arguments, should we use f32 capacity (4 tiles, safer) or error?
+/// Consider emitting warning for mixed dtypes since f32 config reduces
+/// available DST capacity and may cause unexpected capacity overflow.
 static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   // Capacity by datatype and buffering mode (see )
   //   Double-buffering (default):
@@ -98,17 +98,34 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   }
 
   Type elementType;
+  bool sawF32 = false;
+  bool sawNonF32 = false;
   Block *body = &computeOp.getRegion().front();
   if (body) {
     for (BlockArgument arg : body->getArguments()) {
       if (auto tileType = dyn_cast<ttcore::TileType>(arg.getType())) {
-        elementType = tileType.getElementType();
-        if (elementType.isF32()) {
-          fp32DestAccEn = true;
-          break;
+        Type currentType = tileType.getElementType();
+        if (!elementType) {
+          elementType = currentType;
+        }
+        if (currentType.isF32()) {
+          sawF32 = true;
+        } else {
+          sawNonF32 = true;
         }
       }
     }
+  }
+
+  if (sawF32) {
+    fp32DestAccEn = true;
+    elementType = mlir::Float32Type::get(computeOp.getContext());
+  }
+
+  if (sawF32 && sawNonF32) {
+    computeOp.emitWarning(
+        "Mixed f32 and non-f32 tile arguments detected; "
+        "dst capacity uses f32 limits when fp32_dest_acc_en is enabled.");
   }
 
   if (!elementType) {

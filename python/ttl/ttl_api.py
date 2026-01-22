@@ -382,12 +382,6 @@ def _compile_ttnn_kernel(
 
     Returns:
         CompiledTTNNKernel ready for execution
-
-    TODO: Add optional compute_config parameter to allow manual override of
-    automatically detected configuration. This would enable advanced users to
-    manually tune fp32_dest_acc_en, math_fidelity, and other compute settings
-    while keeping automatic detection as the default behavior.
-    Example: compute_config: Optional[ttnn.ComputeConfigDescriptor] = None
     """
     # Get kernel info from module
     kernel_info = get_ttkernel_names(module)
@@ -772,7 +766,9 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
-        compute_config: Optional compute kernel config override
+        compute_config: Optional compute kernel config override. If provided,
+            fp32_dest_acc_en/dst_full_sync_en must be unset or match
+            compute_config values.
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1103,7 +1099,9 @@ def pykernel_gen(
                 if fp32_override is not None and cfg_fp32 is not None:
                     if fp32_override != cfg_fp32:
                         raise ValueError(
-                            "fp32_dest_acc_en conflicts with compute_config."
+                            "fp32_dest_acc_en conflicts with compute_config: "
+                            f"{fp32_override} vs {cfg_fp32}. Set only one or "
+                            "make them match."
                         )
                 elif fp32_override is None and cfg_fp32 is not None:
                     fp32_override = cfg_fp32
@@ -1111,7 +1109,9 @@ def pykernel_gen(
                 if dst_sync_override is not None and cfg_dst_sync is not None:
                     if dst_sync_override != cfg_dst_sync:
                         raise ValueError(
-                            "dst_full_sync_en conflicts with compute_config."
+                            "dst_full_sync_en conflicts with compute_config: "
+                            f"{dst_sync_override} vs {cfg_dst_sync}. Set only one "
+                            "or make them match."
                         )
                 elif dst_sync_override is None and cfg_dst_sync is not None:
                     dst_sync_override = cfg_dst_sync
