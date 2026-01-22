@@ -138,11 +138,15 @@ def _run_profiling_pipeline(tensors: tuple, source_lines: List[str]):
         print(f"[Auto-profile] Failed to read device profiler: {e}")
         return
 
-    # Find the profile CSV
-    profile_csv_path = os.environ.get(
-        "TTLANG_PROFILE_CSV", "/tmp/profile_log_device.csv"
-    )
-    csv_path = Path(profile_csv_path)
+    # Find the profile CSV - default location is $TT_METAL_HOME/generated/profiler/.logs/
+    if "TTLANG_PROFILE_CSV" in os.environ:
+        csv_path = Path(os.environ["TTLANG_PROFILE_CSV"])
+    else:
+        tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+        if not tt_metal_home:
+            print("[Auto-profile] TT_METAL_HOME not set, cannot find profile CSV")
+            return
+        csv_path = Path(tt_metal_home) / "generated/profiler/.logs/profile_log_device.csv"
 
     if not csv_path.exists():
         print(f"[Auto-profile] Profile CSV not found at {csv_path}")
