@@ -139,7 +139,7 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
     attempting to write to a block destination before wait() completes. The error
     message should clearly indicate the locking violation.
     """
-    code, out = run_ttlsim_and_capture(EXAMPLES_DIR / "copy_lock_error.py")
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / "copy_lock_error.py")
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy lock violation)
     assert (
