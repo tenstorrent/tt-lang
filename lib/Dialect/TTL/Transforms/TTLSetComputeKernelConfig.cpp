@@ -11,12 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttlang/Dialect/TTL/Passes.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Passes.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir::tt::ttl {
 
@@ -34,17 +34,22 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
     return false;
   }
 
-  for (BlockArgument arg : body->getArguments()) {
-    auto tileType = dyn_cast<ttcore::TileType>(arg.getType());
-    if (!tileType) {
-      continue;
-    }
-    if (tileType.getElementType().isF32()) {
-      return true;
-    }
-  }
+  return llvm::any_of(body->getArguments(), [](BlockArgument arg) {
+    std::optional<mlir::Type> elementType = getTileElementType(arg.getType());
+    return elementType && elementType->isF32();
+  });
+}
 
-  return false;
+static void
+setBoolAttrIf(ComputeOp computeOp, llvm::StringRef attrName, bool condition,
+              llvm::function_ref<bool(ComputeOp)> extraPredicate = {}) {
+  if (!condition || computeOp->hasAttr(attrName)) {
+    return;
+  }
+  if (extraPredicate && !extraPredicate(computeOp)) {
+    return;
+  }
+  computeOp->setAttr(attrName, BoolAttr::get(computeOp.getContext(), true));
 }
 
 struct TTLSetComputeKernelConfigPass
@@ -57,20 +62,18 @@ struct TTLSetComputeKernelConfigPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    funcOp.walk([&](ComputeOp computeOp) {
-      if (!computeOp->hasAttr("fp32_dest_acc_en")) {
-        bool enableFp32 = fp32DestAccEn || hasF32TileArgs(computeOp);
-        if (enableFp32) {
-          computeOp->setAttr("fp32_dest_acc_en",
-                             BoolAttr::get(computeOp.getContext(), true));
-        }
-      }
+    for (ComputeOp computeOp : funcOp.getOps<ComputeOp>()) {
 
-      if (!computeOp->hasAttr("dst_full_sync_en") && dstFullSyncEn) {
-        computeOp->setAttr("dst_full_sync_en",
-                           BoolAttr::get(computeOp.getContext(), true));
-      }
-    });
+      // Set fp32_dest_acc_en if any tile arg is f32
+      setBoolAttrIf(computeOp, kFp32DestAccEnAttrName, true, [&](ComputeOp op) {
+        return fp32DestAccEn || hasF32TileArgs(op);
+      });
+
+      // Set dst_full_sync_en if not already set
+      setBoolAttrIf(computeOp, kDstFullSyncEnAttrName, dstFullSyncEn);
+
+      // Add other runtime configuration attributes as needed below
+    }
   }
 };
 

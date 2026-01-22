@@ -103,12 +103,12 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   Block *body = &computeOp.getRegion().front();
   if (body) {
     for (BlockArgument arg : body->getArguments()) {
-      if (auto tileType = dyn_cast<ttcore::TileType>(arg.getType())) {
-        Type currentType = tileType.getElementType();
+      std::optional<Type> currentType = getTileElementType(arg.getType());
+      if (currentType) {
         if (!elementType) {
-          elementType = currentType;
+          elementType = *currentType;
         }
-        if (currentType.isF32()) {
+        if (currentType->isF32()) {
           sawF32 = true;
         } else {
           sawNonF32 = true;
