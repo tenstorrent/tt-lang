@@ -55,6 +55,51 @@ def tensor_shape_in_tiles(
     return tuple(dim // tile_dim for dim, tile_dim in zip(tensor.shape, tile_shape))
 
 
+def broadcast_tensors(
+    left_tensors: List["Tensor"],
+    right_tensors: List["Tensor"],
+    left_shape: Shape,
+    right_shape: Shape,
+    op: Any,
+) -> List["Tensor"]:
+    """Apply binary operation to tensor lists with broadcasting.
+
+    Stacks tensors into batched tensors, reshapes according to tile grid shapes,
+    applies PyTorch broadcasting, and flattens back to list of tensors.
+
+    Args:
+        left_tensors: List of left operand tensors
+        right_tensors: List of right operand tensors
+        left_shape: Tile grid shape for left operand (e.g., (4, 4) for 16 tiles)
+        right_shape: Tile grid shape for right operand
+        op: Binary operation to apply (e.g., operator.add)
+
+    Returns:
+        List of result tensors after broadcasting
+    """
+    # Extract underlying torch tensors
+    left_torch = [t._tensor if hasattr(t, "_tensor") else t for t in left_tensors]
+    right_torch = [t._tensor if hasattr(t, "_tensor") else t for t in right_tensors]
+
+    # Stack into batched tensors
+    left_batched = torch.stack(left_torch)
+    right_batched = torch.stack(right_torch)
+
+    # Reshape to include tile grid dimensions
+    left_reshaped = left_batched.reshape(*left_shape, *left_batched.shape[1:])
+    right_reshaped = right_batched.reshape(*right_shape, *right_batched.shape[1:])
+
+    # Apply operation with PyTorch broadcasting
+    result_batched = op(left_reshaped, right_reshaped)
+
+    # Flatten back to list of tiles
+    num_result_tiles = result_batched.shape[0] * result_batched.shape[1]
+    result_flat = result_batched.reshape(num_result_tiles, *result_batched.shape[2:])
+
+    # Wrap each result tile in Tensor
+    return [Tensor(result_flat[i]) for i in range(num_result_tiles)]
+
+
 # Memory config placeholder (no-op in simulator)
 L1_MEMORY_CONFIG = None
 DRAM_MEMORY_CONFIG = None
@@ -181,7 +226,7 @@ class Tensor:
         return self._tensor.dtype
 
     def __getitem__(self, key: Any) -> "Tensor":
-        # If key looks like tile-style indexing (two slices), use TensorAccessor
+        # If key looks like tile-style indexing (two slices/ints), use TensorAccessor
         if isinstance(key, tuple):
             key_t = cast(Tuple[Any, ...], key)
             if len(key_t) == 2:
@@ -198,21 +243,17 @@ class Tensor:
                     ):
                         return Tensor(self._tensor.__getitem__(cast(Any, key)))
                     # Use tile indexing for tile-aligned tensors
-                    row_slice: slice = slice(row_key, row_key + 1)
-                    col_slice: slice = slice(col_key, col_key + 1)
                     self._ensure_accessor()
                     assert self._accessor is not None
-                    return Tensor(self._accessor.get_tiles(row_slice, col_slice))
+                    return Tensor(self._accessor[row_key, col_key])
 
-                # Check if both are slices (slice indexing)
-                if isinstance(row_key, slice) and isinstance(col_key, slice):
+                # Check if either or both are slices (mixed or full slice indexing)
+                if isinstance(row_key, (slice, int)) and isinstance(
+                    col_key, (slice, int)
+                ):
                     self._ensure_accessor()
                     assert self._accessor is not None
-                    return Tensor(
-                        self._accessor.get_tiles(
-                            cast(slice, row_key), cast(slice, col_key)
-                        )
-                    )
+                    return Tensor(self._accessor[row_key, col_key])
 
         return Tensor(self._tensor.__getitem__(cast(Any, key)))
 
@@ -241,36 +282,30 @@ class Tensor:
                                 self._tensor.__setitem__(cast(Any, key), value)
                         return
                     # Use tile indexing for tile-aligned tensors
-                    row_slice: slice = slice(row_key, row_key + 1)
-                    col_slice: slice = slice(col_key, col_key + 1)
                     self._ensure_accessor()
                     assert self._accessor is not None
                     match value:
                         case Tensor() as tval:
-                            self._accessor.set_tiles(row_slice, col_slice, tval._tensor)
+                            self._accessor[row_key, col_key] = tval._tensor
                         case torch.Tensor() as tt:
-                            self._accessor.set_tiles(row_slice, col_slice, tt)
+                            self._accessor[row_key, col_key] = tt
                         case _:
-                            self._accessor.set_tiles(row_slice, col_slice, value)
+                            self._accessor[row_key, col_key] = value
                     return
 
-                # Check if both are slices (slice indexing)
-                if isinstance(row_key, slice) and isinstance(col_key, slice):
+                # Check if either or both are slices (mixed or full slice indexing)
+                if isinstance(row_key, (slice, int)) and isinstance(
+                    col_key, (slice, int)
+                ):
                     self._ensure_accessor()
                     assert self._accessor is not None
                     match value:
                         case Tensor() as tval:
-                            self._accessor.set_tiles(
-                                cast(slice, row_key), cast(slice, col_key), tval._tensor
-                            )
+                            self._accessor[row_key, col_key] = tval._tensor
                         case torch.Tensor() as tt:
-                            self._accessor.set_tiles(
-                                cast(slice, row_key), cast(slice, col_key), tt
-                            )
+                            self._accessor[row_key, col_key] = tt
                         case _:
-                            self._accessor.set_tiles(
-                                cast(slice, row_key), cast(slice, col_key), value
-                            )
+                            self._accessor[row_key, col_key] = value
                     return
 
         match value:
@@ -291,23 +326,27 @@ class Tensor:
     def _ensure_accessor(self) -> None:
         """Create a TensorAccessor for tile-based indexing when possible.
 
-        Raises ValueError if the underlying tensor is not compatible with
-        tile-based access (i.e., not 2D or not multiple of tile dims).
+        Raises ValueError if the underlying tensor is not 2D or if non-degenerate
+        dimensions are not multiples of tile dimensions.
         """
         if self._accessor is not None:
             return
 
-        # Only create accessor when the tensor dimensions align with TILE_SHAPE
+        # Only 2D tensors are supported
         if len(self._tensor.shape) != 2:
             raise ValueError("Tile-style indexing requires a 2D tensor")
 
-        if (
-            self._tensor.shape[0] % TILE_SHAPE[0] != 0
-            or self._tensor.shape[1] % TILE_SHAPE[1] != 0
-        ):
-            raise ValueError(
-                "Tensor shape is not a multiple of tile shape; cannot create TensorAccessor"
-            )
+        # Validate non-degenerate dimensions are multiples of tile shape
+        # Degenerate dimensions (size 1) are always valid
+        if True:
+            for i, dim_size in enumerate(self._tensor.shape):
+                if dim_size == 1:
+                    continue
+                if dim_size % TILE_SHAPE[i] != 0:
+                    raise ValueError(
+                        f"Tensor dimension {i} has size {dim_size} which is not "
+                        f"a multiple of tile dimension {TILE_SHAPE[i]}"
+                    )
 
         self._accessor = TensorAccessor(self._tensor, index_type=IndexType.TILE)
 

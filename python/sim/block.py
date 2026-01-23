@@ -243,27 +243,25 @@ class Block:
     ) -> List[Tensor]:
         """Element-wise binary op: left (op) right with broadcasting support.
 
-        Supports broadcasting when one operand has length 1.
+        Supports broadcasting using PyTorch's native broadcasting rules.
         """
         len_left = len(left)
         len_right = len(right)
 
+        # Simple cases: equal length or scalar broadcasting
         if len_left == len_right:
-            # Standard element-wise operation
             return [op(left[i], right[i]) for i in range(len_left)]
         elif len_right == 1:
-            # Broadcast right to all elements of left
             right_val = right[0]
             return [op(left[i], right_val) for i in range(len_left)]
         elif len_left == 1:
-            # Broadcast left to all elements of right
             left_val = left[0]
             return [op(left_val, right[i]) for i in range(len_right)]
-        else:
-            raise ValueError(
-                f"Operand lengths must match or one must be 1 for broadcasting "
-                f"(got lengths {len_left} and {len_right})"
-            )
+
+        # Both operands are Blocks with shapes - delegate to ttnnsim for broadcasting
+        from .ttnnsim import broadcast_tensors
+
+        return broadcast_tensors(list(left), list(right), left._shape, right._shape, op)
 
     def _binary_op(
         self,

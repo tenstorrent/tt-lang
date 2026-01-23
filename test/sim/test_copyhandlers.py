@@ -70,7 +70,7 @@ class TestTensorToBlockHandler:
         buf: List[CBSlot] = [None]
         block = Block(buf, 1, Span(0, 1), shape=(1, 1))
 
-        with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
+        with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
             handler.validate(tensor, block)
 
     def test_validate_tile_count_mismatch(self):
@@ -141,7 +141,7 @@ class TestBlockToTensorHandler:
         torch_3d = torch.zeros(32, 32, 32)
         tensor = ttnn.Tensor(torch_3d)
 
-        with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
+        with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
             handler.validate(block, tensor)
 
     def test_validate_tile_count_mismatch(self):
