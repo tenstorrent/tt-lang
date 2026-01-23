@@ -476,6 +476,45 @@ def print_profile_report(
             f"[{100.0 * thread_cycles[thread] / total_cycles:>5.1f}%]"
         )
     print()
+
+    # Roofline model visualization
+    dm_threads = ["NCRISC", "BRISC"]
+    compute_threads = ["TRISC_0", "TRISC_1", "TRISC_2"]
+
+    memory_cycles = max((thread_cycles.get(t, 0) for t in dm_threads), default=0)
+    compute_cycles = max((thread_cycles.get(t, 0) for t in compute_threads), default=0)
+
+    if memory_cycles > 0 or compute_cycles > 0:
+        total_bottleneck = memory_cycles + compute_cycles
+        # Position on roofline: 0 = compute bound, 1 = memory bound, 0.5 = balanced
+        memory_ratio = memory_cycles / total_bottleneck if total_bottleneck > 0 else 0.5
+
+        # Determine bound type and percentage
+        if memory_cycles > compute_cycles:
+            bound_type = "memory"
+            bound_pct = 100 * (memory_cycles - compute_cycles) / memory_cycles
+        elif compute_cycles > memory_cycles:
+            bound_type = "compute"
+            bound_pct = 100 * (compute_cycles - memory_cycles) / compute_cycles
+        else:
+            bound_type = "balanced"
+            bound_pct = 0
+
+        # Draw ASCII roofline (40 chars wide)
+        roof_width = 40
+        marker_pos = int(memory_ratio * (roof_width - 1))
+        roof_line = "─" * marker_pos + "●" + "─" * (roof_width - 1 - marker_pos)
+
+        print("ROOFLINE MODEL")
+        print("=" * 100)
+        if bound_type == "balanced":
+            print(f"  Perfectly balanced!")
+        else:
+            print(f"  {bound_pct:.0f}% {bound_type} bound")
+        print(f"  Compute ├{roof_line}┤ Memory")
+        print(f"          {compute_cycles:,} cycles{' ' * (roof_width - 12)}{memory_cycles:,} cycles")
+        print()
+
     print("=" * 100)
     print()
 
