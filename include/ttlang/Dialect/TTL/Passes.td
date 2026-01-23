@@ -168,10 +168,6 @@ def TTLLowerSignpostToEmitC
     convert-ttl-to-ttkernel to keep profiling concerns separate from
     the main dialect conversion.
   }];
-
-  let dependentDialects = [
-    "::mlir::emitc::EmitCDialect"
-  ];
 }
 
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

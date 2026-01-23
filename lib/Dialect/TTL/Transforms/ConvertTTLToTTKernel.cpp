@@ -7,7 +7,6 @@
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -1028,7 +1027,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
                          func::FuncDialect, tensor::TensorDialect,
-                         ttkernel::TTKernelDialect, emitc::EmitCDialect>();
+                         ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
