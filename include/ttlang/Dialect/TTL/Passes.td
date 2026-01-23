@@ -159,4 +159,19 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLLowerSignpostToEmitC
+    : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
+  let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";
+  let description = [{
+    Converts ttl.signpost operations to EmitC verbatim code that emits
+    DeviceZoneScopedN markers for Tracy profiling. This pass runs after
+    convert-ttl-to-ttkernel to keep profiling concerns separate from
+    the main dialect conversion.
+  }];
+
+  let dependentDialects = [
+    "::mlir::emitc::EmitCDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

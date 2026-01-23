@@ -963,35 +963,6 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
-//===----------------------------------------------------------------------===//
-// Profiling operation lowering patterns
-//===----------------------------------------------------------------------===//
-
-static void createEmitCVerbatim(Location loc, StringRef value,
-                                ConversionPatternRewriter &rewriter) {
-  OperationState state(loc, "emitc.verbatim");
-  state.addAttribute("value", rewriter.getStringAttr(value));
-  rewriter.create(state);
-}
-
-struct SignpostLowering : OpConversionPattern<SignpostOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(SignpostOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    // Emit DeviceZoneScopedN wrapped in braces to avoid variable conflicts.
-    auto loc = op.getLoc();
-    createEmitCVerbatim(loc, "{", rewriter);
-    createEmitCVerbatim(loc,
-                        "DeviceZoneScopedN(\"" + op.getName().str() + "\");",
-                        rewriter);
-    createEmitCVerbatim(loc, "}", rewriter);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1067,6 +1038,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
                     TileRegsWaitOp, TileRegsReleaseOp>();
 
+  // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
+  target.addLegalOp<SignpostOp>();
+
   // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
   // lowering phase.
   target.addLegalOp<CopyTileOp>();
@@ -1091,8 +1065,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering, CoreXLowering, CoreYLowering, SignpostLowering>(
-      typeConverter, &ctx);
+               StoreLowering, CoreXLowering, CoreYLowering>(typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

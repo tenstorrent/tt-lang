@@ -917,6 +917,7 @@ def _compile_kernel(
             "func.func(ttl-lower-to-loops)",
             "func.func(ttl-annotate-cb-associations)",
             "convert-ttl-to-ttkernel",
+            "ttl-lower-signpost-to-emitc",
             "canonicalize",
             "cse",
             "lower-affine",
