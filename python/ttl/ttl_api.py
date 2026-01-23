@@ -11,6 +11,7 @@ import functools
 import inspect
 import os
 import random
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
 try:
@@ -30,8 +31,10 @@ from ttmlir.passes import (
 from ttmlir.passmanager import PassManager
 
 from ._src.auto_profile import (
+    build_cb_wait_to_dma_map,
     get_line_mapper,
     is_auto_profile_enabled,
+    load_cb_flow_graph,
     parse_device_profile_csv,
     print_profile_report,
 )
@@ -167,11 +170,15 @@ def _run_profiling_pipeline(
     # Parse and display results
     line_mapper = get_line_mapper()
 
+    # Load CB flow graph for DMA attribution
+    cb_flow = load_cb_flow_graph(csv_path)
+    cb_wait_to_dma = build_cb_wait_to_dma_map(cb_flow)
+
     try:
         results = parse_device_profile_csv(csv_path, line_mapper)
         if results:
             print_profile_report(
-                results, all_source_lines, thread_to_kernel, line_mapper
+                results, all_source_lines, thread_to_kernel, line_mapper, cb_wait_to_dma
             )
         else:
             print("[Auto-profile] No signpost results found in profile CSV")
@@ -892,9 +899,27 @@ def _compile_kernel(
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
             "func.func(ttl-annotate-cb-associations)",
-            "ttl-dump-cb-flow-graph",
+        ]
+
+        # Add auto-profiling passes if enabled
+        if is_auto_profile_enabled():
+            if "TTLANG_PROFILE_CSV" in os.environ:
+                cb_flow_json = str(Path(os.environ["TTLANG_PROFILE_CSV"]).parent / "cb_flow_graph.json")
+            else:
+                tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+                if not tt_metal_home:
+                    raise ValueError("TTLANG_AUTO_PROFILE=1 requires TT_METAL_HOME or TTLANG_PROFILE_CSV to be set")
+                cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
+            pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
+
+        pipeline_passes += [
             "convert-ttl-to-ttkernel",
-            "ttl-lower-signpost-to-emitc",
+        ]
+
+        if is_auto_profile_enabled():
+            pipeline_passes.append("ttl-lower-signpost-to-emitc")
+
+        pipeline_passes += [
             "canonicalize",
             "cse",
             "lower-affine",

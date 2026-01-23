@@ -11,6 +11,7 @@ a visual profile report showing cycle counts per source line.
 """
 
 import csv
+import json
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -168,6 +169,7 @@ def print_profile_report(
     all_source_lines: Dict[str, List[str]],
     thread_to_kernel: Dict[str, str],
     line_mapper: Optional[SourceLineMapper] = None,
+    cb_wait_to_dma: Optional[Dict[Tuple[str, int], Tuple[str, int, int]]] = None,
 ):
     """
     Print a profile report organized by thread.
@@ -180,7 +182,10 @@ def print_profile_report(
         all_source_lines: Dict mapping kernel name to source lines
         thread_to_kernel: Dict mapping RISC thread name to kernel name
         line_mapper: Optional SourceLineMapper with line offset info
+        cb_wait_to_dma: Optional mapping from (kernel, line) -> (dma_kernel, dma_line, cb_index)
     """
+    if cb_wait_to_dma is None:
+        cb_wait_to_dma = {}
     print()
     print("=" * 100)
     print("TTLANG AUTO-PROFILE REPORT")
@@ -290,6 +295,13 @@ def print_profile_report(
                             op_groups.items(), key=lambda x: (x[0][1], x[0][0] or "")
                         )
                         op_list = list(sorted_ops)
+
+                        # Check if any op is cb_wait and get DMA attribution
+                        has_cb_wait = any(op_name == "cb_wait" for (op_name, _), _ in op_list)
+                        dma_info = None
+                        if has_cb_wait:
+                            dma_info = cb_wait_to_dma.get((kernel_name, file_lineno))
+
                         for i, ((op_name, implicit), ops) in enumerate(op_list):
                             op_cycles = sum(r.cycles for r in ops)
                             op_label = op_name or "line"
@@ -297,11 +309,19 @@ def print_profile_report(
                                 op_label = f"{op_label} (implicit)"
                             if len(ops) > 1:
                                 op_label = f"{op_label} (x{len(ops)})"
-                            is_last = i == len(op_list) - 1
+                            is_last = i == len(op_list) - 1 and dma_info is None
                             arrow = "╰─" if is_last else "├─"
                             print(
                                 f"{Colors.DIM}{' ' * indent}"
                                 f"{arrow} {op_cycles:,} {op_label}{Colors.RESET}"
+                            )
+
+                        # Show DMA attribution for cb_wait
+                        if dma_info:
+                            dma_kernel, dma_line, cb_idx = dma_info
+                            print(
+                                f"{Colors.DIM}{' ' * indent}"
+                                f"╰─ waiting for DMA @ line {dma_line} ({dma_kernel}){Colors.RESET}"
                             )
                     else:
                         cycles_list = [r.cycles for r in line_results]
@@ -349,6 +369,62 @@ def print_profile_report(
     print()
     print("=" * 100)
     print()
+
+
+# =============================================================================
+# CB Flow Graph Integration
+# =============================================================================
+
+
+def load_cb_flow_graph(csv_path: Path) -> Optional[Dict]:
+    """Load CB flow graph JSON from same directory as CSV."""
+    json_path = csv_path.parent / "cb_flow_graph.json"
+    if not json_path.exists():
+        return None
+
+    try:
+        with open(json_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def build_cb_wait_to_dma_map(
+    cb_flow: Optional[Dict],
+) -> Dict[Tuple[str, int], Tuple[str, int, int]]:
+    """Build mapping from cb_wait locations to DMA producer locations.
+
+    Returns:
+        Dict mapping (kernel, line) of cb_wait -> (dma_kernel, dma_line, cb_index)
+    """
+    if not cb_flow:
+        return {}
+
+    result = {}
+    for cb_info in cb_flow.get("circular_buffers", []):
+        cb_index = cb_info.get("cb_index", -1)
+
+        dma_ops = cb_info.get("dma_ops", [])
+        if not dma_ops:
+            continue
+
+        # Use the first DMA op as the producer location
+        dma_op = dma_ops[0]
+        dma_kernel = dma_op.get("kernel", "")
+        dma_line = dma_op.get("line", -1)
+
+        # Map each consumer (cb_wait) to this DMA
+        for consumer in cb_info.get("consumers", []):
+            consumer_kernel = consumer.get("kernel", "")
+            consumer_line = consumer.get("line", -1)
+            if consumer_line > 0:
+                result[(consumer_kernel, consumer_line)] = (
+                    dma_kernel,
+                    dma_line,
+                    cb_index,
+                )
+
+    return result
 
 
 # Global line mapper instance

@@ -215,8 +215,10 @@ struct TTLDumpCBFlowGraphPass
       });
     });
 
-    // Print the graph
+    // Print the graph (disabled by default, enable for debugging)
+#if 0
     printGraph(cbFlows);
+#endif
 
     // Output JSON if path specified
     if (!outputPath.empty()) {
