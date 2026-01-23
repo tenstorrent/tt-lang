@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -1056,6 +1057,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering>(
       typeConverter, &ctx);
   patterns.add<StoreLowering, CoreXLowering, CoreYLowering>(typeConverter, &ctx);
+
+  // Convert scf.for/scf.if/etc region signatures when result/iter_arg types
+  // change due to the type converter.
+  mlir::scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter,
+                                                            patterns, target);
+
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
