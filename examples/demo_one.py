@@ -21,7 +21,7 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-# For BH extended grid: grid=(12, 8) with shape=(3072, 2048)
+# For BH extended grid: grid=(12, 10) with shape=(2560, 3072)
 @ttl.kernel(grid=(8, 8))  # (cols, rows)
 def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
