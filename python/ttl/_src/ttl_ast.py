@@ -233,7 +233,8 @@ class TTLGenericCompiler(TTCompilerBase):
     def _emit_op_signposts(self, op_name: str, node, op_fn, implicit=False):
         """Emit signposts for CB operations with op name included."""
         if not self.auto_profile_enabled:
-            return op_fn()
+            with self._loc_for_node(node):
+                return op_fn()
 
         file_lineno = node.lineno + self.line_offset
         prefix = "implicit_" if implicit else ""
@@ -249,9 +250,10 @@ class TTLGenericCompiler(TTCompilerBase):
             self.line_mapper.register_signpost(before_name, file_lineno, source_line)
             self.line_mapper.register_signpost(after_name, file_lineno, source_line)
 
-        self._emit_signpost(before_name)
-        result = op_fn()
-        self._emit_signpost(after_name)
+        with self._loc_for_node(node):
+            self._emit_signpost(before_name)
+            result = op_fn()
+            self._emit_signpost(after_name)
         return result
 
     def visit_Call(self, node):
