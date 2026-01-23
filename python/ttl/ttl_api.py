@@ -181,8 +181,13 @@ def _run_profiling_pipeline(
         results = parse_device_profile_csv(csv_path, line_mapper)
         if results:
             print_profile_report(
-                results, all_source_lines, thread_to_kernel, line_mapper,
-                cb_wait_to_dma, dma_producer_to_cb, kernel_line_offsets
+                results,
+                all_source_lines,
+                thread_to_kernel,
+                line_mapper,
+                cb_wait_to_dma,
+                dma_producer_to_cb,
+                kernel_line_offsets,
             )
         else:
             print("[Auto-profile] No signpost results found in profile CSV")

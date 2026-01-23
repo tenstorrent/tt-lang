@@ -221,7 +221,9 @@ def print_profile_report(
     print()
 
     # Print CB color key
-    active_cbs = set(dma_producer_to_cb.values()) | {info[2] for info in cb_wait_to_dma.values()}
+    active_cbs = set(dma_producer_to_cb.values()) | {
+        info[2] for info in cb_wait_to_dma.values()
+    }
     if active_cbs:
         print("CB Colors: ", end="")
         for cb_idx in sorted(active_cbs):
@@ -305,10 +307,18 @@ def print_profile_report(
 
                     # Check if this line is a DMA producer/consumer
                     original_lineno = line_results[0].lineno if line_results else -1
-                    producer_cb_idx = dma_producer_to_cb.get((kernel_name, original_lineno))
-                    consumer_dma_info = cb_wait_to_dma.get((kernel_name, original_lineno))
+                    producer_cb_idx = dma_producer_to_cb.get(
+                        (kernel_name, original_lineno)
+                    )
+                    consumer_dma_info = cb_wait_to_dma.get(
+                        (kernel_name, original_lineno)
+                    )
                     # Only producers get source line background (consumers only highlight remark)
-                    cb_bg = Colors.cb_bg(producer_cb_idx) if producer_cb_idx is not None else ""
+                    cb_bg = (
+                        Colors.cb_bg(producer_cb_idx)
+                        if producer_cb_idx is not None
+                        else ""
+                    )
 
                     # Group by op_name to show breakdown
                     op_groups = defaultdict(list)
@@ -322,7 +332,11 @@ def print_profile_report(
                     if len(line_results) == 1 and not has_named_ops:
                         r = line_results[0]
                         pct = 100.0 * r.cycles / thread_cycles[thread]
-                        source_colored = f"{cb_bg}{source_line}{Colors.RESET}" if cb_bg else source_line
+                        source_colored = (
+                            f"{cb_bg}{source_line}{Colors.RESET}"
+                            if cb_bg
+                            else source_line
+                        )
                         print(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
                             f"{r.cycles:<10,} {source_colored}{Colors.RESET if color else ''}"
@@ -354,7 +368,11 @@ def print_profile_report(
                     elif has_named_ops:
                         # Show line with total, then breakdown per op
                         pct = 100.0 * total_line_cycles / thread_cycles[thread]
-                        source_colored = f"{cb_bg}{source_line}{Colors.RESET}" if cb_bg else source_line
+                        source_colored = (
+                            f"{cb_bg}{source_line}{Colors.RESET}"
+                            if cb_bg
+                            else source_line
+                        )
                         print(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
                             f"{total_line_cycles:<10,} {source_colored}{Colors.RESET if color else ''}"
@@ -375,7 +393,11 @@ def print_profile_report(
                                 op_label = f"{op_label} (implicit)"
                             if len(ops) > 1:
                                 op_label = f"{op_label} (x{len(ops)})"
-                            is_last = i == len(op_list) - 1 and consumer_dma_info is None and producer_cb_idx is None
+                            is_last = (
+                                i == len(op_list) - 1
+                                and consumer_dma_info is None
+                                and producer_cb_idx is None
+                            )
                             arrow = "╰─" if is_last else "├─"
                             print(
                                 f"{Colors.DIM}{' ' * indent}"
@@ -413,7 +435,11 @@ def print_profile_report(
                         max_cycles = max(cycles_list)
                         sum_cycles = sum(cycles_list)
                         pct = 100.0 * sum_cycles / thread_cycles[thread]
-                        source_colored = f"{cb_bg}{source_line}{Colors.RESET}" if cb_bg else source_line
+                        source_colored = (
+                            f"{cb_bg}{source_line}{Colors.RESET}"
+                            if cb_bg
+                            else source_line
+                        )
 
                         if min_cycles == max_cycles:
                             stats = f"(x{len(line_results)} = {sum_cycles:,} cycles)"
@@ -510,7 +536,9 @@ def print_profile_report(
         else:
             print(f"  {bound_pct:.0f}% {bound_type} bound")
         print(f"  Compute ├{roof_line}┤ Memory")
-        print(f"          {compute_cycles:,} cycles{' ' * (roof_width - 12)}{memory_cycles:,} cycles")
+        print(
+            f"          {compute_cycles:,} cycles{' ' * (roof_width - 12)}{memory_cycles:,} cycles"
+        )
         print()
 
     print("=" * 100)
@@ -554,7 +582,9 @@ def build_cb_wait_to_dma_map(
         cb_index = cb_info.get("cb_index", -1)
 
         # Only consider DMA read barriers (data flowing INTO CB)
-        read_barriers = [op for op in cb_info.get("wait_ops", []) if op.get("direction") == "read"]
+        read_barriers = [
+            op for op in cb_info.get("wait_ops", []) if op.get("direction") == "read"
+        ]
         if not read_barriers:
             continue
 

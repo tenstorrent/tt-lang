@@ -14,10 +14,10 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -36,7 +36,7 @@ struct CBOpInfo {
   std::string kernel;
   std::string thread;
   int64_t line;
-  std::string op;       // "cb_wait", "cb_reserve", "copy", "wait"
+  std::string op;        // "cb_wait", "cb_reserve", "copy", "wait"
   std::string direction; // "read" or "write" for copy/wait ops
 };
 
@@ -46,7 +46,7 @@ struct CBFlowInfo {
   std::string name; // Variable name if available
   llvm::SmallVector<CBOpInfo> producers;
   llvm::SmallVector<CBOpInfo> consumers;
-  llvm::SmallVector<CBOpInfo> dmaOps; // copy operations
+  llvm::SmallVector<CBOpInfo> dmaOps;  // copy operations
   llvm::SmallVector<CBOpInfo> waitOps; // ttl.wait operations
 };
 
@@ -85,8 +85,8 @@ static std::string getKernelName(func::FuncOp func) {
 
 /// Get the thread type from a function's ttl.kernel_thread attribute.
 static std::string getThreadType(func::FuncOp func) {
-  if (auto threadAttr =
-          func->getAttrOfType<tt::ttkernel::ThreadTypeAttr>("ttl.kernel_thread")) {
+  if (auto threadAttr = func->getAttrOfType<tt::ttkernel::ThreadTypeAttr>(
+          "ttl.kernel_thread")) {
     auto thread = threadAttr.getValue();
     switch (thread) {
     case tt::ttkernel::ThreadType::Noc:
@@ -110,9 +110,7 @@ static int64_t getCBIndex(Value cb) {
 }
 
 /// Check if a type is a CB type.
-static bool isCBType(Type type) {
-  return isa<CircularBufferType>(type);
-}
+static bool isCBType(Type type) { return isa<CircularBufferType>(type); }
 
 /// Get transfer direction from transfer handle type.
 static std::string getTransferDirection(Type handleType) {
@@ -191,7 +189,8 @@ struct TTLDumpCBFlowGraphPass
           }
         } else if (auto waitOp = dyn_cast<WaitOp>(op)) {
           // DMA wait/barrier
-          std::string direction = getTransferDirection(waitOp.getXf().getType());
+          std::string direction =
+              getTransferDirection(waitOp.getXf().getType());
 
           // Try to trace back to the copy op to get CB index
           if (auto copyOp = waitOp.getXf().getDefiningOp<CopyOp>()) {
@@ -238,8 +237,8 @@ struct TTLDumpCBFlowGraphPass
       if (!info.producers.empty()) {
         llvm::errs() << "  producers:\n";
         for (const auto &op : info.producers) {
-          llvm::errs() << "    " << op.kernel << ":" << op.line << " ("
-                       << op.op << ")\n";
+          llvm::errs() << "    " << op.kernel << ":" << op.line << " (" << op.op
+                       << ")\n";
         }
       }
 
@@ -262,8 +261,8 @@ struct TTLDumpCBFlowGraphPass
       if (!info.consumers.empty()) {
         llvm::errs() << "  consumers:\n";
         for (const auto &op : info.consumers) {
-          llvm::errs() << "    " << op.kernel << ":" << op.line << " ("
-                       << op.op << ")\n";
+          llvm::errs() << "    " << op.kernel << ":" << op.line << " (" << op.op
+                       << ")\n";
         }
       }
     }
