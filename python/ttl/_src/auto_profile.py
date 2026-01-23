@@ -396,6 +396,9 @@ def build_cb_wait_to_dma_map(
 ) -> Dict[Tuple[str, int], Tuple[str, int, int]]:
     """Build mapping from cb_wait locations to DMA producer locations.
 
+    Only maps consumers waiting for DMA reads (data flowing into CB).
+    cb_wait ops waiting for compute output (where DMA is a write) are not mapped.
+
     Returns:
         Dict mapping (kernel, line) of cb_wait -> (dma_kernel, dma_line, cb_index)
     """
@@ -406,16 +409,15 @@ def build_cb_wait_to_dma_map(
     for cb_info in cb_flow.get("circular_buffers", []):
         cb_index = cb_info.get("cb_index", -1)
 
-        dma_ops = cb_info.get("dma_ops", [])
-        if not dma_ops:
+        # Only consider DMA reads (data flowing INTO CB)
+        dma_reads = [op for op in cb_info.get("dma_ops", []) if op.get("direction") == "read"]
+        if not dma_reads:
             continue
 
-        # Use the first DMA op as the producer location
-        dma_op = dma_ops[0]
+        dma_op = dma_reads[0]
         dma_kernel = dma_op.get("kernel", "")
         dma_line = dma_op.get("line", -1)
 
-        # Map each consumer (cb_wait) to this DMA
         for consumer in cb_info.get("consumers", []):
             consumer_kernel = consumer.get("kernel", "")
             consumer_line = consumer.get("line", -1)
