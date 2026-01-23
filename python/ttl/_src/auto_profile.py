@@ -303,9 +303,11 @@ def print_profile_report(
                     elif total_line_cycles >= second_hottest and second_hottest > 0:
                         color = Colors.YELLOW
 
-                    # Check if this line is a DMA producer and get CB background
+                    # Check if this line is a DMA producer/consumer
                     original_lineno = line_results[0].lineno if line_results else -1
                     producer_cb_idx = dma_producer_to_cb.get((kernel_name, original_lineno))
+                    consumer_dma_info = cb_wait_to_dma.get((kernel_name, original_lineno))
+                    # Only producers get source line background (consumers only highlight remark)
                     cb_bg = Colors.cb_bg(producer_cb_idx) if producer_cb_idx is not None else ""
 
                     # Group by op_name to show breakdown
@@ -325,6 +327,30 @@ def print_profile_report(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
                             f"{r.cycles:<10,} {source_colored}{Colors.RESET if color else ''}"
                         )
+                        # Show remarks for consumer/producer lines
+                        if consumer_dma_info or producer_cb_idx is not None:
+                            indent = 27 + len(source_line)
+                            if consumer_dma_info:
+                                barrier_kernel, barrier_line, cb_idx = consumer_dma_info
+                                dma_cb_bg = Colors.cb_bg(cb_idx)
+                                remark = f"waiting for DMA @ line {barrier_line} ({barrier_kernel})"
+                                if dma_cb_bg:
+                                    remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
+                                is_last = producer_cb_idx is None
+                                arrow = "╰─" if is_last else "├─"
+                                print(
+                                    f"{Colors.DIM}{' ' * indent}"
+                                    f"{arrow} {remark}{Colors.RESET}"
+                                )
+                            if producer_cb_idx is not None:
+                                producer_bg = Colors.cb_bg(producer_cb_idx)
+                                remark = f"DMA barrier for CB[{producer_cb_idx}]"
+                                if producer_bg:
+                                    remark = f"{producer_bg}{remark}{Colors.RESET}"
+                                print(
+                                    f"{Colors.DIM}{' ' * indent}"
+                                    f"╰─ {remark}{Colors.RESET}"
+                                )
                     elif has_named_ops:
                         # Show line with total, then breakdown per op
                         pct = 100.0 * total_line_cycles / thread_cycles[thread]
@@ -342,12 +368,6 @@ def print_profile_report(
                         )
                         op_list = list(sorted_ops)
 
-                        # Check if any op is cb_wait and get DMA attribution
-                        has_cb_wait = any(op_name == "cb_wait" for (op_name, _), _ in op_list)
-                        dma_info = None
-                        if has_cb_wait and line_results:
-                            dma_info = cb_wait_to_dma.get((kernel_name, original_lineno))
-
                         for i, ((op_name, implicit), ops) in enumerate(op_list):
                             op_cycles = sum(r.cycles for r in ops)
                             op_label = op_name or "line"
@@ -355,20 +375,33 @@ def print_profile_report(
                                 op_label = f"{op_label} (implicit)"
                             if len(ops) > 1:
                                 op_label = f"{op_label} (x{len(ops)})"
-                            is_last = i == len(op_list) - 1 and dma_info is None
+                            is_last = i == len(op_list) - 1 and consumer_dma_info is None and producer_cb_idx is None
                             arrow = "╰─" if is_last else "├─"
                             print(
                                 f"{Colors.DIM}{' ' * indent}"
                                 f"{arrow} {op_cycles:,} {op_label}{Colors.RESET}"
                             )
 
-                        # Show DMA attribution for cb_wait with CB background color
-                        if dma_info:
-                            dma_kernel, dma_line, cb_idx = dma_info
+                        # Show DMA attribution for consumer (cb_wait) with CB background color
+                        if consumer_dma_info:
+                            barrier_kernel, barrier_line, cb_idx = consumer_dma_info
                             dma_cb_bg = Colors.cb_bg(cb_idx)
-                            remark = f"waiting for DMA @ line {dma_line} ({dma_kernel})"
+                            remark = f"waiting for DMA @ line {barrier_line} ({barrier_kernel})"
                             if dma_cb_bg:
                                 remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
+                            is_last = producer_cb_idx is None
+                            arrow = "╰─" if is_last else "├─"
+                            print(
+                                f"{Colors.DIM}{' ' * indent}"
+                                f"{arrow} {remark}{Colors.RESET}"
+                            )
+
+                        # Show DMA barrier remark for producer lines
+                        if producer_cb_idx is not None:
+                            producer_bg = Colors.cb_bg(producer_cb_idx)
+                            remark = f"DMA barrier for CB[{producer_cb_idx}]"
+                            if producer_bg:
+                                remark = f"{producer_bg}{remark}{Colors.RESET}"
                             print(
                                 f"{Colors.DIM}{' ' * indent}"
                                 f"╰─ {remark}{Colors.RESET}"
@@ -397,6 +430,31 @@ def print_profile_report(
                                 f"{range_str:<10} {source_colored}  "
                                 f"{Colors.RESET if color else ''}{Colors.DIM}{stats}{Colors.RESET}"
                             )
+
+                        # Show remarks for consumer/producer lines
+                        if consumer_dma_info or producer_cb_idx is not None:
+                            indent = 27 + len(source_line)
+                            if consumer_dma_info:
+                                barrier_kernel, barrier_line, cb_idx = consumer_dma_info
+                                dma_cb_bg = Colors.cb_bg(cb_idx)
+                                remark = f"waiting for DMA @ line {barrier_line} ({barrier_kernel})"
+                                if dma_cb_bg:
+                                    remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
+                                is_last = producer_cb_idx is None
+                                arrow = "╰─" if is_last else "├─"
+                                print(
+                                    f"{Colors.DIM}{' ' * indent}"
+                                    f"{arrow} {remark}{Colors.RESET}"
+                                )
+                            if producer_cb_idx is not None:
+                                producer_bg = Colors.cb_bg(producer_cb_idx)
+                                remark = f"DMA barrier for CB[{producer_cb_idx}]"
+                                if producer_bg:
+                                    remark = f"{producer_bg}{remark}{Colors.RESET}"
+                                print(
+                                    f"{Colors.DIM}{' ' * indent}"
+                                    f"╰─ {remark}{Colors.RESET}"
+                                )
                 else:
                     if source_line.strip():
                         print(f"{file_lineno:<6} {'':7} {'':10} {source_line}")
