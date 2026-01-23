@@ -155,7 +155,9 @@ def _run_profiling_pipeline(
         if not tt_metal_home:
             print("[Auto-profile] TT_METAL_HOME not set, cannot find profile CSV")
             return
-        csv_path = Path(tt_metal_home) / "generated/profiler/.logs/profile_log_device.csv"
+        csv_path = (
+            Path(tt_metal_home) / "generated/profiler/.logs/profile_log_device.csv"
+        )
 
     if not csv_path.exists():
         print(f"[Auto-profile] Profile CSV not found at {csv_path}")

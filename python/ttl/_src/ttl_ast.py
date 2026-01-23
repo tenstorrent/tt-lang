@@ -566,14 +566,16 @@ class TTLGenericCompiler(TTCompilerBase):
                 tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
                 if method_name == "reserve":
                     tensor = self._emit_op_signposts(
-                        "cb_reserve", context_expr,
-                        lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv)
+                        "cb_reserve",
+                        context_expr,
+                        lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv),
                     )
                     releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
                 else:  # wait
                     tensor = self._emit_op_signposts(
-                        "cb_wait", context_expr,
-                        lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv)
+                        "cb_wait",
+                        context_expr,
+                        lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
                     )
                     releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
 
@@ -594,9 +596,10 @@ class TTLGenericCompiler(TTCompilerBase):
             # Release in reverse order (implicit ops from with statement)
             for op_name, release_op, cb_val, expr_node in reversed(releases):
                 self._emit_op_signposts(
-                    op_name, expr_node,
+                    op_name,
+                    expr_node,
                     lambda ro=release_op, cv=cb_val: ro(cv),
-                    implicit=True
+                    implicit=True,
                 )
 
 

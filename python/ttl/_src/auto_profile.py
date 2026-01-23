@@ -69,7 +69,9 @@ def parse_signpost_name(signpost: str) -> Tuple[Optional[str], bool]:
     if len(parts) != 2 or parts[1] not in ("before", "after"):
         return None, False
 
-    middle = parts[0]  # e.g., "line_52" or "line_52_cb_wait" or "line_52_implicit_cb_pop"
+    middle = parts[
+        0
+    ]  # e.g., "line_52" or "line_52_cb_wait" or "line_52_implicit_cb_pop"
     line_parts = middle.split("_", 2)  # Split "line", "52", rest
     if len(line_parts) <= 2:
         return None, False
@@ -284,7 +286,9 @@ def print_profile_report(
                         # Format: "%-6s %-7s %-10s %s" = 6 + 1 + 7 + 2 + 10 + 1 = 27 + source
                         indent = 27 + len(source_line)
                         # Sort: explicit ops first (implicit=False), then implicit
-                        sorted_ops = sorted(op_groups.items(), key=lambda x: (x[0][1], x[0][0] or ""))
+                        sorted_ops = sorted(
+                            op_groups.items(), key=lambda x: (x[0][1], x[0][0] or "")
+                        )
                         op_list = list(sorted_ops)
                         for i, ((op_name, implicit), ops) in enumerate(op_list):
                             op_cycles = sum(r.cycles for r in ops)
@@ -293,7 +297,7 @@ def print_profile_report(
                                 op_label = f"{op_label} (implicit)"
                             if len(ops) > 1:
                                 op_label = f"{op_label} (x{len(ops)})"
-                            is_last = (i == len(op_list) - 1)
+                            is_last = i == len(op_list) - 1
                             arrow = "╰─" if is_last else "├─"
                             print(
                                 f"{Colors.DIM}{' ' * indent}"

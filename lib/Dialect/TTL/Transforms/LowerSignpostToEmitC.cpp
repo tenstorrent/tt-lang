@@ -32,9 +32,8 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
     // Emit DeviceZoneScopedN wrapped in braces to avoid variable conflicts.
     auto loc = op.getLoc();
     createEmitCVerbatim(loc, "{", rewriter);
-    createEmitCVerbatim(loc,
-                        "DeviceZoneScopedN(\"" + op.getName().str() + "\");",
-                        rewriter);
+    createEmitCVerbatim(
+        loc, "DeviceZoneScopedN(\"" + op.getName().str() + "\");", rewriter);
     createEmitCVerbatim(loc, "}", rewriter);
     rewriter.eraseOp(op);
     return success();
