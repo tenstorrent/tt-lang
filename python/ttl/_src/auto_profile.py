@@ -443,13 +443,13 @@ def load_cb_flow_graph(csv_path: Path) -> Optional[Dict]:
 def build_cb_wait_to_dma_map(
     cb_flow: Optional[Dict],
 ) -> Dict[Tuple[str, int], Tuple[str, int, int]]:
-    """Build mapping from cb_wait locations to DMA producer locations.
+    """Build mapping from cb_wait locations to DMA barrier locations.
 
     Only maps consumers waiting for DMA reads (data flowing into CB).
     cb_wait ops waiting for compute output (where DMA is a write) are not mapped.
 
     Returns:
-        Dict mapping (kernel, line) of cb_wait -> (dma_kernel, dma_line, cb_index)
+        Dict mapping (kernel, line) of cb_wait -> (barrier_kernel, barrier_line, cb_index)
     """
     if not cb_flow:
         return {}
@@ -458,22 +458,22 @@ def build_cb_wait_to_dma_map(
     for cb_info in cb_flow.get("circular_buffers", []):
         cb_index = cb_info.get("cb_index", -1)
 
-        # Only consider DMA reads (data flowing INTO CB)
-        dma_reads = [op for op in cb_info.get("dma_ops", []) if op.get("direction") == "read"]
-        if not dma_reads:
+        # Only consider DMA read barriers (data flowing INTO CB)
+        read_barriers = [op for op in cb_info.get("wait_ops", []) if op.get("direction") == "read"]
+        if not read_barriers:
             continue
 
-        dma_op = dma_reads[0]
-        dma_kernel = dma_op.get("kernel", "")
-        dma_line = dma_op.get("line", -1)
+        barrier_op = read_barriers[0]
+        barrier_kernel = barrier_op.get("kernel", "")
+        barrier_line = barrier_op.get("line", -1)
 
         for consumer in cb_info.get("consumers", []):
             consumer_kernel = consumer.get("kernel", "")
             consumer_line = consumer.get("line", -1)
             if consumer_line > 0:
                 result[(consumer_kernel, consumer_line)] = (
-                    dma_kernel,
-                    dma_line,
+                    barrier_kernel,
+                    barrier_line,
                     cb_index,
                 )
 
@@ -483,10 +483,10 @@ def build_cb_wait_to_dma_map(
 def build_dma_producer_to_cb_map(
     cb_flow: Optional[Dict],
 ) -> Dict[Tuple[str, int], int]:
-    """Build mapping from DMA producer locations to CB index.
+    """Build mapping from DMA barrier locations to CB index.
 
     Returns:
-        Dict mapping (kernel, line) of DMA read -> cb_index
+        Dict mapping (kernel, line) of DMA read barrier -> cb_index
     """
     if not cb_flow:
         return {}
@@ -497,12 +497,12 @@ def build_dma_producer_to_cb_map(
         if cb_index < 0 or cb_index >= len(Colors.CB_BACKGROUNDS):
             continue
 
-        for dma_op in cb_info.get("dma_ops", []):
-            if dma_op.get("direction") == "read":
-                dma_kernel = dma_op.get("kernel", "")
-                dma_line = dma_op.get("line", -1)
-                if dma_line > 0:
-                    result[(dma_kernel, dma_line)] = cb_index
+        for wait_op in cb_info.get("wait_ops", []):
+            if wait_op.get("direction") == "read":
+                barrier_kernel = wait_op.get("kernel", "")
+                barrier_line = wait_op.get("line", -1)
+                if barrier_line > 0:
+                    result[(barrier_kernel, barrier_line)] = cb_index
 
     return result
 
