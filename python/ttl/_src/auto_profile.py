@@ -216,15 +216,6 @@ def print_profile_report(
     print("=" * 100)
     print()
 
-    # DEBUG: Test CB background colors with different text colors - REMOVE LATER
-    print("CB Color Test (black/yellow/red text on each background):")
-    black_text = "\033[30m"
-    for i, bg in enumerate(Colors.CB_BACKGROUNDS):
-        print(f"  {bg}{black_text}CB[{i}] black{Colors.RESET}  "
-              f"{bg}{Colors.YELLOW}CB[{i}] yellow{Colors.RESET}  "
-              f"{bg}{Colors.RED}CB[{i}] red{Colors.RESET}")
-    print()
-
     # Print CB color key
     active_cbs = set(dma_producer_to_cb.values()) | {info[2] for info in cb_wait_to_dma.values()}
     if active_cbs:
@@ -371,11 +362,7 @@ def print_profile_report(
                         if dma_info:
                             dma_kernel, dma_line, cb_idx = dma_info
                             dma_cb_bg = Colors.cb_bg(cb_idx)
-                            # Get cb_wait cycles for the remark
-                            cb_wait_cycles = sum(
-                                r.cycles for r in line_results if r.op_name == "cb_wait"
-                            )
-                            remark = f"{cb_wait_cycles:,} cycles waiting for DMA @ line {dma_line} ({dma_kernel})"
+                            remark = f"waiting for DMA @ line {dma_line} ({dma_kernel})"
                             if dma_cb_bg:
                                 remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
                             print(
