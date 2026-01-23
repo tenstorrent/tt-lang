@@ -892,6 +892,7 @@ def _compile_kernel(
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
             "func.func(ttl-annotate-cb-associations)",
+            "ttl-dump-cb-flow-graph",
             "convert-ttl-to-ttkernel",
             "ttl-lower-signpost-to-emitc",
             "canonicalize",
