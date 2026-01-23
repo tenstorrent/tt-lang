@@ -299,8 +299,10 @@ def print_profile_report(
                         # Check if any op is cb_wait and get DMA attribution
                         has_cb_wait = any(op_name == "cb_wait" for (op_name, _), _ in op_list)
                         dma_info = None
-                        if has_cb_wait:
-                            dma_info = cb_wait_to_dma.get((kernel_name, file_lineno))
+                        if has_cb_wait and line_results:
+                            # Use the signpost's original line number, not the display line
+                            original_lineno = line_results[0].lineno
+                            dma_info = cb_wait_to_dma.get((kernel_name, original_lineno))
 
                         for i, ((op_name, implicit), ops) in enumerate(op_list):
                             op_cycles = sum(r.cycles for r in ops)
