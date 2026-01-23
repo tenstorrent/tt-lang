@@ -134,7 +134,7 @@ jobs:
   build-image:
     needs: [check-if-images-already-exist, build-toolchain-if-needed]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
-    runs-on: ubuntu-latest
+    runs-on: mlir-large-runner-lang
     timeout-minutes: 240
 
     env:
