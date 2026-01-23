@@ -113,6 +113,7 @@ def _run_profiling_pipeline(
     tensors: tuple,
     all_source_lines: Dict[str, List[str]],
     thread_to_kernel: Dict[str, str],
+    kernel_line_offsets: Optional[Dict[str, int]] = None,
 ):
     """
     Read device profiler data and display profile report.
@@ -181,7 +182,7 @@ def _run_profiling_pipeline(
         if results:
             print_profile_report(
                 results, all_source_lines, thread_to_kernel, line_mapper,
-                cb_wait_to_dma, dma_producer_to_cb
+                cb_wait_to_dma, dma_producer_to_cb, kernel_line_offsets
             )
         else:
             print("[Auto-profile] No signpost results found in profile CSV")
@@ -284,6 +285,7 @@ class CompiledTTNNKernel:
         source_lines=None,
         all_source_lines=None,
         thread_to_kernel=None,
+        kernel_line_offsets=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -300,6 +302,7 @@ class CompiledTTNNKernel:
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
             thread_to_kernel: Dict mapping RISC thread name to kernel name
+            kernel_line_offsets: Dict mapping kernel name to line offset
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -312,6 +315,7 @@ class CompiledTTNNKernel:
         self.source_lines = source_lines
         self.all_source_lines = all_source_lines or {}
         self.thread_to_kernel = thread_to_kernel or {}
+        self.kernel_line_offsets = kernel_line_offsets or {}
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -381,6 +385,7 @@ def _compile_ttnn_kernel(
     verbose=True,
     source_lines=None,
     all_source_lines=None,
+    kernel_line_offsets=None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -521,6 +526,7 @@ def _compile_ttnn_kernel(
         source_lines=source_lines,
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
+        kernel_line_offsets=kernel_line_offsets,
     )
 
     if verbose:
@@ -841,6 +847,9 @@ def _compile_kernel(
         all_source_lines = {}
         all_source_files = {}
 
+        # Track per-kernel line offsets for correct display
+        kernel_line_offsets = {}
+
         for compile_thread in program.threads:
             try:
                 ct = compile_thread(*program.args, **program.kwargs)
@@ -874,6 +883,9 @@ def _compile_kernel(
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
                 all_source_files[ct.name] = ct.source_file
                 all_source_lines[ct.name] = ct.source_lines
+            # Track per-kernel line offset
+            if hasattr(ct, "line_offset"):
+                kernel_line_offsets[ct.name] = ct.line_offset
 
         module = Module.create(loc)
 
@@ -998,6 +1010,7 @@ def _compile_kernel(
             program_hash=program_hash,
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
+            kernel_line_offsets=kernel_line_offsets,
         )
         return compiled_kernel
 
@@ -1106,6 +1119,7 @@ def pykernel_gen(
                         args,
                         compiled_kernel.all_source_lines,
                         compiled_kernel.thread_to_kernel,
+                        compiled_kernel.kernel_line_offsets,
                     )
 
                 return result

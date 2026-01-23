@@ -190,6 +190,7 @@ def print_profile_report(
     line_mapper: Optional[SourceLineMapper] = None,
     cb_wait_to_dma: Optional[Dict[Tuple[str, int], Tuple[str, int, int]]] = None,
     dma_producer_to_cb: Optional[Dict[Tuple[str, int], int]] = None,
+    kernel_line_offsets: Optional[Dict[str, int]] = None,
 ):
     """
     Print a profile report organized by thread.
@@ -204,11 +205,14 @@ def print_profile_report(
         line_mapper: Optional SourceLineMapper with line offset info
         cb_wait_to_dma: Optional mapping from (kernel, line) -> (dma_kernel, dma_line, cb_index)
         dma_producer_to_cb: Optional mapping from (kernel, line) -> cb_index for DMA producers
+        kernel_line_offsets: Optional mapping from kernel name to line offset
     """
     if cb_wait_to_dma is None:
         cb_wait_to_dma = {}
     if dma_producer_to_cb is None:
         dma_producer_to_cb = {}
+    if kernel_line_offsets is None:
+        kernel_line_offsets = {}
 
     print()
     print("=" * 100)
@@ -282,7 +286,7 @@ def print_profile_report(
         second_hottest = all_cycle_counts[1] if len(all_cycle_counts) > 1 else 0
 
         if source_lines:
-            line_offset = getattr(line_mapper, "line_offset", 0)
+            line_offset = kernel_line_offsets.get(kernel_name, 0)
 
             for lineno in range(1, len(source_lines) + 1):
                 file_lineno = lineno + line_offset
