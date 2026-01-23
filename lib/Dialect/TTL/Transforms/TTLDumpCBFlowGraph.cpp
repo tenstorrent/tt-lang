@@ -216,7 +216,7 @@ struct TTLDumpCBFlowGraphPass
     });
 
     // Print the graph (disabled by default, enable for debugging)
-#if 1
+#if 0
     printGraph(cbFlows);
 #endif
 

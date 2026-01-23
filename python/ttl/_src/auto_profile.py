@@ -505,8 +505,6 @@ def print_profile_report(
         marker_pos = int(memory_ratio * (roof_width - 1))
         roof_line = "─" * marker_pos + "●" + "─" * (roof_width - 1 - marker_pos)
 
-        print("ROOFLINE MODEL")
-        print("=" * 100)
         if bound_type == "balanced":
             print(f"  Perfectly balanced!")
         else:
