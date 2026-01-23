@@ -29,16 +29,16 @@ class Colors:
     DIM = "\033[2m"
     RESET = "\033[0m"
 
-    # Background colors for CB visualization (8 colors, avoiding red/yellow)
+    # Background colors for CB visualization (8 pastel colors, avoiding red/yellow)
     CB_BACKGROUNDS = [
-        "\033[48;5;24m",   # Deep blue
-        "\033[48;5;29m",   # Teal
-        "\033[48;5;97m",   # Purple
-        "\033[48;5;30m",   # Dark cyan
-        "\033[48;5;65m",   # Olive green
-        "\033[48;5;132m",  # Mauve
-        "\033[48;5;37m",   # Cyan
-        "\033[48;5;60m",   # Slate blue
+        "\033[48;5;153m",  # Light steel blue
+        "\033[48;5;158m",  # Pale turquoise
+        "\033[48;5;183m",  # Lavender
+        "\033[48;5;151m",  # Pale green
+        "\033[48;5;181m",  # Light pink
+        "\033[48;5;152m",  # Pale cyan
+        "\033[48;5;187m",  # Wheat/tan
+        "\033[48;5;146m",  # Light periwinkle
     ]
 
     @classmethod
