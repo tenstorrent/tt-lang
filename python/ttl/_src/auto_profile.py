@@ -29,6 +29,25 @@ class Colors:
     DIM = "\033[2m"
     RESET = "\033[0m"
 
+    # Background colors for CB visualization (8 colors, avoiding red/yellow)
+    CB_BACKGROUNDS = [
+        "\033[48;5;24m",   # Deep blue
+        "\033[48;5;29m",   # Teal
+        "\033[48;5;97m",   # Purple
+        "\033[48;5;30m",   # Dark cyan
+        "\033[48;5;65m",   # Olive green
+        "\033[48;5;132m",  # Mauve
+        "\033[48;5;37m",   # Cyan
+        "\033[48;5;60m",   # Slate blue
+    ]
+
+    @classmethod
+    def cb_bg(cls, cb_index: int) -> str:
+        """Get background color for a CB index, or empty if out of range."""
+        if 0 <= cb_index < len(cls.CB_BACKGROUNDS):
+            return cls.CB_BACKGROUNDS[cb_index]
+        return ""
+
 
 def is_auto_profile_enabled() -> bool:
     """Check if auto-profiling is enabled via environment variable."""
@@ -170,6 +189,7 @@ def print_profile_report(
     thread_to_kernel: Dict[str, str],
     line_mapper: Optional[SourceLineMapper] = None,
     cb_wait_to_dma: Optional[Dict[Tuple[str, int], Tuple[str, int, int]]] = None,
+    dma_producer_to_cb: Optional[Dict[Tuple[str, int], int]] = None,
 ):
     """
     Print a profile report organized by thread.
@@ -183,14 +203,38 @@ def print_profile_report(
         thread_to_kernel: Dict mapping RISC thread name to kernel name
         line_mapper: Optional SourceLineMapper with line offset info
         cb_wait_to_dma: Optional mapping from (kernel, line) -> (dma_kernel, dma_line, cb_index)
+        dma_producer_to_cb: Optional mapping from (kernel, line) -> cb_index for DMA producers
     """
     if cb_wait_to_dma is None:
         cb_wait_to_dma = {}
+    if dma_producer_to_cb is None:
+        dma_producer_to_cb = {}
+
     print()
     print("=" * 100)
     print("TTLANG AUTO-PROFILE REPORT")
     print("=" * 100)
     print()
+
+    # DEBUG: Test CB background colors with different text colors - REMOVE LATER
+    print("CB Color Test (black/yellow/red text on each background):")
+    black_text = "\033[30m"
+    for i, bg in enumerate(Colors.CB_BACKGROUNDS):
+        print(f"  {bg}{black_text}CB[{i}] black{Colors.RESET}  "
+              f"{bg}{Colors.YELLOW}CB[{i}] yellow{Colors.RESET}  "
+              f"{bg}{Colors.RED}CB[{i}] red{Colors.RESET}")
+    print()
+
+    # Print CB color key
+    active_cbs = set(dma_producer_to_cb.values()) | {info[2] for info in cb_wait_to_dma.values()}
+    if active_cbs:
+        print("CB Colors: ", end="")
+        for cb_idx in sorted(active_cbs):
+            bg = Colors.cb_bg(cb_idx)
+            if bg:
+                print(f"{bg} CB[{cb_idx}] {Colors.RESET} ", end="")
+        print()
+        print()
 
     thread_cycles = defaultdict(int)
     thread_ops = defaultdict(int)
@@ -264,6 +308,11 @@ def print_profile_report(
                     elif total_line_cycles >= second_hottest and second_hottest > 0:
                         color = Colors.YELLOW
 
+                    # Check if this line is a DMA producer and get CB background
+                    original_lineno = line_results[0].lineno if line_results else -1
+                    producer_cb_idx = dma_producer_to_cb.get((kernel_name, original_lineno))
+                    cb_bg = Colors.cb_bg(producer_cb_idx) if producer_cb_idx is not None else ""
+
                     # Group by op_name to show breakdown
                     op_groups = defaultdict(list)
                     for r in line_results:
@@ -276,16 +325,18 @@ def print_profile_report(
                     if len(line_results) == 1 and not has_named_ops:
                         r = line_results[0]
                         pct = 100.0 * r.cycles / thread_cycles[thread]
+                        source_colored = f"{cb_bg}{source_line}{Colors.RESET}" if cb_bg else source_line
                         print(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
-                            f"{r.cycles:<10,} {source_line}{Colors.RESET}"
+                            f"{r.cycles:<10,} {source_colored}{Colors.RESET if color else ''}"
                         )
                     elif has_named_ops:
                         # Show line with total, then breakdown per op
                         pct = 100.0 * total_line_cycles / thread_cycles[thread]
+                        source_colored = f"{cb_bg}{source_line}{Colors.RESET}" if cb_bg else source_line
                         print(
                             f"{color}{file_lineno:<6} {pct:>5.1f}%  "
-                            f"{total_line_cycles:<10,} {source_line}{Colors.RESET}"
+                            f"{total_line_cycles:<10,} {source_colored}{Colors.RESET if color else ''}"
                         )
                         # Calculate indent to align arrows at end of source line
                         # Format: "%-6s %-7s %-10s %s" = 6 + 1 + 7 + 2 + 10 + 1 = 27 + source
@@ -300,8 +351,6 @@ def print_profile_report(
                         has_cb_wait = any(op_name == "cb_wait" for (op_name, _), _ in op_list)
                         dma_info = None
                         if has_cb_wait and line_results:
-                            # Use the signpost's original line number, not the display line
-                            original_lineno = line_results[0].lineno
                             dma_info = cb_wait_to_dma.get((kernel_name, original_lineno))
 
                         for i, ((op_name, implicit), ops) in enumerate(op_list):
@@ -318,12 +367,20 @@ def print_profile_report(
                                 f"{arrow} {op_cycles:,} {op_label}{Colors.RESET}"
                             )
 
-                        # Show DMA attribution for cb_wait
+                        # Show DMA attribution for cb_wait with CB background color
                         if dma_info:
                             dma_kernel, dma_line, cb_idx = dma_info
+                            dma_cb_bg = Colors.cb_bg(cb_idx)
+                            # Get cb_wait cycles for the remark
+                            cb_wait_cycles = sum(
+                                r.cycles for r in line_results if r.op_name == "cb_wait"
+                            )
+                            remark = f"{cb_wait_cycles:,} cycles waiting for DMA @ line {dma_line} ({dma_kernel})"
+                            if dma_cb_bg:
+                                remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
                             print(
                                 f"{Colors.DIM}{' ' * indent}"
-                                f"╰─ waiting for DMA @ line {dma_line} ({dma_kernel}){Colors.RESET}"
+                                f"╰─ {remark}{Colors.RESET}"
                             )
                     else:
                         cycles_list = [r.cycles for r in line_results]
@@ -332,21 +389,22 @@ def print_profile_report(
                         max_cycles = max(cycles_list)
                         sum_cycles = sum(cycles_list)
                         pct = 100.0 * sum_cycles / thread_cycles[thread]
+                        source_colored = f"{cb_bg}{source_line}{Colors.RESET}" if cb_bg else source_line
 
                         if min_cycles == max_cycles:
+                            stats = f"(x{len(line_results)} = {sum_cycles:,} cycles)"
                             print(
                                 f"{color}{file_lineno:<6} {pct:>5.1f}%  "
-                                f"{min_cycles:<10,} {source_line}  "
-                                f"(x{len(line_results)} = {sum_cycles:,} cycles)"
-                                f"{Colors.RESET}"
+                                f"{min_cycles:<10,} {source_colored}  "
+                                f"{Colors.RESET if color else ''}{Colors.DIM}{stats}{Colors.RESET}"
                             )
                         else:
                             range_str = f"{min_cycles:,}-{max_cycles:,}"
+                            stats = f"(x{len(line_results)}, avg={avg_cycles:.1f}, total={sum_cycles:,})"
                             print(
                                 f"{color}{file_lineno:<6} {pct:>5.1f}%  "
-                                f"{range_str:<10} {source_line}  "
-                                f"(x{len(line_results)}, avg={avg_cycles:.1f}, "
-                                f"total={sum_cycles:,}){Colors.RESET}"
+                                f"{range_str:<10} {source_colored}  "
+                                f"{Colors.RESET if color else ''}{Colors.DIM}{stats}{Colors.RESET}"
                             )
                 else:
                     if source_line.strip():
@@ -427,6 +485,33 @@ def build_cb_wait_to_dma_map(
                     dma_line,
                     cb_index,
                 )
+
+    return result
+
+
+def build_dma_producer_to_cb_map(
+    cb_flow: Optional[Dict],
+) -> Dict[Tuple[str, int], int]:
+    """Build mapping from DMA producer locations to CB index.
+
+    Returns:
+        Dict mapping (kernel, line) of DMA read -> cb_index
+    """
+    if not cb_flow:
+        return {}
+
+    result = {}
+    for cb_info in cb_flow.get("circular_buffers", []):
+        cb_index = cb_info.get("cb_index", -1)
+        if cb_index < 0 or cb_index >= len(Colors.CB_BACKGROUNDS):
+            continue
+
+        for dma_op in cb_info.get("dma_ops", []):
+            if dma_op.get("direction") == "read":
+                dma_kernel = dma_op.get("kernel", "")
+                dma_line = dma_op.get("line", -1)
+                if dma_line > 0:
+                    result[(dma_kernel, dma_line)] = cb_index
 
     return result
 

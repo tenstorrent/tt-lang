@@ -32,6 +32,7 @@ from ttmlir.passmanager import PassManager
 
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
+    build_dma_producer_to_cb_map,
     get_line_mapper,
     is_auto_profile_enabled,
     load_cb_flow_graph,
@@ -173,12 +174,14 @@ def _run_profiling_pipeline(
     # Load CB flow graph for DMA attribution
     cb_flow = load_cb_flow_graph(csv_path)
     cb_wait_to_dma = build_cb_wait_to_dma_map(cb_flow)
+    dma_producer_to_cb = build_dma_producer_to_cb_map(cb_flow)
 
     try:
         results = parse_device_profile_csv(csv_path, line_mapper)
         if results:
             print_profile_report(
-                results, all_source_lines, thread_to_kernel, line_mapper, cb_wait_to_dma
+                results, all_source_lines, thread_to_kernel, line_mapper,
+                cb_wait_to_dma, dma_producer_to_cb
             )
         else:
             print("[Auto-profile] No signpost results found in profile CSV")
