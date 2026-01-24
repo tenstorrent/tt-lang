@@ -110,3 +110,6 @@ install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
 install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
+
+# Install ttlsim script to bin directory
+install(PROGRAMS bin/ttlsim DESTINATION bin)

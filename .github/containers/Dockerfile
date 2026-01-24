@@ -103,9 +103,16 @@ COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 # Set write permissions
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
-# Install text editors
+# Install text editors and SSH (required for ird tool)
 RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
-    apt-get update && apt-get install -y vim nano && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /run/sshd
+
+# Auto-activate tt-lang environment on login (works even when entrypoint is overridden)
+# Add to /etc/profile.d for login shells and /etc/bash.bashrc for interactive shells
+RUN echo '[ -f "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate" ] && source "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate"' > /etc/profile.d/ttlang.sh && \
+    chmod +x /etc/profile.d/ttlang.sh && \
+    echo '[ -f "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate" ] && source "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate"' >> /etc/bash.bashrc
 
 # Setup entrypoint
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
