@@ -616,7 +616,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [MemoryEffects<[MemRead]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [MemoryEffects<[MemRead, MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for

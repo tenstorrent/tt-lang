@@ -40,8 +40,8 @@ def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Mod
         # TTL to compute conversion (runs on each function).
         f"func.func(convert-ttl-to-compute,"
         f"ttl-assign-dst,"
-        f"ttl-insert-tile-regs-sync,"
         f"ttl-lower-to-loops,"
+        f"ttl-insert-tile-regs-sync,"
         f"ttl-annotate-cb-associations),"
         # TTL to TTKernel conversion (module-level pass).
         f"convert-ttl-to-ttkernel,"
