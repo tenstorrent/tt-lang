@@ -37,9 +37,22 @@ RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     -DTTLANG_ENABLE_PERF_TRACE=ON \
     -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
-# Build and install tt-lang to toolchain
+# Build tt-lang
 RUN source build/env/activate && \
-    cmake --build build && \
+    cmake --build build
+
+# Clean up build artifacts BEFORE install to free disk space
+# Remove object files, CMake cache, and other intermediate files not needed for install
+RUN echo "=== Disk space before cleanup ===" && df -h && \
+    echo "Cleaning up build artifacts before install..." && \
+    find build -type f -name "*.o" -delete 2>/dev/null || true && \
+    rm -rf build/CMakeFiles 2>/dev/null || true && \
+    rm -rf build/_deps/tt-mlir-build/CMakeFiles 2>/dev/null || true && \
+    rm -rf build/_deps/tt-mlir-src/.git 2>/dev/null || true && \
+    echo "=== Disk space after cleanup ===" && df -h
+
+# Install tt-lang to toolchain
+RUN source build/env/activate && \
     cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
 
 # Copy tt-mlir Python packages that aren't included in install
