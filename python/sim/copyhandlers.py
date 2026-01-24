@@ -262,6 +262,7 @@ class TensorToBlockHandler:
         num_tiles = tile_count(src.shape, TILE_SHAPE)
         width_tiles = src.shape[1] // TILE_SHAPE[1]
 
+        tiles = []
         for tile_idx in range(num_tiles):
             # Convert linear index to 2D tile coordinates
             h_tile = tile_idx // width_tiles
@@ -270,7 +271,9 @@ class TensorToBlockHandler:
             # Extract single tile using tile coordinates [h:h+1, w:w+1]
             # This returns a ttnn.Tensor with shape (TILE_HEIGHT, TILE_WIDTH)
             tile = src[h_tile : h_tile + 1, w_tile : w_tile + 1]
-            dst[tile_idx] = tile
+            tiles.append(tile)
+
+        dst.store(tiles)
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
         return True

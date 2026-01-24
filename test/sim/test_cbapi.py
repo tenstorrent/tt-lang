@@ -330,8 +330,7 @@ def test_heterogeneous_cbs_in_same_api():
     # Test first circular buffer
     write1 = cb1.reserve()
     test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
-    for i in range(len(write1)):
-        write1[i] = test_tensors_1[i]
+    write1.store(test_tensors_1)
     cb1.push()
 
     read1 = cb1.wait()
@@ -342,8 +341,7 @@ def test_heterogeneous_cbs_in_same_api():
     # Test second circular buffer
     write2 = cb2.reserve()
     test_tensors_2 = [make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))]
-    for i in range(len(write2)):
-        write2[i] = test_tensors_2[i]
+    write2.store(test_tensors_2)
     cb2.push()
 
     read2 = cb2.wait()
@@ -373,12 +371,12 @@ def test_default_api_heterogeneous():
     # Test that both work correctly
     write1 = cb1.reserve()
     tensor1 = make_full_tensor(32, 32, 42.0)
-    write1[0] = tensor1
+    write1.store([tensor1])
     cb1.push()
 
     write2 = cb2.reserve()
     tensor2 = make_full_tensor(32, 32, 0.0)
-    write2[0] = tensor2
+    write2.store([tensor2])
     cb2.push()
 
     read1 = cb1.wait()

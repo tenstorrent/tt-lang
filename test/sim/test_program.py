@@ -42,7 +42,7 @@ class TestBasicExecution:
             def compute():
                 block = a_cb.wait()
                 out_block = out_cb.reserve()
-                out_block[0] = block[0] * 2
+                out_block.store([block[0] * 2])
                 a_cb.pop()
                 out_cb.push()
 
@@ -97,8 +97,10 @@ class TestBasicExecution:
                 b_block = b_cb.wait()
                 out_block = out_cb.reserve()
                 # Element-wise add
+                results = []
                 for i in range(2):
-                    out_block[i] = a_block[i] + b_block[i]
+                    results.append(a_block[i] + b_block[i])
+                out_block.store(results)
                 a_cb.pop()
                 b_cb.pop()
                 out_cb.push()
@@ -157,7 +159,7 @@ class TestMultiCore:
                 block = a_cb.wait()
                 out_block = out_cb.reserve()
                 # Each core multiplies by (core_id + 1)
-                out_block[0] = block[0] * (core_id + 1)
+                out_block.store([block[0] * (core_id + 1)])
                 a_cb.pop()
                 out_cb.push()
 
@@ -212,7 +214,7 @@ class TestMultiCore:
                 core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
                 out_block = out_cb.reserve()
                 # Each core writes its coordinates
-                out_block[0] = make_ones_tensor(32, 32) * (core_y * 10 + core_x)
+                out_block.store([make_ones_tensor(32, 32) * (core_y * 10 + core_x)])
                 out_cb.push()
 
             @ttl.datamovement()
@@ -262,7 +264,7 @@ class TestContextIsolation:
                 core_id = cast(int, ttl.core(dims=1))
                 # Each core reserves/pushes independently
                 block = cb.reserve()
-                block[0] = make_ones_tensor(32, 32) * (core_id + 100)
+                block.store([make_ones_tensor(32, 32) * (core_id + 100)])
                 cb.push()
 
             @ttl.datamovement()

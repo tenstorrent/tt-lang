@@ -157,8 +157,8 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
         lines = f.readlines()
         # Line 88 (1-indexed) should contain the problematic write
         error_line = lines[87].strip()  # 0-indexed
-        assert "a_block[0] = None" in error_line, (
+        assert "a_block.store" in error_line, (
             f"Line 88 in copy_lock_error.py does not contain expected write.\n"
-            f"Expected: 'a_block[0] = None'\n"
+            f"Expected: 'a_block.store'\n"
             f"Got: {error_line}"
         )

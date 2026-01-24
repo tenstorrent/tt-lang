@@ -131,7 +131,13 @@ class Block:
     # resolve to tensor which is similar to a list?
     # @validate_call
     def __setitem__(self, idx: Index, value: Tensor) -> None:
-        """Set item with lock checking."""
+        """Direct assignment to Block is not allowed. Use store() or copy() instead."""
+        raise RuntimeError(
+            "Direct assignment to Block is not allowed. Use block.store() or copy() instead."
+        )
+
+    def _write_slot(self, idx: Index, value: Tensor) -> None:
+        """Internal method to write to a slot. Only used by store() and copy handlers."""
         self._check_can_write()
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
@@ -162,11 +168,11 @@ class Block:
         if acc:
             # Accumulate: add new values to existing values
             for i, v in enumerate(items):
-                self[i] = self[i] + v
+                self._write_slot(i, self[i] + v)
         else:
             # Regular assignment
             for i, v in enumerate(items):
-                self[i] = v
+                self._write_slot(i, v)
 
     def _apply_binary_op(
         self,

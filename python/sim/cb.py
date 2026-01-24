@@ -47,8 +47,8 @@ class _BlockContextManager:
         """Return the underlying Block object."""
         return self._block
 
-    def __enter__(self) -> Block:
-        return self._block
+    def __enter__(self) -> "_BlockContextManager":
+        return self
 
     def __exit__(
         self,
@@ -67,7 +67,9 @@ class _BlockContextManager:
         return self._block[idx]
 
     def __setitem__(self, idx: int, value: Tensor) -> None:
-        self._block[idx] = value
+        raise RuntimeError(
+            "Direct assignment to Block is not allowed. Use block.store() or copy() instead."
+        )
 
     def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
         """Store items into the block.
@@ -306,8 +308,7 @@ class CircularBuffer:
 
         # Initialize the reserved block with zero tensors
         zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
-        for i in range(len(block)):
-            block[i] = zero_tensor
+        block.store([zero_tensor] * len(block))
 
         return ReserveContext(self, block)
 

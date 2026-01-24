@@ -47,7 +47,7 @@ def test_circular_buffer_basic(api: CBAPI) -> None:
 
     # Simulate writing data
     test_data = make_ones_tile()
-    write_view[0] = test_data
+    write_view.store([test_data])
     cb.push()
 
     # Consumer: wait -> read -> pop
@@ -78,10 +78,12 @@ def test_circular_buffer_multi_tile(api: CBAPI) -> None:
     assert len(write_view) == 2  # Should have space for 2 tiles
 
     # Fill with test data
+    tiles = []
     for i in range(2):
         tile = ttnn.rand(TILE_SHAPE)
         tile.to_torch().fill_(float(i + 1))
-        write_view[i] = tile
+        tiles.append(tile)
+    write_view.store(tiles)
 
     cb.push()
 
@@ -367,7 +369,7 @@ def test_can_wait_and_can_reserve(api: CBAPI) -> None:
 
     # Reserve and push one tile
     block = cb.reserve()
-    block[0] = make_ones_tile()
+    block.store([make_ones_tile()])
     cb.push()
 
     # Now we have 1 tile visible, 1 tile free
@@ -378,7 +380,7 @@ def test_can_wait_and_can_reserve(api: CBAPI) -> None:
     block = cb.reserve()
     tile = ttnn.rand(TILE_SHAPE)
     tile.to_torch().fill_(2.0)
-    block[0] = tile
+    block.store([tile])
     cb.push()
 
     # Now we have 2 tiles visible, 0 tiles free
@@ -416,10 +418,12 @@ def test_can_methods_multi_tile(api: CBAPI) -> None:
 
     # Reserve and push 2 tiles
     block = cb.reserve()
+    tiles = []
     for i in range(2):
         tile = ttnn.rand(TILE_SHAPE)
         tile.to_torch().fill_(float(i + 1))
-        block[i] = tile
+        tiles.append(tile)
+    block.store(tiles)
     cb.push()
 
     # 2 visible, 4 free
@@ -428,10 +432,12 @@ def test_can_methods_multi_tile(api: CBAPI) -> None:
 
     # Reserve and push 2 more tiles
     block = cb.reserve()
+    tiles = []
     for i in range(2):
         tile = ttnn.rand(TILE_SHAPE)
         tile.to_torch().fill_(float(i + 3))
-        block[i] = tile
+        tiles.append(tile)
+    block.store(tiles)
     cb.push()
 
     # 4 visible, 2 free
@@ -440,10 +446,12 @@ def test_can_methods_multi_tile(api: CBAPI) -> None:
 
     # Reserve and push 2 more tiles (buffer full)
     block = cb.reserve()
+    tiles = []
     for i in range(2):
         tile = ttnn.rand(TILE_SHAPE)
         tile.to_torch().fill_(float(i + 5))
-        block[i] = tile
+        tiles.append(tile)
+    block.store(tiles)
     cb.push()
 
     # 6 visible, 0 free
@@ -479,7 +487,7 @@ def test_context_manager_syntax(api: CBAPI) -> None:
     # Test reserve with context manager
     test_data = make_ones_tile()
     with cb.reserve() as write_view:
-        write_view[0] = test_data
+        write_view.store([test_data])
         # push() is automatically called on exit
 
     # Test wait with context manager
@@ -490,7 +498,7 @@ def test_context_manager_syntax(api: CBAPI) -> None:
 
     # Verify that we can still use the old style (backward compatibility)
     write_view2 = cb.reserve()
-    write_view2[0] = make_zeros_tile()
+    write_view2.store([make_zeros_tile()])
     cb.push()
 
     read_view2 = cb.wait()
@@ -503,12 +511,12 @@ def test_context_manager_syntax(api: CBAPI) -> None:
 
     # Write data first
     with cb.reserve() as w1:
-        w1[0] = make_ones_tile()
+        w1.store([make_ones_tile()])
 
     # Create another CB for multi-context test
     cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
     with cb2.reserve() as w2:
-        w2[0] = make_zeros_tile()
+        w2.store([make_zeros_tile()])
 
     # Test multiple wait contexts (simulating the matmul pattern)
     with cb.wait() as r1, cb2.wait() as r2:

@@ -187,7 +187,7 @@ class TestBlockToTensorCopy:
         tile = make_full_tile(9.99)
         buf: List[CBSlot] = [None]
         block = Block(buf, 1, Span(0, 1), shape=(1, 1))
-        block[0] = tile
+        block.store([tile])
 
         destination = make_zeros_tile()
 
@@ -244,7 +244,7 @@ class TestCopyComplexOperations:
         # Copy first tile only for simplicity
         result_buf: List[CBSlot] = [None]
         result_block = Block(result_buf, 1, Span(0, 1), shape=(1, 1))
-        result_block[0] = block2[0]
+        result_block.store([block2[0]])
         tx2 = copy(result_block, result)
         tx2.wait()
         assert tx2.is_completed
@@ -533,11 +533,11 @@ class TestCopySourceLocking:
             RuntimeError,
             match="Cannot write to Block: locked as copy source until wait\\(\\) completes",
         ):
-            source_block[0] = make_zeros_tile()
+            source_block.store([make_zeros_tile(), make_zeros_tile()])
 
         # After wait(), writing should work
         tx.wait()
-        source_block[0] = make_zeros_tile()  # Should succeed
+        source_block.store([make_zeros_tile(), make_zeros_tile()])  # Should succeed
 
     def test_can_read_from_block_source_before_wait(self) -> None:
         """Test that reading from Block source before wait() is allowed."""
@@ -602,11 +602,11 @@ class TestCopyDestinationLocking:
             RuntimeError,
             match="Cannot write to Block: locked as copy destination until wait\\(\\) completes",
         ):
-            dest_block[0] = make_ones_tile()
+            dest_block.store([make_ones_tile(), make_ones_tile()])
 
         # After wait(), writing should work
         tx.wait()
-        dest_block[0] = make_ones_tile()  # Should succeed
+        dest_block.store([make_ones_tile(), make_ones_tile()])  # Should succeed
 
 
 class TestMultipleCopyOperations:
@@ -674,7 +674,9 @@ class TestCopyLockingAfterWait:
 
         # Block should be fully accessible now
         _ = source_block[0]  # Read source - should succeed
-        source_block[0] = make_ones_tile()  # Write source - should succeed
+        source_block.store(
+            [make_ones_tile(), make_ones_tile()]
+        )  # Write source - should succeed
 
     def test_can_reuse_blocks_after_wait(self) -> None:
         """Test that blocks can be used in new copy operations after wait()."""
@@ -716,4 +718,4 @@ class TestCopyWaitIdempotency:
         tx.wait()
 
         # Block should be accessible
-        source_block[0] = make_zeros_tile()
+        source_block.store([make_zeros_tile()])
