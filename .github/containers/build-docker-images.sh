@@ -143,6 +143,13 @@ build_image() {
         echo "Skipping push (--no-push specified)"
     fi
 
+    # Clean up build cache after each image to free disk space
+    # Prune all unused build cache (Docker will keep layers needed for next build)
+    echo "Cleaning up Docker build cache after $name..."
+    docker builder prune -af 2>/dev/null || true
+    echo "Disk space after cleanup:"
+    df -h | head -2
+
     echo "✓ Done: $name"
     echo ""
 }
@@ -156,6 +163,14 @@ build_image "tt-lang-ci-ubuntu-22-04" "$DOCKERFILE" ci
 build_image "tt-lang-dist-ubuntu-22-04" "$DOCKERFILE" dist
 build_image "tt-lang-ird-ubuntu-22-04" "$DOCKERFILE" ird
 
+
+# Final cleanup of all unused Docker resources
+echo "Performing final Docker cleanup..."
+docker builder prune -af 2>/dev/null || true
+docker system prune -af --volumes 2>/dev/null || true
+echo "Final disk space:"
+df -h | head -2
+echo ""
 
 echo "=== Build Complete ==="
 echo ""

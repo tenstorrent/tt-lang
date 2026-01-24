@@ -26,6 +26,7 @@ RUN git log -1 || echo "Git info not available"
 
 # Build tt-lang using FetchContent (builds tt-mlir from pinned commit)
 # Install tt-mlir directly to /opt/ttmlir-toolchain
+# Build and install in one step to reduce intermediate layer size
 RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     cmake -G Ninja -B build \
     -DCMAKE_BUILD_TYPE=Release \
@@ -34,33 +35,34 @@ RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     -DTTMLIR_CMAKE_BUILD_TYPE=Release \
     -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
     -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
-    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
-
-# Build and install tt-lang to toolchain
-RUN source build/env/activate && \
+    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON && \
+    source build/env/activate && \
     cmake --build build && \
     cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
 
 # Copy tt-mlir Python packages that aren't included in install
 # Use -L to dereference symlinks (copy actual files, not symlink paths)
 # TODO: Remove when tt-mlir install is fixed
-RUN mkdir -p $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime && \
-    cp -prL build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/ 2>/dev/null || true
-
-# Copy ttmlir Python bindings (dereference symlinks with -L)
-RUN if [ -d "build/_deps/tt-mlir-build/python_packages/ttmlir" ]; then \
-      cp -prL build/_deps/tt-mlir-build/python_packages/ttmlir/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttmlir/ 2>/dev/null || true; \
-    fi
-
-# Normalize tt-mlir installation (replace any remaining symlinks with actual files)
+# Copy all Python packages and normalize in one step to reduce layers
 COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
-RUN bash /tmp/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/normalize-ttmlir-install.sh
-
-# Remove unnecessary LLVM/MLIR tools to reduce image size
 COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
-RUN bash /tmp/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/cleanup-toolchain.sh
+RUN mkdir -p $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime && \
+    cp -prL build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/ 2>/dev/null || true && \
+    if [ -d "build/_deps/tt-mlir-build/python_packages/ttmlir" ]; then \
+      cp -prL build/_deps/tt-mlir-build/python_packages/ttmlir/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttmlir/ 2>/dev/null || true; \
+    fi && \
+    bash /tmp/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR && \
+    bash /tmp/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR && \
+    find $TTMLIR_TOOLCHAIN_DIR -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+    find $TTMLIR_TOOLCHAIN_DIR -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true && \
+    rm -f /tmp/normalize-ttmlir-install.sh /tmp/cleanup-toolchain.sh
 
-# Keep build directory - dist stage needs it for installation
+# Remove entire build directory to free disk space (installation is complete)
+# All necessary files are now in $TTMLIR_TOOLCHAIN_DIR, so build directory is no longer needed
+# This saves 50-100GB+ of disk space
+RUN echo "Removing build directory to free disk space..." && \
+    rm -rf build && \
+    echo "Build directory removed (saved significant disk space)"
 
 # =============================================================================
 # Stage 2: CI (tt-mlir toolchain for CI workflows)

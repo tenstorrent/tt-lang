@@ -178,6 +178,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
+      - name: Clean up Docker before build
+        run: |
+          echo "Cleaning up Docker system before build..."
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
+          echo "Docker cleanup complete"
+          df -h
+
       - name: Build Docker images
         id: build
         env:
@@ -204,6 +212,14 @@ jobs:
 
           echo "Space usage after build: " && df -h
           echo "✓ Docker images built successfully"
+
+      - name: Clean up Docker after build
+        if: always()
+        run: |
+          echo "Cleaning up Docker build cache after build..."
+          docker builder prune -af || true
+          echo "Docker cleanup complete"
+          df -h
 
       - name: Show disk usage on failure
         if: failure()
