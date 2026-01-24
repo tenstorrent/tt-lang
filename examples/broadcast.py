@@ -128,7 +128,7 @@ try:
     shape = (2048, 2048)
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)
-    c = torch.rand((2048, 1), dtype=torch.bfloat16)
+    c = torch.rand((shape[0], 1), dtype=torch.bfloat16)
     d = torch.rand(shape, dtype=torch.bfloat16)
     expected_y = (a * b + c) * d
     a = from_torch(a)
