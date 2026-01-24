@@ -26,7 +26,6 @@ RUN git log -1 || echo "Git info not available"
 
 # Build tt-lang using FetchContent (builds tt-mlir from pinned commit)
 # Install tt-mlir directly to /opt/ttmlir-toolchain
-# Build and install in one step to reduce intermediate layer size
 RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     cmake -G Ninja -B build \
     -DCMAKE_BUILD_TYPE=Release \
@@ -35,8 +34,11 @@ RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     -DTTMLIR_CMAKE_BUILD_TYPE=Release \
     -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
     -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
-    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON && \
-    source build/env/activate && \
+    -DTTLANG_ENABLE_PERF_TRACE=ON \
+    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+
+# Build and install tt-lang to toolchain
+RUN source build/env/activate && \
     cmake --build build && \
     cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
 
