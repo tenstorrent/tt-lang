@@ -37,47 +37,13 @@ RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
     -DTTLANG_ENABLE_PERF_TRACE=ON \
     -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
-# Build tt-lang
-RUN source build/env/activate && \
-    cmake --build build
-
-# Clean up build artifacts BEFORE install to free disk space
-# Remove object files, CMake cache, and other intermediate files not needed for install
-RUN echo "=== Disk space before cleanup ===" && df -h && \
-    echo "Cleaning up build artifacts before install..." && \
-    find build -type f -name "*.o" -delete 2>/dev/null || true && \
-    rm -rf build/CMakeFiles 2>/dev/null || true && \
-    rm -rf build/_deps/tt-mlir-build/CMakeFiles 2>/dev/null || true && \
-    rm -rf build/_deps/tt-mlir-src/.git 2>/dev/null || true && \
-    echo "=== Disk space after cleanup ===" && df -h
-
-# Install tt-lang to toolchain
-RUN source build/env/activate && \
-    cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
-
-# Copy tt-mlir Python packages that aren't included in install
-# Use -L to dereference symlinks (copy actual files, not symlink paths)
-# TODO: Remove when tt-mlir install is fixed
-# Copy all Python packages and normalize in one step to reduce layers
+# Build, install, and cleanup in ONE RUN command to avoid Docker layer bloat
+# Docker keeps all layers during build - by combining these, the huge build
+# directory never gets committed to a layer, saving 50-80GB of disk space
 COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
 COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
-RUN mkdir -p $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime && \
-    cp -prL build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/ 2>/dev/null || true && \
-    if [ -d "build/_deps/tt-mlir-build/python_packages/ttmlir" ]; then \
-      cp -prL build/_deps/tt-mlir-build/python_packages/ttmlir/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttmlir/ 2>/dev/null || true; \
-    fi && \
-    bash /tmp/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR && \
-    bash /tmp/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR && \
-    find $TTMLIR_TOOLCHAIN_DIR -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
-    find $TTMLIR_TOOLCHAIN_DIR -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true && \
-    rm -f /tmp/normalize-ttmlir-install.sh /tmp/cleanup-toolchain.sh
-
-# Remove entire build directory to free disk space (installation is complete)
-# All necessary files are now in $TTMLIR_TOOLCHAIN_DIR, so build directory is no longer needed
-# This saves 50-100GB+ of disk space
-RUN echo "Removing build directory to free disk space..." && \
-    rm -rf build && \
-    echo "Build directory removed (saved significant disk space)"
+COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
+RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh && rm /tmp/build-and-install.sh
 
 # =============================================================================
 # Stage 2: CI (tt-mlir toolchain for CI workflows)
@@ -151,10 +117,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install Python dev dependencies (black, sphinx, etc.)
 COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN python3.11 -m pip install -r /tmp/dev-requirements.txt --no-cache-dir && \
-    rm /tmp/dev-requirements.txt
-
-# Install additional development tools
-RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
+    rm /tmp/dev-requirements.txt && \
+    rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \
