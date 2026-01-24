@@ -111,5 +111,5 @@ install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
 
-# Install ttlsim script to bin directory
-install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlsim" DESTINATION bin)
+# Install ttlang-sim script to bin directory
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim" DESTINATION bin)
