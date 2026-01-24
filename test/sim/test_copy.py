@@ -511,3 +511,209 @@ class TestCopyTransactionCanWait:
         assert dst_block[0] is not None
         assert src_block[0] is not None
         assert tensors_equal(dst_block[0], src_block[0])
+
+
+class TestCopySourceLocking:
+    """Test that copy source is locked against writes until wait() completes."""
+
+    def test_cannot_write_to_block_source_before_wait(self) -> None:
+        """Test that writing to Block source before wait() raises RuntimeError."""
+        # Create source block with data
+        buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
+        source_block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        # Create destination tensor (non-Block, so no locking)
+        dest_tensor = make_rand_tensor(64, 32)
+
+        # Start copy
+        tx = copy(source_block, dest_tensor)
+
+        # Attempt to write to source block should fail
+        with pytest.raises(
+            RuntimeError,
+            match="Cannot write to Block: locked as copy source until wait\\(\\) completes",
+        ):
+            source_block[0] = make_zeros_tile()
+
+        # After wait(), writing should work
+        tx.wait()
+        source_block[0] = make_zeros_tile()  # Should succeed
+
+    def test_can_read_from_block_source_before_wait(self) -> None:
+        """Test that reading from Block source before wait() is allowed."""
+        # Create source block with data
+        buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
+        source_block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        # Create destination tensor (non-Block, so no locking)
+        dest_tensor = make_rand_tensor(64, 32)
+
+        # Start copy
+        tx = copy(source_block, dest_tensor)
+
+        # Reading from source should still work
+        tile = source_block[0]  # Should succeed
+        assert tile is not None
+
+        tx.wait()
+
+
+class TestCopyDestinationLocking:
+    """Test that copy destination is locked against all access until wait() completes."""
+
+    def test_cannot_read_from_block_destination_before_wait(self) -> None:
+        """Test that reading from Block destination before wait() raises RuntimeError."""
+        # Create source tensor (non-Block, so no locking)
+        source_tensor = make_rand_tensor(64, 32)
+
+        # Create destination block (needs to have slots initialized for read to work)
+        buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
+        dest_block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        # Start copy
+        tx = copy(source_tensor, dest_block)
+
+        # Attempt to read from destination should fail
+        with pytest.raises(
+            RuntimeError,
+            match="Cannot read from Block: locked as copy destination until wait\\(\\) completes",
+        ):
+            _ = dest_block[0]
+
+        # After wait(), reading should work
+        tx.wait()
+        tile = dest_block[0]  # Should succeed
+        assert tile is not None
+
+    def test_cannot_write_to_block_destination_before_wait(self) -> None:
+        """Test that writing to Block destination before wait() raises RuntimeError."""
+        # Create source tensor (non-Block, so no locking)
+        source_tensor = make_rand_tensor(64, 32)
+
+        # Create destination block
+        buf: List[CBSlot] = [None, None]
+        dest_block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        # Start copy
+        tx = copy(source_tensor, dest_block)
+
+        # Attempt to write to destination should fail
+        with pytest.raises(
+            RuntimeError,
+            match="Cannot write to Block: locked as copy destination until wait\\(\\) completes",
+        ):
+            dest_block[0] = make_ones_tile()
+
+        # After wait(), writing should work
+        tx.wait()
+        dest_block[0] = make_ones_tile()  # Should succeed
+
+
+class TestMultipleCopyOperations:
+    """Test locking behavior with multiple concurrent copy operations."""
+
+    def test_cannot_use_same_block_as_source_and_destination(self) -> None:
+        """Test that a block cannot be both source and destination simultaneously."""
+        # Create block
+        buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        # Create tensors (non-Block, so no locking)
+        tensor1 = make_rand_tensor(64, 32)
+        tensor2 = make_rand_tensor(64, 32)
+
+        # Start copy with block as source
+        tx1 = copy(block, tensor1)
+
+        # Attempt to start copy with same block as destination should fail immediately
+        # because block is read-locked, and destination would try to write-lock it
+        with pytest.raises(
+            RuntimeError,
+            match="Cannot use Block as copy destination: locked as copy source until wait\\(\\) completes",
+        ):
+            copy(tensor2, block)
+
+        # Clean up
+        tx1.wait()
+
+    def test_can_read_source_multiple_times(self) -> None:
+        """Test that a block can be source for multiple copies simultaneously."""
+        # Create source block
+        buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
+        source_block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        # Create multiple destinations (non-Block, so no locking)
+        dest1 = make_rand_tensor(64, 32)
+        dest2 = make_rand_tensor(64, 32)
+
+        # Start multiple copies from same source
+        tx1 = copy(source_block, dest1)
+        tx2 = copy(
+            source_block, dest2
+        )  # Should succeed (read lock allows multiple readers)
+
+        # Wait for both
+        tx1.wait()
+        tx2.wait()
+
+
+class TestCopyLockingAfterWait:
+    """Test that locks are released after wait() completes."""
+
+    def test_block_unlocked_after_wait(self) -> None:
+        """Test that blocks are fully unlocked after wait() completes."""
+        # Create block and tensor
+        buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
+        source_block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        dest_tensor = make_rand_tensor(64, 32)
+
+        # Perform copy and wait
+        tx = copy(source_block, dest_tensor)
+        tx.wait()
+
+        # Block should be fully accessible now
+        _ = source_block[0]  # Read source - should succeed
+        source_block[0] = make_ones_tile()  # Write source - should succeed
+
+    def test_can_reuse_blocks_after_wait(self) -> None:
+        """Test that blocks can be used in new copy operations after wait()."""
+        # Create blocks
+        buf: List[CBSlot] = [make_ones_tile(), make_zeros_tile()]
+        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+
+        tensor1 = make_rand_tensor(64, 32)
+        tensor2 = make_rand_tensor(64, 32)
+
+        # First copy: block as source
+        tx1 = copy(block, tensor1)
+        tx1.wait()
+
+        # Second copy: same block as destination (should work now)
+        tx2 = copy(tensor2, block)
+        tx2.wait()
+
+        # Third copy: block as source again
+        tx3 = copy(block, tensor1)
+        tx3.wait()
+
+
+class TestCopyWaitIdempotency:
+    """Test that calling wait() multiple times is safe."""
+
+    def test_multiple_wait_calls(self) -> None:
+        """Test that calling wait() multiple times doesn't cause issues."""
+        buf1: List[CBSlot] = [make_ones_tile()]
+        source_block = Block(buf1, 1, Span(0, 1), shape=(1, 1))
+
+        dest_tensor = make_rand_tensor(32, 32)
+
+        tx = copy(source_block, dest_tensor)
+
+        # Call wait multiple times
+        tx.wait()
+        tx.wait()
+        tx.wait()
+
+        # Block should be accessible
+        source_block[0] = make_zeros_tile()

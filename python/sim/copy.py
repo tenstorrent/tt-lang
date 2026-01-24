@@ -9,12 +9,29 @@ enabling data transfer operations between tensors and Blocks in the
 CircularBuffer system.
 """
 
+from typing import Any
+
+from .block import Block
 from .copyhandlers import (
-    CopyEndpoint,
     CopyEndpointType,
     CopyTransferHandler,
     handler_registry,
 )
+
+
+def _extract_block(obj: Any) -> Any:
+    """Extract the underlying Block from a context manager if applicable.
+
+    Args:
+        obj: Object that may be a Block or a context manager containing a Block
+
+    Returns:
+        The underlying Block if obj is a context manager, otherwise obj unchanged
+    """
+    # Check if object has a block() method (ReserveContext/WaitContext)
+    if hasattr(obj, "block") and callable(obj.block):
+        return obj.block()
+    return obj
 
 
 class CopyTransaction:
@@ -32,8 +49,8 @@ class CopyTransaction:
 
     def __init__(
         self,
-        src: CopyEndpoint,
-        dst: CopyEndpoint,
+        src: Any,
+        dst: Any,
     ):
         """
         Initialize a copy transaction from src to dst.
@@ -49,12 +66,23 @@ class CopyTransaction:
         self._dst = dst
         self._completed = False
 
+        # Extract underlying Blocks from context managers if needed
+        src_block = _extract_block(src)
+        dst_block = _extract_block(dst)
+
         # Lookup and store the handler for this type combination
         handler = self._lookup_handler(type(src), type(dst))
         self._handler = handler
 
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
+
+        # Lock Block source for reading and Block destination for writing
+        # Lock methods will check for conflicts and raise if needed
+        if isinstance(src_block, Block):
+            src_block.lock_for_read()
+        if isinstance(dst_block, Block):
+            dst_block.lock_for_write()
 
     @staticmethod
     def _lookup_handler(
@@ -95,6 +123,16 @@ class CopyTransaction:
         if self._completed:
             return
 
+        # Extract underlying Blocks from context managers if needed
+        src_block = _extract_block(self._src)
+        dst_block = _extract_block(self._dst)
+
+        # Unlock Block source and destination before transfer
+        if isinstance(src_block, Block):
+            src_block.unlock_read()
+        if isinstance(dst_block, Block):
+            dst_block.unlock_write()
+
         # Transfer - let exceptions propagate to scheduler for context
         self._handler.transfer(self._src, self._dst)
         self._completed = True
@@ -120,8 +158,8 @@ class CopyTransaction:
 
 
 def copy(
-    src: CopyEndpoint,
-    dst: CopyEndpoint,
+    src: Any,
+    dst: Any,
 ) -> CopyTransaction:
     """
     Create a copy transaction from source to destination.

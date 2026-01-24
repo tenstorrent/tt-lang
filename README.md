@@ -67,7 +67,7 @@ For users who want to run simulator examples without building the full compiler 
 ```bash
 ./setup_simulator.sh
 source .venv/bin/activate
-./bin/ttlsim examples/eltwise_add.py
+./bin/ttlang-sim examples/eltwise_add.py
 pytest test/sim/
 ```
 

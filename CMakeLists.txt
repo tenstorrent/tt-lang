@@ -77,6 +77,16 @@ if(MLIR_ENABLE_BINDINGS_PYTHON AND TTLANG_ENABLE_BINDINGS_PYTHON)
   set(TTLANG_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
   add_subdirectory(python)
   include(CopyTTNNPythonPackage)
+
+  # Install dev-requirements.txt into toolchain venv if it exists.
+  if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")
+    add_custom_target(install-dev-deps
+      COMMAND ${Python3_EXECUTABLE} -m pip install -q -r "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt"
+      COMMENT "Installing development dependencies into toolchain venv"
+      VERBATIM
+    )
+    message(STATUS "Target 'install-dev-deps' available to install dev-requirements.txt")
+  endif()
 endif()
 
 add_subdirectory(test)
