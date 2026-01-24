@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -222,6 +223,35 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     if (processingFailed) {
       return rewriter.notifyMatchFailure(
           op, "copy_tile index computation failed (mismatched rank/IVs)");
+    }
+
+    // Mark the innermost loop for later sync insertion pass.
+    // The kTileLoopAttrName attribute indicates this loop came from a ComputeOp
+    // and needs DST register synchronization ops inserted.
+    if (!loopNest.loops.empty()) {
+      scf::ForOp innermostLoop = loopNest.loops.back();
+      innermostLoop->setAttr(kTileLoopAttrName, rewriter.getUnitAttr());
+
+      // Store CB indices for init_sfpu in the TTLInsertTileRegsSync pass.
+      // TODO: Currently only stores the first input/output CB. If ComputeOp
+      // supports multiple outputs with different CBs, this needs to be extended
+      // to store a list of CB indices.
+      Value icb = getAttachedCB(op.getInputs().front());
+      Value ocb = getAttachedCB(op.getOutputs().front());
+      if (icb) {
+        if (auto bindOp = icb.getDefiningOp<BindCBOp>()) {
+          innermostLoop->setAttr(
+              kTileLoopInputCBAttrName,
+              rewriter.getI64IntegerAttr(bindOp.getCbIndex().getSExtValue()));
+        }
+      }
+      if (ocb) {
+        if (auto bindOp = ocb.getDefiningOp<BindCBOp>()) {
+          innermostLoop->setAttr(
+              kTileLoopOutputCBAttrName,
+              rewriter.getI64IntegerAttr(bindOp.getCbIndex().getSExtValue()));
+        }
+      }
     }
 
     rewriter.replaceOp(op, loopNest.results);

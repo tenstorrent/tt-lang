@@ -784,8 +784,8 @@ def _compile_kernel(
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-assign-dst)",
-            "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
+            "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-annotate-cb-associations)",
             "convert-ttl-to-ttkernel",
             "canonicalize",

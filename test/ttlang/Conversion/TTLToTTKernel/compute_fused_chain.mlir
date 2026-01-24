@@ -1,6 +1,6 @@
 // Summary: Fused add->mul->exp lowers through loops to TTKernel ops (with sync).
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-insert-tile-regs-sync, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // Purpose: ensure copy_tile + fused math ops lower to ttkernel with no TTL ops left.
@@ -21,10 +21,11 @@
 // CHECK-NEXT:  ttkernel.init_sfpu(%[[CB0_TTK]], %[[CB2_TTK]])
 // CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT]])
 // CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
+// Acquire DST registers at start of loop body
+// CHECK-NEXT:      ttkernel.tile_regs_acquire
 // CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[CAST0]][%[[I]], %[[J]]]
 // Compute linear tile index: i * cols + j (via affine map)
 // CHECK-NEXT:      %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
-// CHECK-NEXT:      ttkernel.tile_regs_acquire
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
 // CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]], %[[C0]])
 // CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
@@ -35,6 +36,7 @@
 // CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // CHECK-NEXT:      ttkernel.exp_tile_init()
 // CHECK-NEXT:      ttkernel.exp_tile(%[[C0]])
+// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
 // CHECK-NEXT:      ttkernel.tile_regs_commit
 // CHECK-NEXT:      ttkernel.tile_regs_wait
 // CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK]], %[[C4:.*]])
@@ -44,7 +46,6 @@
 // CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[CB_IDX]], false)
 // CHECK-NEXT:      ttkernel.cb_push_back(%[[CB2_TTK]], %[[C4]])
 // CHECK-NEXT:      ttkernel.tile_regs_release
-// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
 // CHECK-NEXT:      scf.yield %[[INSERT]]
 // CHECK-NEXT:    }
 // CHECK-NEXT:    scf.yield

@@ -30,6 +30,16 @@ class TTLTileOpTrait
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 
+/// Loop marker attribute names (used by loop lowering and sync insertion).
+/// The tile_loop attribute marks loops from ComputeOp lowering that need sync.
+/// The CB index attributes store which CBs are used for init_sfpu and stores.
+inline constexpr llvm::StringRef kTileLoopAttrName = "ttl.tile_loop";
+inline constexpr llvm::StringRef kTileLoopAttrPrefix = "ttl.tile_loop.";
+inline constexpr llvm::StringRef kTileLoopInputCBAttrName =
+    "ttl.tile_loop.input_cb";
+inline constexpr llvm::StringRef kTileLoopOutputCBAttrName =
+    "ttl.tile_loop.output_cb";
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait
