@@ -4,10 +4,9 @@ on:
   schedule:
     - cron: "0 22 * * *"
   workflow_dispatch:
-  # TODO: Re-enable pull_request trigger after testing - this is temporarily disabled
-  # pull_request:
-  #   types: [opened, synchronize, reopened, ready_for_review]
-  #   branches: ["main"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: ["main"]
 
 permissions:
   checks: write
