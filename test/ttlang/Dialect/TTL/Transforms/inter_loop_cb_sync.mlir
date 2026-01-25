@@ -155,3 +155,94 @@ func.func @two_computes_different_cbs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Test: User loop surrounding two computes - cb_wait inserted INSIDE user loop
+// This tests that ttl.tile_loop.outer correctly identifies compute boundaries
+// and doesn't treat the user loop as part of the compute nest.
+
+// CHECK-LABEL: func.func @user_loop_around_computes
+// CHECK:         [[CB2:%.*]] = ttl.bind_cb{cb_index = 2
+// User loop (no tile_loop markers)
+// CHECK:         scf.for
+// First compute's outer loop (inside user loop)
+// CHECK:           scf.for
+// CHECK:             scf.for
+// CHECK:               ttl.tile_add
+// cb_wait for CB2 inserted INSIDE user loop, between compute nests
+// CHECK:           ttl.cb_wait [[CB2]]
+// Second compute's outer loop (inside user loop)
+// CHECK:           scf.for
+// CHECK:             scf.for
+// CHECK:               ttl.tile_mul
+// End of user loop
+// CHECK:         return
+
+func.func @user_loop_around_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                      %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>>
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init2 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+
+  %a_ready = ttl.cb_wait %cb0 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_ready = ttl.cb_wait %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // USER LOOP surrounding both computes
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c3 = arith.constant 3 : index
+
+  %final = scf.for %user_iter = %c0 to %c3 step %c1 iter_args(%acc = %init_cb) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+    // Attach CB inside loop for outputs
+    %acc_cb = ttl.attach_cb %acc, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+    // First compute: a + b -> cb2
+    %r0 = ttl.compute
+        ins(%a_ready, %b_ready : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                 tensor<2x2x!ttcore.tile<32x32, f32>>)
+        outs(%acc_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+        {indexing_maps = [#map, #map, #map],
+         iterator_types = ["parallel", "parallel"]} {
+    ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+         %b_tile: !ttcore.tile<32x32, f32>,
+         %out_tile: !ttcore.tile<32x32, f32>):
+      %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+      %view0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+      ttl.store %sum, %view0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+      ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
+      ttl.yield %sum : !ttcore.tile<32x32, f32>
+    } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+    // Attach r0 to SAME cb2 for second compute input
+    %r0_cb = ttl.attach_cb %r0, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+    %init2_cb = ttl.attach_cb %init2, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+    // Second compute: r0 * r0 -> cb2 (reads from cb2)
+    %result = ttl.compute
+        ins(%r0_cb, %r0_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                             tensor<2x2x!ttcore.tile<32x32, f32>>)
+        outs(%init2_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+        {indexing_maps = [#map, #map, #map],
+         iterator_types = ["parallel", "parallel"]} {
+    ^bb0(%r0_tile1: !ttcore.tile<32x32, f32>,
+         %r0_tile2: !ttcore.tile<32x32, f32>,
+         %out_tile: !ttcore.tile<32x32, f32>):
+      %product = ttl.tile_mul %r0_tile1, %r0_tile2 : !ttcore.tile<32x32, f32>
+      %view1 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+      ttl.store %product, %view1 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+      ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
+      ttl.yield %product : !ttcore.tile<32x32, f32>
+    } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+    scf.yield %result : tensor<2x2x!ttcore.tile<32x32, f32>>
+  }
+
+  func.return %final : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
