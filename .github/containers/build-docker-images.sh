@@ -157,11 +157,7 @@ build_image() {
         echo "Skipping push (--no-push specified)"
     fi
 
-    # Clean up build cache after each image to free disk space
-    # Prune all unused build cache (Docker will keep layers needed for next build)
-    echo "Cleaning up Docker build cache after $name..."
-    docker builder prune -af 2>/dev/null || true
-    echo "Disk space after cleanup:"
+    echo "Disk space after $name:"
     df -h | head -2
 
     echo "✓ Done: $name"

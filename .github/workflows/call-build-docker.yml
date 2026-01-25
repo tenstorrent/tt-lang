@@ -190,6 +190,7 @@ jobs:
         id: build
         env:
           DOCKER_BUILDKIT: 1
+          BUILDKIT_STEP_LOG_MAX_SIZE: -1
         run: |
           set -o pipefail
           set -x  # Show all commands
