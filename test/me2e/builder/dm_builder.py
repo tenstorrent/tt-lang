@@ -86,7 +86,10 @@ func.func @{name}({args})
 """
 
     def build_writer(
-        self, output_cbs: List[int], total_cbs: Optional[int] = None
+        self,
+        output_cbs: List[int],
+        total_cbs: Optional[int] = None,
+        output_tensor_indices: Optional[List[int]] = None,
     ) -> str:
         """
         Build writer thread: CBs -> DRAM tensors.
@@ -95,6 +98,10 @@ func.func @{name}({args})
             output_cbs: List of output CB indices.
             total_cbs: Total number of CBs in the module (for base_cta_index).
                       If None, defaults to max(output_cbs) + 1.
+            output_tensor_indices: List of tensor indices for crta_indices attribute.
+                      If None, defaults to output_cbs (assumes no intermediate CBs).
+                      Use this when intermediate CBs shift the mapping between CB
+                      indices and tensor indices.
 
         Returns:
             MLIR string for the writer function.
@@ -102,13 +109,18 @@ func.func @{name}({args})
         if total_cbs is None:
             total_cbs = max(output_cbs) + 1 if output_cbs else 1
 
+        # Tensor indices for crta_indices (defaults to CB indices).
+        tensor_indices = (
+            output_tensor_indices if output_tensor_indices is not None else output_cbs
+        )
+
         num_outputs = len(output_cbs)
 
         # Generate function signature.
         args = ", ".join(
             [f"%out{i}: {self.dram_tensor_type_str}" for i in range(num_outputs)]
         )
-        crta = ", ".join([f"{cb} : i32" for cb in output_cbs])
+        crta = ", ".join([f"{idx} : i32" for idx in tensor_indices])
 
         # Generate CB bindings.
         cb_binds = "\n".join(

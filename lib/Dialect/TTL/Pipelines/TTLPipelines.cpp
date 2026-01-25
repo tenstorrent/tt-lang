@@ -25,11 +25,13 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   //    and assigns dst_idx attributes.
   // 2. ttl-lower-to-loops: Lowers ttl.compute to scf.for loops and marks the
   //    innermost loop with ttl.tile_loop attribute for sync insertion.
-  // 3. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops
-  //    (acquire/commit/wait/release) inside the marked loops. Runs after loop
-  //    lowering to enable future inter-loop CB synchronization.
+  // 3. ttl-insert-inter-loop-cb-sync: Inserts cb_wait between consecutive loops
+  //    when the output CB of one loop feeds into the input CB of the next.
+  // 4. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops
+  //    (acquire/commit/wait/release) inside the marked loops.
   pm.addPass(createTTLAssignDST());
   pm.addPass(createTTLLowerToLoops());
+  pm.addPass(createTTLInsertInterLoopCBSync());
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());

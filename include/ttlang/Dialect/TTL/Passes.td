@@ -94,6 +94,27 @@ def TTLInsertTileRegsSync
   ];
 }
 
+def TTLInsertInterLoopCBSync
+    : Pass<"ttl-insert-inter-loop-cb-sync", "::mlir::func::FuncOp"> {
+  let summary = "Insert CB synchronization between consecutive compute loops";
+  let description = [{
+    Inserts circular buffer synchronization operations between consecutive
+    scf.for loops (marked with ttl.tile_loop) when the output CB of one loop
+    feeds into the input CB of the next loop.
+
+    When loop1.output_cb == loop2.input_cb, this pass inserts cb_wait before
+    loop2 to ensure data from loop1 is available.
+
+    This pass must run AFTER ttl-lower-to-loops (which creates the loop markers)
+    and BEFORE ttl-insert-tile-regs-sync (which removes them).
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttl::TTLDialect",
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
 def TTLLowerToLoops
     : Pass<"ttl-lower-to-loops", "::mlir::func::FuncOp"> {
   let summary = "Lower ttl.compute structured ops to scf.for loops";

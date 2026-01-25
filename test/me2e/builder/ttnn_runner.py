@@ -25,7 +25,7 @@ from ttl.kernel_runner import (
     KernelSpec as RunnerKernelSpec,
     run_kernel_on_device,
 )
-from ttl.circular_buffer import CircularBuffer
+from ttl.circular_buffer import CircularBuffer, make_intermediate_cb
 
 from .kernels import KernelSpec
 
@@ -42,6 +42,7 @@ def run_binary_op(
     input_a: torch.Tensor,
     input_b: torch.Tensor,
     kernel_dir: Path,
+    num_intermediate_cbs: int = 0,
 ) -> torch.Tensor:
     """
     Run a binary operation on device.
@@ -53,6 +54,8 @@ def run_binary_op(
         input_a: First input tensor.
         input_b: Second input tensor.
         kernel_dir: Directory containing kernel C++ files.
+        num_intermediate_cbs: Number of intermediate CBs (not backed by I/O tensors).
+            These are inserted after input CBs and before output CBs.
 
     Returns:
         Output tensor as torch tensor.
@@ -63,6 +66,7 @@ def run_binary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a, input_b],
         kernel_dir=kernel_dir,
+        num_intermediate_cbs=num_intermediate_cbs,
     )
 
 
@@ -72,6 +76,7 @@ def run_unary_op(
     compute_kernel: KernelSpec,
     input_a: torch.Tensor,
     kernel_dir: Path,
+    num_intermediate_cbs: int = 0,
 ) -> torch.Tensor:
     """
     Run a unary operation on device.
@@ -82,6 +87,7 @@ def run_unary_op(
         compute_kernel: Compute kernel spec.
         input_a: Input tensor.
         kernel_dir: Directory containing kernel C++ files.
+        num_intermediate_cbs: Number of intermediate CBs (not backed by I/O tensors).
 
     Returns:
         Output tensor as torch tensor.
@@ -92,6 +98,7 @@ def run_unary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a],
         kernel_dir=kernel_dir,
+        num_intermediate_cbs=num_intermediate_cbs,
     )
 
 
@@ -101,6 +108,7 @@ def _run_op(
     compute_kernel: KernelSpec,
     inputs: List[torch.Tensor],
     kernel_dir: Path,
+    num_intermediate_cbs: int = 0,
 ) -> torch.Tensor:
     """
     Run an operation on device using shared kernel_runner infrastructure.
@@ -114,6 +122,8 @@ def _run_op(
         compute_kernel: Compute kernel spec.
         inputs: List of input tensors.
         kernel_dir: Directory containing kernel C++ files.
+        num_intermediate_cbs: Number of intermediate CBs (not backed by I/O tensors).
+            These are inserted after input CBs and before output CBs.
 
     Returns:
         Output tensor as torch tensor.
@@ -173,12 +183,38 @@ def _run_op(
         ),
     ]
 
-    # Build CB configs: CircularBuffer objects for each tensor.
+    # Build CB configs: CircularBuffer objects for each CB index.
+    # CB layout:
+    #   CB0..CB(num_inputs-1) = input tensors
+    #   CB(num_inputs)..CB(num_inputs+num_intermediate_cbs-1) = intermediate CBs
+    #   CB(num_inputs+num_intermediate_cbs) = output tensor
+    #
     # Shape is (1, 1) for single tile, buffer_factor is 1 for single buffering.
-    cb_configs: List[CircularBuffer] = [
-        CircularBuffer(tensor=tensor, shape=(1, 1), buffer_factor=1)
-        for tensor in io_tensors
-    ]
+    cb_configs: List[CircularBuffer] = []
+
+    # Input CBs (backed by input tensors).
+    for i, tensor in enumerate(device_inputs):
+        cb_configs.append(
+            CircularBuffer(tensor=tensor, shape=(1, 1), buffer_factor=1, cb_index=i)
+        )
+
+    # Intermediate CBs (not backed by I/O tensors, use bfloat16 dtype).
+    num_inputs = len(device_inputs)
+    for i in range(num_intermediate_cbs):
+        cb_idx = num_inputs + i
+        cb_configs.append(
+            make_intermediate_cb(
+                dtype=torch.bfloat16, shape=(1, 1), buffer_factor=1, cb_index=cb_idx
+            )
+        )
+
+    # Output CB (backed by output tensor).
+    output_cb_idx = num_inputs + num_intermediate_cbs
+    cb_configs.append(
+        CircularBuffer(
+            tensor=output_tensor, shape=(1, 1), buffer_factor=1, cb_index=output_cb_idx
+        )
+    )
 
     # Execute using shared kernel runner.
     run_kernel_on_device(

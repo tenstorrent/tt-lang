@@ -52,6 +52,9 @@ class CircularBuffer:
 
     Can be instantiated via make_circular_buffer_like() in kernel body,
     then captured by thread closures. Methods generate TTL ops during compilation.
+
+    For intermediate CBs (not backed by input/output tensors), use
+    make_intermediate_cb() which takes an explicit dtype instead of a tensor.
     """
 
     def __init__(
@@ -59,6 +62,9 @@ class CircularBuffer:
         tensor: Any,
         shape: Tuple[int, int],
         buffer_factor: int,
+        *,
+        dtype: Any = None,
+        cb_index: int = None,
     ):
         if len(shape) != 2:
             raise ValueError(f"shape must be a 2-tuple, got {shape}")
@@ -70,13 +76,18 @@ class CircularBuffer:
         self.tensor = tensor
         self.shape = shape
         self.buffer_factor = buffer_factor
-        self._cb_index = _next_cb_index()
+        self._explicit_dtype = dtype
+        # Allow explicit cb_index for intermediate CBs, otherwise auto-assign.
+        self._cb_index = cb_index if cb_index is not None else _next_cb_index()
 
     @property
     def dtype(self):
-        if hasattr(self.tensor, "dtype"):
+        # Prefer explicit dtype (for intermediate CBs).
+        if self._explicit_dtype is not None:
+            return self._explicit_dtype
+        if self.tensor is not None and hasattr(self.tensor, "dtype"):
             return self.tensor.dtype
-        raise ValueError("tensor has no dtype attribute")
+        raise ValueError("CB has no dtype (no tensor and no explicit dtype)")
 
     def wait(ast_self: "CircularBuffer") -> "TensorBlock":
         """
@@ -162,3 +173,33 @@ def make_circular_buffer_like(
         CircularBuffer for use in thread function closures
     """
     return CircularBuffer(tensor, shape, buffer_factor)
+
+
+def make_intermediate_cb(
+    dtype: Any,
+    shape: Tuple[int, int],
+    buffer_factor: int = 1,
+    cb_index: int = None,
+) -> CircularBuffer:
+    """
+    Create an intermediate circular buffer (not backed by input/output tensor).
+
+    Intermediate CBs are used for inter-compute communication where the data
+    stays in L1 and is never transferred to/from DRAM.
+
+    Args:
+        dtype: Data type (e.g., torch.bfloat16, ttnn.bfloat16).
+        shape: (rows, cols) in tiles.
+        buffer_factor: Capacity multiplier (default 1).
+        cb_index: Explicit CB index. If None, auto-assigns next available index.
+
+    Returns:
+        CircularBuffer for intermediate data.
+    """
+    return CircularBuffer(
+        tensor=None,
+        shape=shape,
+        buffer_factor=buffer_factor,
+        dtype=dtype,
+        cb_index=cb_index,
+    )
