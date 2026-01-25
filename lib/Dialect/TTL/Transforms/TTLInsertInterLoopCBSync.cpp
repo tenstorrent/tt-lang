@@ -57,26 +57,10 @@ struct TTLInsertInterLoopCBSyncPass
     // Collect all tile loops in program order, along with their outermost
     // compute loops. The tile_loop attribute is on the innermost loop, and
     // tile_loop.outer marks the outermost loop of each compute nest.
-    // We use the outer marker to correctly identify compute boundaries even
-    // when user code has additional loops surrounding the compute.
     SmallVector<std::pair<scf::ForOp, scf::ForOp>> tileLoopsWithOuter;
     funcOp.walk([&](scf::ForOp forOp) {
       if (forOp->hasAttr(kTileLoopAttrName)) {
-        // Find the outermost loop by walking up and looking for the marker.
-        scf::ForOp outermost = forOp;
-        Operation *current = forOp.getOperation();
-        while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
-          if (parentFor->hasAttr(kTileLoopOuterAttrName)) {
-            outermost = parentFor;
-            break;
-          }
-          // Stop if we hit a loop without the outer marker - it's a user loop.
-          if (!parentFor->hasAttr(kTileLoopOuterAttrName) &&
-              !parentFor->hasAttr(kTileLoopAttrName)) {
-            break;
-          }
-          current = parentFor.getOperation();
-        }
+        scf::ForOp outermost = findOutermostComputeLoop(forOp);
         tileLoopsWithOuter.push_back({forOp, outermost});
       }
     });
