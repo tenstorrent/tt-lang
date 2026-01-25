@@ -135,7 +135,7 @@ jobs:
     needs: [check-if-images-already-exist, build-toolchain-if-needed]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
     runs-on: mlir-large-runner-lang
-    timeout-minutes: 240
+    timeout-minutes: 360
 
     env:
       TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
