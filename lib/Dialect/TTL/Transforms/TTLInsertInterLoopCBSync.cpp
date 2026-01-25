@@ -7,8 +7,9 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass inserts circular buffer synchronization operations between
-// consecutive scf.for loops (marked with ttl.tile_loop) when the output CB
-// of one loop feeds into the input CB of the next loop.
+// scf.for loops (marked with ttl.tile_loop) when the output CB of a prior
+// loop feeds into the input CB of a later loop. Handles non-consecutive
+// dependencies and producers in ancestor blocks.
 //
 // The pass runs AFTER ttl-lower-to-loops and BEFORE ttl-insert-tile-regs-sync.
 // It uses the loop marker attributes to identify CB dependencies:
@@ -30,6 +31,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 
 #define DEBUG_TYPE "ttl-insert-inter-loop-cb-sync"
@@ -69,44 +71,54 @@ struct TTLInsertInterLoopCBSyncPass
       return; // Nothing to sync
     }
 
-    // Check consecutive loop pairs for CB dependencies.
-    // Compare outermost loops to find consecutive compute operations.
-    for (size_t i = 0; i + 1 < tileLoopsWithOuter.size(); ++i) {
-      auto [producerInner, producerOuter] = tileLoopsWithOuter[i];
-      auto [consumerInner, consumerOuter] = tileLoopsWithOuter[i + 1];
+    // Build dominance info for checking producer-consumer relationships.
+    DominanceInfo domInfo(funcOp);
 
-      // Only sync loops whose outermost loops are siblings in the same block.
-      if (producerOuter->getBlock() != consumerOuter->getBlock()) {
-        continue;
+    // Build a set of all CBs written by each loop for efficient lookup.
+    // cbWrittenByLoop[i] = set of CB indices written by loop i.
+    SmallVector<llvm::SmallDenseSet<int64_t>> cbWrittenByLoop;
+    for (auto &[innerLoop, outerLoop] : tileLoopsWithOuter) {
+      llvm::SmallDenseSet<int64_t> outputCBs;
+      for (int64_t cb :
+           getCBIndicesFromLoopAttr(innerLoop, kTileLoopOutputCBsAttrName)) {
+        outputCBs.insert(cb);
       }
+      cbWrittenByLoop.push_back(std::move(outputCBs));
+    }
 
-      // Get all output CBs from producer and all input CBs from consumer.
-      SmallVector<int64_t> producerOutputCBs =
-          getCBIndicesFromLoopAttr(producerInner, kTileLoopOutputCBsAttrName);
+    // For each consumer loop, check ALL prior loops for CB dependencies.
+    for (size_t i = 1; i < tileLoopsWithOuter.size(); ++i) {
+      auto [consumerInner, consumerOuter] = tileLoopsWithOuter[i];
+
       SmallVector<int64_t> consumerInputCBs =
           getCBIndicesFromLoopAttr(consumerInner, kTileLoopInputCBsAttrName);
-
-      if (producerOutputCBs.empty() || consumerInputCBs.empty()) {
+      if (consumerInputCBs.empty()) {
         continue;
       }
 
-      // Find CBs that are in both producer's output and consumer's input.
-      // These need cb_wait inserted before the consumer.
-      // Use sets to avoid duplicate cb_wait insertions when the same CB
-      // appears multiple times in input_cbs (e.g., both inputs from same CB).
-      llvm::SmallDenseSet<int64_t> outputSet(producerOutputCBs.begin(),
-                                             producerOutputCBs.end());
-      llvm::SmallDenseSet<int64_t> sharedCBSet;
-      for (int64_t cb : consumerInputCBs) {
-        if (outputSet.contains(cb)) {
-          sharedCBSet.insert(cb);
+      // Find CBs that need sync (CBs produced by prior loops and used here)
+      llvm::SmallDenseSet<int64_t> cbsNeedingSync;
+      for (int64_t inputCB : consumerInputCBs) {
+        for (size_t j = 0; j < i; ++j) {
+          auto [producerInner, producerOuter] = tileLoopsWithOuter[j];
+          // Only consider producers that dominate the consumer.
+          if (!domInfo.dominates(producerOuter.getOperation(),
+                                 consumerOuter.getOperation())) {
+            continue;
+          }
+          if (cbWrittenByLoop[j].contains(inputCB)) {
+            cbsNeedingSync.insert(inputCB);
+            break; // Found a producer for this CB, no need to check more
+          }
         }
       }
-      SmallVector<int64_t> sharedCBs(sharedCBSet.begin(), sharedCBSet.end());
 
-      if (sharedCBs.empty()) {
+      if (cbsNeedingSync.empty()) {
         continue;
       }
+
+      SmallVector<int64_t> sharedCBs(cbsNeedingSync.begin(),
+                                     cbsNeedingSync.end());
 
       // Insert cb_wait for each shared CB before the consumer's outermost loop.
       OpBuilder builder(consumerOuter);
