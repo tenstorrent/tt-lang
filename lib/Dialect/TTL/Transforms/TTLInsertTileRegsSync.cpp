@@ -73,8 +73,8 @@ static scf::ForOp findOutermostLoop(Operation *op) {
 
 /// Lookup CB values from a loop attribute that stores an array of cb_indices.
 static SmallVector<Value> getCBsFromArrayAttr(func::FuncOp funcOp,
-                                               scf::ForOp forOp,
-                                               llvm::StringRef attrName) {
+                                              scf::ForOp forOp,
+                                              llvm::StringRef attrName) {
   SmallVector<Value> cbs;
   auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName);
   if (!cbArrayAttr) {

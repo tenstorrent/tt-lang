@@ -54,8 +54,8 @@ static BindCBOp findBindCBByIndex(func::FuncOp funcOp, int64_t cbIndex) {
 }
 
 /// Get CB indices from a loop's array attribute.
-static SmallVector<int64_t> getCBIndicesFromArrayAttr(scf::ForOp forOp,
-                                                       llvm::StringRef attrName) {
+static SmallVector<int64_t>
+getCBIndicesFromArrayAttr(scf::ForOp forOp, llvm::StringRef attrName) {
   SmallVector<int64_t> indices;
   if (auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName)) {
     for (Attribute attr : cbArrayAttr) {
@@ -128,7 +128,7 @@ struct TTLInsertInterLoopCBSyncPass
       // Find CBs that are in both producer's output and consumer's input.
       // These need cb_wait inserted before the consumer.
       llvm::SmallDenseSet<int64_t> outputSet(producerOutputCBs.begin(),
-                                              producerOutputCBs.end());
+                                             producerOutputCBs.end());
       SmallVector<int64_t> sharedCBs;
       for (int64_t cb : consumerInputCBs) {
         if (outputSet.contains(cb)) {
