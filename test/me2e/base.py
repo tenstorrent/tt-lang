@@ -176,6 +176,9 @@ class ME2ETestBase:
         if compute_kernel is None:
             pytest.skip("No compute kernel found in kernel files.")
 
+        # Get number of intermediate CBs from test class (default 0).
+        num_intermediate_cbs = getattr(self, "NUM_INTERMEDIATE_CBS", 0)
+
         # Run based on arity.
         if len(inputs) == 2:
             result = run_binary_op(
@@ -185,6 +188,7 @@ class ME2ETestBase:
                 input_a=inputs[0],
                 input_b=inputs[1],
                 kernel_dir=kernel_dir,
+                num_intermediate_cbs=num_intermediate_cbs,
             )
         else:
             result = run_unary_op(
@@ -193,6 +197,7 @@ class ME2ETestBase:
                 compute_kernel=compute_kernel,
                 input_a=inputs[0],
                 kernel_dir=kernel_dir,
+                num_intermediate_cbs=num_intermediate_cbs,
             )
 
         # Save result for validation.

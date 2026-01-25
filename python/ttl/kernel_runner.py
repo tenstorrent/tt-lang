@@ -142,7 +142,9 @@ def build_cb_descriptors(
             corresponds to its CB index. For intermediate CBs (not backed by
             input/output tensors), pass None in the corresponding position.
         cb_configs: List of CircularBuffer objects for each CB, indexed by CB index.
-            Each CB has shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
+            Each CB has shape, buffer_factor, and either tensor (for dtype) or
+            explicit dtype. For intermediate CBs, tensor may be None but dtype
+            must be set.
         core_ranges: ttnn.CoreRangeSet for CB allocation.
 
     Returns:
@@ -159,12 +161,15 @@ def build_cb_descriptors(
                 f"All CB indices must have associated CircularBuffer configurations."
             )
 
-        # Get dtype from CB's reference tensor.
-        ref_tensor = cb.tensor
-        if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-            data_format = ref_tensor.dtype
+        # Get dtype from CB - supports both tensor-backed and intermediate CBs.
+        # The CB.dtype property handles both cases (explicit dtype or from tensor).
+        cb_dtype = cb.dtype
+        if hasattr(cb_dtype, "name"):
+            # Already a ttnn datatype.
+            data_format = cb_dtype
         else:
-            data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
+            # Convert from torch dtype.
+            data_format = torch_dtype_to_ttnn_datatype(cb_dtype)
 
         page_size = tile_bytes_from_dtype(data_format)
         num_tiles = cb.shape[0] * cb.shape[1] * cb.buffer_factor

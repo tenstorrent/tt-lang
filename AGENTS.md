@@ -49,6 +49,11 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   the pass creates; do not include the starting dialect.
 - **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
 - Use enums instead of integer literals for encoding items in a category.
+- **Producer-consumer analysis**: When inserting synchronization or analyzing
+  data dependencies between operations, check ALL dominating producers, not just
+  immediate predecessors or same-block operations. Use MLIR's `DominanceInfo`
+  class (`mlir/IR/Dominance.h`) to properly handle cross-block dominance
+  (e.g., producer in function body, consumer inside a loop).
 
 ### Pattern Rewriter Error Handling
 - **NEVER call `emitOpError()` inside a pattern rewriter** - causes pass to

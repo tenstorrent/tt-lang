@@ -47,43 +47,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find a bind_cb op with the given cb_index in the function.
-static BindCBOp findBindCBByIndex(func::FuncOp funcOp, int64_t cbIndex) {
-  BindCBOp result = nullptr;
-  funcOp.walk([&](BindCBOp bindOp) {
-    if (bindOp.getCbIndex() == cbIndex) {
-      result = bindOp;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return result;
-}
-
-/// Find the outermost scf.for loop containing this operation.
-static scf::ForOp findOutermostLoop(Operation *op) {
-  scf::ForOp outermost = nullptr;
-  Operation *current = op;
-  while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
-    outermost = parentFor;
-    current = parentFor.getOperation();
-  }
-  return outermost;
-}
-
-/// Lookup a CB value from a loop attribute that stores a cb_index.
-static FailureOr<Value> getCBFromAttr(func::FuncOp funcOp, scf::ForOp forOp,
-                                      llvm::StringRef attrName) {
-  auto cbAttr = forOp->getAttrOfType<IntegerAttr>(attrName);
-  if (!cbAttr) {
-    return failure();
-  }
-  if (auto bindOp = findBindCBByIndex(funcOp, cbAttr.getInt())) {
-    return bindOp.getResult();
-  }
-  return failure();
-}
-
 /// Find a cb_reserve view for auto-inserted stores. Searches for cb_reserve
 /// ops in the loop body and in the parent block before the outermost loop.
 static Value findReserveViewForStore(scf::ForOp forOp, scf::ForOp outermostLoop,
@@ -137,10 +100,8 @@ struct TTLInsertTileRegsSyncPass
       Block &body = forOp.getRegion().front();
       OpBuilder builder(forOp);
 
-      // Find outermost loop for init_sfpu placement.
-      scf::ForOp outermostLoop = forOp->getParentOfType<scf::ForOp>()
-                                     ? findOutermostLoop(forOp)
-                                     : forOp;
+      // Find outermost compute loop for init_sfpu placement.
+      scf::ForOp outermostLoop = findOutermostComputeLoop(forOp);
 
       // Find existing sync ops preceding the outermost loop.
       auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
@@ -148,18 +109,16 @@ struct TTLInsertTileRegsSyncPass
           findPrecedingOp<InitSFPUOp>(outermostLoop.getOperation(), stopAtLoop);
 
       // Insert init_sfpu before outermost loop if not present.
-      // Use stored CB indices from loop attributes to find the CBs.
+      // Use first input/output CB for init_sfpu (hardware only needs one pair).
       if (!existingInitSfpu) {
-        auto icbOrFailure =
-            getCBFromAttr(funcOp, forOp, kTileLoopInputCBAttrName);
-        auto ocbOrFailure =
-            getCBFromAttr(funcOp, forOp, kTileLoopOutputCBAttrName);
+        SmallVector<Value> inputCBs =
+            getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
+        SmallVector<Value> outputCBs =
+            getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
-        if (succeeded(icbOrFailure) && succeeded(ocbOrFailure)) {
-          Value icb = *icbOrFailure;
-          Value ocb = *ocbOrFailure;
+        if (!inputCBs.empty() && !outputCBs.empty()) {
           builder.setInsertionPoint(outermostLoop);
-          builder.create<InitSFPUOp>(loc, icb, ocb);
+          builder.create<InitSFPUOp>(loc, inputCBs.front(), outputCBs.front());
         }
       }
 
@@ -234,15 +193,16 @@ struct TTLInsertTileRegsSyncPass
 
       // Auto-insert stores for tiles being inserted into tensors that lack
       // explicit stores. Each tensor.insert corresponds to an output.
-      // Use the stored output CB index to find the CB (works for nested loops).
-      // TODO: Currently only supports a single output CB. If ComputeOp has
-      // multiple outputs with different CBs, this needs to match each
-      // tensor.insert to its corresponding CB.
-      Value outputCB;
-      if (auto outputCBOrFailure =
-              getCBFromAttr(funcOp, forOp, kTileLoopOutputCBAttrName);
-          succeeded(outputCBOrFailure)) {
-        outputCB = *outputCBOrFailure;
+      // Match each tensor.insert to its corresponding output CB by finding
+      // which iter_arg it writes to.
+      SmallVector<Value> outputCBs =
+          getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
+
+      // Build a map from iter_arg (output tensor) to output CB index.
+      // The iter_args are in the same order as the ComputeOp outputs.
+      llvm::DenseMap<Value, size_t> iterArgToOutputIdx;
+      for (auto [idx, iterArg] : llvm::enumerate(forOp.getRegionIterArgs())) {
+        iterArgToOutputIdx[iterArg] = idx;
       }
 
       for (tensor::InsertOp insertOp : insertOps) {
@@ -251,13 +211,19 @@ struct TTLInsertTileRegsSyncPass
           continue;
         }
 
-        // Use the output CB from the loop marker attributes.
-        Value cb = outputCB;
-        if (!cb) {
-          continue; // Cannot find CB, skip auto-insert
-        }
-
+        // Find which output CB corresponds to this tensor.insert.
+        // The dest of tensor.insert is an iter_arg, which maps to an output.
         Value destTensor = insertOp.getDest();
+        auto it = iterArgToOutputIdx.find(destTensor);
+        if (it == iterArgToOutputIdx.end()) {
+          continue; // Not writing to an iter_arg, skip
+        }
+        size_t outputIdx = it->second;
+        if (outputIdx >= outputCBs.size()) {
+          continue; // No CB for this output, skip
+        }
+        Value cb = outputCBs[outputIdx];
+
         Value view = findReserveViewForStore(forOp, outermostLoop, cb,
                                              tail->getNextNode());
         if (!view) {
@@ -283,8 +249,9 @@ struct TTLInsertTileRegsSyncPass
 
       // Clean up marker attributes after processing.
       forOp->removeAttr(kTileLoopAttrName);
-      forOp->removeAttr(kTileLoopInputCBAttrName);
-      forOp->removeAttr(kTileLoopOutputCBAttrName);
+      forOp->removeAttr(kTileLoopInputCBsAttrName);
+      forOp->removeAttr(kTileLoopOutputCBsAttrName);
+      outermostLoop->removeAttr(kTileLoopOuterAttrName);
 
       return WalkResult::skip();
     });

@@ -59,15 +59,11 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
                "cb_index must be in range [0, 31]");
 
         // Find the bind_cb op with matching cb_index in the function.
-        Value result;
-        funcOp->walk([&](BindCBOp bindOp) {
-          if (bindOp.getCbIndexAttr().getInt() == *cbIndex) {
-            result = bindOp.getResult();
-            return WalkResult::interrupt();
-          }
-          return WalkResult::advance();
-        });
-        return result;
+        if (auto bindOp =
+                findBindCBByIndex(cast<func::FuncOp>(funcOp), *cbIndex)) {
+          return bindOp.getResult();
+        }
+        return Value();
       }
     }
   }
