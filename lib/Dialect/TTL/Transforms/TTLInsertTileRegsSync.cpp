@@ -100,10 +100,23 @@ struct TTLInsertTileRegsSyncPass
       Block &body = forOp.getRegion().front();
       OpBuilder builder(forOp);
 
-      // Find outermost loop for init_sfpu placement.
-      scf::ForOp outermostLoop = forOp->getParentOfType<scf::ForOp>()
-                                     ? findOutermostLoop(forOp)
-                                     : forOp;
+      // Find outermost compute loop for init_sfpu placement.
+      // Use the tile_loop.outer marker to correctly identify compute boundaries
+      // even when user code has additional loops surrounding the compute.
+      scf::ForOp outermostLoop = forOp;
+      Operation *current = forOp.getOperation();
+      while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
+        if (parentFor->hasAttr(kTileLoopOuterAttrName)) {
+          outermostLoop = parentFor;
+          break;
+        }
+        // Stop if we hit a loop without compute markers - it's a user loop.
+        if (!parentFor->hasAttr(kTileLoopOuterAttrName) &&
+            !parentFor->hasAttr(kTileLoopAttrName)) {
+          break;
+        }
+        current = parentFor.getOperation();
+      }
 
       // Find existing sync ops preceding the outermost loop.
       auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
@@ -253,6 +266,7 @@ struct TTLInsertTileRegsSyncPass
       forOp->removeAttr(kTileLoopAttrName);
       forOp->removeAttr(kTileLoopInputCBsAttrName);
       forOp->removeAttr(kTileLoopOutputCBsAttrName);
+      outermostLoop->removeAttr(kTileLoopOuterAttrName);
 
       return WalkResult::skip();
     });

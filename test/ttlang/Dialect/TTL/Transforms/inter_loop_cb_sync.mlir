@@ -17,7 +17,9 @@
 // CHECK:             ttl.copy_tile
 // CHECK:             ttl.tile_add
 // After first loop nest, before second: cb_wait should be inserted for CB2
+// Only ONE cb_wait should be inserted even though both inputs use CB2 (dedup test)
 // CHECK:         ttl.cb_wait [[CB2]]
+// CHECK-NOT:     ttl.cb_wait
 // Second outer loop
 // CHECK:         scf.for
 // Second inner loop (has tile_loop marker with input_cb = 2)

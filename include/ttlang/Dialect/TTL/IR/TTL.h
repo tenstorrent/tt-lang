@@ -31,9 +31,14 @@ inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 
 /// Loop marker attribute names (used by loop lowering and sync insertion).
-/// The tile_loop attribute marks loops from ComputeOp lowering that need sync.
+/// The tile_loop attribute marks the innermost loop from ComputeOp lowering.
+/// The tile_loop.outer attribute marks the outermost loop of a compute nest.
 /// The CB index attributes store which CBs are used for init_sfpu and stores.
 inline constexpr llvm::StringRef kTileLoopAttrName = "ttl.tile_loop";
+/// TODO(ttl): Remove kTileLoopOuterAttrName once loop flattening is
+/// implemented. With flattened loops, there will only be one loop per compute,
+/// making the outer marker unnecessary.
+inline constexpr llvm::StringRef kTileLoopOuterAttrName = "ttl.tile_loop.outer";
 inline constexpr llvm::StringRef kTileLoopAttrPrefix = "ttl.tile_loop.";
 /// Input CB indices (ArrayAttr of I64IntegerAttr).
 inline constexpr llvm::StringRef kTileLoopInputCBsAttrName =

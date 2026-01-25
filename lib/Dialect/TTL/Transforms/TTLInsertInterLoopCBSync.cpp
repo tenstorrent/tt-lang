@@ -48,16 +48,34 @@ struct TTLInsertInterLoopCBSyncPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
+    // Build a cache of CB index -> BindCBOp for O(1) lookups.
+    llvm::DenseMap<int64_t, BindCBOp> cbIndexCache;
+    funcOp.walk([&](BindCBOp bindOp) {
+      cbIndexCache[bindOp.getCbIndex().getSExtValue()] = bindOp;
+    });
+
     // Collect all tile loops in program order, along with their outermost
-    // loops. The tile_loop attribute is on the innermost loop, but we need to
-    // compare outermost loops to find consecutive compute operations.
+    // compute loops. The tile_loop attribute is on the innermost loop, and
+    // tile_loop.outer marks the outermost loop of each compute nest.
+    // We use the outer marker to correctly identify compute boundaries even
+    // when user code has additional loops surrounding the compute.
     SmallVector<std::pair<scf::ForOp, scf::ForOp>> tileLoopsWithOuter;
     funcOp.walk([&](scf::ForOp forOp) {
       if (forOp->hasAttr(kTileLoopAttrName)) {
-        scf::ForOp outermost = findOutermostLoop(forOp);
-        // If no outer loop, the tile loop itself is outermost
-        if (!outermost) {
-          outermost = forOp;
+        // Find the outermost loop by walking up and looking for the marker.
+        scf::ForOp outermost = forOp;
+        Operation *current = forOp.getOperation();
+        while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
+          if (parentFor->hasAttr(kTileLoopOuterAttrName)) {
+            outermost = parentFor;
+            break;
+          }
+          // Stop if we hit a loop without the outer marker - it's a user loop.
+          if (!parentFor->hasAttr(kTileLoopOuterAttrName) &&
+              !parentFor->hasAttr(kTileLoopAttrName)) {
+            break;
+          }
+          current = parentFor.getOperation();
         }
         tileLoopsWithOuter.push_back({forOp, outermost});
       }
@@ -90,14 +108,17 @@ struct TTLInsertInterLoopCBSyncPass
 
       // Find CBs that are in both producer's output and consumer's input.
       // These need cb_wait inserted before the consumer.
+      // Use sets to avoid duplicate cb_wait insertions when the same CB
+      // appears multiple times in input_cbs (e.g., both inputs from same CB).
       llvm::SmallDenseSet<int64_t> outputSet(producerOutputCBs.begin(),
                                              producerOutputCBs.end());
-      SmallVector<int64_t> sharedCBs;
+      llvm::SmallDenseSet<int64_t> sharedCBSet;
       for (int64_t cb : consumerInputCBs) {
         if (outputSet.contains(cb)) {
-          sharedCBs.push_back(cb);
+          sharedCBSet.insert(cb);
         }
       }
+      SmallVector<int64_t> sharedCBs(sharedCBSet.begin(), sharedCBSet.end());
 
       if (sharedCBs.empty()) {
         continue;
@@ -108,10 +129,15 @@ struct TTLInsertInterLoopCBSyncPass
       Location loc = consumerOuter.getLoc();
 
       for (int64_t cbIndex : sharedCBs) {
-        BindCBOp bindOp = findBindCBByIndex(funcOp, cbIndex);
-        if (!bindOp) {
-          continue; // Can't find the CB, skip
+        auto it = cbIndexCache.find(cbIndex);
+        if (it == cbIndexCache.end()) {
+          consumerOuter.emitOpError()
+              << "inter-loop CB sync failed: loop attribute references "
+              << "cb_index " << cbIndex
+              << " but no bind_cb with that index exists";
+          return signalPassFailure();
         }
+        BindCBOp bindOp = it->second;
 
         // Insert cb_wait to ensure data is available.
         auto cbType = cast<CircularBufferType>(bindOp.getType());
