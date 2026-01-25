@@ -25,6 +25,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -39,44 +40,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-/// Find a bind_cb op with the given cb_index in the function.
-static BindCBOp findBindCBByIndex(func::FuncOp funcOp, int64_t cbIndex) {
-  BindCBOp result = nullptr;
-  funcOp.walk([&](BindCBOp bindOp) {
-    if (bindOp.getCbIndex() == cbIndex) {
-      result = bindOp;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return result;
-}
-
-/// Get CB indices from a loop's array attribute.
-static SmallVector<int64_t>
-getCBIndicesFromArrayAttr(scf::ForOp forOp, llvm::StringRef attrName) {
-  SmallVector<int64_t> indices;
-  if (auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName)) {
-    for (Attribute attr : cbArrayAttr) {
-      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
-        indices.push_back(intAttr.getInt());
-      }
-    }
-  }
-  return indices;
-}
-
-/// Find the outermost scf.for loop containing this operation.
-static scf::ForOp findOutermostLoop(Operation *op) {
-  scf::ForOp outermost = nullptr;
-  Operation *current = op;
-  while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
-    outermost = parentFor;
-    current = parentFor.getOperation();
-  }
-  return outermost;
-}
 
 struct TTLInsertInterLoopCBSyncPass
     : public impl::TTLInsertInterLoopCBSyncBase<TTLInsertInterLoopCBSyncPass> {
@@ -117,9 +80,9 @@ struct TTLInsertInterLoopCBSyncPass
 
       // Get all output CBs from producer and all input CBs from consumer.
       SmallVector<int64_t> producerOutputCBs =
-          getCBIndicesFromArrayAttr(producerInner, kTileLoopOutputCBsAttrName);
+          getCBIndicesFromLoopAttr(producerInner, kTileLoopOutputCBsAttrName);
       SmallVector<int64_t> consumerInputCBs =
-          getCBIndicesFromArrayAttr(consumerInner, kTileLoopInputCBsAttrName);
+          getCBIndicesFromLoopAttr(consumerInner, kTileLoopInputCBsAttrName);
 
       if (producerOutputCBs.empty() || consumerInputCBs.empty()) {
         continue;

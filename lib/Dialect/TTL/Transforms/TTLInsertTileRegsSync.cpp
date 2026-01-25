@@ -47,51 +47,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find a bind_cb op with the given cb_index in the function.
-static BindCBOp findBindCBByIndex(func::FuncOp funcOp, int64_t cbIndex) {
-  BindCBOp result = nullptr;
-  funcOp.walk([&](BindCBOp bindOp) {
-    if (bindOp.getCbIndex() == cbIndex) {
-      result = bindOp;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return result;
-}
-
-/// Find the outermost scf.for loop containing this operation.
-static scf::ForOp findOutermostLoop(Operation *op) {
-  scf::ForOp outermost = nullptr;
-  Operation *current = op;
-  while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
-    outermost = parentFor;
-    current = parentFor.getOperation();
-  }
-  return outermost;
-}
-
-/// Lookup CB values from a loop attribute that stores an array of cb_indices.
-static SmallVector<Value> getCBsFromArrayAttr(func::FuncOp funcOp,
-                                              scf::ForOp forOp,
-                                              llvm::StringRef attrName) {
-  SmallVector<Value> cbs;
-  auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName);
-  if (!cbArrayAttr) {
-    return cbs;
-  }
-  for (Attribute attr : cbArrayAttr) {
-    auto intAttr = dyn_cast<IntegerAttr>(attr);
-    if (!intAttr) {
-      continue;
-    }
-    if (auto bindOp = findBindCBByIndex(funcOp, intAttr.getInt())) {
-      cbs.push_back(bindOp.getResult());
-    }
-  }
-  return cbs;
-}
-
 /// Find a cb_reserve view for auto-inserted stores. Searches for cb_reserve
 /// ops in the loop body and in the parent block before the outermost loop.
 static Value findReserveViewForStore(scf::ForOp forOp, scf::ForOp outermostLoop,
@@ -159,9 +114,9 @@ struct TTLInsertTileRegsSyncPass
       // Use first input/output CB for init_sfpu (hardware only needs one pair).
       if (!existingInitSfpu) {
         SmallVector<Value> inputCBs =
-            getCBsFromArrayAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
+            getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
         SmallVector<Value> outputCBs =
-            getCBsFromArrayAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
+            getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
         if (!inputCBs.empty() && !outputCBs.empty()) {
           builder.setInsertionPoint(outermostLoop);
@@ -243,7 +198,7 @@ struct TTLInsertTileRegsSyncPass
       // Match each tensor.insert to its corresponding output CB by finding
       // which iter_arg it writes to.
       SmallVector<Value> outputCBs =
-          getCBsFromArrayAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
+          getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
       // Build a map from iter_arg (output tensor) to output CB index.
       // The iter_args are in the same order as the ComputeOp outputs.

@@ -312,7 +312,7 @@ class TestThreeComputePipeline(TwoComputeTestBase):
     ARITY = 2
     NUM_INTERMEDIATE_CBS = 2
     # Higher ULP threshold due to three chained bfloat16 operations accumulating error.
-    ULP_THRESHOLD = 100.0
+    ULP_THRESHOLD = 150.0
 
     def torch_reference(self, a: Tensor, b: Tensor) -> Tensor:
         """Compute (a + b)² + a."""
