@@ -32,6 +32,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/Pass/Pass.h"
 
 #define DEBUG_TYPE "ttl-insert-inter-loop-cb-sync"
@@ -60,7 +61,7 @@ struct TTLInsertInterLoopCBSyncPass
     // compute loops. The tile_loop attribute is on the innermost loop, and
     // tile_loop.outer marks the outermost loop of each compute nest.
     SmallVector<std::pair<scf::ForOp, scf::ForOp>> tileLoopsWithOuter;
-    funcOp.walk([&](scf::ForOp forOp) {
+    funcOp.walk<WalkOrder::PreOrder>([&](scf::ForOp forOp) {
       if (forOp->hasAttr(kTileLoopAttrName)) {
         scf::ForOp outermost = findOutermostComputeLoop(forOp);
         tileLoopsWithOuter.push_back({forOp, outermost});
@@ -70,9 +71,6 @@ struct TTLInsertInterLoopCBSyncPass
     if (tileLoopsWithOuter.size() < 2) {
       return; // Nothing to sync
     }
-
-    // Build dominance info for checking producer-consumer relationships.
-    DominanceInfo domInfo(funcOp);
 
     // Build a set of all CBs written by each loop for efficient lookup.
     // cbWrittenByLoop[i] = set of CB indices written by loop i.
@@ -86,6 +84,9 @@ struct TTLInsertInterLoopCBSyncPass
       cbWrittenByLoop.push_back(std::move(outputCBs));
     }
 
+    // Build dominance info for checking producer-consumer relationships.
+    DominanceInfo domInfo(funcOp);
+
     // For each consumer loop, check ALL prior loops for CB dependencies.
     for (size_t i = 1; i < tileLoopsWithOuter.size(); ++i) {
       auto [consumerInner, consumerOuter] = tileLoopsWithOuter[i];
@@ -96,9 +97,14 @@ struct TTLInsertInterLoopCBSyncPass
         continue;
       }
 
-      // Find CBs that need sync (CBs produced by prior loops and used here)
-      llvm::SmallDenseSet<int64_t> cbsNeedingSync;
+      // Find CBs that need sync (CBs produced by prior loops and used here).
+      // Use SmallVector with duplicate check for deterministic ordering.
+      SmallVector<int64_t> sharedCBs;
       for (int64_t inputCB : consumerInputCBs) {
+        // Skip if already added (deduplication).
+        if (llvm::is_contained(sharedCBs, inputCB)) {
+          continue;
+        }
         for (size_t j = 0; j < i; ++j) {
           auto [producerInner, producerOuter] = tileLoopsWithOuter[j];
           // Only consider producers that dominate the consumer.
@@ -107,18 +113,15 @@ struct TTLInsertInterLoopCBSyncPass
             continue;
           }
           if (cbWrittenByLoop[j].contains(inputCB)) {
-            cbsNeedingSync.insert(inputCB);
+            sharedCBs.push_back(inputCB);
             break; // Found a producer for this CB, no need to check more
           }
         }
       }
 
-      if (cbsNeedingSync.empty()) {
+      if (sharedCBs.empty()) {
         continue;
       }
-
-      SmallVector<int64_t> sharedCBs(cbsNeedingSync.begin(),
-                                     cbsNeedingSync.end());
 
       // Insert cb_wait for each shared CB before the consumer's outermost loop.
       OpBuilder builder(consumerOuter);
