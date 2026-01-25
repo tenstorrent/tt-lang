@@ -12,8 +12,8 @@
 //
 // The pass runs AFTER ttl-lower-to-loops and BEFORE ttl-insert-tile-regs-sync.
 // It uses the loop marker attributes to identify CB dependencies:
-//   - ttl.tile_loop.output_cb: CB index written by the loop
-//   - ttl.tile_loop.input_cb: CB index read by the loop
+//   - ttl.tile_loop.output_cbs: Array of CB indices written by the loop
+//   - ttl.tile_loop.input_cbs: Array of CB indices read by the loop
 //
 // When loop1.output_cb == loop2.input_cb, this pass inserts:
 //   - cb_wait before loop2 to ensure data from loop1 is available
@@ -53,13 +53,18 @@ static BindCBOp findBindCBByIndex(func::FuncOp funcOp, int64_t cbIndex) {
   return result;
 }
 
-/// Get CB index from a loop's attribute, if present.
-static std::optional<int64_t> getCBIndexFromAttr(scf::ForOp forOp,
-                                                  llvm::StringRef attrName) {
-  if (auto cbAttr = forOp->getAttrOfType<IntegerAttr>(attrName)) {
-    return cbAttr.getInt();
+/// Get CB indices from a loop's array attribute.
+static SmallVector<int64_t> getCBIndicesFromArrayAttr(scf::ForOp forOp,
+                                                       llvm::StringRef attrName) {
+  SmallVector<int64_t> indices;
+  if (auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName)) {
+    for (Attribute attr : cbArrayAttr) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+        indices.push_back(intAttr.getInt());
+      }
+    }
   }
-  return std::nullopt;
+  return indices;
 }
 
 /// Find the outermost scf.for loop containing this operation.
@@ -80,9 +85,9 @@ struct TTLInsertInterLoopCBSyncPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    // Collect all tile loops in program order, along with their outermost loops.
-    // The tile_loop attribute is on the innermost loop, but we need to compare
-    // outermost loops to find consecutive compute operations.
+    // Collect all tile loops in program order, along with their outermost
+    // loops. The tile_loop attribute is on the innermost loop, but we need to
+    // compare outermost loops to find consecutive compute operations.
     SmallVector<std::pair<scf::ForOp, scf::ForOp>> tileLoopsWithOuter;
     funcOp.walk([&](scf::ForOp forOp) {
       if (forOp->hasAttr(kTileLoopAttrName)) {
@@ -110,38 +115,48 @@ struct TTLInsertInterLoopCBSyncPass
         continue;
       }
 
-      // Check if producer's output CB matches consumer's input CB.
-      auto producerOutputCB =
-          getCBIndexFromAttr(producerInner, kTileLoopOutputCBAttrName);
-      auto consumerInputCB =
-          getCBIndexFromAttr(consumerInner, kTileLoopInputCBAttrName);
+      // Get all output CBs from producer and all input CBs from consumer.
+      SmallVector<int64_t> producerOutputCBs =
+          getCBIndicesFromArrayAttr(producerInner, kTileLoopOutputCBsAttrName);
+      SmallVector<int64_t> consumerInputCBs =
+          getCBIndicesFromArrayAttr(consumerInner, kTileLoopInputCBsAttrName);
 
-      if (!producerOutputCB || !consumerInputCB) {
+      if (producerOutputCBs.empty() || consumerInputCBs.empty()) {
         continue;
       }
 
-      if (*producerOutputCB != *consumerInputCB) {
+      // Find CBs that are in both producer's output and consumer's input.
+      // These need cb_wait inserted before the consumer.
+      llvm::SmallDenseSet<int64_t> outputSet(producerOutputCBs.begin(),
+                                              producerOutputCBs.end());
+      SmallVector<int64_t> sharedCBs;
+      for (int64_t cb : consumerInputCBs) {
+        if (outputSet.contains(cb)) {
+          sharedCBs.push_back(cb);
+        }
+      }
+
+      if (sharedCBs.empty()) {
         continue;
       }
 
-      // Found a dependency: producer writes to CB that consumer reads from.
-      // Insert cb_wait before the consumer's outermost loop.
-      int64_t cbIndex = *consumerInputCB;
-      BindCBOp bindOp = findBindCBByIndex(funcOp, cbIndex);
-      if (!bindOp) {
-        continue; // Can't find the CB, skip
-      }
-
+      // Insert cb_wait for each shared CB before the consumer's outermost loop.
       OpBuilder builder(consumerOuter);
       Location loc = consumerOuter.getLoc();
 
-      // Insert cb_wait to ensure data is available.
-      // The result type should match the CB's tensor type.
-      auto cbType = cast<CircularBufferType>(bindOp.getType());
-      auto tensorType = RankedTensorType::get(
-          cbType.getShape(), cbType.getElementType());
+      for (int64_t cbIndex : sharedCBs) {
+        BindCBOp bindOp = findBindCBByIndex(funcOp, cbIndex);
+        if (!bindOp) {
+          continue; // Can't find the CB, skip
+        }
 
-      builder.create<CBWaitOp>(loc, tensorType, bindOp.getResult());
+        // Insert cb_wait to ensure data is available.
+        auto cbType = cast<CircularBufferType>(bindOp.getType());
+        auto tensorType =
+            RankedTensorType::get(cbType.getShape(), cbType.getElementType());
+
+        builder.create<CBWaitOp>(loc, tensorType, bindOp.getResult());
+      }
     }
   }
 };

@@ -785,6 +785,7 @@ def _compile_kernel(
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-assign-dst)",
             "func.func(ttl-lower-to-loops)",
+            "func.func(ttl-insert-inter-loop-cb-sync)",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-annotate-cb-associations)",
             "convert-ttl-to-ttkernel",

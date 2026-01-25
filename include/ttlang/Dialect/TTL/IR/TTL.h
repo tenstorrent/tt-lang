@@ -35,10 +35,12 @@ inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 /// The CB index attributes store which CBs are used for init_sfpu and stores.
 inline constexpr llvm::StringRef kTileLoopAttrName = "ttl.tile_loop";
 inline constexpr llvm::StringRef kTileLoopAttrPrefix = "ttl.tile_loop.";
-inline constexpr llvm::StringRef kTileLoopInputCBAttrName =
-    "ttl.tile_loop.input_cb";
-inline constexpr llvm::StringRef kTileLoopOutputCBAttrName =
-    "ttl.tile_loop.output_cb";
+/// Input CB indices (ArrayAttr of I64IntegerAttr).
+inline constexpr llvm::StringRef kTileLoopInputCBsAttrName =
+    "ttl.tile_loop.input_cbs";
+/// Output CB indices (ArrayAttr of I64IntegerAttr).
+inline constexpr llvm::StringRef kTileLoopOutputCBsAttrName =
+    "ttl.tile_loop.output_cbs";
 
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
