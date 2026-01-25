@@ -5,12 +5,13 @@
 # Build and optionally push tt-lang Docker images
 #
 # Usage:
-#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push]
+#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push] [--no-cache]
 #
 # Arguments:
 #   MLIR_SHA     - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
 #   --check-only - Only check if images exist, don't build
 #   --no-push    - Build locally but don't push to registry
+#   --no-cache   - Build from scratch without using Docker cache
 #
 # Must be run from the repository root directory
 
@@ -20,6 +21,7 @@ set -e
 MLIR_SHA=""
 CHECK_ONLY=false
 NO_PUSH=false
+NO_CACHE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -29,6 +31,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-push)
             NO_PUSH=true
+            shift
+            ;;
+        --no-cache)
+            NO_CACHE=true
             shift
             ;;
         *)
@@ -60,6 +66,7 @@ echo "=== tt-lang Docker Image Builder ==="
 echo "tt-mlir SHA: $MLIR_SHA"
 echo "Check only: $CHECK_ONLY"
 echo "No push: $NO_PUSH"
+echo "No cache: $NO_CACHE"
 echo ""
 
 # Get version from git tags (e.g., v0.1.0 or v0.1.0-5-gabc1234 for dev builds)
@@ -123,10 +130,17 @@ build_image() {
         build_args="$build_args --build-arg MLIR_TAG=$MLIR_TAG"
     fi
 
+    # Build options
+    local cache_arg=""
+    if [ "$NO_CACHE" = true ]; then
+        cache_arg="--no-cache"
+    fi
+
     # Always tag with registry path (required for Dockerfile FROM references)
     # Also add simplified name and latest tags
     docker build \
         --progress=plain \
+        $cache_arg \
         $target_arg \
         $build_args \
         -t "$registry_image" \

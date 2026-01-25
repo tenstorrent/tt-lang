@@ -2,13 +2,28 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build, install, and cleanup tt-lang in a single script.
+# Configure, build, install, and cleanup tt-lang in a single script.
 # This is called from Dockerfile to keep everything in one layer,
 # avoiding Docker layer bloat from the large build directory.
 
 set -e
 
 TTMLIR_TOOLCHAIN_DIR="${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}"
+
+echo "=== Configuring tt-lang ==="
+TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+cmake -G Ninja -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=clang++-17 \
+    -DCMAKE_C_COMPILER=clang-17 \
+    -DTTMLIR_CMAKE_BUILD_TYPE=Release \
+    -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
+    -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
+    -DTTLANG_ENABLE_PERF_TRACE=ON \
+    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+
+echo "=== Disk space after configure ==="
+df -BM
 
 echo "=== Building tt-lang ==="
 source build/env/activate

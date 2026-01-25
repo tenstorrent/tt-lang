@@ -24,22 +24,9 @@ WORKDIR /home/build/tt-lang
 # Show commit info for traceability
 RUN git log -1 || echo "Git info not available"
 
-# Build tt-lang using FetchContent (builds tt-mlir from pinned commit)
-# Install tt-mlir directly to /opt/ttmlir-toolchain
-RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
-    cmake -G Ninja -B build \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_COMPILER=clang++-17 \
-    -DCMAKE_C_COMPILER=clang-17 \
-    -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-    -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
-    -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
-    -DTTLANG_ENABLE_PERF_TRACE=ON \
-    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
-
-# Build, install, and cleanup in ONE RUN command to avoid Docker layer bloat
+# Configure, build, install, and cleanup in ONE RUN command to avoid Docker layer bloat
 # Docker keeps all layers during build - by combining these, the huge build
-# directory never gets committed to a layer, saving 50-80GB of disk space
+# directory (50-80GB) never gets committed to a layer
 COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
 COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
 COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
