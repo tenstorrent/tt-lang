@@ -108,9 +108,19 @@ struct TTLInsertTileRegsSyncPass
       InitSFPUOp existingInitSfpu =
           findPrecedingOp<InitSFPUOp>(outermostLoop.getOperation(), stopAtLoop);
 
+      // Check if the loop body contains broadcast ops (have bcast_dim attribute).
+      // Broadcast operations use their own init functions, not init_sfpu.
+      bool hasBroadcastOps = false;
+      forOp.walk([&](Operation *innerOp) {
+        if (innerOp->hasAttr("bcast_dim")) {
+          hasBroadcastOps = true;
+        }
+      });
+
       // Insert init_sfpu before outermost loop if not present.
       // Use first input/output CB for init_sfpu (hardware only needs one pair).
-      if (!existingInitSfpu) {
+      // Skip for broadcast ops - they use their own bcast init functions.
+      if (!existingInitSfpu && !hasBroadcastOps) {
         SmallVector<Value> inputCBs =
             getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
         SmallVector<Value> outputCBs =

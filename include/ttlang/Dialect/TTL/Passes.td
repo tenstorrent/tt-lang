@@ -180,4 +180,28 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLConvertBcastToEmitC
+    : Pass<"ttl-convert-bcast-to-emitc", "::mlir::func::FuncOp"> {
+  let summary = "Lower TTL tile broadcast ops directly to EmitC";
+  let description = [{
+    Converts TTL tile binary ops with bcast_dim attribute directly to EmitC
+    call_opaque ops that emit tt-metal broadcast intrinsics.
+
+    For each tile op with bcast_dim attribute (e.g., ttl.tile_add with bcast_dim=col):
+    1. Emit the init function: add_bcast_cols_init_short() (or rows/scalar variant)
+    2. Emit the compute function: add_tiles_bcast_cols(cb0, cb1, i0, i1, dst)
+
+    This pass runs AFTER ttl-tile-ops-to-ttkernel (which skips broadcast ops)
+    and BEFORE ttkernel-to-emitc.
+
+    NOTE: emitc dialect is NOT listed in dependentDialects to avoid double
+    registration when running with other passes that also use emitc.
+  }];
+
+  // NOTE: EmitCDialect is loaded at runtime to avoid double registration
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

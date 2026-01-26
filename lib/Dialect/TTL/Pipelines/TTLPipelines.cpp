@@ -34,6 +34,10 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLInsertInterLoopCBSync());
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLAnnotateCBAssociations());
+  // Convert TTL broadcast ops directly to EmitC BEFORE TTL→TTKernel conversion.
+  // Broadcast ops need special intrinsics that are emitted directly as EmitC.
+  // Must run before TTLConvertTTLToTTKernel which marks TTL tile ops as illegal.
+  pm.addPass(createTTLConvertBcastToEmitC());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());

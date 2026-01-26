@@ -232,6 +232,9 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 ///
 /// DST indices are extracted from operand-defining ops (copy_tile or tile ops
 /// with dst_idx attributes). The output index comes from this op's dst_idx.
+///
+/// NOTE: Ops with bcast_dim attribute are skipped here - they are handled by
+/// a separate pass that lowers directly to EmitC with broadcast intrinsics.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -239,6 +242,12 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // Skip broadcast ops - they're handled by TTL→EmitC lowering
+    if (op.getBcastDim()) {
+      return rewriter.notifyMatchFailure(
+          op, "broadcast ops handled by TTL→EmitC lowering");
+    }
+
     Location loc = op.getLoc();
 
     auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
@@ -278,6 +287,9 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
 /// DST[dst0] = max(DST[dst0], DST[dst1])
 /// TODO: Remove this special pattern once TTKernel adds a 3-arg max_binary_tile
 /// op that matches the add/sub/mul signature: max(src0, src1, odst).
+///
+/// NOTE: Ops with bcast_dim attribute are skipped here - they are handled by
+/// a separate pass that lowers directly to EmitC with broadcast intrinsics.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -285,6 +297,12 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // Skip broadcast ops - they're handled by TTL→EmitC lowering
+    if (op.getBcastDim()) {
+      return rewriter.notifyMatchFailure(
+          op, "broadcast ops handled by TTL→EmitC lowering");
+    }
+
     Location loc = op.getLoc();
 
     // Extract dst_idx from original (unconverted) operands, not adaptor

@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPS_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
+include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -480,7 +481,22 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileBinaryOpTrait])> {
   let summary = "Binary tile operation";
-  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let description = [{
+    Binary tile operation. When the optional `bcast_dim` attribute is present,
+    the rhs operand is treated as a broadcast tile and the operation uses the
+    corresponding broadcast variant (e.g., `add_tiles_bcast_cols` instead of
+    `add_tiles`).
+
+    Broadcast dimension semantics:
+    - `row`: rhs tile is broadcast along rows (rhs CB has Nx1 shape)
+    - `col`: rhs tile is broadcast along columns (rhs CB has 1xN shape)
+    - `scalar`: rhs tile is broadcast as scalar (rhs CB has 1x1 shape)
+  }];
+  let arguments = (ins
+    AnyType:$lhs,
+    AnyType:$rhs,
+    OptionalAttr<TTL_BcastDimAttr>:$bcast_dim
+  );
   let results = (outs AnyType:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
 }

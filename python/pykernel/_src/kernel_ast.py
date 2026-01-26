@@ -10,6 +10,7 @@ import inspect
 
 from ttmlir.dialects import arith, emitc, func, memref, scf
 from ttmlir.ir import *
+from ttmlir.ir import RankedTensorType
 
 from .base_ast import PyKernelAstBase
 from .kernel_types import ClassRegistry
@@ -112,6 +113,58 @@ class TTCompilerBase(PyKernelAstBase):
         # Get rid of appended metadata sent into compiler
         self.verbose = kwargs.get("_verbose", False)
         self.source_code = kwargs.get("_source_code", "")
+
+    @classmethod
+    def _try_broadcast_or_cast_binop(cls, node, lhs, rhs):
+        """Handle broadcast semantics for tensor binary ops, or scalar cast."""
+        lhs_is_tensor = isinstance(lhs.type, RankedTensorType)
+        rhs_is_tensor = isinstance(rhs.type, RankedTensorType)
+        if lhs_is_tensor and rhs_is_tensor:
+            if lhs.type.element_type != rhs.type.element_type:
+                raise ValueError(
+                    f"mismatched operand element types: {lhs.type} vs {rhs.type}"
+                )
+            if lhs.type.encoding != rhs.type.encoding:
+                raise ValueError(
+                    f"mismatched operand encodings: {lhs.type} vs {rhs.type}"
+                )
+            if lhs.type.rank != rhs.type.rank:
+                raise ValueError(f"mismatched operand ranks: {lhs.type} vs {rhs.type}")
+
+            lhs_shape = list(lhs.type.shape)
+            rhs_shape = list(rhs.type.shape)
+            lhs_is_result = True
+            rhs_is_result = True
+            for l_dim, r_dim in zip(lhs_shape, rhs_shape):
+                if l_dim == r_dim:
+                    continue
+                if l_dim == 1 and r_dim > 1:
+                    lhs_is_result = False
+                    continue
+                if r_dim == 1 and l_dim > 1:
+                    rhs_is_result = False
+                    continue
+                raise ValueError(
+                    "mismatched operand shapes not broadcast-compatible: "
+                    f"{lhs.type} vs {rhs.type}"
+                )
+
+            # For commutative ops, swap if needed so lhs has result shape
+            if not lhs_is_result and rhs_is_result:
+                if isinstance(
+                    node.op, (ast.Add, ast.Mult, ast.BitAnd, ast.BitOr, ast.BitXor)
+                ):
+                    lhs, rhs = rhs, lhs
+                else:
+                    raise ValueError(
+                        "broadcast requires left-hand operand to have the result "
+                        f"shape for non-commutative ops: {lhs.type} vs {rhs.type}"
+                    )
+            # For tensor broadcast, return lhs, rhs, is_broadcast=False (no cast needed)
+            return lhs, rhs, False
+
+        # For scalar types, apply standard cast
+        return lhs, _cast(rhs, lhs.type), True
 
     # Control Flow
     def visit_If(self, node):
@@ -511,8 +564,10 @@ class TTCompilerBase(PyKernelAstBase):
             ).result
 
         if lhs.type != rhs.type:
-            rhs = _cast(rhs, lhs.type)
-        assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
+            # Handle broadcast for tensor types or cast for scalar types
+            lhs, rhs, did_cast = self._try_broadcast_or_cast_binop(node, lhs, rhs)
+            if did_cast:
+                assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
         mlir_type = _get_type_str(lhs.type)
 
         def qualified_or(attr, otherwise, *args, **kwargs):

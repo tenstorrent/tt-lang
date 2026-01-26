@@ -86,8 +86,12 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
 
     # Device shape: [grid_rows, grid_cols, shard_row_tiles, shard_col_tiles]
     # MLIR expects (rows, cols) order
-    shard_row_tiles = tensor_rows // grid_rows // DEFAULT_TILE_SIZE
-    shard_col_tiles = tensor_cols // grid_cols // DEFAULT_TILE_SIZE
+    # Use ceildiv to handle non-exact tile divisions
+    def ceildiv(a, b):
+        return (a + b - 1) // b
+
+    shard_row_tiles = ceildiv(tensor_rows // grid_rows, DEFAULT_TILE_SIZE)
+    shard_col_tiles = ceildiv(tensor_cols // grid_cols, DEFAULT_TILE_SIZE)
     device_shape = [grid_rows, grid_cols, shard_row_tiles, shard_col_tiles]
 
     return RankedTensorType.get(device_shape, element_type, layout)
