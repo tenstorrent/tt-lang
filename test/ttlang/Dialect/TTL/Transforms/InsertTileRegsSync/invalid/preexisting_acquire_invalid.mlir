@@ -11,8 +11,8 @@ func.func @preexisting_acquire(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> 
   %output = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
   %output_cb = ttl.attach_cb %output, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
-  // Pre-existing acquire outside compute - should error
-  // expected-error @+1 {{tile_regs_acquire outside tile loop is not supported; sync ops must be inside the loop body}}
+  // Pre-existing acquire outside compute without matching release - should error
+  // expected-error @+1 {{tile_regs_acquire outside tile loop without matching release; sync ops must be inside the loop body}}
   ttl.tile_regs_acquire
 
   %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%output_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {

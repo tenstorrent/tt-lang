@@ -272,3 +272,59 @@ func.func @preexisting_init_sfpu_not_duplicated(%a: tensor<2x2x!ttcore.tile<32x3
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+#map = affine_map<(d0, d1) -> (d0, d1)>
+
+// Purpose: verify matched acquire+release before loop is allowed.
+// A complete acquire/release pair prior to the loop should not error.
+// CHECK-LABEL:   func.func @matched_acquire_release_before_loop
+// CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
+// CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
+// Matched pair before loop - OK
+// CHECK:           ttl.tile_regs_acquire
+// CHECK-NEXT:      ttl.tile_regs_release
+// CHECK-NEXT:      ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      %[[OUTER:.*]] = scf.for {{.*}} iter_args
+// CHECK-NEXT:        %[[INNER:.*]] = scf.for {{.*}} iter_args
+// Sync ops inserted inside loop body
+// CHECK-NEXT:          ttl.tile_regs_acquire
+// CHECK:               ttl.tile_regs_commit
+// CHECK-NEXT:          ttl.tile_regs_wait
+// CHECK:               ttl.tile_regs_release
+// CHECK-NEXT:          scf.yield
+func.func @matched_acquire_release_before_loop(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                               %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+
+  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // Matched acquire+release pair before compute - should be allowed
+  ttl.tile_regs_acquire
+  ttl.tile_regs_release
+
+  %result = ttl.compute
+      ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                         tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [#map, #map, #map],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+       %b_tile: !ttcore.tile<32x32, f32>,
+       %out_tile: !ttcore.tile<32x32, f32>):
+    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield %sum : !ttcore.tile<32x32, f32>
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
+}

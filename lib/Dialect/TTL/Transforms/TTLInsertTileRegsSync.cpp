@@ -33,6 +33,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -83,12 +84,54 @@ static FailureOr<Value> getCBFromAttr(func::FuncOp funcOp, scf::ForOp forOp,
   return failure();
 }
 
+/// Find an unmatched tile_regs_acquire that dominates the given operation.
+/// An acquire is "unmatched" if there is no tile_regs_release that:
+/// - properly dominates the target (comes before on all paths), AND
+/// - is dominated by the acquire (comes after the acquire)
+/// Uses DominanceInfo for correctness across complex control flow.
+static TileRegsAcquireOp
+findUnmatchedDominatingAcquire(func::FuncOp funcOp, Operation *target,
+                               DominanceInfo &domInfo) {
+  TileRegsAcquireOp unmatchedAcquire = nullptr;
+
+  // Collect all release ops that properly dominate the target.
+  SmallVector<TileRegsReleaseOp> dominatingReleases;
+  funcOp.walk([&](TileRegsReleaseOp release) {
+    if (domInfo.properlyDominates(release.getOperation(), target)) {
+      dominatingReleases.push_back(release);
+    }
+  });
+
+  // Check each acquire that properly dominates the target.
+  funcOp.walk([&](TileRegsAcquireOp acquire) {
+    if (!domInfo.properlyDominates(acquire.getOperation(), target)) {
+      return;
+    }
+
+    // Check if there's a release that "intercepts" this acquire:
+    // - The release must properly dominate the target (already filtered above)
+    // - The release must be dominated by the acquire (comes after it)
+    bool hasMatchingRelease =
+        llvm::any_of(dominatingReleases, [&](TileRegsReleaseOp release) {
+          return domInfo.dominates(acquire.getOperation(),
+                                   release.getOperation());
+        });
+
+    if (!hasMatchingRelease) {
+      unmatchedAcquire = acquire;
+    }
+  });
+
+  return unmatchedAcquire;
+}
+
 struct TTLInsertTileRegsSyncPass
     : public impl::TTLInsertTileRegsSyncBase<TTLInsertTileRegsSyncPass> {
   using Base::Base;
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
+    DominanceInfo domInfo(funcOp);
 
     WalkResult result = funcOp.walk([&](scf::ForOp forOp) -> WalkResult {
       // Only process loops marked with the tile loop attribute.
@@ -109,15 +152,16 @@ struct TTLInsertTileRegsSyncPass
       auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
       InitSFPUOp existingInitSfpu =
           findPrecedingOp<InitSFPUOp>(outermostLoop.getOperation(), stopAtLoop);
-      TileRegsAcquireOp existingAcquire = findPrecedingOp<TileRegsAcquireOp>(
-          outermostLoop.getOperation(), stopAtLoop);
 
-      // Pre-existing tile_regs_acquire outside the loop is not supported.
-      // The pass inserts acquire inside the loop body; having one outside
-      // would result in an unbalanced acquire/release pair.
-      if (existingAcquire) {
-        existingAcquire.emitError()
-            << "tile_regs_acquire outside tile loop is not supported; "
+      // Check for an unmatched tile_regs_acquire that dominates the loop.
+      // An acquire is "unmatched" if there's no release between it and the
+      // loop. This would create an unbalanced acquire/release pair since the
+      // pass inserts acquire inside the loop body.
+      TileRegsAcquireOp unmatchedAcquire = findUnmatchedDominatingAcquire(
+          funcOp, outermostLoop.getOperation(), domInfo);
+      if (unmatchedAcquire) {
+        unmatchedAcquire.emitError()
+            << "tile_regs_acquire outside tile loop without matching release; "
             << "sync ops must be inside the loop body";
         return WalkResult::interrupt();
       }
