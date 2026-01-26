@@ -247,7 +247,7 @@ def matmul_read():
             for k in range(K):
                 # acquire a_blk and b_blk from a_cb and b_cb:
                 with (
-                    a_cb.reserve() as a_blk
+                    a_cb.reserve() as a_blk,
                     b_cb.reserve() as b_blk
                 ):
                     # then copy:
@@ -557,7 +557,7 @@ def dm():
     for ct in range(start_ct, end_ct):
         for rt in range(row_tiles // g):
             # acquire a_blk from a_cb:
-            with a_cb.wait() as a_blk:
+            with a_cb.reserve() as a_blk:
 
                 # then copy from a tensor slice of matching shape:
                 row_slice = slice(rt * g, (rt + 1) * g) # explicit row slice
@@ -666,7 +666,7 @@ def dm():
 | `ttl.BlockExpr.__add__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Add two blocks element-wise. Example: `a + b`. |
 | `ttl.BlockExpr.__sub__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Two blocks subtracted second from first element-wise. Example: `a - b`. |
 | `ttl.BlockExpr.__mul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Multiply two blocks element-wise. Example: `a * b`. |
-| `ttl.BlockExpr.__div__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Two blocks divided first by second element-wise. Example: `a / b`. |
+| `ttl.BlockExpr.__truediv__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Two blocks divided first by second element-wise. Example: `a / b`. |
 | `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Dot product of two blocks. If `a` has shape `[M, K]` and `b` has shape `[K, N]` then the result will have shape `[M, N]`. Example: `a @ b`. |
 | `ttl.math.max(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise maximum |
 | `ttl.math.min(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise minimum |
@@ -710,7 +710,7 @@ def dm():
 | :---- | :---- |
 | `ttl.math.relu(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [ReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.ReLU.html) |
 | `ttl.math.relu_max(expr: ttl.BlockExpr, upper_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with upper limit (`ttl.math.relu(ttl.math.max(x, upper_limit)))`) |
-| `ttl.math.relu_max(expr: ttl.BlockExpr, lower_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with lower limit (`ttl.math.relu(ttl.math.min(x, lower_limit)))`) |
+| `ttl.math.relu_min(expr: ttl.BlockExpr, lower_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with lower limit (`ttl.math.relu(ttl.math.min(x, lower_limit)))`) |
 | `ttl.math.leaky_relu(expr: ttl.BlockExpr, slope: ttl.PositiveInt) -> ttl.BlockExpr` | [Leaky ReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.LeakyReLU.html) |
 | `ttl.math.elu(expr: ttl.BlockExpr, slope: ttl.PositiveInt) -> ttl.BlockExpr` | [ELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.ELU.html) |
 | `ttl.math.gelu(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [GELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.GELU.html) |
