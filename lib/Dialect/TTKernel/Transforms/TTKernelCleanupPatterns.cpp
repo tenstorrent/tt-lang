@@ -36,7 +36,8 @@ struct DeduplicateConsecutiveBarriers : OpRewritePattern<BarrierOp> {
 /// target the same TRID (and optional NOC). Unlike global barriers, barriers
 /// with different TRIDs are not redundant and must not be removed.
 template <typename BarrierWithTridOp>
-struct DeduplicateConsecutiveTridBarriers : OpRewritePattern<BarrierWithTridOp> {
+struct DeduplicateConsecutiveTridBarriers
+    : OpRewritePattern<BarrierWithTridOp> {
   using OpRewritePattern<BarrierWithTridOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(BarrierWithTridOp op,
@@ -73,12 +74,12 @@ void populateTTKernelCleanupPatterns(RewritePatternSet &patterns) {
       patterns.getContext());
   patterns.add<DeduplicateConsecutiveBarriers<NocAsyncWriteBarrierOp>>(
       patterns.getContext());
-  patterns.add<
-      DeduplicateConsecutiveTridBarriers<NocAsyncReadBarrierWithTridOp>>(
-      patterns.getContext());
-  patterns.add<
-      DeduplicateConsecutiveTridBarriers<NocAsyncWriteBarrierWithTridOp>>(
-      patterns.getContext());
+  patterns
+      .add<DeduplicateConsecutiveTridBarriers<NocAsyncReadBarrierWithTridOp>>(
+          patterns.getContext());
+  patterns
+      .add<DeduplicateConsecutiveTridBarriers<NocAsyncWriteBarrierWithTridOp>>(
+          patterns.getContext());
 }
 
 } // namespace mlir::tt::ttkernel

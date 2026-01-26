@@ -603,8 +603,8 @@ private:
 
 /// Lower tensor_slice->CB copy: read tiles from tensor into CB.
 /// Loops over CB shape, reading tiles starting at slice offset.
-static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp, Value dstCB,
-                                    Value tridVal,
+static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
+                                    Value dstCB, Value tridVal,
                                     ConversionPatternRewriter &rewriter,
                                     const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
@@ -704,8 +704,7 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp, Value dstC
 /// Lower CB->tensor_slice copy: write tiles from CB to tensor.
 /// Loops over CB shape, writing tiles starting at slice offset.
 static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
-                                    TensorSliceOp sliceOp,
-                                    Value tridVal,
+                                    TensorSliceOp sliceOp, Value tridVal,
                                     ConversionPatternRewriter &rewriter,
                                     const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
@@ -855,7 +854,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     }
 
     uint32_t trid = tridAllocator->allocateTrid();
-    Value tridVal = rewriter.create<arith::ConstantIntOp>(op.getLoc(), trid, 32);
+    Value tridVal =
+        rewriter.create<arith::ConstantIntOp>(op.getLoc(), trid, 32);
 
     // TensorSlice -> CB: read tiles from tensor into circular buffer.
     if (srcIsSlice && dstIsCB) {
@@ -1054,14 +1054,16 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<TensorSliceLowering>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx, &tridAllocator);
   patterns.add<WaitLowering>(typeConverter, &ctx);
-  patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering>(
-      typeConverter, &ctx);
-  patterns.add<StoreLowering, CoreXLowering, CoreYLowering>(typeConverter, &ctx);
+  patterns
+      .add<CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering>(
+          typeConverter, &ctx);
+  patterns.add<StoreLowering, CoreXLowering, CoreYLowering>(typeConverter,
+                                                            &ctx);
 
   // Convert scf.for/scf.if/etc region signatures when result/iter_arg types
   // change due to the type converter.
   mlir::scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter,
-                                                            patterns, target);
+                                                             patterns, target);
 
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
