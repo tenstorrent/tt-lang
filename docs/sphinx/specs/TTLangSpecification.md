@@ -709,8 +709,8 @@ def dm():
 | Function | Description |
 | :---- | :---- |
 | `ttl.math.relu(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [ReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.ReLU.html) |
-| `ttl.math.relu_max(expr: ttl.BlockExpr, upper_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with upper limit (`ttl.math.relu(ttl.math.max(x, upper_limit)))`) |
-| `ttl.math.relu_min(expr: ttl.BlockExpr, lower_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with lower limit (`ttl.math.relu(ttl.math.min(x, lower_limit)))`) |
+| `ttl.math.relu_max(expr: ttl.BlockExpr, upper_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with upper limit (`ttl.math.relu(ttl.math.min(x, upper_limit)))`) |
+| `ttl.math.relu_min(expr: ttl.BlockExpr, lower_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with lower limit (`ttl.math.relu(ttl.math.max(x, lower_limit)))`) |
 | `ttl.math.leaky_relu(expr: ttl.BlockExpr, slope: ttl.PositiveInt) -> ttl.BlockExpr` | [Leaky ReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.LeakyReLU.html) |
 | `ttl.math.elu(expr: ttl.BlockExpr, slope: ttl.PositiveInt) -> ttl.BlockExpr` | [ELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.ELU.html) |
 | `ttl.math.gelu(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [GELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.GELU.html) |
