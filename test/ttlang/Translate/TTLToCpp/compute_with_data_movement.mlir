@@ -55,6 +55,7 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
 // CHECK-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
+// CHECK-NEXT:   noc_async_read_set_trid({{.*}}, {{.*}});
 // CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
 // Tile offset computation: i * cols + j
