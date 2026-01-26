@@ -50,6 +50,20 @@ static Value findOutputCB(Operation *op) {
   return nullptr;
 }
 
+/// Find the tensor_store op that uses this operation's result, if any.
+static TensorStoreOp findTensorStore(Operation *op) {
+  if (op->getNumResults() == 0) {
+    return nullptr;
+  }
+  Value result = op->getResult(0);
+  for (OpOperand &use : result.getUses()) {
+    if (auto storeOp = dyn_cast<TensorStoreOp>(use.getOwner())) {
+      return storeOp;
+    }
+  }
+  return nullptr;
+}
+
 /// Find unused bind_cb ops in the function that can be used for output CBs.
 /// Returns bind_cb ops that are not used by any attach_cb op.
 // TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
@@ -196,8 +210,29 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
+  // Emit cb_reserve and store before yield ONLY if there's an explicit
+  // tensor_store op. This ensures stores are only generated when the user
+  // explicitly called store() in the Python DSL, not just based on CB
+  // attachment.
+  TensorStoreOp tensorStoreOp = findTensorStore(sinkOp);
+  if (tensorStoreOp) {
+    Value storeCb = tensorStoreOp.getCb();
+    auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
+    if (cbType) {
+      auto viewType =
+          RankedTensorType::get(cbType.getShape(), cbType.getElementType());
+      Value view = rewriter.create<CBReserveOp>(loc, viewType, storeCb);
+      rewriter.create<StoreOp>(loc, finalResult, view);
+    }
+  }
+
   rewriter.create<YieldOp>(loc, ValueRange{finalResult});
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+
+  // Erase the tensor_store op (now that stores are inside the compute body)
+  if (tensorStoreOp) {
+    rewriter.eraseOp(tensorStoreOp);
+  }
 
   // Erase the fused ops (they're now inside the compute body as tile ops)
   for (Operation *op : trace.opsInOrder) {
@@ -294,9 +329,31 @@ static LogicalResult buildBinaryCompute(Operation *op,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
+
+  // Emit cb_reserve and store before yield ONLY if there's an explicit
+  // tensor_store op. This ensures stores are only generated when the user
+  // explicitly called store() in Python DSL, not just from CB attachment.
+  TensorStoreOp tensorStoreOp = findTensorStore(op);
+  if (tensorStoreOp) {
+    Value storeCb = tensorStoreOp.getCb();
+    auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
+    if (cbType) {
+      auto viewType =
+          RankedTensorType::get(cbType.getShape(), cbType.getElementType());
+      Value view = rewriter.create<CBReserveOp>(loc, viewType, storeCb);
+      rewriter.create<StoreOp>(loc, result, view);
+    }
+  }
+
   rewriter.create<YieldOp>(loc, ValueRange{result});
 
   rewriter.replaceOp(op, computeOp.getResult(0));
+
+  // Erase the tensor_store op (now that stores are inside the compute body)
+  if (tensorStoreOp) {
+    rewriter.eraseOp(tensorStoreOp);
+  }
+
   return success();
 }
 
@@ -376,9 +433,31 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
+
+  // Emit cb_reserve and store before yield ONLY if there's an explicit
+  // tensor_store op. This ensures stores are only generated when the user
+  // explicitly called store() in Python DSL, not just from CB attachment.
+  TensorStoreOp tensorStoreOp = findTensorStore(op);
+  if (tensorStoreOp) {
+    Value storeCb = tensorStoreOp.getCb();
+    auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
+    if (cbType) {
+      auto viewType =
+          RankedTensorType::get(cbType.getShape(), cbType.getElementType());
+      Value view = rewriter.create<CBReserveOp>(loc, viewType, storeCb);
+      rewriter.create<StoreOp>(loc, result, view);
+    }
+  }
+
   rewriter.create<YieldOp>(loc, ValueRange{result});
 
   rewriter.replaceOp(op, computeOp.getResult(0));
+
+  // Erase the tensor_store op (now that stores are inside the compute body)
+  if (tensorStoreOp) {
+    rewriter.eraseOp(tensorStoreOp);
+  }
+
   return success();
 }
 
