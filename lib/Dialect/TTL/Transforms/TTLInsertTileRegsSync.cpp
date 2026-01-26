@@ -16,14 +16,13 @@
 //    - Inserts tile_regs_acquire at the beginning of the innermost loop body
 //    - Inserts tile_regs_commit immediately before ttl.store
 //    - Inserts tile_regs_wait before ttl.store
-//    - Inserts ttl.store for outputs that lack one (requires existing CB view)
 //    - Inserts tile_regs_release at the end of the loop body (before scf.yield)
 //
 // This establishes the correct DST lifecycle per tile:
 //   acquire -> [compute] -> commit -> wait -> [pack] -> release
 //
-// The pass is designed to run once during lowering; it does not check for
-// existing sync ops.
+// The pass requires that all tensor.insert ops in the loop body have a
+// corresponding ttl.store op. Missing stores result in an error.
 //
 //===----------------------------------------------------------------------===//
 
@@ -84,42 +83,6 @@ static FailureOr<Value> getCBFromAttr(func::FuncOp funcOp, scf::ForOp forOp,
   return failure();
 }
 
-/// Find a cb_reserve view for auto-inserted stores. Searches for cb_reserve
-/// ops in the loop body and in the parent block before the outermost loop.
-static Value findReserveViewForStore(scf::ForOp forOp, scf::ForOp outermostLoop,
-                                     Value cb, Operation *insertAfter) {
-  Value candidate;
-  Block &body = forOp.getRegion().front();
-
-  // Scan the loop body up to (but not including) insertAfter.
-  for (Operation &op : body) {
-    if (&op == insertAfter) {
-      break;
-    }
-    if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
-      if (reserve.getCb() == cb) {
-        candidate = reserve.getResult(); // keep the last dominating one
-      }
-    }
-  }
-  if (candidate) {
-    return candidate;
-  }
-
-  // Scan the parent block backwards from the outermost loop.
-  Operation *loopOp = outermostLoop.getOperation();
-  for (Operation *curr = loopOp->getPrevNode(); curr;
-       curr = curr->getPrevNode()) {
-    if (auto reserve = dyn_cast<CBReserveOp>(curr)) {
-      if (reserve.getCb() == cb) {
-        return reserve.getResult();
-      }
-    }
-  }
-
-  return Value();
-}
-
 struct TTLInsertTileRegsSyncPass
     : public impl::TTLInsertTileRegsSyncBase<TTLInsertTileRegsSyncPass> {
   using Base::Base;
@@ -146,6 +109,18 @@ struct TTLInsertTileRegsSyncPass
       auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
       InitSFPUOp existingInitSfpu =
           findPrecedingOp<InitSFPUOp>(outermostLoop.getOperation(), stopAtLoop);
+      TileRegsAcquireOp existingAcquire = findPrecedingOp<TileRegsAcquireOp>(
+          outermostLoop.getOperation(), stopAtLoop);
+
+      // Pre-existing tile_regs_acquire outside the loop is not supported.
+      // The pass inserts acquire inside the loop body; having one outside
+      // would result in an unbalanced acquire/release pair.
+      if (existingAcquire) {
+        existingAcquire.emitError()
+            << "tile_regs_acquire outside tile loop is not supported; "
+            << "sync ops must be inside the loop body";
+        return WalkResult::interrupt();
+      }
 
       // Insert init_sfpu before outermost loop if not present.
       // Use stored CB indices from loop attributes to find the CBs.
@@ -155,12 +130,22 @@ struct TTLInsertTileRegsSyncPass
         auto ocbOrFailure =
             getCBFromAttr(funcOp, forOp, kTileLoopOutputCBAttrName);
 
-        if (succeeded(icbOrFailure) && succeeded(ocbOrFailure)) {
-          Value icb = *icbOrFailure;
-          Value ocb = *ocbOrFailure;
-          builder.setInsertionPoint(outermostLoop);
-          builder.create<InitSFPUOp>(loc, icb, ocb);
+        if (failed(icbOrFailure)) {
+          forOp.emitError() << "tile loop missing '" << kTileLoopInputCBAttrName
+                            << "' attribute required for init_sfpu insertion";
+          return WalkResult::interrupt();
         }
+        if (failed(ocbOrFailure)) {
+          forOp.emitError()
+              << "tile loop missing '" << kTileLoopOutputCBAttrName
+              << "' attribute required for init_sfpu insertion";
+          return WalkResult::interrupt();
+        }
+
+        Value icb = *icbOrFailure;
+        Value ocb = *ocbOrFailure;
+        builder.setInsertionPoint(outermostLoop);
+        builder.create<InitSFPUOp>(loc, icb, ocb);
       }
 
       // Collect operations in the loop body.
@@ -232,47 +217,17 @@ struct TTLInsertTileRegsSyncPass
         tail = push.getOperation();
       }
 
-      // Auto-insert stores for tiles being inserted into tensors that lack
-      // explicit stores. Each tensor.insert corresponds to an output.
-      // Use the stored output CB index to find the CB (works for nested loops).
-      // TODO: Currently only supports a single output CB. If ComputeOp has
-      // multiple outputs with different CBs, this needs to match each
-      // tensor.insert to its corresponding CB.
-      Value outputCB;
-      if (auto outputCBOrFailure =
-              getCBFromAttr(funcOp, forOp, kTileLoopOutputCBAttrName);
-          succeeded(outputCBOrFailure)) {
-        outputCB = *outputCBOrFailure;
-      }
-
+      // Verify all tensor.insert ops have corresponding ttl.store ops.
+      // Each tensor.insert corresponds to an output that must be stored to a
+      // CB.
       for (tensor::InsertOp insertOp : insertOps) {
         Value tile = insertOp.getScalar();
-        if (storeForTile.contains(tile)) {
-          continue;
+        if (!storeForTile.contains(tile)) {
+          insertOp.emitError()
+              << "tensor.insert tile has no corresponding ttl.store op; "
+              << "all compute outputs must be explicitly stored to a CB";
+          return WalkResult::interrupt();
         }
-
-        // Use the output CB from the loop marker attributes.
-        Value cb = outputCB;
-        if (!cb) {
-          continue; // Cannot find CB, skip auto-insert
-        }
-
-        Value destTensor = insertOp.getDest();
-        Value view = findReserveViewForStore(forOp, outermostLoop, cb,
-                                             tail->getNextNode());
-        if (!view) {
-          // Create a new cb_reserve.
-          builder.setInsertionPointAfter(tail);
-          auto newReserve =
-              builder.create<CBReserveOp>(loc, destTensor.getType(), cb);
-          view = newReserve.getResult();
-          tail = newReserve.getOperation();
-        }
-
-        builder.setInsertionPointAfter(tail);
-        auto newStore = builder.create<StoreOp>(loc, tile, view);
-        tail = newStore.getOperation();
-        storeForTile.try_emplace(tile, newStore);
       }
 
       // Release: at end of loop body (before scf.yield) if not present.
