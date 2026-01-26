@@ -276,7 +276,7 @@ def matmul_compute():
                 for k in range(K):
                     # acquire a_blk and b_blk from a_cb and b_cb:
                     with (
-                        a_cb.wait() as a_blk
+                        a_cb.wait() as a_blk,
                         b_cb.wait() as b_blk
                     ):
                         # then compute y += a @ b:
