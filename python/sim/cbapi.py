@@ -11,7 +11,7 @@ from typing import Annotated, Any, List, NamedTuple, Optional
 
 from pydantic import Field, validate_call
 
-from .block import Block
+from .block import Block, BlockAcquisition, ThreadType, _get_current_thread_type
 from .cbstate import CBState
 from .constants import CB_DEFAULT_TIMEOUT, MAX_CBS
 from .errors import CBContractError, CBTimeoutError
@@ -193,7 +193,18 @@ class CBAPI:
                     f"cb_pop_front({num_tiles}) exceeds visible={cb_state.visible}"
                 )
             span = cb_state.front_span(num_tiles)
-            view = Block(cb_state.buf, cb_state.cap, span, cb_state.shape)
+            # Determine thread type from context
+            thread_type = _get_current_thread_type()
+            if thread_type is None:
+                thread_type = ThreadType.COMPUTE  # Default to COMPUTE if not set
+            view = Block(
+                cb_state.buf,
+                cb_state.cap,
+                span,
+                cb_state.shape,
+                BlockAcquisition.WAIT,
+                thread_type,
+            )
             for i in range(len(view)):
                 view.pop(i)
             cb_state.head = (cb_state.head + num_tiles) % cb_state.cap
@@ -216,7 +227,19 @@ class CBAPI:
                     "read window invalidated; call cb_wait_front again"
                 )
             span = cb_state.front_span(cb_state.last_wait_target)
-            return Block(cb_state.buf, cb_state.cap, span, cb_state.shape)
+            # Determine thread type from context
+            thread_type = _get_current_thread_type()
+            if thread_type is None:
+                thread_type = ThreadType.COMPUTE  # Default to COMPUTE if not set
+            block = Block(
+                cb_state.buf,
+                cb_state.cap,
+                span,
+                cb_state.shape,
+                BlockAcquisition.WAIT,
+                thread_type,
+            )
+            return block
 
     @validate_call
     def get_write_ptr(self, cb_id: CBID) -> Block:
@@ -228,7 +251,19 @@ class CBAPI:
             if cb_state.reserved < cb_state.last_reserve_target:
                 raise CBContractError("write window invalidated; call cb_reserve again")
             span = cb_state.back_span(cb_state.last_reserve_target)
-            return Block(cb_state.buf, cb_state.cap, span, cb_state.shape)
+            # Determine thread type from context
+            thread_type = _get_current_thread_type()
+            if thread_type is None:
+                thread_type = ThreadType.COMPUTE  # Default to COMPUTE if not set
+            block = Block(
+                cb_state.buf,
+                cb_state.cap,
+                span,
+                cb_state.shape,
+                BlockAcquisition.RESERVE,
+                thread_type,
+            )
+            return block
 
     @validate_call
     def set_timeout(self, seconds: Optional[Annotated[float, Field(gt=0)]]) -> None:

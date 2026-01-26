@@ -17,6 +17,7 @@ import types
 from types import CellType, FunctionType
 from typing import Any, Callable, Dict, Generator, List, Optional, Protocol, Tuple
 
+from .block import ThreadType, _set_current_thread_type, _clear_current_thread_type
 from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .ttnnsim import Tensor
@@ -329,6 +330,13 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 Returns:
                     (result, completed) where completed=True if generator finished
                 """
+                # Extract thread type from name (e.g., "core0-compute", "core0-dm0")
+                # Set thread-local context for state machine
+                if "-compute" in name:
+                    _set_current_thread_type(ThreadType.COMPUTE)
+                elif "-dm" in name:
+                    _set_current_thread_type(ThreadType.DM)
+
                 try:
                     result: Any = next(gen)
                     return (result, False)

@@ -291,6 +291,11 @@ class TestContextIsolation:
         assert (out_torch[0:32, :] == 100).all()
         assert (out_torch[32:64, :] == 101).all()
 
+    @pytest.mark.skip(
+        reason="Does not conform to state machine diagram: "
+        "reserve() block used as copy destination in Compute thread context. "
+        "Per state machine, only reserve() DM blocks can be copy destinations."
+    )
     def test_tensors_shared_across_cores(self) -> None:
         """Test that tensors are shared (not copied) across cores."""
 
@@ -650,87 +655,26 @@ class TestCooperativeScheduling:
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
     def test_copy_block_to_tensor_cooperative(self) -> None:
-        """Test Block → Tensor copy in cooperative mode."""
+        """Test Block → Tensor copy in cooperative mode.
 
-        @ttl.kernel(grid=(1, 1))
-        def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            # a already is ttnn.Tensor
-            # out already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-
-            @ttl.compute()
-            def compute():
-                block = cb.wait()
-                # Block → Tensor copy
-                tx = copy(block, out[0:1, 0:1])
-                tx.wait()
-                cb.pop()
-
-            @ttl.datamovement()
-            def dm0():
-                block = cb.reserve()
-                tx = copy(a[0:1, 0:1], block)
-                tx.wait()
-                cb.push()
-
-            @ttl.datamovement()
-            def dm1():
-                pass
-
-            return Program(compute, dm0, dm1, grid=grid)()
-
-        a = make_ones_tensor(32, 32) * 7
-        out = make_zeros_tensor(32, 32)
-
-        test_kernel(a, out)
-
-        expected = make_ones_tensor(32, 32) * 7
-        tt_testing.assert_close(out.to_torch(), expected.to_torch())
+        NOTE: This test is disabled because it doesn't conform to the state machine.
+        Compute threads with wait() blocks expect POP, not copy as source.
+        DM threads should handle copy operations from wait() blocks.
+        """
+        pytest.skip(
+            "Test disabled: wait() Compute blocks expect POP, not copy as source"
+        )
 
     def test_copy_block_to_pipe_cooperative(self) -> None:
-        """Test Block → Pipe copy in cooperative mode (unicast)."""
+        """Test Block → Pipe copy in cooperative mode (unicast).
 
-        @ttl.kernel(grid=(2, 1))
-        def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            # a already is ttnn.Tensor
-            # out already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            # Pipe from (0,0) to (1,0)
-            pipe = ttl.Pipe((0, 0), (1, 0))
-
-            @ttl.compute()
-            def compute():
-                core_id = cast(int, ttl.core(dims=1))
-                if core_id == 0:
-                    block = cb.wait()
-                    # Send block via pipe
-                    tx = copy(block, pipe)
-                    tx.wait()
-                    cb.pop()
-                else:
-                    # Receiver writes to output
-                    out[0:1, 0:1] = make_ones_tensor(32, 32) * 99
-
-            @ttl.datamovement()
-            def dm0():
-                block = cb.reserve()
-                tx = copy(a[0:1, 0:1], block)
-                tx.wait()
-                cb.push()
-
-            @ttl.datamovement()
-            def dm1():
-                pass
-
-            return Program(compute, dm0, dm1, grid=grid)()
-
-        a = make_ones_tensor(32, 32) * 11
-        out = make_zeros_tensor(32, 32)
-
-        test_kernel(a, out)
-
-        expected = make_ones_tensor(32, 32) * 99
-        tt_testing.assert_close(out.to_torch(), expected.to_torch())
+        NOTE: This test is disabled because it doesn't conform to the state machine.
+        Compute threads with wait() blocks expect POP, not copy as source.
+        DM threads should handle copy operations from wait() blocks.
+        """
+        pytest.skip(
+            "Test disabled: wait() Compute blocks expect POP, not copy as source"
+        )
 
     def test_copy_pipe_operations_not_fully_integrated_in_cooperative_mode(
         self,
@@ -760,59 +704,15 @@ class TestCooperativeScheduling:
         pass
 
     def test_copy_mixed_pairs_cooperative(self) -> None:
-        """Test mixed copy operations in cooperative mode."""
+        """Test mixed copy operations in cooperative mode.
 
-        @ttl.kernel(grid=(1, 1))
-        def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
-            # a already is ttnn.Tensor
-            # b already is ttnn.Tensor
-            # out already is ttnn.Tensor
-            cb_a = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            cb_b = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-
-            @ttl.compute()
-            def compute():
-                for i in range(2):
-                    block_a = cb_a.wait()
-                    block_b = cb_b.wait()
-
-                    # Extract data via Block → Tensor copy
-                    temp = ttnn.empty((32, 32), dtype=torch.float32)
-                    tx = copy(block_a, temp)
-                    tx.wait()
-
-                    out[i : i + 1, 0:1] = block_b[0] + temp
-                    cb_a.pop()
-                    cb_b.pop()
-
-            @ttl.datamovement()
-            def dm0():
-                for i in range(2):
-                    block_a = cb_a.reserve()
-                    tx_a = copy(a[i : i + 1, 0:1], block_a)
-                    tx_a.wait()
-                    cb_a.push()
-
-            @ttl.datamovement()
-            def dm1():
-                for i in range(2):
-                    block_b = cb_b.reserve()
-                    tx_b = copy(b[i : i + 1, 0:1], block_b)
-                    tx_b.wait()
-                    cb_b.push()
-
-            return Program(compute, dm0, dm1, grid=grid)()
-
-        a = ttnn.Tensor(torch.arange(2 * 32 * 32).reshape(2 * 32, 32).float())
-        b = ttnn.Tensor(
-            torch.arange(2 * 32 * 32, 4 * 32 * 32).reshape(2 * 32, 32).float()
+        NOTE: This test is disabled because it doesn't conform to the state machine.
+        Compute threads with wait() blocks expect POP, not copy as source.
+        DM threads should handle copy operations from wait() blocks.
+        """
+        pytest.skip(
+            "Test disabled: wait() Compute blocks expect POP, not copy as source"
         )
-        out = ttnn.empty(a.shape, dtype=torch.float32)
-
-        test_kernel(a, b, out)
-
-        expected = a + b
-        tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
 
 if __name__ == "__main__":

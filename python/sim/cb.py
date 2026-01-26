@@ -57,6 +57,7 @@ class _BlockContextManager:
         exc_tb: Optional[TracebackType],
     ) -> None:
         # Always invoke the cleanup action, even if an exception occurred
+        # The cleanup function will call mark_push_complete or mark_pop_complete
         self._on_exit_func()
 
     # Delegate Block operations for backward compatibility
@@ -124,7 +125,12 @@ class ReserveContext(_BlockContextManager):
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        super().__init__(cb, block, cb.push)
+        # Create a custom push function that marks block state
+        def push_with_state():
+            self._block.mark_push_complete()
+            cb.push()
+
+        super().__init__(cb, block, push_with_state)
 
 
 class WaitContext(_BlockContextManager):
@@ -141,7 +147,12 @@ class WaitContext(_BlockContextManager):
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        super().__init__(cb, block, cb.pop)
+        # Create a custom pop function that marks block state
+        def pop_with_state():
+            self._block.mark_pop_complete()
+            cb.pop()
+
+        super().__init__(cb, block, pop_with_state)
 
 
 # TODO: Should this class now be private?
@@ -308,7 +319,7 @@ class CircularBuffer:
 
         # Initialize the reserved block with zero tensors
         zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
-        block.store([zero_tensor] * len(block))
+        block._internal_store([zero_tensor] * len(block))
 
         return ReserveContext(self, block)
 

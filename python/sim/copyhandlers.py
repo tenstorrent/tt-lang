@@ -273,7 +273,7 @@ class TensorToBlockHandler:
             tile = src[h_tile : h_tile + 1, w_tile : w_tile + 1]
             tiles.append(tile)
 
-        dst.store(tiles)
+        dst.copy_as_dest(tiles)
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
         return True
@@ -397,7 +397,7 @@ class PipeToBlockHandler:
                         f"does not match pipe data length ({len(src_data)})"
                     )
 
-                dst.store(src_data)
+                dst.copy_as_dest(src_data)
 
                 # Decrement receiver count and update queue
                 remaining_receivers -= 1

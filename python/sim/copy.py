@@ -74,15 +74,15 @@ class CopyTransaction:
         handler = self._lookup_handler(type(src), type(dst))
         self._handler = handler
 
+        # Mark blocks in state machine BEFORE validation - this transitions them to appropriate states
+        # that prevent user access during the copy operation
+        if isinstance(src_block, Block):
+            src_block.mark_copy_as_source()
+        if isinstance(dst_block, Block):
+            dst_block.mark_copy_as_dest()
+
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
-
-        # Lock Block source for reading and Block destination for writing
-        # Lock methods will check for conflicts and raise if needed
-        if isinstance(src_block, Block):
-            src_block.lock_for_read()
-        if isinstance(dst_block, Block):
-            dst_block.lock_for_write()
 
     @staticmethod
     def _lookup_handler(
@@ -127,15 +127,15 @@ class CopyTransaction:
         src_block = _extract_block(self._src)
         dst_block = _extract_block(self._dst)
 
-        # Unlock Block source and destination before transfer
-        if isinstance(src_block, Block):
-            src_block.unlock_read()
-        if isinstance(dst_block, Block):
-            dst_block.unlock_write()
-
         # Transfer - let exceptions propagate to scheduler for context
         self._handler.transfer(self._src, self._dst)
         self._completed = True
+
+        # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states
+        if isinstance(src_block, Block):
+            src_block.mark_tx_wait_complete()
+        if isinstance(dst_block, Block):
+            dst_block.mark_tx_wait_complete()
 
     def can_wait(self) -> bool:
         """
