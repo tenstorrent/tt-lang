@@ -181,8 +181,8 @@ def elwise_read():
             b_cb.reserve() as b_blk
         ):
             # then copy:
-            a_xf = ttl.copy(A[n], a_blk)
-            b_xf = ttl.copy(B[n], b_blk)
+            a_xf = ttl.copy(A[0, n], a_blk)
+            b_xf = ttl.copy(B[0, n], b_blk)
 
             a_xf.wait()
             b_xf.wait()
@@ -214,7 +214,7 @@ def elwise_write():
         with y_cb.wait() as y_blk:
 
             # then copy:
-            y_xf = ttl.copy(y_blk, Y[n])
+            y_xf = ttl.copy(y_blk, Y[0, n])
             y_xf.wait()
 
             # release y_blk
