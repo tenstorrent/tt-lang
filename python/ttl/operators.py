@@ -317,11 +317,26 @@ def grid_size(*, dims):
     return _get_current_grid()
 
 
+@syntax("signpost")
+def signpost(name: str):
+    """
+    Emit a profiling marker visible in Tracy.
+
+    The marker creates a DeviceZoneScopedN in the generated C++ code,
+    which will appear in Tracy profiler traces when TT_METAL_DEVICE_PROFILER=1.
+
+    Args:
+        name: Name for the profiling region (must be a string literal)
+    """
+    return ttl.signpost(name)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
     "copy",
     "core",
     "grid_size",
+    "signpost",
     *_generated_all,
 ]
