@@ -25,4 +25,16 @@ def TTL_TransferKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_BcastDim : I32EnumAttr<
+    "BcastDim", "TTL broadcast dimension",
+    [
+      I32EnumAttrCase<"row", 0>,    // Broadcast along rows (input is Nx1)
+      I32EnumAttrCase<"col", 1>,    // Broadcast along columns (input is 1xN)
+      I32EnumAttrCase<"scalar", 2>, // Scalar broadcast (input is 1x1)
+    ]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_BcastDimAttr : EnumAttr<TTL_Dialect, TTL_BcastDim, "bcast_dim">;
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

@@ -788,6 +788,7 @@ def _compile_kernel(
             "func.func(ttl-insert-inter-loop-cb-sync)",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-annotate-cb-associations)",
+            "func.func(ttl-convert-bcast-to-emitc)",
             "convert-ttl-to-ttkernel",
             "canonicalize",
             "cse",

@@ -161,6 +161,22 @@ static bool hasUnaryConsumer(ArrayRef<Operation *> consumers) {
                       [](Operation *op) { return isTileUnaryOp(op); });
 }
 
+/// Check if an operation is a broadcast tile op (has bcast_dim attribute).
+/// Broadcast ops read both operands directly from CBs without copy_tile.
+static bool isBroadcastOp(Operation *op) { return op->hasAttr("bcast_dim"); }
+
+/// Check if all consumers of a value are broadcast ops.
+/// If so, no copy_tile is needed for this value since broadcast ops read
+/// directly from CBs.
+static bool allConsumersAreBroadcast(Value v) {
+  for (Operation *user : v.getUsers()) {
+    if (!isBroadcastOp(user)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Phase 1: Insert copy operations for multi-consumer values where any
 /// consumer is unary. Copies are inserted for all but the last consumer.
 /// Unary ops overwrite their input in-place, so if other ops need that
@@ -697,6 +713,13 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Second: Process remaining block arguments - insert copy_tile at first
       // use
       for (Operation &op : *body) {
+        // Skip broadcast ops - they read directly from CB, no copy_tile needed
+        if (isBroadcastOp(&op)) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Skipping copy_tile for broadcast op: " << op << "\n");
+          continue;
+        }
+
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {
@@ -705,6 +728,15 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
           // Skip if already copied
           if (dstIndexForValue.count(arg)) {
+            continue;
+          }
+
+          // Skip block arguments that are only consumed by broadcast ops
+          // Broadcast ops read directly from CB, no DST copy needed
+          if (allConsumersAreBroadcast(arg)) {
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Skipping copy_tile for arg only used by broadcast: "
+                       << arg << "\n");
             continue;
           }
 

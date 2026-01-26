@@ -23,6 +23,79 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
+/// Build an indexing map for a tensor that may be broadcast to the output
+/// shape. For dimensions where input is 1 and output is >1, the map uses
+/// constant 0. For example, input [1,1] to output [1,2] gives map (d0, d1) ->
+/// (0, 0).
+static AffineMap buildBroadcastIndexingMap(RankedTensorType inputType,
+                                           RankedTensorType outputType,
+                                           MLIRContext *ctx) {
+  auto inputShape = inputType.getShape();
+  auto outputShape = outputType.getShape();
+  int64_t rank = outputType.getRank();
+
+  // Build the affine expressions for each dimension
+  SmallVector<AffineExpr> exprs;
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i < static_cast<int64_t>(inputShape.size()) && inputShape[i] == 1 &&
+        outputShape[i] > 1) {
+      // Broadcast dimension: always access index 0
+      exprs.push_back(getAffineConstantExpr(0, ctx));
+    } else {
+      // Regular dimension: identity mapping
+      exprs.push_back(getAffineDimExpr(i, ctx));
+    }
+  }
+
+  return AffineMap::get(rank, 0, exprs, ctx);
+}
+
+/// Determine broadcast dimension for an input relative to the output.
+/// Returns nullopt if no broadcast (shapes match).
+/// Assumes 2D tile tensors: shape is [rows, cols] of tiles.
+static std::optional<BcastDim> getBcastDim(RankedTensorType inputType,
+                                           RankedTensorType outputType) {
+  auto inputShape = inputType.getShape();
+  auto outputShape = outputType.getShape();
+
+  if (inputShape == outputShape) {
+    return std::nullopt; // No broadcast
+  }
+
+  // For 2D: [rows, cols]
+  // row broadcast: input is [N, 1], output is [N, M] where M > 1
+  // col broadcast: input is [1, M], output is [N, M] where N > 1
+  // scalar broadcast: input is [1, 1], output is [N, M]
+  if (inputType.getRank() < 2 || outputType.getRank() < 2) {
+    return std::nullopt; // Can't determine for non-2D
+  }
+
+  int64_t inputRows = inputShape[inputShape.size() - 2];
+  int64_t inputCols = inputShape[inputShape.size() - 1];
+  int64_t outputRows = outputShape[outputShape.size() - 2];
+  int64_t outputCols = outputShape[outputShape.size() - 1];
+
+  // Determine which dimensions need broadcast based on what differs
+  bool rowBcast = (inputRows == 1 && outputRows > 1);
+  bool colBcast = (inputCols == 1 && outputCols > 1);
+
+  if (rowBcast && colBcast) {
+    // Both dimensions broadcast - scalar broadcast
+    return BcastDim::scalar;
+  }
+  if (colBcast) {
+    // Input is [N, 1], output is [N, M] - replicate single column across all
+    // columns
+    return BcastDim::col;
+  }
+  if (rowBcast) {
+    // Input is [1, M], output is [N, M] - replicate single row across all rows
+    return BcastDim::row;
+  }
+
+  return std::nullopt;
+}
+
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
@@ -88,14 +161,17 @@ static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
 
 /// Emit the tile-level op corresponding to a tensor-level elementwise op.
 /// Returns the result Value, or null on failure.
+/// The optional bcastDim specifies broadcast dimension when rhs is broadcast.
 static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *tensorOp,
-                           ValueRange tileOperands, Type tileType) {
+                           ValueRange tileOperands, Type tileType,
+                           BcastDimAttr bcastDim = nullptr) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(tensorOp))                                               \
     return b.create<TILE_OP>(loc, tileType, tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##Op>(tensorOp))                                               \
-    return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1]);
+    return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1],  \
+                             bcastDim);
 #define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -130,12 +206,35 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Build indexing maps: identity for each input and output
+  // Build indexing maps for inputs (broadcast-aware) and output (identity)
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+  auto outputShape = type.getShape();
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    maps.push_back(AffineMapAttr::get(identityMap));
+    auto inputType = getTensorType(trace.rootInputs[i]);
+    if (!inputType) {
+      maps.push_back(AffineMapAttr::get(identityMap));
+      continue;
+    }
+    auto inputShape = inputType.getShape();
+    bool needsBroadcast = false;
+    if (inputShape.size() == outputShape.size()) {
+      for (size_t d = 0; d < inputShape.size(); ++d) {
+        if (inputShape[d] != outputShape[d]) {
+          needsBroadcast = true;
+          break;
+        }
+      }
+    }
+    if (needsBroadcast) {
+      // Input has different shape - build broadcast-aware indexing map
+      maps.push_back(
+          AffineMapAttr::get(buildBroadcastIndexingMap(inputType, type, ctx)));
+    } else {
+      // Same shape - identity map
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
   }
   maps.push_back(AffineMapAttr::get(identityMap)); // output
 
@@ -179,15 +278,31 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
     SmallVector<Value, 2> tileOperands;
+    SmallVector<Value, 2> tensorOperands;
     for (Value operand : getElementwiseOperands(op)) {
       auto it = tensorToTile.find(operand);
       if (it == tensorToTile.end()) {
         return op->emitError("fusion failed: operand not mapped to tile value");
       }
       tileOperands.push_back(it->second);
+      tensorOperands.push_back(operand);
     }
 
-    Value tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+    // Detect broadcast for binary ops: check if rhs has smaller shape
+    BcastDimAttr bcastDim = nullptr;
+    if (tensorOperands.size() == 2) {
+      auto resultType = getTensorType(op->getResult(0));
+      auto rhsType = getTensorType(tensorOperands[1]);
+      if (resultType && rhsType) {
+        auto bcast = getBcastDim(rhsType, resultType);
+        if (bcast.has_value()) {
+          bcastDim = BcastDimAttr::get(rewriter.getContext(), *bcast);
+        }
+      }
+    }
+
+    Value tileResult =
+        emitTileOpFor(rewriter, loc, op, tileOperands, tileType, bcastDim);
     if (!tileResult) {
       return op->emitError("fusion failed: unsupported op type");
     }
@@ -255,14 +370,46 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
+  // Get rhs type for broadcast detection
+  auto rhsType = getTensorType(rhs);
+  auto outputShape = type.getShape();
+
+  // Build indexing maps: identity for lhs, broadcast-aware for rhs if needed
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  // inputs
+
+  // lhs always uses identity (we ensure lhs has the output shape in the DSL)
   maps.push_back(AffineMapAttr::get(identityMap));
-  maps.push_back(AffineMapAttr::get(identityMap));
-  // outputs
+
+  // rhs may need broadcast-aware indexing
+  BcastDimAttr bcastDim = nullptr;
+  if (rhsType) {
+    auto rhsShape = rhsType.getShape();
+    bool needsBroadcast = false;
+    if (rhsShape.size() == outputShape.size()) {
+      for (size_t d = 0; d < rhsShape.size(); ++d) {
+        if (rhsShape[d] != outputShape[d]) {
+          needsBroadcast = true;
+          break;
+        }
+      }
+    }
+    if (needsBroadcast) {
+      maps.push_back(
+          AffineMapAttr::get(buildBroadcastIndexingMap(rhsType, type, ctx)));
+      // Also set bcast_dim attribute for the tile op
+      auto bcast = getBcastDim(rhsType, type);
+      if (bcast.has_value()) {
+        bcastDim = BcastDimAttr::get(ctx, *bcast);
+      }
+    } else {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
+  } else {
+    maps.push_back(AffineMapAttr::get(identityMap));
+  }
+  // output
   maps.push_back(AffineMapAttr::get(identityMap));
 
   // Build iterator types: all parallel
@@ -292,8 +439,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
   body->addArgument(tileType, loc); // output tile
 
   rewriter.setInsertionPointToStart(body);
+  // Create tile op with broadcast attribute if detected
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
-                                         body->getArgument(1));
+                                         body->getArgument(1), bcastDim);
   rewriter.create<YieldOp>(loc, ValueRange{result});
 
   rewriter.replaceOp(op, computeOp.getResult(0));
