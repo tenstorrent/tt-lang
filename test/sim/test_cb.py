@@ -101,18 +101,59 @@ def test_circular_buffer_multi_tile(api: CBAPI) -> None:
     print("Multi-tile CircularBuffer test passed!")
 
 
-def test_copy_operations(api: CBAPI) -> None:
-    """Test copy operations between TensorAccessor and CircularBuffer.
+def test_copy_operations_with_dm_context(api: CBAPI) -> None:
+    """Test copy operations between tensor and CircularBuffer with proper DM thread context.
 
-    NOTE: This test is disabled because it doesn't conform to the state machine.
-    Copy operations from wait() blocks require proper thread context (DM thread),
-    which is not set up in this low-level unit test.
-
-    Use test_examples.py for proper integration tests with thread context.
+    This replaces the old test_copy_operations that was disabled due to lack of thread context.
     """
-    pytest.skip(
-        "Test disabled: requires proper thread context for state machine conformance"
+    from python.sim.block import (
+        _set_current_thread_type,
+        _clear_current_thread_type,
+        ThreadType,
     )
+
+    # Set DM thread context (required for copy operations)
+    _set_current_thread_type(ThreadType.DM)
+
+    try:
+        # Create test tensors
+        tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
+
+        # Create circular buffer
+        element = make_ones_tile()
+        cb_a = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+
+        # Test copy from tensor to circular buffer (DM thread can do this)
+        cb_view = cb_a.reserve()
+        tensor_slice = tensor_a[0:1, 0:1]  # Single tile
+
+        # Copy operation
+        tx = copy(tensor_slice, cb_view)
+        tx.wait()
+        cb_a.push()
+
+        # Test copy from circular buffer back to tensor
+        cb_read_view = cb_a.wait()
+        output_tensor = make_zeros_tile()  # Single tile output
+
+        # Copy operation
+        tx2 = copy(cb_read_view, output_tensor)
+        tx2.wait()
+        cb_a.pop()
+
+        # Verify the data was transferred
+        assert output_tensor.shape == TILE_SHAPE
+        # The output tensor should now contain the data from the circular buffer
+        # Verify at least some data was copied (non-zero)
+        import torch
+
+        assert output_tensor.to_torch().sum() != 0
+
+    finally:
+        # Clean up thread context
+        _clear_current_thread_type()
+
+    print("Copy operations with DM context test passed!")
 
 
 def test_error_handling(api: CBAPI) -> None:
@@ -147,73 +188,124 @@ def test_error_handling(api: CBAPI) -> None:
     print("Error handling test passed!")
 
 
-@pytest.mark.skip(
-    reason="Does not conform to state machine diagram: "
-    "reserve() blocks used as copy destinations in Compute thread context. "
-    "Per state machine, only reserve() DM blocks can be copy destinations."
-)
-def test_example_usage_pattern(api: CBAPI) -> None:
-    """Test usage pattern similar to the provided example."""
-    # Create tensors like in the example
-    rows, cols = 128, 128
-    granularity = 4
+def test_copy_in_dm_thread_context(api: CBAPI) -> None:
+    """Test copy operations with proper DM thread context.
 
-    a_in = make_rand_tensor(rows, cols)
-    c_in = make_rand_tensor(
-        TILE_SHAPE[0], cols
-    )  # Make c_in a full tile height for proper tiling
-
-    # Create accessors
-    a_accessor = a_in
-    c_accessor = c_in
-
-    # Create circular buffers like in the example
-    element = make_ones_tile()
-    a_in_cb = CircularBuffer(
-        element=element, shape=(granularity, 1), buffer_factor=2, api=api
-    )
-    _ = CircularBuffer(
-        element=element, shape=(granularity, 1), buffer_factor=2, api=api
-    )
-    c_in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
-    _ = CircularBuffer(
-        element=element, shape=(granularity, 1), buffer_factor=2, api=api
+    This is the corrected version of test_example_usage_pattern that follows
+    the state machine by using DM thread context for copy operations.
+    """
+    from python.sim.block import (
+        _set_current_thread_type,
+        _clear_current_thread_type,
+        ThreadType,
     )
 
-    # Verify the circular buffers were created correctly
-    assert a_in_cb.shape == (granularity, 1)
-    assert a_in_cb.capacity_tiles == granularity * 2
-    assert c_in_cb.shape == (1, 1)
-    assert c_in_cb.capacity_tiles == 2
+    # Set DM thread context (required for copy operations)
+    _set_current_thread_type(ThreadType.DM)
 
-    # Test basic operations
-    # Simulate data movement operations
-    c_block = c_in_cb.reserve()
-    c_slice = c_accessor[0:1, 0:1]
-    tx = copy(c_slice, c_block)
-    tx.wait()
-    c_in_cb.push()
+    try:
+        # Create tensors
+        rows, cols = 128, 128
+        granularity = 4
 
-    # Simulate some compute pattern
-    a_block = a_in_cb.reserve()
-    a_slice = a_accessor[0:granularity, 0:1]
-    tx = copy(a_slice, a_block)
-    tx.wait()
-    a_in_cb.push()
+        a_in = make_rand_tensor(rows, cols)
+        c_in = make_rand_tensor(TILE_SHAPE[0], cols)
 
-    # Consumer side
-    c_data = c_in_cb.wait()
-    a_data = a_in_cb.wait()
+        # Create circular buffers
+        element = make_ones_tile()
+        a_in_cb = CircularBuffer(
+            element=element, shape=(granularity, 1), buffer_factor=2, api=api
+        )
+        c_in_cb = CircularBuffer(
+            element=element, shape=(1, 1), buffer_factor=2, api=api
+        )
 
-    # Verify we got the expected views
-    assert len(c_data) == 1
-    assert len(a_data) == granularity
+        # Verify the circular buffers were created correctly
+        assert a_in_cb.shape == (granularity, 1)
+        assert a_in_cb.capacity_tiles == granularity * 2
+        assert c_in_cb.shape == (1, 1)
+        assert c_in_cb.capacity_tiles == 2
 
-    # Clean up
-    c_in_cb.pop()
-    a_in_cb.pop()
+        # Test copy operations in DM thread context
+        # Copy c_in data
+        c_block = c_in_cb.reserve()
+        c_slice = c_in[0:1, 0:1]
+        tx = copy(c_slice, c_block)
+        tx.wait()
+        c_in_cb.push()
 
-    print("Example usage pattern test passed!")
+        # Copy a_in data
+        a_block = a_in_cb.reserve()
+        a_slice = a_in[0:granularity, 0:1]
+        tx = copy(a_slice, a_block)
+        tx.wait()
+        a_in_cb.push()
+
+        # Consumer side - read data back
+        c_data = c_in_cb.wait()
+        a_data = a_in_cb.wait()
+
+        # Verify we got the expected views
+        assert len(c_data) == 1
+        assert len(a_data) == granularity
+
+        # Verify data was copied correctly
+        assert c_data[0] is not None
+        assert a_data[0] is not None
+
+        # Clean up
+        c_in_cb.pop()
+        a_in_cb.pop()
+
+    finally:
+        # Clean up thread context
+        _clear_current_thread_type()
+
+    print("Copy in DM thread context test passed!")
+
+
+def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:
+    """Test the complete reserve->store->push->wait->pop workflow.
+
+    This tests the primary usage pattern for compute operations without
+    using copy (which requires DM thread context).
+    """
+    import torch
+    from python.sim import ttnn, TILE_SHAPE
+
+    # Create circular buffer
+    element = make_zeros_tile()
+    cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
+
+    # Producer: reserve -> store -> push
+    with cb.reserve() as write_block:
+        # Create test data
+        data = [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
+        ]
+        write_block.store(data)
+
+    # Consumer: wait -> read -> pop
+    with cb.wait() as read_block:
+        # Verify data
+        assert read_block[0].to_torch()[0, 0].item() == 5.0
+        assert read_block[1].to_torch()[0, 0].item() == 10.0
+
+    # Test multiple iterations
+    for i in range(3):
+        with cb.reserve() as write_block:
+            data = [
+                ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2))),
+                ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2 + 1))),
+            ]
+            write_block.store(data)
+
+        with cb.wait() as read_block:
+            assert read_block[0].to_torch()[0, 0].item() == float(i * 2)
+            assert read_block[1].to_torch()[0, 0].item() == float(i * 2 + 1)
+
+    print("Reserve-store-push-pop workflow test passed!")
 
 
 def test_make_circular_buffer_like_basic(api: CBAPI) -> None:
@@ -511,13 +603,196 @@ def test_context_manager_syntax(api: CBAPI) -> None:
     print("Context manager syntax test passed!")
 
 
+def test_store_accumulate_first_assigns(api: CBAPI) -> None:
+    """Test that the first store(acc=True) assigns instead of accumulates."""
+    element = make_zeros_tile()
+    cb = CircularBuffer(element=element, shape=(3, 1), buffer_factor=2, api=api)
+
+    with cb.reserve() as block:
+        # Create test values
+        import torch
+        from python.sim import ttnn, TILE_SHAPE
+
+        values1 = [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 15.0)),
+        ]
+
+        # First store(acc=True) - should assign (y = x), not accumulate (y += x)
+        block.store(values1, acc=True)
+
+        # Verify values were assigned (not accumulated with garbage/zeros)
+        assert block[0].to_torch()[0, 0].item() == 5.0
+        assert block[1].to_torch()[0, 0].item() == 10.0
+        assert block[2].to_torch()[0, 0].item() == 15.0
+
+        # Second store(acc=True) - should accumulate (y += x)
+        values2 = [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 9.0)),
+        ]
+        block.store(values2, acc=True)
+
+        # Verify values were accumulated
+        assert block[0].to_torch()[0, 0].item() == 8.0  # 5 + 3
+        assert block[1].to_torch()[0, 0].item() == 16.0  # 10 + 6
+        assert block[2].to_torch()[0, 0].item() == 24.0  # 15 + 9
+
+    print("Store accumulate first assigns test passed!")
+
+
+def test_store_accumulate_vs_regular_store(api: CBAPI) -> None:
+    """Test that regular store() and store(acc=True) have different paths."""
+    element = make_zeros_tile()
+    cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
+
+    import torch
+    from python.sim import ttnn, TILE_SHAPE
+
+    # Test 1: Regular store() followed by push (cannot use store(acc=True) after)
+    with cb.reserve() as block1:
+        values = [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 7.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 14.0)),
+        ]
+        block1.store(values)  # Regular store
+
+        assert block1[0].to_torch()[0, 0].item() == 7.0
+        assert block1[1].to_torch()[0, 0].item() == 14.0
+
+    # Verify we can read it back
+    with cb.wait() as block_read:
+        assert block_read[0].to_torch()[0, 0].item() == 7.0
+        assert block_read[1].to_torch()[0, 0].item() == 14.0
+
+    # Test 2: store(acc=True) path - can be called multiple times
+    with cb.reserve() as block2:
+        values1 = [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 2.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 4.0)),
+        ]
+        block2.store(values1, acc=True)  # First: assigns
+
+        values2 = [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
+        ]
+        block2.store(values2, acc=True)  # Second: accumulates
+
+        assert block2[0].to_torch()[0, 0].item() == 5.0  # 2 + 3
+        assert block2[1].to_torch()[0, 0].item() == 10.0  # 4 + 6
+
+    print("Store accumulate vs regular store test passed!")
+
+
+def test_block_state_machine_restrictions(api: CBAPI) -> None:
+    """Test that block state machine enforces access restrictions."""
+    element = make_zeros_tile()
+    cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+
+    import torch
+    from python.sim import ttnn, TILE_SHAPE
+
+    # Test: Cannot read from WO (Write-Only) state before first store
+    block = cb.reserve()
+
+    # Attempting to read from WO state should fail
+    with pytest.raises(RuntimeError, match="Cannot read from Block.*write-only"):
+        _ = block[0]
+
+    # Store makes it RO (for regular store) or RW (for acc store)
+    values = [ttnn.Tensor(torch.full(TILE_SHAPE, 5.0))]
+    block.store(values, acc=True)
+
+    # Now we can read
+    assert block[0].to_torch()[0, 0].item() == 5.0
+
+    cb.push()
+
+    # Test: Cannot write to RO (Read-Only) state after wait()
+    read_block = cb.wait()
+
+    # Can read
+    assert read_block[0].to_torch()[0, 0].item() == 5.0
+
+    # Cannot write - wait() blocks expect POP, not STORE
+    with pytest.raises(
+        RuntimeError, match="Cannot perform store.*Expected one of.*POP"
+    ):
+        read_block.store([ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))])
+
+    cb.pop()
+
+    print("Block state machine restrictions test passed!")
+
+
+def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
+    """Test that copy operations set blocks to NA (No Access) state."""
+    from python.sim.block import (
+        Block,
+        BlockAcquisition,
+        ThreadType,
+        _set_current_thread_type,
+    )
+    from python.sim.typedefs import Span
+    import torch
+    from python.sim import ttnn
+
+    # Set thread type to DM (required for copy operations)
+    _set_current_thread_type(ThreadType.DM)
+
+    try:
+        # Create a block manually in DM thread context
+        buf = [None, None]
+        block = Block(
+            buf, 2, Span(0, 2), (2, 1), BlockAcquisition.RESERVE, ThreadType.DM
+        )
+
+        # Create source tensor
+        source_tensor = ttnn.Tensor(torch.ones((64, 32)))
+
+        # Start copy - block should transition to NA state
+        tx = copy(source_tensor, block)
+
+        # Cannot read or write while copy is in progress (NA state)
+        with pytest.raises(RuntimeError, match="Cannot read from Block.*no access"):
+            _ = block[0]
+
+        with pytest.raises(RuntimeError, match="Cannot write to Block.*no access"):
+            from python.sim import TILE_SHAPE
+
+            # Need 2 items for block with span length 2
+            block.store(
+                [
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
+                ]
+            )
+
+        # After tx.wait(), block becomes RW (can do more operations)
+        tx.wait()
+
+        # Now we can read (block is in RW state)
+        _ = block[0]
+    finally:
+        # Clean up thread context
+        from python.sim.block import _clear_current_thread_type
+
+        _clear_current_thread_type()
+
+    print("Copy sets block to NA state test passed!")
+
+
 if __name__ == "__main__":
     test_api = CBAPI()
     test_circular_buffer_basic(test_api)
     test_circular_buffer_multi_tile(test_api)
-    test_copy_operations(test_api)
+    test_copy_operations_with_dm_context(test_api)
     test_error_handling(test_api)
-    test_example_usage_pattern(test_api)
+    test_copy_in_dm_thread_context(test_api)
+    test_reserve_store_push_pop_workflow(test_api)
     test_make_circular_buffer_like_basic(test_api)
     test_make_circular_buffer_like_infers_type(test_api)
     test_make_circular_buffer_like_multiple_tensors(test_api)
@@ -526,4 +801,8 @@ if __name__ == "__main__":
     test_can_methods_multi_tile(test_api)
     test_can_methods_uninitialized(test_api)
     test_context_manager_syntax(test_api)
+    test_store_accumulate_first_assigns(test_api)
+    test_store_accumulate_vs_regular_store(test_api)
+    test_block_state_machine_restrictions(test_api)
+    test_copy_sets_block_to_na_state(test_api)
     print("All CircularBuffer tests passed!")

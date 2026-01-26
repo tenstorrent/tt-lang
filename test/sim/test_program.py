@@ -291,27 +291,26 @@ class TestContextIsolation:
         assert (out_torch[0:32, :] == 100).all()
         assert (out_torch[32:64, :] == 101).all()
 
-    @pytest.mark.skip(
-        reason="Does not conform to state machine diagram: "
-        "reserve() block used as copy destination in Compute thread context. "
-        "Per state machine, only reserve() DM blocks can be copy destinations."
-    )
-    def test_tensors_shared_across_cores(self) -> None:
-        """Test that tensors are shared (not copied) across cores."""
+    def test_shared_tensor_with_compute_store(self) -> None:
+        """Test shared tensors where compute thread uses store instead of copy.
+
+        This tests the pattern where compute thread reads from a shared tensor
+        and uses store() to write to CB (not copy).
+        """
 
         @ttl.kernel(grid=(2, 1))
         def test_kernel(shared: ttnn.Tensor, out: ttnn.Tensor):
-            # shared and out already are ttnn.Tensor
-            # shared tensor should be the same object in all cores
             cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                _ = ttl.core(dims=1)
+                # Compute thread reads shared tensor and stores to CB
+                core_id = cast(int, ttl.core(dims=1))
                 block = cb.reserve()
-                # Read from shared tensor
-                tx = copy(shared[0:1, 0:1], block)
-                tx.wait()
+                # Read from shared tensor and store (not copy)
+                # Add core_id to distinguish which core wrote
+                data = shared[0:1, 0:1] + core_id
+                block.store([data])
                 cb.push()
 
             @ttl.datamovement()
@@ -320,6 +319,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
+                # DM thread copies from CB to output
                 core_id = cast(int, ttl.core(dims=1))
                 block = cb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -328,15 +328,15 @@ class TestContextIsolation:
 
             return Program(compute, dm0, dm1, grid=grid)()
 
-        shared = make_ones_tensor(32, 32) * 42
+        shared = make_ones_tensor(32, 32) * 10
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
         test_kernel(shared, out)
 
-        # Both cores should have read the same shared tensor
+        # Each core should have written shared + core_id
         out_torch = out.to_torch()
-        assert (out_torch[0:32, :] == 42).all()
-        assert (out_torch[32:64, :] == 42).all()
+        assert (out_torch[0:32, :] == 10).all()  # core 0: 10 + 0
+        assert (out_torch[32:64, :] == 11).all()  # core 1: 10 + 1
 
 
 class TestErrorHandling:
@@ -654,27 +654,116 @@ class TestCooperativeScheduling:
         expected = make_ones_tensor(32, 32) * 15
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
-    def test_copy_block_to_tensor_cooperative(self) -> None:
-        """Test Block → Tensor copy in cooperative mode.
+    def test_copy_block_to_tensor_with_dm_thread(self) -> None:
+        """Test Block → Tensor copy in cooperative mode using DM thread.
 
-        NOTE: This test is disabled because it doesn't conform to the state machine.
-        Compute threads with wait() blocks expect POP, not copy as source.
-        DM threads should handle copy operations from wait() blocks.
+        This replaces test_copy_block_to_tensor_cooperative with proper thread separation:
+        - DM0 copies Tensor → Block
+        - DM1 copies Block → Tensor
+        - Compute processes data
         """
-        pytest.skip(
-            "Test disabled: wait() Compute blocks expect POP, not copy as source"
-        )
 
-    def test_copy_block_to_pipe_cooperative(self) -> None:
-        """Test Block → Pipe copy in cooperative mode (unicast).
+        @ttl.kernel(grid=(1, 1))
+        def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
+            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
-        NOTE: This test is disabled because it doesn't conform to the state machine.
-        Compute threads with wait() blocks expect POP, not copy as source.
-        DM threads should handle copy operations from wait() blocks.
+            @ttl.compute()
+            def compute():
+                # Compute just verifies data can be accessed
+                # In real use, it would process the data
+                pass
+
+            @ttl.datamovement()
+            def dm0():
+                # DM0: Copy input tensor to CB
+                block = cb.reserve()
+                tx = copy(a[0:1, 0:1], block)
+                tx.wait()
+                cb.push()
+
+            @ttl.datamovement()
+            def dm1():
+                # DM1: Copy CB to output tensor
+                block = cb.wait()
+                tx = copy(block, out[0:1, 0:1])
+                tx.wait()
+                cb.pop()
+
+            return Program(compute, dm0, dm1, grid=grid)()
+
+        a = make_ones_tensor(32, 32) * 7
+        out = make_zeros_tensor(32, 32)
+
+        test_kernel(a, out)
+
+        expected = make_ones_tensor(32, 32) * 7
+        tt_testing.assert_close(out.to_torch(), expected.to_torch())
+
+    def test_copy_mixed_pairs_with_dm_threads(self) -> None:
+        """Test mixed copy operations using DM threads for all copies.
+
+        This replaces test_copy_mixed_pairs_cooperative with proper thread separation:
+        - DM threads handle all copy operations
+        - Compute thread can read from wait() blocks (via direct access, not copy)
         """
-        pytest.skip(
-            "Test disabled: wait() Compute blocks expect POP, not copy as source"
+
+        @ttl.kernel(grid=(1, 1))
+        def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
+            cb_a = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            cb_b = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
+            cb_out = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+            @ttl.compute()
+            def compute():
+                # Compute reads from CBs, processes, and writes to output CB
+                for i in range(2):
+                    block_a = cb_a.wait()
+                    block_b = cb_b.wait()
+
+                    # Process data: add blocks together and store to output CB
+                    block_out = cb_out.reserve()
+                    result = block_a[0] + block_b[0]
+                    block_out.store([result])
+                    cb_out.push()
+
+                    cb_a.pop()
+                    cb_b.pop()
+
+            @ttl.datamovement()
+            def dm0():
+                # DM0: Copy input tensors to CBs
+                for i in range(2):
+                    block_a = cb_a.reserve()
+                    tx_a = copy(a[i : i + 1, 0:1], block_a)
+                    tx_a.wait()
+                    cb_a.push()
+
+                    block_b = cb_b.reserve()
+                    tx_b = copy(b[i : i + 1, 0:1], block_b)
+                    tx_b.wait()
+                    cb_b.push()
+
+            @ttl.datamovement()
+            def dm1():
+                # DM1: Copy output CB to output tensor
+                for i in range(2):
+                    block_out = cb_out.wait()
+                    tx = copy(block_out, out[i : i + 1, 0:1])
+                    tx.wait()
+                    cb_out.pop()
+
+            return Program(compute, dm0, dm1, grid=grid)()
+
+        a = ttnn.Tensor(torch.arange(2 * 32 * 32).reshape(2 * 32, 32).float())
+        b = ttnn.Tensor(
+            torch.arange(2 * 32 * 32, 4 * 32 * 32).reshape(2 * 32, 32).float()
         )
+        out = ttnn.empty(a.shape, dtype=torch.float32)
+
+        test_kernel(a, b, out)
+
+        expected = a + b
+        tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
     def test_copy_pipe_operations_not_fully_integrated_in_cooperative_mode(
         self,
@@ -703,16 +792,30 @@ class TestCooperativeScheduling:
         # For now, we skip this test to document the limitation
         pass
 
-    def test_copy_mixed_pairs_cooperative(self) -> None:
-        """Test mixed copy operations in cooperative mode.
 
-        NOTE: This test is disabled because it doesn't conform to the state machine.
-        Compute threads with wait() blocks expect POP, not copy as source.
-        DM threads should handle copy operations from wait() blocks.
-        """
-        pytest.skip(
-            "Test disabled: wait() Compute blocks expect POP, not copy as source"
-        )
+class TestProgramInternals:
+    """Test internal program mechanisms and edge cases."""
+
+    def test_empty_generator_completion(self) -> None:
+        """Test that generators with only 'pass' are handled correctly."""
+        from python.sim import ttl
+        from python.sim.program import Program
+
+        @ttl.datamovement()
+        def dm0() -> None:
+            pass  # Empty generator
+
+        @ttl.datamovement()
+        def dm1() -> None:
+            pass  # Empty generator
+
+        @ttl.compute()
+        def compute() -> None:
+            pass  # Empty generator
+
+        prog = Program(compute, dm0, dm1, grid=(1, 1))
+        # Should complete without error
+        prog()
 
 
 if __name__ == "__main__":
