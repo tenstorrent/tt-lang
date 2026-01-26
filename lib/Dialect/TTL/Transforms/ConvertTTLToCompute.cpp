@@ -23,9 +23,10 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
-/// Build an indexing map for a tensor that may be broadcast to the output shape.
-/// For dimensions where input is 1 and output is >1, the map uses constant 0.
-/// For example, input [1,1] to output [1,2] gives map (d0, d1) -> (0, 0).
+/// Build an indexing map for a tensor that may be broadcast to the output
+/// shape. For dimensions where input is 1 and output is >1, the map uses
+/// constant 0. For example, input [1,1] to output [1,2] gives map (d0, d1) ->
+/// (0, 0).
 static AffineMap buildBroadcastIndexingMap(RankedTensorType inputType,
                                            RankedTensorType outputType,
                                            MLIRContext *ctx) {
@@ -36,8 +37,8 @@ static AffineMap buildBroadcastIndexingMap(RankedTensorType inputType,
   // Build the affine expressions for each dimension
   SmallVector<AffineExpr> exprs;
   for (int64_t i = 0; i < rank; ++i) {
-    if (i < static_cast<int64_t>(inputShape.size()) &&
-        inputShape[i] == 1 && outputShape[i] > 1) {
+    if (i < static_cast<int64_t>(inputShape.size()) && inputShape[i] == 1 &&
+        outputShape[i] > 1) {
       // Broadcast dimension: always access index 0
       exprs.push_back(getAffineConstantExpr(0, ctx));
     } else {
@@ -83,7 +84,8 @@ static std::optional<BcastDim> getBcastDim(RankedTensorType inputType,
     return BcastDim::scalar;
   }
   if (colBcast) {
-    // Input is [N, 1], output is [N, M] - replicate single column across all columns
+    // Input is [N, 1], output is [N, M] - replicate single column across all
+    // columns
     return BcastDim::col;
   }
   if (rowBcast) {

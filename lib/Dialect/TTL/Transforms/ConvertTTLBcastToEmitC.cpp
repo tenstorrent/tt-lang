@@ -9,8 +9,10 @@
 // This pass converts TTL tile binary ops with bcast_dim attribute directly
 // to EmitC call_opaque ops that emit tt-metal broadcast intrinsics.
 //
-// For each tile op with bcast_dim attribute (e.g., ttl.tile_add with bcast_dim=col):
-// 1. Emit the init function: add_bcast_cols_init_short() (or rows/scalar variant)
+// For each tile op with bcast_dim attribute (e.g., ttl.tile_add with
+// bcast_dim=col):
+// 1. Emit the init function: add_bcast_cols_init_short() (or rows/scalar
+// variant)
 // 2. Emit the compute function: add_tiles_bcast_cols(cb0, cb1, i0, i1, dst)
 //
 // This pass runs AFTER ttl-tile-ops-to-ttkernel (which skips broadcast ops)
@@ -68,14 +70,43 @@ static StringRef getOpPrefix(StringRef opName) {
   return opName;
 }
 
-/// Build the init function name for a broadcast operation.
-/// e.g., "add" + "cols" -> "add_bcast_cols_init_short"
-static std::string buildInitFuncName(StringRef opPrefix, BcastDim dim) {
-  std::string result;
-  result += opPrefix;
-  result += "_bcast_";
-  result += getBcastDimSuffix(dim);
-  result += "_init_short";
+/// Get BroadcastType enum name for code generation.
+static StringRef getBcastTypeEnumName(BcastDim dim) {
+  switch (dim) {
+  case BcastDim::row:
+    return "BroadcastType::ROW";
+  case BcastDim::col:
+    return "BroadcastType::COL";
+  case BcastDim::scalar:
+    return "BroadcastType::SCALAR";
+  }
+  llvm_unreachable("Unknown BcastDim");
+}
+
+/// Get EltwiseBinaryType enum name for code generation.
+static StringRef getEltwiseBinaryTypeEnumName(StringRef opPrefix) {
+  if (opPrefix == "add") {
+    return "EltwiseBinaryType::ELWADD";
+  }
+  if (opPrefix == "sub") {
+    return "EltwiseBinaryType::ELWSUB";
+  }
+  if (opPrefix == "mul") {
+    return "EltwiseBinaryType::ELWMUL";
+  }
+  // Default to add for unknown ops
+  return "EltwiseBinaryType::ELWADD";
+}
+
+/// Build the full init_bcast template function name.
+/// e.g., "add" + "col" -> "init_bcast<EltwiseBinaryType::ELWADD,
+/// BroadcastType::COL>"
+static std::string buildFullInitFuncName(StringRef opPrefix, BcastDim dim) {
+  std::string result = "init_bcast<";
+  result += getEltwiseBinaryTypeEnumName(opPrefix);
+  result += ", ";
+  result += getBcastTypeEnumName(dim);
+  result += ">";
   return result;
 }
 
@@ -97,8 +128,8 @@ static std::optional<int64_t> getDstIdx(Operation *op) {
   return std::nullopt;
 }
 
-/// Get CB index from a tensor.extract operand by tracing back to the attached CB.
-/// Returns the CB index (0-31) or nullopt if not found.
+/// Get CB index from a tensor.extract operand by tracing back to the attached
+/// CB. Returns the CB index (0-31) or nullopt if not found.
 static std::optional<int64_t> getCBIndexFromOperand(Value operand) {
   auto extractOp = operand.getDefiningOp<tensor::ExtractOp>();
   if (!extractOp) {
@@ -112,6 +143,32 @@ static std::optional<int64_t> getCBIndexFromOperand(Value operand) {
 
   if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
     return bindOp.getCbIndex().getSExtValue();
+  }
+  return std::nullopt;
+}
+
+/// Find the output CB index by looking at the StoreOp that uses this result.
+/// Returns the CB index (0-31) or nullopt if not found.
+static std::optional<int64_t> findOutputCBIndex(Value tileResult) {
+  // Look for a StoreOp that uses this tile result
+  for (Operation *user : tileResult.getUsers()) {
+    if (auto storeOp = dyn_cast<StoreOp>(user)) {
+      // The store's second operand is the output tensor
+      Value outputTensor = storeOp.getOperand(1);
+      // Trace back to find the CB
+      Value cb = getAttachedCB(outputTensor);
+      if (!cb) {
+        // Try tracing through the tensor directly
+        if (auto cbReserve = outputTensor.getDefiningOp<CBReserveOp>()) {
+          cb = cbReserve.getCb();
+        }
+      }
+      if (cb) {
+        if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+          return bindOp.getCbIndex().getSExtValue();
+        }
+      }
+    }
   }
   return std::nullopt;
 }
@@ -140,9 +197,10 @@ static Value getTileIndexFromExtract(tensor::ExtractOp extractOp,
 }
 
 /// Create emitc.literal for get_compile_time_arg_val(cbIndex).
-/// tt-metal uses compile-time arguments for CB indices.
+/// tt-metal bcast functions take uint32_t for CB indices.
 static Value createCBIndexLiteral(OpBuilder &rewriter, Location loc,
                                   int64_t cbIndex) {
+  // Use i32 since tt-metal API takes uint32_t
   auto i32Type = rewriter.getI32Type();
   std::string literalStr =
       "get_compile_time_arg_val(" + std::to_string(cbIndex) + ")";
@@ -168,7 +226,8 @@ struct TTLTileBcastToEmitC : OpRewritePattern<SourceOp> {
 
   LogicalResult matchAndRewrite(SourceOp op,
                                 PatternRewriter &rewriter) const override {
-    LLVM_DEBUG(llvm::dbgs() << "TTLTileBcastToEmitC: checking op: " << op << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "TTLTileBcastToEmitC: checking op: " << op << "\n");
 
     // Only match ops with bcast_dim attribute set.
     auto bcastDim = op.getBcastDim();
@@ -206,46 +265,66 @@ struct TTLTileBcastToEmitC : OpRewritePattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "could not find CB indices");
     }
 
-    LLVM_DEBUG(llvm::dbgs() << "  lhs CB=" << *lhsCBIdx << ", rhs CB=" << *rhsCBIdx
-                            << ", dst=" << *dstIdxOpt << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "  lhs CB=" << *lhsCBIdx << ", rhs CB="
+                            << *rhsCBIdx << ", dst=" << *dstIdxOpt << "\n");
 
     // Get tile indices from tensor.extract indices (as i32).
     Value lhsTileIdx = getTileIndexFromExtract(lhsExtract, rewriter, loc);
     Value rhsTileIdx = getTileIndexFromExtract(rhsExtract, rewriter, loc);
 
+    // Find output CB index from the store operation that uses this result
+    auto outCBIdx = findOutputCBIndex(op.getResult());
+    if (!outCBIdx) {
+      // Fallback: try common output CB indices
+      outCBIdx = 2; // Default to CB2 if we can't find it
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  Warning: could not find output CB, using default CB2\n");
+    }
+
+    LLVM_DEBUG(llvm::dbgs() << "  output CB=" << *outCBIdx << "\n");
+
     // Create emitc.literal for CB indices using get_compile_time_arg_val().
     Value lhsCBVal = createCBIndexLiteral(rewriter, loc, *lhsCBIdx);
     Value rhsCBVal = createCBIndexLiteral(rewriter, loc, *rhsCBIdx);
+    Value outCBVal = createCBIndexLiteral(rewriter, loc, *outCBIdx);
     // Create i32 constant for DST index.
     Value dstIdxVal = createI32Constant(rewriter, loc, *dstIdxOpt);
 
     // Build function names.
-    std::string initFuncName = buildInitFuncName(opPrefix, *bcastDim);
+    std::string fullInitFuncName = buildFullInitFuncName(opPrefix, *bcastDim);
     std::string computeFuncName = buildComputeFuncName(opPrefix, *bcastDim);
 
-    // Emit init function: <op>_bcast_<dim>_init_short(bcast_cb, regular_cb)
-    // tt-metal pattern: bcast CB comes first, regular CB comes second.
-    // Use OperationState to build the op generically to avoid symbol conflicts
+    // Emit full init_bcast: init_bcast<ELWADD, COL>(regular_cb, bcast_cb,
+    // out_cb) This does full hardware initialization including UNPACK, MATH,
+    // and PACK. tt-metal API (from
+    // _examples/ttnn-bcast/kernels/compute/bcast_add.cpp):
+    //   init_bcast<EltwiseBinaryType::ELWADD, BroadcastType::COL>(cb_in0,
+    //   cb_in1, cb_out)
     {
       OperationState state(loc, "emitc.call_opaque");
-      state.addAttribute("callee", rewriter.getStringAttr(initFuncName));
-      // Init function takes CB indices: (bcast_cb, regular_cb)
-      state.addOperands({rhsCBVal, lhsCBVal});
+      state.addAttribute("callee", rewriter.getStringAttr(fullInitFuncName));
+      // Init function takes CB indices: (regular_cb, bcast_cb, out_cb)
+      state.addOperands({lhsCBVal, rhsCBVal, outCBVal});
       rewriter.create(state);
     }
 
     // Emit compute function:
-    //   <op>_tiles_bcast_<dim>(bcast_cb, regular_cb, bcast_tile, regular_tile, dst)
-    // tt-metal pattern: bcast CB/tile come first, regular CB/tile come second.
+    //   <op>_tiles_bcast_<dim>(regular_cb, bcast_cb, regular_tile, bcast_tile,
+    //   dst)
+    // tt-metal API (from bcast_add.cpp line 72):
+    //   add_tiles_bcast_cols(cb_in0, cb_in1, base_t + i, 0, i)
+    //   where cb_in0=regular (A), cb_in1=bcast (B), first index is A's tile,
+    //   second is B's tile
     {
       OperationState state(loc, "emitc.call_opaque");
       state.addAttribute("callee", rewriter.getStringAttr(computeFuncName));
-      state.addOperands({rhsCBVal, lhsCBVal, rhsTileIdx, lhsTileIdx, dstIdxVal});
+      state.addOperands(
+          {lhsCBVal, rhsCBVal, lhsTileIdx, rhsTileIdx, dstIdxVal});
       rewriter.create(state);
     }
 
-    // Replace the op with lhs (result goes to DST, but we need a value for SSA).
-    // The actual result is in DST register dstIdxOpt.
+    // Replace the op with lhs (result goes to DST, but we need a value for
+    // SSA). The actual result is in DST register dstIdxOpt.
     rewriter.replaceOp(op, lhs);
     return success();
   }
@@ -257,7 +336,6 @@ struct TTLConvertBcastToEmitCPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
     MLIRContext *ctx = &getContext();
-
 
     LLVM_DEBUG(llvm::dbgs() << "=== TTLConvertBcastToEmitCPass running on: "
                             << funcOp.getName() << " ===\n");

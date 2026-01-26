@@ -163,9 +163,7 @@ static bool hasUnaryConsumer(ArrayRef<Operation *> consumers) {
 
 /// Check if an operation is a broadcast tile op (has bcast_dim attribute).
 /// Broadcast ops read both operands directly from CBs without copy_tile.
-static bool isBroadcastOp(Operation *op) {
-  return op->hasAttr("bcast_dim");
-}
+static bool isBroadcastOp(Operation *op) { return op->hasAttr("bcast_dim"); }
 
 /// Check if all consumers of a value are broadcast ops.
 /// If so, no copy_tile is needed for this value since broadcast ops read
