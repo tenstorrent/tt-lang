@@ -551,20 +551,6 @@ class Block:
     def to_list(self) -> List[CBSlot]:
         return [self[i] for i in range(len(self))]
 
-    def _internal_store(self, items: Sequence[Tensor]) -> None:
-        """Internal store method for initialization, bypasses state machine validation.
-
-        This is used by CircularBuffer.reserve() to initialize blocks with zero tensors.
-
-        Args:
-            items: Sequence of tensors to store
-        """
-        if len(items) != self._span.length:
-            raise ValueError("Length mismatch in _internal_store()")
-
-        for i, v in enumerate(items):
-            self._buf[(self._span.start + i) % self._capacity] = v
-
     def copy_as_dest(self, items: Sequence[Tensor]) -> None:
         """Store items into the block as part of a copy operation.
 
@@ -590,6 +576,7 @@ class Block:
         Args:
             items: Sequence of tensors to store
             acc: If True, accumulate with existing values (+=), otherwise assign (=)
+                 Note: First store(acc=True) does assignment (y=x), subsequent ones accumulate (y+=x)
         """
         if len(items) != self._span.length:
             raise ValueError("Length mismatch in store()")
@@ -597,13 +584,21 @@ class Block:
         # Check write access first (provides better error message for NA state)
         self._check_can_write()
 
+        # Determine if this is the first store(acc=True) by checking if we're in WO state
+        is_first_acc_store = acc and self._access_state == AccessState.WO
+
         # Mark state machine transition BEFORE actual store (needed for acc=True to read)
         self.mark_store_complete(acc=acc)
 
         if acc:
-            # Accumulate: add new values to existing values
-            for i, v in enumerate(items):
-                self._write_slot(i, self[i] + v)
+            if is_first_acc_store:
+                # First store(acc=True): Just assign (y = x), don't accumulate
+                for i, v in enumerate(items):
+                    self._write_slot(i, v)
+            else:
+                # Subsequent store(acc=True): Accumulate (y += x)
+                for i, v in enumerate(items):
+                    self._write_slot(i, self[i] + v)
         else:
             # Regular assignment
             for i, v in enumerate(items):

@@ -317,10 +317,7 @@ class CircularBuffer:
         api.cb_reserve_back(cb_id, self._tiles_per_operation)
         block = api.get_write_ptr(cb_id)
 
-        # Initialize the reserved block with zero tensors
-        zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
-        block._internal_store([zero_tensor] * len(block))
-
+        # No initialization - block data is assumed to be garbage until first store
         return ReserveContext(self, block)
 
     def can_reserve(self) -> bool:
