@@ -234,9 +234,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 
       // Store CB indices for init_sfpu in the TTLInsertTileRegsSync pass.
       // TODO: Currently only stores the first input/output CB. If ComputeOp
-      // has multiple inputs/outputs with different CBs, init_sfpu will only
-      // be configured for the first ones. This may need to be extended to
-      // handle multiple CBs if required by the hardware.
+      // supports multiple outputs with different CBs, this needs to be extended
+      // to store a list of CB indices.
       Value icb = getAttachedCB(op.getInputs().front());
       Value ocb = getAttachedCB(op.getOutputs().front());
       if (icb) {

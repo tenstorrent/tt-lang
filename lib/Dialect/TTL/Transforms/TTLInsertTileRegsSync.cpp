@@ -155,7 +155,7 @@ struct TTLInsertTileRegsSyncPass
 
       // Check for an unmatched tile_regs_acquire that dominates the loop.
       // An acquire is "unmatched" if there's no release between it and the
-      // loop. This would create an unbalanced acquire/release pair since the
+      // loop. This would create an unbalanced acquire/release pair since this
       // pass inserts acquire inside the loop body.
       TileRegsAcquireOp unmatchedAcquire = findUnmatchedDominatingAcquire(
           funcOp, outermostLoop.getOperation(), domInfo);
