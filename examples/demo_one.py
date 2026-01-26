@@ -21,8 +21,7 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-# For BH extended grid: grid=(12, 10) with shape=(2560, 3072)
-@ttl.kernel(grid=(8, 8))  # (cols, rows)
+@ttl.kernel(grid="auto")
 def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
@@ -139,7 +138,15 @@ device = ttnn.open_device(device_id=0)
 
 
 try:
-    shape = (2048, 2048)
+    # Compute shape based on device compute grid
+    device_grid = device.compute_with_storage_grid_size()
+    grid_cols, grid_rows = device_grid.x, device_grid.y
+    # Shape must be divisible by (TILE_SIZE * grid_dim * GRANULARITY) per dimension
+    min_rows = TILE_SIZE * grid_rows * GRANULARITY
+    min_cols = TILE_SIZE * grid_cols * GRANULARITY
+    shape = (min_rows, min_cols)
+    print(f"Using grid ({grid_cols}, {grid_rows}) with shape {shape}")
+
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)
     c = torch.rand(shape, dtype=torch.bfloat16)

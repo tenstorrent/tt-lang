@@ -216,8 +216,20 @@ def _is_interleaved_tensor(tensor) -> bool:
 
 
 def _resolve_grid(grid, args, kwargs):
-    """Resolve grid, evaluating callable if needed."""
-    return grid(*args, **kwargs) if callable(grid) else grid
+    """Resolve grid, evaluating callable or 'auto' if needed."""
+    if callable(grid):
+        return grid(*args, **kwargs)
+    if grid == "auto":
+        for arg in args:
+            if is_ttnn_tensor(arg) and hasattr(arg, "device"):
+                device = arg.device()
+                device_grid = device.compute_with_storage_grid_size()
+                return (device_grid.x, device_grid.y)
+        raise ValueError(
+            "grid='auto' requires at least one ttnn tensor argument "
+            "to determine device compute grid"
+        )
+    return grid
 
 
 def _get_source_line_offset(f) -> int:
