@@ -5,7 +5,7 @@
 import ast
 import inspect
 from dataclasses import dataclass
-from typing import List, Set
+from typing import List, Optional, Set
 
 from pykernel._src.kernel_ast import TTCompilerBase
 from ttmlir.dialects import arith, func, ttcore, ttkernel
@@ -17,6 +17,10 @@ from ..dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
 from ..layouts import TTNNLayoutConfig, create_ttnn_layout
 from ..ttl_utils import get_thread_type_string
+from .auto_profile import (
+    get_line_mapper,
+    is_auto_profile_enabled,
+)
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
@@ -133,6 +137,13 @@ class TTLGenericCompiler(TTCompilerBase):
         # Track CB info for binding inside function body
         self._cb_info: List[dict] = []  # [{name, shape, element_type, cb_index}, ...]
 
+        # Auto-profiling support
+        self.auto_profile_enabled = is_auto_profile_enabled()
+        self.line_mapper = get_line_mapper() if self.auto_profile_enabled else None
+        if self.line_mapper:
+            self.line_mapper.line_offset = self.line_offset
+        self._current_signpost_line = None
+
         self._fn_map = {}
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
@@ -175,21 +186,95 @@ class TTLGenericCompiler(TTCompilerBase):
             col=col,
         )
 
+    # Auto-profiling helpers for line-based signposting
+
+    def _emit_signpost(self, name: str):
+        """Emit a signpost operation into the MLIR."""
+        ttl.signpost(name)
+
+    def _emit_line_signpost_if_needed(self, node):
+        """Emit signposts at line boundaries for auto-profiling."""
+        if not self.auto_profile_enabled or not hasattr(node, "lineno"):
+            return
+
+        file_lineno = node.lineno + self.line_offset
+        if self._current_signpost_line == file_lineno:
+            return
+
+        if self._current_signpost_line is not None:
+            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {file_lineno}>"
+
+        before_name = f"line_{file_lineno}_before"
+        after_name = f"line_{file_lineno}_after"
+
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+
+        self._emit_signpost(before_name)
+        self._current_signpost_line = file_lineno
+
+    def _close_final_signpost(self):
+        """Close the final signpost at the end of function body."""
+        if self.auto_profile_enabled and self._current_signpost_line is not None:
+            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+            self._current_signpost_line = None
+
+    def _try_emit_auto_signposts(self, node, visit_fn):
+        """Emit line-based signposts if auto-profiling is enabled."""
+        self._emit_line_signpost_if_needed(node)
+        return visit_fn()
+
+    def _emit_op_signposts(self, op_name: str, node, op_fn, implicit=False):
+        """Emit signposts for CB operations with op name included."""
+        if not self.auto_profile_enabled:
+            with self._loc_for_node(node):
+                return op_fn()
+
+        file_lineno = node.lineno + self.line_offset
+        prefix = "implicit_" if implicit else ""
+        before_name = f"line_{file_lineno}_{prefix}{op_name}_before"
+        after_name = f"line_{file_lineno}_{prefix}{op_name}_after"
+
+        if self.source_lines and 0 < node.lineno <= len(self.source_lines):
+            source_line = self.source_lines[node.lineno - 1].strip()
+        else:
+            source_line = f"<line {file_lineno}>"
+
+        if self.line_mapper:
+            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+
+        with self._loc_for_node(node):
+            self._emit_signpost(before_name)
+            result = op_fn()
+            self._emit_signpost(after_name)
+        return result
+
     def visit_Call(self, node):
-        """Override to set location context and catch errors for call expressions."""
+        """Override to set location context, catch errors, and inject auto-profiling."""
         with self._loc_for_node(node):
             try:
-                return super().visit_Call(node)
+                return self._try_emit_auto_signposts(
+                    node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
+                )
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
 
     def visit_BinOp(self, node):
-        """Override to provide better error messages with source location."""
+        """Override to inject auto-profiling and provide better error messages."""
         with self._loc_for_node(node):
             try:
-                return super().visit_BinOp(node)
+                return self._try_emit_auto_signposts(
+                    node, lambda: super(TTLGenericCompiler, self).visit_BinOp(node)
+                )
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
                     raise
@@ -405,6 +490,7 @@ class TTLGenericCompiler(TTCompilerBase):
             for target in node.body:
                 self.visit(target)
 
+            self._close_final_signpost()
             func.ReturnOp([])
 
         self.symbol_tables.pop()
@@ -481,11 +567,19 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Get tensor type from CB for reserve/wait result
                 tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
                 if method_name == "reserve":
-                    tensor = ttl.cb_reserve(tensor_type, cb_val)
-                    releases.append((ttl.cb_push, cb_val))
+                    tensor = self._emit_op_signposts(
+                        "cb_reserve",
+                        context_expr,
+                        lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv),
+                    )
+                    releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
                 else:  # wait
-                    tensor = ttl.cb_wait(tensor_type, cb_val)
-                    releases.append((ttl.cb_pop, cb_val))
+                    tensor = self._emit_op_signposts(
+                        "cb_wait",
+                        context_expr,
+                        lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
+                    )
+                    releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
 
                 # Attach CB to tensor so store() can find the CB association
                 acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
@@ -501,9 +595,14 @@ class TTLGenericCompiler(TTCompilerBase):
             for stmt in node.body:
                 self.visit(stmt)
 
-            # Release in reverse order
-            for release_op, cb_val in reversed(releases):
-                release_op(cb_val)
+            # Release in reverse order (implicit ops from with statement)
+            for op_name, release_op, cb_val, expr_node in reversed(releases):
+                self._emit_op_signposts(
+                    op_name,
+                    expr_node,
+                    lambda ro=release_op, cv=cb_val: ro(cv),
+                    implicit=True,
+                )
 
 
 def syntax(syntax_name):
