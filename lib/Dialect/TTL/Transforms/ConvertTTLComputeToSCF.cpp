@@ -225,32 +225,46 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
-    // Mark the innermost loop for later sync insertion pass.
-    // The kTileLoopAttrName attribute indicates this loop came from a ComputeOp
-    // and needs DST register synchronization ops inserted.
+    // Mark loops for later sync insertion passes.
+    // - kTileLoopAttrName on innermost: DST register sync ops inserted here
+    // - kTileLoopOuterAttrName on outermost: identifies compute boundary for
+    //   inter-loop CB sync (prevents confusion with user loops)
     if (!loopNest.loops.empty()) {
+      scf::ForOp outermostLoop = loopNest.loops.front();
       scf::ForOp innermostLoop = loopNest.loops.back();
+
+      // Mark outermost loop (may be same as innermost for 1D iteration).
+      outermostLoop->setAttr(kTileLoopOuterAttrName, rewriter.getUnitAttr());
       innermostLoop->setAttr(kTileLoopAttrName, rewriter.getUnitAttr());
 
-      // Store CB indices for init_sfpu in the TTLInsertTileRegsSync pass.
-      // TODO: Currently only stores the first input/output CB. If ComputeOp
-      // supports multiple outputs with different CBs, this needs to be extended
-      // to store a list of CB indices.
-      Value icb = getAttachedCB(op.getInputs().front());
-      Value ocb = getAttachedCB(op.getOutputs().front());
-      if (icb) {
-        if (auto bindOp = icb.getDefiningOp<BindCBOp>()) {
-          innermostLoop->setAttr(
-              kTileLoopInputCBAttrName,
-              rewriter.getI64IntegerAttr(bindOp.getCbIndex().getSExtValue()));
+      // Collect all input CB indices for init_sfpu placement.
+      SmallVector<int64_t> inputCBs;
+      for (Value input : op.getInputs()) {
+        Value cb = getAttachedCB(input);
+        if (cb) {
+          if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+            inputCBs.push_back(bindOp.getCbIndex().getSExtValue());
+          }
         }
       }
-      if (ocb) {
-        if (auto bindOp = ocb.getDefiningOp<BindCBOp>()) {
-          innermostLoop->setAttr(
-              kTileLoopOutputCBAttrName,
-              rewriter.getI64IntegerAttr(bindOp.getCbIndex().getSExtValue()));
+      if (!inputCBs.empty()) {
+        innermostLoop->setAttr(kTileLoopInputCBsAttrName,
+                               rewriter.getI64ArrayAttr(inputCBs));
+      }
+
+      // Collect all output CB indices for stores and inter-loop sync.
+      SmallVector<int64_t> outputCBs;
+      for (Value output : op.getOutputs()) {
+        Value cb = getAttachedCB(output);
+        if (cb) {
+          if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+            outputCBs.push_back(bindOp.getCbIndex().getSExtValue());
+          }
         }
+      }
+      if (!outputCBs.empty()) {
+        innermostLoop->setAttr(kTileLoopOutputCBsAttrName,
+                               rewriter.getI64ArrayAttr(outputCBs));
       }
     }
 

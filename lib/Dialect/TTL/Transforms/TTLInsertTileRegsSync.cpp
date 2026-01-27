@@ -47,41 +47,58 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find a bind_cb op with the given cb_index in the function.
-static BindCBOp findBindCBByIndex(func::FuncOp funcOp, int64_t cbIndex) {
-  BindCBOp result = nullptr;
-  funcOp.walk([&](BindCBOp bindOp) {
-    if (bindOp.getCbIndex() == cbIndex) {
-      result = bindOp;
-      return WalkResult::interrupt();
+/// Find an input CB that is extracted in the loop body, preferring one whose
+/// shape matches the output CB shape, or the largest input CB. This handles:
+/// - Broadcast ops: prefers full-sized input over broadcast input
+/// - Reduction ops: prefers largest input (the one being reduced)
+/// - Broadcast + reduction: prefers largest input
+///
+/// Only considers CBs from AttachCBOp/CBWaitOp, not iter_args (accumulators).
+/// Returns nullptr if no CB is found.
+static Value findExtractedInputCB(scf::ForOp forOp, Value outputCB) {
+  // Get output CB shape for matching.
+  ArrayRef<int64_t> outputShape;
+  if (outputCB) {
+    if (auto cbType = dyn_cast<CircularBufferType>(outputCB.getType())) {
+      outputShape = cbType.getShape();
+    }
+  }
+
+  Value matchingShapeCB;
+  Value largestCB;
+  int64_t largestSize = 0;
+
+  forOp.walk([&](tensor::ExtractOp extractOp) {
+    Value tensor = extractOp.getTensor();
+    if (Value cb = getAttachedCB(tensor)) {
+      auto cbType = dyn_cast<CircularBufferType>(cb.getType());
+      if (!cbType) {
+        return WalkResult::advance();
+      }
+
+      // Track the largest CB (by total number of elements).
+      ArrayRef<int64_t> shape = cbType.getShape();
+      int64_t size = 1;
+      for (int64_t dim : shape) {
+        size *= dim;
+      }
+      if (size > largestSize) {
+        largestSize = size;
+        largestCB = cb;
+      }
+
+      // Check if this CB's shape matches the output shape.
+      if (!matchingShapeCB && !outputShape.empty()) {
+        if (shape == outputShape) {
+          matchingShapeCB = cb;
+        }
+      }
     }
     return WalkResult::advance();
   });
-  return result;
-}
 
-/// Find the outermost scf.for loop containing this operation.
-static scf::ForOp findOutermostLoop(Operation *op) {
-  scf::ForOp outermost = nullptr;
-  Operation *current = op;
-  while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
-    outermost = parentFor;
-    current = parentFor.getOperation();
-  }
-  return outermost;
-}
-
-/// Lookup a CB value from a loop attribute that stores a cb_index.
-static FailureOr<Value> getCBFromAttr(func::FuncOp funcOp, scf::ForOp forOp,
-                                      llvm::StringRef attrName) {
-  auto cbAttr = forOp->getAttrOfType<IntegerAttr>(attrName);
-  if (!cbAttr) {
-    return failure();
-  }
-  if (auto bindOp = findBindCBByIndex(funcOp, cbAttr.getInt())) {
-    return bindOp.getResult();
-  }
-  return failure();
+  // Prefer: 1) CB matching output shape, 2) largest CB.
+  return matchingShapeCB ? matchingShapeCB : largestCB;
 }
 
 /// Find a cb_reserve view for auto-inserted stores. Searches for cb_reserve
@@ -137,10 +154,8 @@ struct TTLInsertTileRegsSyncPass
       Block &body = forOp.getRegion().front();
       OpBuilder builder(forOp);
 
-      // Find outermost loop for init_sfpu placement.
-      scf::ForOp outermostLoop = forOp->getParentOfType<scf::ForOp>()
-                                     ? findOutermostLoop(forOp)
-                                     : forOp;
+      // Find outermost compute loop for init_sfpu placement.
+      scf::ForOp outermostLoop = findOutermostComputeLoop(forOp);
 
       // Find existing sync ops preceding the outermost loop.
       auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
@@ -148,18 +163,37 @@ struct TTLInsertTileRegsSyncPass
           findPrecedingOp<InitSFPUOp>(outermostLoop.getOperation(), stopAtLoop);
 
       // Insert init_sfpu before outermost loop if not present.
-      // Use stored CB indices from loop attributes to find the CBs.
+      // init_sfpu only uses CB metadata (format, num_faces, face_dim) to
+      // configure hardware. It does not access CB data. We use the CB that is
+      // actually extracted in the loop body, preferring one whose shape matches
+      // the output shape. This ensures correct configuration for broadcast ops
+      // where inputs have different shapes.
       if (!existingInitSfpu) {
-        auto icbOrFailure =
-            getCBFromAttr(funcOp, forOp, kTileLoopInputCBAttrName);
-        auto ocbOrFailure =
-            getCBFromAttr(funcOp, forOp, kTileLoopOutputCBAttrName);
+        SmallVector<Value> outputCBs =
+            getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
-        if (succeeded(icbOrFailure) && succeeded(ocbOrFailure)) {
-          Value icb = *icbOrFailure;
-          Value ocb = *ocbOrFailure;
+        // Find the input CB that is extracted in the loop body.
+        // Prefer one whose shape matches the output CB shape.
+        Value outputCB = outputCBs.empty() ? Value() : outputCBs.front();
+        Value extractedInputCB = findExtractedInputCB(forOp, outputCB);
+
+        // Error if no input CB is extracted in the loop body.
+        // This indicates the loop doesn't read from any input, which is
+        // invalid for init_sfpu configuration.
+        if (!extractedInputCB) {
+          SmallVector<Value> inputCBs =
+              getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
+          if (!inputCBs.empty()) {
+            forOp.emitOpError()
+                << "init_sfpu: no input CB is extracted in the loop body; "
+                   "cannot determine correct CB for hardware configuration";
+            return WalkResult::interrupt();
+          }
+        }
+
+        if (extractedInputCB && !outputCBs.empty()) {
           builder.setInsertionPoint(outermostLoop);
-          builder.create<InitSFPUOp>(loc, icb, ocb);
+          builder.create<InitSFPUOp>(loc, extractedInputCB, outputCBs.front());
         }
       }
 
@@ -234,15 +268,16 @@ struct TTLInsertTileRegsSyncPass
 
       // Auto-insert stores for tiles being inserted into tensors that lack
       // explicit stores. Each tensor.insert corresponds to an output.
-      // Use the stored output CB index to find the CB (works for nested loops).
-      // TODO: Currently only supports a single output CB. If ComputeOp has
-      // multiple outputs with different CBs, this needs to match each
-      // tensor.insert to its corresponding CB.
-      Value outputCB;
-      if (auto outputCBOrFailure =
-              getCBFromAttr(funcOp, forOp, kTileLoopOutputCBAttrName);
-          succeeded(outputCBOrFailure)) {
-        outputCB = *outputCBOrFailure;
+      // Match each tensor.insert to its corresponding output CB by finding
+      // which iter_arg it writes to.
+      SmallVector<Value> outputCBs =
+          getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
+
+      // Build a map from iter_arg (output tensor) to output CB index.
+      // The iter_args are in the same order as the ComputeOp outputs.
+      llvm::DenseMap<Value, size_t> iterArgToOutputIdx;
+      for (auto [idx, iterArg] : llvm::enumerate(forOp.getRegionIterArgs())) {
+        iterArgToOutputIdx[iterArg] = idx;
       }
 
       for (tensor::InsertOp insertOp : insertOps) {
@@ -251,13 +286,19 @@ struct TTLInsertTileRegsSyncPass
           continue;
         }
 
-        // Use the output CB from the loop marker attributes.
-        Value cb = outputCB;
-        if (!cb) {
-          continue; // Cannot find CB, skip auto-insert
-        }
-
+        // Find which output CB corresponds to this tensor.insert.
+        // The dest of tensor.insert is an iter_arg, which maps to an output.
         Value destTensor = insertOp.getDest();
+        auto it = iterArgToOutputIdx.find(destTensor);
+        if (it == iterArgToOutputIdx.end()) {
+          continue; // Not writing to an iter_arg, skip
+        }
+        size_t outputIdx = it->second;
+        if (outputIdx >= outputCBs.size()) {
+          continue; // No CB for this output, skip
+        }
+        Value cb = outputCBs[outputIdx];
+
         Value view = findReserveViewForStore(forOp, outermostLoop, cb,
                                              tail->getNextNode());
         if (!view) {
@@ -283,8 +324,9 @@ struct TTLInsertTileRegsSyncPass
 
       // Clean up marker attributes after processing.
       forOp->removeAttr(kTileLoopAttrName);
-      forOp->removeAttr(kTileLoopInputCBAttrName);
-      forOp->removeAttr(kTileLoopOutputCBAttrName);
+      forOp->removeAttr(kTileLoopInputCBsAttrName);
+      forOp->removeAttr(kTileLoopOutputCBsAttrName);
+      outermostLoop->removeAttr(kTileLoopOuterAttrName);
 
       return WalkResult::skip();
     });
