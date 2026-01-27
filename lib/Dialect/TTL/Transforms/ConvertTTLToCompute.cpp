@@ -185,9 +185,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     if (auto bcastOp = dyn_cast<BcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
-      tileResult = rewriter.create<TileBcastOp>(loc, tileType, inputTile,
-                                                outputTile,
-                                                bcastOp.getBcastTypeAttr());
+      tileResult = rewriter.create<TileBcastOp>(
+          loc, tileType, inputTile, outputTile, bcastOp.getBcastTypeAttr());
     } else {
       // Elementwise ops
       SmallVector<Value, 2> tileOperands;
