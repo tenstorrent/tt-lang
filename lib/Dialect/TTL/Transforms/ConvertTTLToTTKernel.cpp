@@ -1037,6 +1037,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
                     TileRegsWaitOp, TileRegsReleaseOp>();
 
+  // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
+  target.addLegalOp<SignpostOp>();
+
   // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
   // lowering phase.
   target.addLegalOp<CopyTileOp>();
