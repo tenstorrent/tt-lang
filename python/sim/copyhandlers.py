@@ -29,11 +29,13 @@ from typing import (
 from .block import Block
 from .cb import ReserveContext, WaitContext
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
+from .pipe import DstPipeIdentity, SrcPipeIdentity
 from .ttnnsim import Tensor, tensor_shape_in_tiles
 from .typedefs import Count, Pipe, Shape
 
 if TYPE_CHECKING:
     from .cb import ReserveContext, WaitContext
+    from .pipe import SrcPipeIdentity
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
@@ -47,13 +49,23 @@ if TYPE_CHECKING:
 
 # Copy endpoint types - these are the valid types for copy transfers
 # To add a new endpoint type, add it to the Unions and implement a handler for it
-CopyEndpoint = Union[Tensor, Block, Pipe, "ReserveContext", "WaitContext"]
+CopyEndpoint = Union[
+    Tensor,
+    Block,
+    Pipe,
+    "ReserveContext",
+    "WaitContext",
+    "SrcPipeIdentity",
+    DstPipeIdentity,
+]
 CopyEndpointType = Union[
     Type[Tensor],
     Type[Block],
     Type[Pipe],
     Type["ReserveContext"],
     Type["WaitContext"],
+    Type["SrcPipeIdentity"],
+    Type[DstPipeIdentity],
 ]
 
 
@@ -207,20 +219,35 @@ class BlockToPipeHandler:
                 entry = new_entry
 
         # Calculate number of receivers based on dst_core_range type
-        match dst.dst_core_range:
-            case (tuple() as first, tuple() as second):
-                # Rectangular range: count all cores in the rectangle
-                dims = len(first)
-                num_receivers = 1
+        num_receivers = 1
+
+        # Check if it's a CoreRange with slices (by examining elements)
+        if isinstance(dst.dst_core_range, tuple) and len(dst.dst_core_range) > 0:
+            has_slice = any(isinstance(item, slice) for item in dst.dst_core_range)
+
+            if has_slice:
+                # CoreRange with slices: expand and count
+                from .pipe import expand_core_range
+                from .typedefs import CoreRange
+
+                expanded_cores = expand_core_range(dst.dst_core_range)  # type: ignore[arg-type]
+                num_receivers = len(expanded_cores)
+            elif (
+                all(isinstance(item, tuple) for item in dst.dst_core_range)
+                and len(dst.dst_core_range) == 2
+            ):
+                # Legacy rectangular range: ((x1,y1), (x2,y2))
+                first, second = dst.dst_core_range
+                dims = len(first)  # type: ignore[arg-type]
                 for i in range(dims):
-                    range_size = abs(second[i] - first[i]) + 1
+                    range_size = abs(second[i] - first[i]) + 1  # type: ignore[index]
                     num_receivers *= range_size
-            case tuple():
+            else:
                 # Single multi-dimensional core
                 num_receivers = 1
-            case int():
-                # Single 1D core
-                num_receivers = 1
+        elif isinstance(dst.dst_core_range, int):
+            # Single 1D core
+            num_receivers = 1
 
         # Add to the queue for this pipe with receiver count
         # and notify any waiting receivers via event
@@ -407,6 +434,42 @@ class PipeToBlockHandler:
                     queue[0] = (src_data, remaining_receivers)
 
                 return
+
+
+# ===== Pipe Identity Wrapper Handlers =====
+# These handlers delegate to the underlying Pipe handlers for SrcPipeIdentity and DstPipeIdentity
+
+
+@register_copy_handler(Block, SrcPipeIdentity)
+class BlockToSrcPipeIdentityHandler:
+    """Handler for Block → SrcPipeIdentity (delegates to Block → Pipe)."""
+
+    def validate(self, src: Block, dst: SrcPipeIdentity) -> None:
+        # Delegate to the Pipe handler
+        BlockToPipeHandler().validate(src, dst.pipe)
+
+    def transfer(self, src: Block, dst: SrcPipeIdentity) -> None:
+        # Delegate to the Pipe handler
+        BlockToPipeHandler().transfer(src, dst.pipe)
+
+    def can_wait(self, src: Block, dst: SrcPipeIdentity) -> bool:
+        return BlockToPipeHandler().can_wait(src, dst.pipe)
+
+
+@register_copy_handler(DstPipeIdentity, Block)
+class DstPipeIdentityToBlockHandler:
+    """Handler for DstPipeIdentity → Block (delegates to Pipe → Block)."""
+
+    def validate(self, src: DstPipeIdentity, dst: Block) -> None:
+        # Delegate to the Pipe handler
+        PipeToBlockHandler().validate(src.pipe, dst)
+
+    def transfer(self, src: DstPipeIdentity, dst: Block) -> None:
+        # Delegate to the Pipe handler
+        PipeToBlockHandler().transfer(src.pipe, dst)
+
+    def can_wait(self, src: DstPipeIdentity, dst: Block) -> bool:
+        return PipeToBlockHandler().can_wait(src.pipe, dst)
 
 
 # ===== Context Manager Wrapper Handlers =====
