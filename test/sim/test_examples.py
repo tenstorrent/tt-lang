@@ -72,6 +72,7 @@ def assert_success_output(code: int, out: str) -> None:
     "script_name",
     [
         "broadcast.py",
+        "general_broadcast.py",
         "eltwise_add.py",
         "eltwise_pipe.py",
         "eltwise_pipe_core3.py",
