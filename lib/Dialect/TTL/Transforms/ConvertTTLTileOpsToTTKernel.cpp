@@ -28,6 +28,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
@@ -98,8 +99,7 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
 
 /// Look up and convert a CB for an operand.
 /// Combines lookupCBByIndex with type conversion to TTKernel CB type.
-[[maybe_unused]] static FailureOr<Value>
-lookupAndConvertCB(Value operand, func::FuncOp funcOp,
+static FailureOr<Value> lookupAndConvertCB(Value operand, func::FuncOp funcOp,
                                            const TypeConverter *typeConverter,
                                            ConversionPatternRewriter &rewriter,
                                            Location loc) {
@@ -463,6 +463,100 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Bcast Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Convert TTL BcastType to TTKernel BcastType.
+static ttk::BcastType convertBcastType(ttl::BcastType ttlType) {
+  switch (ttlType) {
+  case ttl::BcastType::Col:
+    return ttk::BcastType::Col;
+  case ttl::BcastType::Row:
+    return ttk::BcastType::Row;
+  case ttl::BcastType::Scalar:
+    return ttk::BcastType::Scalar;
+  }
+  llvm_unreachable("unknown BcastType");
+}
+
+/// Compute linearized index from tensor::ExtractOp indices.
+/// For a 2D tensor, linearizes as: row_idx * num_cols + col_idx.
+static std::optional<Value> computeInputIndexFromExtract(Value input,
+                                                         OpBuilder &builder,
+                                                         Location loc) {
+  auto extractOp = input.getDefiningOp<tensor::ExtractOp>();
+  if (!extractOp || extractOp.getIndices().size() != 2) {
+    return std::nullopt;
+  }
+
+  auto tensorType = dyn_cast<RankedTensorType>(extractOp.getTensor().getType());
+  if (!tensorType || tensorType.getRank() != 2) {
+    return std::nullopt;
+  }
+
+  int64_t numCols = tensorType.getDimSize(1);
+  if (numCols == ShapedType::kDynamic) {
+    return std::nullopt;
+  }
+
+  Value rowIdx = extractOp.getIndices()[0];
+  Value colIdx = extractOp.getIndices()[1];
+  Value numColsVal = builder.create<arith::ConstantIndexOp>(loc, numCols);
+  Value rowTerm = builder.create<arith::MulIOp>(loc, rowIdx, numColsVal);
+  return builder.create<arith::AddIOp>(loc, rowTerm, colIdx).getResult();
+}
+
+/// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
+/// Supports shape expansion where input CB has different shape than output CB.
+struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
+  using OpConversionPattern<TileBcastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileBcastOp op, TileBcastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+    auto inCB =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
+    }
+
+    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
+                                    rewriter, loc);
+    if (failed(outCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
+    }
+
+    Value dstIdx =
+        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+
+    // For shape expansion, input comes from ExtractOp with affine-mapped indices.
+    Value inCBIdx;
+    if (auto extractIdx = computeInputIndexFromExtract(op.getInput(), rewriter, loc)) {
+      inCBIdx = *extractIdx;
+    } else {
+      inCBIdx = dstIdx;
+    }
+
+    auto ttkAttr = convertBcastType(op.getBcastType());
+
+    rewriter.create<ttk::UnaryBcastInitOp>(loc, *inCB, *outCB, ttkAttr);
+    rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx, dstIdx,
+                                           ttkAttr);
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
 
@@ -518,6 +612,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLCopyDstToTTKernel>(ctx);
+
+  // CB -> DST ops with attribute need the type converter.
+  patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)
