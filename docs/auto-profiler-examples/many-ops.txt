@@ -1,0 +1,175 @@
+====================================================================================================
+TTLANG AUTO-PROFILE REPORT
+====================================================================================================
+
+Total operations: 206
+Longest thread: 1,365 cycles
+
+====================================================================================================
+THREAD: NCRISC     [dm_read] (24 ops, 596 cycles, 43.7% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+92                        def dm_read():
+93       7.2%  19-24          a_blk = a_cb.reserve()  (x2, avg=21.5, total=43)
+94       7.4%  20-24          tx_a = ttl.copy(a[0, 0], a_blk)  (x2, avg=22.0, total=44)
+95       7.2%  21-22          tx_a.wait()  (x2, avg=21.5, total=43)
+96       7.4%  21-23          a_cb.push()  (x2, avg=22.0, total=44)
+98       9.2%  21-34          b_blk = b_cb.reserve()  (x2, avg=27.5, total=55)
+99       9.4%  22-34          tx_b = ttl.copy(b[0, 0], b_blk)  (x2, avg=28.0, total=56)
+100      9.4%  22-34          tx_b.wait()  (x2, avg=28.0, total=56)
+101      9.2%  22-33          b_cb.push()  (x2, avg=27.5, total=55)
+103      7.4%  21-23          c_blk = c_cb.reserve()  (x2, avg=22.0, total=44)
+104      9.2%  22-33          tx_c = ttl.copy(c[0, 0], c_blk)  (x2, avg=27.5, total=55)
+105      9.2%  22-33          tx_c.wait()  (x2, avg=27.5, total=55)
+106      7.7%  22-24          c_cb.push()  (x2, avg=23.0, total=46)
+
+====================================================================================================
+THREAD: BRISC      [dm_write] (8 ops, 152 cycles, 11.1% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+92                        def dm_write():
+93      28.9%  18-26          out_blk = out_cb.wait()  (x2, avg=22.0, total=44)
+94      23.7%  18             tx = ttl.copy(out_blk, out[0, 0])  (x2 = 36 cycles)
+95      23.7%  18             tx.wait()  (x2 = 36 cycles)
+96      23.7%  18             out_cb.pop()  (x2 = 36 cycles)
+
+====================================================================================================
+THREAD: TRISC_0    [fused_compute] (58 ops, 1,099 cycles, 80.5% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+92                        def fused_compute():
+93       3.7%  20-21          av = a_cb.wait()  (x2, avg=20.5, total=41)
+94       4.3%  23-24          bv = b_cb.wait()  (x2, avg=23.5, total=47)
+95       4.5%  22-27          cv = c_cb.wait()  (x2, avg=24.5, total=49)
+96       3.6%  20             o = out_cb.reserve()  (x2 = 40 cycles)
+97                            # 20 ops: sequential chain to avoid multiple uses of intermediates
+98                            # Start with a: 5 unary ops
+99       3.9%  19-24          v = ttl.math.sigmoid(av)  # 1  (x2, avg=21.5, total=43)
+100      3.3%  18             v = ttl.math.sigmoid(v)  # 2  (x2 = 36 cycles)
+101      3.3%  18             v = ttl.math.tanh(v)  # 3  (x2 = 36 cycles)
+102      3.4%  18-19          v = ttl.math.tanh(v)  # 4  (x2, avg=18.5, total=37)
+103      3.4%  18-19          v = ttl.math.abs(v)  # 5  (x2, avg=18.5, total=37)
+104                           # Mix in b: 5 ops (1 binary + 4 unary)
+105      3.4%  18-19          v = v + bv  # 6  (x2, avg=18.5, total=37)
+106      3.6%  19-21          v = ttl.math.sigmoid(v)  # 7  (x2, avg=20.0, total=40)
+107      3.5%  19             v = ttl.math.tanh(v)  # 8  (x2 = 38 cycles)
+108      3.4%  18-19          v = ttl.math.neg(v)  # 9  (x2, avg=18.5, total=37)
+109      3.5%  18-20          v = ttl.math.abs(v)  # 10  (x2, avg=19.0, total=38)
+110                           # Mix in c: 5 ops (1 binary + 4 unary)
+111      3.3%  18             v = v + cv  # 11  (x2 = 36 cycles)
+112      3.3%  18             v = ttl.math.relu(v)  # 12  (x2 = 36 cycles)
+113      3.3%  18             v = ttl.math.sigmoid(v)  # 13  (x2 = 36 cycles)
+114      3.3%  18             v = ttl.math.tanh(v)  # 14  (x2 = 36 cycles)
+115      3.3%  18             v = ttl.math.abs(v)  # 15  (x2 = 36 cycles)
+116                           # Final: 5 more unary ops
+117      3.3%  18             v = ttl.math.sigmoid(v)  # 16  (x2 = 36 cycles)
+118      3.3%  18             v = ttl.math.tanh(v)  # 17  (x2 = 36 cycles)
+119      3.3%  18             v = ttl.math.relu(v)  # 18  (x2 = 36 cycles)
+120      3.3%  18             v = ttl.math.sigmoid(v)  # 19  (x2 = 36 cycles)
+121      3.3%  18             result = ttl.math.tanh(v)  # 20  (x2 = 36 cycles)
+122      3.3%  18             o.store(result)  (x2 = 36 cycles)
+123      3.4%  18-19          a_cb.pop()  (x2, avg=18.5, total=37)
+124      3.4%  18-19          b_cb.pop()  (x2, avg=18.5, total=37)
+125      3.4%  18-19          c_cb.pop()  (x2, avg=18.5, total=37)
+126      3.3%  18             out_cb.push()  (x2 = 36 cycles)
+
+====================================================================================================
+THREAD: TRISC_1    [fused_compute] (58 ops, 1,349 cycles, 98.8% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+92                        def fused_compute():
+93       2.7%  18-19          av = a_cb.wait()  (x2, avg=18.5, total=37)
+94       3.2%  20-23          bv = b_cb.wait()  (x2, avg=21.5, total=43)
+95       3.3%  22-23          cv = c_cb.wait()  (x2, avg=22.5, total=45)
+96       4.7%  29-34          o = out_cb.reserve()  (x2, avg=31.5, total=63)
+97                            # 20 ops: sequential chain to avoid multiple uses of intermediates
+98                            # Start with a: 5 unary ops
+99       3.2%  21-22          v = ttl.math.sigmoid(av)  # 1  (x2, avg=21.5, total=43)
+100      3.3%  21-23          v = ttl.math.sigmoid(v)  # 2  (x2, avg=22.0, total=44)
+101      3.4%  22-24          v = ttl.math.tanh(v)  # 3  (x2, avg=23.0, total=46)
+102      3.0%  20-21          v = ttl.math.tanh(v)  # 4  (x2, avg=20.5, total=41)
+103      5.0%  33-34          v = ttl.math.abs(v)  # 5  (x2, avg=33.5, total=67)
+104                           # Mix in b: 5 ops (1 binary + 4 unary)
+105      3.3%  22-23          v = v + bv  # 6  (x2, avg=22.5, total=45)
+106      4.1%  21-34          v = ttl.math.sigmoid(v)  # 7  (x2, avg=27.5, total=55)
+107      5.0%  34             v = ttl.math.tanh(v)  # 8  (x2 = 68 cycles)
+108      4.5%  27-34          v = ttl.math.neg(v)  # 9  (x2, avg=30.5, total=61)
+109      3.1%  21             v = ttl.math.abs(v)  # 10  (x2 = 42 cycles)
+110                           # Mix in c: 5 ops (1 binary + 4 unary)
+111      3.8%  22-29          v = v + cv  # 11  (x2, avg=25.5, total=51)
+112      3.8%  21-30          v = ttl.math.relu(v)  # 12  (x2, avg=25.5, total=51)
+113      4.8%  31-34          v = ttl.math.sigmoid(v)  # 13  (x2, avg=32.5, total=65)
+114      3.2%  21-22          v = ttl.math.tanh(v)  # 14  (x2, avg=21.5, total=43)
+115      3.4%  22-24          v = ttl.math.abs(v)  # 15  (x2, avg=23.0, total=46)
+116                           # Final: 5 more unary ops
+117      3.3%  22-23          v = ttl.math.sigmoid(v)  # 16  (x2, avg=22.5, total=45)
+118      3.0%  20             v = ttl.math.tanh(v)  # 17  (x2 = 40 cycles)
+119      2.9%  18-21          v = ttl.math.relu(v)  # 18  (x2, avg=19.5, total=39)
+120      3.7%  20-30          v = ttl.math.sigmoid(v)  # 19  (x2, avg=25.0, total=50)
+121      2.9%  19-20          result = ttl.math.tanh(v)  # 20  (x2, avg=19.5, total=39)
+122      2.7%  18             o.store(result)  (x2 = 36 cycles)
+123      2.7%  18             a_cb.pop()  (x2 = 36 cycles)
+124      2.7%  18             b_cb.pop()  (x2 = 36 cycles)
+125      2.7%  18             c_cb.pop()  (x2 = 36 cycles)
+126      2.7%  18             out_cb.push()  (x2 = 36 cycles)
+
+====================================================================================================
+THREAD: TRISC_2    [fused_compute] (58 ops, 1,365 cycles, 100.0% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+92                        def fused_compute():
+93       4.4%  26-34          av = a_cb.wait()  (x2, avg=30.0, total=60)
+94       3.1%  19-23          bv = b_cb.wait()  (x2, avg=21.0, total=42)
+95       3.5%  20-28          cv = c_cb.wait()  (x2, avg=24.0, total=48)
+96       4.0%  21-34          o = out_cb.reserve()  (x2, avg=27.5, total=55)
+97                            # 20 ops: sequential chain to avoid multiple uses of intermediates
+98                            # Start with a: 5 unary ops
+99       3.1%  20-22          v = ttl.math.sigmoid(av)  # 1  (x2, avg=21.0, total=42)
+100      3.0%  20-21          v = ttl.math.sigmoid(v)  # 2  (x2, avg=20.5, total=41)
+101      3.3%  21-24          v = ttl.math.tanh(v)  # 3  (x2, avg=22.5, total=45)
+102      4.1%  23-33          v = ttl.math.tanh(v)  # 4  (x2, avg=28.0, total=56)
+103      4.2%  23-34          v = ttl.math.abs(v)  # 5  (x2, avg=28.5, total=57)
+104                           # Mix in b: 5 ops (1 binary + 4 unary)
+105      3.1%  21             v = v + bv  # 6  (x2 = 42 cycles)
+106      5.0%  34             v = ttl.math.sigmoid(v)  # 7  (x2 = 68 cycles)
+107      4.0%  20-34          v = ttl.math.tanh(v)  # 8  (x2, avg=27.0, total=54)
+108      4.5%  28-34          v = ttl.math.neg(v)  # 9  (x2, avg=31.0, total=62)
+109      3.2%  20-23          v = ttl.math.abs(v)  # 10  (x2, avg=21.5, total=43)
+110                           # Mix in c: 5 ops (1 binary + 4 unary)
+111      2.9%  20             v = v + cv  # 11  (x2 = 40 cycles)
+112      3.6%  21-28          v = ttl.math.relu(v)  # 12  (x2, avg=24.5, total=49)
+113      5.3%  34-38          v = ttl.math.sigmoid(v)  # 13  (x2, avg=36.0, total=72)
+114      3.3%  22-23          v = ttl.math.tanh(v)  # 14  (x2, avg=22.5, total=45)
+115      3.2%  21-22          v = ttl.math.abs(v)  # 15  (x2, avg=21.5, total=43)
+116                           # Final: 5 more unary ops
+117      3.5%  21-27          v = ttl.math.sigmoid(v)  # 16  (x2, avg=24.0, total=48)
+118      3.1%  20-22          v = ttl.math.tanh(v)  # 17  (x2, avg=21.0, total=42)
+119      2.9%  19-20          v = ttl.math.relu(v)  # 18  (x2, avg=19.5, total=39)
+120      2.9%  19-21          v = ttl.math.sigmoid(v)  # 19  (x2, avg=20.0, total=40)
+121      3.1%  19-23          result = ttl.math.tanh(v)  # 20  (x2, avg=21.0, total=42)
+122      2.8%  19             o.store(result)  (x2 = 38 cycles)
+123      2.9%  19-20          a_cb.pop()  (x2, avg=19.5, total=39)
+124      2.7%  18-19          b_cb.pop()  (x2, avg=18.5, total=37)
+125      2.8%  19             c_cb.pop()  (x2 = 38 cycles)
+126      2.8%  19             out_cb.push()  (x2 = 38 cycles)
+
+====================================================================================================
+THREAD SUMMARY
+====================================================================================================
+  NCRISC                 [dm_read]        596 cycles ( 24 ops) [ 43.7%]
+  BRISC                 [dm_write]        152 cycles (  8 ops) [ 11.1%]
+  TRISC_0          [fused_compute]      1,099 cycles ( 58 ops) [ 80.5%]
+  TRISC_1          [fused_compute]      1,349 cycles ( 58 ops) [ 98.8%]
+  TRISC_2          [fused_compute]      1,365 cycles ( 58 ops) [100.0%]
+
+====================================================================================================
