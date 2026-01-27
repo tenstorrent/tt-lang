@@ -25,4 +25,13 @@ def TTL_TransferKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;
+def TTL_BcastType_Row    : I32EnumAttrCase<"Row",    2, "row">;
+def TTL_BcastType_Scalar : I32EnumAttrCase<"Scalar", 3, "scalar">;
+
+def TTL_BcastType : I32EnumAttr<"BcastType", "TTL broadcast type",
+    [TTL_BcastType_Col, TTL_BcastType_Row, TTL_BcastType_Scalar]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD
