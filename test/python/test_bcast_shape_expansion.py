@@ -68,7 +68,7 @@ def bcast_col_expand_kernel(inp, out):
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
             # bcast handles the (2,1) -> (2,2) expansion internally
-            result = ttl.bcast(i, o, "col")
+            result = ttl.math.broadcast(i, o, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
@@ -97,7 +97,7 @@ def bcast_row_expand_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "row")
+            result = ttl.math.broadcast(i, o, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
@@ -125,7 +125,7 @@ def bcast_scalar_expand_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "scalar")
+            result = ttl.math.broadcast(i, o, dims=[0, 1])
             o.store(result)
 
     @ttl.datamovement()
@@ -161,7 +161,7 @@ def mul_add_bcast_expand_kernel(a, b, c, out):
     def compute_fn():
         # Stage 1: Bcast c from (2,1) to (2,2)
         with c_cb.wait() as c_tile, c_bcast_cb.reserve() as c_out:
-            c_bcast = ttl.bcast(c_tile, c_out, "col")
+            c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[1])
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast

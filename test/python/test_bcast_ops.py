@@ -72,7 +72,7 @@ def bcast_row_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "row")
+            result = ttl.math.broadcast(i, o, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
@@ -99,7 +99,7 @@ def bcast_col_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "col")
+            result = ttl.math.broadcast(i, o, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
@@ -126,7 +126,7 @@ def bcast_scalar_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "scalar")
+            result = ttl.math.broadcast(i, o, dims=[0, 1])
             o.store(result)
 
     @ttl.datamovement()
@@ -171,7 +171,7 @@ def mul_add_bcast_kernel(a, b, c, out):
     def compute_fn():
         # Stage 1: Bcast c and store to intermediate CB
         with c_cb.wait() as c_tile, c_bcast_cb.reserve() as c_out:
-            c_bcast = ttl.bcast(c_tile, c_out, "row")
+            c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
@@ -272,7 +272,7 @@ def bcast_row_multitile_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "row")
+            result = ttl.math.broadcast(i, o, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
@@ -299,7 +299,7 @@ def bcast_col_multitile_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "col")
+            result = ttl.math.broadcast(i, o, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
@@ -326,7 +326,7 @@ def bcast_scalar_multitile_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, out_cb.reserve() as o:
-            result = ttl.bcast(i, o, "scalar")
+            result = ttl.math.broadcast(i, o, dims=[0, 1])
             o.store(result)
 
     @ttl.datamovement()
@@ -634,7 +634,7 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
     def compute_fn():
         # Stage 1: Bcast c and store to intermediate CB
         with c_cb.wait() as c_tile, c_bcast_cb.reserve() as c_out:
-            c_bcast = ttl.bcast(c_tile, c_out, "row")
+            c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
