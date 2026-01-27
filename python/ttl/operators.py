@@ -329,6 +329,31 @@ def signpost(name: str):
     return ttl.signpost(name)
 
 
+@syntax("bcast")
+def bcast(
+    input: TensorBlock, output: TensorBlock, bcast_type: str = "row"
+) -> TensorBlock:
+    """
+    Broadcast a row/column/scalar tensor to full tiles.
+
+    Args:
+        input: Input tensor (CB-attached)
+        output: Output tensor (CB-attached, used for output CB tracking)
+        bcast_type: Broadcast type - "row", "col", or "scalar"
+
+    Returns:
+        Result tensor with broadcast values
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType
+
+    bcast_map = {"col": 1, "row": 2, "scalar": 3}
+    bcast_val = bcast_map.get(bcast_type.lower(), 2)
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    bcast_attr = IntegerAttr.get(i32_type, bcast_val)
+    return ttl.bcast(output.type, input, output, bcast_attr)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -336,5 +361,6 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "bcast",
     *_generated_all,
 ]

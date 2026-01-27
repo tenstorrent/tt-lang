@@ -767,8 +767,11 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
 
       // Second: Process remaining block arguments - insert copy_tile at first
-      // use
+      // use. Skip CB-reading ops (bcast, etc.) which read from CB directly.
       for (Operation &op : *body) {
+        if (isa<TileBcastOp>(&op)) {
+          continue;
+        }
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {
@@ -825,8 +828,12 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
-      // Set dst_idx attributes on tile compute ops
+      // Set dst_idx attributes on tile compute ops.
+      // Skip CB-reading ops (bcast, etc.) - their DST index comes from loop IVs.
       for (Operation &op : *body) {
+        if (isa<TileBcastOp>(&op)) {
+          continue;
+        }
         if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op)) {
           continue;
         }
