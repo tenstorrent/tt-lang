@@ -12,7 +12,10 @@ project(tt-lang LANGUAGES CXX C)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 include(TTLangUtils)
-ttlang_set_version("0.2.0")
+
+# Get version from git tags
+include(GetVersionFromGit)
+ttlang_set_version("${TTLANG_VERSION}")
 
 option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" ON)
 option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
@@ -117,3 +120,6 @@ install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
 install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
+
+# Install ttlang-sim script to bin directory
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim" DESTINATION bin)

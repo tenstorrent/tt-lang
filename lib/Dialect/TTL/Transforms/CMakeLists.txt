@@ -3,7 +3,9 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
+  LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
+  TTLDumpCBFlowGraph.cpp
   TTLInsertTileRegsSync.cpp
   TTLAssignDST.cpp
 
@@ -13,6 +15,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LINK_LIBS PUBLIC
   MLIRAnalysis
   MLIRArithDialect
+  MLIREmitCDialect
   MLIRFuncDialect
   MLIRLinalgDialect
   MLIRMathDialect
