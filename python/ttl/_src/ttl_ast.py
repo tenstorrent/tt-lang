@@ -394,6 +394,8 @@ class TTLGenericCompiler(TTCompilerBase):
             return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        elif isinstance(node.value, str):
+            return node.value
         else:
             self._raise_error(
                 node, f"constant type {type(node.value).__name__} not implemented"
