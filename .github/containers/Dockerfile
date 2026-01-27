@@ -24,43 +24,13 @@ WORKDIR /home/build/tt-lang
 # Show commit info for traceability
 RUN git log -1 || echo "Git info not available"
 
-# Build tt-lang using FetchContent (builds tt-mlir from pinned commit)
-# Install tt-mlir directly to /opt/ttmlir-toolchain
-RUN TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]') && \
-    cmake -G Ninja -B build \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_COMPILER=clang++-17 \
-    -DCMAKE_C_COMPILER=clang-17 \
-    -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-    -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
-    -DTTMLIR_GIT_TAG=$TTMLIR_COMMIT \
-    -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
-
-# Build and install tt-lang to toolchain
-RUN source build/env/activate && \
-    cmake --build build && \
-    cmake --install build --prefix $TTMLIR_TOOLCHAIN_DIR
-
-# Copy tt-mlir Python packages that aren't included in install
-# Use -L to dereference symlinks (copy actual files, not symlink paths)
-# TODO: Remove when tt-mlir install is fixed
-RUN mkdir -p $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime && \
-    cp -prL build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/ 2>/dev/null || true
-
-# Copy ttmlir Python bindings (dereference symlinks with -L)
-RUN if [ -d "build/_deps/tt-mlir-build/python_packages/ttmlir" ]; then \
-      cp -prL build/_deps/tt-mlir-build/python_packages/ttmlir/* $TTMLIR_TOOLCHAIN_DIR/python_packages/ttmlir/ 2>/dev/null || true; \
-    fi
-
-# Normalize tt-mlir installation (replace any remaining symlinks with actual files)
+# Configure, build, install, and cleanup in ONE RUN command to avoid Docker layer bloat
+# Docker keeps all layers during build - by combining these, the huge build
+# directory (50-80GB) never gets committed to a layer
 COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
-RUN bash /tmp/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/normalize-ttmlir-install.sh
-
-# Remove unnecessary LLVM/MLIR tools to reduce image size
 COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
-RUN bash /tmp/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR && rm /tmp/cleanup-toolchain.sh
-
-# Keep build directory - dist stage needs it for installation
+COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
+RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh && rm /tmp/build-and-install.sh
 
 # =============================================================================
 # Stage 2: CI (tt-mlir toolchain for CI workflows)
@@ -101,9 +71,25 @@ COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 # Set write permissions
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
-# Install text editors
+# Install text editors and SSH (required for ird tool)
 RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
-    apt-get update && apt-get install -y vim nano && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /run/sshd
+
+# Auto-activate tt-lang environment on login (works even when entrypoint is overridden)
+# Add to /etc/profile.d for login shells and /etc/bash.bashrc for interactive shells
+RUN printf '%s\n' \
+      '# Auto-activate tt-lang environment' \
+      'if [ "${TTLANG_ENV_ACTIVATED:-0}" != "1" ]; then' \
+      '    export TTMLIR_TOOLCHAIN_DIR="${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}"' \
+      '    if [ -f "$TTMLIR_TOOLCHAIN_DIR/env/activate" ]; then' \
+      '        echo "Activating tt-lang environment (profile.d)..."' \
+      '        source "$TTMLIR_TOOLCHAIN_DIR/env/activate"' \
+      '    fi' \
+      'fi' \
+      > /etc/profile.d/ttlang.sh && \
+    chmod +x /etc/profile.d/ttlang.sh && \
+    echo '[ "${TTLANG_ENV_ACTIVATED:-0}" != "1" ] && export TTMLIR_TOOLCHAIN_DIR="${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}" && [ -f "$TTMLIR_TOOLCHAIN_DIR/env/activate" ] && source "$TTMLIR_TOOLCHAIN_DIR/env/activate"' >> /etc/bash.bashrc
 
 # Setup entrypoint
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -127,10 +113,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install Python dev dependencies (black, sphinx, etc.)
 COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN python3.11 -m pip install -r /tmp/dev-requirements.txt --no-cache-dir && \
-    rm /tmp/dev-requirements.txt
-
-# Install additional development tools
-RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
+    rm /tmp/dev-requirements.txt && \
+    rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \
