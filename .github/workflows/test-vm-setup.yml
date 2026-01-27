@@ -1,0 +1,233 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+#
+# Manual workflow to test the Lima VM setup for ttsim testing.
+# This verifies that the bundled ttsim binaries and VM scripts work correctly.
+#
+# Note: This workflow uses macos-26 which has limited resources:
+#   - 3 CPUs (M1)
+#   - 7 GB RAM
+#   - 14 GB disk
+# The VM is configured with reduced resources to fit these constraints.
+
+name: Test VM Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      chip_type:
+        description: "Chip type to simulate"
+        type: choice
+        options:
+          - wh
+          - bh
+        default: wh
+      skip_tt_mlir_build:
+        description: "Skip tt-mlir build (faster, but tests won't run)"
+        type: boolean
+        default: false
+
+jobs:
+  test-vm-setup:
+    runs-on: macos-26
+    timeout-minutes: 180  # 3 hours for full build
+
+    env:
+      TT_ROOT: ${{ github.workspace }}/tt
+      VM_NAME: ttlang-ttsim-ci
+      # Reduced resources for CI runner (macos-26 has 3 CPUs, 7GB RAM, 14GB disk)
+      VM_CPUS: 2
+      VM_MEMORY: 4GiB
+      VM_DISK: 10GiB
+      CHIP_TYPE: ${{ inputs.chip_type }}
+
+    steps:
+      - name: Show runner info
+        run: |
+          echo "Runner OS: $RUNNER_OS"
+          echo "Runner Arch: $RUNNER_ARCH"
+          sysctl -n hw.ncpu
+          sysctl -n hw.memsize | awk '{print $0/1024/1024/1024 " GB"}'
+          df -h
+
+      - name: Checkout tt-lang
+        uses: actions/checkout@v4
+        with:
+          path: tt/tt-lang
+
+      - name: Read tt-mlir version
+        id: ttmlir-version
+        run: |
+          TTMLIR_COMMIT=$(cat tt/tt-lang/third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$TTMLIR_COMMIT" >> $GITHUB_OUTPUT
+
+      - name: Checkout tt-mlir
+        uses: actions/checkout@v4
+        with:
+          repository: tenstorrent/tt-mlir
+          ref: ${{ steps.ttmlir-version.outputs.commit }}
+          path: tt/tt-mlir
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Lima
+        run: |
+          brew install lima
+          limactl --version
+
+      - name: Verify bundled ttsim binaries
+        run: |
+          echo "Checking bundled ttsim binaries..."
+          ls -la tt/tt-lang/tools/vm/bin/
+          ls -la tt/tt-lang/tools/vm/bin/wh/
+          ls -la tt/tt-lang/tools/vm/bin/bh/
+
+          # Verify the binary for selected chip type exists
+          if [[ ! -f "tt/tt-lang/tools/vm/bin/${{ inputs.chip_type }}/libttsim.so" ]]; then
+            echo "ERROR: libttsim.so not found for chip type: ${{ inputs.chip_type }}"
+            exit 1
+          fi
+          echo "✓ Bundled libttsim.so found for ${{ inputs.chip_type }}"
+
+      - name: Validate VM configuration
+        run: |
+          cd tt/tt-lang
+          source tools/vm/config.sh
+
+          echo "=== Configuration Validation ==="
+          config_summary
+
+          echo ""
+          echo "=== Path Validation ==="
+          if validate_paths; then
+            echo "✓ All paths valid"
+          else
+            echo "✗ Path validation failed"
+            exit 1
+          fi
+
+      - name: Generate Lima configuration
+        run: |
+          cd tt/tt-lang/tools/vm
+
+          # Source config to get variables
+          source config.sh
+
+          # Generate lima.yaml from template
+          sed -e "s|@TT_ROOT@|${TT_ROOT}|g" \
+              -e "s|@VM_MOUNT_POINT@|$(get_vm_mount_point)|g" \
+              -e "s|@VM_CPUS@|${VM_CPUS}|g" \
+              -e "s|@VM_MEMORY@|${VM_MEMORY}|g" \
+              -e "s|@VM_DISK@|${VM_DISK}|g" \
+              -e "s|@UBUNTU_VERSION@|${UBUNTU_VERSION}|g" \
+              -e "s|@CHIP_TYPE@|${CHIP_TYPE}|g" \
+              lima.yaml.template > lima.yaml
+
+          echo "=== Generated Lima Configuration ==="
+          cat lima.yaml
+
+      - name: Create Lima VM
+        run: |
+          cd tt/tt-lang/tools/vm
+
+          echo "Creating Lima VM: $VM_NAME"
+          limactl create --name="$VM_NAME" lima.yaml
+
+          echo "Starting Lima VM..."
+          limactl start "$VM_NAME"
+
+          echo "Waiting for VM to be ready..."
+          sleep 10
+
+          echo "VM Status:"
+          limactl list
+
+      - name: Verify VM access
+        run: |
+          echo "Testing SSH access to VM..."
+          limactl shell "$VM_NAME" -- uname -a
+          limactl shell "$VM_NAME" -- cat /etc/os-release
+          limactl shell "$VM_NAME" -- df -h
+
+      - name: Verify mount point
+        run: |
+          echo "Checking if TT_ROOT is mounted in VM..."
+          limactl shell "$VM_NAME" -- ls -la /home/runner.linux/tt/ || {
+            echo "Mount point not found, checking available mounts..."
+            limactl shell "$VM_NAME" -- mount | grep -i tt || true
+            limactl shell "$VM_NAME" -- ls -la /home/ || true
+          }
+
+      - name: Verify bundled binary accessible in VM
+        run: |
+          limactl shell "$VM_NAME" -- bash -c "
+            ls -la /home/runner.linux/tt/tt-lang/tools/vm/bin/${{ inputs.chip_type }}/
+            file /home/runner.linux/tt/tt-lang/tools/vm/bin/${{ inputs.chip_type }}/libttsim.so
+          "
+
+      - name: Test provisioning script (dry run)
+        if: ${{ inputs.skip_tt_mlir_build }}
+        run: |
+          echo "Skipping full provisioning (skip_tt_mlir_build=true)"
+          echo "Would run: provision-vm.sh"
+
+          # Just verify the script is accessible and has correct syntax
+          limactl shell "$VM_NAME" -- bash -n /home/runner.linux/tt/tt-lang/tools/vm/provision-vm.sh
+          echo "✓ Provisioning script syntax OK"
+
+      - name: Run full provisioning
+        if: ${{ !inputs.skip_tt_mlir_build }}
+        run: |
+          echo "Running full VM provisioning..."
+          echo "This will build ttmlir-toolchain, tt-mlir, and tt-lang"
+          echo "Expected time: 1-2 hours"
+
+          limactl shell "$VM_NAME" -- bash -c "
+            export TT_ROOT_VM='/home/runner.linux/tt'
+            export LINUX_VM_DIR='\${TT_ROOT_VM}/linux-vm'
+            export TTMLIR_TOOLCHAIN_DIR='\${LINUX_VM_DIR}/ttmlir-toolchain'
+            export CHIP_TYPE='${{ inputs.chip_type }}'
+            export SIM_DIR='\$HOME/sim'
+            export CMAKE_BUILD_TYPE='Release'
+            export USE_CCACHE='ON'
+
+            bash '\${TT_ROOT_VM}/tt-lang/tools/vm/provision-vm.sh'
+          "
+
+      - name: Verify simulator setup
+        if: ${{ !inputs.skip_tt_mlir_build }}
+        run: |
+          echo "Verifying simulator directory..."
+          limactl shell "$VM_NAME" -- bash -c "
+            ls -la ~/sim/
+            echo ''
+            echo 'Checking libttsim.so:'
+            file ~/sim/libttsim.so
+            echo ''
+            echo 'Checking soc_descriptor.yaml:'
+            head -20 ~/sim/soc_descriptor.yaml
+          "
+
+      - name: Run smoke test
+        if: ${{ !inputs.skip_tt_mlir_build }}
+        run: |
+          echo "Running smoke test inside VM..."
+          limactl shell "$VM_NAME" -- bash -c "
+            source ~/activate-ttsim.sh
+            cd /home/runner.linux/tt/tt-lang
+            python test/python/smoketest.py
+          "
+
+      - name: Cleanup VM
+        if: always()
+        run: |
+          echo "Cleaning up VM..."
+          limactl stop "$VM_NAME" || true
+          limactl delete --force "$VM_NAME" || true
+          echo "VM cleaned up"
+
+      - name: Show disk usage
+        if: always()
+        run: |
+          echo "Final disk usage:"
+          df -h
