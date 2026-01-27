@@ -22,6 +22,19 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
     return result;
   }
 
+  // Special case: BcastOp can be fused when its input is CB-attached.
+  // Bcast reads from CB and writes to DST, so it can be the first op
+  // in a fused compute block.
+  if (auto bcastOp = llvm::dyn_cast<BcastOp>(defOp)) {
+    mlir::Value bcastInput = bcastOp.getInput();
+    if (getAttachedCB(bcastInput)) {
+      result.rootInputs.insert(bcastInput);
+      result.opsInOrder.insert(defOp);
+      return result;
+    }
+    // Input not CB-attached - fall through to failure
+  }
+
   if (!isElementwiseOp(defOp)) {
     result.failureReason = TraceFailureReason::NotElementwiseOp;
     result.failedValue = value;

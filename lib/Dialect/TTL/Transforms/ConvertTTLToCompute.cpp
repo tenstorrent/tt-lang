@@ -179,18 +179,31 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Emit tile ops in topological order
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
-    SmallVector<Value, 2> tileOperands;
-    for (Value operand : getElementwiseOperands(op)) {
-      auto it = tensorToTile.find(operand);
-      if (it == tensorToTile.end()) {
-        return op->emitError("fusion failed: operand not mapped to tile value");
-      }
-      tileOperands.push_back(it->second);
-    }
+    Value tileResult;
 
-    Value tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
-    if (!tileResult) {
-      return op->emitError("fusion failed: unsupported op type");
+    // Special case: BcastOp reads from CB, needs TileBcastOp
+    if (auto bcastOp = dyn_cast<BcastOp>(op)) {
+      Value inputTile = tensorToTile[bcastOp.getInput()];
+      Value outputTile = body->getArguments().back(); // output block arg
+      tileResult = rewriter.create<TileBcastOp>(loc, tileType, inputTile,
+                                                outputTile,
+                                                bcastOp.getBcastTypeAttr());
+    } else {
+      // Elementwise ops
+      SmallVector<Value, 2> tileOperands;
+      for (Value operand : getElementwiseOperands(op)) {
+        auto it = tensorToTile.find(operand);
+        if (it == tensorToTile.end()) {
+          return op->emitError(
+              "fusion failed: operand not mapped to tile value");
+        }
+        tileOperands.push_back(it->second);
+      }
+
+      tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+      if (!tileResult) {
+        return op->emitError("fusion failed: unsupported op type");
+      }
     }
 
     tensorToTile[op->getResult(0)] = tileResult;
@@ -200,8 +213,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   rewriter.create<YieldOp>(loc, ValueRange{finalResult});
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
-  // Erase the fused ops (they're now inside the compute body as tile ops)
-  for (Operation *op : trace.opsInOrder) {
+  // Erase the fused ops in reverse topological order (sink to roots).
+  // This ensures each op's users are erased before the op itself.
+  for (auto it = trace.opsInOrder.rbegin(); it != trace.opsInOrder.rend();
+       ++it) {
+    Operation *op = *it;
     if (op != sinkOp && op->use_empty()) {
       rewriter.eraseOp(op);
     }
