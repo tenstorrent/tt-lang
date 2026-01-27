@@ -39,6 +39,9 @@ endif()
 include(TTLangCompilerSetup)
 include(ExternTTMLIR)
 
+# Find Python3 after ExternTTMLIR to use the toolchain Python.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. Please make a new directory (called a build directory) and run CMake from there.")
 endif()
@@ -48,6 +51,19 @@ set(TTLANG_BINARY_DIR ${PROJECT_BINARY_DIR})
 set(LLVM_TOOLS_DIR "${TTMLIR_TOOLCHAIN_DIR}/bin")
 
 set(TT_LANG_HOME "${CMAKE_CURRENT_LIST_DIR}")
+
+ttlang_check_device_available(TTLANG_HAS_DEVICE)
+if(TTLANG_HAS_DEVICE)
+  set(TTLANG_HAS_DEVICE_INT 1)
+else()
+  set(TTLANG_HAS_DEVICE_INT 0)
+endif()
+
+configure_file(
+  "${PROJECT_SOURCE_DIR}/include/ttlang/Config.h.in"
+  "${PROJECT_BINARY_DIR}/include/ttlang/Config.h"
+  @ONLY
+)
 
 configure_file(
   "${PROJECT_SOURCE_DIR}/env/activate.in"

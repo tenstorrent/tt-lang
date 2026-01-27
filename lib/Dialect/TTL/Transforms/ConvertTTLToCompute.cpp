@@ -158,6 +158,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Build the body region
   Block *body = rewriter.createBlock(&computeOp.getBody());
+  // TODO(#264): Assumes all inputs/outputs have the same element type (from
+  // output). This forces all block arguments to have the output's dtype, which
+  // may cause issues when fusing mixed dtype operations (e.g., f32 + bf16).
   Type scalarType = type.getElementType();
   Type tileType = ttcore::TileType::get(scalarType);
 
