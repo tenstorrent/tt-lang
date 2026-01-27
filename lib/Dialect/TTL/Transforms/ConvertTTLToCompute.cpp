@@ -426,10 +426,9 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
 static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
                                     bool expandCols) {
   if (expandRows && expandCols) {
-    return AffineMap::get(2, 0,
-                          {getAffineConstantExpr(0, ctx),
-                           getAffineConstantExpr(0, ctx)},
-                          ctx);
+    return AffineMap::get(
+        2, 0, {getAffineConstantExpr(0, ctx), getAffineConstantExpr(0, ctx)},
+        ctx);
   }
   if (expandCols) {
     return AffineMap::get(

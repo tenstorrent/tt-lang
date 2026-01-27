@@ -332,9 +332,7 @@ def signpost(name: str):
 
 
 @syntax("broadcast")
-def broadcast(
-    input: TensorBlock, output: TensorBlock, dims: List[int]
-) -> TensorBlock:
+def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> TensorBlock:
     """
     Broadcast over specified dimensions.
 
