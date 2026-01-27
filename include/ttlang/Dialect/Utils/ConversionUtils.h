@@ -46,7 +46,8 @@ inline Value linearizeLoopIndices(OpBuilder &builder, Location loc,
       stride =
           builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
     }
-    Value term = builder.create<arith::MulIOp>(loc, loop.getInductionVar(), stride);
+    Value term =
+        builder.create<arith::MulIOp>(loc, loop.getInductionVar(), stride);
     result = builder.create<arith::AddIOp>(loc, result, term);
   }
   return result;
