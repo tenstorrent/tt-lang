@@ -401,6 +401,15 @@ class TTLGenericCompiler(TTCompilerBase):
                 node, f"constant type {type(node.value).__name__} not implemented"
             )
 
+    def visit_List(self, node):
+        """Parse a list of constants. Returns a Python list, not MLIR values."""
+        result = []
+        for elt in node.elts:
+            if not isinstance(elt, ast.Constant):
+                self._raise_error(node, "list elements must be constants")
+            result.append(elt.value)
+        return result
+
     def _emit_cb_from_capture(self, cb):
         """Emit ttl.bind_cb for a captured CircularBuffer instance."""
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(cb.dtype)

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 from ttmlir.dialects import arith
 from ttmlir.ir import RankedTensorType, Type
@@ -331,25 +331,33 @@ def signpost(name: str):
     return ttl.signpost(name)
 
 
-@syntax("bcast")
-def bcast(
-    input: TensorBlock, output: TensorBlock, bcast_type: str = "row"
+@syntax("broadcast")
+def broadcast(
+    input: TensorBlock, output: TensorBlock, dims: List[int]
 ) -> TensorBlock:
     """
-    Broadcast a row/column/scalar tensor to full tiles.
+    Broadcast over specified dimensions.
 
     Args:
         input: Input tensor (CB-attached)
         output: Output tensor (CB-attached, used for output CB tracking)
-        bcast_type: Broadcast type - "row", "col", or "scalar"
+        dims: Dimensions to broadcast over
 
     Returns:
         Result tensor with broadcast values
     """
     from ttmlir.ir import IntegerAttr, IntegerType
 
-    bcast_map = {"col": 1, "row": 2, "scalar": 3}
-    bcast_val = bcast_map.get(bcast_type.lower(), 2)
+    dims_set = set(dims)
+    if dims_set == {0}:
+        bcast_val = 2  # Row
+    elif dims_set == {1}:
+        bcast_val = 1  # Col
+    elif dims_set == {0, 1}:
+        bcast_val = 3  # Scalar
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)
     bcast_attr = IntegerAttr.get(i32_type, bcast_val)
@@ -363,6 +371,5 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
-    "bcast",
     *_generated_all,
 ]
