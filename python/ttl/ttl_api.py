@@ -536,7 +536,7 @@ def _compile_ttnn_kernel(
 
     # Check if input args use f32 to auto-configure compute kernels
     has_f32 = _has_float32_args(args)
-    
+
     # Build thread-to-kernel mapping for profiling
     # Maps RISC thread names to kernel names
     thread_to_kernel = {}
