@@ -7,7 +7,10 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -48,6 +51,19 @@ static Value findOutputCB(Operation *op) {
     }
   }
   return nullptr;
+}
+
+/// Emit cb_reserve + store for a tensor_store op.
+static void emitStoreOps(OpBuilder &builder, Location loc, Value tile,
+                         TensorStoreOp tensorStoreOp) {
+  Value storeCb = tensorStoreOp.getCb();
+  auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
+  if (cbType) {
+    auto viewType =
+        RankedTensorType::get(cbType.getShape(), cbType.getElementType());
+    Value view = builder.create<CBReserveOp>(loc, viewType, storeCb);
+    builder.create<StoreOp>(loc, tile, view);
+  }
 }
 
 /// Find the tensor_store op that uses this operation's result, if any.
@@ -210,20 +226,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  // Emit cb_reserve and store before yield ONLY if there's an explicit
-  // tensor_store op. This ensures stores are only generated when the user
-  // explicitly called store() in the Python DSL, not just based on CB
-  // attachment.
+  // Emit store ops ONLY if there's an explicit tensor_store op.
   TensorStoreOp tensorStoreOp = findTensorStore(sinkOp);
   if (tensorStoreOp) {
-    Value storeCb = tensorStoreOp.getCb();
-    auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
-    if (cbType) {
-      auto viewType =
-          RankedTensorType::get(cbType.getShape(), cbType.getElementType());
-      Value view = rewriter.create<CBReserveOp>(loc, viewType, storeCb);
-      rewriter.create<StoreOp>(loc, finalResult, view);
-    }
+    emitStoreOps(rewriter, loc, finalResult, tensorStoreOp);
   }
 
   rewriter.create<YieldOp>(loc, ValueRange{finalResult});
@@ -330,23 +336,13 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
 
-  // Emit cb_reserve and store before yield ONLY if there's an explicit
-  // tensor_store op. This ensures stores are only generated when the user
-  // explicitly called store() in Python DSL, not just from CB attachment.
+  // Emit store ops ONLY if there's an explicit tensor_store op.
   TensorStoreOp tensorStoreOp = findTensorStore(op);
   if (tensorStoreOp) {
-    Value storeCb = tensorStoreOp.getCb();
-    auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
-    if (cbType) {
-      auto viewType =
-          RankedTensorType::get(cbType.getShape(), cbType.getElementType());
-      Value view = rewriter.create<CBReserveOp>(loc, viewType, storeCb);
-      rewriter.create<StoreOp>(loc, result, view);
-    }
+    emitStoreOps(rewriter, loc, result, tensorStoreOp);
   }
 
   rewriter.create<YieldOp>(loc, ValueRange{result});
-
   rewriter.replaceOp(op, computeOp.getResult(0));
 
   // Erase the tensor_store op (now that stores are inside the compute body)
@@ -434,23 +430,13 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
 
-  // Emit cb_reserve and store before yield ONLY if there's an explicit
-  // tensor_store op. This ensures stores are only generated when the user
-  // explicitly called store() in Python DSL, not just from CB attachment.
+  // Emit store ops ONLY if there's an explicit tensor_store op.
   TensorStoreOp tensorStoreOp = findTensorStore(op);
   if (tensorStoreOp) {
-    Value storeCb = tensorStoreOp.getCb();
-    auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
-    if (cbType) {
-      auto viewType =
-          RankedTensorType::get(cbType.getShape(), cbType.getElementType());
-      Value view = rewriter.create<CBReserveOp>(loc, viewType, storeCb);
-      rewriter.create<StoreOp>(loc, result, view);
-    }
+    emitStoreOps(rewriter, loc, result, tensorStoreOp);
   }
 
   rewriter.create<YieldOp>(loc, ValueRange{result});
-
   rewriter.replaceOp(op, computeOp.getResult(0));
 
   // Erase the tensor_store op (now that stores are inside the compute body)
@@ -489,6 +475,67 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
                                 PatternRewriter &rewriter) const override {
     return buildUnaryCompute<TileOp>(op.getOperation(), rewriter,
                                      op.getInput());
+  }
+};
+
+/// Pattern for direct stores: tensor_store where the tensor is not the result
+/// of a computation. Generates loops to iterate over tiles and store each one
+/// to the output CB.
+struct LowerDirectTensorStore : OpRewritePattern<TensorStoreOp> {
+  using OpRewritePattern<TensorStoreOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TensorStoreOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value tensor = op.getTensor();
+
+    auto tensorType = dyn_cast<RankedTensorType>(tensor.getType());
+    if (!tensorType) {
+      return rewriter.notifyMatchFailure(op, "tensor must be ranked");
+    }
+
+    // Check if input is attached to a CB
+    Value inputCb = getAttachedCB(tensor);
+    if (!inputCb) {
+      return rewriter.notifyMatchFailure(
+          op, "direct store input must be attached to a CB");
+    }
+
+    Value outCb = op.getCb();
+    auto cbType = dyn_cast<CircularBufferType>(outCb.getType());
+    if (!cbType) {
+      return rewriter.notifyMatchFailure(op, "output must be a CB");
+    }
+
+    // Build loop bounds from tensor shape
+    SmallVector<Value> lowerBounds;
+    SmallVector<Value> upperBounds;
+    SmallVector<Value> steps;
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+    for (int64_t dim : tensorType.getShape()) {
+      lowerBounds.push_back(c0);
+      upperBounds.push_back(rewriter.create<arith::ConstantIndexOp>(loc, dim));
+      steps.push_back(c1);
+    }
+
+    // Build nested loops to iterate over tiles
+    scf::buildLoopNest(
+        rewriter, loc, lowerBounds, upperBounds, steps,
+        [&](OpBuilder &builder, Location loc, ValueRange ivs) {
+          // Extract tile from input tensor at current indices
+          Value tile = builder.create<tensor::ExtractOp>(loc, tensor, ivs);
+
+          // Reserve output CB and store tile
+          auto viewType =
+              RankedTensorType::get(cbType.getShape(), cbType.getElementType());
+          Value view = builder.create<CBReserveOp>(loc, viewType, outCb);
+          builder.create<StoreOp>(loc, tile, view);
+        });
+
+    rewriter.eraseOp(op);
+    return success();
   }
 };
 
@@ -547,6 +594,9 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // Direct store pattern (lower priority - runs after compute patterns)
+  patterns.add<LowerDirectTensorStore>(ctx);
 }
 
 } // namespace mlir::tt::ttl
