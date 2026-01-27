@@ -533,8 +533,13 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
     }
 
-    Value dstIdx =
-        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    // Get DST index from attribute (assigned by TTLAssignDST pass).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdxVal = dstIdxAttr.getInt();
+    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
 
     // For shape expansion, input comes from ExtractOp with affine-mapped
     // indices.

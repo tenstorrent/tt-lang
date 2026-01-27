@@ -757,12 +757,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
 
       // Set dst_idx attributes on tile compute ops.
-      // Skip CB-reading ops (bcast, etc.) - their DST index comes from loop
-      // IVs.
       for (Operation &op : *body) {
-        if (isa<TileBcastOp>(&op)) {
-          continue;
-        }
         if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op)) {
           continue;
         }
