@@ -24,6 +24,18 @@ def test_device_open_close():
     assert ttnn.close_device(dev) is None
 
 
+def test_device_compute_with_storage_grid_size():
+    """Test that Device.compute_with_storage_grid_size() returns 8x8 grid."""
+    device = ttnn.open_device(device_id=0)
+    grid = device.compute_with_storage_grid_size()
+
+    assert isinstance(grid, ttnn.CoreCoord)
+    assert grid.x == 8, f"Expected grid.x=8, got {grid.x}"
+    assert grid.y == 8, f"Expected grid.y=8, got {grid.y}"
+
+    ttnn.close_device(device)
+
+
 def test_tensor_rand_and_empty_and_to_torch():
     shape = (4, 8)
     t1 = ttnn.rand(shape, dtype=ttnn.float32)
