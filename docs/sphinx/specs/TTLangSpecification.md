@@ -753,4 +753,10 @@ def dm():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Broadcasts over specified dimensions. Produces block with shape expanded to be compatible with the outer part of the expression. Example for broadcast over rows: `ttl.math.broadcast(a, dims=[0])`. Example for broadcast over rows and columns: `ttl.math.broadcast(a, dims=[0, 1])`.  |
+| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Broadcasts over specified dimensions. Produces block with shape expanded to be compatible with the outer part of the expression.
+
+Example for broadcast over rows: `y.store(ttl.math.broadcast(a, dims=[0]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(1, M)`.
+
+Example for broadcast over columns: `y.store(b * ttl.math.broadcast(a, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`.
+
+Example for broadcast over rows and columns: `y.store(b + ttl.math.broadcast(a, dims=[0, 1]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[0,1]` `a` must have shape of `(1, 1)`. |
