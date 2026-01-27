@@ -533,7 +533,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       // After loop lowering in fused blocks, the output operand traces to
       // iter_args. Find the output CB from the init_sfpu op in the function.
       funcOp->walk([&](InitSFPUOp initOp) {
-        outCB = utils::convertTTLCBToTTKernel(initOp.getOcb(), rewriter, loc,
+        outCB = utils::convertTTLCBToTTKernel (initOp.getOcb(), rewriter, loc,
                                               typeConverter);
         return WalkResult::interrupt();
       });
@@ -550,14 +550,16 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     int64_t dstIdxVal = dstIdxAttr.getInt();
     Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
 
+    // Get input CB tile index.
     // For shape expansion, input comes from ExtractOp with affine-mapped
-    // indices.
+    // indices. Otherwise, use loop indices to read the correct input tile.
     Value inCBIdx;
     if (auto extractIdx =
             computeInputIndexFromExtract(op.getInput(), rewriter, loc)) {
       inCBIdx = *extractIdx;
     } else {
-      inCBIdx = dstIdx;
+      inCBIdx =
+          utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     }
 
     auto ttkAttr = convertBcastType(op.getBcastType());
