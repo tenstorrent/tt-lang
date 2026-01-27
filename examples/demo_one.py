@@ -137,15 +137,19 @@ torch.manual_seed(42)
 device = ttnn.open_device(device_id=0)
 
 
-try:
-    # Compute shape based on device compute grid
+def get_shape(device):
+    NUM_BLOCKS = 2
     device_grid = device.compute_with_storage_grid_size()
     grid_cols, grid_rows = device_grid.x, device_grid.y
     # Shape must be divisible by (TILE_SIZE * grid_dim * GRANULARITY) per dimension
-    min_rows = TILE_SIZE * grid_rows * GRANULARITY
-    min_cols = TILE_SIZE * grid_cols * GRANULARITY
-    shape = (min_rows, min_cols)
-    print(f"Using grid ({grid_cols}, {grid_rows}) with shape {shape}")
+    shape_rows = TILE_SIZE * grid_rows * GRANULARITY * NUM_BLOCKS
+    shape_cols = TILE_SIZE * grid_cols * GRANULARITY * NUM_BLOCKS
+    print(f"Using grid ({grid_cols}, {grid_rows}) with shape ({shape_rows}, {shape_cols})")
+    return (shape_rows, shape_cols)
+
+
+try:
+    shape = get_shape(device)
 
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)
