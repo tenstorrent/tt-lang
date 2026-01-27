@@ -16,6 +16,7 @@ INSTALL_PREFIX="$(dirname "$SCRIPT_DIR")"
 
 # Default TTMLIR_TOOLCHAIN_DIR if not set (assume same as install prefix for Docker)
 : ${TTMLIR_TOOLCHAIN_DIR:=$INSTALL_PREFIX}
+export TTMLIR_TOOLCHAIN_DIR
 
 # Activate tt-mlir toolchain venv
 if [ -f "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/activate" ]; then
@@ -35,6 +36,7 @@ export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
 export TTLANG_ENV_ACTIVATED=1
 
 cat << 'EOF'
+
 ████████╗████████╗       ██╗      █████╗  ███╗   ██╗  ██████╗
 ╚══██╔══╝╚══██╔══╝       ██║     ██╔══██╗ ████╗  ██║ ██╔════╝
    ██║      ██║   █████╗ ██║     ███████║ ██╔██╗ ██║ ██║  ███╗
@@ -46,4 +48,6 @@ echo ""
 echo "  Toolchain: ${TTMLIR_TOOLCHAIN_DIR}"
 echo "  Examples:  ${TTMLIR_TOOLCHAIN_DIR}/examples"
 echo ""
-echo "  Run an example:  python \$TTMLIR_TOOLCHAIN_DIR/examples/demo_one.py"
+echo "  Run an example on:"
+echo "   - Python simulator: ttlang-sim $TTMLIR_TOOLCHAIN_DIR/examples/demo_one.py"
+echo "   - TT hardware:      python $TTMLIR_TOOLCHAIN_DIR/examples/demo_one.py"

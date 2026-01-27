@@ -2,14 +2,10 @@ name: Build Docker Image
 
 on:
   push:
-    # TODO: Remove branches trigger after testing - this is temporary for testing
     branches:
-      - '*'
+      - main
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
-  pull_request:
-    # TODO: Remove pull_request trigger after testing - this is temporary for testing
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       ttlang_sha_override:
