@@ -129,6 +129,7 @@ jobs:
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }} \
+                      -DTTLANG_ENABLE_PERF_TRACE=ON \
                       -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
 
             - name: Build tt-lang

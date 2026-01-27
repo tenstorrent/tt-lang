@@ -38,7 +38,6 @@ from .ttl_builder import (
 )
 from .pipeline import compile_ttl_to_ttkernel
 from .kernels import translate_module_to_kernels, write_kernels, load_kernel_metadata
-from .ttnn_runner import run_binary_op, run_unary_op
 from .dtype_utils import torch_dtype_to_mlir_str, torch_dtype_to_ttcore_datatype
 from .device_arch import get_mock_arch_from_device
 
@@ -62,8 +61,6 @@ __all__ = [
     "translate_module_to_kernels",
     "write_kernels",
     "load_kernel_metadata",
-    "run_binary_op",
-    "run_unary_op",
     # Utilities
     "torch_dtype_to_mlir_str",
     "torch_dtype_to_ttcore_datatype",

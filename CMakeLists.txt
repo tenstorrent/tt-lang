@@ -12,7 +12,10 @@ project(tt-lang LANGUAGES CXX C)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 include(TTLangUtils)
-ttlang_set_version("0.2.0")
+
+# Get version from git tags
+include(GetVersionFromGit)
+ttlang_set_version("${TTLANG_VERSION}")
 
 option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" ON)
 option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
@@ -36,6 +39,9 @@ endif()
 include(TTLangCompilerSetup)
 include(ExternTTMLIR)
 
+# Find Python3 after ExternTTMLIR to use the toolchain Python.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. Please make a new directory (called a build directory) and run CMake from there.")
 endif()
@@ -45,6 +51,19 @@ set(TTLANG_BINARY_DIR ${PROJECT_BINARY_DIR})
 set(LLVM_TOOLS_DIR "${TTMLIR_TOOLCHAIN_DIR}/bin")
 
 set(TT_LANG_HOME "${CMAKE_CURRENT_LIST_DIR}")
+
+ttlang_check_device_available(TTLANG_HAS_DEVICE)
+if(TTLANG_HAS_DEVICE)
+  set(TTLANG_HAS_DEVICE_INT 1)
+else()
+  set(TTLANG_HAS_DEVICE_INT 0)
+endif()
+
+configure_file(
+  "${PROJECT_SOURCE_DIR}/include/ttlang/Config.h.in"
+  "${PROJECT_BINARY_DIR}/include/ttlang/Config.h"
+  @ONLY
+)
 
 configure_file(
   "${PROJECT_SOURCE_DIR}/env/activate.in"
@@ -117,3 +136,6 @@ install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
 install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
+
+# Install ttlang-sim script to bin directory
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim" DESTINATION bin)
