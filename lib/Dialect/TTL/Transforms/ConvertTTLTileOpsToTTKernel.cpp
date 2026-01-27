@@ -96,6 +96,37 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
   return Value();
 }
 
+/// Look up and convert a CB for an operand.
+/// Combines lookupCBByIndex with type conversion to TTKernel CB type.
+[[maybe_unused]] static FailureOr<Value>
+lookupAndConvertCB(Value operand, func::FuncOp funcOp,
+                                           const TypeConverter *typeConverter,
+                                           ConversionPatternRewriter &rewriter,
+                                           Location loc) {
+  Value cb = lookupCBByIndex(operand, funcOp);
+  if (!cb) {
+    return failure();
+  }
+
+  Type targetCbTy;
+  if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
+    targetCbTy = ttkCb;
+  } else if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+    targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
+                                  ttlCb.getElementType());
+  }
+  if (!targetCbTy || !typeConverter) {
+    return failure();
+  }
+
+  Value converted =
+      typeConverter->materializeTargetConversion(rewriter, loc, targetCbTy, cb);
+  if (!converted || converted.getType() != targetCbTy) {
+    return failure();
+  }
+  return converted;
+}
+
 //===----------------------------------------------------------------------===//
 // DST lifecycle ops
 //===----------------------------------------------------------------------===//
