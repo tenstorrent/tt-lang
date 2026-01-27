@@ -144,7 +144,9 @@ def get_shape(device):
     # Shape must be divisible by (TILE_SIZE * grid_dim * GRANULARITY) per dimension
     shape_rows = TILE_SIZE * grid_rows * GRANULARITY * NUM_BLOCKS
     shape_cols = TILE_SIZE * grid_cols * GRANULARITY * NUM_BLOCKS
-    print(f"Using grid ({grid_cols}, {grid_rows}) with shape ({shape_rows}, {shape_cols})")
+    print(
+        f"Using grid ({grid_cols}, {grid_rows}) with shape ({shape_rows}, {shape_cols})"
+    )
     return (shape_rows, shape_cols)
 
 
