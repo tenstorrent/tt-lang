@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
+from utils.correctness import assert_with_ulp
 
 from .builder.kernels import (
     KernelSpec,
@@ -24,10 +25,9 @@ from .builder.kernels import (
 )
 from .builder.pipeline import compile_ttl_to_ttkernel
 from .builder.ttl_builder import build_e2e_module
-from .builder.ttnn_runner import run_binary_op, run_unary_op
+from .config import get_maximum_ulp_threshold
 from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
-from .utils import compare_tensors_ulp
 
 # Kernel cache to avoid redundant compilation.
 _kernel_cache: Dict[str, str] = {}
@@ -129,6 +129,9 @@ def run_compute_test(
     write_kernels(noc_kernels, compute_kernel_spec, kernel_dir)
 
     # 5. Execute on device.
+    # Import here to avoid module-level dependency on ttnn.
+    from .builder.ttnn_runner import run_binary_op, run_unary_op
+
     try:
         if op.arity == 2:
             result = run_binary_op(
@@ -149,13 +152,8 @@ def run_compute_test(
             )
 
         # 6. Validate against golden.
-        max_ulp, mean_ulp = compare_tensors_ulp(result, golden)
-
-        # Default ULP threshold (can be overridden per op).
-        ulp_threshold = 10.0
-        assert (
-            max_ulp <= ulp_threshold
-        ), f"Max ULP {max_ulp} exceeds threshold {ulp_threshold} for {op.name}. Mean ULP: {mean_ulp}"
+        ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+        assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)
 
     finally:
         # Cleanup temporary kernel directory.
