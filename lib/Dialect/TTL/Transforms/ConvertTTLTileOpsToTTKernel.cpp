@@ -481,9 +481,8 @@ static ttk::BcastType convertBcastType(ttl::BcastType ttlType) {
 
 /// Compute linearized index from tensor::ExtractOp indices.
 /// For a 2D tensor, linearizes as: row_idx * num_cols + col_idx.
-static std::optional<Value> computeInputIndexFromExtract(Value input,
-                                                         OpBuilder &builder,
-                                                         Location loc) {
+static std::optional<Value>
+computeInputIndexFromExtract(Value input, OpBuilder &builder, Location loc) {
   auto extractOp = input.getDefiningOp<tensor::ExtractOp>();
   if (!extractOp || extractOp.getIndices().size() != 2) {
     return std::nullopt;
@@ -537,9 +536,11 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     Value dstIdx =
         utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
 
-    // For shape expansion, input comes from ExtractOp with affine-mapped indices.
+    // For shape expansion, input comes from ExtractOp with affine-mapped
+    // indices.
     Value inCBIdx;
-    if (auto extractIdx = computeInputIndexFromExtract(op.getInput(), rewriter, loc)) {
+    if (auto extractIdx =
+            computeInputIndexFromExtract(op.getInput(), rewriter, loc)) {
       inCBIdx = *extractIdx;
     } else {
       inCBIdx = dstIdx;
