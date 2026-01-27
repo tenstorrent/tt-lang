@@ -78,9 +78,15 @@ RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
 
 # Auto-activate tt-lang environment on login (works even when entrypoint is overridden)
 # Add to /etc/profile.d for login shells and /etc/bash.bashrc for interactive shells
-RUN echo '[ -f "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate" ] && source "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate"' > /etc/profile.d/ttlang.sh && \
+RUN printf '%s\n' \
+      '# Auto-activate tt-lang environment' \
+      'if [ "${TTLANG_ENV_ACTIVATED:-0}" != "1" ] && [ -f "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate" ]; then' \
+      '    echo "Activating tt-lang environment (profile.d)..."' \
+      '    source "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate"' \
+      'fi' \
+      > /etc/profile.d/ttlang.sh && \
     chmod +x /etc/profile.d/ttlang.sh && \
-    echo '[ -f "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate" ] && source "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate"' >> /etc/bash.bashrc
+    echo '[ "${TTLANG_ENV_ACTIVATED:-0}" != "1" ] && [ -f "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate" ] && source "${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}/env/activate"' >> /etc/bash.bashrc
 
 # Setup entrypoint
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh

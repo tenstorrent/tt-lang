@@ -60,7 +60,6 @@ jobs:
       - name: Check if Docker image exists
         id: check
         run: .github/scripts/check-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}"
-        continue-on-error: true
 
   build-toolchain-if-needed:
     needs: check-if-images-already-exist

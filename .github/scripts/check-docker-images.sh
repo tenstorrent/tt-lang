@@ -12,8 +12,8 @@
 #   docker-image-base: Base variant image name if exists, empty if not
 #
 # Exit codes:
-#   0: All images exist
-#   1: At least one image doesn't exist
+#   0: Always (uses outputs to signal state, not exit codes)
+#   2: Missing required argument
 
 set -e
 
@@ -45,6 +45,7 @@ else
     # Images don't exist - set empty outputs so build job runs
     echo "docker-image=" >> "$GITHUB_OUTPUT"
     echo "docker-image-base=" >> "$GITHUB_OUTPUT"
-    echo "✗ Docker images need to be built"
-    exit 1
+    echo "ℹ Docker images need to be built (not cached)"
+    # Exit 0 - this is not an error condition, just indicates build is needed
+    exit 0
 fi
