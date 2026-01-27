@@ -65,6 +65,7 @@ from .kernel_runner import (
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .ttl_utils import get_thread_type_string
+from .config import HAS_TT_DEVICE
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -99,9 +100,16 @@ def _get_tensor_cache_info(tensor) -> tuple:
     return (shape, dtype, memory_space, layout)
 
 
-def _make_cache_key(args: tuple) -> tuple:
-    """Create cache key from tensor properties that affect compilation."""
-    return tuple(_get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg))
+def _make_cache_key(
+    args: tuple,
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+) -> tuple:
+    """Create cache key from tensor properties and runtime compute config parameters."""
+    tensor_key = tuple(
+        _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
+    )
+    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en)
 
 
 def _should_execute() -> bool:
@@ -212,6 +220,47 @@ def _is_interleaved_tensor(tensor) -> bool:
     mem_config = tensor.memory_config()
     if hasattr(mem_config, "memory_layout"):
         return "INTERLEAVED" in str(mem_config.memory_layout)
+    return False
+
+
+def _has_float32_args(args) -> bool:
+    """
+    Check if any input tensor uses float32 dtype.
+
+    Inspects the tensor arguments to detect float32. This is used to
+    automatically enable fp32_dest_acc_en configuration for compute kernels.
+
+    Args:
+        args: List of tensor arguments (torch or ttnn)
+
+    Returns:
+        True if any tensor uses float32 dtype, False otherwise
+    """
+    try:
+        for tensor in args:
+            if tensor is None:
+                continue
+
+            # Check ttnn tensor
+            if is_ttnn_tensor(tensor):
+                tensor_dtype = tensor.dtype
+                # ttnn.float32
+                if (
+                    hasattr(tensor_dtype, "name")
+                    and "float32" in str(tensor_dtype.name).lower()
+                ):
+                    return True
+                if "float32" in str(tensor_dtype).lower():
+                    return True
+            # Check torch tensor
+            elif hasattr(tensor, "dtype"):
+                import torch
+
+                if tensor.dtype == torch.float32:
+                    return True
+    except (AttributeError, TypeError, ImportError):
+        pass
+
     return False
 
 
@@ -387,6 +436,8 @@ def _compile_ttnn_kernel(
     thread_tensor_indices,
     cb_configs=None,
     program_hash=None,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
     verbose=True,
     source_lines=None,
     all_source_lines=None,
@@ -475,7 +526,6 @@ def _compile_ttnn_kernel(
     core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
     core_range = ttnn.CoreRange(core_start, core_end)
     core_ranges = ttnn.CoreRangeSet([core_range])
-
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
@@ -483,6 +533,9 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
+
+    # Check if input args use f32 to auto-configure compute kernels
+    has_f32 = _has_float32_args(args)
 
     # Build thread-to-kernel mapping for profiling
     # Maps RISC thread names to kernel names
@@ -495,6 +548,16 @@ def _compile_ttnn_kernel(
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
+            if fp32_dest_acc_en is not None:
+                config.fp32_dest_acc_en = fp32_dest_acc_en
+            if dst_full_sync_en is not None:
+                config.dst_full_sync_en = dst_full_sync_en
+            if fp32_dest_acc_en is None and has_f32:
+                config.fp32_dest_acc_en = True
+                if verbose:
+                    print(
+                        "  [fp32 detected] Enabling fp32_dest_acc_en for compute kernel"
+                    )
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -751,6 +814,8 @@ def _compile_kernel(
     memory_space: str,
     tiled: bool,
     program_hash: int,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -766,6 +831,8 @@ def _compile_kernel(
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
         program_hash: Hash for tt-metal program cache
+        fp32_dest_acc_en: Optional override for fp32_dest_acc_en
+        dst_full_sync_en: Optional override for dst_full_sync_en
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -913,8 +980,26 @@ def _compile_kernel(
         verify = True
 
         # fmt: off
+        set_compute_config_pass = "func.func(ttl-set-compute-kernel-config)"
+        config_options = []
+        if fp32_dest_acc_en is not None:
+            config_options.append(
+                f"fp32-dest-acc-en={1 if fp32_dest_acc_en else 0}"
+            )
+        if dst_full_sync_en is not None:
+            config_options.append(
+                f"dst-full-sync-en={1 if dst_full_sync_en else 0}"
+            )
+        if config_options:
+            set_compute_config_pass = (
+                "func.func(ttl-set-compute-kernel-config{"
+                + " ".join(config_options)
+                + "})"
+            )
+
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
+            set_compute_config_pass,
             "func.func(ttl-assign-dst)",
             "func.func(ttl-lower-to-loops)",
             "func.func(ttl-insert-tile-regs-sync)",
@@ -946,6 +1031,9 @@ def _compile_kernel(
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
+
+        if HAS_TT_DEVICE:
+            pipeline_passes.insert(0, "ttcore-register-device")
 
         pipeline = ",".join(pipeline_passes)
 
@@ -1013,6 +1101,8 @@ def _compile_kernel(
             thread_tensor_indices,
             cb_configs,
             program_hash=program_hash,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
@@ -1027,6 +1117,8 @@ def pykernel_gen(
     num_outs: int = 1,
     memory_space: str = "L1",
     tiled: bool = True,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -1042,6 +1134,8 @@ def pykernel_gen(
         num_outs: Number of output arguments
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
+        fp32_dest_acc_en: Optional override for fp32_dest_acc_en
+        dst_full_sync_en: Optional override for dst_full_sync_en
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -1086,9 +1180,16 @@ def pykernel_gen(
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             resolved_grid = _resolve_grid(grid, args, kwargs)
+            fp32_override = fp32_dest_acc_en
+            dst_sync_override = dst_full_sync_en
 
             # Build cache key from tensor properties
-            cache_key = _make_cache_key(args)
+            cache_key = _make_cache_key(
+                args,
+                # Runtime options:
+                fp32_dest_acc_en=fp32_override,
+                dst_full_sync_en=dst_sync_override,
+            )
 
             # Check cache for previously compiled kernel
             if cache_key in cache:
@@ -1109,6 +1210,8 @@ def pykernel_gen(
                     memory_space,
                     tiled,
                     program_hash,
+                    fp32_dest_acc_en=fp32_override,
+                    dst_full_sync_en=dst_sync_override,
                 )
 
                 if compiled_kernel is not None:

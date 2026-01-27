@@ -7,10 +7,12 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/SetVector.h"
+#include <optional>
 
 namespace mlir::tt::ttl {
 
@@ -145,6 +147,14 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
     }
   }
   return value;
+}
+
+/// Return the element type for a ttcore::TileType.
+inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
+  if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {
+    return tileType.getElementType();
+  }
+  return std::nullopt;
 }
 
 /// Return the circular buffer attached to `tensor`, or null if none/ambiguous.
