@@ -42,6 +42,10 @@ func.func @use_second_input_only(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>,
       : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>)
         -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
+  // Reserve output CB for stores
+  %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
+      -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+
   // Compute that only uses %b_attached (CB1, bf16), not %a_attached (CB0, f32).
   %result = ttl.compute
       ins(%a_attached, %b_attached : tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -55,6 +59,8 @@ func.func @use_second_input_only(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>,
     // Only use the bf16 input, ignore the f32 input
     %tok, %tile = ttl.copy_tile %b_tile, %c0, %c0
         : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    // Explicit store required
+    ttl.store %tile, %out_view : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     ttl.yield %tile : !ttcore.tile<32x32, bf16>
   } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
@@ -95,6 +101,10 @@ func.func @both_inputs_used(%arg0: tensor<2x2x!ttcore.tile<32x32, bf16>>,
       : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>)
         -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
+  // Reserve output CB for stores
+  %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
+      -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+
   // Both inputs are used - add them together
   %result = ttl.compute
       ins(%a_attached, %b_attached : tensor<2x2x!ttcore.tile<32x32, bf16>>,
@@ -110,6 +120,8 @@ func.func @both_inputs_used(%arg0: tensor<2x2x!ttcore.tile<32x32, bf16>>,
     %tok1, %tile1 = ttl.copy_tile %b_tile, %c0, %c0
         : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
     %sum = ttl.tile_add %tile0, %tile1 : !ttcore.tile<32x32, bf16>
+    // Explicit store required
+    ttl.store %sum, %out_view : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     ttl.yield %sum : !ttcore.tile<32x32, bf16>
   } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
@@ -156,6 +168,10 @@ func.func @broadcast_prefers_full_size(%bcast_input: tensor<1x2x!ttcore.tile<32x
       : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 1>)
         -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
+  // Reserve output CB for stores
+  %out_view = ttl.cb_reserve %cb_out : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
+      -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+
   // Broadcast add: bcast_input is broadcast across rows
   %result = ttl.compute
       ins(%bcast_attached, %full_attached : tensor<1x2x!ttcore.tile<32x32, bf16>>,
@@ -171,6 +187,8 @@ func.func @broadcast_prefers_full_size(%bcast_input: tensor<1x2x!ttcore.tile<32x
     %tok1, %tile1 = ttl.copy_tile %full_tile, %c0, %c0
         : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
     %sum = ttl.tile_add %tile0, %tile1 : !ttcore.tile<32x32, bf16>
+    // Explicit store required
+    ttl.store %sum, %out_view : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     ttl.yield %sum : !ttcore.tile<32x32, bf16>
   } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 

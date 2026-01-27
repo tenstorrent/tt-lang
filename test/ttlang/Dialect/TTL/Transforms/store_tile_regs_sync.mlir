@@ -45,8 +45,8 @@ func.func @store_reorder_after_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: choose the dominating in-body reserve when multiple reserves exist.
-// CHECK-LABEL: func.func @store_auto_in_body_chooses_last_reserve
+// Purpose: multiple cb_reserves with explicit store to last one.
+// CHECK-LABEL: func.func @store_with_multiple_reserves
 // CHECK:         %[[CB:.*]] = ttl.bind_cb
 // CHECK-NEXT:    %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
 // CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
@@ -65,7 +65,7 @@ func.func @store_reorder_after_wait(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>
 // CHECK-NEXT:        ttl.store %[[TILE]], %[[VIEW1]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        scf.yield %[[INSERT]]
-func.func @store_auto_in_body_chooses_last_reserve(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+func.func @store_with_multiple_reserves(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %c0 = arith.constant 0 : index
   %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %arg_cb = ttl.attach_cb %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -78,94 +78,10 @@ func.func @store_auto_in_body_chooses_last_reserve(%arg0: tensor<1x1x!ttcore.til
     %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
     %view0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %view1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %tile, %view1 : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield %tile : !ttcore.tile<32x32, bf16>
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
-  func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
-}
-
-// -----
-
-#map = affine_map<(d0, d1) -> (d0, d1)>
-
-// Purpose: prefer in-body reserve over a parent reserve for auto store.
-// CHECK-LABEL: func.func @store_auto_prefers_body_over_parent
-// CHECK:         %[[CB:.*]] = ttl.bind_cb
-// CHECK-NEXT:    %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
-// CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
-// CHECK-NEXT:    %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
-// CHECK-NEXT:    %[[OUT_PARENT_VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:    ttl.init_sfpu(%[[CB]], %[[CB]])
-// CHECK-NEXT:    %[[OUTER:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[OUTPUT_CB]])
-// CHECK-NEXT:      %[[INNER:.*]] = scf.for {{.*}} iter_args(%[[ACC2:.*]] = %[[ACC]])
-// CHECK-NEXT:        ttl.tile_regs_acquire
-// CHECK-NEXT:        %[[IN_TILE:.*]] = tensor.extract %[[ARG_CB]]{{.*}}
-// CHECK-NEXT:        %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN_TILE]]
-// CHECK-NEXT:        %[[INSERT:.*]] = tensor.insert %[[TILE]] into %[[ACC2]]{{.*}}
-// CHECK-NEXT:        ttl.tile_regs_commit
-// CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        %[[OUT_BODY_VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:        ttl.store %[[TILE]], %[[OUT_BODY_VIEW]]
-// CHECK-NEXT:        ttl.tile_regs_release
-// CHECK-NEXT:        scf.yield %[[INSERT]]
-func.func @store_auto_prefers_body_over_parent(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
-  %c0 = arith.constant 0 : index
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %arg_cb = ttl.attach_cb %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %output = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %output_cb = ttl.attach_cb %output, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-
-  // Parent reserve should be ignored in favor of the in-body reserve.
-  %out_parent_view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-
-  %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%output_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
-  ^bb0(%in: !ttcore.tile<32x32, bf16>,
-       %out: !ttcore.tile<32x32, bf16>):
-    %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
-    %out_body_view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.yield %tile : !ttcore.tile<32x32, bf16>
-  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-
-  func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
-}
-
-// -----
-
-#map = affine_map<(d0, d1) -> (d0, d1)>
-
-// Pass auto-inserts store for tiles using cb_reserve from parent block.
-// CHECK-LABEL: func.func @store_auto_insert_reuses_parent_reserve
-// CHECK:         %[[CB:.*]] = ttl.bind_cb
-// CHECK-NEXT:    %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
-// CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
-// CHECK-NEXT:    %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
-// CHECK-NEXT:    %[[OUT_VIEW_PARENT:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:    ttl.init_sfpu(%[[CB]], %[[CB]])
-// CHECK-NEXT:    %[[OUTER:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[OUTPUT_CB]])
-// CHECK-NEXT:      %[[INNER:.*]] = scf.for {{.*}} iter_args(%[[ACC2:.*]] = %[[ACC]])
-// CHECK-NEXT:        ttl.tile_regs_acquire
-// CHECK-NEXT:        %[[IN_TILE:.*]] = tensor.extract %[[ARG_CB]]{{.*}}
-// CHECK-NEXT:        %[[TOK:.*]], %[[TILE:.*]] = ttl.copy_tile %[[IN_TILE]]
-// CHECK-NEXT:        %[[INSERT:.*]] = tensor.insert %[[TILE]] into %[[ACC2]]{{.*}}
-// CHECK-NEXT:        ttl.tile_regs_commit
-// CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        ttl.store %[[TILE]], %[[OUT_VIEW_PARENT]]
-// CHECK-NEXT:        ttl.tile_regs_release
-// CHECK-NEXT:        scf.yield %[[INSERT]]
-func.func @store_auto_insert_reuses_parent_reserve(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
-  %c0 = arith.constant 0 : index
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %arg_cb = ttl.attach_cb %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %output = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %output_cb = ttl.attach_cb %output, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // cb_reserve in parent block - pass should find it and insert store.
-  %out_view_parent = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%output_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
-    ^bb0(%in: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
-      %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
-      // No explicit store - pass should auto-insert using parent's cb_reserve.
-      ttl.yield %tile : !ttcore.tile<32x32, bf16>
-  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }
 
@@ -213,12 +129,13 @@ func.func @store_with_reserve_inside_compute(%arg0: tensor<1x1x!ttcore.tile<32x3
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// cb_reserve inside compute body, store auto-inserted.
-// CHECK-LABEL: func.func @store_auto_insert_from_inside_compute
+// Purpose: explicit store using parent cb_reserve.
+// CHECK-LABEL: func.func @store_explicit_using_parent_reserve
 // CHECK:         %[[CB:.*]] = ttl.bind_cb
 // CHECK-NEXT:    %[[ARG_CB:.*]] = ttl.attach_cb %arg0, %[[CB]]
 // CHECK-NEXT:    %[[OUTPUT:.*]] = tensor.empty
 // CHECK-NEXT:    %[[OUTPUT_CB:.*]] = ttl.attach_cb %[[OUTPUT]], %[[CB]]
+// CHECK-NEXT:    %[[OUT_VIEW_PARENT:.*]] = ttl.cb_reserve %[[CB]]
 // CHECK-NEXT:    ttl.init_sfpu(%[[CB]], %[[CB]])
 // CHECK-NEXT:    %[[OUTER:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[OUTPUT_CB]])
 // CHECK-NEXT:      %[[INNER:.*]] = scf.for {{.*}} iter_args(%[[ACC2:.*]] = %[[ACC]])
@@ -228,21 +145,22 @@ func.func @store_with_reserve_inside_compute(%arg0: tensor<1x1x!ttcore.tile<32x3
 // CHECK-NEXT:        %[[INSERT:.*]] = tensor.insert %[[TILE]] into %[[ACC2]]{{.*}}
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB]]
-// CHECK-NEXT:        ttl.store %[[TILE]], %[[VIEW]]
+// CHECK-NEXT:        ttl.store %[[TILE]], %[[OUT_VIEW_PARENT]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        scf.yield %[[INSERT]]
-func.func @store_auto_insert_from_inside_compute(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+func.func @store_explicit_using_parent_reserve(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %c0 = arith.constant 0 : index
   %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %arg_cb = ttl.attach_cb %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %output = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
   %output_cb = ttl.attach_cb %output, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // cb_reserve in parent block - store explicitly uses this view.
+  %out_view_parent = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%output_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
     ^bb0(%in: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
       %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
-      // cb_reserve inside compute body, no explicit store.
-      %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // Explicit store using parent's cb_reserve.
+      ttl.store %tile, %out_view_parent : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield %tile : !ttcore.tile<32x32, bf16>
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>

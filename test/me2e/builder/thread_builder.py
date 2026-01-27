@@ -179,6 +179,10 @@ class ThreadBuilder(ABC):
         """Create ttl.attach_cb operation."""
         return ttl.attach_cb(self._tile_tensor_type, tensor, cb, loc=self.loc)
 
+    def _tensor_store(self, tensor, cb):
+        """Create ttl.tensor_store operation to mark explicit store."""
+        ttl.tensor_store(tensor, cb, loc=self.loc)
+
     # =========================================================================
     # Layer 2: Loop and Function Utilities (Protected)
     # =========================================================================
@@ -317,10 +321,11 @@ class ThreadBuilder(ABC):
                     # Execute compute function.
                     results = compute_fn(inputs)
 
-                    # Attach results to output CBs.
+                    # Store results to output CBs.
                     if not isinstance(results, list):
                         results = [results]
                     for result, cb in zip(results, output_cb_vals):
+                        self._tensor_store(result, cb)
                         self._attach_cb(result, cb)
 
                     # Push outputs, pop inputs.

@@ -16,14 +16,13 @@
 //    - Inserts tile_regs_acquire at the beginning of the innermost loop body
 //    - Inserts tile_regs_commit immediately before ttl.store
 //    - Inserts tile_regs_wait before ttl.store
-//    - Inserts ttl.store for outputs that lack one (requires existing CB view)
 //    - Inserts tile_regs_release at the end of the loop body (before scf.yield)
 //
 // This establishes the correct DST lifecycle per tile:
 //   acquire -> [compute] -> commit -> wait -> [pack] -> release
 //
-// The pass is designed to run once during lowering; it does not check for
-// existing sync ops.
+// The pass requires that all tensor.insert ops in the loop body have a
+// corresponding ttl.store op. Missing stores result in an error.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,6 +33,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -101,40 +101,45 @@ static Value findExtractedInputCB(scf::ForOp forOp, Value outputCB) {
   return matchingShapeCB ? matchingShapeCB : largestCB;
 }
 
-/// Find a cb_reserve view for auto-inserted stores. Searches for cb_reserve
-/// ops in the loop body and in the parent block before the outermost loop.
-static Value findReserveViewForStore(scf::ForOp forOp, scf::ForOp outermostLoop,
-                                     Value cb, Operation *insertAfter) {
-  Value candidate;
-  Block &body = forOp.getRegion().front();
+/// Find an unmatched tile_regs_acquire that dominates the given operation.
+/// An acquire is "unmatched" if there is no tile_regs_release that:
+/// - properly dominates the target (comes before on all paths), AND
+/// - is dominated by the acquire (comes after the acquire)
+/// Uses DominanceInfo for correctness across complex control flow.
+static TileRegsAcquireOp
+findUnmatchedDominatingAcquire(func::FuncOp funcOp, Operation *target,
+                               DominanceInfo &domInfo) {
+  TileRegsAcquireOp unmatchedAcquire = nullptr;
 
-  // Scan the loop body up to (but not including) insertAfter.
-  for (Operation &op : body) {
-    if (&op == insertAfter) {
-      break;
+  // Collect all release ops that properly dominate the target.
+  SmallVector<TileRegsReleaseOp> dominatingReleases;
+  funcOp.walk([&](TileRegsReleaseOp release) {
+    if (domInfo.properlyDominates(release.getOperation(), target)) {
+      dominatingReleases.push_back(release);
     }
-    if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
-      if (reserve.getCb() == cb) {
-        candidate = reserve.getResult(); // keep the last dominating one
-      }
-    }
-  }
-  if (candidate) {
-    return candidate;
-  }
+  });
 
-  // Scan the parent block backwards from the outermost loop.
-  Operation *loopOp = outermostLoop.getOperation();
-  for (Operation *curr = loopOp->getPrevNode(); curr;
-       curr = curr->getPrevNode()) {
-    if (auto reserve = dyn_cast<CBReserveOp>(curr)) {
-      if (reserve.getCb() == cb) {
-        return reserve.getResult();
-      }
+  // Check each acquire that properly dominates the target.
+  funcOp.walk([&](TileRegsAcquireOp acquire) {
+    if (!domInfo.properlyDominates(acquire.getOperation(), target)) {
+      return;
     }
-  }
 
-  return Value();
+    // Check if there's a release that "intercepts" this acquire:
+    // - The release must properly dominate the target (already filtered above)
+    // - The release must be dominated by the acquire (comes after it)
+    bool hasMatchingRelease =
+        llvm::any_of(dominatingReleases, [&](TileRegsReleaseOp release) {
+          return domInfo.dominates(acquire.getOperation(),
+                                   release.getOperation());
+        });
+
+    if (!hasMatchingRelease) {
+      unmatchedAcquire = acquire;
+    }
+  });
+
+  return unmatchedAcquire;
 }
 
 struct TTLInsertTileRegsSyncPass
@@ -143,6 +148,7 @@ struct TTLInsertTileRegsSyncPass
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
+    DominanceInfo domInfo(funcOp);
 
     WalkResult result = funcOp.walk([&](scf::ForOp forOp) -> WalkResult {
       // Only process loops marked with the tile loop attribute.
@@ -161,6 +167,19 @@ struct TTLInsertTileRegsSyncPass
       auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
       InitSFPUOp existingInitSfpu =
           findPrecedingOp<InitSFPUOp>(outermostLoop.getOperation(), stopAtLoop);
+
+      // Check for an unmatched tile_regs_acquire that dominates the loop.
+      // An acquire is "unmatched" if there's no release between it and the
+      // loop. This would create an unbalanced acquire/release pair since this
+      // pass inserts acquire inside the loop body.
+      TileRegsAcquireOp unmatchedAcquire = findUnmatchedDominatingAcquire(
+          funcOp, outermostLoop.getOperation(), domInfo);
+      if (unmatchedAcquire) {
+        unmatchedAcquire.emitError()
+            << "tile_regs_acquire outside tile loop without matching release; "
+            << "sync ops must be inside the loop body";
+        return WalkResult::interrupt();
+      }
 
       // Insert init_sfpu before outermost loop if not present.
       // init_sfpu only uses CB metadata (format, num_faces, face_dim) to
@@ -266,54 +285,17 @@ struct TTLInsertTileRegsSyncPass
         tail = push.getOperation();
       }
 
-      // Auto-insert stores for tiles being inserted into tensors that lack
-      // explicit stores. Each tensor.insert corresponds to an output.
-      // Match each tensor.insert to its corresponding output CB by finding
-      // which iter_arg it writes to.
-      SmallVector<Value> outputCBs =
-          getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
-
-      // Build a map from iter_arg (output tensor) to output CB index.
-      // The iter_args are in the same order as the ComputeOp outputs.
-      llvm::DenseMap<Value, size_t> iterArgToOutputIdx;
-      for (auto [idx, iterArg] : llvm::enumerate(forOp.getRegionIterArgs())) {
-        iterArgToOutputIdx[iterArg] = idx;
-      }
-
+      // Verify all tensor.insert ops have corresponding ttl.store ops.
+      // Each tensor.insert corresponds to an output that must be stored to a
+      // CB.
       for (tensor::InsertOp insertOp : insertOps) {
         Value tile = insertOp.getScalar();
-        if (storeForTile.contains(tile)) {
-          continue;
+        if (!storeForTile.contains(tile)) {
+          insertOp.emitError()
+              << "tensor.insert tile has no corresponding ttl.store op; "
+              << "all compute outputs must be explicitly stored to a CB";
+          return WalkResult::interrupt();
         }
-
-        // Find which output CB corresponds to this tensor.insert.
-        // The dest of tensor.insert is an iter_arg, which maps to an output.
-        Value destTensor = insertOp.getDest();
-        auto it = iterArgToOutputIdx.find(destTensor);
-        if (it == iterArgToOutputIdx.end()) {
-          continue; // Not writing to an iter_arg, skip
-        }
-        size_t outputIdx = it->second;
-        if (outputIdx >= outputCBs.size()) {
-          continue; // No CB for this output, skip
-        }
-        Value cb = outputCBs[outputIdx];
-
-        Value view = findReserveViewForStore(forOp, outermostLoop, cb,
-                                             tail->getNextNode());
-        if (!view) {
-          // Create a new cb_reserve.
-          builder.setInsertionPointAfter(tail);
-          auto newReserve =
-              builder.create<CBReserveOp>(loc, destTensor.getType(), cb);
-          view = newReserve.getResult();
-          tail = newReserve.getOperation();
-        }
-
-        builder.setInsertionPointAfter(tail);
-        auto newStore = builder.create<StoreOp>(loc, tile, view);
-        tail = newStore.getOperation();
-        storeForTile.try_emplace(tile, newStore);
       }
 
       // Release: at end of loop body (before scf.yield) if not present.

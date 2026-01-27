@@ -208,17 +208,20 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: verify init_sfpu is inserted even when tile_regs_acquire already exists
-// outside the compute. The pre-existing acquire stays outside loops, and new sync
-// ops are inserted inside the loop body.
-// CHECK-LABEL:   func.func @init_sfpu_with_preexisting_acquire
+// Purpose: verify pre-existing init_sfpu before loops is found and not duplicated.
+// CHECK-LABEL:   func.func @preexisting_init_sfpu_not_duplicated
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
-// Pre-existing acquire remains outside loops
-// CHECK:           ttl.tile_regs_acquire
-// CHECK-NEXT:      ttl.init_sfpu(%[[CB0]], %[[CB2]])
-// CHECK-NEXT:      %[[OUTER:.*]] = scf.for {{.*}} iter_args
-// CHECK-NEXT:        %[[INNER:.*]] = scf.for {{.*}} iter_args
+// CHECK:           ttl.attach_cb {{.*}}, %[[CB0]]
+// Pre-existing init_sfpu remains outside loops
+// CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// Operations between init_sfpu and loops (arith.constant hoisted by canonicalization)
+// CHECK-NEXT:      %[[EMPTY:.*]] = tensor.empty
+// CHECK-NEXT:      %[[OUT_CB:.*]] = ttl.attach_cb %[[EMPTY]], %[[CB2]]
+// No duplicate init_sfpu before loops
+// CHECK-NOT:       ttl.init_sfpu
+// CHECK:           %[[OUTER:.*]] = scf.for {{.*}} iter_args(%[[ACC0:.*]] = %[[OUT_CB]])
+// CHECK-NEXT:        %[[INNER:.*]] = scf.for {{.*}} iter_args(%[[ACC1:.*]] = %[[ACC0]])
 // Sync ops inserted inside loop body
 // CHECK-NEXT:          ttl.tile_regs_acquire
 // CHECK-NEXT:          %[[T0:.*]] = tensor.extract
@@ -234,21 +237,23 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:          ttl.store %[[SUM]], %[[VIEW]]
 // CHECK-NEXT:          ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield %[[INS]]
-func.func @init_sfpu_with_preexisting_acquire(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
-                                              %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
+func.func @preexisting_init_sfpu_not_duplicated(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                                %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
-  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // Pre-inserted tile_regs_acquire without init_sfpu - pass should insert init_sfpu.
-  ttl.tile_regs_acquire
+  // Pre-inserted init_sfpu - pass should not duplicate it
+  ttl.init_sfpu(%cb0, %cb2) : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+
+  // Operations between init_sfpu and compute
+  %c0 = arith.constant 0 : index
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -272,55 +277,39 @@ func.func @init_sfpu_with_preexisting_acquire(%a: tensor<2x2x!ttcore.tile<32x32,
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: verify pre-existing init_sfpu before loops is found and not duplicated.
-// The pre-existing sync ops remain outside loops; new sync ops are inserted inside.
-// CHECK-LABEL:   func.func @ops_between_acquire_and_compute
+// Purpose: verify matched acquire+release before loop is allowed.
+// A complete acquire/release pair prior to the loop should not error.
+// CHECK-LABEL:   func.func @matched_acquire_release_before_loop
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
-// CHECK:           ttl.attach_cb {{.*}}, %[[CB0]]
-// Pre-existing sync ops remain outside loops
-// CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
-// CHECK-NEXT:      ttl.tile_regs_acquire
-// Operations between sync ops and loops (arith.constant hoisted by canonicalization)
-// CHECK-NEXT:      %[[EMPTY:.*]] = tensor.empty
-// CHECK-NEXT:      %[[OUT_CB:.*]] = ttl.attach_cb %[[EMPTY]], %[[CB2]]
-// No duplicate init_sfpu before loops
-// CHECK-NOT:       ttl.init_sfpu
-// CHECK:           %[[OUTER:.*]] = scf.for {{.*}} iter_args(%[[ACC0:.*]] = %[[OUT_CB]])
-// CHECK-NEXT:        %[[INNER:.*]] = scf.for {{.*}} iter_args(%[[ACC1:.*]] = %[[ACC0]])
+// Matched pair before loop - OK
+// CHECK:           ttl.tile_regs_acquire
+// CHECK-NEXT:      ttl.tile_regs_release
+// CHECK-NEXT:      ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      %[[OUTER:.*]] = scf.for {{.*}} iter_args
+// CHECK-NEXT:        %[[INNER:.*]] = scf.for {{.*}} iter_args
 // Sync ops inserted inside loop body
 // CHECK-NEXT:          ttl.tile_regs_acquire
-// CHECK-NEXT:          %[[T0:.*]] = tensor.extract
-// CHECK-NEXT:          %[[T1:.*]] = tensor.extract
-// CHECK-NEXT:          %[[IDX:.*]] = affine.apply
-// CHECK-NEXT:          %[[TOK0:.*]], %[[TILE0:.*]] = ttl.copy_tile %[[T0]]
-// CHECK-NEXT:          %[[TOK1:.*]], %[[TILE1:.*]] = ttl.copy_tile %[[T1]]
-// CHECK-NEXT:          %[[SUM:.*]] = ttl.tile_add %[[TILE0]], %[[TILE1]] {dst_idx = 0 : i32}
-// CHECK-NEXT:          %[[INS:.*]] = tensor.insert %[[SUM]]
-// CHECK-NEXT:          ttl.tile_regs_commit
+// CHECK:               ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
-// CHECK-NEXT:          %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:          ttl.store %[[SUM]], %[[VIEW]]
-// CHECK-NEXT:          ttl.tile_regs_release
-// CHECK-NEXT:          scf.yield %[[INS]]
-func.func @ops_between_acquire_and_compute(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
-                                            %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// CHECK:               ttl.tile_regs_release
+// CHECK-NEXT:          scf.yield
+func.func @matched_acquire_release_before_loop(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                               %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-
-  // Pre-inserted sync ops
-  ttl.init_sfpu(%cb0, %cb2) : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
-  ttl.tile_regs_acquire
-
-  // Operations between sync ops and compute
-  %c0 = arith.constant 0 : index
-  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // Matched acquire+release pair before compute - should be allowed
+  ttl.tile_regs_acquire
+  ttl.tile_regs_release
 
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,

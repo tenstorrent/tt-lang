@@ -1,9 +1,11 @@
 // Summary: Seven-operation fused chain to verify DST allocation handles long chains.
 // The sync pass now operates on scf.for loops marked with ttl.tile_loop attribute.
 // RUN: ttlang-opt %s --ttl-assign-dst --ttl-lower-to-loops --ttl-insert-tile-regs-sync --canonicalize --cse --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{separate-output-region=1},ttl-lower-to-loops,ttl-insert-tile-regs-sync),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
+// SEPARATE-NOT: placeholder
 
 // Purpose: Regression test for DST register allocation bug where operations were
 // dropped in fused chains due to register conflicts. This test verifies that all
@@ -29,6 +31,8 @@
 // CHECK-NEXT:          %[[LOG:.*]] = ttl.tile_log %[[EXP]] {dst_idx = 0 : i32}
 // CHECK-NEXT:          %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}
 // CHECK-NEXT:          %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] {dst_idx = 0 : i32}
+// With separate-output-region, the output (sqrt) gets its own DST register
+// SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT:          tensor.insert %[[SQRT]]
 // CHECK-NEXT:          ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
