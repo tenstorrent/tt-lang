@@ -1,0 +1,11 @@
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#ifndef TTLANG_CONFIG_H
+#define TTLANG_CONFIG_H
+
+// CMake-configured build settings.
+#define TTLANG_HAS_DEVICE @TTLANG_HAS_DEVICE_INT@
+
+#endif // TTLANG_CONFIG_H

@@ -19,6 +19,7 @@ fi
 
 # Set tt-lang home directory.
 export TT_LANG_HOME="@TT_LANG_HOME@"
+export TTLANG_HAS_DEVICE="@TTLANG_HAS_DEVICE_INT@"
 
 # Set toolchain directory (configured by CMake).
 export TTMLIR_TOOLCHAIN_DIR="@TTMLIR_TOOLCHAIN_DIR@"

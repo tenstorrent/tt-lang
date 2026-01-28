@@ -5,12 +5,18 @@
 # tt-lang environment activation for installed location
 # This script is used when tt-lang is installed via cmake --install
 
+# Guard against double activation
+if [ "${TTLANG_ENV_ACTIVATED:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 # Determine the install prefix (parent of env/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_PREFIX="$(dirname "$SCRIPT_DIR")"
 
 # Default TTMLIR_TOOLCHAIN_DIR if not set (assume same as install prefix for Docker)
 : ${TTMLIR_TOOLCHAIN_DIR:=$INSTALL_PREFIX}
+export TTMLIR_TOOLCHAIN_DIR
 
 # Activate tt-mlir toolchain venv
 if [ -f "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/activate" ]; then
@@ -29,10 +35,19 @@ export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
 
 export TTLANG_ENV_ACTIVATED=1
 
-echo "tt-lang environment activated"
-echo "  TT-Lang install:       ${INSTALL_PREFIX}"
-echo "  Python:                ${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3"
-echo "  TT-MLIR:               ${TTMLIR_TOOLCHAIN_DIR}"
-echo "  Toolchain:             ${TTMLIR_TOOLCHAIN_DIR}"
-echo "  TT_METAL_RUNTIME_ROOT: ${TT_METAL_RUNTIME_ROOT}"
-echo "  LD_LIBRARY_PATH:       ${LD_LIBRARY_PATH}"
+cat << 'EOF'
+
+████████╗████████╗       ██╗      █████╗  ███╗   ██╗  ██████╗
+╚══██╔══╝╚══██╔══╝       ██║     ██╔══██╗ ████╗  ██║ ██╔════╝
+   ██║      ██║   █████╗ ██║     ███████║ ██╔██╗ ██║ ██║  ███╗
+   ██║      ██║   ╚════╝ ██║     ██╔══██║ ██║╚██╗██║ ██║   ██║
+   ██║      ██║          ███████╗██║  ██║ ██║ ╚████║ ╚██████╔╝
+   ╚═╝      ╚═╝          ╚══════╝╚═╝  ╚═╝ ╚═╝  ╚═══╝  ╚═════╝
+EOF
+echo ""
+echo "  Toolchain: ${TTMLIR_TOOLCHAIN_DIR}"
+echo "  Examples:  ${TTMLIR_TOOLCHAIN_DIR}/examples"
+echo ""
+echo "  Run an example on:"
+echo "   - Python simulator: ttlang-sim $TTMLIR_TOOLCHAIN_DIR/examples/demo_one.py"
+echo "   - TT hardware:      python $TTMLIR_TOOLCHAIN_DIR/examples/demo_one.py"

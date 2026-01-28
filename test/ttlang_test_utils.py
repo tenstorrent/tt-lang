@@ -28,7 +28,7 @@ _hardware_available = False
 
 try:
     # Try to import CMake-generated config first (fast - no ttnn import needed).
-    from test_config import HAS_TT_DEVICE
+    from ttl.config import HAS_TT_DEVICE
 
     _hardware_available = HAS_TT_DEVICE
 except ImportError:
