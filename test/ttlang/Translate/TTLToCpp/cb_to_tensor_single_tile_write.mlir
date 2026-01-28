@@ -22,11 +22,11 @@
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
-  func.func @cb_to_tensor(%arg0: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @cb_to_tensor(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<32x32xf32, #layout> -> tensor<32x32xf32, #layout>
-    %xf = ttl.copy %cb, %slice : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<write>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
+    %xf = ttl.copy %cb, %slice : (!ttl.cb<[1, 1], f32, 2>, tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> !ttl.transfer_handle<write>
     ttl.wait %xf : !ttl.transfer_handle<write>
     func.return
   }
