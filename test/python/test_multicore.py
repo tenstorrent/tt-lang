@@ -17,6 +17,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
+from conftest import temp_kernel_files
 from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
@@ -111,6 +112,7 @@ def make_kernel(grid_rows: int, grid_cols: int):
     spec = importlib.util.spec_from_file_location("kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     kernel = module.multicore_loop
     _kernel_cache[cache_key] = kernel

@@ -28,8 +28,11 @@ def __demo_kernel(a, b, c, y):
 
     grid_cols, grid_rows = ttl.grid_size(dims=2)
 
-    rows_per_core = a.shape[0] // TILE_SIZE // grid_rows // row_tiles_per_block
-    cols_per_core = a.shape[1] // TILE_SIZE // grid_cols // col_tiles_per_block
+    rows = a.shape[0] // TILE_SIZE // row_tiles_per_block
+    cols = a.shape[1] // TILE_SIZE // col_tiles_per_block
+
+    rows_per_core = -(-rows // grid_rows)  # divceil
+    cols_per_core = -(-cols // grid_cols)  # divceil
 
     a_cb = ttl.make_circular_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
@@ -46,15 +49,21 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.compute()
     def demo_compute():
-        for _ in range(rows_per_core):
-            for _ in range(cols_per_core):
-                with (
-                    a_cb.wait() as a_blk,
-                    b_cb.wait() as b_blk,
-                    c_cb.wait() as c_blk,
-                    y_cb.reserve() as y_blk,
-                ):
-                    y_blk.store(a_blk * b_blk + c_blk)
+        core_col, core_row = ttl.core(dims=2)
+
+        for local_row in range(rows_per_core):
+            row = core_row * rows_per_core + local_row
+            if row < rows:
+                for local_col in range(cols_per_core):
+                    col = core_col * cols_per_core + local_col
+                    if col < cols:
+                        with (
+                            a_cb.wait() as a_blk,
+                            b_cb.wait() as b_blk,
+                            c_cb.wait() as c_blk,
+                            y_cb.reserve() as y_blk,
+                        ):
+                            y_blk.store(a_blk * b_blk + c_blk)
 
     @ttl.datamovement()
     def demo_read():
@@ -62,44 +71,46 @@ def __demo_kernel(a, b, c, y):
 
         for local_row in range(rows_per_core):
             row = core_row * rows_per_core + local_row
-            start_row_tile = row * row_tiles_per_block
-            end_row_tile = (row + 1) * row_tiles_per_block
+            if row < rows:
+                start_row_tile = row * row_tiles_per_block
+                end_row_tile = (row + 1) * row_tiles_per_block
 
-            for local_col in range(cols_per_core):
-                col = core_col * cols_per_core + local_col
-                start_col_tile = col * col_tiles_per_block
-                end_col_tile = (col + 1) * col_tiles_per_block
+                for local_col in range(cols_per_core):
+                    col = core_col * cols_per_core + local_col
+                    if col < cols:
+                        start_col_tile = col * col_tiles_per_block
+                        end_col_tile = (col + 1) * col_tiles_per_block
 
-                with (
-                    a_cb.reserve() as a_blk,
-                    b_cb.reserve() as b_blk,
-                    c_cb.reserve() as c_blk,
-                ):
-                    tx_a = ttl.copy(
-                        a[
-                            start_row_tile:end_row_tile,
-                            start_col_tile:end_col_tile,
-                        ],
-                        a_blk,
-                    )
-                    tx_b = ttl.copy(
-                        b[
-                            start_row_tile:end_row_tile,
-                            start_col_tile:end_col_tile,
-                        ],
-                        b_blk,
-                    )
-                    tx_c = ttl.copy(
-                        c[
-                            start_row_tile:end_row_tile,
-                            start_col_tile:end_col_tile,
-                        ],
-                        c_blk,
-                    )
+                        with (
+                            a_cb.reserve() as a_blk,
+                            b_cb.reserve() as b_blk,
+                            c_cb.reserve() as c_blk,
+                        ):
+                            tx_a = ttl.copy(
+                                a[
+                                    start_row_tile:end_row_tile,
+                                    start_col_tile:end_col_tile,
+                                ],
+                                a_blk,
+                            )
+                            tx_b = ttl.copy(
+                                b[
+                                    start_row_tile:end_row_tile,
+                                    start_col_tile:end_col_tile,
+                                ],
+                                b_blk,
+                            )
+                            tx_c = ttl.copy(
+                                c[
+                                    start_row_tile:end_row_tile,
+                                    start_col_tile:end_col_tile,
+                                ],
+                                c_blk,
+                            )
 
-                    tx_a.wait()
-                    tx_b.wait()
-                    tx_c.wait()
+                            tx_a.wait()
+                            tx_b.wait()
+                            tx_c.wait()
 
     @ttl.datamovement()
     def demo_write():
@@ -107,23 +118,25 @@ def __demo_kernel(a, b, c, y):
 
         for local_row in range(rows_per_core):
             row = core_row * rows_per_core + local_row
-            start_row_tile = row * row_tiles_per_block
-            end_row_tile = (row + 1) * row_tiles_per_block
+            if row < rows:
+                start_row_tile = row * row_tiles_per_block
+                end_row_tile = (row + 1) * row_tiles_per_block
 
-            for local_col in range(cols_per_core):
-                col = core_col * cols_per_core + local_col
-                start_col_tile = col * col_tiles_per_block
-                end_col_tile = (col + 1) * col_tiles_per_block
+                for local_col in range(cols_per_core):
+                    col = core_col * cols_per_core + local_col
+                    if col < cols:
+                        start_col_tile = col * col_tiles_per_block
+                        end_col_tile = (col + 1) * col_tiles_per_block
 
-                with y_cb.wait() as y_blk:
-                    tx = ttl.copy(
-                        y_blk,
-                        y[
-                            start_row_tile:end_row_tile,
-                            start_col_tile:end_col_tile,
-                        ],
-                    )
-                    tx.wait()
+                        with y_cb.wait() as y_blk:
+                            tx = ttl.copy(
+                                y_blk,
+                                y[
+                                    start_row_tile:end_row_tile,
+                                    start_col_tile:end_col_tile,
+                                ],
+                            )
+                            tx.wait()
 
 
 def demo_kernel(a, b, c):
@@ -136,22 +149,8 @@ torch.manual_seed(42)
 
 device = ttnn.open_device(device_id=0)
 
-
-def get_shape(device):
-    NUM_BLOCKS = 2
-    device_grid = device.compute_with_storage_grid_size()
-    grid_cols, grid_rows = device_grid.x, device_grid.y
-    # Shape must be divisible by (TILE_SIZE * grid_dim * GRANULARITY) per dimension
-    shape_rows = TILE_SIZE * grid_rows * GRANULARITY * NUM_BLOCKS
-    shape_cols = TILE_SIZE * grid_cols * GRANULARITY * NUM_BLOCKS
-    print(
-        f"Using grid ({grid_cols}, {grid_rows}) with shape ({shape_rows}, {shape_cols})"
-    )
-    return (shape_rows, shape_cols)
-
-
 try:
-    shape = get_shape(device)
+    shape = (2048, 2048)
 
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)

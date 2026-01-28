@@ -119,21 +119,19 @@ def _make_tensor_slice(tensor, indices, slice_shape):
     if not isinstance(tensor_type, RankedTensorType):
         raise ValueError(f"Expected RankedTensorType, got {tensor_type}")
 
-    # TTL tensors are 4D internally: [grid_row, grid_col, shard_row, shard_col]
+    # TTL tensors are 2D: [tiles_y, tiles_x]
     # User provides 2D tile coordinates
-    if tensor_type.rank != 4:
-        raise ValueError(f"Expected rank-4 TTL tensor, got rank {tensor_type.rank}")
+    if tensor_type.rank != 2:
+        raise ValueError(f"Expected rank-2 TTL tensor, got rank {tensor_type.rank}")
 
     if len(indices) != 2:
         raise ValueError(f"Expected 2 tile indices (row, col), got {len(indices)}")
 
     row_idx, col_idx = indices
 
-    # Build result type: [grid_row, grid_col, slice_rows, slice_cols]
-    orig_shape = list(tensor_type.shape)
-    reduced_shape = orig_shape[:2] + list(slice_shape)
+    # Build result type: [slice_rows, slice_cols]
     result_type = RankedTensorType.get(
-        reduced_shape, tensor_type.element_type, tensor_type.encoding
+        list(slice_shape), tensor_type.element_type, tensor_type.encoding
     )
     return ttl.tensor_slice(result_type, tensor, row_idx, col_idx)
 
