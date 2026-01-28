@@ -518,36 +518,20 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
                              pageSize);
 }
 
-static std::pair<int64_t, int64_t>
-getTileGridShape(const RankedTensorType &tensorTy) {
-  auto dims = tensorTy.getShape();
-  assert(dims.size() == 2 && "only rank-2 tensors supported currently");
-  auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
-  int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
-  int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
-  return {tilesY, tilesX};
-}
-
 /// Extract tile grid shape from a Value if it's a static tensor.
-/// Handles both rank-2 tensors (logical shape) and rank-4 tensors
-/// (device shape: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]).
-/// Returns the TOTAL tile grid shape (grid * shard) for linearization.
+/// Tensor shape must be [tiles_y, tiles_x] with TileType elements.
+/// Returns the tile grid shape for linearization.
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
   assert(tensorTy && "expected RankedTensorType");
   assert(tensorTy.hasStaticShape() && "expected static shape");
 
   auto dims = tensorTy.getShape();
-  if (dims.size() == 2) {
-    return getTileGridShape(tensorTy);
-  } else if (dims.size() == 4) {
-    // Rank-4 tensor: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
-    // Return total tile grid: grid_y * shard_y, grid_x * shard_x
-    // This is needed for correct linearization across multi-core grids.
-    return {dims[0] * dims[2], dims[1] * dims[3]};
-  }
+  assert(dims.size() == 2 && "expected rank-2 tensor [tiles_y, tiles_x]");
+  assert(llvm::isa<ttcore::TileType>(tensorTy.getElementType()) &&
+         "expected TileType element type");
 
-  llvm_unreachable("expected rank-2 or rank-4 tensor");
+  return {dims[0], dims[1]};
 }
 
 // Emit a tile loop (or single tile body). The callback receives (row, col)

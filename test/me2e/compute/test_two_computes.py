@@ -330,12 +330,12 @@ class TestTwoComputesSecondResult(TwoComputeTestBase):
         reader_mlir = dm_builder.build_reader(num_inputs=2, total_cbs=3)
 
         # Custom writer that discards first result and writes second
-        # Note: DRAM tensor uses #layout attribute and 4D shape (rows x cols x 1 x 1)
+        # Note: DRAM tensor uses #layout attribute and 2D shape [tiles_y, tiles_x]
         # IMPORTANT: We must use attach_cb on the wait result to prevent it from being
         # optimized away. The compiler will otherwise reorder cb_pop before cb_wait.
         writer_mlir = f"""
 // Custom writer: discards first result, writes second result to DRAM.
-func.func @writer(%out0: tensor<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype}>, #layout>)
+func.func @writer(%out0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>, #layout>)
     attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}} {{
   %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[1, 1], !ttcore.tile<32x32, {dtype}>, {bf}>
 
@@ -349,8 +349,8 @@ func.func @writer(%out0: tensor<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype}>, 
   %wait_out = ttl.cb_wait %cb_out : <[1, 1], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<1x1x!ttcore.tile<32x32, {dtype}>>
   %attached_out = ttl.attach_cb %wait_out, %cb_out : (tensor<1x1x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<1x1x!ttcore.tile<32x32, {dtype}>>
   %c0 = arith.constant 0 : index
-  %slice_out = ttl.tensor_slice %out0[%c0, %c0] : tensor<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype}>, #layout> -> tensor<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype}>, #layout>
-  %xf_out = ttl.copy %cb_out, %slice_out : (!ttl.cb<[1, 1], !ttcore.tile<32x32, {dtype}>, {bf}>, tensor<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype}>, #layout>) -> !ttl.transfer_handle<write>
+  %slice_out = ttl.tensor_slice %out0[%c0, %c0] : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>, #layout> -> tensor<1x1x!ttcore.tile<32x32, {dtype}>, #layout>
+  %xf_out = ttl.copy %cb_out, %slice_out : (!ttl.cb<[1, 1], !ttcore.tile<32x32, {dtype}>, {bf}>, tensor<1x1x!ttcore.tile<32x32, {dtype}>, #layout>) -> !ttl.transfer_handle<write>
   ttl.wait %xf_out : !ttl.transfer_handle<write>
   ttl.cb_pop %cb_out : <[1, 1], !ttcore.tile<32x32, {dtype}>, {bf}>
 
