@@ -71,6 +71,10 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
 
     # grid is (cols, rows) from tt-lang API
     # tensor.shape is (rows, cols) standard convention
+
+    # HACK: This is workaround that fixes issue with uneven grid
+    grid = (1, 1)
+
     grid_cols, grid_rows = grid
     tensor_rows, tensor_cols = tensor.shape
 
