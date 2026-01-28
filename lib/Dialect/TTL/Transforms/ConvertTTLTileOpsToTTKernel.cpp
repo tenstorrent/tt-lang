@@ -550,14 +550,16 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     int64_t dstIdxVal = dstIdxAttr.getInt();
     Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
 
+    // Get input CB tile index.
     // For shape expansion, input comes from ExtractOp with affine-mapped
-    // indices.
+    // indices. Otherwise, use loop indices to read the correct input tile.
     Value inCBIdx;
     if (auto extractIdx =
             computeInputIndexFromExtract(op.getInput(), rewriter, loc)) {
       inCBIdx = *extractIdx;
     } else {
-      inCBIdx = dstIdx;
+      inCBIdx =
+          utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     }
 
     auto ttkAttr = convertBcastType(op.getBcastType());
