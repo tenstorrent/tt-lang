@@ -384,11 +384,14 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
   }
 };
 
-enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
+enum class CopyOperandKind { TensorSlice, CircularBuffer, Pipe, Unknown };
 
 static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
+  }
+  if (llvm::isa<PipeType>(v.getType())) {
+    return CopyOperandKind::Pipe;
   }
   if (v.getDefiningOp<TensorSliceOp>()) {
     return CopyOperandKind::TensorSlice;
@@ -783,12 +786,26 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto srcKind = classifyOperand(src);
     auto dstKind = classifyOperand(dst);
 
-    // Validate: copy requires exactly one TensorSlice and one CircularBuffer.
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
+    bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
+    bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
 
+    // Pipe transfers: CB <-> Pipe
+    // These are placeholders - actual multicast lowering will be added later.
+    if (srcIsPipe || dstIsPipe) {
+      // For now, pipe transfers are kept as-is and marked legal.
+      // Full lowering to ttkernel NOC multicast ops requires more context
+      // about the destination CB addresses which will be passed through
+      // compile-time args.
+      return rewriter.notifyMatchFailure(
+          op, "pipe copy lowering not yet implemented - requires multicast "
+              "NOC ops");
+    }
+
+    // Non-pipe transfers: validate exactly one TensorSlice and one CB.
     if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
@@ -847,6 +864,135 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
       });
     }
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Pipe conditional operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IfSrcOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
+
+    // Get current core coordinates.
+    auto coreX =
+        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+    auto coreY =
+        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+
+    // Get source coordinates from pipe type.
+    auto srcXConst =
+        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcX());
+    auto srcYConst =
+        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcY());
+
+    // Check if current core matches source coordinates.
+    auto matchX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 coreX, srcXConst);
+    auto matchY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 coreY, srcYConst);
+    auto isSrc = rewriter.create<arith::AndIOp>(loc, matchX, matchY);
+
+    // Create scf.if with empty body (the builder adds a yield for us).
+    auto ifOp = rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
+
+    // Merge ops from the original body into the then block (before the yield).
+    Block &srcBlock = op.getBody().front();
+    Block &thenBlock = ifOp.getThenRegion().front();
+    rewriter.setInsertionPoint(thenBlock.getTerminator());
+    for (auto &bodyOp : llvm::make_early_inc_range(srcBlock)) {
+      rewriter.clone(bodyOp);
+    }
+
+    rewriter.replaceOp(op, ValueRange{});
+    return success();
+  }
+};
+
+struct IfDstLowering : OpConversionPattern<IfDstOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IfDstOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
+
+    // Get current core coordinates.
+    auto coreX =
+        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+    auto coreY =
+        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+
+    // Get destination range from pipe type.
+    int64_t dstMinX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t dstMaxX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t dstMinY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
+    int64_t dstMaxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
+
+    auto minXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinX);
+    auto maxXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxX);
+    auto minYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinY);
+    auto maxYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxY);
+
+    // Check if current core is within destination range.
+    // coreX >= minX && coreX <= maxX && coreY >= minY && coreY <= maxY
+    auto geMinX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                 coreX, minXConst);
+    auto leMaxX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                                 coreX, maxXConst);
+    auto geMinY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                 coreY, minYConst);
+    auto leMaxY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                                 coreY, maxYConst);
+
+    auto inRangeX = rewriter.create<arith::AndIOp>(loc, geMinX, leMaxX);
+    auto inRangeY = rewriter.create<arith::AndIOp>(loc, geMinY, leMaxY);
+    auto isDst = rewriter.create<arith::AndIOp>(loc, inRangeX, inRangeY);
+
+    // Create scf.if with empty body (the builder adds a yield for us).
+    auto ifOp = rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
+
+    // Merge ops from the original body into the then block (before the yield).
+    Block &srcBlock = op.getBody().front();
+    Block &thenBlock = ifOp.getThenRegion().front();
+    rewriter.setInsertionPoint(thenBlock.getTerminator());
+    for (auto &bodyOp : llvm::make_early_inc_range(srcBlock)) {
+      rewriter.clone(bodyOp);
+    }
+
+    rewriter.replaceOp(op, ValueRange{});
+    return success();
+  }
+};
+
+struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CreatePipeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // CreatePipeOp is a Pure op that just produces a pipe type value.
+    // The pipe type carries all the coordinate information as type parameters.
+    // At runtime, pipes don't need any materialization - the coordinates are
+    // baked into the generated code through if_src/if_dst lowering.
+    // We erase this op since the pipe value is only used to carry type info.
+    if (!op.getResult().use_empty()) {
+      // If the pipe has uses, we need to keep it around for type conversion.
+      // For now, just replace with an unrealized cast that will be cleaned up.
+      auto cast = rewriter.create<UnrealizedConversionCastOp>(
+          op.getLoc(), op.getResult().getType(), ValueRange{});
+      rewriter.replaceOp(op, cast.getResult(0));
+    } else {
+      rewriter.eraseOp(op);
+    }
     return success();
   }
 };
@@ -963,8 +1109,19 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal
   // until the tile ops lowering phase.
-  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
-      [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
+  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
+    // Tile compute ops stay legal until tile ops lowering phase.
+    if (tt::ttl::isTileComputeOp(op)) {
+      return true;
+    }
+    // CopyOp with pipe operands stays legal until pipe lowering is implemented.
+    if (auto copyOp = llvm::dyn_cast<CopyOp>(op)) {
+      auto srcIsPipe = llvm::isa<PipeType>(copyOp.getSrc().getType());
+      auto dstIsPipe = llvm::isa<PipeType>(copyOp.getDst().getType());
+      return srcIsPipe || dstIsPipe;
+    }
+    return false;
+  });
 
   // TensorSliceOp is legal while it has users (CopyLowering will consume them).
   // Once users are gone, TensorSliceLowering erases the op.
@@ -981,8 +1138,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering, CoreXLowering, CoreYLowering>(typeConverter,
-                                                            &ctx);
+               StoreLowering, CoreXLowering, CoreYLowering,
+               IfSrcLowering, IfDstLowering, CreatePipeLowering>(typeConverter,
+                                                                  &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
