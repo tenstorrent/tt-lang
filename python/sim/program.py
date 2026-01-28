@@ -609,16 +609,15 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                                 obj_desc = f" on {obj_type}"
 
                         if frame and k in orig_source_info:
-                            orig_file, base_lineno = orig_source_info[k]
-                            # The frame's lineno is relative to the transformed code
-                            # which starts at the 'def' line. Add base_lineno to map
-                            # back to original source.
-                            transformed_lineno = frame.f_lineno
-                            # Subtract 1 because the first line of the function def is at base_lineno
-                            orig_lineno = base_lineno + transformed_lineno - 1
+                            orig_file, func_def_line = orig_source_info[k]
+                            # frame.f_lineno is the line number within the transformed code
+                            # which has line numbers preserved from the original source.
+                            # Calculate absolute line in file using same logic as error handling:
+                            # actual_line = func_def_line - 1 + frame.f_lineno
+                            actual_line = func_def_line - 1 + frame.f_lineno
 
                             blocked_info.append(
-                                f"  {k}: blocked on {op}(){obj_desc} at {orig_file}:{orig_lineno}"
+                                f"  {k}: blocked on {op}(){obj_desc} at {orig_file}:{actual_line}"
                             )
                         else:
                             blocked_info.append(f"  {k}: blocked on {op}(){obj_desc}")
