@@ -657,6 +657,113 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   return success();
 }
 
+/// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
+/// The destination cores receive data at the same L1 address as their local CB.
+static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
+                                   ConversionPatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  auto pipeType = llvm::cast<PipeType>(pipe.getType());
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
+  if (failed(cbConverted)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+  }
+
+  // Get CB info for address computation
+  auto cbType = getTTLCBType(srcCB);
+  if (!cbType) {
+    return rewriter.notifyMatchFailure(op, "failed to get CB type");
+  }
+  auto cbShape = cbType.getShape();
+  if (cbShape.size() != 2) {
+    return rewriter.notifyMatchFailure(op, "CB shape must be 2D");
+  }
+  int64_t cbRows = cbShape[0];
+  int64_t cbCols = cbShape[1];
+
+  // Get page size from element type
+  auto elementType = cbType.getElementType();
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(elementType);
+  if (!tileType) {
+    return rewriter.notifyMatchFailure(op, "CB element type must be tile");
+  }
+  int64_t pageSizeBytes = tileType.getSizeBytes();
+
+  // Get destination range from pipe
+  int64_t dstStartX = pipeType.getDstStartX();
+  int64_t dstStartY = pipeType.getDstStartY();
+  int64_t dstEndX = pipeType.getDstEndX();
+  int64_t dstEndY = pipeType.getDstEndY();
+  int64_t numDests = pipeType.getNumDests();
+
+  auto indexTy = rewriter.getIndexType();
+  auto i32Ty = rewriter.getI32Type();
+
+  // Get CB read pointer (source L1 address)
+  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+  auto cbReadPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+  auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+
+  // Destination coordinates for multicast
+  auto dstStartXVal = rewriter.create<arith::ConstantIndexOp>(loc, dstStartX);
+  auto dstStartYVal = rewriter.create<arith::ConstantIndexOp>(loc, dstStartY);
+  auto dstEndXVal = rewriter.create<arith::ConstantIndexOp>(loc, dstEndX);
+  auto dstEndYVal = rewriter.create<arith::ConstantIndexOp>(loc, dstEndY);
+  auto numDestsVal = rewriter.create<arith::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
+  auto pageSizeVal = rewriter.create<arith::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(pageSizeBytes));
+
+  emitTileLoop(
+      rewriter, loc, cbRows, cbCols,
+      [&](OpBuilder &b, Location bodyLoc, Value loopRow, Value loopCol) {
+        // Compute CB tile index and address
+        Value cbTileIdx =
+            linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
+        Value byteOffset =
+            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+        Value srcAddrIdx =
+            b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+        Value srcAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
+
+        // The destination L1 address is the same as source (same CB layout)
+        // Get multicast NOC address
+        auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
+            bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+            srcAddr, /*noc=*/Value());
+
+        // Perform multicast write
+        // Optional attrs: linked=nullptr, multicast_path_reserve=nullptr, noc=nullptr
+        if (pipeType.srcInDstRange()) {
+          // Source is in destination range - use loopback version
+          b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
+              bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal, numDestsVal,
+              /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr,
+              /*noc=*/Value());
+        } else {
+          // Source not in destination range - normal multicast
+          b.create<ttk::NocAsyncWriteMulticastOp>(
+              bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal, numDestsVal,
+              /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr,
+              /*noc=*/Value());
+        }
+      });
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
+/// Lower Pipe -> CB copy: destination side of pipe transfer.
+/// At the destination, data arrives via multicast from source core.
+/// This generates a no-op since the multicast write handles the transfer.
+static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
+                                   ConversionPatternRewriter &rewriter) {
+  // The destination side doesn't initiate any transfer - data arrives
+  // via the multicast from the source side. Just replace with dummy handle.
+  rewriter.replaceOp(op, makeZeroI32(op.getLoc(), rewriter));
+  return success();
+}
+
 /// Lower CB->tensor_slice copy: write tiles from CB to tensor.
 /// Loops over CB shape, writing tiles starting at slice offset.
 static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
@@ -794,15 +901,17 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
 
     // Pipe transfers: CB <-> Pipe
-    // These are placeholders - actual multicast lowering will be added later.
+    if (srcIsCB && dstIsPipe) {
+      // CB -> Pipe: source core multicasts data to destination cores
+      return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), rewriter);
+    }
+    if (srcIsPipe && dstIsCB) {
+      // Pipe -> CB: destination receives data via multicast from source
+      return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), rewriter);
+    }
     if (srcIsPipe || dstIsPipe) {
-      // For now, pipe transfers are kept as-is and marked legal.
-      // Full lowering to ttkernel NOC multicast ops requires more context
-      // about the destination CB addresses which will be passed through
-      // compile-time args.
       return rewriter.notifyMatchFailure(
-          op, "pipe copy lowering not yet implemented - requires multicast "
-              "NOC ops");
+          op, "pipe copy requires CB <-> Pipe, got invalid combination");
     }
 
     // Non-pipe transfers: validate exactly one TensorSlice and one CB.
@@ -1111,16 +1220,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // until the tile ops lowering phase.
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
     // Tile compute ops stay legal until tile ops lowering phase.
-    if (tt::ttl::isTileComputeOp(op)) {
-      return true;
-    }
-    // CopyOp with pipe operands stays legal until pipe lowering is implemented.
-    if (auto copyOp = llvm::dyn_cast<CopyOp>(op)) {
-      auto srcIsPipe = llvm::isa<PipeType>(copyOp.getSrc().getType());
-      auto dstIsPipe = llvm::isa<PipeType>(copyOp.getDst().getType());
-      return srcIsPipe || dstIsPipe;
-    }
-    return false;
+    return tt::ttl::isTileComputeOp(op);
   });
 
   // TensorSliceOp is legal while it has users (CopyLowering will consume them).
