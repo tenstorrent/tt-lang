@@ -75,8 +75,8 @@ def assert_success_output(code: int, out: str) -> None:
         "broadcast_demo.py",
         "general_broadcast.py",
         "eltwise_add.py",
-        "eltwise_pipe.py",
-        "eltwise_pipe_core3.py",
+        "eltwise_pipe.py",  # Now supported: reserve() DM blocks can do multiple copies
+        "eltwise_pipe_core3.py",  # Now supported: reserve() DM blocks can do multiple copies
         "singlecore_matmul.py",
         "multicore_matmul.py",
         "demo_one.py",
@@ -140,14 +140,13 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
 
     This example demonstrates incorrect block access during copy operations:
     attempting to write to a block destination before wait() completes. The error
-    message should clearly indicate the locking violation.
+    message should clearly indicate the access violation.
     """
     code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / "copy_lock_error.py")
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
-    # Check for the core error message (copy lock violation)
+    # Check for the core error message (copy access violation)
     assert (
-        "Cannot write to Block: locked as copy destination until wait() completes"
-        in out
+        "Cannot write to Block: Block has no access (NA state)" in out
     ), f"Expected error message not found in output:\n{out}"
     # Verify source location is shown (line 88 where we attempt to write to a_block)
     assert (
@@ -160,8 +159,8 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
         lines = f.readlines()
         # Line 88 (1-indexed) should contain the problematic write
         error_line = lines[87].strip()  # 0-indexed
-        assert "a_block[0] = None" in error_line, (
+        assert "a_block.store" in error_line, (
             f"Line 88 in copy_lock_error.py does not contain expected write.\n"
-            f"Expected: 'a_block[0] = None'\n"
+            f"Expected: 'a_block.store'\n"
             f"Got: {error_line}"
         )

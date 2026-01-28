@@ -17,6 +17,7 @@ import types
 from types import CellType, FunctionType
 from typing import Any, Callable, Dict, Generator, List, Optional, Protocol, Tuple
 
+from .block import ThreadType, _set_current_thread_type, _clear_current_thread_type
 from .cb import CircularBuffer
 from .cbapi import CBAPI
 from .ttnnsim import Tensor
@@ -199,13 +200,17 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             """Cooperative scheduling execution mode - all cores run in round-robin."""
 
             # Create transformed sources for all cores
-            all_sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]] = (
-                []
-            )
+            all_sources: List[
+                Tuple[str, str, ast.Module, Dict[str, Any], str, int, ThreadType]
+            ] = []
+
+            # Track all per-core contexts for validation
+            all_core_contexts: List[Dict[str, Any]] = []
 
             for core in range(total_cores):
                 # build per-core context
                 core_context = self._build_core_context(core)
+                all_core_contexts.append(core_context)
 
                 # Transform functions to sources with yields
                 sources = self._create_cooperative_generators(
@@ -217,6 +222,35 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             # Run round-robin scheduler across all cores
             self._run_round_robin_scheduler(all_sources)
 
+            # Validate all CircularBuffers have no pending blocks
+            self._validate_circular_buffers(all_core_contexts)
+
+        def _validate_circular_buffers(
+            self, all_core_contexts: List[Dict[str, Any]]
+        ) -> None:
+            """Validate that all CircularBuffers have no pending blocks at end of execution.
+
+            Args:
+                all_core_contexts: List of per-core contexts containing CircularBuffers
+
+            Raises:
+                RuntimeError: If any CircularBuffer has pending blocks
+            """
+            errors = []
+            for core_idx, core_context in enumerate(all_core_contexts):
+                for key, value in core_context.items():
+                    if isinstance(value, CircularBuffer):
+                        try:
+                            value.validate_no_pending_blocks()
+                        except RuntimeError as e:
+                            errors.append(f"core{core_idx}.{key}: {e}")
+
+            if errors:
+                raise RuntimeError(
+                    "Kernel execution completed with incomplete CircularBuffer operations:\n"
+                    + "\n".join(errors)
+                )
+
         def _create_cooperative_generators(
             self,
             core: int,
@@ -224,10 +258,10 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             compute_func_tmpl: BindableTemplate,
             dm0_tmpl: BindableTemplate,
             dm1_tmpl: BindableTemplate,
-        ) -> List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]]:
+        ) -> List[Tuple[str, str, ast.Module, Dict[str, Any], str, int, ThreadType]]:
             """Transform function sources for cooperative execution.
 
-            Returns list of (name, func_name, transformed_ast, namespace, orig_file, orig_lineno) tuples
+            Returns list of (name, func_name, transformed_ast, namespace, orig_file, orig_lineno, thread_type) tuples
             that the scheduler will compile and execute.
 
             The transformation inserts `yield (cb, operation)` before each wait()/reserve(),
@@ -237,13 +271,23 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             3. Continue generator if unblocked, or switch to another if blocked
             4. Detect deadlock when all generators are blocked
             """
-            sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]] = []
+            sources: List[
+                Tuple[str, str, ast.Module, Dict[str, Any], str, int, ThreadType]
+            ] = []
 
             for name, tmpl in [
                 ("compute", compute_func_tmpl),
                 ("dm0", dm0_tmpl),
                 ("dm1", dm1_tmpl),
             ]:
+                # Get ThreadType directly from template's thread_type attribute
+                thread_type = getattr(tmpl, "thread_type", None)
+                if not isinstance(thread_type, ThreadType):
+                    raise RuntimeError(
+                        f"Template {tmpl} has invalid thread_type '{thread_type}'. "
+                        f"Expected ThreadType enum (COMPUTE or DM)."
+                    )
+
                 # Bind template to core context
                 bound_func = tmpl.bind(core_context)
 
@@ -288,13 +332,17 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         namespace,
                         orig_file,
                         orig_lineno,
+                        thread_type,
                     )
                 )
 
             return sources
 
         def _run_round_robin_scheduler(
-            self, sources: List[Tuple[str, str, ast.Module, Dict[str, Any], str, int]]
+            self,
+            sources: List[
+                Tuple[str, str, ast.Module, Dict[str, Any], str, int, ThreadType]
+            ],
         ) -> None:
             """Compile sources into generators and run them in round-robin.
 
@@ -311,12 +359,13 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             # Build mapping of generator names to original source locations
             orig_source_map: Dict[str, Tuple[str, int]] = {
                 name: (orig_file, orig_lineno)
-                for name, _, _, _, orig_file, orig_lineno in sources
+                for name, _, _, _, orig_file, orig_lineno, _ in sources
             }
 
             def _advance_generator(
                 name: str,
                 gen: Generator[None, None, None],
+                thread_type: ThreadType,
                 allow_completion: bool = False,
             ) -> Tuple[Any, bool]:
                 """Advance a generator one step.
@@ -324,11 +373,15 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 Args:
                     name: Generator name for error messages
                     gen: Generator to advance
+                    thread_type: Thread type for state machine context
                     allow_completion: If False, StopIteration is an error
 
                 Returns:
                     (result, completed) where completed=True if generator finished
                 """
+                # Set thread context for state machine
+                _set_current_thread_type(thread_type)
+
                 try:
                     result: Any = next(gen)
                     return (result, False)
@@ -395,9 +448,11 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         raise RuntimeError(error_msg)
 
             # First, compile and execute all sources to create generators
-            # active[name] = (generator, blocking_object, operation)
+            # active[name] = (generator, blocking_object, operation, thread_type)
             # blocking_object can be CircularBuffer or CopyTransaction - both support can_wait()/can_reserve()
-            active: Dict[str, Tuple[Generator[None, None, None], Any, str]] = {}
+            active: Dict[
+                str, Tuple[Generator[None, None, None], Any, str, ThreadType]
+            ] = {}
 
             for (
                 name,
@@ -406,6 +461,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 namespace,
                 _orig_file,
                 _orig_lineno,
+                thread_type,
             ) in sources:
                 # Compile transformed AST to bytecode (preserves line numbers)
                 code_obj = compile(transformed_ast, f"<{name}_transformed>", "exec")
@@ -431,7 +487,9 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     continue
 
                 # Run generator once until it yields (must yield at least once)
-                result, _ = _advance_generator(name, gen, allow_completion=True)
+                result, _ = _advance_generator(
+                    name, gen, thread_type, allow_completion=True
+                )
 
                 # If generator completed immediately without yielding, skip it
                 if result is None:
@@ -440,9 +498,9 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 # Generator yielded - check what it yielded
                 match result:
                     case (blocking_obj, operation):
-                        # Store (gen, blocking_obj, operation) in active
+                        # Store (gen, blocking_obj, operation, thread_type) in active
                         # blocking_obj can be CircularBuffer or CopyTransaction
-                        active[name] = (gen, blocking_obj, operation)
+                        active[name] = (gen, blocking_obj, operation, thread_type)
                     case _:
                         # Unexpected yield value
                         raise RuntimeError(
@@ -458,7 +516,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
                 # Try to advance each active generator
                 for name in list(active.keys()):
-                    gen, blocking_obj, blocked_op = active[name]
+                    gen, blocking_obj, blocked_op, thread_type = active[name]
 
                     # Check if operation can proceed
                     # blocking_obj supports can_wait() or can_reserve() depending on blocked_op
@@ -473,7 +531,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     # Run this generator until it blocks or completes
                     while True:
                         result, completed = _advance_generator(
-                            name, gen, allow_completion=True
+                            name, gen, thread_type, allow_completion=True
                         )
 
                         if completed:
@@ -493,7 +551,12 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                                 )
                                 if can_method and not can_method():
                                     # Operation would block - update state in active
-                                    active[name] = (gen, blocking_obj, operation)
+                                    active[name] = (
+                                        gen,
+                                        blocking_obj,
+                                        operation,
+                                        thread_type,
+                                    )
                                     break  # Exit inner while loop, try next generator
                                 # else: operation can proceed, continue this generator
                             case _:
@@ -512,7 +575,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 # Deadlock detection: no progress made and generators still active
                 if not any_progress and active:
                     blocked_info: List[str] = [
-                        f"{k}: {op}()" for k, (_, _, op) in active.items()
+                        f"{k}: {op}()" for k, (_, _, op, _) in active.items()
                     ]
                     raise RuntimeError(
                         f"Deadlock detected: all generators blocked\n"
