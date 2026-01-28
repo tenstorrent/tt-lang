@@ -35,18 +35,18 @@
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
-  func.func @loopback(%src: tensor<32x32xf32, #layout>, %dst: tensor<32x32xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @loopback(%src: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, %dst: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
 
-    %src_slice = ttl.tensor_slice %src[%c0, %c0] : tensor<32x32xf32, #layout> -> tensor<32x32xf32, #layout>
-    %dst_slice = ttl.tensor_slice %dst[%c0, %c0] : tensor<32x32xf32, #layout> -> tensor<32x32xf32, #layout>
+    %src_slice = ttl.tensor_slice %src[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
+    %dst_slice = ttl.tensor_slice %dst[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
     scf.for %i = %c0 to %c4 step %c1 {
-      %xf_read = ttl.copy %src_slice, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf_read = ttl.copy %src_slice, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       ttl.wait %xf_read : !ttl.transfer_handle<read>
-      %xf_write = ttl.copy %cb, %dst_slice : (!ttl.cb<[1, 1], f32, 2>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<write>
+      %xf_write = ttl.copy %cb, %dst_slice : (!ttl.cb<[1, 1], f32, 2>, tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> !ttl.transfer_handle<write>
       ttl.wait %xf_write : !ttl.transfer_handle<write>
     }
     func.return

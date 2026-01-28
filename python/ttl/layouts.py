@@ -56,15 +56,6 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
     mlir_grid = [grid_rows, grid_cols]
 
     # logical_shape is (rows, cols), mlir_grid is (rows, cols)
-    tensor_rows, tensor_cols = config.logical_shape
-    if tensor_rows % grid_rows != 0:
-        raise ValueError(
-            f"Tensor rows ({tensor_rows}) must be divisible by grid rows ({grid_rows})"
-        )
-    if tensor_cols % grid_cols != 0:
-        raise ValueError(
-            f"Tensor cols ({tensor_cols}) must be divisible by grid cols ({grid_cols})"
-        )
 
     ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
     element_type = ttcore.ir.TileType.get(
