@@ -21,20 +21,28 @@ from .typedefs import Index, Shape, Size, Span
 _current_thread_type: Optional["ThreadType"] = None
 
 
-def _get_current_thread_type() -> Optional["ThreadType"]:
+def _get_current_thread_type() -> "ThreadType":
     """Get the current thread type.
 
     Returns:
-        ThreadType if set, None otherwise
+        ThreadType
+
+    Raises:
+        RuntimeError: If thread type is not set (not within a thread context)
     """
+    if _current_thread_type is None:
+        raise RuntimeError(
+            "Thread context not set. Must be called within a kernel thread or after "
+            "calling _set_current_thread_type()."
+        )
     return _current_thread_type
 
 
-def _set_current_thread_type(thread_type: "ThreadType") -> None:
+def _set_current_thread_type(thread_type: Optional["ThreadType"]) -> None:
     """Set the current thread type.
 
     Args:
-        thread_type: The thread type to set
+        thread_type: The thread type to set, or None to clear the context
     """
     global _current_thread_type
     _current_thread_type = thread_type

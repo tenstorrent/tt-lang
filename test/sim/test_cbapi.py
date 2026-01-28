@@ -9,6 +9,7 @@ from typing import List, Tuple
 import pytest
 from test_utils import make_full_tensor, tensors_exact_equal
 
+from python.sim.block import ThreadType, _set_current_thread_type
 from python.sim.cb import CircularBuffer
 from python.sim.cbapi import CBAPI
 from python.sim.cbstate import CBSlot
@@ -17,6 +18,19 @@ from python.sim.typedefs import CBID
 
 
 # Pytest fixtures to reduce redundant setup code
+@pytest.fixture(autouse=True)
+def setup_thread_context():
+    """Automatically set thread context for all CBAPI tests.
+
+    CBAPI is thread-agnostic - it just needs some thread context set to create blocks.
+    We use COMPUTE here, but the actual thread type doesn't affect CBAPI behavior.
+    State machine validation happens at the Block level, which is tested separately.
+    """
+    _set_current_thread_type(ThreadType.COMPUTE)
+    yield
+    _set_current_thread_type(None)  # Clean up
+
+
 @pytest.fixture
 def api() -> CBAPI:
     """Create a fresh CBAPI instance for each test."""

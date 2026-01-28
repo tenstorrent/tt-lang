@@ -193,10 +193,8 @@ class CBAPI:
                     f"cb_pop_front({num_tiles}) exceeds visible={cb_state.visible}"
                 )
             span = cb_state.front_span(num_tiles)
-            # Determine thread type from context
+            # Get thread type from context (will raise if not set)
             thread_type = _get_current_thread_type()
-            if thread_type is None:
-                thread_type = ThreadType.COMPUTE  # Default to COMPUTE if not set
             view = Block(
                 cb_state.buf,
                 cb_state.cap,
@@ -227,10 +225,8 @@ class CBAPI:
                     "read window invalidated; call cb_wait_front again"
                 )
             span = cb_state.front_span(cb_state.last_wait_target)
-            # Determine thread type from context
+            # Get thread type from context (will raise if not set)
             thread_type = _get_current_thread_type()
-            if thread_type is None:
-                thread_type = ThreadType.COMPUTE  # Default to COMPUTE if not set
             block = Block(
                 cb_state.buf,
                 cb_state.cap,
@@ -251,10 +247,8 @@ class CBAPI:
             if cb_state.reserved < cb_state.last_reserve_target:
                 raise CBContractError("write window invalidated; call cb_reserve again")
             span = cb_state.back_span(cb_state.last_reserve_target)
-            # Determine thread type from context
+            # Get thread type from context (will raise if not set)
             thread_type = _get_current_thread_type()
-            if thread_type is None:
-                thread_type = ThreadType.COMPUTE  # Default to COMPUTE if not set
             block = Block(
                 cb_state.buf,
                 cb_state.cap,

@@ -18,9 +18,24 @@ from test_utils import (
 )
 
 from python.sim import TILE_SHAPE, copy, ttnn
+from python.sim.block import ThreadType, _set_current_thread_type
 from python.sim.cb import CircularBuffer
 from python.sim.cbapi import CBAPI
 from python.sim.errors import CBContractError
+
+
+@pytest.fixture(autouse=True)
+def setup_thread_context():
+    """Automatically set thread context to COMPUTE for all CB tests.
+
+    Note: These tests primarily exercise COMPUTE thread patterns (using store()).
+    DM thread patterns (using copy operations) are tested separately in copy/pipe tests.
+    The state machine enforces different expected operations for DM vs COMPUTE threads,
+    so parametrizing these tests would require substantial test logic changes.
+    """
+    _set_current_thread_type(ThreadType.COMPUTE)
+    yield
+    _set_current_thread_type(None)  # Clean up
 
 
 @pytest.fixture
