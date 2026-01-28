@@ -164,3 +164,79 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
             f"Expected: 'a_block.store'\n"
             f"Got: {error_line}"
         )
+
+
+def test_demo_one_deadlock_detection() -> None:
+    """Test that demo_one.py with incorrect wait() instead of reserve() triggers deadlock detection.
+
+    This test modifies demo_one.py to use wait() instead of reserve() for the output
+    buffer, which causes a deadlock. The deadlock detection should clearly show:
+    1. Which threads are blocked
+    2. What operation they're blocked on
+    3. Which CircularBuffer they're waiting for
+    4. The source location where they're blocked
+    """
+    import tempfile
+
+    # Read the original demo_one.py
+    source_file = EXAMPLES_DIR / "demo_one.py"
+    with open(source_file) as f:
+        content = f.read()
+
+    # Introduce the error: change y_cb.reserve() to y_cb.wait()
+    # This creates a deadlock where compute waits for y_cb that it should be writing to
+    modified_content = content.replace(
+        "y_cb.reserve() as y_blk,", "y_cb.wait() as y_blk,"
+    )
+
+    # Verify we actually modified something
+    assert modified_content != content, "Failed to modify demo_one.py content"
+
+    # Create a temporary file with the modified content
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+        tmp.write(modified_content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        # Run the modified script
+        code, out = run_ttlang_sim_and_capture(tmp_path)
+
+        # Should fail with non-zero exit code
+        assert (
+            code != 0
+        ), f"Expected modified demo_one.py to fail, but it exited with code 0"
+
+        # Check for deadlock detection message
+        assert (
+            "Deadlock detected: all generators blocked" in out
+        ), f"Expected deadlock detection message not found in output:\n{out}"
+
+        # Check that it shows which CB is blocked (y_cb)
+        assert (
+            "CircularBuffer(y_cb)" in out
+        ), f"Expected to see y_cb in deadlock output:\n{out}"
+
+        # Check that it shows the blocked operations
+        assert (
+            "blocked on wait()" in out
+        ), f"Expected to see 'blocked on wait()' in deadlock output:\n{out}"
+        assert (
+            "blocked on reserve()" in out
+        ), f"Expected to see 'blocked on reserve()' in deadlock output:\n{out}"
+
+        # Check that source locations are included
+        # The temporary file path will be different, but the line references should be there
+        assert (
+            " at " in out and ".py:" in out
+        ), f"Expected source location (file:line) in deadlock output:\n{out}"
+
+        # Check for multiple cores being blocked (demo_one uses multiple cores)
+        assert (
+            "core0-compute:" in out
+        ), f"Expected core0-compute in deadlock output:\n{out}"
+        assert "core0-dm0:" in out, f"Expected core0-dm0 in deadlock output:\n{out}"
+        assert "core0-dm1:" in out, f"Expected core0-dm1 in deadlock output:\n{out}"
+
+    finally:
+        # Clean up temporary file
+        tmp_path.unlink()
