@@ -131,16 +131,35 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
   const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
   const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
+  const bool srcIsPipe = mlir::isa<PipeType>(srcTy);
+  const bool dstIsPipe = mlir::isa<PipeType>(dstTy);
 
+  // Pipe transfers: CB <-> Pipe
+  if (srcIsPipe || dstIsPipe) {
+    // For pipe transfers, one side must be a pipe and the other must be a CB.
+    if (srcIsPipe && dstIsPipe) {
+      return emitOpError() << "cannot copy directly between pipes";
+    }
+    if (!srcIsCb && !dstIsCb) {
+      return emitOpError()
+             << "pipe transfers require one operand to be !ttl.cb";
+    }
+    // Valid combinations: CB->Pipe (send) or Pipe->CB (receive)
+    // MVP: require explicit wait for all transfers.
+    if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
+                                                           getXf()))) {
+      return failure();
+    }
+    return success();
+  }
+
+  // Non-pipe transfers: CB <-> TensorSlice
   // Exactly one side must be a CB.
   if (srcIsCb == dstIsCb) {
     return emitOpError()
            << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
            << " dst=" << dstTy;
   }
-
-  // TODO(#88): Add support for pipes and blocks as ttl.copy operands once those
-  // IR types/ops land.
 
   // Extract the underlying tensor type from the non-CB operand.
   // For slices, get the original tensor from the defining TensorSliceOp.
@@ -170,9 +189,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << "expects tensor operand to carry TTNNLayout encoding; got "
            << rankedTensorTy;
   }
-
-  // TODO(#89): Verify that the tensor tile/block shape and element type match
-  // the CB element_type and shape/buffer_factor semantics.
 
   // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
   // use ensures we do not silently drop transfers.
