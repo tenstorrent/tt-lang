@@ -10,13 +10,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 
-#define GET_TYPEDEF_CLASSES
-#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
+#include <algorithm>
+#include <cstdlib>
 
-namespace mlir::tt::ttl {
-
-void TTLDialect::registerTypes() {
-  addTypes<CircularBufferType, TransferHandleType>();
-}
-
-} // namespace mlir::tt::ttl
+// Note: registerTypes() is defined in TTLOps.cpp using the tablegen-generated
+// GET_TYPEDEF_LIST macro. Do not duplicate it here.

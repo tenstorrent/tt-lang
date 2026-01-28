@@ -605,3 +605,34 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
 
   return success();
 }
+
+mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
+  auto pipeType = mlir::cast<PipeType>(getResult().getType());
+
+  // Verify consistency between attributes and result type.
+  // Cast to int64_t to match the type's storage.
+  int64_t srcX = static_cast<int64_t>(getSrcX());
+  int64_t srcY = static_cast<int64_t>(getSrcY());
+  int64_t dstStartX = static_cast<int64_t>(getDstStartX());
+  int64_t dstStartY = static_cast<int64_t>(getDstStartY());
+  int64_t dstEndX = static_cast<int64_t>(getDstEndX());
+  int64_t dstEndY = static_cast<int64_t>(getDstEndY());
+
+  if (pipeType.getSrcX() != srcX || pipeType.getSrcY() != srcY ||
+      pipeType.getDstStartX() != dstStartX ||
+      pipeType.getDstStartY() != dstStartY ||
+      pipeType.getDstEndX() != dstEndX || pipeType.getDstEndY() != dstEndY) {
+    return emitOpError()
+           << "attributes must match result pipe type coordinates";
+  }
+
+  // Validate coordinates are non-negative.
+  if (srcX < 0 || srcY < 0) {
+    return emitOpError() << "source coordinates must be non-negative";
+  }
+  if (dstStartX < 0 || dstStartY < 0 || dstEndX < 0 || dstEndY < 0) {
+    return emitOpError() << "destination coordinates must be non-negative";
+  }
+
+  return success();
+}
