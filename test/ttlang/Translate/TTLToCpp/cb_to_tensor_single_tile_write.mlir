@@ -17,8 +17,9 @@
 // CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
+// CHECK:   noc_async_write_set_trid({{.*}}, {{.*}});
 // CHECK:   noc_async_write_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);
-// CHECK:   noc_async_write_barrier();
+// CHECK:   noc_async_write_barrier_with_trid({{.*}}, {{.*}});
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
