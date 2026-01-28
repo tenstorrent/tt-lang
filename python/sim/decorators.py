@@ -11,6 +11,7 @@ operations within the simulation framework.
 from types import FunctionType
 from typing import Any, Callable, Dict, List
 
+from .block import ThreadType
 from .program import BindableTemplate, rebind_func_with_ctx
 
 # Thread registry for automatic collection of @compute and @datamovement threads
@@ -49,7 +50,7 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
         class ComputeTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            thread_type = "compute"  # Identifier for sorting
+            thread_type = ThreadType.COMPUTE  # ThreadType enum for type safety
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 # rebuild function with per-core closure
@@ -84,7 +85,7 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
         class DMTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            thread_type = "datamovement"  # Identifier for sorting
+            thread_type = ThreadType.DM  # ThreadType enum for type safety
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 bound_func = rebind_func_with_ctx(func, ctx)

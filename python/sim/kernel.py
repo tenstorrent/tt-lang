@@ -12,6 +12,7 @@ import inspect
 from typing import Any, Callable, List, Tuple, Union, cast
 import types
 
+from .block import ThreadType
 from .typedefs import CoreIndex, Index, Shape, Size
 
 
@@ -261,10 +262,12 @@ def kernel(
             # Sort threads by type to ensure consistent ordering regardless of definition order
             # Program expects: compute, dm0, dm1
             compute_threads = [
-                t for t in threads if getattr(t, "thread_type", None) == "compute"
+                t
+                for t in threads
+                if getattr(t, "thread_type", None) == ThreadType.COMPUTE
             ]
             dm_threads = [
-                t for t in threads if getattr(t, "thread_type", None) == "datamovement"
+                t for t in threads if getattr(t, "thread_type", None) == ThreadType.DM
             ]
 
             if len(compute_threads) != 1:
