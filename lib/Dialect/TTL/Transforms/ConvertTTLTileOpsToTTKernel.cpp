@@ -530,7 +530,16 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
                                     rewriter, loc);
     if (failed(outCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
+      // After loop lowering in fused blocks, the output operand traces to
+      // iter_args. Find the output CB from the init_sfpu op in the function.
+      funcOp->walk([&](InitSFPUOp initOp) {
+        outCB = utils::convertTTLCBToTTKernel(initOp.getOcb(), rewriter, loc,
+                                              typeConverter);
+        return WalkResult::interrupt();
+      });
+      if (failed(outCB)) {
+        return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
+      }
     }
 
     // Get DST index from attribute (assigned by TTLAssignDST pass).
