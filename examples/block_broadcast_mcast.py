@@ -53,14 +53,12 @@ def block_broadcast_multicast(input_t: ttnn.Tensor, output_t: ttnn.Tensor, block
         core = ttl.core(dims=1)
         with in_cb.reserve() as in_blk:
             def sender(pipe):
-                print("core:", core, "is source")
                 in_rd = copy(input_t[block_slice(0, block_h), block_slice(0, block_w)], in_blk)
                 in_rd.wait()
                 mcast_wr = copy(in_blk, pipe)
                 mcast_wr.wait()
 
             def reciever(pipe):
-                print("core:", core, "is dst")
                 mcast_rd = copy(pipe, in_blk)
                 mcast_rd.wait()
 
@@ -111,3 +109,17 @@ print("-----second test-----")
 test_block_broadcast_mcast(128, 128, 2, 2)
 print("-----third test-----")
 test_block_broadcast_mcast(64, 128, 1, 2)
+print("-----fourth test-----")
+test_block_broadcast_mcast(64, 256, 2, 1)
+print("-----stress, input block within dst, all cores wh-----")
+test_block_broadcast_mcast(4 * 8 * ttnn.TILE_SIZE, 2 * 8 * ttnn.TILE_SIZE, 4, 2)
+print("-----stress, input block half of L1 384/768 tiles, all cores wh-----")
+test_block_broadcast_mcast(24 * 8 * ttnn.TILE_SIZE, 16 * 8 * ttnn.TILE_SIZE, 24, 16)
+# this should fail? 2 blocks in L1
+print("-----stress, input block most of L1 512/768 tiles, all cores wh-----")
+test_block_broadcast_mcast(32 * 8 * ttnn.TILE_SIZE, 16 * 8 * ttnn.TILE_SIZE, 32, 16)
+# should def fail
+print("-----stress, input block all of L1 768 tiles, all cores wh-----")
+test_block_broadcast_mcast(24 * 8 * ttnn.TILE_SIZE, 32 * 8 * ttnn.TILE_SIZE, 24, 32)
+# print("-----stress, block within dst, all cores bh-----")
+# test_block_broadcast_mcast(4 * 13 * ttnn.TILE_SIZE, 2 * 10 * ttnn.TILE_SIZE, 4, 2)
