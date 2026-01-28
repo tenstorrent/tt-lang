@@ -19,6 +19,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
+from conftest import temp_kernel_files
 from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
@@ -134,6 +135,7 @@ def make_add_kernel(tile_rows: int, tile_cols: int):
     spec = importlib.util.spec_from_file_location("add_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     kernel = module.tile_loop_kernel
     _add_kernel_cache[cache_key] = kernel
@@ -160,6 +162,7 @@ def make_fused_kernel(tile_rows: int, tile_cols: int):
     spec = importlib.util.spec_from_file_location("fused_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     kernel = module.fused_kernel
     _fused_kernel_cache[cache_key] = kernel
