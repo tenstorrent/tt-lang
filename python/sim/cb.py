@@ -47,6 +47,11 @@ class _BlockContextManager:
         """Return the underlying Block object."""
         return self._block
 
+    @property
+    def _shape(self) -> "Shape":
+        """Delegate shape access to the underlying block."""
+        return self._block._shape
+
     def __enter__(self) -> Block:
         return self._block
 
@@ -79,33 +84,20 @@ class _BlockContextManager:
         self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
 
     # Delegate arithmetic operations
-    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __add__(self, other: "Block") -> "Block":
         return self._block.__add__(other)
 
-    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __sub__(self, other: "Block") -> "Block":
         return self._block.__sub__(other)
 
-    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __mul__(self, other: "Block") -> "Block":
         return self._block.__mul__(other)
 
-    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __truediv__(self, other: "Block") -> "Block":
         return self._block.__truediv__(other)
 
-    def __matmul__(self, other: "Block") -> List[Tensor]:
+    def __matmul__(self, other: "Block") -> "Block":
         return self._block.__matmul__(other)
-
-    # Reverse operators for when the left operand doesn't support the operation
-    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__radd__(other)
-
-    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rsub__(other)
-
-    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rmul__(other)
-
-    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rtruediv__(other)
 
 
 class ReserveContext(_BlockContextManager):

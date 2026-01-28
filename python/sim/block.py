@@ -35,6 +35,8 @@ class Block:
         "_shape",
         "_read_locked",
         "_write_locked",
+        "_is_temporary",
+        "_broadcast_dims",
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -43,16 +45,56 @@ class Block:
     #       original list as is. This is a limitation of pydantic's validate_call, and
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
     # @validate_call
-    def __init__(self, buf: List[CBSlot], capacity: Size, span: Span, shape: Shape):
+    def __init__(
+        self,
+        buf: List[CBSlot],
+        capacity: Size,
+        span: Span,
+        shape: Shape,
+        is_temporary: bool = False,
+        broadcast_dims: List[int] | None = None,
+    ):
         self._buf = buf
         self._capacity = capacity
         self._span = span
         self._shape = shape
         self._read_locked = False
         self._write_locked = False
+        self._is_temporary = is_temporary
+        self._broadcast_dims = broadcast_dims or []
+
+    @classmethod
+    def from_list(
+        cls,
+        tensors: List[Tensor],
+        shape: Shape,
+        broadcast_dims: List[int] | None = None,
+    ) -> "Block":
+        """Create a temporary Block from a list of tensors (computation result).
+
+        Temporary blocks are not backed by CB storage and don't support wrap-around.
+        """
+        return cls(
+            buf=tensors,
+            capacity=len(tensors),
+            span=Span(0, len(tensors)),
+            shape=shape,
+            is_temporary=True,
+            broadcast_dims=broadcast_dims,
+        )
 
     def __len__(self) -> Size:
         return self._span.length
+
+    @property
+    def is_temporary(self) -> bool:
+        """Check if this Block is a temporary computation result (not CB-backed)."""
+        return self._is_temporary
+
+    @property
+    def broadcast_dims(self) -> List[int]:
+        """Get the dimensions along which this block is marked for broadcasting."""
+        return self._broadcast_dims
 
     def _check_can_read(self) -> None:
         """Check if this Block can be read from.
@@ -122,7 +164,13 @@ class Block:
         self._check_can_read()
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
-        value = self._buf[(self._span.start + idx) % self._capacity]
+
+        # Temporary blocks don't wrap around
+        if self._is_temporary:
+            value = self._buf[idx]
+        else:
+            value = self._buf[(self._span.start + idx) % self._capacity]
+
         if value is None:
             raise ValueError(f"Reading uninitialized or consumed slot at index {idx}")
         return value
@@ -135,7 +183,12 @@ class Block:
         self._check_can_write()
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
-        self._buf[(self._span.start + idx) % self._capacity] = value
+
+        # Temporary blocks don't wrap around
+        if self._is_temporary:
+            self._buf[idx] = value
+        else:
+            self._buf[(self._span.start + idx) % self._capacity] = value
 
     @validate_call
     def pop(self, idx: Index) -> None:
@@ -149,119 +202,169 @@ class Block:
     def to_list(self) -> List[CBSlot]:
         return [self[i] for i in range(len(self))]
 
+    @staticmethod
+    def _infer_broadcast_shape(left_shape: Shape, right_shape: Shape) -> Shape:
+        """Infer the result shape from broadcasting two shapes.
+
+        Uses standard broadcasting rules: dimensions must match or one must be 1.
+        """
+        if len(left_shape) != len(right_shape):
+            # For now, require same number of dimensions
+            raise ValueError(f"Shape dimension mismatch: {left_shape} vs {right_shape}")
+
+        result_shape = tuple(
+            max(l, r) if l == 1 or r == 1 or l == r else None
+            for l, r in zip(left_shape, right_shape)
+        )
+
+        if None in result_shape:
+            raise ValueError(
+                f"Incompatible shapes for broadcasting: {left_shape} and {right_shape}"
+            )
+
+        return result_shape
+
     # @validate_call
-    def store(self, items: Sequence[Tensor], acc: bool = False) -> None:
+    def store(self, items: Union["Block", Sequence[Tensor]], acc: bool = False) -> None:
         """Store items into the block.
 
         Args:
-            items: Sequence of tensors to store
+            items: Block or sequence of tensors to store
             acc: If True, accumulate with existing values (+=), otherwise assign (=)
         """
-        if len(items) != self._span.length:
+        # Convert Block to sequence if needed
+        if isinstance(items, Block):
+            items_seq = items.to_list()
+        else:
+            items_seq = items
+
+        if len(items_seq) != self._span.length:
             raise ValueError("Length mismatch in store()")
         if acc:
             # Accumulate: add new values to existing values
-            for i, v in enumerate(items):
+            for i, v in enumerate(items_seq):
                 self[i] = self[i] + v
         else:
             # Regular assignment
-            for i, v in enumerate(items):
+            for i, v in enumerate(items_seq):
                 self[i] = v
 
     def _apply_binary_op(
         self,
-        left: Union["Block", List[Tensor]],
-        right: Union["Block", List[Tensor]],
+        left: "Block",
+        right: "Block",
         op: Callable[[Any, Any], Any],
     ) -> List[Tensor]:
-        """Element-wise binary op: left (op) right with broadcasting support.
+        """Element-wise binary op: left (op) right.
 
-        Supports broadcasting when one operand has length 1.
+        Broadcasting must be explicit via ttl.math.broadcast().
+        Implicit broadcasting (different shapes without explicit broadcast) is an error.
         """
         len_left = len(left)
         len_right = len(right)
+        left_shape = left._shape
+        right_shape = right._shape
 
-        if len_left == len_right:
-            # Standard element-wise operation
+        # Check if shapes match exactly
+        if left_shape == right_shape and len_left == len_right:
             return [op(left[i], right[i]) for i in range(len_left)]
-        elif len_right == 1:
-            # Broadcast right to all elements of left
-            right_val = right[0]
-            return [op(left[i], right_val) for i in range(len_left)]
-        elif len_left == 1:
-            # Broadcast left to all elements of right
-            left_val = left[0]
-            return [op(left_val, right[i]) for i in range(len_right)]
-        else:
+
+        # Check if one operand is marked for broadcasting
+        left_broadcast = getattr(left, "_broadcast_dims", None)
+        right_broadcast = getattr(right, "_broadcast_dims", None)
+
+        # Exactly one operand should be marked for broadcast
+        if left_broadcast and right_broadcast:
             raise ValueError(
-                f"Operand lengths must match or one must be 1 for broadcasting "
-                f"(got lengths {len_left} and {len_right})"
+                f"Cannot perform operation: both operands are marked for broadcast "
+                f"(left dims={left_broadcast}, right dims={right_broadcast}). "
+                f"Only one operand should be marked for broadcast."
             )
+
+        if not left_broadcast and not right_broadcast:
+            raise ValueError(
+                f"Cannot perform operation: shape mismatch {left_shape} vs {right_shape}. "
+                f"Use ttl.math.broadcast() to explicitly broadcast one of the operands."
+            )
+
+        # One operand is marked for broadcast - handle symmetrically
+        broadcast_block = left if left_broadcast else right
+        other_block = right if left_broadcast else left
+        broadcast_dims = left_broadcast or right_broadcast
+        broadcast_shape = broadcast_block._shape
+        other_shape = other_block._shape
+
+        # Validate broadcast
+        if len(broadcast_shape) != len(other_shape):
+            raise ValueError(
+                f"Cannot broadcast: dimension mismatch between shapes {broadcast_shape} and {other_shape}"
+            )
+
+        for dim in broadcast_dims:
+            if dim >= len(broadcast_shape):
+                raise ValueError(
+                    f"Cannot broadcast: dimension {dim} out of range for shape {broadcast_shape}"
+                )
+            if broadcast_shape[dim] != 1:
+                raise ValueError(
+                    f"Cannot broadcast: dimension {dim} must have size 1, got {broadcast_shape[dim]}"
+                )
+
+        # Perform the operation with broadcasting
+        from .ttnnsim import broadcast_tensors
+
+        return broadcast_tensors(
+            left.to_list(), right.to_list(), left_shape, right_shape, op
+        )
 
     def _binary_op(
         self,
-        other: Union["Block", List[Tensor]],
+        other: "Block",
         op: Callable[[Any, Any], Any],
-    ) -> List[Tensor]:
+    ) -> "Block":
         """Element-wise binary op: self (op) other."""
-        return self._apply_binary_op(self, other, op)
+        result_list = self._apply_binary_op(self, other, op)
 
-    def _rbinary_op(
-        self,
-        other: List[Tensor],
-        op: Callable[[Any, Any], Any],
-    ) -> List[Tensor]:
-        """Element-wise reverse binary op: other (op) self."""
-        return self._apply_binary_op(other, self, op)
+        # Infer result shape using broadcasting rules
+        result_shape = self._infer_broadcast_shape(self._shape, other._shape)
+
+        return Block.from_list(result_list, result_shape)
 
     # ---- forward operators ----
 
-    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __add__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.add)
 
-    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __sub__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.sub)
 
-    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __mul__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.mul)
 
-    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __truediv__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.truediv)
 
-    def __floordiv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __floordiv__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.floordiv)
 
-    def __mod__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __mod__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.mod)
 
-    def __pow__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __pow__(self, other: Union["Block", int]) -> "Block":
+        """Element-wise exponentiation.
+
+        Supports both Block and scalar integer exponents.
+        """
+        if isinstance(other, int):
+            # Scalar power - apply to each tensor in the block
+            result_tensors = [t**other for t in self.to_list()]
+            return Block.from_list(result_tensors, shape=self._shape)
+
+        # Block power
         return self._binary_op(other, _op.pow)
 
-    def __matmul__(self, other: "Block") -> List[Tensor]:
+    def __matmul__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.matmul)
-
-    # ---- reverse operators ----
-
-    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._rbinary_op(other, _op.add)
-
-    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._rbinary_op(other, _op.sub)
-
-    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._rbinary_op(other, _op.mul)
-
-    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._rbinary_op(other, _op.truediv)
-
-    def __rfloordiv__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._rbinary_op(other, _op.floordiv)
-
-    def __rmod__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._rbinary_op(other, _op.mod)
-
-    def __rpow__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._rbinary_op(other, _op.pow)
 
     @property
     def shape(self) -> Shape:
