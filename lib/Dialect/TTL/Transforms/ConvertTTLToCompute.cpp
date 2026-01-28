@@ -495,7 +495,10 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value inputCb = getAttachedCB(op.getInput());
     Value outCb = getAttachedCB(op.getOutput());
     if (!inputCb) {
-      return op.emitError("bcast input must be attached to a circular buffer");
+      return op.emitError(
+          "broadcast input must come directly from a circular buffer, not from "
+          "an elementwise result; move the broadcast to its own compute block "
+          "or make it the first operation in a fused sequence");
     }
     if (!outCb) {
       return op.emitError("bcast output must be attached to a circular buffer");

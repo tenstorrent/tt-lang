@@ -20,7 +20,7 @@ import ttnn
 import ttl
 
 
-# CHECK: bcast input must be attached to a circular buffer
+# CHECK: broadcast input must come directly from a circular buffer
 # CHECK:   --> {{.*}}invalid_bcast_not_first.py:[[LINE:[0-9]+]]:{{[0-9]+}}
 # CHECK:    |
 # CHECK: [[LINE]] |             result = ttl.math.broadcast(ab, o, dims=[0])
