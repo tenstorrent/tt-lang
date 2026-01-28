@@ -389,11 +389,14 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
   }
 };
 
-enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
+enum class CopyOperandKind { TensorSlice, CircularBuffer, Pipe, Unknown };
 
 static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
+  }
+  if (llvm::isa<PipeType>(v.getType())) {
+    return CopyOperandKind::Pipe;
   }
   if (v.getDefiningOp<TensorSliceOp>()) {
     return CopyOperandKind::TensorSlice;
@@ -659,6 +662,113 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   return success();
 }
 
+/// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
+/// The destination cores receive data at the same L1 address as their local CB.
+static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
+                                   ConversionPatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  auto pipeType = llvm::cast<PipeType>(pipe.getType());
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
+  if (failed(cbConverted)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+  }
+
+  // Get CB info for address computation
+  auto cbType = getTTLCBType(srcCB);
+  if (!cbType) {
+    return rewriter.notifyMatchFailure(op, "failed to get CB type");
+  }
+  auto cbShape = cbType.getShape();
+  if (cbShape.size() != 2) {
+    return rewriter.notifyMatchFailure(op, "CB shape must be 2D");
+  }
+  int64_t cbRows = cbShape[0];
+  int64_t cbCols = cbShape[1];
+
+  // Get page size from element type
+  auto elementType = cbType.getElementType();
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(elementType);
+  if (!tileType) {
+    return rewriter.notifyMatchFailure(op, "CB element type must be tile");
+  }
+  int64_t pageSizeBytes = tileType.getSizeBytes();
+
+  // Get destination range from pipe
+  int64_t dstStartX = pipeType.getDstStartX();
+  int64_t dstStartY = pipeType.getDstStartY();
+  int64_t dstEndX = pipeType.getDstEndX();
+  int64_t dstEndY = pipeType.getDstEndY();
+  int64_t numDests = pipeType.getNumDests();
+
+  auto indexTy = rewriter.getIndexType();
+  auto i32Ty = rewriter.getI32Type();
+
+  // Get CB read pointer (source L1 address)
+  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+  auto cbReadPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+  auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+
+  // Destination coordinates for multicast
+  auto dstStartXVal = rewriter.create<arith::ConstantIndexOp>(loc, dstStartX);
+  auto dstStartYVal = rewriter.create<arith::ConstantIndexOp>(loc, dstStartY);
+  auto dstEndXVal = rewriter.create<arith::ConstantIndexOp>(loc, dstEndX);
+  auto dstEndYVal = rewriter.create<arith::ConstantIndexOp>(loc, dstEndY);
+  auto numDestsVal = rewriter.create<arith::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
+  auto pageSizeVal = rewriter.create<arith::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(pageSizeBytes));
+
+  emitTileLoop(
+      rewriter, loc, cbRows, cbCols,
+      [&](OpBuilder &b, Location bodyLoc, Value loopRow, Value loopCol) {
+        // Compute CB tile index and address
+        Value cbTileIdx =
+            linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
+        Value byteOffset =
+            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+        Value srcAddrIdx =
+            b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+        Value srcAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
+
+        // The destination L1 address is the same as source (same CB layout)
+        // Get multicast NOC address
+        auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
+            bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+            srcAddr, /*noc=*/Value());
+
+        // Perform multicast write
+        // Optional attrs: linked=nullptr, multicast_path_reserve=nullptr, noc=nullptr
+        if (pipeType.srcInDstRange()) {
+          // Source is in destination range - use loopback version
+          b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
+              bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal, numDestsVal,
+              /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr,
+              /*noc=*/Value());
+        } else {
+          // Source not in destination range - normal multicast
+          b.create<ttk::NocAsyncWriteMulticastOp>(
+              bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal, numDestsVal,
+              /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr,
+              /*noc=*/Value());
+        }
+      });
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
+/// Lower Pipe -> CB copy: destination side of pipe transfer.
+/// At the destination, data arrives via multicast from source core.
+/// This generates a no-op since the multicast write handles the transfer.
+static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
+                                   ConversionPatternRewriter &rewriter) {
+  // The destination side doesn't initiate any transfer - data arrives
+  // via the multicast from the source side. Just replace with dummy handle.
+  rewriter.replaceOp(op, makeZeroI32(op.getLoc(), rewriter));
+  return success();
+}
+
 /// Lower CB->tensor_slice copy: write tiles from CB to tensor.
 /// Loops over CB shape, writing tiles starting at slice offset.
 static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
@@ -788,12 +898,28 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto srcKind = classifyOperand(src);
     auto dstKind = classifyOperand(dst);
 
-    // Validate: copy requires exactly one TensorSlice and one CircularBuffer.
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
+    bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
+    bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
 
+    // Pipe transfers: CB <-> Pipe
+    if (srcIsCB && dstIsPipe) {
+      // CB -> Pipe: source core multicasts data to destination cores
+      return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), rewriter);
+    }
+    if (srcIsPipe && dstIsCB) {
+      // Pipe -> CB: destination receives data via multicast from source
+      return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), rewriter);
+    }
+    if (srcIsPipe || dstIsPipe) {
+      return rewriter.notifyMatchFailure(
+          op, "pipe copy requires CB <-> Pipe, got invalid combination");
+    }
+
+    // Non-pipe transfers: validate exactly one TensorSlice and one CB.
     if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
@@ -852,6 +978,128 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
       });
     }
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Pipe conditional operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IfSrcOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
+
+    // Get current core coordinates.
+    auto coreX =
+        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+    auto coreY =
+        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+
+    // Get source coordinates from pipe type.
+    auto srcXConst =
+        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcX());
+    auto srcYConst =
+        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcY());
+
+    // Check if current core matches source coordinates.
+    auto matchX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 coreX, srcXConst);
+    auto matchY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 coreY, srcYConst);
+    auto isSrc = rewriter.create<arith::AndIOp>(loc, matchX, matchY);
+
+    // Create scf.if with empty body (the builder adds a yield for us).
+    auto ifOp = rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
+
+    // Move ops from the original body into the then block (before the yield).
+    // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    Block &srcBlock = op.getBody().front();
+    Block &thenBlock = ifOp.getThenRegion().front();
+    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct IfDstLowering : OpConversionPattern<IfDstOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IfDstOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
+
+    // Get current core coordinates.
+    auto coreX =
+        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+    auto coreY =
+        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+
+    // Get destination range from pipe type.
+    int64_t dstMinX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t dstMaxX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t dstMinY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
+    int64_t dstMaxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
+
+    auto minXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinX);
+    auto maxXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxX);
+    auto minYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinY);
+    auto maxYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxY);
+
+    // Check if current core is within destination range.
+    // coreX >= minX && coreX <= maxX && coreY >= minY && coreY <= maxY
+    auto geMinX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                 coreX, minXConst);
+    auto leMaxX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                                 coreX, maxXConst);
+    auto geMinY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                 coreY, minYConst);
+    auto leMaxY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                                 coreY, maxYConst);
+
+    auto inRangeX = rewriter.create<arith::AndIOp>(loc, geMinX, leMaxX);
+    auto inRangeY = rewriter.create<arith::AndIOp>(loc, geMinY, leMaxY);
+    auto isDst = rewriter.create<arith::AndIOp>(loc, inRangeX, inRangeY);
+
+    // Create scf.if with empty body (the builder adds a yield for us).
+    auto ifOp = rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
+
+    // Move ops from the original body into the then block (before the yield).
+    // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    Block &srcBlock = op.getBody().front();
+    Block &thenBlock = ifOp.getThenRegion().front();
+    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CreatePipeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // CreatePipeOp is a Pure op that just produces a pipe type value.
+    // The pipe type carries all the coordinate information as type parameters.
+    // At runtime, pipes don't need any materialization - the coordinates are
+    // baked into the generated code through if_src/if_dst lowering.
+    //
+    // Always replace with an unrealized cast to handle uses in nested regions
+    // (like if_src/if_dst bodies) that may be processed in a different order.
+    // The unrealized cast preserves the type for downstream patterns.
+    auto cast = rewriter.create<UnrealizedConversionCastOp>(
+        op.getLoc(), op.getResult().getType(), ValueRange{});
+    rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
 };
@@ -968,8 +1216,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal
   // until the tile ops lowering phase.
-  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
-      [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
+  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
+    // Tile compute ops stay legal until tile ops lowering phase.
+    return tt::ttl::isTileComputeOp(op);
+  });
 
   // TensorSliceOp is legal while it has users (CopyLowering will consume them).
   // Once users are gone, TensorSliceLowering erases the op.
@@ -986,8 +1236,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering, CoreXLowering, CoreYLowering>(typeConverter,
-                                                            &ctx);
+               StoreLowering, CoreXLowering, CoreYLowering,
+               IfSrcLowering, IfDstLowering, CreatePipeLowering>(typeConverter,
+                                                                  &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

@@ -195,21 +195,78 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
     return _make_tensor_slice(tensor, start_indices, cb_shape)
 
 
+def _is_pipe(val):
+    """Check if a value is a pipe (either MLIR PipeType or Python Pipe with MLIR value)."""
+    # Check for MLIR PipeType value
+    if hasattr(val, "type"):
+        type_str = str(val.type)
+        if "ttl.pipe" in type_str:
+            return True
+    # Check for Python Pipe object with MLIR value
+    from .pipe import Pipe
+
+    return isinstance(val, Pipe) and hasattr(val, "_mlir_value")
+
+
+def _get_pipe_mlir_value(pipe):
+    """Get the MLIR value for a pipe (either MLIR value or Python Pipe object)."""
+    # If it's already an MLIR value, return it
+    if hasattr(pipe, "type"):
+        type_str = str(pipe.type)
+        if "ttl.pipe" in type_str:
+            return pipe
+    # If it's a Python Pipe object, get its MLIR value
+    return pipe._mlir_value
+
+
 @syntax("copy")
 def copy(src, dst) -> CopyTransferHandler:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
-        src: Source tensor/slice (for reads) or block (for writes)
-        dst: Destination block (for reads) or tensor/slice (for writes)
+        src: Source tensor/slice (for reads), block (for writes), or Pipe (for pipe receive)
+        dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
 
     Returns:
         CopyTransferHandler handle that must be waited on for completion
 
     For multi-tile CBs (shape > 1x1), use range syntax: tensor[0:2, 0:2]
     For single-tile CBs (shape 1x1), use index syntax: tensor[0, 0]
+
+    For pipe transfers:
+        ttl.copy(block, pipe) - send from CB to pipe (multicast write)
+        ttl.copy(pipe, block) - receive from pipe to CB (no-op, data arrives via multicast)
     """
+    # Check for pipe operands first
+    src_is_pipe = _is_pipe(src)
+    dst_is_pipe = _is_pipe(dst)
+
+    if src_is_pipe or dst_is_pipe:
+        # Pipe transfer: CB <-> Pipe
+        if src_is_pipe and dst_is_pipe:
+            raise ValueError("copy() cannot transfer directly between two pipes")
+
+        if dst_is_pipe:
+            # CB -> Pipe (send via multicast)
+            if not _is_block(src):
+                raise ValueError("copy() to pipe requires block src (from cb.reserve() or cb.wait())")
+            src_cb = _get_cb_from_block(src)
+            pipe_val = _get_pipe_mlir_value(dst)
+            ctx = src_cb.type.context
+            xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
+            return ttl.copy(xf_type, src_cb, pipe_val)
+        else:
+            # Pipe -> CB (receive, data arrives via multicast)
+            if not _is_block(dst):
+                raise ValueError("copy() from pipe requires block dst (from cb.reserve() or cb.wait())")
+            dst_cb = _get_cb_from_block(dst)
+            pipe_val = _get_pipe_mlir_value(src)
+            ctx = dst_cb.type.context
+            xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
+            return ttl.copy(xf_type, pipe_val, dst_cb)
+
+    # Non-pipe transfers: tensor subscript <-> block
     src_is_subscript = isinstance(src, tuple)
     dst_is_subscript = isinstance(dst, tuple)
 
