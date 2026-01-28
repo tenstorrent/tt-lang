@@ -11,6 +11,7 @@ third_party/ttnn-python
 cluster_descriptor.yaml
 test/lit.site.cfg.py
 /generated
+.venv/
 
 # ttnn-dylib and ttnn-standalone artifacts
 tools/ttnn-standalone/ttnn-dylib.cpp
