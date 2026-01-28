@@ -71,6 +71,9 @@ def assert_success_output(code: int, out: str) -> None:
 @pytest.mark.parametrize(
     "script_name",
     [
+        "broadcast.py",
+        "broadcast_demo.py",
+        "general_broadcast.py",
         "eltwise_add.py",
         "eltwise_pipe.py",
         "eltwise_pipe_core3.py",
