@@ -584,7 +584,7 @@ def TTL_BcastOp : TTL_Op<"bcast", []> {
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
-def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", []> {
+def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
   let summary = "Tile-level broadcast operation";
   let description = [{
     Broadcasts a row, column, or scalar tile into a full 32x32 tile.

@@ -148,8 +148,8 @@ static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
 static SmallVector<Operation *> getSortedConsumers(Value v) {
   SmallVector<Operation *> consumers;
   for (Operation *user : v.getUsers()) {
-    // Skip bcast ops - they read from CB, not DST
-    if (isa<TileBcastOp>(user)) {
+    // Skip CB-input ops (bcast, reduce, transpose, etc.)
+    if (user->hasTrait<TTLCBInputTileOpTrait>()) {
       continue;
     }
     consumers.push_back(user);
@@ -275,12 +275,8 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   for (Operation &op : *body) {
     int64_t currentIdx = opIndex[&op];
 
-    // Skip interval creation for bcast operands - bcast reads from CB, not DST.
-    // Bcast's result still needs an interval (it writes to DST).
-    bool isBcast = isa<TileBcastOp>(&op);
-
-    // Extend input intervals to this use
-    if (!isBcast) {
+    // Extend input intervals to this use (skipping ops with CB inputs)
+    if (!op.hasTrait<TTLCBInputTileOpTrait>()) {
       for (Value operand : op.getOperands()) {
         if (!isTileValue(operand)) {
           continue;
@@ -708,7 +704,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Second: Process remaining block arguments - insert copy_tile at first
       // use. Skip CB-reading ops (bcast, etc.) which read from CB directly.
       for (Operation &op : *body) {
-        if (isa<TileBcastOp>(&op)) {
+        if (op.hasTrait<TTLCBInputTileOpTrait>()) {
           continue;
         }
         for (OpOperand &operand : op.getOpOperands()) {
@@ -762,9 +758,9 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
           arg.replaceUsesWithIf(copy.getDstTile(), [&](OpOperand &use) {
             // Don't replace in copy_tile ops - they need the original block arg
-            // Don't replace in bcast ops - they read from CB, not DST
+            // Don't replace in CB-reading ops - they read from CB, not DST
             return use.getOwner() != copy && !isa<CopyTileOp>(use.getOwner()) &&
-                   !isa<TileBcastOp>(use.getOwner());
+                   !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
           });
         }
       }
