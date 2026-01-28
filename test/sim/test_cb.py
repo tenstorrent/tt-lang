@@ -206,17 +206,15 @@ def test_error_handling(api: CBAPI) -> None:
 def test_copy_in_dm_thread_context(api: CBAPI) -> None:
     """Test copy operations with proper DM thread context.
 
-    This is the corrected version of test_example_usage_pattern that follows
-    the state machine by using DM thread context for copy operations.
+    This test demonstrates the full workflow:
+    - DM thread: copy data into CBs (reserve + copy + push)
+    - Switch to COMPUTE thread for consumption (wait + read + pop)
     """
     from python.sim.block import (
         _set_current_thread_type,
         _clear_current_thread_type,
         ThreadType,
     )
-
-    # Set DM thread context (required for copy operations)
-    _set_current_thread_type(ThreadType.DM)
 
     try:
         # Create tensors
@@ -241,7 +239,9 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
         assert c_in_cb.shape == (1, 1)
         assert c_in_cb.capacity_tiles == 2
 
-        # Test copy operations in DM thread context
+        # DM thread: Producer side - copy data into CBs
+        _set_current_thread_type(ThreadType.DM)
+
         # Copy c_in data
         c_block = c_in_cb.reserve()
         c_slice = c_in[0:1, 0:1]
@@ -256,7 +256,9 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
         tx.wait()
         a_in_cb.push()
 
-        # Consumer side - read data back
+        # Switch to COMPUTE thread: Consumer side - read data back
+        _set_current_thread_type(ThreadType.COMPUTE)
+
         c_data = c_in_cb.wait()
         a_data = a_in_cb.wait()
 
@@ -268,7 +270,7 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
         assert c_data[0] is not None
         assert a_data[0] is not None
 
-        # Clean up
+        # In COMPUTE thread, wait() blocks can be directly popped
         c_in_cb.pop()
         a_in_cb.pop()
 
@@ -277,6 +279,90 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
         _clear_current_thread_type()
 
     print("Copy in DM thread context test passed!")
+
+
+def test_single_pending_reserve_constraint(api: CBAPI) -> None:
+    """Test that only one reserve() is allowed before push()."""
+    from python.sim.block import _set_current_thread_type, ThreadType
+
+    _set_current_thread_type(ThreadType.DM)
+
+    try:
+        element = make_ones_tile()
+        cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+
+        # First reserve() should succeed
+        block1 = cb.reserve()
+        assert block1 is not None
+
+        # Second reserve() before push() should fail
+        with pytest.raises(
+            RuntimeError, match="Cannot call reserve\\(\\) again before push\\(\\)"
+        ):
+            cb.reserve()
+
+        # After push(), should be able to reserve() again
+        cb.push()
+        block2 = cb.reserve()
+        assert block2 is not None
+        cb.push()
+    finally:
+        from python.sim.block import _clear_current_thread_type
+
+        _clear_current_thread_type()
+
+
+def test_single_pending_wait_constraint(api: CBAPI) -> None:
+    """Test that only one wait() is allowed before pop()."""
+    from python.sim.block import _set_current_thread_type, ThreadType
+    from python.sim.copy import copy
+
+    _set_current_thread_type(ThreadType.COMPUTE)
+
+    try:
+        element = make_ones_tile()
+        cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+
+        # First populate the CB with data (using DM thread)
+        _set_current_thread_type(ThreadType.DM)
+        block = cb.reserve()
+        test_data = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
+        test_slice = test_data[0:1, 0:1]
+        tx = copy(test_slice, block)
+        tx.wait()
+        cb.push()
+
+        # Switch to COMPUTE thread for consumption
+        _set_current_thread_type(ThreadType.COMPUTE)
+
+        # First wait() should succeed
+        data1 = cb.wait()
+        assert data1 is not None
+
+        # Second wait() before pop() should fail
+        with pytest.raises(
+            RuntimeError, match="Cannot call wait\\(\\) again before pop\\(\\)"
+        ):
+            cb.wait()
+
+        # After pop(), should be able to wait() again (if there's more data)
+        cb.pop()
+
+        # Add more data (using DM thread)
+        _set_current_thread_type(ThreadType.DM)
+        block = cb.reserve()
+        tx = copy(test_slice, block)
+        tx.wait()
+        cb.push()
+
+        _set_current_thread_type(ThreadType.COMPUTE)
+        data2 = cb.wait()
+        assert data2 is not None
+        cb.pop()
+    finally:
+        from python.sim.block import _clear_current_thread_type
+
+        _clear_current_thread_type()
 
 
 def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:

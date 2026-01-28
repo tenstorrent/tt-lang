@@ -435,6 +435,171 @@ class TestErrorHandling:
             test_kernel(a)
 
 
+class TestBlockCompletion:
+    """Test block completion validation at end of kernel execution.
+
+    These tests verify that the simulator catches incomplete block operations
+    (missing push() or pop() calls) at the end of kernel execution.
+    """
+
+    def test_missing_push_detected(self) -> None:
+        """Test that missing push() is detected at end of execution."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create circular buffers
+            element = make_ones_tensor(32, 32)
+            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Reserve a block but forget to push it
+                block = in_cb.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block)
+                tx.wait()
+                # Missing: in_cb.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                pass
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should raise RuntimeError about incomplete CircularBuffer operations
+        with pytest.raises(
+            RuntimeError,
+            match="Kernel execution completed with incomplete CircularBuffer operations",
+        ):
+            test_kernel(input_tensor)
+
+    def test_missing_pop_detected(self) -> None:
+        """Test that missing pop() is detected at end of execution."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create circular buffers
+            element = make_ones_tensor(32, 32)
+            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Produce data
+                block = in_cb.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block)
+                tx.wait()
+                in_cb.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                # Wait for data but forget to pop it
+                data = in_cb.wait()
+                # Use the data
+                _ = data[0]
+                # Missing: in_cb.pop()
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should raise RuntimeError about incomplete CircularBuffer operations
+        with pytest.raises(
+            RuntimeError,
+            match="Kernel execution completed with incomplete CircularBuffer operations",
+        ):
+            test_kernel(input_tensor)
+
+    def test_complete_operations_pass(self) -> None:
+        """Test that properly completed operations pass validation."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create circular buffers
+            element = make_ones_tensor(32, 32)
+            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Produce data - with push()
+                block = in_cb.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block)
+                tx.wait()
+                in_cb.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                # Consume data - with pop()
+                data = in_cb.wait()
+                _ = data[0]
+                in_cb.pop()
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should NOT raise - all operations are complete
+        test_kernel(input_tensor)
+
+    def test_multiple_cbs_with_errors(self) -> None:
+        """Test that errors from multiple CBs are all reported."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create multiple circular buffers
+            element = make_ones_tensor(32, 32)
+            cb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Both CBs have incomplete operations
+                block1 = cb1.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block1)
+                tx.wait()
+                # Missing: cb1.push()
+
+                block2 = cb2.reserve()
+                tx = copy(slice_data, block2)
+                tx.wait()
+                # Missing: cb2.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                pass
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should raise RuntimeError mentioning multiple CBs
+        with pytest.raises(
+            RuntimeError,
+            match="Kernel execution completed with incomplete CircularBuffer operations",
+        ):
+            test_kernel(input_tensor)
+
+
 class TestRebindFunc:
     """Test the rebind_func_with_ctx utility function."""
 

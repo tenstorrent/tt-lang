@@ -204,9 +204,13 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 Tuple[str, str, ast.Module, Dict[str, Any], str, int, ThreadType]
             ] = []
 
+            # Track all per-core contexts for validation
+            all_core_contexts: List[Dict[str, Any]] = []
+
             for core in range(total_cores):
                 # build per-core context
                 core_context = self._build_core_context(core)
+                all_core_contexts.append(core_context)
 
                 # Transform functions to sources with yields
                 sources = self._create_cooperative_generators(
@@ -217,6 +221,35 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             # Run round-robin scheduler across all cores
             self._run_round_robin_scheduler(all_sources)
+
+            # Validate all CircularBuffers have no pending blocks
+            self._validate_circular_buffers(all_core_contexts)
+
+        def _validate_circular_buffers(
+            self, all_core_contexts: List[Dict[str, Any]]
+        ) -> None:
+            """Validate that all CircularBuffers have no pending blocks at end of execution.
+
+            Args:
+                all_core_contexts: List of per-core contexts containing CircularBuffers
+
+            Raises:
+                RuntimeError: If any CircularBuffer has pending blocks
+            """
+            errors = []
+            for core_idx, core_context in enumerate(all_core_contexts):
+                for key, value in core_context.items():
+                    if isinstance(value, CircularBuffer):
+                        try:
+                            value.validate_no_pending_blocks()
+                        except RuntimeError as e:
+                            errors.append(f"core{core_idx}.{key}: {e}")
+
+            if errors:
+                raise RuntimeError(
+                    "Kernel execution completed with incomplete CircularBuffer operations:\n"
+                    + "\n".join(errors)
+                )
 
         def _create_cooperative_generators(
             self,
