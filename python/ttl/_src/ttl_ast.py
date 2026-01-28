@@ -514,6 +514,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 elif isinstance(val, Pipe):
                     pipe_val = self._emit_pipe_from_capture(val)
                     self.symbol_tables[-1][name] = pipe_val
+                    # Store MLIR value on the Pipe object for use in operators
+                    val._mlir_value = pipe_val
                 else:
                     self._raise_error(
                         node, f"Invalid capture type for var {name}: {type(val)}"
