@@ -515,20 +515,20 @@ def callback_wrapper(func):
 
 
 def test_stage2_marker_ttl_pipe_functions() -> None:
-    """Test that marker identifies functions calling ttl.if_pipe_src/dst."""
+    """Test that marker identifies functions calling pipe_net.if_src/if_dst."""
     source = """
 def compute():
-    ttl.if_pipe_src(pipe, callback)
-    ttl.if_pipe_dst(pipe, callback)
+    pipe_net.if_src(callback)
+    pipe_net.if_dst(callback)
 """
     tree = ast.parse(source)
     marker = YieldingFunctionMarker()
     marker.visit(tree)
 
-    # compute should be marked due to ttl.if_pipe_* calls
+    # compute should be marked due to pipe_net.if_src/if_dst calls
     assert "compute" in marker.functions_with_yields
 
-    print("Stage 2 marker (ttl pipe functions) test passed!")
+    print("Stage 2 marker (pipe_net methods) test passed!")
 
 
 def test_stage3_yield_from_nested_function() -> None:
@@ -582,11 +582,11 @@ def wrapper(func):
 
 
 def test_stage3_yield_from_ttl_functions() -> None:
-    """Test that stage 3 inserts yield from for ttl.if_pipe_* calls."""
+    """Test that stage 3 inserts yield from for pipe_net.if_src/if_dst calls."""
     source = """
 def compute():
-    ttl.if_pipe_src(pipe, dm0)
-    ttl.if_pipe_dst(pipe, dm1)
+    pipe_net.if_src(dm0)
+    pipe_net.if_dst(dm1)
 """
     tree = ast.parse(source)
     marker = YieldingFunctionMarker()
@@ -597,10 +597,10 @@ def compute():
     result = ast.unparse(tree)
 
     # Should have yield from for both calls
-    assert "yield from ttl.if_pipe_src(pipe, dm0)" in result
-    assert "yield from ttl.if_pipe_dst(pipe, dm1)" in result
+    assert "yield from pipe_net.if_src(dm0)" in result
+    assert "yield from pipe_net.if_dst(dm1)" in result
 
-    print("Stage 3 yield from (ttl functions) test passed!")
+    print("Stage 3 yield from (pipe_net methods) test passed!")
 
 
 def test_three_level_nesting() -> None:

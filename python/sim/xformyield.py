@@ -12,8 +12,8 @@ import ast
 
 # Central registry of known generator-like functions exposed via ttl
 KNOWN_TTL_GENERATORS: set[str] = {
-    "if_pipe_src",
-    "if_pipe_dst",
+    "if_src",  # PipeNet.if_src method
+    "if_dst",  # PipeNet.if_dst method
 }
 
 __all__ = [
@@ -265,7 +265,7 @@ class YieldFromInserter(ast.NodeTransformer):
             # Yield from function parameters (potential generator callbacks)
             case ast.Name(id=param_name) if param_name in self.current_function_params:
                 return True
-            # Handle attribute access calls: ttl.if_pipe_src(...), obj.method(...)
+            # Handle attribute access calls: pipe_net.if_src(...), obj.method(...)
             case ast.Attribute(attr=attr_name) if attr_name in KNOWN_TTL_GENERATORS:
                 return True
             case _:
