@@ -533,7 +533,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       // After loop lowering in fused blocks, the output operand traces to
       // iter_args. Find the output CB from the init_sfpu op in the function.
       funcOp->walk([&](InitSFPUOp initOp) {
-        outCB = utils::convertTTLCBToTTKernel (initOp.getOcb(), rewriter, loc,
+        outCB = utils::convertTTLCBToTTKernel(initOp.getOcb(), rewriter, loc,
                                               typeConverter);
         return WalkResult::interrupt();
       });
