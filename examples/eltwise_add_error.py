@@ -3,11 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
 
-import ttnn
 import torch
-
 import ttl
-from ttl import copy, Program, make_circular_buffer_like
+import ttnn
+from ttl import Program, copy, make_circular_buffer_like
 
 
 @ttl.kernel(grid=(1, 1))
