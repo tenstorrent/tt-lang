@@ -22,23 +22,20 @@ import sys
 # Feature detection
 # =============================================================================
 
-# Check device availability from CMake-generated config (fast path).
-# Falls back to checking environment if config not available.
+# Check device availability: env vars first (for simulator), then CMake config.
 _hardware_available = False
 
-try:
-    # Try to import CMake-generated config first (fast - no ttnn import needed).
-    from ttl.config import HAS_TT_DEVICE
+if os.environ.get("TT_METAL_SIMULATOR"):
+    _hardware_available = True
+elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+    _hardware_available = True
+else:
+    try:
+        from ttl.config import HAS_TT_DEVICE
 
-    _hardware_available = HAS_TT_DEVICE
-except ImportError:
-    # Config not available (running outside build dir) - check env or device files.
-    if os.environ.get("TT_METAL_SIMULATOR"):
-        _hardware_available = True
-    elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
-        _hardware_available = True
-    elif glob.glob("/dev/tenstorrent*"):
-        _hardware_available = True
+        _hardware_available = HAS_TT_DEVICE
+    except ImportError:
+        _hardware_available = bool(glob.glob("/dev/tenstorrent*"))
 
 # Set compile-only mode if no hardware.
 if not _hardware_available:
