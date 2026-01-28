@@ -9,6 +9,8 @@
 #include "mlir/IR/Types.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <numeric>
 #include <optional>
 

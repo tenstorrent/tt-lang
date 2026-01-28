@@ -72,4 +72,60 @@ def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
 
 def TTL_BcastTypeAttr : EnumAttr<TTL_Dialect, TTL_BcastType, "bcast_type">;
 
+def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
+  let summary = "Pipe for core-to-core data transfer";
+  let description = [{
+    A pipe represents a communication channel from a source core to one or more
+    destination cores. Used with `ttl.copy` for inter-core data movement.
+
+    For unicast (single destination), dstStart == dstEnd.
+    For multicast (rectangular grid), dstStart and dstEnd define the corners.
+
+    Example:
+    ```mlir
+    // Unicast pipe from (0,0) to (1,0)
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) : !ttl.pipe
+
+    // Multicast pipe from (0,0) to rectangular region (1,0)-(1,3)
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to (1, 3) : !ttl.pipe
+    ```
+  }];
+  let parameters = (ins
+    "int64_t":$srcX,
+    "int64_t":$srcY,
+    "int64_t":$dstStartX,
+    "int64_t":$dstStartY,
+    "int64_t":$dstEndX,
+    "int64_t":$dstEndY
+  );
+  let assemblyFormat = "`<` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` `>`";
+
+  let extraClassDeclaration = [{
+    /// Returns true if this is a unicast pipe (single destination).
+    bool isUnicast() const {
+      return getDstStartX() == getDstEndX() && getDstStartY() == getDstEndY();
+    }
+
+    /// Returns true if this is a multicast pipe (multiple destinations).
+    bool isMulticast() const { return !isUnicast(); }
+
+    /// Returns the number of destination cores.
+    int64_t getNumDests() const {
+      int64_t width = std::abs(getDstEndX() - getDstStartX()) + 1;
+      int64_t height = std::abs(getDstEndY() - getDstStartY()) + 1;
+      return width * height;
+    }
+
+    /// Returns true if the source core is within the destination range.
+    bool srcInDstRange() const {
+      int64_t minX = std::min(getDstStartX(), getDstEndX());
+      int64_t maxX = std::max(getDstStartX(), getDstEndX());
+      int64_t minY = std::min(getDstStartY(), getDstEndY());
+      int64_t maxY = std::max(getDstStartY(), getDstEndY());
+      return getSrcX() >= minX && getSrcX() <= maxX &&
+             getSrcY() >= minY && getSrcY() <= maxY;
+    }
+  }];
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD
