@@ -47,8 +47,13 @@ class _BlockContextManager:
         """Return the underlying Block object."""
         return self._block
 
-    def __enter__(self) -> "_BlockContextManager":
-        return self
+    @property
+    def _shape(self) -> "Shape":
+        """Delegate shape access to the underlying block."""
+        return self._block._shape
+
+    def __enter__(self) -> Block:
+        return self._block
 
     def __exit__(
         self,
@@ -57,7 +62,6 @@ class _BlockContextManager:
         exc_tb: Optional[TracebackType],
     ) -> None:
         # Always invoke the cleanup action, even if an exception occurred
-        # The cleanup function will call mark_push_complete or mark_pop_complete
         self._on_exit_func()
 
     # Delegate Block operations for backward compatibility
@@ -82,33 +86,20 @@ class _BlockContextManager:
         self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
 
     # Delegate arithmetic operations
-    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __add__(self, other: "Block") -> "Block":
         return self._block.__add__(other)
 
-    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __sub__(self, other: "Block") -> "Block":
         return self._block.__sub__(other)
 
-    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __mul__(self, other: "Block") -> "Block":
         return self._block.__mul__(other)
 
-    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __truediv__(self, other: "Block") -> "Block":
         return self._block.__truediv__(other)
 
-    def __matmul__(self, other: "Block") -> List[Tensor]:
+    def __matmul__(self, other: "Block") -> "Block":
         return self._block.__matmul__(other)
-
-    # Reverse operators for when the left operand doesn't support the operation
-    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__radd__(other)
-
-    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rsub__(other)
-
-    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rmul__(other)
-
-    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rtruediv__(other)
 
 
 class ReserveContext(_BlockContextManager):
@@ -125,12 +116,7 @@ class ReserveContext(_BlockContextManager):
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        # Create a custom push function that marks block state
-        def push_with_state():
-            self._block.mark_push_complete()
-            cb.push()
-
-        super().__init__(cb, block, push_with_state)
+        super().__init__(cb, block, cb.push)
 
 
 class WaitContext(_BlockContextManager):
@@ -147,12 +133,7 @@ class WaitContext(_BlockContextManager):
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        # Create a custom pop function that marks block state
-        def pop_with_state():
-            self._block.mark_pop_complete()
-            cb.pop()
-
-        super().__init__(cb, block, pop_with_state)
+        super().__init__(cb, block, cb.pop)
 
 
 # TODO: Should this class now be private?
@@ -317,7 +298,11 @@ class CircularBuffer:
         api.cb_reserve_back(cb_id, self._tiles_per_operation)
         block = api.get_write_ptr(cb_id)
 
-        # No initialization - block data is assumed to be garbage until first store
+        # Initialize the reserved block with zero tensors
+        zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
+        for i in range(len(block)):
+            block._write_slot(i, zero_tensor)
+
         return ReserveContext(self, block)
 
     def can_reserve(self) -> bool:

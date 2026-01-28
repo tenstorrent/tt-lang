@@ -80,7 +80,7 @@ class TestCopyValidationErrors:
         )
 
         with cb.reserve() as block:
-            with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
+            with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
                 copy(tensor_3d, block)
 
     def test_tile_count_mismatch_tensor_to_block(self, api: "CBAPI") -> None:

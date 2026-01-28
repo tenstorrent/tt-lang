@@ -88,6 +88,37 @@ def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
     )
 
 
+def tensor_shape_in_tiles_with_skip(
+    tensor_shape: Shape, tile_shape: Shape
+) -> Tuple[int, ...]:
+    """Convert tensor shape to tile dimensions, preserving size-1 dimensions.
+
+    Unlike tensor_shape_in_tiles, this returns 1 for dimensions that are already
+    size 1, rather than attempting to divide by tile dimension. This allows
+    tensors like (N, 1) or (1, N) to be properly validated against blocks.
+
+    Args:
+        tensor_shape: Shape of the tensor (height, width, ...)
+        tile_shape: Shape of each tile (height, width, ...)
+
+    Returns:
+        Shape in tiles, with size-1 dimensions preserved as 1
+
+    Example:
+        tensor_shape_in_tiles_with_skip((2048, 1), (32, 32)) = (64, 1)
+        tensor_shape_in_tiles_with_skip((1, 64), (32, 32)) = (1, 2)
+    """
+    if len(tensor_shape) != len(tile_shape):
+        raise ValueError(
+            f"tensor_shape and tile_shape must have same dimensions: "
+            f"{len(tensor_shape)} vs {len(tile_shape)}"
+        )
+    return tuple(
+        1 if dim_size == 1 else dim_size // tile_dim
+        for dim_size, tile_dim in zip(tensor_shape, tile_shape)
+    )
+
+
 # Global pipe state for simulating NoC pipe communication
 # For each pipe we keep a small structure with:
 # - queue: deque of (data, remaining_receiver_count)
@@ -240,13 +271,11 @@ class TensorToBlockHandler:
 
     def validate(self, src: Tensor, dst: Block) -> None:
         if len(src.shape) != 2:
-            raise ValueError(
-                f"Copy only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
-            )
+            raise ValueError(f"Tensor must be 2-dimensional, got shape {src.shape}")
 
         # Validate tensor shape matches block shape (in tiles)
         block_shape = dst.shape
-        src_shape_in_tiles = tensor_shape_in_tiles(src, TILE_SHAPE)
+        src_shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
         if src_shape_in_tiles != block_shape:
             raise ValueError(
                 f"Tensor shape {src.shape} (={src_shape_in_tiles} tiles) does not match "
@@ -259,8 +288,10 @@ class TensorToBlockHandler:
         Extracts tiles from src using tile coordinates and stores them as
         ttnn.Tensor objects in the Block slots.
         """
-        num_tiles = tile_count(src.shape, TILE_SHAPE)
-        width_tiles = src.shape[1] // TILE_SHAPE[1]
+        # Calculate tile count, handling size-1 dimensions properly
+        shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
+        num_tiles = int(prod(shape_in_tiles))
+        width_tiles = shape_in_tiles[1]
 
         tiles = []
         for tile_idx in range(num_tiles):
@@ -269,7 +300,6 @@ class TensorToBlockHandler:
             w_tile = tile_idx % width_tiles
 
             # Extract single tile using tile coordinates [h:h+1, w:w+1]
-            # This returns a ttnn.Tensor with shape (TILE_HEIGHT, TILE_WIDTH)
             tile = src[h_tile : h_tile + 1, w_tile : w_tile + 1]
             tiles.append(tile)
 
@@ -284,14 +314,13 @@ class BlockToTensorHandler:
     """Handler for Block → TTNN.Tensor transfers using tile-level indexing."""
 
     def validate(self, src: Block, dst: Tensor) -> None:
+        # Validate tensor is 2D
         if len(dst.shape) != 2:
-            raise ValueError(
-                f"Copy only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
-            )
+            raise ValueError(f"Tensor must be 2-dimensional, got shape {dst.shape}")
 
         # Validate tensor shape matches block shape (in tiles)
         block_shape = src.shape
-        dst_shape_in_tiles = tensor_shape_in_tiles(dst, TILE_SHAPE)
+        dst_shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
         if dst_shape_in_tiles != block_shape:
             raise ValueError(
                 f"Tensor shape {dst.shape} (={dst_shape_in_tiles} tiles) does not match "
@@ -304,8 +333,10 @@ class BlockToTensorHandler:
         Retrieves ttnn.Tensor objects from Block slots and places them into
         the destination tensor using tile coordinates.
         """
-        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
-        width_tiles = dst.shape[1] // TILE_SHAPE[1]
+        # Calculate tile count, handling size-1 dimensions properly
+        shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
+        dst_tiles = int(prod(shape_in_tiles))
+        width_tiles = shape_in_tiles[1]
 
         for tile_idx in range(dst_tiles):
             # Convert linear index to 2D tile coordinates
