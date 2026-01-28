@@ -20,7 +20,6 @@ from cb_configs rather than the tensor argument count.
 
 import pytest
 import torch
-import ttnn
 import ttl
 from ttlang_test_utils import assert_allclose, to_l1
 
@@ -65,11 +64,14 @@ def intermediate_cb_kernel(x, out):
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
-    return ttl.Program(compute, dm_read, dm_write)(x, out)
-
 
 def test_intermediate_cb(device):
     """Test intermediate CB pattern computes exp(relu(x)) correctly."""
+    try:
+        import ttnn
+    except ImportError:
+        pytest.skip("TTNN not available")
+
     x_torch = torch.tensor(
         [[-1.0, 0.0, 1.0, 2.0, 3.0] + [1.0] * 27] * 32, dtype=torch.bfloat16
     )

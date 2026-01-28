@@ -9,14 +9,15 @@ Shows the full workflow: MLIR generation → compiler pass → verification.
 No hardware execution required.
 """
 
+import os
 import subprocess
 import tempfile
-import os
 
 import torch
+from utils.correctness import assert_with_ulp
 
-from ..config import E2EConfig
 from ..builder.ttl_builder import build_ttl_module
+from ..config import E2EConfig
 from ..ops import OP_TORCH_MAP
 
 
@@ -91,7 +92,7 @@ class TestAddOperation:
         result = torch_add(a, b)
 
         expected = torch.tensor([5.0, 7.0, 9.0])
-        assert torch.allclose(result, expected)
+        assert_with_ulp(expected, result)
 
         print(f"\n✅ Torch reference for add works correctly")
 

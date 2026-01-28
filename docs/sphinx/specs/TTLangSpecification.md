@@ -25,6 +25,7 @@
 | 0.1 | 12/15/2025 | Initial version |
 | 0.2 | 01/20/2026 | Remove `ttl.Program` |
 | 0.3 | 01/23/2026 | Add specification for block operators and math functions |
+| 0.4 | 01/26/2026 | Add `ttl.math.broadcast` |
 
 ## 1. Introduction
 
@@ -162,11 +163,18 @@ def some_compute():
 
 A *block* represents memory acquired from a circular buffer. Block size is determined by the shape of a circular buffer and its memory is allocated when a circular buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). It is illegal to have multiple `store` invocations  for the same block with different values of `acc` parameter. Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
 
-#### Element-wise example
+#### Element-wise with broadcast example
 
 ```py
 # ---------------------
-# Element-wise: Y = sqrt(A^2 + B^2)
+# Element-wise with broadcast: Y = sqrt(A^2 + B^2)
+#
+# Tensor   Torch shape  Shape in tiles
+# A        1, N         1, NT
+# B        1, 1         1, 1
+# Y        1, N         1, NT
+#
+# NT = N // TILE_SIZE
 
 a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1))
 b_cb = ttl.make_circular_buffer_like(B, shape = (1, 1))
@@ -174,15 +182,15 @@ y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1))
 
 @ttl.datamovement()
 def elwise_read():
-    for n in range(N):
+    for nt in range(NT):
         # acquire a_blk and b_blk from a_cb and b_cb:
         with (
             a_cb.reserve() as a_blk,
             b_cb.reserve() as b_blk
         ):
             # then copy:
-            a_xf = ttl.copy(A[0, n], a_blk)
-            b_xf = ttl.copy(B[0, n], b_blk)
+            a_xf = ttl.copy(A[0, nt], a_blk)
+            b_xf = ttl.copy(B[0, 0], b_blk)
 
             a_xf.wait()
             b_xf.wait()
@@ -191,7 +199,7 @@ def elwise_read():
 
 @ttl.compute()
 def elwise_compute():
-    for n in range(N):
+    for _ in range(NT):
         # acquire a_blk, b_blk and y_blk from a_cb, b_cb and y_cb:
         with (
             a_cb.wait() as a_blk,
@@ -201,7 +209,7 @@ def elwise_compute():
             # then compute y = sqrt(a^2 + b^2):
             a_squared = a_blk ** 2
             b_squared = b_blk ** 2
-            y = ttl.math.sqrt(a_squared + b_squared)
+            y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[1]))
             y_blk.store(y)
 
             # release a_blk, b_blk and y_blk
@@ -209,12 +217,12 @@ def elwise_compute():
 
 @ttl.datamovement()
 def elwise_write():
-    for n in range(N):
+    for nt in range(NT):
         # acquire y_blk from y_cb:
         with y_cb.wait() as y_blk:
 
             # then copy:
-            y_xf = ttl.copy(y_blk, Y[0, n])
+            y_xf = ttl.copy(y_blk, Y[0, nt])
             y_xf.wait()
 
             # release y_blk
@@ -225,6 +233,16 @@ def elwise_write():
 ```py
 # ---------------------
 # Matmul with bias: Y = A @ B + C
+#
+# Tensor   Torch shape  Shape in tiles
+# A        M, K         MT, KT
+# B        K, N         KT, NT
+# C        M, N         MT, NT
+# Y        M, N         MT, NT
+#
+# MT = M // TILE_SIZE
+# NT = N // TILE_SIZE
+# KT = K // TILE_SIZE
 
 a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1))
 b_cb = ttl.make_circular_buffer_like(B, shape = (1, 1))
@@ -233,26 +251,26 @@ y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1))
 
 @ttl.datamovement()
 def matmul_read():
-    for m in range(M):
-        for n in range(N):
+    for mt in range(MT):
+        for nt in range(NT):
             # acquire c_blk from c_cb:
             with c_cb.reserve() as c_blk:
 
                 # then copy:
-                c_xf = ttl.copy(C[m, n], c_blk)
+                c_xf = ttl.copy(C[mt, nt], c_blk)
                 c_xf.wait()
 
                 # release c_blk
 
-            for k in range(K):
+            for kt in range(KT):
                 # acquire a_blk and b_blk from a_cb and b_cb:
                 with (
                     a_cb.reserve() as a_blk,
                     b_cb.reserve() as b_blk
                 ):
                     # then copy:
-                    a_xf = ttl.copy(A[m, k], a_blk)
-                    b_xf = ttl.copy(B[k, n], b_blk)
+                    a_xf = ttl.copy(A[mt, kt], a_blk)
+                    b_xf = ttl.copy(B[kt, nt], b_blk)
 
                     a_xf.wait()
                     b_xf.wait()
@@ -261,8 +279,8 @@ def matmul_read():
 
 @ttl.compute()
 def matmul_compute():
-    for m in range(M):
-        for n in range(N):
+    for _ in range(MT):
+        for _ in range(NT):
             # acquire y_blk from y_cb:
             with y_cb.reserve() as y_blk:
                 # acquire c_blk from c_cb:
@@ -273,7 +291,7 @@ def matmul_compute():
 
                     # release c_blk
 
-                for k in range(K):
+                for _ in range(KT):
                     # acquire a_blk and b_blk from a_cb and b_cb:
                     with (
                         a_cb.wait() as a_blk,
@@ -288,13 +306,13 @@ def matmul_compute():
 
 @ttl.datamovement()
 def matmul_write():
-    for m in range(M):
-        for n in range(N):
+    for mt in range(MT):
+        for nt in range(NT):
             # acquire y_blk from y_cb:
             with y_cb.wait() as y_blk:
 
                 # then copy:
-                y_xf = ttl.copy(y_blk, Y[m, n])
+                y_xf = ttl.copy(y_blk, Y[mt, nt])
                 y_xf.wait()
 
                 # release y_blk
@@ -730,3 +748,9 @@ def dm():
 | :---- | :---- |
 | `ttl.math.reduce_sum(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled sum reduction over specified dimensions. Example for reduction over rows: `ttl.math.reduce_sum(a, s, dims=[0])`. Example for reduction over rows and columns: `ttl.math.reduce_sum(a, s, dims=[0, 1])`.  |
 | `ttl.math.reduce_max(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled maximum reduction over specified dimensions. Example for reduction over rows: `ttl.math.reduce_max(a, s, dims=[0])`. Example for reduction over rows and columns: `ttl.math.reduce_max(a, s, dims=[0, 1])`. |
+
+### Broadcast function
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Broadcasts over specified dimensions. Produces block with shape expanded to be compatible with the outer part of the expression.<br><br>Example for broadcast over dimension 0: `y.store(ttl.math.broadcast(a, dims=[0]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(1, M)`.<br><br>Example for broadcast over dimension 1: `y.store(b * ttl.math.broadcast(a, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`.<br><br>Example for broadcast over both dimensions: `y.store(b + ttl.math.broadcast(a, dims=[0, 1]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[0,1]` `a` must have shape of `(1, 1)`. |

@@ -149,6 +149,17 @@ class Device:
     def __repr__(self) -> str:
         return f"Device(id={self.device_id})"
 
+    def compute_with_storage_grid_size(self) -> CoreCoord:
+        """Return the compute grid size for the device.
+
+        In the simulator, returns a fixed 8x8 grid to match the default
+        'auto' grid size used by kernels.
+
+        Returns:
+            CoreCoord: Grid size (x=8, y=8)
+        """
+        return CoreCoord(8, 8)
+
 
 def open_device(device_id: int = 0) -> Device:
     """Open a simulated device (no-op)."""
