@@ -30,6 +30,7 @@ from ttl.ttl_api import (
     CopyTransferHandler,
     TensorBlock,
 )
+from ttl.pipe import Pipe, PipeNet
 
 __all__ = [
     "kernel",
@@ -39,6 +40,8 @@ __all__ = [
     "CircularBuffer",
     "TensorBlock",
     "CopyTransferHandler",
+    "Pipe",
+    "PipeNet",
     "make_circular_buffer_like",
     "copy",
     "core",
