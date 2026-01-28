@@ -225,6 +225,23 @@ class Tensor:
     def dtype(self) -> torch.dtype:
         return self._tensor.dtype
 
+    def _is_tile_indexable(self) -> bool:
+        """Check if tensor can use tile-based indexing.
+
+        A tensor is tile-indexable if it's 2D and each dimension is either:
+        - A multiple of the corresponding TILE_SHAPE dimension, OR
+        - A degenerate dimension (size 1)
+        """
+        if len(self._tensor.shape) != 2:
+            return False
+
+        for dim_size, tile_dim in zip(self._tensor.shape, TILE_SHAPE):
+            # Allow degenerate dimensions (size 1) or tile-aligned dimensions
+            if dim_size != 1 and dim_size % tile_dim != 0:
+                return False
+
+        return True
+
     def __getitem__(self, key: Any) -> "Tensor":
         # If key looks like tile-style indexing (two slices/ints), use TensorAccessor
         if isinstance(key, tuple):
@@ -235,14 +252,10 @@ class Tensor:
 
                 # Check if both are integers (tile indexing like a[m, k])
                 if isinstance(row_key, int) and isinstance(col_key, int):
-                    # Check if tensor is tile-aligned; if not, use regular indexing
-                    if (
-                        len(self._tensor.shape) != 2
-                        or self._tensor.shape[0] % TILE_SHAPE[0] != 0
-                        or self._tensor.shape[1] % TILE_SHAPE[1] != 0
-                    ):
+                    # Check if tensor is tile-indexable
+                    if not self._is_tile_indexable():
                         return Tensor(self._tensor.__getitem__(cast(Any, key)))
-                    # Use tile indexing for tile-aligned tensors
+                    # Use tile indexing for tile-indexable tensors
                     self._ensure_accessor()
                     assert self._accessor is not None
                     return Tensor(self._accessor[row_key, col_key])
@@ -267,12 +280,8 @@ class Tensor:
 
                 # Check if both are integers (tile indexing like a[m, k])
                 if isinstance(row_key, int) and isinstance(col_key, int):
-                    # Check if tensor is tile-aligned; if not, use regular indexing
-                    if (
-                        len(self._tensor.shape) != 2
-                        or self._tensor.shape[0] % TILE_SHAPE[0] != 0
-                        or self._tensor.shape[1] % TILE_SHAPE[1] != 0
-                    ):
+                    # Check if tensor is tile-indexable
+                    if not self._is_tile_indexable():
                         match value:
                             case Tensor() as tval:
                                 self._tensor.__setitem__(cast(Any, key), tval._tensor)
@@ -281,7 +290,7 @@ class Tensor:
                             case _:
                                 self._tensor.__setitem__(cast(Any, key), value)
                         return
-                    # Use tile indexing for tile-aligned tensors
+                    # Use tile indexing for tile-indexable tensors
                     self._ensure_accessor()
                     assert self._accessor is not None
                     match value:

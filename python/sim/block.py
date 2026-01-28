@@ -36,6 +36,7 @@ class Block:
         "_read_locked",
         "_write_locked",
         "_is_temporary",
+        "_broadcast_dims",
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -51,6 +52,7 @@ class Block:
         span: Span,
         shape: Shape,
         is_temporary: bool = False,
+        broadcast_dims: List[int] | None = None,
     ):
         self._buf = buf
         self._capacity = capacity
@@ -59,9 +61,15 @@ class Block:
         self._read_locked = False
         self._write_locked = False
         self._is_temporary = is_temporary
+        self._broadcast_dims = broadcast_dims or []
 
     @classmethod
-    def from_list(cls, tensors: List[Tensor], shape: Shape) -> "Block":
+    def from_list(
+        cls,
+        tensors: List[Tensor],
+        shape: Shape,
+        broadcast_dims: List[int] | None = None,
+    ) -> "Block":
         """Create a temporary Block from a list of tensors (computation result).
 
         Temporary blocks are not backed by CB storage and don't support wrap-around.
@@ -72,6 +80,7 @@ class Block:
             span=Span(0, len(tensors)),
             shape=shape,
             is_temporary=True,
+            broadcast_dims=broadcast_dims,
         )
 
     def __len__(self) -> Size:
@@ -81,6 +90,11 @@ class Block:
     def is_temporary(self) -> bool:
         """Check if this Block is a temporary computation result (not CB-backed)."""
         return self._is_temporary
+
+    @property
+    def broadcast_dims(self) -> List[int]:
+        """Get the dimensions along which this block is marked for broadcasting."""
+        return self._broadcast_dims
 
     def _check_can_read(self) -> None:
         """Check if this Block can be read from.
@@ -241,27 +255,67 @@ class Block:
         right: "Block",
         op: Callable[[Any, Any], Any],
     ) -> List[Tensor]:
-        """Element-wise binary op: left (op) right with broadcasting support.
+        """Element-wise binary op: left (op) right.
 
-        Supports broadcasting using PyTorch's native broadcasting rules.
+        Broadcasting must be explicit via ttl.math.broadcast().
+        Implicit broadcasting (different shapes without explicit broadcast) is an error.
         """
         len_left = len(left)
         len_right = len(right)
+        left_shape = left._shape
+        right_shape = right._shape
 
-        # Simple cases: equal length or scalar broadcasting
-        if len_left == len_right:
+        # Check if shapes match exactly
+        if left_shape == right_shape and len_left == len_right:
             return [op(left[i], right[i]) for i in range(len_left)]
-        elif len_right == 1:
-            right_val = right[0]
-            return [op(left[i], right_val) for i in range(len_left)]
-        elif len_left == 1:
-            left_val = left[0]
-            return [op(left_val, right[i]) for i in range(len_right)]
 
-        # Both operands are Blocks with shapes - delegate to ttnnsim for broadcasting
+        # Check if one operand is marked for broadcasting
+        left_broadcast = getattr(left, "_broadcast_dims", None)
+        right_broadcast = getattr(right, "_broadcast_dims", None)
+
+        # Exactly one operand should be marked for broadcast
+        if left_broadcast and right_broadcast:
+            raise ValueError(
+                f"Cannot perform operation: both operands are marked for broadcast "
+                f"(left dims={left_broadcast}, right dims={right_broadcast}). "
+                f"Only one operand should be marked for broadcast."
+            )
+
+        if not left_broadcast and not right_broadcast:
+            raise ValueError(
+                f"Cannot perform operation: shape mismatch {left_shape} vs {right_shape}. "
+                f"Use ttl.math.broadcast() to explicitly broadcast one of the operands."
+            )
+
+        # One operand is marked for broadcast - handle symmetrically
+        broadcast_block = left if left_broadcast else right
+        other_block = right if left_broadcast else left
+        broadcast_dims = left_broadcast or right_broadcast
+        broadcast_shape = broadcast_block._shape
+        other_shape = other_block._shape
+
+        # Validate broadcast
+        if len(broadcast_shape) != len(other_shape):
+            raise ValueError(
+                f"Cannot broadcast: dimension mismatch between shapes {broadcast_shape} and {other_shape}"
+            )
+
+        for dim in broadcast_dims:
+            if dim >= len(broadcast_shape):
+                raise ValueError(
+                    f"Cannot broadcast: dimension {dim} out of range for shape {broadcast_shape}"
+                )
+            if broadcast_shape[dim] != 1:
+                raise ValueError(
+                    f"Cannot broadcast: dimension {dim} must have size 1, got {broadcast_shape[dim]}"
+                )
+
+        # Perform the operation with broadcasting
         from .ttnnsim import broadcast_tensors
 
-        return broadcast_tensors(list(left), list(right), left._shape, right._shape, op)
+        return broadcast_tensors(
+            left.to_list(), right.to_list(), left_shape, right_shape, op
+        )
 
     def _binary_op(
         self,
@@ -296,7 +350,17 @@ class Block:
     def __mod__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.mod)
 
-    def __pow__(self, other: "Block") -> "Block":
+    def __pow__(self, other: Union["Block", int]) -> "Block":
+        """Element-wise exponentiation.
+
+        Supports both Block and scalar integer exponents.
+        """
+        if isinstance(other, int):
+            # Scalar power - apply to each tensor in the block
+            result_tensors = [t**other for t in self.to_list()]
+            return Block.from_list(result_tensors, shape=self._shape)
+
+        # Block power
         return self._binary_op(other, _op.pow)
 
     def __matmul__(self, other: "Block") -> "Block":
