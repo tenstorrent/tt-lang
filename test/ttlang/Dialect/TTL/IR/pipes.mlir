@@ -67,3 +67,33 @@ func.func @if_src_if_dst_combo() {
   }
   func.return
 }
+
+// -----
+
+// CHECK-LABEL: func.func @copy_cb_to_pipe
+// CHECK: %[[CB:.*]] = ttl.bind_cb
+// CHECK: %[[P:.*]] = ttl.create_pipe
+// CHECK: ttl.copy %[[CB]], %[[P]]
+// CHECK: ttl.wait
+func.func @copy_cb_to_pipe() {
+  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>
+  %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], f32, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>) -> !ttl.transfer_handle<write>
+  ttl.wait %xf : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// CHECK-LABEL: func.func @copy_pipe_to_cb
+// CHECK: %[[CB:.*]] = ttl.bind_cb
+// CHECK: %[[P:.*]] = ttl.create_pipe
+// CHECK: ttl.copy %[[P]], %[[CB]]
+// CHECK: ttl.wait
+func.func @copy_pipe_to_cb() {
+  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>
+  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %xf : !ttl.transfer_handle<read>
+  func.return
+}
