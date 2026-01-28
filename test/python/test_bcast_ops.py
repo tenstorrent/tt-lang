@@ -18,10 +18,6 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-import sys
-import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ttlang_test_utils import assert_allclose, to_l1
 
 import ttl

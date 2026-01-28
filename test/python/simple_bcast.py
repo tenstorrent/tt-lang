@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
+# REQUIRES: tt-device
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
@@ -13,6 +13,7 @@
 import torch
 import ttnn
 import ttl
+from ttlang_test_utils import to_l1
 
 
 @ttl.kernel(grid=(1, 1))
@@ -69,46 +70,14 @@ def fused_bcast_kernel(a, b, c, out):
 def main():
     device = ttnn.open_device(device_id=0)
 
-    # a = full tile of 2.0
-    a_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
-
-    # b = full tile of 3.0
-    b_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
-
     # c = row tile with first row = 1.0 (for row broadcast)
     c_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
     c_torch[0, :] = 1.0
 
-    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
-
-    a = ttnn.from_torch(
-        a_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.L1_MEMORY_CONFIG,
-    )
-    b = ttnn.from_torch(
-        b_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.L1_MEMORY_CONFIG,
-    )
-    c = ttnn.from_torch(
-        c_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.L1_MEMORY_CONFIG,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.L1_MEMORY_CONFIG,
-    )
+    a = to_l1(torch.full((32, 32), 2.0, dtype=torch.bfloat16), device)
+    b = to_l1(torch.full((32, 32), 3.0, dtype=torch.bfloat16), device)
+    c = to_l1(c_torch, device)
+    out = to_l1(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
     fused_bcast_kernel(a, b, c, out)
 

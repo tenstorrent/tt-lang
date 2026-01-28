@@ -17,38 +17,13 @@ import sys
 import pytest
 import torch
 
-try:
-    import ttnn
-    import ttl
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-    TTNN_AVAILABLE = True
-except ImportError:
-    TTNN_AVAILABLE = False
+from ttlang_test_utils import assert_allclose, to_l1
 
-pytestmark = pytest.mark.skipif(not TTNN_AVAILABLE, reason="TTNN not available")
+import ttl
 
 TILE_SIZE = 32
-
-
-def to_l1(t, device):
-    return ttnn.from_torch(
-        t,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.L1_MEMORY_CONFIG,
-    )
-
-
-def assert_allclose(actual, expected, rtol=1e-2, atol=1e-2):
-    if not torch.allclose(actual, expected, rtol=rtol, atol=atol):
-        mismatch = ~torch.isclose(actual, expected, rtol=rtol, atol=atol)
-        mismatch_indices = torch.nonzero(mismatch)
-        msg = f"Tensors not close. Mismatches: {mismatch_indices.shape[0]}\n"
-        for idx in mismatch_indices[:5]:
-            i, j = idx[0].item(), idx[1].item()
-            msg += f"  [{i},{j}]: got {actual[i,j]:.4f}, expected {expected[i,j]:.4f}\n"
-        raise AssertionError(msg)
 
 
 # =============================================================================
