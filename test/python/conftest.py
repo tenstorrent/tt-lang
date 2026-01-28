@@ -4,10 +4,38 @@
 
 """Pytest configuration and fixtures for tt-lang Python tests."""
 
+import atexit
 import os
 import sys
 
 import pytest
+
+# =============================================================================
+# Temp file cleanup for dynamically generated kernels
+# =============================================================================
+# Source files can't be deleted immediately after loading - inspect.findsource()
+# needs them during kernel compilation. Track and cleanup at exit instead.
+#
+# Set TTLANG_KEEP_GENERATED_KERNELS=1 to preserve temp files for debugging.
+
+temp_kernel_files = []
+
+
+def _cleanup_temp_kernel_files():
+    if os.environ.get("TTLANG_KEEP_GENERATED_KERNELS"):
+        if temp_kernel_files:
+            print(f"\nPreserving {len(temp_kernel_files)} temp kernel file(s):")
+            for path in temp_kernel_files:
+                print(f"  {path}")
+        return
+    for path in temp_kernel_files:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_temp_kernel_files)
 
 # Add test root to path for shared utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

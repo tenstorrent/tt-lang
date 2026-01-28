@@ -21,6 +21,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
+from conftest import temp_kernel_files
 from ttlang_test_utils import assert_allclose, to_l1
 
 
@@ -162,6 +163,7 @@ def make_binary_kernel(name: str, op: str):
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     return getattr(module, f"{name}_kernel")
 
@@ -181,6 +183,7 @@ def make_binary_fn_kernel(name: str, op: str):
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     return getattr(module, f"{name}_kernel")
 
@@ -200,6 +203,7 @@ def make_unary_kernel(name: str, op: str):
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     return getattr(module, f"{name}_kernel")
 
