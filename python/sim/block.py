@@ -451,15 +451,31 @@ class Block:
     def mark_push_complete(self) -> None:
         """Mark that push() has completed.
 
-        Valid for reserve() blocks (both DM and Compute).
-        Can be called after STORE, STORE_ACC, COPY operations, or from RW COPY_SRC loop state.
-        This is important for error handling - if an exception occurs before the expected
-        operation completes, the context manager still calls push() on exit.
-
-        We allow push from ANY expected operation for error handling purposes.
+        Valid states (per state machine diagram):
+        - Must be a reserve() block (not wait())
+        - Must have PUSH in expected operations
         """
-        # For error handling, allow push from any state (don't validate expected_ops)
-        # Just transition to DONE
+        # Validate acquisition
+        if self._acquisition != BlockAcquisition.RESERVE:
+            raise RuntimeError(
+                f"Cannot perform push(): Expected RESERVE acquisition, got {self._acquisition.name}. "
+                f"Current state: Thread={self._thread_type.name}, Access={self._access_state.name}, "
+                f"Expected Ops={{{', '.join(op.name for op in self._expected_ops)}}}"
+            )
+
+        # Validate that PUSH is in expected operations
+        if ExpectedOp.PUSH not in self._expected_ops:
+            expected_names = ", ".join(
+                op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
+            )
+            raise RuntimeError(
+                f"Cannot perform push(): Expected PUSH in expected operations, "
+                f"but got {{{expected_names}}}. "
+                f"Current state: Acquisition={self._acquisition.name}, "
+                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
+            )
+
+        # Transition to DONE
         self._access_state = AccessState.NA
         self._expected_ops = set()  # Empty = DONE
 

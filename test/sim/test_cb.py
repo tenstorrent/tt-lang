@@ -284,12 +284,16 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
 def test_single_pending_reserve_constraint(api: CBAPI) -> None:
     """Test that only one reserve() is allowed before push()."""
     from python.sim.block import _set_current_thread_type, ThreadType
+    from python.sim.copy import copy
 
     _set_current_thread_type(ThreadType.DM)
 
     try:
         element = make_ones_tile()
         cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+
+        # Create a source tensor for copy operations
+        src_tensor = make_ones_tile()
 
         # First reserve() should succeed
         block1 = cb.reserve()
@@ -301,10 +305,18 @@ def test_single_pending_reserve_constraint(api: CBAPI) -> None:
         ):
             cb.reserve()
 
+        # Complete the copy operation and push to get to PUSH state
+        tx = copy(src_tensor, block1)
+        tx.wait()
+
         # After push(), should be able to reserve() again
         cb.push()
         block2 = cb.reserve()
         assert block2 is not None
+
+        # Complete second block's operations
+        tx = copy(src_tensor, block2)
+        tx.wait()
         cb.push()
     finally:
         from python.sim.block import _clear_current_thread_type
@@ -884,6 +896,61 @@ def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
         _clear_current_thread_type()
 
     print("Copy sets block to NA state test passed!")
+
+
+def test_push_validates_expected_state(api: CBAPI) -> None:
+    """Test that push() validates the block is in a valid state before completing.
+
+    This test verifies that push() can only be called on reserve() blocks
+    (not wait() blocks) and only when PUSH is in the expected operations.
+    """
+    from python.sim.block import (
+        Block,
+        BlockAcquisition,
+        ThreadType,
+        ExpectedOp,
+        _set_current_thread_type,
+    )
+
+    _set_current_thread_type(ThreadType.COMPUTE)
+
+    try:
+        element = make_ones_tile()
+        cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+
+        # Create a block in WAIT state (POP expected)
+        # First, populate the CB
+        _set_current_thread_type(ThreadType.DM)
+        from python.sim.copy import copy
+
+        src = make_ones_tile()
+        blk = cb.reserve()
+        tx = copy(src, blk)
+        tx.wait()
+        cb.push()
+
+        # Now wait for it in COMPUTE thread
+        _set_current_thread_type(ThreadType.COMPUTE)
+        waited_context = cb.wait()
+        waited_block = waited_context.block()
+
+        # Try to call push() on a wait() block - should fail
+        # because waited_block is WAIT acquisition, not RESERVE
+        with pytest.raises(
+            RuntimeError,
+            match="Cannot perform push\\(\\): Expected RESERVE acquisition, got WAIT",
+        ):
+            # Manually try to mark push (bypassing CB's push method which checks pending_reserved_block)
+            waited_block.mark_push_complete()
+
+        # Clean up properly
+        cb.pop()
+
+        print("Push validates expected state test passed!")
+    finally:
+        from python.sim.block import _clear_current_thread_type
+
+        _clear_current_thread_type()
 
 
 if __name__ == "__main__":

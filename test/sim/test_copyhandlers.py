@@ -79,8 +79,8 @@ class TestCopyValidationErrors:
             element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
         )
 
-        with cb.reserve() as block:
-            with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
+        with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
+            with cb.reserve() as block:
                 copy(tensor_3d, block)
 
     def test_tile_count_mismatch_tensor_to_block(self, api: "CBAPI") -> None:
@@ -97,10 +97,10 @@ class TestCopyValidationErrors:
             element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
         )
 
-        with cb.reserve() as block:
-            with pytest.raises(
-                ValueError, match="Tensor shape .* does not match.*Block shape"
-            ):
+        with pytest.raises(
+            ValueError, match="Tensor shape .* does not match.*Block shape"
+        ):
+            with cb.reserve() as block:
                 copy(source, block)
 
 
@@ -121,9 +121,9 @@ class TestPipeErrorHandling:
             element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
         )
 
-        with cb.reserve() as block:
-            tx = copy(pipe, block)
-            with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
+        with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
+            with cb.reserve() as block:
+                tx = copy(pipe, block)
                 tx.wait()
 
     def test_pipe_length_mismatch(self, api: "CBAPI") -> None:
@@ -152,12 +152,12 @@ class TestPipeErrorHandling:
             tx_send.wait()
 
         # Try to receive into 1-tile block
-        with dst_cb.reserve() as dst_block:
-            tx_recv = copy(pipe, dst_block)
-            with pytest.raises(
-                ValueError,
-                match="Destination Block length .* does not match pipe data length",
-            ):
+        with pytest.raises(
+            ValueError,
+            match="Destination Block length .* does not match pipe data length",
+        ):
+            with dst_cb.reserve() as dst_block:
+                tx_recv = copy(pipe, dst_block)
                 tx_recv.wait()
 
 

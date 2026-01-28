@@ -61,8 +61,14 @@ class _BlockContextManager:
         exc_val: Optional[BaseException],
         exc_tb: Optional[TracebackType],
     ) -> None:
-        # Always invoke the cleanup action, even if an exception occurred
-        self._on_exit_func()
+        # Always attempt cleanup, but don't let cleanup errors mask original exceptions
+        try:
+            self._on_exit_func()
+        except Exception:
+            # Only re-raise if there wasn't already an exception
+            # Otherwise, suppress cleanup error to preserve original exception
+            if exc_type is None:
+                raise
 
     # Delegate Block operations for backward compatibility
     def __len__(self) -> int:
