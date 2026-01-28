@@ -1012,15 +1012,13 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
     // Create scf.if with empty body (the builder adds a yield for us).
     auto ifOp = rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
 
-    // Merge ops from the original body into the then block (before the yield).
+    // Move ops from the original body into the then block (before the yield).
+    // Using inlineBlockBefore moves rather than clones, preserving SSA.
     Block &srcBlock = op.getBody().front();
     Block &thenBlock = ifOp.getThenRegion().front();
-    rewriter.setInsertionPoint(thenBlock.getTerminator());
-    for (auto &bodyOp : llvm::make_early_inc_range(srcBlock)) {
-      rewriter.clone(bodyOp);
-    }
+    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
 
-    rewriter.replaceOp(op, ValueRange{});
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1069,15 +1067,13 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
     // Create scf.if with empty body (the builder adds a yield for us).
     auto ifOp = rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
 
-    // Merge ops from the original body into the then block (before the yield).
+    // Move ops from the original body into the then block (before the yield).
+    // Using inlineBlockBefore moves rather than clones, preserving SSA.
     Block &srcBlock = op.getBody().front();
     Block &thenBlock = ifOp.getThenRegion().front();
-    rewriter.setInsertionPoint(thenBlock.getTerminator());
-    for (auto &bodyOp : llvm::make_early_inc_range(srcBlock)) {
-      rewriter.clone(bodyOp);
-    }
+    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
 
-    rewriter.replaceOp(op, ValueRange{});
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1092,16 +1088,13 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
     // The pipe type carries all the coordinate information as type parameters.
     // At runtime, pipes don't need any materialization - the coordinates are
     // baked into the generated code through if_src/if_dst lowering.
-    // We erase this op since the pipe value is only used to carry type info.
-    if (!op.getResult().use_empty()) {
-      // If the pipe has uses, we need to keep it around for type conversion.
-      // For now, just replace with an unrealized cast that will be cleaned up.
-      auto cast = rewriter.create<UnrealizedConversionCastOp>(
-          op.getLoc(), op.getResult().getType(), ValueRange{});
-      rewriter.replaceOp(op, cast.getResult(0));
-    } else {
-      rewriter.eraseOp(op);
-    }
+    //
+    // Always replace with an unrealized cast to handle uses in nested regions
+    // (like if_src/if_dst bodies) that may be processed in a different order.
+    // The unrealized cast preserves the type for downstream patterns.
+    auto cast = rewriter.create<UnrealizedConversionCastOp>(
+        op.getLoc(), op.getResult().getType(), ValueRange{});
+    rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
 };
