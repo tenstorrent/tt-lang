@@ -15,6 +15,10 @@ Core (1,0) receives and writes to output.
 
 import ttnn
 import ttl
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 @ttl.kernel(grid=(2, 1))
@@ -112,14 +116,7 @@ if __name__ == "__main__":
     import torch
     from ttlang_test_utils import require_hardware, to_dram, assert_allclose
 
-    # Skip runtime test if in compile-only mode (lit test)
-    if os.environ.get("TTLANG_COMPILE_ONLY") == "1":
-        print("Compile-only mode, skipping runtime test")
-        import sys
-        sys.exit(0)
-
-    print("=== Pipe Forward Test ===")
-    require_hardware()
+    compile_only = os.environ.get("TTLANG_COMPILE_ONLY") == "1"
 
     device = ttnn.open_device(device_id=0)
 
@@ -131,18 +128,20 @@ if __name__ == "__main__":
         inp = to_dram(inp_torch, device)
         out = to_dram(out_torch, device)
 
-        print("Running pipe forward kernel (simple version for sim)...")
-        pipe_forward_simple(inp, out)
+        if compile_only:
+            pipe_forward(inp, out)
+        else:
+            print("=== Pipe Forward Test ===")
+            require_hardware()
 
-        # Verify output - each core processes its own tile
-        out_result = ttnn.to_torch(out)
-        print(f"Output tensor shape: {out_result.shape}")
-        print(f"Output tile 0 (first row, cols 0-4): {out_result[0, :4]}")
-        print(f"Output tile 1 (first row, cols 32-36): {out_result[0, 32:36]}")
-        expected = torch.full((32, 64), 42.0, dtype=torch.bfloat16)
-        assert_allclose(out_result, expected)
+            pipe_forward(inp, out)
 
-        print("=== Pipe Forward Test Complete ===")
+            out_result = ttnn.to_torch(out)
+            print(f"Output tensor: {out_result[0,:5]}")
+            expected = torch.full((32, 64), 42.0, dtype=torch.bfloat16)
+            assert_allclose(out_result, expected)
+
+            print("=== Pipe Forward Test Complete ===")
 
     finally:
         ttnn.close_device(device)
