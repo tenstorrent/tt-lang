@@ -3,6 +3,11 @@ name: Build tt-mlir Toolchain (Cache)
 # Dedicated workflow to build and cache the LLVM + tt-mlir toolchain.
 # Other workflows restore from this cache using fail-on-cache-miss: true.
 #
+# Architecture:
+# - check-cache (ubuntu-latest): Check if caches exist
+# - build-llvm (ubuntu-latest): Build LLVM on standard runner (cheaper)
+# - build-ttmlir (mlir-large-runner-lang): Build tt-mlir on large runner
+#
 # Best practice: https://github.com/actions/cache
 # "It is a recommended practice to use a dedicated job or workflow to build
 # and save dependencies, which can then be restored by other jobs or workflows."
@@ -46,7 +51,7 @@ permissions:
     contents: read
 
 jobs:
-    # First job: Check if cache exists (runs on standard runner)
+    # First job: Check if caches exist (runs on standard runner)
     check-cache:
         name: Check toolchain cache
         runs-on: ubuntu-latest
@@ -54,9 +59,12 @@ jobs:
 
         outputs:
             cache-key: ${{ steps.cache-key.outputs.key }}
+            llvm-cache-key: ${{ steps.cache-key.outputs.llvm-key }}
             ttmlir-commit: ${{ steps.ttmlir-commit.outputs.commit }}
-            cache-hit: ${{ steps.check-cache.outputs.cache-hit }}
-            needs-build: ${{ steps.needs-build.outputs.result }}
+            toolchain-cache-hit: ${{ steps.check-toolchain-cache.outputs.cache-hit }}
+            llvm-cache-hit: ${{ steps.check-llvm-cache.outputs.cache-hit }}
+            needs-llvm-build: ${{ steps.needs-build.outputs.needs-llvm }}
+            needs-ttmlir-build: ${{ steps.needs-build.outputs.needs-ttmlir }}
 
         steps:
             - name: Checkout tt-lang
@@ -67,39 +75,141 @@ jobs:
               run: |
                   bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
 
-            - name: Generate cache key
+            - name: Generate cache keys
               id: cache-key
               run: |
-                  KEY="Linux-ttlang-toolchain-v1-${{ steps.ttmlir-commit.outputs.commit }}"
-                  echo "key=$KEY" >> $GITHUB_OUTPUT
-                  echo "Cache key: $KEY"
+                  COMMIT="${{ steps.ttmlir-commit.outputs.commit }}"
+                  echo "key=Linux-ttlang-toolchain-v1-$COMMIT" >> $GITHUB_OUTPUT
+                  echo "llvm-key=Linux-ttlang-llvm-only-v1-$COMMIT" >> $GITHUB_OUTPUT
+                  echo "Toolchain cache key: Linux-ttlang-toolchain-v1-$COMMIT"
+                  echo "LLVM cache key: Linux-ttlang-llvm-only-v1-$COMMIT"
 
-            - name: Check if cache exists
-              id: check-cache
+            - name: Check if toolchain cache exists
+              id: check-toolchain-cache
               uses: actions/cache/restore@v4
               with:
                   path: ttmlir-toolchain
                   key: ${{ steps.cache-key.outputs.key }}
                   lookup-only: true
 
-            - name: Determine if build is needed
+            - name: Check if LLVM cache exists
+              id: check-llvm-cache
+              if: steps.check-toolchain-cache.outputs.cache-hit != 'true'
+              uses: actions/cache/restore@v4
+              with:
+                  path: ttmlir-toolchain
+                  key: ${{ steps.cache-key.outputs.llvm-key }}
+                  lookup-only: true
+
+            - name: Determine what builds are needed
               id: needs-build
               run: |
-                  if [ "${{ steps.check-cache.outputs.cache-hit }}" == "true" ] && [ "${{ inputs.force_rebuild }}" != "true" ]; then
-                      echo "Cache exists and force_rebuild is not set. Skipping build."
-                      echo "result=false" >> $GITHUB_OUTPUT
+                  TOOLCHAIN_HIT="${{ steps.check-toolchain-cache.outputs.cache-hit }}"
+                  LLVM_HIT="${{ steps.check-llvm-cache.outputs.cache-hit }}"
+                  FORCE="${{ inputs.force_rebuild }}"
+
+                  echo "toolchain-cache-hit=$TOOLCHAIN_HIT, llvm-cache-hit=$LLVM_HIT, force=$FORCE"
+
+                  if [ "$TOOLCHAIN_HIT" == "true" ] && [ "$FORCE" != "true" ]; then
+                      echo "Full toolchain cache exists. No builds needed."
+                      echo "needs-llvm=false" >> $GITHUB_OUTPUT
+                      echo "needs-ttmlir=false" >> $GITHUB_OUTPUT
+                  elif [ "$LLVM_HIT" == "true" ] && [ "$FORCE" != "true" ]; then
+                      echo "LLVM cache exists. Only tt-mlir build needed."
+                      echo "needs-llvm=false" >> $GITHUB_OUTPUT
+                      echo "needs-ttmlir=true" >> $GITHUB_OUTPUT
                   else
-                      echo "Build needed: cache-hit=${{ steps.check-cache.outputs.cache-hit }}, force_rebuild=${{ inputs.force_rebuild }}"
-                      echo "result=true" >> $GITHUB_OUTPUT
+                      echo "No cache or force rebuild. Both builds needed."
+                      echo "needs-llvm=true" >> $GITHUB_OUTPUT
+                      echo "needs-ttmlir=true" >> $GITHUB_OUTPUT
                   fi
 
-    # Second job: Build toolchain (only runs if cache miss, uses large runner)
-    build-toolchain:
-        name: Build LLVM + tt-mlir toolchain
+    # Second job: Build LLVM (standard runner - cheaper)
+    build-llvm:
+        name: Build LLVM toolchain
         needs: check-cache
-        if: needs.check-cache.outputs.needs-build == 'true'
+        if: needs.check-cache.outputs.needs-llvm-build == 'true'
+        runs-on: ubuntu-latest
+        timeout-minutes: 240  # 4 hours for LLVM build
+
+        env:
+            TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
+            CMAKE_BUILD_PARALLEL_LEVEL: 2
+
+        steps:
+            - name: Maximize space
+              uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
+            - name: Checkout tt-lang
+              uses: actions/checkout@v4
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.11'
+                  cache: 'pip'
+
+            - name: Install build dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                      build-essential ninja-build lld \
+                      clang-17 clang++-17 \
+                      libzstd-dev \
+                      coreutils
+
+            - name: Checkout tt-mlir
+              uses: actions/checkout@v4
+              with:
+                  repository: tenstorrent/tt-mlir
+                  ref: ${{ needs.check-cache.outputs.ttmlir-commit }}
+                  path: tt-mlir-src
+                  fetch-depth: 0
+                  fetch-tags: true
+
+            - name: Create toolchain directory
+              run: mkdir -p $TTMLIR_TOOLCHAIN_DIR
+
+            - name: Build LLVM toolchain
+              working-directory: tt-mlir-src
+              run: |
+                  echo "=== Building LLVM toolchain ==="
+                  echo "This will take 2-3 hours..."
+                  stdbuf -oL cmake -G Ninja -B env/build env
+                  stdbuf -oL cmake --build env/build
+                  rm -rf env/build  # Clean up build directory
+                  echo "=== LLVM toolchain complete ==="
+                  df -h
+
+            - name: Cleanup LLVM toolchain
+              run: |
+                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
+                  df -h
+
+            - name: Save LLVM-only cache
+              uses: actions/cache/save@v4
+              with:
+                  path: ttmlir-toolchain
+                  key: ${{ needs.check-cache.outputs.llvm-cache-key }}
+
+            - name: Verify LLVM cache contents
+              run: |
+                  echo "=== LLVM Toolchain contents ==="
+                  ls -lh $TTMLIR_TOOLCHAIN_DIR/
+                  test -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/llvm/LLVMConfig.cmake" && echo "LLVM: OK"
+                  test -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake" && echo "MLIR: OK"
+                  test -x "$TTMLIR_TOOLCHAIN_DIR/venv/bin/python3" && echo "Python venv: OK"
+
+    # Third job: Build tt-mlir (large runner)
+    build-ttmlir:
+        name: Build tt-mlir
+        needs: [check-cache, build-llvm]
+        if: |
+            always() &&
+            needs.check-cache.outputs.needs-ttmlir-build == 'true' &&
+            (needs.build-llvm.result == 'success' || needs.build-llvm.result == 'skipped')
         runs-on: mlir-large-runner-lang
-        timeout-minutes: 360  # 6 hours for LLVM + tt-mlir build
+        timeout-minutes: 120  # 2 hours for tt-mlir build
 
         env:
             TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
@@ -133,48 +243,18 @@ jobs:
                   fetch-depth: 0
                   fetch-tags: true
 
-            - name: Create toolchain directory
-              run: mkdir -p $TTMLIR_TOOLCHAIN_DIR
-
-            - name: Check for LLVM-only cache
-              id: llvm-cache
-              uses: actions/cache/restore@v4
-              with:
-                  path: ttmlir-toolchain
-                  key: Linux-ttlang-llvm-only-v1-${{ needs.check-cache.outputs.ttmlir-commit }}
-                  lookup-only: true
-
             - name: Restore LLVM-only cache
-              if: steps.llvm-cache.outputs.cache-hit == 'true'
               uses: actions/cache/restore@v4
               with:
                   path: ttmlir-toolchain
-                  key: Linux-ttlang-llvm-only-v1-${{ needs.check-cache.outputs.ttmlir-commit }}
-
-            - name: Build LLVM toolchain
-              if: steps.llvm-cache.outputs.cache-hit != 'true'
-              working-directory: tt-mlir-src
-              run: |
-                  echo "=== Building LLVM toolchain ==="
-                  echo "This will take 2-3 hours..."
-                  stdbuf -oL cmake -G Ninja -B env/build env
-                  stdbuf -oL cmake --build env/build
-                  rm -rf env/build  # Clean up build directory
-                  echo "=== LLVM toolchain complete ==="
-                  df -h
-
-            - name: Save LLVM-only cache
-              if: steps.llvm-cache.outputs.cache-hit != 'true'
-              uses: actions/cache/save@v4
-              with:
-                  path: ttmlir-toolchain
-                  key: Linux-ttlang-llvm-only-v1-${{ needs.check-cache.outputs.ttmlir-commit }}
+                  key: ${{ needs.check-cache.outputs.llvm-cache-key }}
+                  fail-on-cache-miss: true
 
             - name: Configure tt-mlir
               working-directory: tt-mlir-src
               run: |
                   source env/activate
-                  cmake -G Ninja -B build \
+                  stdbuf -oL cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
@@ -202,15 +282,9 @@ jobs:
                   cp -prL tt-mlir-src/build/python_packages/ttrt/runtime/* \
                       $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/
 
-            - name: Normalize and cleanup toolchain
+            - name: Normalize toolchain
               run: |
                   .github/scripts/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR
-                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
-
-            - name: Remove build artifacts
-              run: |
-                  rm -rf tt-mlir-src
-                  df -h
 
             - name: Save toolchain to cache
               uses: actions/cache/save@v4
