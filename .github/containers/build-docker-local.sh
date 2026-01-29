@@ -4,18 +4,24 @@
 #
 # Build Docker images locally for testing
 #
-# Usage: .github/containers/build-docker-local.sh --ttmlir-toolchain=<dir>
+# Usage: .github/containers/build-docker-local.sh \
+#            --ttmlir-toolchain=<dir> --ttlang-install=<dir>
 #
 # Run from repository root
 
 set -e
 
 TTMLIR_TOOLCHAIN_DIR=""
+TTLANG_INSTALL_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --ttmlir-toolchain=*)
             TTMLIR_TOOLCHAIN_DIR="${1#*=}"
+            shift
+            ;;
+        --ttlang-install=*)
+            TTLANG_INSTALL_DIR="${1#*=}"
             shift
             ;;
         *)
@@ -28,9 +34,18 @@ done
 if [ -z "$TTMLIR_TOOLCHAIN_DIR" ]; then
     echo "ERROR: --ttmlir-toolchain=<dir> is required"
     echo ""
-    echo "Usage: $0 --ttmlir-toolchain=<dir>"
+    echo "Usage: $0 --ttmlir-toolchain=<dir> --ttlang-install=<dir>"
     echo ""
     echo "The toolchain must contain pre-built LLVM + tt-mlir."
+    exit 1
+fi
+
+if [ -z "$TTLANG_INSTALL_DIR" ]; then
+    echo "ERROR: --ttlang-install=<dir> is required"
+    echo ""
+    echo "Usage: $0 --ttmlir-toolchain=<dir> --ttlang-install=<dir>"
+    echo ""
+    echo "The ttlang-install directory must contain toolchain + pre-built tt-lang."
     exit 1
 fi
 
@@ -39,48 +54,45 @@ if [ ! -d "$TTMLIR_TOOLCHAIN_DIR" ]; then
     exit 1
 fi
 
+if [ ! -d "$TTLANG_INSTALL_DIR" ]; then
+    echo "ERROR: ttlang-install directory does not exist: $TTLANG_INSTALL_DIR"
+    exit 1
+fi
+
 echo "=== tt-lang Docker Build Test ==="
 echo "Toolchain: $TTMLIR_TOOLCHAIN_DIR"
+echo "tt-lang install: $TTLANG_INSTALL_DIR"
 echo ""
 
 DOCKERFILE=".github/containers/Dockerfile"
 
-# Build CI image
-echo "--- Building tt-lang CI image ---"
+# Build Dev image
+echo "--- Building tt-lang Dev image ---"
 docker build \
     --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
-    --target ci \
-    -t tt-lang-ci:local \
-    -f "$DOCKERFILE" .
-echo "✓ CI image built"
-echo ""
-
-# Build Dist image
-echo "--- Building tt-lang Dist image ---"
-docker build \
-    --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
-    --target user \
-    -t tt-lang-user:local \
-    -f "$DOCKERFILE" .
-echo "✓ Dist image built"
-echo ""
-
-# Build IRD image
-echo "--- Building tt-lang IRD image ---"
-docker build \
-    --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
+    --build-context ttlang-install="$TTLANG_INSTALL_DIR" \
     --target dev \
     -t tt-lang-dev:local \
     -f "$DOCKERFILE" .
-echo "✓ IRD image built"
+echo "✓ Dev image built"
+echo ""
+
+# Build User image
+echo "--- Building tt-lang User image ---"
+docker build \
+    --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
+    --build-context ttlang-install="$TTLANG_INSTALL_DIR" \
+    --target user \
+    -t tt-lang-user:local \
+    -f "$DOCKERFILE" .
+echo "✓ User image built"
 echo ""
 
 echo "=== Build Complete ==="
 echo ""
 echo "Images created:"
-echo "  - tt-lang-ci:local (tt-mlir toolchain)"
-echo "  - tt-lang-user:local (pre-built tt-lang)"
-echo "  - tt-lang-dev:local (dev tools)"
+echo "  - tt-lang-dev:local (tt-mlir toolchain + dev tools)"
+echo "  - tt-lang-user:local (dev + pre-built tt-lang)"
 echo ""
 echo "Test the user image:"
 echo "  docker run -it tt-lang-user:local python -c \"import ttl\""

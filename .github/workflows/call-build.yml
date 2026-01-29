@@ -102,17 +102,6 @@ jobs:
                       "${{ steps.ttmlir-commit.outputs.commit }}" \
                       "${{ github.repository }}"
 
-            - name: Validate toolchain
-              run: |
-                  echo "=== Validating cached toolchain ==="
-                  test -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake" || \
-                      { echo "ERROR: TTMLIRConfig.cmake missing"; exit 1; }
-                  test -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake" || \
-                      { echo "ERROR: MLIRConfig.cmake missing"; exit 1; }
-                  test -d "$TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/ttnn" || \
-                      { echo "ERROR: ttrt/TTNN runtime missing"; exit 1; }
-                  echo "Toolchain validated successfully"
-
             - name: Setup ccache
               uses: hendrikmuhs/ccache-action@v1.2
               with:
@@ -121,19 +110,11 @@ jobs:
                       ${{ runner.os }}-ttlang-main
                   max-size: 200M
 
-            - name: Configure tt-lang
-              run: |
-                  cmake -G Ninja -B build \
-                      -DCMAKE_BUILD_TYPE=Release \
-                      -DCMAKE_CXX_COMPILER=clang++-17 \
-                      -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_DIR=$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir \
-                      -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
-
             - name: Build tt-lang
-              run: |
-                  source build/env/activate
-                  cmake --build build
+              uses: ./.github/actions/build-ttlang
+              with:
+                  toolchain_dir: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+                  enable_docs: ${{ inputs.build_docs && 'true' || 'false' }}
 
             - name: Test the tt-lang build
               run: |

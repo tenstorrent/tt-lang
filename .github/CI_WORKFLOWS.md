@@ -88,11 +88,19 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 |  GitHub Actions Cache         |
 |  Linux-ttlang-toolchain-v1-{sha} |
 +-------------------------------+
+              |
+              | restores cache
+              v
++-------------------------------+
+|  build-ttlang action          |  <-- Reusable composite action
+|  (validates, configures,      |
+|   builds tt-lang)             |
++-------------------------------+
         |             |
         v             v
 +---------------+  +------------------+
 |  CI Workflow  |  |  Container Build |
-|  (TT-Lang)    |  |  (Docker images) |
+|  (tests)      |  |  (Docker images) |
 +---------------+  +------------------+
 ```
 
@@ -121,7 +129,7 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 2. Installs build dependencies
 3. Clones tt-mlir
 4. Builds LLVM toolchain (`cmake -B env/build env`)
-5. Builds tt-mlir via FetchContent
+5. Builds tt-mlir directly (`cmake --build build`)
 6. Normalizes and cleans up toolchain
 7. Saves to cache
 
@@ -137,10 +145,9 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 
 **What it does:**
 1. Restores toolchain from cache (`fail-on-cache-miss: true`)
-2. Validates toolchain contents
-3. Configures and builds TT-Lang
-4. Runs tests (smoketest, MLIR lit, Python bindings, Python lit)
-5. Archives artifacts for hardware tests
+2. Builds TT-Lang using `build-ttlang` reusable action
+3. Runs tests (smoketest, MLIR lit, Python bindings, Python lit)
+4. Archives artifacts for hardware tests
 
 **Timeout:** 60 minutes
 
@@ -157,8 +164,12 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 1. Checks if Docker images already exist
 2. Restores toolchain from cache (`fail-on-cache-miss: true`)
 3. Validates cache contents
-4. Builds Docker images using pre-built toolchain
-5. Pushes to GitHub Container Registry
+4. Builds tt-lang **outside Docker** (for space efficiency)
+5. Creates `ttlang-install` directory (toolchain + tt-lang)
+6. Builds Docker images using two build contexts:
+   - `ttmlir-toolchain` - for dev image
+   - `ttlang-install` - for user image
+7. Pushes to GitHub Container Registry
 
 **Timeout:** 120 minutes
 
@@ -198,6 +209,12 @@ ttmlir-toolchain/
 | CI (TT-Lang only) | ~15-30 minutes | N/A (fails) |
 | Container (TT-Lang in Docker) | ~10-15 minutes | N/A (fails) |
 
+### Reusable Actions
+
+| Action | Purpose |
+|--------|---------|
+| `.github/actions/build-ttlang` | Validates toolchain, configures, and builds tt-lang |
+
 ### Scripts
 
 | Script | Purpose |
@@ -207,7 +224,6 @@ ttmlir-toolchain/
 | `.github/scripts/normalize-ttmlir-install.sh` | Replaces symlinks with files |
 | `.github/containers/cleanup-toolchain.sh` | Removes unnecessary binaries |
 | `.github/containers/build-docker-images.sh` | Docker build orchestration |
-| `.github/containers/build-and-install.sh` | Builds TT-Lang in Docker |
 
 ### Environment Variables
 

@@ -143,6 +143,62 @@ jobs:
           name: ttmlir-toolchain-for-docker
           path: ttmlir-toolchain
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              build-essential ninja-build lld \
+              clang-17 clang++-17 \
+              libzstd-dev
+
+      - name: Build tt-lang (outside Docker for space efficiency)
+        uses: ./.github/actions/build-ttlang
+        with:
+          toolchain_dir: ${{ github.workspace }}/ttmlir-toolchain
+          enable_perf_trace: 'true'
+
+      - name: Show disk usage after build
+        run: df -h
+
+      - name: Create ttlang-install directory
+        env:
+          TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
+        run: |
+          echo "=== Creating ttlang-install (toolchain + tt-lang) ==="
+
+          # Copy toolchain as base
+          cp -a ttmlir-toolchain ttlang-install
+
+          # Install tt-lang into it
+          cmake --install build --prefix ttlang-install
+
+          # Copy Python packages
+          cp -prL build/python_packages/ttl ttlang-install/python_packages/ 2>/dev/null || true
+          cp -prL build/python_packages/pykernel ttlang-install/python_packages/ 2>/dev/null || true
+          cp -prL build/python_packages/sim ttlang-install/python_packages/ 2>/dev/null || true
+
+          # Copy examples and tests
+          cp -r examples ttlang-install/ 2>/dev/null || true
+          cp -r test ttlang-install/ 2>/dev/null || true
+
+          # Copy env/activate script
+          mkdir -p ttlang-install/env
+          cp build/env/activate ttlang-install/env/
+
+          # Clean up Python cache
+          find ttlang-install -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+          # Remove build directory to save space
+          rm -rf build
+
+          echo "=== ttlang-install created ==="
+          df -h
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -168,7 +224,8 @@ jobs:
           set -x
           echo "Space usage: " && df -h
           .github/containers/build-docker-images.sh "${{ needs.restore-ttmlir-cache.outputs.ttmlir-commit }}" \
-              --ttmlir-toolchain=ttmlir-toolchain | tee docker.log
+              --ttmlir-toolchain=ttmlir-toolchain \
+              --ttlang-install=ttlang-install | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"

@@ -19,24 +19,34 @@ User image with pre-built tt-lang, ready to `import ttl`. Extends dev image.
 ### `.github/containers/build-docker-images.sh`
 Orchestrates building all images with proper tagging and optional registry push.
 
-**Important:** Requires a pre-built toolchain from CI cache.
+**Important:** Requires both a pre-built toolchain AND pre-built tt-lang from CI.
 
 ```bash
-# Build locally (requires pre-built toolchain)
-.github/containers/build-docker-images.sh --ttmlir-toolchain=/path/to/toolchain --no-push
+# Build locally (requires pre-built toolchain and ttlang-install)
+.github/containers/build-docker-images.sh \
+    --ttmlir-toolchain=/path/to/toolchain \
+    --ttlang-install=/path/to/ttlang-install \
+    --no-push
 
 # Build and push to registry
-.github/containers/build-docker-images.sh --ttmlir-toolchain=/path/to/toolchain
+.github/containers/build-docker-images.sh \
+    --ttmlir-toolchain=/path/to/toolchain \
+    --ttlang-install=/path/to/ttlang-install
 
 # Check if images exist without building
-.github/containers/build-docker-images.sh --ttmlir-toolchain=/path/to/toolchain --check-only
+.github/containers/build-docker-images.sh \
+    --ttmlir-toolchain=/path/to/toolchain \
+    --ttlang-install=/path/to/ttlang-install \
+    --check-only
 ```
 
 ### `.github/containers/build-docker-local.sh`
 Simplified script for local testing.
 
 ```bash
-.github/containers/build-docker-local.sh --ttmlir-toolchain=/path/to/toolchain
+.github/containers/build-docker-local.sh \
+    --ttmlir-toolchain=/path/to/toolchain \
+    --ttlang-install=/path/to/ttlang-install
 ```
 
 ## Hardware Access
@@ -53,7 +63,7 @@ docker run -it \
 
 ## Architecture
 
-Container builds use a pre-built toolchain from a dedicated cache workflow:
+Container builds use a pre-built toolchain from a dedicated cache workflow, and tt-lang is built outside Docker for space efficiency:
 
 ```
 call-build-ttmlir-toolchain.yml (dedicated cache builder)
@@ -66,21 +76,20 @@ call-build-ttmlir-toolchain.yml (dedicated cache builder)
          v
 Container Build (call-build-docker.yml)
          |
-         | restores cache (FAILS if not present)
+         | 1. Restore toolchain cache (FAILS if not present)
+         | 2. Build tt-lang using build-ttlang action
+         | 3. Create ttlang-install (toolchain + tt-lang)
          v
-    Docker Build
+    Docker Build (two build contexts)
+         |
+         +-- ttmlir-toolchain (for dev image)
+         +-- ttlang-install (for user image)
          |
          v
       base stage
     (Ubuntu 22.04 +
      build deps +
      Python deps)
-         |
-         v
-      build stage
-    (builds tt-lang
-     using cached
-     toolchain)
          |
          v
        dev
@@ -92,31 +101,48 @@ Container Build (call-build-docker.yml)
     (dev + tt-lang)
 ```
 
+**Why build tt-lang outside Docker?**
+- Space efficiency: Build artifacts don't end up in Docker layers
+- Faster builds: Can reuse ccache from CI
+- Smaller images: Only the installed files are copied into the image
+
 ## Multi-stage Dockerfile
 
 The self-contained `Dockerfile` uses multi-stage builds for efficiency:
 
 1. **Base stage** (`base`): Ubuntu 22.04 + clang-17 + Python 3.11 + pip dependencies
-2. **Build stage** (`build`): Copies pre-built toolchain, builds tt-lang (intermediate, not exported)
-3. **Dev stage** (`dev`): Base + toolchain + dev tools (for developers)
-4. **User stage** (`user`): Dev + pre-built tt-lang (for end users)
+2. **Dev stage** (`dev`): Base + toolchain + dev tools (for developers)
+3. **User stage** (`user`): Dev + pre-built tt-lang (for end users)
 
 Layer optimization:
 - Dependencies ordered from least to most frequently changing
 - apt-get and pip installs combined into single layers
 - `user` extends `dev` to reuse layers
-- Build context (toolchain) copied after stable dependencies
+- tt-lang built outside Docker, only installed files copied in
 
 ## Build Context Requirements
 
-The Dockerfile expects a build context named `ttmlir-toolchain` containing:
+The Dockerfile expects two build contexts:
+
+### `ttmlir-toolchain` (for dev image)
+Pre-built LLVM + tt-mlir toolchain:
 - `lib/cmake/llvm/LLVMConfig.cmake` - LLVM toolchain
 - `lib/cmake/mlir/MLIRConfig.cmake` - MLIR toolchain
 - `lib/cmake/ttmlir/TTMLIRConfig.cmake` - tt-mlir
 - `venv/bin/python3` - Python virtual environment
 - `python_packages/ttrt/runtime/ttnn/` - TTNN runtime
 
-Passed via `--build-context ttmlir-toolchain=<dir>` to docker build.
+### `ttlang-install` (for user image)
+Toolchain + pre-built tt-lang:
+- Everything from `ttmlir-toolchain`
+- `python_packages/ttl/` - tt-lang Python package
+- `python_packages/pykernel/` - pykernel Python package
+- `python_packages/sim/` - simulator Python package
+- `env/activate` - tt-lang environment activation script
+- `examples/` - Example scripts
+- `test/` - Test files
+
+Both passed via `--build-context` to docker build.
 
 ## Image Sizes (Approximate)
 
@@ -125,12 +151,10 @@ Passed via `--build-context ttmlir-toolchain=<dir>` to docker build.
 
 ## Files
 
-- `Dockerfile` - Self-contained multi-stage build (base/build/dev/user targets)
+- `Dockerfile` - Self-contained multi-stage build (base/dev/user targets)
 - `entrypoint.sh` - Container entrypoint that activates environments
-- `activate-install.sh` - Environment activation for installed tt-lang
 - `CONTAINER_README.md` - Welcome message shown to users inside container
 - `cleanup-toolchain.sh` - Removes unnecessary LLVM tools to reduce size
-- `build-and-install.sh` - Builds tt-lang using pre-built toolchain
 - `build-docker-images.sh` - Main build orchestration script
 - `build-docker-local.sh` - Local testing script
 - `push-docker-images.sh` - Push locally built images to registry

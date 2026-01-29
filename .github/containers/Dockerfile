@@ -10,6 +10,11 @@
 # Build context requirements:
 #   ttmlir-toolchain - Pre-built LLVM + tt-mlir toolchain from CI cache
 #                      (passed via --build-context ttmlir-toolchain=<dir>)
+#   ttlang-install   - Pre-built toolchain + tt-lang (for user stage)
+#                      (passed via --build-context ttlang-install=<dir>)
+#
+# tt-lang is built OUTSIDE Docker (in CI workflow) for space efficiency.
+# This avoids having build artifacts in Docker layers.
 #
 # Layer optimization:
 #   - Dependencies ordered from least to most frequently changing
@@ -56,35 +61,14 @@ RUN python3.11 -m pip install --upgrade pip --no-cache-dir && \
     rm /tmp/requirements.txt
 
 # =============================================================================
-# Stage 1: Build tt-lang (intermediate stage, not exported)
-# =============================================================================
-FROM base AS build
-
-ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
-
-# Copy pre-built toolchain from build context
-COPY --from=ttmlir-toolchain / $TTMLIR_TOOLCHAIN_DIR
-
-# Copy tt-lang source
-ADD . /home/build/tt-lang
-WORKDIR /home/build/tt-lang
-
-# Show commit info for traceability
-RUN git log -1 || echo "Git info not available"
-
-# Build and install tt-lang
-COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
-RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh && rm /tmp/build-and-install.sh
-
-# =============================================================================
-# Stage 2: IRD (Interactive Research & Development)
+# Stage 1: Dev (Interactive Research & Development)
 # Complete toolchain for developers to build tt-lang from source
 # =============================================================================
 FROM base AS dev
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
-# Copy toolchain (tt-mlir only, no tt-lang - developers build it themselves)
+# Copy toolchain (llvm and tt-mlir only, no tt-lang - developers build it themselves)
 COPY --from=ttmlir-toolchain / $TTMLIR_TOOLCHAIN_DIR
 
 # Install dev tools
@@ -126,13 +110,14 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
 
 # =============================================================================
-# Stage 3: Dist (Distribution image for end users)
-# IRD + pre-built tt-lang, ready to import ttl
+# Stage 2: User (Distribution image for end users)
+# Dev + pre-built tt-lang, ready to import ttl
 # =============================================================================
 FROM dev AS user
 
-# Copy tt-lang from build stage (overwrites toolchain-only copy from dev)
-COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
+# Copy pre-built tt-lang from build context (built outside Docker for space efficiency)
+# This overwrites the toolchain-only copy from dev with toolchain + tt-lang
+COPY --from=ttlang-install / $TTMLIR_TOOLCHAIN_DIR
 
 # Update activation to use tt-lang's env/activate
 RUN printf '%s\n' \
