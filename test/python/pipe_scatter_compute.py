@@ -130,9 +130,9 @@ if __name__ == "__main__":
             out_result = ttnn.to_torch(out)
 
             # Each output tile should have the corresponding function applied
-            tile0 = out_result[:, 0:32]    # abs(x)
-            tile1 = out_result[:, 32:64]   # neg(x)
-            tile2 = out_result[:, 64:96]   # exp(x)
+            tile0 = out_result[:, 0:32]  # abs(x)
+            tile1 = out_result[:, 32:64]  # neg(x)
+            tile2 = out_result[:, 64:96]  # exp(x)
             tile3 = out_result[:, 96:128]  # tanh(x)
 
             expected_abs = torch.abs(inp_torch)
