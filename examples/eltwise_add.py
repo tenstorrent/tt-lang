@@ -1,135 +1,89 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# type: ignore
-import math
-
+import torch
 import ttl
 import ttnn
-from sim.testing import assert_pcc
+
+TILE_SIZE = 32
+GRANULARITY = 2
 
 
-@ttl.kernel(
-    grid="auto",
-)
-def eltwise_add(
-    a_in: ttnn.Tensor,
-    b_in: ttnn.Tensor,
-    out: ttnn.Tensor,
-) -> None:
+@ttl.kernel(grid="auto")
+def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
+    row_tiles = a_in.shape[0] // TILE_SIZE // GRANULARITY
+    col_tiles = a_in.shape[1] // TILE_SIZE
 
-    # Set granularity
-    granularity = 2
+    grid_cols, grid_rows = ttl.grid_size(dims=2)
+    rows_per_core = -(-row_tiles // grid_rows)
+    cols_per_core = -(-col_tiles // grid_cols)
 
-    # Assuming lightweight op input validation should be here
-    assert a_in.shape == b_in.shape == out.shape
-    assert a_in.shape[0] % granularity == 0
-
-    row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
-    col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
-
-    # Parallelizing by columns here to get reuse on C
-    grid_h, grid_w = ttl.grid_size()
-    cols_per_core = math.ceil(col_tiles / (grid_h * grid_w))
-    buffer_factor = 2
-
-    # Create circular buffers
-    a_in_cb = ttl.make_circular_buffer_like(
-        a_in, shape=(granularity, 1), buffer_factor=buffer_factor
-    )
-    b_in_cb = ttl.make_circular_buffer_like(
-        b_in, shape=(granularity, 1), buffer_factor=buffer_factor
-    )
-    out_cb = ttl.make_circular_buffer_like(
-        out, shape=(granularity, 1), buffer_factor=buffer_factor
-    )
+    a_cb = ttl.make_circular_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(GRANULARITY, 1), buffer_factor=2)
 
     @ttl.compute()
-    def compute_func():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
-
-        for ct in range(start_col_tile, end_col_tile):
-            # TODO: Perhaps consider making Block pointers that come from wait()/reserve() read/write only respectively?
-            for rt_block in range(row_tiles // granularity):
-                print(
-                    "Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}"
-                )
-                # again, these return Block pointers:
-                a_block = a_in_cb.wait()  # blocking
-                b_block = b_in_cb.wait()  # blocking
-                # NOTE: Please consider making non-approx the default for eltwise unary, but leave the option for the user to specify approx=True
-                out_block = out_cb.reserve()  # blocking
-
-                # Use store() to properly populate the Block with computed results
-                result = a_block + b_block
-                out_block.store(result)
-
-                # finalize push, this advances the cb pointers, the writing happened at the line above
-                out_cb.push()
-                # finalize pop, this advances the cb pointers, essentially freeing the memory
-                # After poping, the corresponding Block(a_block) points to stale data. Should probably make it an error to access it at that point
-                a_in_cb.pop()
-                # ditto
-                b_in_cb.pop()
+    def compute():
+        core_col, core_row = ttl.core(dims=2)
+        for local_row in range(rows_per_core):
+            row = core_row * rows_per_core + local_row
+            if row < row_tiles:
+                for local_col in range(cols_per_core):
+                    col = core_col * cols_per_core + local_col
+                    if col < col_tiles:
+                        with a_cb.wait() as a_blk, b_cb.wait() as b_blk, out_cb.reserve() as out_blk:
+                            out_blk.store(a_blk + b_blk)
 
     @ttl.datamovement()
-    def dm0():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
-
-        for ct in range(start_col_tile, end_col_tile):
-            for rt_block in range(row_tiles // granularity):
-                print("dm0: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
-                row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
-                col_slice = slice(ct, ct + 1)
-                # Write the cbs just as above
-                a_block = a_in_cb.reserve()
-                tx = ttl.copy(a_in[row_slice, col_slice], a_block)
-                tx.wait()
-                a_in_cb.push()
-                b_block = b_in_cb.reserve()
-                tx = ttl.copy(b_in[row_slice, col_slice], b_block)
-                tx.wait()
-                b_in_cb.push()
+    def read():
+        core_col, core_row = ttl.core(dims=2)
+        for local_row in range(rows_per_core):
+            row = core_row * rows_per_core + local_row
+            if row < row_tiles:
+                r0, r1 = row * GRANULARITY, (row + 1) * GRANULARITY
+                for local_col in range(cols_per_core):
+                    col = core_col * cols_per_core + local_col
+                    if col < col_tiles:
+                        with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                            tx_a = ttl.copy(a_in[r0:r1, col : col + 1], a_blk)
+                            tx_b = ttl.copy(b_in[r0:r1, col : col + 1], b_blk)
+                            tx_a.wait()
+                            tx_b.wait()
 
     @ttl.datamovement()
-    def dm1():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
-
-        for ct in range(start_col_tile, end_col_tile):
-            for rt_block in range(row_tiles // granularity):
-                print("dm1: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
-                row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
-                col_slice = slice(ct, ct + 1)
-
-                out_block = out_cb.wait()
-                # out_block[100] # accessing out of bounds should fail
-
-                tx = ttl.copy(out_block, out[row_slice, col_slice])
-                tx.wait()
-                out_cb.pop()
-                # TODO: We might want better error messages, most of them come from the underlying CBAPI
-                #       which might be confusing to the higher level CircularBuffer user.
-                # TODO: What if another thread writes to the same positions this Block points to?
-                # out_block[0] # using pointer on stale data should fail
-                # out_cb.pop() # double pop should fail
+    def write():
+        core_col, core_row = ttl.core(dims=2)
+        for local_row in range(rows_per_core):
+            row = core_row * rows_per_core + local_row
+            if row < row_tiles:
+                r0, r1 = row * GRANULARITY, (row + 1) * GRANULARITY
+                for local_col in range(cols_per_core):
+                    col = core_col * cols_per_core + local_col
+                    if col < col_tiles:
+                        with out_cb.wait() as out_blk:
+                            tx = ttl.copy(out_blk, out[r0:r1, col : col + 1])
+                            tx.wait()
 
 
 def main() -> None:
-    dim = 256
-    a_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
-    b_in = ttnn.rand((dim, dim), dtype=ttnn.float32)
-    out = ttnn.empty((dim, dim), dtype=ttnn.float32)
+    device = ttnn.open_device(device_id=0)
+    try:
+        dim = 256
+        a_torch = torch.rand((dim, dim), dtype=torch.bfloat16)
+        b_torch = torch.rand((dim, dim), dtype=torch.bfloat16)
 
-    eltwise_add(a_in, b_in, out)
+        a = ttnn.from_torch(a_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        b = ttnn.from_torch(b_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        out = ttnn.from_torch(torch.zeros_like(a_torch), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
 
-    golden = a_in + b_in
-    assert_pcc(golden, out)
+        eltwise_add(a, b, out)
+
+        result = ttnn.to_torch(out)
+        expected = a_torch + b_torch
+        assert torch.allclose(result, expected, rtol=1e-2, atol=1e-2), "Mismatch!"
+        print("PASSED!")
+    finally:
+        ttnn.close_device(device)
 
 
 if __name__ == "__main__":

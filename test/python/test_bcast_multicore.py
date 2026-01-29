@@ -17,6 +17,8 @@ Features:
 - 1x1 CB shapes for all CBs (shapes match in binary ops)
 - L1 tile 'c' held in outer scope, reused across 16 DRAM iterations
 - 20 fused ops across 3 outputs
+
+Also tests varying CB granularity (1x1, 2x2) with ttl.math.broadcast op.
 """
 
 import pytest
@@ -24,7 +26,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram, to_l1
+from ttlang_test_utils import assert_allclose, to_dram, to_l1
 
 import ttl
 
@@ -239,6 +241,131 @@ def test_bcast_multicore(device):
     assert torch.allclose(result1.float(), exp1, rtol=0.05, atol=0.1)
     assert torch.allclose(result2.float(), exp2, rtol=0.05, atol=0.1)
     assert torch.allclose(result3.float(), exp3, rtol=0.05, atol=0.1)
+
+
+# =============================================================================
+# Granularity-parameterized broadcast tests
+# =============================================================================
+
+
+def make_bcast_granularity_kernel(granularity: int):
+    """Factory to create broadcast kernels with different CB granularities.
+
+    Tests ttl.math.broadcast with varying CB block sizes on multicore grid.
+    Uses row broadcast (dims=[0]) pattern.
+    """
+
+    @ttl.kernel(grid=(8, 8))
+    def bcast_granularity_kernel(inp, out):
+        """Multicore broadcast kernel with parameterized granularity."""
+        block_rows = granularity
+        block_cols = granularity
+
+        grid_x, grid_y = ttl.grid_size(dims=2)
+        rows_per_core = inp.shape[0] // TILE_SIZE // grid_x // block_rows
+        cols_per_core = inp.shape[1] // TILE_SIZE // grid_y // block_cols
+
+        inp_cb = ttl.make_circular_buffer_like(
+            inp, shape=(block_rows, block_cols), buffer_factor=2
+        )
+        out_cb = ttl.make_circular_buffer_like(
+            out, shape=(block_rows, block_cols), buffer_factor=2
+        )
+
+        @ttl.compute()
+        def compute_fn():
+            for _ in range(rows_per_core):
+                for _ in range(cols_per_core):
+                    with inp_cb.wait() as i, out_cb.reserve() as o:
+                        result = ttl.math.broadcast(i, o, dims=[0])
+                        o.store(result)
+
+        @ttl.datamovement()
+        def dm_read():
+            core_x, core_y = ttl.core(dims=2)
+            for core_row in range(rows_per_core):
+                row = core_x * rows_per_core + core_row
+                start_row = row * block_rows
+                end_row = (row + 1) * block_rows
+                for core_col in range(cols_per_core):
+                    col = core_y * cols_per_core + core_col
+                    start_col = col * block_cols
+                    end_col = (col + 1) * block_cols
+                    with inp_cb.reserve() as blk:
+                        tx = ttl.copy(inp[start_row:end_row, start_col:end_col], blk)
+                        tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            core_x, core_y = ttl.core(dims=2)
+            for core_row in range(rows_per_core):
+                row = core_x * rows_per_core + core_row
+                start_row = row * block_rows
+                end_row = (row + 1) * block_rows
+                for core_col in range(cols_per_core):
+                    col = core_y * cols_per_core + core_col
+                    start_col = col * block_cols
+                    end_col = (col + 1) * block_cols
+                    with out_cb.wait() as blk:
+                        tx = ttl.copy(blk, out[start_row:end_row, start_col:end_col])
+                        tx.wait()
+
+    return bcast_granularity_kernel
+
+
+def create_row_bcast_input_multitile(shape, value, dtype=torch.bfloat16):
+    """Create tensor with first row of each tile filled (for row broadcast)."""
+    t = torch.zeros(shape, dtype=dtype)
+    rows, cols = shape
+    for tile_row in range(0, rows, TILE_SIZE):
+        t[tile_row, :] = value
+    return t
+
+
+def expected_row_bcast_result(shape, value, dtype=torch.bfloat16):
+    """Expected result: all elements filled with broadcast value."""
+    return torch.full(shape, value, dtype=dtype)
+
+
+# Pre-create kernels for each granularity (avoids recompilation in parametrize)
+_bcast_kernel_g1 = make_bcast_granularity_kernel(1)
+_bcast_kernel_g2 = make_bcast_granularity_kernel(2)
+
+
+@pytest.mark.parametrize(
+    "granularity,kernel",
+    [
+        (1, _bcast_kernel_g1),
+        (2, _bcast_kernel_g2),
+    ],
+    ids=["granularity_1x1", "granularity_2x2"],
+)
+def test_bcast_multicore_granularity(device, granularity, kernel):
+    """Test ttl.math.broadcast with different CB granularities on 8x8 grid.
+
+    Validates that broadcast works correctly with varying CB block sizes:
+    - granularity=1: 1x1 tile blocks (baseline)
+    - granularity=2: 2x2 tile blocks (4 tiles per block)
+
+    Each test uses shape divisible by grid and granularity:
+    - 8x8 grid * granularity * 32 tile_size
+    """
+    # Shape must be divisible by grid_size * granularity * tile_size
+    shape_dim = GRID_ROWS * granularity * TILE_SIZE  # 256 for g=1, 512 for g=2
+    shape = (shape_dim, shape_dim)
+
+    value = 3.5
+    inp_torch = create_row_bcast_input_multitile(shape, value)
+    out_torch = torch.zeros(shape, dtype=torch.bfloat16)
+    expected = expected_row_bcast_result(shape, value)
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":

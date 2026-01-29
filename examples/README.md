@@ -32,15 +32,15 @@ python examples/<example_name>.py
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
 | `eltwise_add.py` | Element-wise addition of two tensors | ✓ | ✓ |
-| `eltwise_pipe.py` | Fused element-wise ops using pipe multicasting | ✓ | ✓ |
-| `eltwise_pipe_core3.py` | Variant of eltwise_pipe with different core config | ✓ | ✓ |
+| `eltwise_pipe.py` | Fused element-wise ops using pipe multicasting | ✓ | ✗ |
+| `eltwise_pipe_core3.py` | Variant of eltwise_pipe with different core config | ✓ | ✗ |
 
 ### Broadcasting
 
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
 | `broadcast.py` | Column vector broadcast during element-wise op | ✓ | ✗ |
-| `broadcast_demo.py` | Well-documented scalar broadcast example | ✓ | ✗ |
+| `broadcast_demo.py` | Well-documented scalar broadcast example | ✓ | ✓ |
 | `general_broadcast.py` | Adaptive broadcasting based on tensor shapes | ✓ | ✗ |
 
 ### Matrix Multiplication
