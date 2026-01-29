@@ -22,8 +22,7 @@ The toolchain (LLVM + tt-mlir) is cached to speed up CI. Rebuild it when:
 4. Wait for completion (~3-4 hours)
 
 The cache is also automatically rebuilt:
-- When `third-party/tt-mlir.commit` changes (path trigger)
-- Weekly on Sunday 6 AM UTC (keeps cache warm)
+- Nightly at 6 AM UTC (keeps cache warm, rebuilds if tt-mlir.commit changed)
 
 ### Building Docker Images
 
@@ -59,7 +58,7 @@ Same as above - run the toolchain workflow first.
 
 ### Cache was evicted
 
-GitHub evicts caches not accessed in 7 days. The weekly schedule should prevent this.
+GitHub evicts caches not accessed in 7 days. The nightly schedule prevents this.
 
 **Solution:** Run the toolchain workflow manually.
 
@@ -78,51 +77,57 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 
 ```
 +-------------------------------+
-|  call-build-ttmlir-toolchain  |  <-- Dedicated cache builder
-|  (builds LLVM + tt-mlir)      |
+|         on-pr.yml             |  <-- PR orchestrator
 +-------------------------------+
               |
-              | saves to cache
+              | calls (workflow_call)
+              v
++-------------------------------+
+|  call-build-ttmlir-toolchain  |  <-- Checks cache, builds if needed
+|  (check-cache on ubuntu-latest|      (large runner only if cache miss)
+|   build on large runner)      |
++-------------------------------+
+              |
+              | saves to cache (if built)
               v
 +-------------------------------+
 |  GitHub Actions Cache         |
 |  Linux-ttlang-toolchain-v1-{sha} |
 +-------------------------------+
               |
-              | restores cache
+              | waits (needs: toolchain)
               v
 +-------------------------------+
-|  build-ttlang action          |  <-- Reusable composite action
-|  (validates, configures,      |
-|   builds tt-lang)             |
+|  call-build.yml               |  <-- Builds tt-lang using cached toolchain
+|  (uses build-ttlang action)   |
 +-------------------------------+
-        |             |
-        v             v
-+---------------+  +------------------+
-|  CI Workflow  |  |  Container Build |
-|  (tests)      |  |  (Docker images) |
-+---------------+  +------------------+
+              |
+              v
++-------------------------------+
+|  Container Build (separate)   |
+|  (Docker images)              |
++-------------------------------+
 ```
 
 ### Workflow Files
 
 | File | Purpose |
 |------|---------|
-| `call-build-ttmlir-toolchain.yml` | Dedicated cache builder - LLVM + tt-mlir |
+| `on-pr.yml` | PR orchestrator - calls toolchain, then build |
+| `on-push.yml` | Push trigger |
+| `call-build-ttmlir-toolchain.yml` | Cache builder - LLVM + tt-mlir (skips if cache exists) |
 | `call-build.yml` | CI build and test |
 | `call-build-docker.yml` | Container image builds |
 | `call-test-hardware.yml` | Hardware tests |
-| `on-pr.yml` | PR trigger |
-| `on-push.yml` | Push trigger |
 
 ### `call-build-ttmlir-toolchain.yml` (Cache Builder)
 
 **Purpose:** Builds and caches the LLVM + tt-mlir toolchain.
 
 **Triggers:**
-- Changes to `third-party/tt-mlir.commit`
-- Manual dispatch
-- Weekly schedule (keeps cache warm)
+- Pull requests that change `tt-mlir.commit` or the workflow file (builds cache if needed)
+- Manual dispatch (for force rebuild or testing specific commits)
+- Nightly schedule (keeps cache warm)
 
 **What it does:**
 1. Checks if cache already exists (skips build if so)
@@ -196,9 +201,9 @@ ttmlir-toolchain/
 
 | Event | Action |
 |-------|--------|
-| `third-party/tt-mlir.commit` changes | Toolchain workflow triggered, new cache created |
-| Weekly schedule (Sunday 6 AM UTC) | Toolchain workflow runs, keeps cache warm |
-| Cache not accessed for 7 days | GitHub evicts cache (prevented by weekly schedule) |
+| `third-party/tt-mlir.commit` changes | Manual trigger needed to build cache before PR can merge |
+| Nightly schedule (6 AM UTC) | Toolchain workflow runs, keeps cache warm |
+| Cache not accessed for 7 days | GitHub evicts cache (prevented by nightly schedule) |
 | Manual dispatch with `force_rebuild=true` | Cache rebuilt even if exists |
 
 ### Build Times

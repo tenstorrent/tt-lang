@@ -22,7 +22,13 @@ jobs:
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
+  # Ensure toolchain cache exists (builds if needed, skips if cache hit)
+  toolchain:
+    uses: ./.github/workflows/call-build-ttmlir-toolchain.yml
+    secrets: inherit
+
   build:
+    needs: toolchain
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
 
@@ -34,6 +40,7 @@ jobs:
     if: always()
     needs:
       - pre-commit
+      - toolchain
       - build
       - test-sim
     runs-on: ubuntu-latest

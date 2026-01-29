@@ -44,11 +44,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Read tt-mlir commit
+      - name: Determine tt-mlir commit
         id: ttmlir-commit
         run: |
-          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.mlir_override }}" "third-party/tt-mlir.commit"
 
       - name: Check if Docker image exists
         id: check
@@ -70,11 +69,10 @@ jobs:
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
 
-      - name: Read tt-mlir commit
+      - name: Determine tt-mlir commit
         id: ttmlir-commit
         run: |
-          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.mlir_override }}" "third-party/tt-mlir.commit"
 
       - name: Restore toolchain from cache
         id: cache-toolchain
