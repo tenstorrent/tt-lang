@@ -311,5 +311,167 @@ class TestBcastShapeExpansion:
         assert_allclose(result.float(), expected.float())
 
 
+# =============================================================================
+# Kernels with shape expansion AND outer loops
+# =============================================================================
+# These test the case where we have both outer loops iterating over tensor
+# blocks AND shape expansion within each block. This is a regression test
+# for a bug where the broadcast index was computed incorrectly (linearized
+# instead of using broadcast-aware indexing).
+
+
+@ttl.kernel(grid=(1, 1))
+def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
+    """Col bcast with shape expansion and outer tensor loops.
+
+    Pattern: y = bcast(a) * b + c
+    - a: column vector with CB shape (2, 1)
+    - b, c, y: full tensors with CB shape (2, 2)
+    - Outer loops iterate over tensor blocks
+    """
+    block_rows = 2
+    block_cols = 2
+
+    rows = y.shape[0] // TILE_SIZE // block_rows
+    cols = y.shape[1] // TILE_SIZE // block_cols
+
+    a_cb = ttl.make_circular_buffer_like(a, shape=(block_rows, 1), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(
+        b, shape=(block_rows, block_cols), buffer_factor=2
+    )
+    c_cb = ttl.make_circular_buffer_like(
+        c, shape=(block_rows, block_cols), buffer_factor=2
+    )
+    y_cb = ttl.make_circular_buffer_like(
+        y, shape=(block_rows, block_cols), buffer_factor=2
+    )
+
+    @ttl.compute()
+    def compute_fn():
+        for _ in range(rows):
+            for _ in range(cols):
+                with (
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    c_cb.wait() as c_blk,
+                    y_cb.reserve() as y_blk,
+                ):
+                    y_blk.store(
+                        ttl.math.broadcast(a_blk, y_blk, dims=[1]) * b_blk + c_blk
+                    )
+
+    @ttl.datamovement()
+    def dm_read():
+        for row in range(rows):
+            start_row = row * block_rows
+            end_row = (row + 1) * block_rows
+
+            for col in range(cols):
+                start_col = col * block_cols
+                end_col = (col + 1) * block_cols
+
+                with (
+                    a_cb.reserve() as a_blk,
+                    b_cb.reserve() as b_blk,
+                    c_cb.reserve() as c_blk,
+                ):
+                    tx_a = ttl.copy(a[start_row:end_row, 0], a_blk)
+                    tx_b = ttl.copy(b[start_row:end_row, start_col:end_col], b_blk)
+                    tx_c = ttl.copy(c[start_row:end_row, start_col:end_col], c_blk)
+                    tx_a.wait()
+                    tx_b.wait()
+                    tx_c.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        for row in range(rows):
+            start_row = row * block_rows
+            end_row = (row + 1) * block_rows
+
+            for col in range(cols):
+                start_col = col * block_cols
+                end_col = (col + 1) * block_cols
+
+                with y_cb.wait() as y_blk:
+                    tx = ttl.copy(y_blk, y[start_row:end_row, start_col:end_col])
+                    tx.wait()
+
+
+class TestBcastShapeExpansionWithOuterLoops:
+    """Regression tests for bcast shape expansion with outer tensor loops.
+
+    These tests verify that broadcast index calculation is correct when there
+    are outer loops iterating over tensor blocks combined with shape expansion
+    (input CB smaller than output CB) within each block.
+
+    The bug this tests for: index was computed as row*cols+col (linearized)
+    instead of just row (for col bcast) or col (for row bcast).
+    """
+
+    def test_col_bcast_expand_with_outer_loops(self, device):
+        """Test col bcast (2,1) -> (2,2) with outer tensor block loops.
+
+        This is a regression test for the bug where broadcast with shape
+        expansion computed incorrect indices when outer loops were present.
+        """
+        torch.manual_seed(42)
+
+        # Use a size that requires multiple outer loop iterations
+        # 128x128 = 4x4 tiles, with block size 2x2 = 2x2 outer iterations
+        shape = (128, 128)
+
+        # a: column vector (broadcasts across columns)
+        a_torch = torch.rand((shape[0], 1), dtype=torch.bfloat16)
+        b_torch = torch.rand(shape, dtype=torch.bfloat16)
+        c_torch = torch.rand(shape, dtype=torch.bfloat16)
+        y_torch = torch.zeros(shape, dtype=torch.bfloat16)
+
+        # Expected: (a * b + c) where a broadcasts to match b's shape
+        expected = a_torch * b_torch + c_torch
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+        y = to_l1(y_torch, device)
+
+        bcast_col_expand_with_outer_loops_kernel(a, b, c, y)
+        result = ttnn.to_torch(y)
+
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+    def test_col_bcast_expand_large_tensor(self, device):
+        """Test col bcast shape expansion on larger tensor (many outer iterations).
+
+        Uses 2048x2048 tensor which requires 32x32 outer iterations with 2x2
+        tile blocks. This stress-tests the index calculation across many
+        iterations.
+        """
+        from ttlang_test_utils import to_dram
+
+        torch.manual_seed(42)
+
+        shape = (2048, 2048)
+
+        # a: column vector (broadcasts across columns)
+        a_torch = torch.rand((shape[0], 1), dtype=torch.bfloat16)
+        b_torch = torch.rand(shape, dtype=torch.bfloat16)
+        c_torch = torch.rand(shape, dtype=torch.bfloat16)
+        y_torch = torch.zeros(shape, dtype=torch.bfloat16)
+
+        # Expected: (a * b + c) where a broadcasts to match b's shape
+        expected = a_torch * b_torch + c_torch
+
+        # Use DRAM for larger tensors
+        a = to_dram(a_torch, device)
+        b = to_dram(b_torch, device)
+        c = to_dram(c_torch, device)
+        y = to_dram(y_torch, device)
+
+        bcast_col_expand_with_outer_loops_kernel(a, b, c, y)
+        result = ttnn.to_torch(y)
+
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

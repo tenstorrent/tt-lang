@@ -479,30 +479,105 @@ static ttk::BcastType convertBcastType(ttl::BcastType ttlType) {
   llvm_unreachable("unknown BcastType");
 }
 
-/// Compute linearized index from tensor::ExtractOp indices.
-/// For a 2D tensor, linearizes as: row_idx * num_cols + col_idx.
-static std::optional<Value>
-computeInputIndexFromExtract(Value input, OpBuilder &builder, Location loc) {
-  auto extractOp = input.getDefiningOp<tensor::ExtractOp>();
-  if (!extractOp || extractOp.getIndices().size() != 2) {
-    return std::nullopt;
+/// Get the CB tile grid shape from an operand by tracing to the tensor type.
+/// After loop lowering, operands come from tensor.extract, so we trace back
+/// to find the tensor and extract its shape (in tiles).
+/// Returns std::nullopt if the shape cannot be determined.
+static std::optional<std::pair<int64_t, int64_t>>
+getCBTileGridShape(Value operand, func::FuncOp funcOp) {
+  // First, try to get shape from TTL CB type.
+  Value cb = lookupCBByIndex(operand, funcOp);
+  if (cb) {
+    if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+      auto shape = ttlCb.getShape();
+      if (shape.size() == 2) {
+        return std::make_pair(shape[0], shape[1]);
+      }
+    }
   }
 
-  auto tensorType = dyn_cast<RankedTensorType>(extractOp.getTensor().getType());
-  if (!tensorType || tensorType.getRank() != 2) {
-    return std::nullopt;
+  // If that fails, try to extract shape from the tensor type.
+  // After loop lowering, the operand comes from tensor.extract.
+  Value tensor = operand;
+  if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
+    tensor = extract.getTensor();
   }
 
-  int64_t numCols = tensorType.getDimSize(1);
-  if (numCols == ShapedType::kDynamic) {
-    return std::nullopt;
+  // Trace through unrealized conversion casts.
+  tensor = traceUnrealizedCasts(tensor);
+
+  // Check if we have a ranked tensor with a 2D tile shape.
+  if (auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType())) {
+    if (tensorTy.getRank() == 2) {
+      return std::make_pair(tensorTy.getDimSize(0), tensorTy.getDimSize(1));
+    }
   }
 
-  Value rowIdx = extractOp.getIndices()[0];
-  Value colIdx = extractOp.getIndices()[1];
-  Value numColsVal = builder.create<arith::ConstantIndexOp>(loc, numCols);
-  Value rowTerm = builder.create<arith::MulIOp>(loc, rowIdx, numColsVal);
-  return builder.create<arith::AddIOp>(loc, rowTerm, colIdx).getResult();
+  return std::nullopt;
+}
+
+/// Check if broadcast has shape expansion (input CB smaller than output CB).
+/// Returns true if the input CB is reduced on the broadcast dimension(s).
+static bool hasBcastShapeExpansion(Value input, Value output,
+                                   ttl::BcastType bcastType,
+                                   func::FuncOp funcOp) {
+  auto inShape = getCBTileGridShape(input, funcOp);
+  auto outShape = getCBTileGridShape(output, funcOp);
+  if (!inShape || !outShape) {
+    return false;
+  }
+
+  int64_t inRows = inShape->first;
+  int64_t inCols = inShape->second;
+  int64_t outRows = outShape->first;
+  int64_t outCols = outShape->second;
+
+  switch (bcastType) {
+  case ttl::BcastType::Col:
+    // Col broadcast: input has fewer cols than output.
+    return inCols < outCols;
+  case ttl::BcastType::Row:
+    // Row broadcast: input has fewer rows than output.
+    return inRows < outRows;
+  case ttl::BcastType::Scalar:
+    // Scalar broadcast: input is smaller in both dimensions.
+    return (inRows < outRows) || (inCols < outCols);
+  }
+  return false;
+}
+
+/// Compute input CB tile index for broadcast with shape expansion.
+/// For broadcast ops where input CB is smaller than output CB:
+///   - Col broadcast (dims=[1]): input has 1 col, index = row_idx
+///   - Row broadcast (dims=[0]): input has 1 row, index = col_idx
+///   - Scalar broadcast (dims=[0,1]): input is (1,1), index = 0
+static Value computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
+                                             OpBuilder &builder, Location loc) {
+  SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
+
+  // Expect at least 2 loops for 2D tile iteration.
+  // Loops are collected innermost-first: loops[0]=col, loops[1]=row.
+  if (loops.size() < 2) {
+    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
+  Value colIdx = loops[0].getInductionVar();
+  Value rowIdx = loops[1].getInductionVar();
+
+  // Determine index based on broadcast type.
+  auto bcastType = op.getBcastType();
+  switch (bcastType) {
+  case ttl::BcastType::Col:
+    // Input has shape (N, 1): index = row_idx.
+    return rowIdx;
+  case ttl::BcastType::Row:
+    // Input has shape (1, M): index = col_idx.
+    return colIdx;
+  case ttl::BcastType::Scalar:
+    // Input has shape (1, 1): index = 0.
+    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  }
+  llvm_unreachable("unknown BcastType");
 }
 
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
@@ -551,12 +626,12 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
 
     // Get input CB tile index.
-    // For shape expansion, input comes from ExtractOp with affine-mapped
-    // indices. Otherwise, use loop indices to read the correct input tile.
+    // For shape expansion (input CB smaller than output), use broadcast-aware
+    // indexing. Otherwise, use linearized index for same-shape CB iteration.
     Value inCBIdx;
-    if (auto extractIdx =
-            computeInputIndexFromExtract(op.getInput(), rewriter, loc)) {
-      inCBIdx = *extractIdx;
+    if (hasBcastShapeExpansion(op.getInput(), op.getOutput(), op.getBcastType(),
+                               funcOp)) {
+      inCBIdx = computeBcastShapeExpansionIndex(op, rewriter, loc);
     } else {
       inCBIdx =
           utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
