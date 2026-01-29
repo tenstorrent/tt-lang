@@ -81,6 +81,26 @@ static TensorStoreOp findTensorStore(Operation *op) {
   return nullptr;
 }
 
+/// Finalize compute body: emit stores if needed, yield result, replace the
+/// original op, and erase the tensor_store op.
+static void finalizeComputeBody(Operation *op, PatternRewriter &rewriter,
+                                Location loc, Value result,
+                                ComputeOp computeOp) {
+  // Emit store ops ONLY if there's an explicit tensor_store op.
+  TensorStoreOp tensorStoreOp = findTensorStore(op);
+  if (tensorStoreOp) {
+    emitStoreOps(rewriter, loc, result, tensorStoreOp);
+  }
+
+  rewriter.create<YieldOp>(loc, ValueRange{result});
+  rewriter.replaceOp(op, computeOp.getResult(0));
+
+  // Erase the tensor_store op (now that stores are inside the compute body)
+  if (tensorStoreOp) {
+    rewriter.eraseOp(tensorStoreOp);
+  }
+}
+
 /// Find unused bind_cb ops in the function that can be used for output CBs.
 /// Returns bind_cb ops that are not used by any attach_cb op.
 // TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
@@ -242,19 +262,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  // Emit store ops ONLY if there's an explicit tensor_store op.
-  TensorStoreOp tensorStoreOp = findTensorStore(sinkOp);
-  if (tensorStoreOp) {
-    emitStoreOps(rewriter, loc, finalResult, tensorStoreOp);
-  }
-
-  rewriter.create<YieldOp>(loc, ValueRange{finalResult});
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
-
-  // Erase the tensor_store op (now that stores are inside the compute body)
-  if (tensorStoreOp) {
-    rewriter.eraseOp(tensorStoreOp);
-  }
+  finalizeComputeBody(sinkOp, rewriter, loc, finalResult, computeOp);
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -355,20 +363,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
 
-  // Emit store ops ONLY if there's an explicit tensor_store op.
-  TensorStoreOp tensorStoreOp = findTensorStore(op);
-  if (tensorStoreOp) {
-    emitStoreOps(rewriter, loc, result, tensorStoreOp);
-  }
-
-  rewriter.create<YieldOp>(loc, ValueRange{result});
-  rewriter.replaceOp(op, computeOp.getResult(0));
-
-  // Erase the tensor_store op (now that stores are inside the compute body)
-  if (tensorStoreOp) {
-    rewriter.eraseOp(tensorStoreOp);
-  }
-
+  finalizeComputeBody(op, rewriter, loc, result, computeOp);
   return success();
 }
 
@@ -449,20 +444,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
 
-  // Emit store ops ONLY if there's an explicit tensor_store op.
-  TensorStoreOp tensorStoreOp = findTensorStore(op);
-  if (tensorStoreOp) {
-    emitStoreOps(rewriter, loc, result, tensorStoreOp);
-  }
-
-  rewriter.create<YieldOp>(loc, ValueRange{result});
-  rewriter.replaceOp(op, computeOp.getResult(0));
-
-  // Erase the tensor_store op (now that stores are inside the compute body)
-  if (tensorStoreOp) {
-    rewriter.eraseOp(tensorStoreOp);
-  }
-
+  finalizeComputeBody(op, rewriter, loc, result, computeOp);
   return success();
 }
 
@@ -683,9 +665,8 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value result =
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
-    rewriter.create<YieldOp>(loc, ValueRange{result});
 
-    rewriter.replaceOp(op, computeOp.getResult(0));
+    finalizeComputeBody(op, rewriter, loc, result, computeOp);
     return success();
   }
 };
