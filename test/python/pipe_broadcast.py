@@ -19,12 +19,12 @@ Grid layout (2x2):
   (1,1) destination
 """
 
-import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
 import ttnn
 import ttl
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 @ttl.kernel(grid=(2, 2))
@@ -40,7 +40,7 @@ def pipe_broadcast(inp, out):
     def compute():
         with inp_cb.wait() as tile_in:
             with out_cb.reserve() as tile_out:
-                tile_out.store(tile_in)
+                tile_out.store(ttl.math.abs(tile_in))
 
     @ttl.datamovement()
     def dm_read():
@@ -84,10 +84,9 @@ def pipe_broadcast(inp, out):
 
 if __name__ == "__main__":
     import torch
-    from ttlang_test_utils import require_hardware
+    from ttlang_test_utils import require_hardware, to_dram, assert_allclose
 
-    print("=== Pipe Broadcast Test ===")
-    require_hardware()
+    compile_only = os.environ.get("TTLANG_COMPILE_ONLY") == "1"
 
     device = ttnn.open_device(device_id=0)
 
@@ -96,25 +95,24 @@ if __name__ == "__main__":
         inp_torch = torch.full((64, 64), 42.0, dtype=torch.bfloat16)
         out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
 
-        inp = ttnn.from_torch(
-            inp_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        out = ttnn.from_torch(
-            out_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        inp = to_dram(inp_torch, device)
+        out = to_dram(out_torch, device)
 
-        print("Running pipe broadcast kernel...")
-        pipe_broadcast(inp, out)
+        if compile_only:
+            pipe_broadcast(inp, out)
+        else:
+            print("=== Pipe Broadcast Test ===")
+            require_hardware()
 
-        print("=== Pipe Broadcast Test Complete ===")
+            pipe_broadcast(inp, out)
+
+            out_result = ttnn.to_torch(out)
+            print(f"Output tensor: {out_result[0,:5]}")
+            # All cores receive value 42 from source (0,0)
+            expected = torch.full((64, 64), 42.0, dtype=torch.bfloat16)
+            assert_allclose(out_result, expected)
+
+            print("=== Pipe Broadcast Test Complete ===")
 
     finally:
         ttnn.close_device(device)

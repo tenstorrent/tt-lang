@@ -782,9 +782,11 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       /*noc=*/Value());
 
   if (pipeType.srcInDstRange()) {
+    // Loopback version requires explicit BoolAttr values (not optional).
+    auto falseBoolAttr = rewriter.getBoolAttr(false);
     rewriter.create<ttk::NocSemaphoreSetMulticastLoopbackOp>(
         loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-        /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+        /*linked=*/falseBoolAttr, /*multicast_path_reserve=*/falseBoolAttr);
   } else {
     rewriter.create<ttk::NocSemaphoreSetMulticastOp>(
         loc, semAddr, semMcastAddr.getResult(), numDestsVal,
