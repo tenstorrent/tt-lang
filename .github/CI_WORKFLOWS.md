@@ -101,7 +101,7 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 | File | Purpose |
 |------|---------|
 | `call-build-ttmlir-toolchain.yml` | Dedicated cache builder - LLVM + tt-mlir |
-| `call-build-tt-mlir-fetchcontent.yml` | CI build and test |
+| `call-build.yml` | CI build and test |
 | `call-build-docker.yml` | Container image builds |
 | `call-test-hardware.yml` | Hardware tests |
 | `on-pr.yml` | PR trigger |
@@ -125,7 +125,7 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 6. Normalizes and cleans up toolchain
 7. Saves to cache
 
-### `call-build-tt-mlir-fetchcontent.yml` (CI)
+### `call-build.yml` (CI)
 
 **Purpose:** Builds and tests TT-Lang.
 
