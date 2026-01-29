@@ -8,7 +8,7 @@ tt-lang examples are available in `$TTMLIR_TOOLCHAIN_DIR/examples`.
 
 Try running an example:
 ```bash
-python $TTMLIR_TOOLCHAIN_DIR/examples/demo_one.py
+python $TTMLIR_TOOLCHAIN_DIR/examples/tutorial/multicore_grid_auto.py
 ```
 
 ## Available Tools
