@@ -23,7 +23,9 @@ jobs:
     secrets: inherit
 
   # Ensure toolchain cache exists (builds if needed, skips if cache hit)
+  # Waits for pre-commit to avoid wasting resources if pre-commit fails
   toolchain:
+    needs: pre-commit
     uses: ./.github/workflows/call-build-ttmlir-toolchain.yml
     secrets: inherit
 
@@ -33,6 +35,7 @@ jobs:
     secrets: inherit
 
   test-sim:
+    needs: pre-commit
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 

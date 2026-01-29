@@ -48,8 +48,8 @@ permissions:
     contents: read
 
 jobs:
-    build-tt-lang-tt-mlir:
-        name: build-tt-lang-tt-mlir (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
+    build-and-test-tt-lang-nohw:
+        name: build-and-test-tt-lang-nohw (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
         runs-on: ${{ inputs.linux_runner || 'mlir-large-runner-lang' }}
         timeout-minutes: 60  # Reduced - only building tt-lang, not LLVM/tt-mlir
 
@@ -168,8 +168,8 @@ jobs:
                   retention-days: 1
 
 
-    test-hardware:
-        needs: build-tt-lang-tt-mlir
+    test-ttlang-on-tt-hw:
+        needs: build-and-test-tt-lang-nohw
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:

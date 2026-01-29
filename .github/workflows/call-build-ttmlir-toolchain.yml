@@ -121,7 +121,8 @@ jobs:
                   sudo apt-get install -y \
                       build-essential ninja-build lld \
                       clang-17 clang++-17 \
-                      libzstd-dev
+                      libzstd-dev \
+                      coreutils
 
             - name: Checkout tt-mlir
               uses: actions/checkout@v4
@@ -135,21 +136,44 @@ jobs:
             - name: Create toolchain directory
               run: mkdir -p $TTMLIR_TOOLCHAIN_DIR
 
+            - name: Check for LLVM-only cache
+              id: llvm-cache
+              uses: actions/cache/restore@v4
+              with:
+                  path: ttmlir-toolchain
+                  key: Linux-ttlang-llvm-only-v1-${{ needs.check-cache.outputs.ttmlir-commit }}
+                  lookup-only: true
+
+            - name: Restore LLVM-only cache
+              if: steps.llvm-cache.outputs.cache-hit == 'true'
+              uses: actions/cache/restore@v4
+              with:
+                  path: ttmlir-toolchain
+                  key: Linux-ttlang-llvm-only-v1-${{ needs.check-cache.outputs.ttmlir-commit }}
+
             - name: Build LLVM toolchain
+              if: steps.llvm-cache.outputs.cache-hit != 'true'
               working-directory: tt-mlir-src
               run: |
                   echo "=== Building LLVM toolchain ==="
                   echo "This will take 2-3 hours..."
-                  cmake -G Ninja -B env/build env
-                  cmake --build env/build
+                  stdbuf -oL cmake -G Ninja -B env/build env
+                  stdbuf -oL cmake --build env/build
                   rm -rf env/build  # Clean up build directory
                   echo "=== LLVM toolchain complete ==="
                   df -h
 
+            - name: Save LLVM-only cache
+              if: steps.llvm-cache.outputs.cache-hit != 'true'
+              uses: actions/cache/save@v4
+              with:
+                  path: ttmlir-toolchain
+                  key: Linux-ttlang-llvm-only-v1-${{ needs.check-cache.outputs.ttmlir-commit }}
+
             - name: Configure tt-mlir
               working-directory: tt-mlir-src
               run: |
-                  source $TTMLIR_TOOLCHAIN_DIR/venv/bin/activate
+                  source env/activate
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
@@ -162,14 +186,14 @@ jobs:
               working-directory: tt-mlir-src
               run: |
                   echo "=== Building tt-mlir ==="
-                  source $TTMLIR_TOOLCHAIN_DIR/venv/bin/activate
-                  cmake --build build
+                  source env/activate
+                  stdbuf -oL cmake --build build
                   df -h
 
             - name: Install tt-mlir
               working-directory: tt-mlir-src
               run: |
-                  source $TTMLIR_TOOLCHAIN_DIR/venv/bin/activate
+                  source env/activate
                   cmake --install build
 
             - name: Copy ttrt runtime to toolchain

@@ -6,7 +6,10 @@ This document describes the CI/CD workflows for TT-Lang.
 
 ### Running CI on a PR
 
-CI runs automatically on pull requests. If CI fails with a cache miss error, the toolchain cache needs to be built first (see below).
+CI runs automatically on pull requests. The `on-pr.yml` workflow:
+1. Calls toolchain workflow first (builds cache if needed, skips if exists)
+2. Waits for toolchain to complete
+3. Runs the build workflow
 
 ### Rebuilding the Toolchain Cache
 
@@ -45,16 +48,15 @@ The cache key is based on the tt-mlir commit SHA from `third-party/tt-mlir.commi
 
 ### CI fails with "cache miss"
 
-The toolchain cache doesn't exist for this tt-mlir commit.
+This shouldn't happen normally since `on-pr.yml` calls the toolchain workflow first. If it does:
 
 **Solution:**
-1. Go to **Actions** > **Build tt-mlir Toolchain (Cache)**
-2. Run the workflow
-3. Wait for completion, then re-run CI
+1. Re-run the failed workflow (toolchain should build automatically)
+2. Or manually trigger: **Actions** > **Build tt-mlir Toolchain (Cache)**
 
 ### Container build fails with "cache miss"
 
-Same as above - run the toolchain workflow first.
+The toolchain cache doesn't exist. Run the toolchain workflow first, or trigger a PR CI run which will build the cache.
 
 ### Cache was evicted
 
@@ -125,18 +127,19 @@ TT-Lang CI uses a **dedicated cache workflow** pattern ([GitHub Actions best pra
 **Purpose:** Builds and caches the LLVM + tt-mlir toolchain.
 
 **Triggers:**
-- Pull requests that change `tt-mlir.commit` or the workflow file (builds cache if needed)
+- Called by `on-pr.yml` via `workflow_call` (ensures cache exists before build)
 - Manual dispatch (for force rebuild or testing specific commits)
 - Nightly schedule (keeps cache warm)
 
+**Jobs:**
+1. **`check-cache`** (ubuntu-latest, ~1 min): Checks if cache exists, outputs `needs-build`
+2. **`build-toolchain`** (large runner, ~4-6 hours): Only runs if `needs-build == true`
+
 **What it does:**
-1. Checks if cache already exists (skips build if so)
-2. Installs build dependencies
-3. Clones tt-mlir
-4. Builds LLVM toolchain (`cmake -B env/build env`)
-5. Builds tt-mlir directly (`cmake --build build`)
-6. Normalizes and cleans up toolchain
-7. Saves to cache
+1. Determines tt-mlir commit from `third-party/tt-mlir.commit`
+2. Checks if cache exists (on standard runner)
+3. If cache miss: builds LLVM toolchain + tt-mlir (on large runner)
+4. Saves to cache
 
 ### `call-build.yml` (CI)
 
@@ -201,7 +204,7 @@ ttmlir-toolchain/
 
 | Event | Action |
 |-------|--------|
-| `third-party/tt-mlir.commit` changes | Manual trigger needed to build cache before PR can merge |
+| PR opened/updated | `on-pr.yml` calls toolchain workflow, builds cache if needed |
 | Nightly schedule (6 AM UTC) | Toolchain workflow runs, keeps cache warm |
 | Cache not accessed for 7 days | GitHub evicts cache (prevented by nightly schedule) |
 | Manual dispatch with `force_rebuild=true` | Cache rebuilt even if exists |
