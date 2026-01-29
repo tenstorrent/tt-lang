@@ -174,12 +174,15 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         memo[id(value)] = value
                     case CircularBuffer():
                         # create a fresh CB for this core
-                        core_context[key] = CircularBuffer(
+                        new_cb = CircularBuffer(
                             element=value.element,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
                             api=api,
                         )
+                        # Store the variable name for debugging
+                        new_cb._name = key
+                        core_context[key] = new_cb
                     case _:
                         core_context[key] = copy.deepcopy(value, memo)
 
@@ -454,15 +457,21 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 str, Tuple[Generator[None, None, None], Any, str, ThreadType]
             ] = {}
 
+            # Track original source file and base line number for each generator
+            # Used for mapping transformed line numbers back to original source
+            orig_source_info: Dict[str, Tuple[str, int]] = {}
+
             for (
                 name,
                 func_name,
                 transformed_ast,
                 namespace,
-                _orig_file,
-                _orig_lineno,
+                orig_file,
+                orig_lineno,
                 thread_type,
             ) in sources:
+                # Store original source info for error reporting
+                orig_source_info[name] = (orig_file, orig_lineno)
                 # Compile transformed AST to bytecode (preserves line numbers)
                 code_obj = compile(transformed_ast, f"<{name}_transformed>", "exec")
 
@@ -574,12 +583,81 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
                 # Deadlock detection: no progress made and generators still active
                 if not any_progress and active:
-                    blocked_info: List[str] = [
-                        f"{k}: {op}()" for k, (_, _, op, _) in active.items()
-                    ]
+                    blocked_info: List[str] = []
+                    for k, (gen, blocking_obj, op, _) in active.items():
+                        # Extract file and line information from generator frame
+                        frame = gen.gi_frame
+
+                        # Get a descriptive name for the blocking object
+                        obj_desc = ""
+                        if hasattr(blocking_obj, "__class__"):
+                            obj_type = blocking_obj.__class__.__name__
+                            # Try to get a name or identifier for the object
+                            if hasattr(blocking_obj, "_name"):
+                                # CircularBuffer with name
+                                obj_desc = f" on {obj_type}({blocking_obj._name})"
+                            elif (
+                                obj_type == "CopyTransaction"
+                                and hasattr(blocking_obj, "_src")
+                                and hasattr(blocking_obj, "_dst")
+                            ):
+                                # CopyTransaction - show src->dst
+                                src_desc = self._get_obj_description(blocking_obj._src)
+                                dst_desc = self._get_obj_description(blocking_obj._dst)
+                                obj_desc = f" on {obj_type}({src_desc} -> {dst_desc})"
+                            else:
+                                obj_desc = f" on {obj_type}"
+
+                        if frame and k in orig_source_info:
+                            orig_file, func_def_line = orig_source_info[k]
+                            # frame.f_lineno is the line number within the transformed code
+                            # which has line numbers preserved from the original source.
+                            # Calculate absolute line in file using same logic as error handling:
+                            # actual_line = func_def_line - 1 + frame.f_lineno
+                            actual_line = func_def_line - 1 + frame.f_lineno
+
+                            blocked_info.append(
+                                f"  {k}: blocked on {op}(){obj_desc} at {orig_file}:{actual_line}"
+                            )
+                        else:
+                            blocked_info.append(f"  {k}: blocked on {op}(){obj_desc}")
+
                     raise RuntimeError(
                         f"Deadlock detected: all generators blocked\n"
                         + "\n".join(blocked_info)
+                    )
+
+        def _get_obj_description(self, obj: Any) -> str:
+            """Get a brief description of an object for debugging output.
+
+            Args:
+                obj: Object to describe (Block, Pipe, Tensor, etc.)
+
+            Returns:
+                String description of the object
+            """
+            from .block import Block
+            from .cb import CircularBuffer
+            from .pipe import Pipe
+            from .ttnnsim import Tensor
+
+            match obj:
+                case Block():
+                    # For blocks, we don't have direct names, just show Block
+                    return "Block"
+                case CircularBuffer() if hasattr(obj, "_name"):
+                    return obj._name
+                case CircularBuffer():
+                    return "CB"
+                case Pipe():
+                    return f"Pipe({obj.src}->{obj.dst})"
+                case Tensor():
+                    return "Tensor"
+                case _:
+                    return (
+                        obj.__class__.__name__
+                        if hasattr(obj, "__class__")
+                        else str(obj)
                     )
 
     return ProgramImpl(*funcs)
