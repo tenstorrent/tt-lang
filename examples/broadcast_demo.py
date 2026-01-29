@@ -9,15 +9,14 @@ This example matches the specification's element-wise with broadcast example:
 Y = sqrt(A^2 + B^2) where A has shape (1, N) and B has shape (1, 1).
 """
 
-import sys
 import os
+import sys
 
 # Add python directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import torch
-from sim import ttl
-from sim import ttnn
+from sim import ttl, ttnn
 
 
 @ttl.kernel(grid="auto")

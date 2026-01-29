@@ -101,6 +101,15 @@ def test_metal_example_cli(example_path: str) -> None:
     assert_success_output(code, out)
 
 
+@pytest.mark.skip(reason="multicore reuse matmul not yet supported in simulator")
+def test_multicore_reuse_matmul() -> None:
+    """Test multicore reuse matmul example (skipped until matmul support is ready)."""
+    code, out = run_ttlang_sim_and_capture(
+        EXAMPLES_METAL_DIR / "multicore_reuse_matmul/ttlang/multicore_reuse_matmul.py"
+    )
+    assert_success_output(code, out)
+
+
 def test_eltwise_add2_fails_with_expected_error() -> None:
     """Test that eltwise_add_error.py fails with the expected copy validation error.
 
@@ -119,17 +128,17 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
     ), f"Expected error message not found in output:\n{out}"
     # Verify source location is shown
     assert (
-        "examples/eltwise_add_error.py:37" in out
+        "examples/eltwise_add_error.py:36" in out
     ), f"Expected source location not found in output:\n{out}"
 
     # Verify the reported line number is correct by checking the actual source
     source_file = EXAMPLES_DIR / "eltwise_add_error.py"
     with open(source_file) as f:
         lines = f.readlines()
-        # Line 37 (1-indexed) should contain the problematic copy call
-        error_line = lines[36].strip()  # 0-indexed
+        # Line 36 (1-indexed) should contain the problematic copy call
+        error_line = lines[35].strip()  # 0-indexed
         assert "tx_a = copy(a[r, c], a_block)" in error_line, (
-            f"Line 37 in eltwise_add_error.py does not contain expected copy call.\n"
+            f"Line 36 in eltwise_add_error.py does not contain expected copy call.\n"
             f"Expected: 'tx_a = copy(a[r, c], a_block)'\n"
             f"Got: {error_line}"
         )
