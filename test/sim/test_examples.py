@@ -173,3 +173,148 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
             f"Expected: 'a_block.store'\n"
             f"Got: {error_line}"
         )
+
+
+def test_demo_one_deadlock_detection() -> None:
+    """Test that demo_one.py with incorrect wait() instead of reserve() triggers deadlock detection.
+
+    This test modifies demo_one.py to use wait() instead of reserve() for the output
+    buffer, which causes a deadlock. The deadlock detection should clearly show:
+    1. Which threads are blocked
+    2. What operation they're blocked on
+    3. Which CircularBuffer they're waiting for
+    4. The source location where they're blocked (with accurate line numbers)
+    """
+    import tempfile
+    import re
+
+    # Read the original demo_one.py
+    source_file = EXAMPLES_DIR / "demo_one.py"
+    with open(source_file) as f:
+        lines = f.readlines()
+        content = "".join(lines)
+
+    # Introduce the error: change y_cb.reserve() to y_cb.wait()
+    # This creates a deadlock where compute waits for y_cb that it should be writing to
+    modified_content = content.replace(
+        "y_cb.reserve() as y_blk,", "y_cb.wait() as y_blk,"
+    )
+
+    # Verify we actually modified something
+    assert modified_content != content, "Failed to modify demo_one.py content"
+
+    # Find the line numbers where wait() and reserve() calls are made
+    # We'll verify the deadlock message points to these exact lines
+    compute_wait_line = None
+    dm0_reserve_line = None
+    dm1_wait_line = None
+
+    for i, line in enumerate(lines, start=1):
+        # In the compute function, after our modification, y_cb.wait() should be present
+        if "y_cb.wait() as y_blk" in modified_content.split("\n")[i - 1]:
+            # Find the first occurrence in compute function
+            if (
+                compute_wait_line is None and i > 50 and i < 70
+            ):  # Rough range for compute function
+                compute_wait_line = i
+        # In dm0 function, a_cb.reserve() is the first reserve call
+        if "a_cb.reserve() as a_blk" in line:
+            if dm0_reserve_line is None and i > 70:  # After compute function
+                dm0_reserve_line = i
+        # In dm1 function, y_cb.wait() is present
+        if "y_cb.wait() as y_blk" in line and i > 120:  # dm1 is later in file
+            if dm1_wait_line is None:
+                dm1_wait_line = i
+
+    # Create a temporary file with the modified content
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+        tmp.write(modified_content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        # Run the modified script
+        code, out = run_ttlang_sim_and_capture(tmp_path)
+
+        # Should fail with non-zero exit code
+        assert (
+            code != 0
+        ), f"Expected modified demo_one.py to fail, but it exited with code 0"
+
+        # Check for deadlock detection message
+        assert (
+            "Deadlock detected: all generators blocked" in out
+        ), f"Expected deadlock detection message not found in output:\n{out}"
+
+        # Check that it shows which CB is blocked (y_cb)
+        assert (
+            "CircularBuffer(y_cb)" in out
+        ), f"Expected to see y_cb in deadlock output:\n{out}"
+
+        # Check that it shows the blocked operations
+        assert (
+            "blocked on wait()" in out
+        ), f"Expected to see 'blocked on wait()' in deadlock output:\n{out}"
+        assert (
+            "blocked on reserve()" in out
+        ), f"Expected to see 'blocked on reserve()' in deadlock output:\n{out}"
+
+        # Check that source locations are included with line numbers
+        assert (
+            " at " in out and ".py:" in out
+        ), f"Expected source location (file:line) in deadlock output:\n{out}"
+
+        # Check for multiple cores being blocked (demo_one uses multiple cores)
+        assert (
+            "core0-compute:" in out
+        ), f"Expected core0-compute in deadlock output:\n{out}"
+        assert "core0-dm0:" in out, f"Expected core0-dm0 in deadlock output:\n{out}"
+        assert "core0-dm1:" in out, f"Expected core0-dm1 in deadlock output:\n{out}"
+
+        # Verify line numbers are accurate by checking they match actual wait()/reserve() calls
+        # Extract line numbers from the deadlock output
+        # Format: "coreX-Y: blocked on operation() on CircularBuffer(name) at file.py:LINE"
+        line_number_pattern = r"core0-(\w+).*?at .*?:(\d+)"
+        matches = re.findall(line_number_pattern, out)
+
+        reported_lines = {}
+        for thread_name, line_str in matches:
+            reported_lines[thread_name] = int(line_str)
+
+        # Note: The line numbers in the output will be for the temporary file,
+        # but the structure should be the same as the original.
+        # We verify the line numbers point to actual wait()/reserve() calls by
+        # checking the temporary file content at those lines.
+        with open(tmp_path) as f:
+            tmp_lines = f.readlines()
+
+        # Check compute thread line points to y_cb.wait()
+        if "compute" in reported_lines:
+            compute_line = reported_lines["compute"]
+            # Line numbers are 1-indexed
+            assert compute_line <= len(tmp_lines), f"Line {compute_line} out of range"
+            line_content = tmp_lines[compute_line - 1]
+            assert (
+                "y_cb.wait()" in line_content
+            ), f"Expected y_cb.wait() at line {compute_line} but got: {line_content.strip()}"
+
+        # Check dm0 thread line points to reserve()
+        if "dm0" in reported_lines:
+            dm0_line = reported_lines["dm0"]
+            assert dm0_line <= len(tmp_lines), f"Line {dm0_line} out of range"
+            line_content = tmp_lines[dm0_line - 1]
+            assert (
+                "reserve()" in line_content
+            ), f"Expected reserve() at line {dm0_line} but got: {line_content.strip()}"
+
+        # Check dm1 thread line points to y_cb.wait()
+        if "dm1" in reported_lines:
+            dm1_line = reported_lines["dm1"]
+            assert dm1_line <= len(tmp_lines), f"Line {dm1_line} out of range"
+            line_content = tmp_lines[dm1_line - 1]
+            assert (
+                "y_cb.wait()" in line_content
+            ), f"Expected y_cb.wait() at line {dm1_line} but got: {line_content.strip()}"
+
+    finally:
+        # Clean up temporary file
+        tmp_path.unlink()
