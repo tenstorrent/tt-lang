@@ -657,8 +657,20 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   return success();
 }
 
-// Semaphore index reserved for pipe synchronization.
-constexpr int64_t kPipeSemaphoreIndex = 0;
+/// Compute semaphore index for a pipe based on source coordinates.
+/// For point-to-point pipes (gather pattern), each source uses a distinct
+/// semaphore to avoid race conditions when multiple sources signal the same
+/// destination. For multicast pipes, all destinations share semaphore 0.
+static int64_t getPipeSemaphoreIndex(PipeType pipeType) {
+  if (pipeType.isUnicast()) {
+    // Point-to-point: use source X coordinate as semaphore index.
+    // This ensures each source->dest pipe has a unique semaphore.
+    // Note: For 2D grids, this should be srcX * gridHeight + srcY.
+    return pipeType.getSrcX();
+  }
+  // Multicast: all destinations use semaphore 0.
+  return 0;
+}
 
 /// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
 /// The destination cores receive data at the same L1 address as their local CB.
@@ -766,31 +778,44 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         }
       });
 
-  // Signal destinations that data has arrived via semaphore multicast.
-  auto semIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, kPipeSemaphoreIndex);
+  // Signal destinations that data has arrived.
+  // For point-to-point pipes, use atomic increment to support gather pattern
+  // (multiple sources to one destination). For multicast, use set+multicast.
+  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
+  auto semIdx = rewriter.create<arith::ConstantIndexOp>(loc, semIdxVal);
   auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
-  auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
-  auto validVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
-  // Set local semaphore to valid value (this is what gets multicast)
-  rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, validVal);
+  if (pipeType.isUnicast()) {
+    // Point-to-point: atomically increment destination's semaphore.
+    // This supports gather patterns where multiple sources signal one dest.
+    auto incrVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
-  // Multicast semaphore to destination cores
-  auto semMcastAddr = rewriter.create<ttk::GetNocMulticastAddrOp>(
-      loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
-      /*noc=*/Value());
+    // Get NOC address of destination's semaphore for atomic increment.
+    auto dstSemNocAddr =
+        rewriter.create<ttk::GetNocAddrOp>(loc, dstStartXVal, dstStartYVal, semAddr);
 
-  if (pipeType.srcInDstRange()) {
-    // Loopback version requires explicit BoolAttr values (not optional).
-    auto falseBoolAttr = rewriter.getBoolAttr(false);
-    rewriter.create<ttk::NocSemaphoreSetMulticastLoopbackOp>(
-        loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-        /*linked=*/falseBoolAttr, /*multicast_path_reserve=*/falseBoolAttr);
+    rewriter.create<ttk::NocSemaphoreIncOp>(loc, dstSemNocAddr.getResult(),
+                                            incrVal, /*noc_id=*/Value());
   } else {
-    rewriter.create<ttk::NocSemaphoreSetMulticastOp>(
-        loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-        /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+    // Multicast: set local semaphore and multicast to all destinations.
+    auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
+    auto validVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, validVal);
+
+    auto semMcastAddr = rewriter.create<ttk::GetNocMulticastAddrOp>(
+        loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
+        /*noc=*/Value());
+
+    if (pipeType.srcInDstRange()) {
+      auto falseBoolAttr = rewriter.getBoolAttr(false);
+      rewriter.create<ttk::NocSemaphoreSetMulticastLoopbackOp>(
+          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+          /*linked=*/falseBoolAttr, /*multicast_path_reserve=*/falseBoolAttr);
+    } else {
+      rewriter.create<ttk::NocSemaphoreSetMulticastOp>(
+          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+    }
   }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
@@ -798,21 +823,25 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 }
 
 /// Lower Pipe -> CB copy: destination side of pipe transfer.
-/// At the destination, data arrives via multicast from source core.
+/// At the destination, data arrives via multicast/unicast from source core.
 /// Waits for semaphore signal from source before proceeding.
 static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                                    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
+  auto pipeType = llvm::cast<PipeType>(pipe.getType());
 
-  // Wait for source to signal data arrival via semaphore.
-  auto semIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, kPipeSemaphoreIndex);
+  // Use semaphore index derived from pipe's source coordinates.
+  // This ensures each source->dest pipe has a unique semaphore.
+  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
+  auto semIdx = rewriter.create<arith::ConstantIndexOp>(loc, semIdxVal);
   auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
   auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
-  auto validVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
-  // Wait until semaphore is set to valid by source's multicast
-  rewriter.create<ttk::NocSemaphoreWaitOp>(loc, semPtr, validVal);
+  // Wait for semaphore to reach at least 1.
+  // For point-to-point, source uses atomic inc; for multicast, source uses set.
+  auto oneVal = rewriter.create<arith::ConstantOp>(
+      loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
+  rewriter.create<ttk::NocSemaphoreWaitMinOp>(loc, semPtr, oneVal);
 
   // Reset semaphore for next use
   auto zeroVal = rewriter.create<arith::ConstantIndexOp>(loc, 0);
