@@ -66,5 +66,10 @@ def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Enum attribute wrappers
+//===----------------------------------------------------------------------===//
+
+def TTL_BcastTypeAttr : EnumAttr<TTL_Dialect, TTL_BcastType, "bcast_type">;
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

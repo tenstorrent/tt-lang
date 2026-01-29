@@ -61,6 +61,11 @@ template <typename ConcreteType>
 class TTLTileBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileBinaryOpTrait> {};
 
+/// Trait for tile-level operations that read from CB rather than DST.
+template <typename ConcreteType>
+class TTLCBInputTileOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBInputTileOpTrait> {};
+
 //===----------------------------------------------------------------------===//
 // CB Index Attribute Helpers
 //===----------------------------------------------------------------------===//

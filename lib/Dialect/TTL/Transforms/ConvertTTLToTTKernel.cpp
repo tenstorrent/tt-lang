@@ -350,20 +350,20 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    // Trace from the view back to the CB.
     auto cb = getCBFromView(adaptor.getView());
     if (failed(cb)) {
       return rewriter.notifyMatchFailure(
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // Get the DST index from the tile value's dst_idx attribute.
-    // The DST assignment pass (ttl-assign-dst) should run before this
-    // pass and annotates tile-producing operations with DST register indices.
-    // If the attribute is missing, we default to DST index 0.
-    auto tileValue = adaptor.getTile();
-    Value dstIndex;
+    auto cbTileIndex =
+        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
 
+    // Determine DST index based on the source operation type:
+    // - DST-to-DST ops (binary ops): have dst_idx attribute
+    // - CB-reading ops (bcast, reduce): no dst_idx attribute, use loop index
+    Value dstIndex;
+    auto tileValue = adaptor.getTile();
     if (auto defOp = tileValue.getDefiningOp()) {
       if (auto dstIdxAttr =
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
@@ -372,15 +372,10 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       }
     }
 
-    // Default to DST index 0 if no attribute is found.
-    // This can happen in unit tests or if DST assignment hasn't run.
     if (!dstIndex) {
-      dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      dstIndex = cbTileIndex;
     }
 
-    // Compute CB tile index from innermost 2 loops (CB is always 2D).
-    auto cbTileIndex =
-        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
