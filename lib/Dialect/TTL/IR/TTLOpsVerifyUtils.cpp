@@ -316,7 +316,8 @@ static bool isDerivedFromCopy(mlir::Value v,
 mlir::LogicalResult isEventuallyWaitedOn(mlir::Operation *op,
                                          mlir::Value handle) {
   // Accept any TransferHandleType (typed or untyped).
-  // Typed handles get barriers, untyped handles (e.g., pipe receive) are no-ops.
+  // Typed handles get barriers, untyped handles (e.g., pipe receive) are
+  // no-ops.
   if (!mlir::isa<mlir::tt::ttl::TransferHandleType>(handle.getType())) {
     return op->emitOpError()
            << "expects transfer handle (!ttl.transfer_handle), got "
