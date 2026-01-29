@@ -649,7 +649,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [MemoryEffects<[MemRead]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [MemoryEffects<[MemRead, MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
@@ -721,6 +721,32 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
   );
   let assemblyFormat = "$tile `,` $view attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;
+}
+
+def TTL_TensorStoreOp : TTL_Op<"tensor_store", []> {
+  let summary = "Mark a tensor result for storage to a circular buffer";
+  let description = [{
+    `ttl.tensor_store` marks that a tensor result from an elementwise operation
+    should be stored to the specified circular buffer. This is a high-level
+    operation that gets lowered to `ttl.cb_reserve` + `ttl.store` inside the
+    compute body by the `convert-ttl-to-compute` pass.
+
+    This op is emitted by the Python DSL when the user calls `view.store(result)`.
+    It indicates the user's explicit intent to store the result, as opposed to
+    just attaching a CB association.
+
+    Example:
+    ```mlir
+    %result = ttl.add %a, %b : tensor<2x2x!ttcore.tile<32x32, bf16>>, ...
+    ttl.tensor_store %result, %cb : tensor<2x2x!ttcore.tile<32x32, bf16>>,
+                                    !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$tensor,
+    TTL_CircularBuffer:$cb
+  );
+  let assemblyFormat = "$tensor `,` $cb attr-dict `:` type($tensor) `,` type($cb)";
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

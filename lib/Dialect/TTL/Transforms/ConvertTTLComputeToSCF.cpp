@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -239,6 +240,49 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     if (processingFailed) {
       return rewriter.notifyMatchFailure(
           op, "copy_tile index computation failed (mismatched rank/IVs)");
+    }
+
+    // Mark loops for later sync insertion passes.
+    // - kTileLoopAttrName on innermost: DST register sync ops inserted here
+    // - kTileLoopOuterAttrName on outermost: identifies compute boundary for
+    //   inter-loop CB sync (prevents confusion with user loops)
+    if (!loopNest.loops.empty()) {
+      scf::ForOp outermostLoop = loopNest.loops.front();
+      scf::ForOp innermostLoop = loopNest.loops.back();
+
+      // Mark outermost loop (may be same as innermost for 1D iteration).
+      outermostLoop->setAttr(kTileLoopOuterAttrName, rewriter.getUnitAttr());
+      innermostLoop->setAttr(kTileLoopAttrName, rewriter.getUnitAttr());
+
+      // Collect all input CB indices for init_sfpu placement.
+      SmallVector<int64_t> inputCBs;
+      for (Value input : op.getInputs()) {
+        Value cb = getAttachedCB(input);
+        if (cb) {
+          if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+            inputCBs.push_back(bindOp.getCbIndex().getSExtValue());
+          }
+        }
+      }
+      if (!inputCBs.empty()) {
+        innermostLoop->setAttr(kTileLoopInputCBsAttrName,
+                               rewriter.getI64ArrayAttr(inputCBs));
+      }
+
+      // Collect all output CB indices for stores and inter-loop sync.
+      SmallVector<int64_t> outputCBs;
+      for (Value output : op.getOutputs()) {
+        Value cb = getAttachedCB(output);
+        if (cb) {
+          if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+            outputCBs.push_back(bindOp.getCbIndex().getSExtValue());
+          }
+        }
+      }
+      if (!outputCBs.empty()) {
+        innermostLoop->setAttr(kTileLoopOutputCBsAttrName,
+                               rewriter.getI64ArrayAttr(outputCBs));
+      }
     }
 
     rewriter.replaceOp(op, loopNest.results);

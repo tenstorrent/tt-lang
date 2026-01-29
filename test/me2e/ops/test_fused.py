@@ -180,6 +180,7 @@ func.func @compute_exp_add() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta
   // Fused: add then exp.
   %sum = ttl.add %a_attached, %b_attached : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
   %result = ttl.exp %sum : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  ttl.tensor_store %result, %cb_out : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
   %result_attached = ttl.attach_cb %result, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Push output, pop inputs.
@@ -257,6 +258,7 @@ func.func @compute_relu_mul() attributes {{ttl.base_cta_index = 3 : i32, ttl.crt
   // Fused: mul then relu.
   %prod = ttl.mul %a_attached, %b_attached : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
   %result = ttl.relu %prod : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  ttl.tensor_store %result, %cb_out : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
   %result_attached = ttl.attach_cb %result, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Push output, pop inputs.
@@ -332,6 +334,7 @@ func.func @compute_sqrt_abs() attributes {{ttl.base_cta_index = 2 : i32, ttl.crt
   // Fused: abs then sqrt.
   %abs_result = ttl.abs %a_attached : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
   %result = ttl.sqrt %abs_result : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  ttl.tensor_store %result, %cb_out : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
   %result_attached = ttl.attach_cb %result, %cb_out : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Push output, pop input.

@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-insert-tile-regs-sync, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
@@ -22,13 +22,13 @@
 // CHECK:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
 // CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
 
+// --- DST register lifecycle (acquire at start of loop body) ---
+// CHECK-NEXT:      tile_regs_acquire();
+
 // --- Compute linear tile index: i * cols + j ---
 // CHECK:           size_t [[COL_SIZE:.*]] = 2;
 // CHECK-NEXT:      size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
 // CHECK-NEXT:      size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
-
-// --- DST register lifecycle (acquire inside loop) ---
-// CHECK-NEXT:      tile_regs_acquire();
 
 // --- Load tile from CB0 (input A) into DST[0] ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));

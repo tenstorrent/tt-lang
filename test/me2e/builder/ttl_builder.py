@@ -147,6 +147,9 @@ def build_ttl_module(
                 else:
                     raise ValueError(f"Unsupported arity: {arity}")
 
+                # Emit explicit tensor_store to mark the result for storage.
+                ttl.tensor_store(result, output_cb, loc=loc)
+
                 func.ReturnOp([result], loc=loc)
 
         module.operation.verify()

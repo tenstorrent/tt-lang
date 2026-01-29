@@ -30,7 +30,23 @@ class TTLTileOpTrait
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 
-/// Runtime configuration attributes
+/// Loop marker attribute names (used by loop lowering and sync insertion).
+/// The tile_loop attribute marks loops from ComputeOp lowering that need sync.
+/// The CB index attributes store which CBs are used for init_sfpu and stores.
+inline constexpr llvm::StringRef kTileLoopAttrName = "ttl.tile_loop";
+
+/// TODO: Remove kTileLoopOuterAttrName once loop flattening is
+/// implemented. With flattened loops, there will only be one loop per compute,
+/// making the outer marker unnecessary.
+inline constexpr llvm::StringRef kTileLoopOuterAttrName = "ttl.tile_loop.outer";
+/// Input CB indices (ArrayAttr of I64IntegerAttr).
+inline constexpr llvm::StringRef kTileLoopInputCBsAttrName =
+    "ttl.tile_loop.input_cbs";
+/// Output CB indices (ArrayAttr of I64IntegerAttr).
+inline constexpr llvm::StringRef kTileLoopOutputCBsAttrName =
+    "ttl.tile_loop.output_cbs";
+
+/// Compute kernel configuration attributes.
 inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";
 inline constexpr llvm::StringRef kDstFullSyncEnAttrName = "dst_full_sync_en";
 
