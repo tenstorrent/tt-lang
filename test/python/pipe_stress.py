@@ -17,12 +17,12 @@ Grid layout (8x8):
   All 64 cores are destinations
 """
 
-import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
 import ttnn
 import ttl
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 @ttl.kernel(grid=(8, 8))
@@ -38,7 +38,7 @@ def pipe_stress(inp, out):
     def compute():
         with inp_cb.wait() as tile_in:
             with out_cb.reserve() as tile_out:
-                tile_out.store(tile_in)
+                tile_out.store(ttl.math.abs(tile_in))
 
     @ttl.datamovement()
     def dm_read():
@@ -82,10 +82,9 @@ def pipe_stress(inp, out):
 
 if __name__ == "__main__":
     import torch
-    from ttlang_test_utils import require_hardware
+    from ttlang_test_utils import require_hardware, to_dram, assert_allclose
 
-    print("=== Pipe Stress Test (8x8 Grid) ===")
-    require_hardware()
+    compile_only = os.environ.get("TTLANG_COMPILE_ONLY") == "1"
 
     device = ttnn.open_device(device_id=0)
 
@@ -94,25 +93,24 @@ if __name__ == "__main__":
         inp_torch = torch.full((256, 256), 42.0, dtype=torch.bfloat16)
         out_torch = torch.zeros((256, 256), dtype=torch.bfloat16)
 
-        inp = ttnn.from_torch(
-            inp_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        out = ttnn.from_torch(
-            out_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        inp = to_dram(inp_torch, device)
+        out = to_dram(out_torch, device)
 
-        print("Running pipe stress kernel (8x8 broadcast)...")
-        pipe_stress(inp, out)
+        if compile_only:
+            pipe_stress(inp, out)
+        else:
+            print("=== Pipe Stress Test (8x8 Grid) ===")
+            require_hardware()
 
-        print("=== Pipe Stress Test Complete ===")
+            pipe_stress(inp, out)
+
+            out_result = ttnn.to_torch(out)
+            print(f"Output tensor: {out_result[0,:5]}")
+            # All 64 cores receive value 42 from source (0,0)
+            expected = torch.full((256, 256), 42.0, dtype=torch.bfloat16)
+            assert_allclose(out_result, expected)
+
+            print("=== Pipe Stress Test Complete ===")
 
     finally:
         ttnn.close_device(device)
