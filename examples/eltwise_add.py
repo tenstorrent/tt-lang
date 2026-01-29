@@ -10,7 +10,7 @@ from sim.testing import assert_pcc
 
 
 @ttl.kernel(
-    grid="auto",  # NOTE: allow compiler to choose grid
+    grid="auto",
 )
 def eltwise_add(
     a_in: ttnn.Tensor,
@@ -118,9 +118,6 @@ def eltwise_add(
                 # TODO: What if another thread writes to the same positions this Block points to?
                 # out_block[0] # using pointer on stale data should fail
                 # out_cb.pop() # double pop should fail
-
-    # Execute the program across all cores
-    ttl.Program(compute_func, dm0, dm1)(a_in, b_in, out)
 
 
 def main() -> None:

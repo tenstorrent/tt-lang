@@ -12,11 +12,6 @@ Simple add kernel with float32 data type.
 Tests that float32 tensors are properly handled through the layout derivation
 path (TTNNLayoutAttr -> page size calculation).
 """
-
-import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
 import ttl
 
 try:
@@ -26,7 +21,11 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.kernel(
+    grid=(1, 1),
+    fp32_dest_acc_en=True,
+    dst_full_sync_en=False,
+)
 def add_kernel_f32(lhs, rhs, out):
     lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
@@ -53,8 +52,6 @@ def add_kernel_f32(lhs, rhs, out):
         with out_cb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
-
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 
 
 # =============================================================================
@@ -85,9 +82,14 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        lhs_torch = torch.full((32, 32), 2.0, dtype=torch.float32)
-        rhs_torch = torch.full((32, 32), 3.0, dtype=torch.float32)
+        # Use random inputs for more thorough testing
+        torch.manual_seed(42)
+        lhs_torch = torch.rand((32, 32), dtype=torch.float32)
+        rhs_torch = torch.rand((32, 32), dtype=torch.float32)
         out_torch = torch.zeros((32, 32), dtype=torch.float32)
+
+        # Compute expected result
+        expected = lhs_torch + rhs_torch
 
         lhs = ttnn.from_torch(
             lhs_torch,
@@ -115,8 +117,19 @@ if __name__ == "__main__":
         rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        print("Compiling float32 add kernel...")
+        print("Compiling and executing float32 add kernel...")
         add_kernel_f32(lhs, rhs, out)
+
+        # Validate result
+        result = ttnn.to_torch(out)
+
+        print(f"Input A sample: {lhs_torch[0, :5]}")
+        print(f"Input B sample: {rhs_torch[0, :5]}")
+        print(f"Result sample:  {result[0, :5]}")
+        print(f"Expected:       {expected[0, :5]}")
+
+        torch.allclose(result, expected, rtol=1e-06, atol=1e-10)
+        print("✓ Results match expected values ({rtol=1e-06, atol=1e-10})")
 
         print("=== Float32 Add Kernel Test Complete ===")
 

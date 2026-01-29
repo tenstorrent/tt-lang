@@ -1,4 +1,4 @@
-# Test configuration
+# Lit Test configuration
 
 # Check for Tenstorrent device at configure time (must be before configure_lit_site_cfg)
 ttlang_check_device_available(TTLANG_HAS_DEVICE)
@@ -21,12 +21,7 @@ configure_lit_site_cfg(
   CMAKE_CURRENT_SOURCE_DIR
 )
 
-# Generate test config file with device availability
-configure_file(
-  ${CMAKE_CURRENT_SOURCE_DIR}/python/test_config.py.in
-  ${CMAKE_CURRENT_BINARY_DIR}/python/test_config.py
-  @ONLY
-)
+
 
 set(TTLANG_TEST_DEPENDS
   ttlang-opt
@@ -37,6 +32,7 @@ set(TTLANG_TEST_DEPENDS
 set(TTLANG_LIT_COMMON_ARGS
   --verbose
 )
+
 if(DEFINED ENV{TTLANG_CMAKE_DEBUG})
   list(APPEND TTLANG_LIT_COMMON_ARGS --show-all --no-progress-bar)
 endif()
@@ -45,10 +41,10 @@ endif()
 # built before running the full suite (and python-only suites), so imports of
 # `ttlang._mlir_libs._ttlang` do not spuriously fail.
 set(TTLANG_PYTHON_TEST_DEPENDS ${TTLANG_TEST_DEPENDS})
+
 if(TARGET TTLangPythonModules)
   list(APPEND TTLANG_PYTHON_TEST_DEPENDS TTLangPythonModules)
 endif()
-
 
 # MLIR tests only (no TT device required).
 add_lit_testsuite(check-ttlang-mlir "Running ttlang MLIR tests"
@@ -81,7 +77,7 @@ add_custom_target(check-ttlang
   COMMENT "Running ttlang lit tests that never require a TT device"
 )
 
-# Pytest tests (test_*.py files).
+# Pytest tests (test/python/test_*.py files).
 add_custom_target(check-ttlang-pytest
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
@@ -94,6 +90,20 @@ add_custom_target(check-ttlang-pytest
 )
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
+# Middle end to end tests (test/me2e/).
+# Run 'cmake --build build --target install-dev-deps' if tests fail due to missing pytest-order.
+add_custom_target(check-ttlang-me2e
+  COMMAND ${Python3_EXECUTABLE} -m pytest
+    ${CMAKE_CURRENT_SOURCE_DIR}/me2e
+    -v --tb=short
+    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/me2e-report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  COMMENT "Running ttlang me2e tests"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/me2e
+  USES_TERMINAL
+)
+set_target_properties(check-ttlang-me2e PROPERTIES FOLDER "Tests")
+
 # All tests including those requiring TT device.
 # Uses sequential COMMAND invocations to ensure device-accessing tests
 # (python-lit and pytest) don't run concurrently and cause TLB allocation failures.
@@ -103,10 +113,12 @@ add_custom_target(check-ttlang-all
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-mlir
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-bindings ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-bindings
-  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-lit ==="
-  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-lit
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-me2e ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-me2e
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-pytest ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-pytest
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-lit ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-lit
   COMMAND ${CMAKE_COMMAND} -E echo "=== All ttlang tests completed ==="
   USES_TERMINAL
   COMMENT "Running all ttlang tests sequentially"

@@ -83,6 +83,22 @@ add_custom_command(
 
 add_custom_target(TTLangGeneratedElementwise DEPENDS ${GENERATED_ELEMENTWISE_PY})
 
+# Check for Tenstorrent device at configure time
+ttlang_check_device_available(TTLANG_HAS_DEVICE)
+
+if(TTLANG_HAS_DEVICE)
+  set(TTLANG_HAS_DEVICE_INT 1)
+else()
+  set(TTLANG_HAS_DEVICE_INT 0)
+endif()
+
+# Python config file for various CMake-computed settings, e.g., device availability
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/ttl/config.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/ttl/config.py
+  @ONLY
+)
+
 # ###############################################################################
 # Additional custom python code we want to bundle in the package
 # ###############################################################################
@@ -96,6 +112,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     circular_buffer.py
     constants.py
     diagnostics.py
+    kernel_runner.py
     ttl.py
     ttl_api.py
     ttl_math.py
@@ -106,12 +123,13 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     operators.py
 )
 
-# Add generated elementwise ops file
+# Add generated elementwise ops file and config file
 declare_mlir_python_sources(TTLangPythonCommon.Generated
   ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ttl"
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _generated_elementwise.py
+    config.py
 )
 
 declare_mlir_python_sources(TTLangPythonCommon.Src
@@ -119,6 +137,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
+    _src/auto_profile.py
     _src/ttl_ast.py
     _src/tensor_registry.py
 )

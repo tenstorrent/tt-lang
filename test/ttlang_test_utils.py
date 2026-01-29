@@ -3,54 +3,94 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Common test utilities for tt-lang Python tests.
+Shared test utilities for tt-lang test suite.
 
-Provides consistent TTNN import handling, device availability checking,
-and tensor creation helpers. When no hardware is available,
-TTLANG_COMPILE_ONLY is set automatically.
+Provides unified feature detection (ttnn availability, hardware detection),
+tensor creation helpers, and comparison utilities. Used across pytest conftest
+files, lit configuration, and test scripts.
 
-Device availability is determined at CMake configure time by checking for
+Device availability is determined by checking environment variables and
 /dev/tenstorrent* files, avoiding the slow ttnn.GetNumAvailableDevices() call.
 """
 
+import glob
+import importlib.util
 import os
 import sys
 
-# Check device availability from CMake-generated config (fast path)
-# Falls back to checking environment if config not available
+# =============================================================================
+# Feature detection
+# =============================================================================
+
+# Check device availability: env vars first (for simulator), then CMake config.
 _hardware_available = False
 
-try:
-    # Try to import CMake-generated config first (fast - no ttnn import needed)
-    from test_config import HAS_TT_DEVICE
+if os.environ.get("TT_METAL_SIMULATOR"):
+    _hardware_available = True
+elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+    _hardware_available = True
+else:
+    try:
+        from ttl.config import HAS_TT_DEVICE
 
-    _hardware_available = HAS_TT_DEVICE
-except ImportError:
-    # Config not available (running outside build dir) - check env or device files
-    import glob
+        _hardware_available = HAS_TT_DEVICE
+    except ImportError:
+        _hardware_available = bool(glob.glob("/dev/tenstorrent*"))
 
-    if os.environ.get("TT_METAL_SIMULATOR"):
-        _hardware_available = True
-    elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
-        _hardware_available = True
-    elif glob.glob("/dev/tenstorrent*"):
-        _hardware_available = True
-
-# Set compile-only mode if no hardware
+# Set compile-only mode if no hardware.
 if not _hardware_available:
     os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-# Try to import TTNN
-ttnn = None
+# Check if TTNN is available (lightweight check without importing).
 _ttnn_available = False
-
 try:
-    import ttnn as _ttnn
-
-    ttnn = _ttnn
-    _ttnn_available = True
-except ImportError:
+    _ttnn_available = importlib.util.find_spec("ttnn") is not None
+except Exception:
     pass
+
+ttnn = None  # Lazy import - loaded when first needed
+
+
+def _get_ttnn():
+    """Lazy import of ttnn module."""
+    global ttnn, _ttnn_available
+    if ttnn is None and _ttnn_available:
+        try:
+            import ttnn as _ttnn
+
+            ttnn = _ttnn
+        except (ImportError, ModuleNotFoundError):
+            _ttnn_available = False
+            ttnn = None
+    return ttnn
+
+
+def is_ttnn_available() -> bool:
+    """
+    Check if ttnn module is available without importing it.
+
+    Uses importlib.util.find_spec for lightweight detection that avoids
+    the overhead of actually importing ttnn (which can be slow).
+
+    Returns:
+        True if ttnn can be imported, False otherwise.
+    """
+    return _ttnn_available
+
+
+def is_hardware_available() -> bool:
+    """
+    Check if Tenstorrent hardware is available.
+
+    Checks in order:
+    1. TT_METAL_SIMULATOR environment variable (simulation mode)
+    2. TTLANG_HAS_DEVICE environment variable (set by CMake)
+    3. Physical device files (/dev/tenstorrent*)
+
+    Returns:
+        True if hardware or simulator is available, False otherwise.
+    """
+    return _hardware_available
 
 
 def require_ttnn():
@@ -58,16 +98,6 @@ def require_ttnn():
     if not _ttnn_available:
         print("TTNN not available - exiting")
         sys.exit(0)
-
-
-def is_hardware_available():
-    """Check if Tenstorrent hardware is available for running kernels."""
-    return _hardware_available
-
-
-def is_ttnn_available():
-    """Check if TTNN library is available."""
-    return _ttnn_available
 
 
 def require_hardware(message: str = "Skipping test - no hardware available"):
@@ -99,7 +129,8 @@ def to_dram(torch_tensor, device):
     Returns:
         TTNN tensor in DRAM with TILE_LAYOUT
     """
-    if not _ttnn_available:
+    ttnn = _get_ttnn()
+    if ttnn is None:
         raise RuntimeError("TTNN not available")
     return ttnn.from_torch(
         torch_tensor,
@@ -122,7 +153,8 @@ def to_l1(torch_tensor, device):
     Returns:
         TTNN tensor in L1 with TILE_LAYOUT
     """
-    if not _ttnn_available:
+    ttnn = _get_ttnn()
+    if ttnn is None:
         raise RuntimeError("TTNN not available")
     dram_tensor = ttnn.from_torch(
         torch_tensor,
@@ -155,9 +187,9 @@ def assert_pcc(golden, actual, threshold=0.99):
     golden_flat = golden.flatten().float()
     actual_flat = actual.flatten().float()
 
-    # Handle constant tensors (no variance)
+    # Handle constant tensors (no variance).
     if golden_flat.std() == 0 and actual_flat.std() == 0:
-        # Both constant - check if same constant
+        # Both constant - check if same constant.
         if torch.allclose(golden_flat, actual_flat):
             return 1.0
         else:
@@ -172,7 +204,7 @@ def assert_pcc(golden, actual, threshold=0.99):
             f"(golden std={golden_flat.std()}, actual std={actual_flat.std()})"
         )
 
-    # Compute Pearson correlation
+    # Compute Pearson correlation.
     golden_centered = golden_flat - golden_flat.mean()
     actual_centered = actual_flat - actual_flat.mean()
 
@@ -217,7 +249,7 @@ def assert_allclose(actual, expected, rtol=1e-5, atol=1e-8, verbose=True):
         )
 
         if verbose:
-            # Find location of max difference
+            # Find location of max difference.
             max_idx = diff.argmax().item()
             actual_val = actual.flatten()[max_idx].item()
             expected_val = expected.flatten()[max_idx].item()
@@ -227,3 +259,15 @@ def assert_allclose(actual, expected, rtol=1e-5, atol=1e-8, verbose=True):
             )
 
         raise AssertionError(msg)
+
+
+__all__ = [
+    "is_ttnn_available",
+    "is_hardware_available",
+    "require_ttnn",
+    "require_hardware",
+    "to_dram",
+    "to_l1",
+    "assert_pcc",
+    "assert_allclose",
+]

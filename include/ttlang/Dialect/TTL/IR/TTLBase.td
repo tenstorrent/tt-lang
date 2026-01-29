@@ -70,5 +70,6 @@ def TTL_BinaryElementwiseOpTrait : TTL_Trait<"TTLBinaryElementwiseOpTrait", []>;
 def TTL_TileUnaryOpTrait : TTL_Trait<"TTLTileUnaryOpTrait", []>;
 def TTL_TileBinaryOpTrait : TTL_Trait<"TTLTileBinaryOpTrait", []>;
 def TTL_FPUElementwiseOpTrait : TTL_Trait<"TTLFPUElementwiseOpTrait", []>;
+def TTL_CBInputTileOpTrait : TTL_Trait<"TTLCBInputTileOpTrait", []>;
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLBASE_TD

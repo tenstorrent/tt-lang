@@ -38,6 +38,10 @@ inline constexpr llvm::StringRef kExecutionTargetFPU = "fpu";
 inline constexpr llvm::StringRef kExecutionTargetDestReuse = "dest_reuse";
 inline constexpr llvm::StringRef kExecutionTargetSFPU = "sfpu";
 
+/// Runtime configuration attributes
+inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";
+inline constexpr llvm::StringRef kDstFullSyncEnAttrName = "dst_full_sync_en";
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait
@@ -71,6 +75,11 @@ template <typename ConcreteType>
 class TTLFPUElementwiseOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLFPUElementwiseOpTrait> {
 };
+
+/// Trait for tile-level operations that read from CB rather than DST.
+template <typename ConcreteType>
+class TTLCBInputTileOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBInputTileOpTrait> {};
 
 //===----------------------------------------------------------------------===//
 // CB Index Attribute Helpers

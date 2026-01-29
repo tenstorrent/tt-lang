@@ -9,12 +9,29 @@ enabling data transfer operations between tensors and Blocks in the
 CircularBuffer system.
 """
 
+from typing import Any
+
+from .block import Block
 from .copyhandlers import (
-    CopyEndpoint,
     CopyEndpointType,
     CopyTransferHandler,
     handler_registry,
 )
+
+
+def _extract_block(obj: Any) -> Any:
+    """Extract the underlying Block from a context manager if applicable.
+
+    Args:
+        obj: Object that may be a Block or a context manager containing a Block
+
+    Returns:
+        The underlying Block if obj is a context manager, otherwise obj unchanged
+    """
+    # Check if object has a block() method (ReserveContext/WaitContext)
+    if hasattr(obj, "block") and callable(obj.block):
+        return obj.block()
+    return obj
 
 
 class CopyTransaction:
@@ -32,8 +49,8 @@ class CopyTransaction:
 
     def __init__(
         self,
-        src: CopyEndpoint,
-        dst: CopyEndpoint,
+        src: Any,
+        dst: Any,
     ):
         """
         Initialize a copy transaction from src to dst.
@@ -49,9 +66,20 @@ class CopyTransaction:
         self._dst = dst
         self._completed = False
 
+        # Extract underlying Blocks from context managers if needed
+        src_block = _extract_block(src)
+        dst_block = _extract_block(dst)
+
         # Lookup and store the handler for this type combination
         handler = self._lookup_handler(type(src), type(dst))
         self._handler = handler
+
+        # Mark blocks in state machine BEFORE validation - this transitions them to appropriate states
+        # that prevent user access during the copy operation
+        if isinstance(src_block, Block):
+            src_block.mark_copy_as_source()
+        if isinstance(dst_block, Block):
+            dst_block.mark_copy_as_dest()
 
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
@@ -95,9 +123,19 @@ class CopyTransaction:
         if self._completed:
             return
 
+        # Extract underlying Blocks from context managers if needed
+        src_block = _extract_block(self._src)
+        dst_block = _extract_block(self._dst)
+
         # Transfer - let exceptions propagate to scheduler for context
         self._handler.transfer(self._src, self._dst)
         self._completed = True
+
+        # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states
+        if isinstance(src_block, Block):
+            src_block.mark_tx_wait_complete()
+        if isinstance(dst_block, Block):
+            dst_block.mark_tx_wait_complete()
 
     def can_wait(self) -> bool:
         """
@@ -120,8 +158,8 @@ class CopyTransaction:
 
 
 def copy(
-    src: CopyEndpoint,
-    dst: CopyEndpoint,
+    src: Any,
+    dst: Any,
 ) -> CopyTransaction:
     """
     Create a copy transaction from source to destination.

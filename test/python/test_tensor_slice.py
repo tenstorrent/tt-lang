@@ -16,10 +16,11 @@ import tempfile
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from conftest import temp_kernel_files
+from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
 
@@ -69,7 +70,6 @@ def tile_loop_kernel(inp, bias, out):
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 FUSED_KERNEL_TEMPLATE = '''
@@ -109,7 +109,6 @@ def fused_kernel(inp, bias, out):
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(inp, bias, out)
 '''
 
 _add_kernel_cache = {}
@@ -136,6 +135,7 @@ def make_add_kernel(tile_rows: int, tile_cols: int):
     spec = importlib.util.spec_from_file_location("add_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     kernel = module.tile_loop_kernel
     _add_kernel_cache[cache_key] = kernel
@@ -162,6 +162,7 @@ def make_fused_kernel(tile_rows: int, tile_cols: int):
     spec = importlib.util.spec_from_file_location("fused_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     kernel = module.fused_kernel
     _fused_kernel_cache[cache_key] = kernel

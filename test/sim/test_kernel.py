@@ -5,6 +5,7 @@
 Tests for kernel.py module (kernel decorator, grid_size, etc.).
 """
 
+import torch
 from typing import cast
 
 import pytest
@@ -21,12 +22,23 @@ class TestGridSize:
     def test_grid_size_in_kernel_2d(self):
         """Test grid_size returns correct dimensions in 2D grid."""
 
-        @ttl.kernel(grid=(4, 8), granularity=1)
+        @ttl.kernel(grid=(4, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
-            grid_h, grid_w = cast(Shape, ttl.grid_size(dims=2))
-            assert grid_h == 4
-            assert grid_w == 8
+
+            @ttl.compute()
+            def compute():
+                grid_h, grid_w = cast(Shape, ttl.grid_size(dims=2))
+                assert grid_h == 4
+                assert grid_w == 8
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
 
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
@@ -38,12 +50,23 @@ class TestGridSize:
     def test_grid_size_in_kernel_auto(self):
         """Test grid_size with auto grid (defaults to 8x8)."""
 
-        @ttl.kernel(grid="auto", granularity=1)
+        @ttl.kernel(grid="auto")
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
-            grid_h, grid_w = cast(Shape, ttl.grid_size(dims=2))
-            assert grid_h == 8
-            assert grid_w == 8
+
+            @ttl.compute()
+            def compute():
+                grid_h, grid_w = cast(Shape, ttl.grid_size(dims=2))
+                assert grid_h == 8
+                assert grid_w == 8
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
 
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
@@ -55,11 +78,22 @@ class TestGridSize:
     def test_grid_size_in_kernel_1d(self):
         """Test grid_size with 1D grid."""
 
-        @ttl.kernel(grid=(16,), granularity=1)
+        @ttl.kernel(grid=(16,))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
-            grid_size_val = ttl.grid_size(dims=1)
-            assert grid_size_val == 16
+
+            @ttl.compute()
+            def compute():
+                grid_size_val = ttl.grid_size(dims=1)
+                assert grid_size_val == 16
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
 
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
@@ -71,13 +105,24 @@ class TestGridSize:
     def test_grid_size_in_kernel_3d(self):
         """Test grid_size with 3D grid."""
 
-        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        @ttl.kernel(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
-            grid_d1, grid_d2, grid_d3 = cast(Shape, ttl.grid_size(dims=3))
-            assert grid_d1 == 2
-            assert grid_d2 == 3
-            assert grid_d3 == 4
+
+            @ttl.compute()
+            def compute():
+                grid_d1, grid_d2, grid_d3 = cast(Shape, ttl.grid_size(dims=3))
+                assert grid_d1 == 2
+                assert grid_d2 == 3
+                assert grid_d3 == 4
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
 
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
@@ -94,7 +139,7 @@ class TestGridSize:
     def test_grid_size_in_compute_function(self):
         """Test grid_size can be called from within compute/datamovement functions."""
 
-        @ttl.kernel(grid=(3, 5), granularity=1)
+        @ttl.kernel(grid=(3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -114,10 +159,6 @@ class TestGridSize:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
@@ -128,22 +169,33 @@ class TestGridSize:
     def test_grid_size_unpacking(self):
         """Test various ways to unpack grid_size result."""
 
-        @ttl.kernel(grid=(2, 3), granularity=1)
+        @ttl.kernel(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
-            # Unpack to individual variables
-            h, w = cast(Shape, ttl.grid_size(dims=2))
-            assert h == 2
-            assert w == 3
 
-            # Get as tuple
-            grid_dims = cast(Shape, ttl.grid_size(dims=2))
-            assert grid_dims == (2, 3)
-            assert len(grid_dims) == 2
+            @ttl.compute()
+            def compute():
+                # Unpack to individual variables
+                h, w = cast(Shape, ttl.grid_size(dims=2))
+                assert h == 2
+                assert w == 3
 
-            # Access by index
-            assert cast(Shape, ttl.grid_size(dims=2))[0] == 2
-            assert cast(Shape, ttl.grid_size(dims=2))[1] == 3
+                # Get as tuple
+                grid_dims = cast(Shape, ttl.grid_size(dims=2))
+                assert grid_dims == (2, 3)
+                assert len(grid_dims) == 2
+
+                # Access by index
+                assert cast(Shape, ttl.grid_size(dims=2))[0] == 2
+                assert cast(Shape, ttl.grid_size(dims=2))[1] == 3
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
 
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
@@ -155,19 +207,29 @@ class TestGridSize:
     def test_grid_size_in_nested_functions(self):
         """Test grid_size works in nested function calls within kernel."""
 
-        @ttl.kernel(grid=(6, 7), granularity=1)
+        @ttl.kernel(grid=(6, 7))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
-            def helper_function():
-                return cast(Shape, ttl.grid_size(dims=2))
+            @ttl.compute()
+            def compute():
+                def helper_function():
+                    return cast(Shape, ttl.grid_size(dims=2))
 
-            def another_helper():
-                h, w = helper_function()
-                return h * w
+                def another_helper():
+                    h, w = helper_function()
+                    return h * w
 
-            result = another_helper()
-            assert result == 42  # 6 * 7
+                result = another_helper()
+                assert result == 42  # 6 * 7
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
 
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
@@ -179,15 +241,26 @@ class TestGridSize:
     def test_grid_size_consistent_across_calls(self):
         """Test that grid_size returns consistent values across multiple calls."""
 
-        @ttl.kernel(grid=(5, 9), granularity=1)
+        @ttl.kernel(grid=(5, 9))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
-            grid1 = cast(Shape, ttl.grid_size(dims=2))
-            grid2 = cast(Shape, ttl.grid_size(dims=2))
-            grid3 = cast(Shape, ttl.grid_size(dims=2))
 
-            assert grid1 == grid2 == grid3
-            assert grid1 == (5, 9)
+            @ttl.compute()
+            def compute():
+                grid1 = cast(Shape, ttl.grid_size(dims=2))
+                grid2 = cast(Shape, ttl.grid_size(dims=2))
+                grid3 = cast(Shape, ttl.grid_size(dims=2))
+
+                assert grid1 == grid2 == grid3
+                assert grid1 == (5, 9)
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+            @ttl.datamovement()
+            def dm1():
+                pass
 
         # Create dummy tensors
         a = make_zeros_tensor(32, 32)
@@ -203,7 +276,7 @@ class TestCore:
     def test_core_1d_grid_dims_1(self):
         """Test core() returns single Index for 1D grid with dims=1."""
 
-        @ttl.kernel(grid=(8,), granularity=1)
+        @ttl.kernel(grid=(8,))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -222,10 +295,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -233,7 +302,7 @@ class TestCore:
     def test_core_2d_grid_dims_1(self):
         """Test core() with dims=1 on 2D grid returns flattened index."""
 
-        @ttl.kernel(grid=(2, 3), granularity=1)
+        @ttl.kernel(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -252,10 +321,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -263,7 +328,7 @@ class TestCore:
     def test_core_2d_grid_dims_2(self):
         """Test core() returns 2D coordinates for 2D grid with dims=2."""
 
-        @ttl.kernel(grid=(3, 4), granularity=1)
+        @ttl.kernel(grid=(3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -284,10 +349,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -295,7 +356,7 @@ class TestCore:
     def test_core_3d_grid_dims_1(self):
         """Test core() with dims=1 on 3D grid returns fully flattened index."""
 
-        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        @ttl.kernel(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -314,10 +375,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -325,7 +382,7 @@ class TestCore:
     def test_core_3d_grid_dims_2_flattens_first_dimension(self):
         """Test core() with dims=2 on 3D grid flattens first two dimensions."""
 
-        @ttl.kernel(grid=(2, 3, 5), granularity=1)
+        @ttl.kernel(grid=(2, 3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -348,10 +405,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -359,7 +412,7 @@ class TestCore:
     def test_core_3d_grid_dims_3(self):
         """Test core() returns 3D coordinates for 3D grid with dims=3."""
 
-        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        @ttl.kernel(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -381,10 +434,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -392,7 +441,7 @@ class TestCore:
     def test_core_2d_grid_dims_3_pads_with_zeros(self):
         """Test core() pads with zeros when dims > grid dimensions."""
 
-        @ttl.kernel(grid=(2, 3), granularity=1)
+        @ttl.kernel(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -414,10 +463,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -425,7 +470,7 @@ class TestCore:
     def test_core_default_dims_is_2(self):
         """Test that core() defaults to dims=2."""
 
-        @ttl.kernel(grid=(4, 5), granularity=1)
+        @ttl.kernel(grid=(4, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -446,10 +491,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -462,7 +503,7 @@ class TestCore:
     def test_core_in_nested_functions(self):
         """Test core() works in nested function calls."""
 
-        @ttl.kernel(grid=(3, 4), granularity=1)
+        @ttl.kernel(grid=(3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -489,10 +530,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -500,7 +537,7 @@ class TestCore:
     def test_core_in_datamovement_functions(self):
         """Test core() can be called from datamovement functions."""
 
-        @ttl.kernel(grid=(2, 3), granularity=1)
+        @ttl.kernel(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -524,10 +561,6 @@ class TestCore:
                 assert 0 <= core_coord[0] < 2
                 assert 0 <= core_coord[1] < 3
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -535,7 +568,7 @@ class TestCore:
     def test_core_consistent_across_calls(self):
         """Test that core() returns consistent values across multiple calls."""
 
-        @ttl.kernel(grid=(3, 5), granularity=1)
+        @ttl.kernel(grid=(3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -556,10 +589,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -567,7 +596,7 @@ class TestCore:
     def test_core_different_dims_same_core(self):
         """Test that different dims values on same core produce correct transformations."""
 
-        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        @ttl.kernel(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -595,10 +624,6 @@ class TestCore:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -610,7 +635,7 @@ class TestFlattenCoreIndex:
     def test_flatten_already_linear_index(self):
         """Test flattening an already linear index returns it unchanged."""
 
-        @ttl.kernel(grid=(8, 8), granularity=1)
+        @ttl.kernel(grid=(8, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -629,10 +654,6 @@ class TestFlattenCoreIndex:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -640,7 +661,7 @@ class TestFlattenCoreIndex:
     def test_flatten_2d_core_index(self):
         """Test flattening a 2D core index to linear."""
 
-        @ttl.kernel(grid=(4, 8), granularity=1)
+        @ttl.kernel(grid=(4, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -669,10 +690,6 @@ class TestFlattenCoreIndex:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -680,7 +697,7 @@ class TestFlattenCoreIndex:
     def test_flatten_3d_core_index(self):
         """Test flattening a 3D core index to linear."""
 
-        @ttl.kernel(grid=(2, 3, 4), granularity=1)
+        @ttl.kernel(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -707,10 +724,6 @@ class TestFlattenCoreIndex:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -718,7 +731,7 @@ class TestFlattenCoreIndex:
     def test_flatten_with_core_function(self):
         """Test flattening the result of core() function."""
 
-        @ttl.kernel(grid=(3, 5), granularity=1)
+        @ttl.kernel(grid=(3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -745,10 +758,6 @@ class TestFlattenCoreIndex:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -756,7 +765,7 @@ class TestFlattenCoreIndex:
     def test_flatten_idempotent(self):
         """Test that flattening twice gives the same result."""
 
-        @ttl.kernel(grid=(2, 4), granularity=1)
+        @ttl.kernel(grid=(2, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -778,10 +787,6 @@ class TestFlattenCoreIndex:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -789,7 +794,7 @@ class TestFlattenCoreIndex:
     def test_flatten_different_grid_sizes(self):
         """Test flattening works correctly with different grid dimensions."""
 
-        @ttl.kernel(grid=(10, 5), granularity=1)
+        @ttl.kernel(grid=(10, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -813,10 +818,6 @@ class TestFlattenCoreIndex:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
@@ -824,7 +825,7 @@ class TestFlattenCoreIndex:
     def test_flatten_returns_int_type(self):
         """Test that flatten_core_index always returns an int."""
 
-        @ttl.kernel(grid=(2, 2), granularity=1)
+        @ttl.kernel(grid=(2, 2))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -846,10 +847,154 @@ class TestFlattenCoreIndex:
             def dm1():
                 pass
 
-            from python.sim import Program
-
-            return Program(compute_func, dm0, dm1)()
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
+
+
+class TestThreadOrderIndependence:
+    """Test that thread definition order doesn't matter in kernels."""
+
+    def test_thread_order_dm_compute_dm(self):
+        """Test kernel with order: DM, compute, DM (like broadcast_demo.py)."""
+
+        @ttl.kernel(grid=(1, 1))
+        def kernel_dm_compute_dm(
+            A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
+        ) -> None:
+            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
+            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
+            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+
+            @ttl.datamovement()
+            def dm_read():
+                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    a_xf = ttl.copy(A[0, 0], a_blk)
+                    b_xf = ttl.copy(B[0, 0], b_blk)
+                    a_xf.wait()
+                    b_xf.wait()
+
+            @ttl.compute()
+            def compute():
+                with (
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    y_cb.reserve() as y_blk,
+                ):
+                    result = a_blk + b_blk
+                    y_blk.store(result)
+
+            @ttl.datamovement()
+            def dm_write():
+                with y_cb.wait() as y_blk:
+                    y_xf = ttl.copy(y_blk, Y[0, 0])
+                    y_xf.wait()
+
+        # Create test tensors
+        A = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32))
+        B = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32) * 2)
+        Y = ttnn.empty((32, 32), dtype=torch.float32)
+
+        # Run kernel
+        kernel_dm_compute_dm(A, B, Y)
+
+        # Verify result
+        Y_torch = Y.to_torch()
+        expected = torch.ones((32, 32), dtype=torch.float32) * 3
+        assert torch.allclose(Y_torch, expected)
+
+    def test_thread_order_compute_dm_dm(self):
+        """Test kernel with order: compute, DM, DM (traditional order)."""
+
+        @ttl.kernel(grid=(1, 1))
+        def kernel_compute_dm_dm(
+            A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
+        ) -> None:
+            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
+            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
+            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+
+            @ttl.compute()
+            def compute():
+                with (
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    y_cb.reserve() as y_blk,
+                ):
+                    result = a_blk + b_blk
+                    y_blk.store(result)
+
+            @ttl.datamovement()
+            def dm_read():
+                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    a_xf = ttl.copy(A[0, 0], a_blk)
+                    b_xf = ttl.copy(B[0, 0], b_blk)
+                    a_xf.wait()
+                    b_xf.wait()
+
+            @ttl.datamovement()
+            def dm_write():
+                with y_cb.wait() as y_blk:
+                    y_xf = ttl.copy(y_blk, Y[0, 0])
+                    y_xf.wait()
+
+        # Create test tensors
+        A = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32))
+        B = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32) * 2)
+        Y = ttnn.empty((32, 32), dtype=torch.float32)
+
+        # Run kernel
+        kernel_compute_dm_dm(A, B, Y)
+
+        # Verify result
+        Y_torch = Y.to_torch()
+        expected = torch.ones((32, 32), dtype=torch.float32) * 3
+        assert torch.allclose(Y_torch, expected)
+
+    def test_thread_order_dm_dm_compute(self):
+        """Test kernel with order: DM, DM, compute."""
+
+        @ttl.kernel(grid=(1, 1))
+        def kernel_dm_dm_compute(
+            A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
+        ) -> None:
+            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
+            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
+            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+
+            @ttl.datamovement()
+            def dm_read():
+                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    a_xf = ttl.copy(A[0, 0], a_blk)
+                    b_xf = ttl.copy(B[0, 0], b_blk)
+                    a_xf.wait()
+                    b_xf.wait()
+
+            @ttl.datamovement()
+            def dm_write():
+                with y_cb.wait() as y_blk:
+                    y_xf = ttl.copy(y_blk, Y[0, 0])
+                    y_xf.wait()
+
+            @ttl.compute()
+            def compute():
+                with (
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    y_cb.reserve() as y_blk,
+                ):
+                    result = a_blk + b_blk
+                    y_blk.store(result)
+
+        # Create test tensors
+        A = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32))
+        B = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32) * 2)
+        Y = ttnn.empty((32, 32), dtype=torch.float32)
+
+        # Run kernel
+        kernel_dm_dm_compute(A, B, Y)
+
+        # Verify result
+        Y_torch = Y.to_torch()
+        expected = torch.ones((32, 32), dtype=torch.float32) * 3
+        assert torch.allclose(Y_torch, expected)

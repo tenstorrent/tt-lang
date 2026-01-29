@@ -64,8 +64,6 @@ def add_with_kernel(lhs, rhs, out):
             tx.wait()
         # Automatic: out_cb.pop()
 
-    return ttl.Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
-
 
 # =============================================================================
 # Initial IR Checks - Verify 'with' generates correct CB ops
@@ -177,7 +175,7 @@ def add_with_kernel(lhs, rhs, out):
 
 if __name__ == "__main__":
     import torch
-    from test_helpers import require_hardware
+    from ttlang_test_utils import require_hardware
 
     print("=== With-Pattern Add Kernel Test ===")
 

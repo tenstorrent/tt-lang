@@ -55,6 +55,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Read tt-mlir version
         id: ttmlir-version
@@ -129,7 +130,9 @@ jobs:
       - name: Setup ccache for tt-lang
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ steps.ttmlir-commit.outputs.commit }}
+          key: ${{ runner.os }}-ttlang-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-ttlang-main
           max-size: 200M
 
       - name: Configure tt-lang

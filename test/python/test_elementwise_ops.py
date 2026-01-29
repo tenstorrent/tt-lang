@@ -18,10 +18,11 @@ import tempfile
 
 import pytest
 import torch
-import ttnn
-from test_helpers import assert_allclose, to_l1
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from conftest import temp_kernel_files
+from ttlang_test_utils import assert_allclose, to_l1
 
 
 # =============================================================================
@@ -68,7 +69,6 @@ def {name}_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 BINARY_FN_KERNEL_TEMPLATE = '''
@@ -111,7 +111,6 @@ def {name}_kernel(lhs, rhs, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 UNARY_KERNEL_TEMPLATE = '''
@@ -146,7 +145,6 @@ def {name}_kernel(inp, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(inp, out)
 '''
 
 
@@ -165,6 +163,7 @@ def make_binary_kernel(name: str, op: str):
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     return getattr(module, f"{name}_kernel")
 
@@ -184,6 +183,7 @@ def make_binary_fn_kernel(name: str, op: str):
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     return getattr(module, f"{name}_kernel")
 
@@ -203,6 +203,7 @@ def make_unary_kernel(name: str, op: str):
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     return getattr(module, f"{name}_kernel")
 

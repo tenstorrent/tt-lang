@@ -4,8 +4,10 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
+#include "ttlang/Config.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
+#include "ttmlir/Dialect/TTCore/Transforms/Passes.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
@@ -18,6 +20,9 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  if (TTLANG_HAS_DEVICE) {
+    pm.addPass(mlir::tt::ttcore::createTTCoreRegisterDevicePass());
+  }
   pm.addPass(createTTLConvertTTLToCompute());
 
   // Annotate binary operations with execution strategy (FPU vs SFPU).
@@ -31,6 +36,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // 2. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops
   //    (acquire/commit/wait/release). These must run before TTKernel lowering
   //    and in this specific order.
+  pm.addPass(createTTLSetComputeKernelConfig());
   pm.addPass(createTTLAssignDST());
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLLowerToLoops());

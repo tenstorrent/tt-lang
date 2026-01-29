@@ -71,6 +71,8 @@ jobs:
 
     env:
       RUNS_ON: ${{ inputs.runs-on }}
+      PYTHONDONTWRITEBYTECODE: 1
+      TTLANG_TEST_SEED: 42
 
     steps:
       - name: Checkout tt-lang
@@ -98,6 +100,11 @@ jobs:
           ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
           find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
 
+      - name: Install test dependencies
+        run: |
+          source build/env/activate
+          pip install -r dev-requirements.txt
+
       - name: Smoketest
         run: |
           source build/env/activate
@@ -113,7 +120,12 @@ jobs:
           source build/env/activate
           cmake --build build --target check-ttlang-python-lit
 
-      - name: Pytests
+      - name: ME2E tests (MLIR input end-to-end tests)
+        run: |
+          source build/env/activate
+          python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
+
+      - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
           # Run pytest directly instead of through ninja
@@ -126,5 +138,6 @@ jobs:
           name: hardware-test-reports-${{ inputs.runs-on }}
           path: |
             build/test/python-lit-report.xml
+            build/test/me2e-report.xml
             build/test/pytest-report.xml
           retention-days: 7

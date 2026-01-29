@@ -63,8 +63,6 @@ def fused_kernel(inp, bias, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(inp, bias, out)
-
 
 # =============================================================================
 # Initial IR Checks - Verify fused TTL ops in compute function

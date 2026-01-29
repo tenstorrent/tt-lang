@@ -392,6 +392,26 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Profiling operations
+//===----------------------------------------------------------------------===//
+
+def TTL_SignpostOp : TTL_Op<"signpost", []> {
+  let summary = "Profiling marker for device tracing";
+  let description = [{
+    Marks a profiling region with a custom name for Tracy profiler visualization.
+    This operation generates DeviceZoneScopedN markers in the emitted C++ code.
+
+    Example:
+    ```mlir
+    ttl.signpost "my_custom_region"
+    ```
+  }];
+
+  let arguments = (ins StrAttr:$name);
+  let assemblyFormat = "$name attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // Tile-Level Operations (for use inside ttl.compute body)
 //===----------------------------------------------------------------------===//
 
@@ -542,6 +562,39 @@ defm TTL_Sigmoid : TTL_UnaryElementwisePair<"sigmoid", "sigmoid_tile">;
 defm TTL_Neg : TTL_UnaryElementwisePair<"neg", "neg_tile">;
 defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile">;
 defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
+
+//===----------------------------------------------------------------------===//
+// Broadcast Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_BcastOp : TTL_Op<"bcast", []> {
+  let summary = "Broadcast a row/column/scalar tensor to full tiles";
+  let description = [{
+    Broadcasts the input tensor to full tiles based on bcast_type.
+    Reads from CB, writes result to DST then packs to output CB.
+    Both input and output must be CB-attached tensors.
+
+    bcast_type specifies the broadcast dimension:
+    - Row: broadcast first row to all rows
+    - Col: broadcast first column to all columns
+    - Scalar: broadcast single value to all elements
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level broadcast operation";
+  let description = [{
+    Broadcasts a row, column, or scalar tile into a full 32x32 tile.
+    Maps to ttkernel.unary_bcast_init + ttkernel.unary_bcast.
+    Reads directly from circular buffer (not DST), writes to DST.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
 
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//

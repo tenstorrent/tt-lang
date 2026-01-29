@@ -10,6 +10,7 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   copyright checks)
 - **Compiler tests**: `cmake --build build --target check-ttlang`
 - **Single MLIR test**: `llvm-lit test/ttlang/path/to/test.mlir`
+- **ME2E tests**: `pytest test/me2e/`(requires ttnn and a TT device)
 - **Pytest tests**: `pytest test/python` (requires ttnn and a TT device)
 - **Python lit tests**: `llvm-lit test/python/` (hardware execution tests)
 - **Simulation tests**: `pytest test/sim/` (software simulation of runtime behavior)
@@ -27,6 +28,9 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - **Namespaces**: Lowercase, avoid `using namespace`, no aliases in headers
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
   not and)
+- **Unicode**: Avoid Unicode characters in code and documentation. Use ASCII
+  equivalents instead (e.g., `->` instead of `→`). This ensures compatibility
+  across different editors, terminals, and build environments.
 
 ## MLIR implementation
 - Follow the conventions in llvm-project for directory organization and naming

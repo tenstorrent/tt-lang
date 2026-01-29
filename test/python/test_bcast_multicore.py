@@ -21,12 +21,12 @@ Features:
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram, to_l1
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import to_dram, to_l1
 
 import ttl
-
-pytestmark = pytest.mark.requires_ttnn
 
 TILE_SIZE = 32
 GRID_ROWS = 8
@@ -152,8 +152,6 @@ def bcast_kernel(a, b, c, out1, out2, out3):
         with out3_cb.wait() as o3_blk:
             tx3 = ttl.copy(o3_blk, out3[y, x])
             tx3.wait()
-
-    return ttl.Program(fused_compute, dm_read, dm_write)(a, b, c, out1, out2, out3)
 
 
 def compute_expected_dram(a, b, c):

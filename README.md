@@ -67,7 +67,7 @@ For users who want to run simulator examples without building the full compiler 
 ```bash
 ./setup_simulator.sh
 source .venv/bin/activate
-./bin/ttlsim examples/eltwise_add.py
+./bin/ttlang-sim examples/eltwise_add.py
 pytest test/sim/
 ```
 
@@ -90,6 +90,31 @@ Note: this project is currently in early prototype phase, examples are not final
 - [Simulator Quick Start](docs/SIMULATOR.md) - Run kernels in simulation without building the compiler
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
 - [Sphinx docs](docs/README.md) - How to build, view, and extend the documentation (docs are disabled by default; enable with `-DTTLANG_ENABLE_DOCS=ON` and build with `cmake --build build --target ttlang-docs`)
+
+## Auto-Profiling
+
+TT-Lang includes built-in auto-profiling that instruments kernels with signposts and generates per-line cycle count reports.
+
+**Required environment variables** (must be exported before running):
+```bash
+export TT_METAL_HOME=/path/to/tt-metal
+export TT_METAL_DEVICE_PROFILER=1
+export TT_METAL_PROFILER_MID_RUN_DUMP=1
+export TTLANG_AUTO_PROFILE=1
+```
+
+**Example:**
+```bash
+export TT_METAL_HOME=/workspace/tt-mlir/third_party/tt-metal/src/tt-metal
+export TT_METAL_DEVICE_PROFILER=1
+export TT_METAL_PROFILER_MID_RUN_DUMP=1
+export TTLANG_AUTO_PROFILE=1
+python examples/demo_one.py
+```
+
+See [docs/auto-profiler-examples/](https://github.com/tenstorrent/tt-lang/tree/main/docs/auto-profiler-examples) for sample profile outputs showing the per-line cycle breakdown format.
+
+> **Warning:** Each core supports only 125 signposts. Kernels with many operations in tight loops may overflow this buffer, causing later signposts to be silently dropped and mismatched cycle counts. See [#268](https://github.com/tenstorrent/tt-lang/issues/268) for details.
 
 ## Testing
 

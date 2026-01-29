@@ -59,8 +59,6 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                     out_wr = copy(out_blk, out[m, n])
                     out_wr.wait()
 
-    return Program(mm_compute, mm_reader, mm_writer)(a, b, out)
-
 
 def test_singlecore_matmul_tt_lang():
     """Test singlecore matmul kernel."""

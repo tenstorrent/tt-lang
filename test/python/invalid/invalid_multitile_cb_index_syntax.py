@@ -50,8 +50,6 @@ def invalid_multitile_index_kernel(inp, out):
         tx.wait()
         out_cb.pop()
 
-    return ttl.Program(compute_fn, dm_read, dm_write)(inp, out)
-
 
 if __name__ == "__main__":
     import torch

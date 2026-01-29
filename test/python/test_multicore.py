@@ -14,10 +14,11 @@ import tempfile
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram
 
-pytestmark = pytest.mark.requires_ttnn
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from conftest import temp_kernel_files
+from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
 TILES_PER_CORE_ROW = 2  # Each core processes 2x2 tiles
@@ -39,7 +40,8 @@ def grid_to_tensor_shape(grid_rows: int, grid_cols: int) -> tuple[int, int]:
 MULTICORE_LOOP_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+# Grid: {grid_cols} cols x {grid_rows} rows
+@ttl.kernel(grid=({grid_cols}, {grid_rows}))  # (cols, rows)
 def multicore_loop(lhs, rhs, out):
     """Multicore kernel: each core loops over 2x2 tiles computing exp(lhs) + sqrt(rhs)."""
     lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
@@ -80,7 +82,6 @@ def multicore_loop(lhs, rhs, out):
                     tx = ttl.copy(out_blk, out[row, col])
                     tx.wait()
 
-    return ttl.Program(fused_compute, dm_read, dm_write)(lhs, rhs, out)
 '''
 
 _kernel_cache = {}
@@ -111,6 +112,7 @@ def make_kernel(grid_rows: int, grid_cols: int):
     spec = importlib.util.spec_from_file_location("kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
 
     kernel = module.multicore_loop
     _kernel_cache[cache_key] = kernel

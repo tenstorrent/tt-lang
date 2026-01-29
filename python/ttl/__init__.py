@@ -24,6 +24,7 @@ from ttl._generated_elementwise import *  # noqa: F401,F403
 from ttl._generated_elementwise import __all__ as _elementwise_all
 
 # Export additional TTL DSL API classes
+from ttl.operators import signpost
 from ttl.ttl_api import (
     CircularBuffer,
     CopyTransferHandler,
@@ -43,6 +44,7 @@ __all__ = [
     "core",
     "grid_size",
     "math",
+    "signpost",
     # Elementwise operators are automatically included from generated file
     *_elementwise_all,
 ]

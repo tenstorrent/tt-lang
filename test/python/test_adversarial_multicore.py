@@ -18,29 +18,29 @@ Evil features:
 
 import pytest
 import torch
-import ttnn
-from test_helpers import to_dram
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import to_dram
 
 import ttl
 
-pytestmark = pytest.mark.requires_ttnn
-
 TILE_SIZE = 32
 
-# Non-square grid
-GRID_ROWS = 8
+# Non-square grid: 6 cols x 8 rows
 GRID_COLS = 6
+GRID_ROWS = 8
 
 # All tensors same size: 2x2 tiles per core = 512x384 total
 CB_ROWS = 2
 CB_COLS = 2
 TENSOR_SHAPE = (
-    GRID_ROWS * CB_ROWS * TILE_SIZE,  # 512
-    GRID_COLS * CB_COLS * TILE_SIZE,  # 384
+    GRID_ROWS * CB_ROWS * TILE_SIZE,  # 512 rows
+    GRID_COLS * CB_COLS * TILE_SIZE,  # 384 cols
 )
 
 
-@ttl.kernel(grid=(8, 6))
+@ttl.kernel(grid=(6, 8))  # (cols, rows)
 def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     Adversarial kernel with 4 inputs and 4 outputs.
@@ -147,10 +147,6 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
         with out4_cb.wait() as o4_blk:
             tx = ttl.copy(o4_blk, out4[row : row + 2, col : col + 2])
             tx.wait()
-
-    return ttl.Program(evil_compute, dm_read, dm_write)(
-        a, b, c, d, out1, out2, out3, out4
-    )
 
 
 def compute_expected(a, b, c, d):

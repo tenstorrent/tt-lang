@@ -12,7 +12,7 @@ on:
                 type: choice
                 options:
                     - ubuntu-latest
-                    - test1-large-runner-lang
+                    - mlir-large-runner-lang
                 default: "ubuntu-latest"
             build_docs:
                 description: "Build and deploy documentation."
@@ -25,7 +25,7 @@ on:
                 required: false
                 type: string
             linux_runner:
-                description: "Linux runner to use (ubuntu-latest or test1-large-runner-lang)"
+                description: "Linux runner to use (ubuntu-latest or mlir-large-runner-lang)"
                 type: string
                 required: false
                 default: "ubuntu-latest"
@@ -43,8 +43,8 @@ permissions:
 
 jobs:
     build-tt-lang-tt-mlir:
-        name: build-tt-lang-tt-mlir (${{ inputs.linux_runner || 'test1-large-runner-lang' }})
-        runs-on: ${{ inputs.linux_runner || 'test1-large-runner-lang' }}
+        name: build-tt-lang-tt-mlir (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
+        runs-on: ${{ inputs.linux_runner || 'mlir-large-runner-lang' }}
         timeout-minutes: 240
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
@@ -129,6 +129,7 @@ jobs:
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
                       -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }} \
+                      -DTTLANG_ENABLE_PERF_TRACE=ON \
                       -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
 
             - name: Build tt-lang
