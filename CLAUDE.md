@@ -17,6 +17,9 @@ Proactively check the GitHub issues once the user wants to start writing tests o
 - `docs/BUILD_SYSTEM.md` - Build system architecture and integration with tt-mlir
 - `test/TESTING.md` - Python lit testing guide for D2M dialect
 
+**For CI/CD work**:
+- `.github/CI_WORKFLOWS.md` - CI workflow architecture and troubleshooting
+
 **For macOS builds**:
 - `../tt-mlir/MACOS_BUILD.md` - macOS-specific build instructions (supersedes README build instructions on macOS)
 
@@ -82,7 +85,7 @@ See `docs/BUILD_SYSTEM.md` for detailed build instructions and options.
 
 ```bash
 cd <tt-lang-directory>
-source env/activate
+source build/env/activate
 
 # Configure
 cmake -G Ninja -B build .
@@ -107,7 +110,7 @@ See `docs/TESTING.md` for complete testing documentation including:
 **Quick reference**:
 ```bash
 cd <tt-lang-directory>
-source env/activate
+source build/env/activate
 
 # Run all tests
 llvm-lit -sv test/python/

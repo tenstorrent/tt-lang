@@ -4,6 +4,8 @@ Welcome to the tt-lang containerized environment!
 
 ## Quick Start
 
+The tt-mlir toolchain is installed in `$TTMLIR_TOOLCHAIN_DIR` (typically `/opt/ttmlir-toolchain`).
+
 tt-lang examples are available in `$TTMLIR_TOOLCHAIN_DIR/examples`.
 
 Try running an example:

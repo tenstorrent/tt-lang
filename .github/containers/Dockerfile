@@ -4,31 +4,36 @@
 # tt-lang distribution image: Multi-stage build with dist/dev targets
 #
 # Targets:
+#   ci   - tt-mlir toolchain for CI workflows (tt-lang stripped)
 #   dist - Pre-built tt-lang for end users (ready to import ttl)
-#   dev  - Development image with toolchain + extra tools (vim, tmux, nano)
+#   ird  - Development image with toolchain + extra tools (vim, tmux, nano)
+#
+# Build context requirements:
+#   ttmlir-toolchain - Pre-built LLVM + tt-mlir toolchain from CI cache
+#                      (passed via --build-context ttmlir-toolchain=<dir>)
 
 ARG FROM_TAG=latest
-ARG MLIR_TAG=latest
 
 # =============================================================================
-# Stage 1: Build tt-lang
+# Stage 1: Build tt-lang (using pre-built toolchain from CI cache)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG} AS build
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS build
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
+# Copy pre-built toolchain (LLVM + tt-mlir) from build context
+# This is cached from CI - NOT built here
+COPY --from=ttmlir-toolchain / $TTMLIR_TOOLCHAIN_DIR
+
+# Copy tt-lang source
 ADD . /home/build/tt-lang
 WORKDIR /home/build/tt-lang
 
 # Show commit info for traceability
 RUN git log -1 || echo "Git info not available"
 
-# Configure, build, install, and cleanup in ONE RUN command to avoid Docker layer bloat
-# Docker keeps all layers during build - by combining these, the huge build
-# directory (50-80GB) never gets committed to a layer
-COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
-COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
+# Build and install tt-lang in ONE RUN command to avoid Docker layer bloat
 COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
 RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh && rm /tmp/build-and-install.sh
 

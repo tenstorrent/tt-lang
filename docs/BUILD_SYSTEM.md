@@ -13,6 +13,29 @@ The tt-lang build system supports:
 
 See the [README Quick Start](README.md#quick-start) section for prerequisites and build instructions.
 
+## CI/CD Integration
+
+tt-lang CI uses a **dedicated cache workflow** pattern (GitHub Actions best practice). See [CI Workflows](../.github/CI_WORKFLOWS.md) for details.
+
+```
+call-build-ttmlir-toolchain.yml (dedicated cache builder)
+         |
+         | builds LLVM + tt-mlir (~3-4 hours)
+         v
+[GitHub Actions Cache: Linux-ttlang-toolchain-v1-{sha}]
+        |             |
+        v             v
+   CI Workflow    Container Build
+   (tt-lang)      (Docker images)
+```
+
+Key points:
+- Dedicated workflow (`call-build-ttmlir-toolchain.yml`) builds the toolchain
+- CI and container workflows restore from cache with `fail-on-cache-miss: true`
+- Cache key is based on the tt-mlir commit SHA
+- Weekly schedule keeps cache warm (prevents 7-day eviction)
+- Toolchain workflow triggers on changes to `third-party/tt-mlir.commit`
+
 ## Configuration and build
 
 tt-lang supports three integration scenarios for tt-mlir:
@@ -53,18 +76,36 @@ Use a pre-installed tt-mlir toolchain. This mode:
 
 **Important:** The pre-installed tt-mlir must be built with Python bindings enabled (`-DTTMLIR_ENABLE_BINDINGS_PYTHON=ON`). See the [tt-mlir Getting Started guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) for details on building tt-mlir with Python bindings.
 
-### Scenario 3: Automatic Build
+### Scenario 3: Automatic Build (FetchContent)
 
 Automatically fetch and build tt-mlir if not found. This mode:
 - Fetches tt-mlir from the commit specified in `third-party/tt-mlir.commit`
+- Or uses an existing tt-mlir source directory if `TTMLIR_SRC_DIR` is provided
 - Builds and installs tt-mlir locally in the build directory
-- Requires an existing LLVM/MLIR toolchain and Python environment
-- First build is slow, but subsequent builds reuse the cached installation
+- Requires an existing LLVM/MLIR toolchain and Python environment at `TTMLIR_TOOLCHAIN_DIR`
+- First build is slow (~60-90 minutes), but subsequent builds reuse the cached installation
 
 **Use this mode when:**
 - You don't have tt-mlir pre-installed and don't want to build/install it yourself
 - You want a fully automated setup
 - You're setting up a new development environment
+
+**Configuration:**
+```bash
+# Basic automatic build (fetches tt-mlir from GitHub)
+cmake -GNinja -Bbuild .
+
+# Use existing tt-mlir source directory (avoids re-downloading)
+cmake -GNinja -Bbuild . -DTTMLIR_SRC_DIR=/path/to/tt-mlir-src
+
+# Custom install prefix
+cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
+
+# With performance trace enabled
+cmake -GNinja -Bbuild . -DTTLANG_ENABLE_PERF_TRACE=ON -DTTMLIR_CMAKE_BUILD_TYPE=Release
+```
+
+**Note:** CI uses `TTMLIR_SRC_DIR` to point to an already-cloned tt-mlir repository, avoiding duplicate downloads.
 
 ## How It Works
 
@@ -202,6 +243,8 @@ cmake --build build
   - Environment variable takes precedence
   - **Recommended for Scenario 1**: Set as environment variable to prevent incorrect derivation from Python path
 - `TTMLIR_INSTALL_PREFIX` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`) - Installation prefix for automatically built tt-mlir (Scenario 3 only)
+- `TTMLIR_SRC_DIR` - Path to existing tt-mlir source directory (Scenario 3 only, avoids re-downloading)
+- `TTMLIR_GIT_TAG` - tt-mlir commit to fetch (Scenario 3 only, overrides `third-party/tt-mlir.commit`)
 - `TTLANG_ENABLE_BINDINGS_PYTHON` (default: OFF) - Enable Python bindings
 - `TTLANG_ENABLE_RUNTIME` (default: OFF) - Enable runtime support
 - `TTLANG_ENABLE_PERF_TRACE` (default: OFF) - Enable performance trace (Scenario 3 only, passed to tt-mlir build)
@@ -395,13 +438,7 @@ As the project grows, you can add:
 ### Scenario 1 Issues (Pre-built tt-mlir)
 
 #### Error: "Could not find TTMLIR in build directory"
-**Solution:** Ensure tt-mlir is built:
-```bash
-cd /path/to/tt-mlir
-source env/activate
-cmake -GNinja -Bbuild .
-cmake --build build
-```
+**Solution:** Ensure tt-mlir is built; refer to tt-mlir build instructions.
 
 Verify `TTMLIRConfig.cmake` exists at `${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir/TTMLIRConfig.cmake`.
 
@@ -447,10 +484,11 @@ The toolchain must include a Python 3.11+ virtual environment with required pack
 Ensure these prerequisites are met before attempting automatic build.
 
 #### Build takes too long
-**Solution:** The first automatic build fetches and compiles tt-mlir, which can take 30-60 minutes. To speed up:
+**Solution:** The first automatic build fetches and compiles tt-mlir, which can take 60-90 minutes. To speed up:
 - Ensure ccache is installed (automatically detected and used)
 - Use a pre-installed tt-mlir (Scenario 2) for faster builds
 - Subsequent builds reuse the cached tt-mlir installation
+- In CI, the toolchain is cached - only the first build for a new tt-mlir commit is slow
 
 ### Common Issues
 

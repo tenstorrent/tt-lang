@@ -5,13 +5,14 @@
 # Build and optionally push tt-lang Docker images
 #
 # Usage:
-#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push] [--no-cache]
+#   ./build-docker-images.sh [MLIR_SHA] --ttmlir-toolchain=<dir> [--check-only] [--no-push] [--no-cache]
 #
 # Arguments:
-#   MLIR_SHA     - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
-#   --check-only - Only check if images exist, don't build
-#   --no-push    - Build locally but don't push to registry
-#   --no-cache   - Build from scratch without using Docker cache
+#   MLIR_SHA              - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
+#   --ttmlir-toolchain    - REQUIRED: Path to pre-built toolchain (LLVM + tt-mlir)
+#   --check-only          - Only check if images exist, don't build
+#   --no-push             - Build locally but don't push to registry
+#   --no-cache            - Build from scratch without using Docker cache
 #
 # Must be run from the repository root directory
 
@@ -22,9 +23,14 @@ MLIR_SHA=""
 CHECK_ONLY=false
 NO_PUSH=false
 NO_CACHE=false
+TTMLIR_TOOLCHAIN_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --ttmlir-toolchain=*)
+            TTMLIR_TOOLCHAIN_DIR="${1#*=}"
+            shift
+            ;;
         --check-only)
             CHECK_ONLY=true
             shift
@@ -46,6 +52,35 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate required toolchain argument
+if [ -z "$TTMLIR_TOOLCHAIN_DIR" ]; then
+    echo "ERROR: --ttmlir-toolchain=<dir> is required"
+    echo ""
+    echo "Usage: $0 [MLIR_SHA] --ttmlir-toolchain=<dir> [--check-only] [--no-push] [--no-cache]"
+    echo ""
+    echo "The toolchain must contain pre-built LLVM + tt-mlir from CI cache."
+    echo "Container builds require CI to have run first for this tt-mlir commit."
+    exit 1
+fi
+
+if [ ! -d "$TTMLIR_TOOLCHAIN_DIR" ]; then
+    echo "ERROR: Toolchain directory does not exist: $TTMLIR_TOOLCHAIN_DIR"
+    exit 1
+fi
+
+# Validate toolchain contents
+if [ ! -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake" ]; then
+    echo "ERROR: Invalid toolchain - TTMLIRConfig.cmake not found"
+    echo "Expected at: $TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake"
+    exit 1
+fi
+
+if [ ! -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake" ]; then
+    echo "ERROR: Invalid toolchain - MLIRConfig.cmake not found (LLVM toolchain missing)"
+    echo "Expected at: $TTMLIR_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake"
+    exit 1
+fi
+
 # Default to pinned tt-mlir commit if not specified
 if [ -z "$MLIR_SHA" ]; then
     MLIR_SHA=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
@@ -64,6 +99,7 @@ fi
 
 echo "=== tt-lang Docker Image Builder ==="
 echo "tt-mlir SHA: $MLIR_SHA"
+echo "Toolchain: $TTMLIR_TOOLCHAIN_DIR"
 echo "Check only: $CHECK_ONLY"
 echo "No push: $NO_PUSH"
 echo "No cache: $NO_CACHE"
@@ -79,9 +115,8 @@ DOCKER_TAG=$(echo "$TTLANG_VERSION" | sed 's/[\/:]/-/g')
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
-# Note: tt-lang builds tt-mlir via FetchContent, so we don't require
-# a pre-existing tt-mlir Docker image (unlike tt-xla which layers on top)
-echo "Note: tt-lang uses FetchContent to build tt-mlir from source"
+# Note: Using pre-built toolchain from CI cache
+echo "Note: Using pre-built toolchain from: $TTMLIR_TOOLCHAIN_DIR"
 echo ""
 
 # Build function
@@ -100,7 +135,7 @@ build_image() {
     # Check if image already exists in registry (only when not using --no-push)
     if [ "$NO_PUSH" = false ]; then
         if docker manifest inspect "$registry_image" > /dev/null 2>&1; then
-            echo "✓ Image already exists: $registry_image"
+            echo "Image already exists: $registry_image"
             if [ "$CHECK_ONLY" = true ]; then
                 return 0
             fi
@@ -109,7 +144,7 @@ build_image() {
         fi
 
         if [ "$CHECK_ONLY" = true ]; then
-            echo "✗ Image does not exist: $registry_image"
+            echo "Image does not exist: $registry_image"
             return 2
         fi
     fi
@@ -138,8 +173,10 @@ build_image() {
 
     # Always tag with registry path (required for Dockerfile FROM references)
     # Also add simplified name and latest tags
+    # Pass pre-built toolchain as build context
     docker build \
         --progress=plain \
+        --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
         $cache_arg \
         $target_arg \
         $build_args \
@@ -160,11 +197,11 @@ build_image() {
     echo "Disk space after $name:"
     df -h | head -2
 
-    echo "✓ Done: $name"
+    echo "Done: $name"
     echo ""
 }
 
-# Always use the same Dockerfile (builds tt-mlir via FetchContent against pre-built toolchain)
+# Always use the same Dockerfile (uses pre-built toolchain from build context)
 DOCKERFILE=".github/containers/Dockerfile"
 
 # Build images in dependency order
