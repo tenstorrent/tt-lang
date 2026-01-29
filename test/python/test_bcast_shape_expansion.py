@@ -336,9 +336,15 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
     cols = y.shape[1] // TILE_SIZE // block_cols
 
     a_cb = ttl.make_circular_buffer_like(a, shape=(block_rows, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(block_rows, block_cols), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(block_rows, block_cols), buffer_factor=2)
-    y_cb = ttl.make_circular_buffer_like(y, shape=(block_rows, block_cols), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(
+        b, shape=(block_rows, block_cols), buffer_factor=2
+    )
+    c_cb = ttl.make_circular_buffer_like(
+        c, shape=(block_rows, block_cols), buffer_factor=2
+    )
+    y_cb = ttl.make_circular_buffer_like(
+        y, shape=(block_rows, block_cols), buffer_factor=2
+    )
 
     @ttl.compute()
     def compute_fn():
@@ -421,7 +427,7 @@ class TestBcastShapeExpansionWithOuterLoops:
         y_torch = torch.zeros(shape, dtype=torch.bfloat16)
 
         # Expected: (a * b + c) where a broadcasts to match b's shape
-        expected = (a_torch * b_torch + c_torch)
+        expected = a_torch * b_torch + c_torch
 
         a = to_l1(a_torch, device)
         b = to_l1(b_torch, device)
