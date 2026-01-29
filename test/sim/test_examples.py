@@ -198,7 +198,9 @@ def test_demo_one_deadlock_detection() -> None:
     )
 
     # Verify we actually modified something
-    assert modified_content != content, "Failed to modify tutorial/multicore_grid_auto.py content"
+    assert (
+        modified_content != content
+    ), "Failed to modify tutorial/multicore_grid_auto.py content"
 
     # Find the line numbers where wait() and reserve() calls are made
     # We'll verify the deadlock message points to these exact lines
