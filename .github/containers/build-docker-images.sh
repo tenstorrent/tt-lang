@@ -160,11 +160,6 @@ build_image() {
         target_arg="--target $target"
     fi
 
-    local build_args="--build-arg FROM_TAG=$DOCKER_TAG"
-    if [ -n "$MLIR_TAG" ]; then
-        build_args="$build_args --build-arg MLIR_TAG=$MLIR_TAG"
-    fi
-
     # Build options
     local cache_arg=""
     if [ "$NO_CACHE" = true ]; then
@@ -179,7 +174,6 @@ build_image() {
         --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
         $cache_arg \
         $target_arg \
-        $build_args \
         -t "$registry_image" \
         -t "$local_image" \
         -t "$name:latest" \
@@ -201,14 +195,12 @@ build_image() {
     echo ""
 }
 
-# Always use the same Dockerfile (uses pre-built toolchain from build context)
+# Build images (all from same Dockerfile with different targets)
+# Order matters: dev first (user extends dev)
 DOCKERFILE=".github/containers/Dockerfile"
 
-# Build images in dependency order
-build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
-build_image "tt-lang-ci-ubuntu-22-04" "$DOCKERFILE" ci
-build_image "tt-lang-dist-ubuntu-22-04" "$DOCKERFILE" dist
-build_image "tt-lang-ird-ubuntu-22-04" "$DOCKERFILE" ird
+build_image "tt-lang-dev-ubuntu-22-04" "$DOCKERFILE" dev
+build_image "tt-lang-user-ubuntu-22-04" "$DOCKERFILE" user
 
 
 # Final cleanup of all unused Docker resources
@@ -224,26 +216,22 @@ echo ""
 
 if [ "$NO_PUSH" = false ]; then
     echo "Images built and pushed:"
-    echo "  - ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    echo "  - ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
-    echo "  - ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
-    echo "  - ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
+    echo "  - ghcr.io/$REPO/tt-lang-dev-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain + dev tools)"
+    echo "  - ghcr.io/$REPO/tt-lang-user-ubuntu-22-04:$DOCKER_TAG (dev + pre-built tt-lang)"
 
-    # Write dist image name to file for workflow consumption
-    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    # Write user image name to file for workflow consumption
+    DIST_IMAGE="ghcr.io/$REPO/tt-lang-user-ubuntu-22-04:$DOCKER_TAG"
     echo "$DIST_IMAGE" > .docker-image-name
     echo ""
     echo "DIST_IMAGE_NAME:"
     echo "$DIST_IMAGE"
 else
     echo "Local images built:"
-    echo "  - tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    echo "  - tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
-    echo "  - tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
-    echo "  - tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
+    echo "  - tt-lang-dev-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain + dev tools)"
+    echo "  - tt-lang-user-ubuntu-22-04:$DOCKER_TAG (dev + pre-built tt-lang)"
 
-    # Write local dist image name to file for workflow consumption
-    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    # Write local user image name to file for workflow consumption
+    DIST_IMAGE="tt-lang-user-ubuntu-22-04:$DOCKER_TAG"
     echo "$DIST_IMAGE" > .docker-image-name
     echo ""
     echo "DIST_IMAGE_NAME:"

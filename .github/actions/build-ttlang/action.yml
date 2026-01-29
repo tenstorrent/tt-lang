@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+#
+# Composite action to build tt-lang
+#
+# Reusable across CI and Docker workflows
+
+name: 'Build tt-lang'
+description: 'Configure and build tt-lang using pre-built tt-mlir toolchain'
+
+inputs:
+  toolchain_dir:
+    description: 'Path to pre-built tt-mlir toolchain'
+    required: true
+  build_dir:
+    description: 'Build directory'
+    required: false
+    default: 'build'
+  build_type:
+    description: 'CMake build type'
+    required: false
+    default: 'Release'
+  enable_docs:
+    description: 'Build documentation'
+    required: false
+    default: 'false'
+  enable_perf_trace:
+    description: 'Enable performance tracing'
+    required: false
+    default: 'false'
+  enable_python_bindings:
+    description: 'Enable Python bindings'
+    required: false
+    default: 'true'
+
+outputs:
+  build_dir:
+    description: 'Path to build directory'
+    value: ${{ inputs.build_dir }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate toolchain
+      shell: bash
+      run: |
+        TOOLCHAIN_DIR="${{ inputs.toolchain_dir }}"
+        echo "=== Validating toolchain at $TOOLCHAIN_DIR ==="
+
+        test -f "$TOOLCHAIN_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake" || \
+            { echo "ERROR: TTMLIRConfig.cmake missing"; exit 1; }
+        test -f "$TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake" || \
+            { echo "ERROR: MLIRConfig.cmake missing"; exit 1; }
+        test -d "$TOOLCHAIN_DIR/python_packages/ttrt/runtime/ttnn" || \
+            { echo "ERROR: ttrt/TTNN runtime missing"; exit 1; }
+
+        echo "Toolchain validated successfully"
+
+    - name: Configure tt-lang
+      shell: bash
+      env:
+        TTMLIR_TOOLCHAIN_DIR: ${{ inputs.toolchain_dir }}
+      run: |
+        echo "=== Configuring tt-lang ==="
+
+        cmake -G Ninja -B ${{ inputs.build_dir }} \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -DCMAKE_C_COMPILER=clang-17 \
+            -DTTMLIR_DIR=$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir \
+            -DTTLANG_ENABLE_DOCS=${{ inputs.enable_docs == 'true' && 'ON' || 'OFF' }} \
+            -DTTLANG_ENABLE_PERF_TRACE=${{ inputs.enable_perf_trace == 'true' && 'ON' || 'OFF' }} \
+            -DTTLANG_ENABLE_BINDINGS_PYTHON=${{ inputs.enable_python_bindings == 'true' && 'ON' || 'OFF' }}
+
+        echo "Configuration complete"
+
+    - name: Build tt-lang
+      shell: bash
+      run: |
+        echo "=== Building tt-lang ==="
+
+        source ${{ inputs.build_dir }}/env/activate
+        cmake --build ${{ inputs.build_dir }}
+
+        echo "=== Build complete ==="

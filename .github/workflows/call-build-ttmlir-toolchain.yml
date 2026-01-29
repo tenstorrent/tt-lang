@@ -58,9 +58,6 @@ jobs:
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
         steps:
-            - name: Maximize space
-              uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
             - name: Checkout tt-lang
               uses: actions/checkout@v4
 
@@ -131,33 +128,41 @@ jobs:
                   echo "=== LLVM toolchain complete ==="
                   df -h
 
-            # ========== BUILD TT-MLIR VIA FETCHCONTENT ==========
-            - name: Configure tt-lang (builds tt-mlir via FetchContent)
+            # ========== BUILD TT-MLIR DIRECTLY ==========
+            - name: Configure tt-mlir
               if: steps.check-cache.outputs.cache-hit != 'true' || inputs.force_rebuild == true
+              working-directory: tt-mlir-src
               run: |
+                  source $TTMLIR_TOOLCHAIN_DIR/venv/bin/activate
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_SRC_DIR=$(pwd)/tt-mlir-src \
-                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
-                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }} \
-                      -DTTLANG_ENABLE_PERF_TRACE=ON
+                      -DCMAKE_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
+                      -DTTMLIR_ENABLE_RUNTIME=ON \
+                      -DTTMLIR_ENABLE_STABLEHLO=OFF
 
-            - name: Build tt-lang (includes tt-mlir build)
+            - name: Build tt-mlir
               if: steps.check-cache.outputs.cache-hit != 'true' || inputs.force_rebuild == true
+              working-directory: tt-mlir-src
               run: |
-                  echo "=== Building tt-mlir via FetchContent ==="
-                  source build/env/activate
+                  echo "=== Building tt-mlir ==="
+                  source $TTMLIR_TOOLCHAIN_DIR/venv/bin/activate
                   cmake --build build
                   df -h
+
+            - name: Install tt-mlir
+              if: steps.check-cache.outputs.cache-hit != 'true' || inputs.force_rebuild == true
+              working-directory: tt-mlir-src
+              run: |
+                  source $TTMLIR_TOOLCHAIN_DIR/venv/bin/activate
+                  cmake --install build
 
             - name: Copy ttrt runtime to toolchain
               if: steps.check-cache.outputs.cache-hit != 'true' || inputs.force_rebuild == true
               run: |
                   mkdir -p $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime
-                  cp -prL build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* \
+                  cp -prL tt-mlir-src/build/python_packages/ttrt/runtime/* \
                       $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/
 
             - name: Normalize and cleanup toolchain
@@ -169,7 +174,7 @@ jobs:
             - name: Remove build artifacts
               if: steps.check-cache.outputs.cache-hit != 'true' || inputs.force_rebuild == true
               run: |
-                  rm -rf build tt-mlir-src
+                  rm -rf tt-mlir-src
                   df -h
 
             - name: Save toolchain to cache

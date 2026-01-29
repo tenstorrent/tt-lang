@@ -27,9 +27,6 @@ on:
       docker-image:
         description: "Built Docker image name with tag"
         value: ${{ jobs.check-if-images-already-exist.outputs.docker-image || jobs.build-image.outputs.docker-image }}
-      docker-image-base:
-        description: "Base Docker image name with tag"
-        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image-base || jobs.build-image.outputs.docker-image-base }}
 
 permissions:
   packages: write
@@ -40,7 +37,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       docker-image: ${{ steps.check.outputs.docker-image }}
-      docker-image-base: ${{ steps.check.outputs.docker-image-base }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,7 +122,6 @@ jobs:
 
     outputs:
       docker-image: ${{ steps.build.outputs.docker-image }}
-      docker-image-base: ${{ steps.build.outputs.docker-image-base }}
 
     steps:
       - name: Maximize space
@@ -183,9 +178,6 @@ jobs:
           DOCKER_IMAGE=$(tail -n 1 docker.log)
           echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
 
-          DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
-          echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
-
           echo "Space usage after build: " && df -h
           echo "Docker images built successfully"
 
@@ -228,7 +220,7 @@ jobs:
 
           echo "Setting latest tag for Docker images with tag: $TAG"
 
-          for IMAGE_SUFFIX in "-base" "-ci" "-ird" "-dist"; do
+          for IMAGE_SUFFIX in "-dev" "-user"; do
             IMAGE_NAME="ghcr.io/tenstorrent/tt-lang/tt-lang${IMAGE_SUFFIX}-ubuntu-22-04"
             echo "Tagging ${IMAGE_NAME}:${TAG} as latest"
             skopeo copy "docker://${IMAGE_NAME}:${TAG}" "docker://${IMAGE_NAME}:latest"

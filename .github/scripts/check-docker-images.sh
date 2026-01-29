@@ -9,7 +9,6 @@
 #
 # Outputs (via GITHUB_OUTPUT):
 #   docker-image: Full image name if exists, empty if not
-#   docker-image-base: Base variant image name if exists, empty if not
 #
 # Exit codes:
 #   0: Always (uses outputs to signal state, not exit codes)
@@ -34,17 +33,11 @@ if [ $EXIT_CODE -eq 0 ]; then
     # Images exist - extract image name from last line
     DOCKER_IMAGE=$(tail -n 1 /tmp/docker-check.log)
     echo "docker-image=$DOCKER_IMAGE" >> "$GITHUB_OUTPUT"
-
-    # Create base variant by replacing -ubuntu- with -base-ubuntu-
-    DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
-    echo "docker-image-base=$DOCKER_IMAGE_BASE" >> "$GITHUB_OUTPUT"
-
     echo "✓ Docker images already exist"
     exit 0
 else
     # Images don't exist - set empty outputs so build job runs
     echo "docker-image=" >> "$GITHUB_OUTPUT"
-    echo "docker-image-base=" >> "$GITHUB_OUTPUT"
     echo "ℹ Docker images need to be built (not cached)"
     # Exit 0 - this is not an error condition, just indicates build is needed
     exit 0

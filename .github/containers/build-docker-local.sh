@@ -3,77 +3,84 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Build Docker images locally for testing
-# Run from repository root: .github/containers/build-docker-local.sh
+#
+# Usage: .github/containers/build-docker-local.sh --ttmlir-toolchain=<dir>
+#
+# Run from repository root
 
 set -e
 
+TTMLIR_TOOLCHAIN_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --ttmlir-toolchain=*)
+            TTMLIR_TOOLCHAIN_DIR="${1#*=}"
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$TTMLIR_TOOLCHAIN_DIR" ]; then
+    echo "ERROR: --ttmlir-toolchain=<dir> is required"
+    echo ""
+    echo "Usage: $0 --ttmlir-toolchain=<dir>"
+    echo ""
+    echo "The toolchain must contain pre-built LLVM + tt-mlir."
+    exit 1
+fi
+
+if [ ! -d "$TTMLIR_TOOLCHAIN_DIR" ]; then
+    echo "ERROR: Toolchain directory does not exist: $TTMLIR_TOOLCHAIN_DIR"
+    exit 1
+fi
+
 echo "=== tt-lang Docker Build Test ==="
+echo "Toolchain: $TTMLIR_TOOLCHAIN_DIR"
 echo ""
 
-# Use the CI image tag
-MLIR_TAG="latest"
-echo "Using tt-mlir CI image tag: $MLIR_TAG"
-echo ""
+DOCKERFILE=".github/containers/Dockerfile"
 
-# Pull the base tt-mlir images
-echo "--- Pulling tt-mlir images ---"
-sudo docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-base-ubuntu-22-04:${MLIR_TAG}
-sudo docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG}
-echo ""
-
-# Build base image
-echo "--- Building tt-lang-base ---"
-sudo docker build \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
-    -t tt-lang-base:local \
-    -f .github/containers/Dockerfile.base .
-
-# Tag with full registry path so dist/dev builds can find it locally
-sudo docker tag tt-lang-base:local ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:local
-
-echo "✓ Base image built"
-echo ""
-
-# Build CI image (tt-mlir toolchain for CI workflows)
+# Build CI image
 echo "--- Building tt-lang CI image ---"
-sudo docker build \
-    --build-arg FROM_TAG=local \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
+docker build \
+    --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
     --target ci \
     -t tt-lang-ci:local \
-    -f .github/containers/Dockerfile .
+    -f "$DOCKERFILE" .
 echo "✓ CI image built"
 echo ""
 
-# Build Dist image (pre-built tt-lang for users)
+# Build Dist image
 echo "--- Building tt-lang Dist image ---"
-sudo docker build \
-    --build-arg FROM_TAG=local \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
-    --target dist \
-    -t tt-lang-dist:local \
-    -f .github/containers/Dockerfile .
+docker build \
+    --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
+    --target user \
+    -t tt-lang-user:local \
+    -f "$DOCKERFILE" .
 echo "✓ Dist image built"
 echo ""
 
-# Build IRD image (development tools)
+# Build IRD image
 echo "--- Building tt-lang IRD image ---"
-sudo docker build \
-    --build-arg FROM_TAG=local \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
-    --target ird \
-    -t tt-lang-ird:local \
-    -f .github/containers/Dockerfile .
+docker build \
+    --build-context ttmlir-toolchain="$TTMLIR_TOOLCHAIN_DIR" \
+    --target dev \
+    -t tt-lang-dev:local \
+    -f "$DOCKERFILE" .
 echo "✓ IRD image built"
 echo ""
 
 echo "=== Build Complete ==="
 echo ""
 echo "Images created:"
-echo "  - tt-lang-base:local"
-echo "  - tt-lang-ci:local (also tagged as tt-lang-dist:local)"
-echo "  - tt-lang-ird:local"
+echo "  - tt-lang-ci:local (tt-mlir toolchain)"
+echo "  - tt-lang-user:local (pre-built tt-lang)"
+echo "  - tt-lang-dev:local (dev tools)"
 echo ""
-echo "Test the CI/dist image:"
-echo "  sudo docker run -it tt-lang-ci:local python -c \"import ttl\""
-echo "  sudo docker run -it tt-lang-dist:local python -c \"import ttl\""
+echo "Test the user image:"
+echo "  docker run -it tt-lang-user:local python -c \"import ttl\""
