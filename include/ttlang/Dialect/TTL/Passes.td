@@ -182,6 +182,28 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLAnnotateBinaryOpStrategy
+    : Pass<"ttl-annotate-binary-op-strategy", "::mlir::func::FuncOp"> {
+  let summary = "Annotate binary tile operations with execution strategy";
+  let description = [{
+    Analysis pass that annotates binary tile operations (add, sub, mul) with
+    their optimal execution strategy based on operand provenance:
+
+    - "fpu": Both operands are block arguments (from CB) → use FPU direct access
+    - "dest_reuse": One operand is block argument, one from DST → use binary_dest_reuse
+    - "sfpu": Both operands from DST intermediates → use SFPU
+
+    This follows LLVM/MLIR best practice of computing analysis once and caching
+    results via attributes. The execution_target attribute is consumed by:
+    - TTLAssignDST: Skips copy_tile insertion for FPU block argument operands
+    - ConvertTTLToTTKernel: Selects appropriate lowering pattern (FPU/dest-reuse/SFPU)
+
+    Benefits: Modularity, efficiency (compute once), maintainability.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLLowerSignpostToEmitC
     : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";
