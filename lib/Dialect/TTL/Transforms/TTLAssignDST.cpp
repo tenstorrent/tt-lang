@@ -216,9 +216,14 @@ static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
 //===----------------------------------------------------------------------===//
 
 /// Get consumers of a value sorted by their position in the block.
+/// Excludes CB-reading ops (bcast, etc.) since they don't use DST for input.
 static SmallVector<Operation *> getSortedConsumers(Value v) {
   SmallVector<Operation *> consumers;
   for (Operation *user : v.getUsers()) {
+    // Skip CB-input ops (bcast, reduce, transpose, etc.)
+    if (user->hasTrait<TTLCBInputTileOpTrait>()) {
+      continue;
+    }
     consumers.push_back(user);
   }
   // Sort by block position
@@ -342,18 +347,20 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   for (Operation &op : *body) {
     int64_t currentIdx = opIndex[&op];
 
-    // Extend input intervals to this use
-    for (Value operand : op.getOperands()) {
-      if (!isTileValue(operand)) {
-        continue;
-      }
-      if (intervals.find(operand) == intervals.end()) {
-        // Block argument: start at (first_use - 1) to enable register reuse.
-        // Args consumed at position N get allocated before outputs produced at
-        // N, allowing outputs to reuse the consumed args' registers.
-        intervals[operand] = {currentIdx - 1, currentIdx, operand};
-      } else {
-        intervals[operand].end = std::max(intervals[operand].end, currentIdx);
+    // Extend input intervals to this use (skipping ops with CB inputs)
+    if (!op.hasTrait<TTLCBInputTileOpTrait>()) {
+      for (Value operand : op.getOperands()) {
+        if (!isTileValue(operand)) {
+          continue;
+        }
+        if (intervals.find(operand) == intervals.end()) {
+          // Block argument: start at (first_use - 1) to enable register reuse.
+          // Args consumed at position N get allocated before outputs produced
+          // at N, allowing outputs to reuse the consumed args' registers.
+          intervals[operand] = {currentIdx - 1, currentIdx, operand};
+        } else {
+          intervals[operand].end = std::max(intervals[operand].end, currentIdx);
+        }
       }
     }
 
@@ -767,8 +774,11 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
 
       // Second: Process remaining block arguments - insert copy_tile at first
-      // use
+      // use. Skip CB-reading ops (bcast, etc.) which read from CB directly.
       for (Operation &op : *body) {
+        if (op.hasTrait<TTLCBInputTileOpTrait>()) {
+          continue;
+        }
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {
@@ -820,12 +830,14 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
           arg.replaceUsesWithIf(copy.getDstTile(), [&](OpOperand &use) {
             // Don't replace in copy_tile ops - they need the original block arg
-            return use.getOwner() != copy && !isa<CopyTileOp>(use.getOwner());
+            // Don't replace in CB-reading ops - they read from CB, not DST
+            return use.getOwner() != copy && !isa<CopyTileOp>(use.getOwner()) &&
+                   !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
           });
         }
       }
 
-      // Set dst_idx attributes on tile compute ops
+      // Set dst_idx attributes on tile compute ops.
       for (Operation &op : *body) {
         if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op)) {
           continue;
