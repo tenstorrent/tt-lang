@@ -257,13 +257,14 @@ def copy(src, dst) -> CopyTransferHandler:
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
             return ttl.copy(xf_type, src_cb, pipe_val)
         else:
-            # Pipe -> CB (receive, data arrives via multicast)
+            # Pipe -> CB (receive, data arrives via multicast from source)
+            # No transfer kind - data is already in CB after source's write barrier
             if not _is_block(dst):
                 raise ValueError("copy() from pipe requires block dst (from cb.reserve() or cb.wait())")
             dst_cb = _get_cb_from_block(dst)
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst_cb.type.context
-            xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
+            xf_type = Type.parse("!ttl.transfer_handle", ctx)
             return ttl.copy(xf_type, pipe_val, dst_cb)
 
     # Non-pipe transfers: tensor subscript <-> block

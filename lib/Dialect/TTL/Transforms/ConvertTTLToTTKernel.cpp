@@ -657,8 +657,12 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   return success();
 }
 
+// Semaphore index reserved for pipe synchronization.
+constexpr int64_t kPipeSemaphoreIndex = 0;
+
 /// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
 /// The destination cores receive data at the same L1 address as their local CB.
+/// After multicast, signals destinations via semaphore.
 static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
@@ -704,11 +708,24 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto cbReadPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
   auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
 
-  // Destination coordinates for multicast
-  auto dstStartXVal = rewriter.create<arith::ConstantIndexOp>(loc, dstStartX);
-  auto dstStartYVal = rewriter.create<arith::ConstantIndexOp>(loc, dstStartY);
-  auto dstEndXVal = rewriter.create<arith::ConstantIndexOp>(loc, dstEndX);
-  auto dstEndYVal = rewriter.create<arith::ConstantIndexOp>(loc, dstEndY);
+  // Destination coordinates for multicast - convert logical to virtual coords
+  auto dstStartXLogical =
+      rewriter.create<arith::ConstantIndexOp>(loc, dstStartX);
+  auto dstStartYLogical =
+      rewriter.create<arith::ConstantIndexOp>(loc, dstStartY);
+  auto dstEndXLogical = rewriter.create<arith::ConstantIndexOp>(loc, dstEndX);
+  auto dstEndYLogical = rewriter.create<arith::ConstantIndexOp>(loc, dstEndY);
+
+  // NOC operations require virtual/translated coordinates
+  auto dstStartXVal = rewriter.create<ttk::ConvertLogicalXToTranslatedOp>(
+      loc, indexTy, dstStartXLogical);
+  auto dstStartYVal = rewriter.create<ttk::ConvertLogicalYToTranslatedOp>(
+      loc, indexTy, dstStartYLogical);
+  auto dstEndXVal = rewriter.create<ttk::ConvertLogicalXToTranslatedOp>(
+      loc, indexTy, dstEndXLogical);
+  auto dstEndYVal = rewriter.create<ttk::ConvertLogicalYToTranslatedOp>(
+      loc, indexTy, dstEndYLogical);
+
   auto numDestsVal = rewriter.create<arith::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
   auto pageSizeVal = rewriter.create<arith::ConstantOp>(
@@ -749,18 +766,57 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         }
       });
 
+  // Signal destinations that data has arrived via semaphore multicast.
+  auto semIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, kPipeSemaphoreIndex);
+  auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
+  auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
+  auto validVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+  // Set local semaphore to valid value (this is what gets multicast)
+  rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, validVal);
+
+  // Multicast semaphore to destination cores
+  auto semMcastAddr = rewriter.create<ttk::GetNocMulticastAddrOp>(
+      loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
+      /*noc=*/Value());
+
+  if (pipeType.srcInDstRange()) {
+    rewriter.create<ttk::NocSemaphoreSetMulticastLoopbackOp>(
+        loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+        /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+  } else {
+    rewriter.create<ttk::NocSemaphoreSetMulticastOp>(
+        loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+        /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+  }
+
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
 }
 
 /// Lower Pipe -> CB copy: destination side of pipe transfer.
 /// At the destination, data arrives via multicast from source core.
-/// This generates a no-op since the multicast write handles the transfer.
+/// Waits for semaphore signal from source before proceeding.
 static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                                    ConversionPatternRewriter &rewriter) {
-  // The destination side doesn't initiate any transfer - data arrives
-  // via the multicast from the source side. Just replace with dummy handle.
-  rewriter.replaceOp(op, makeZeroI32(op.getLoc(), rewriter));
+  auto loc = op.getLoc();
+
+  // Wait for source to signal data arrival via semaphore.
+  auto semIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, kPipeSemaphoreIndex);
+  auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
+  auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
+  auto validVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+  // Wait until semaphore is set to valid by source's multicast
+  rewriter.create<ttk::NocSemaphoreWaitOp>(loc, semPtr, validVal);
+
+  // Reset semaphore for next use
+  auto zeroVal = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, zeroVal);
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
 }
 
@@ -953,13 +1009,15 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
     // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
-    // MVP behavior: require a direction-typed handle and emit the
-    // corresponding global barrier. Untyped handles are rejected by the
-    // verifier, but we also fail the rewrite defensively.
+    // MVP behavior: emit the corresponding global barrier based on transfer
+    // direction. Untyped handles (no kind) are no-ops - used for pipe receives
+    // where data arrives via multicast and no local barrier is needed.
     auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
     if (!kind) {
-      return rewriter.notifyMatchFailure(
-          op, "requires direction-typed !ttl.transfer_handle<read|write>");
+      // No transfer kind means no barrier needed (e.g., pipe receive where
+      // data arrives via multicast from source core).
+      rewriter.eraseOp(op);
+      return success();
     }
     if (*kind == TransferKind::read) {
       rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
