@@ -44,7 +44,7 @@ permissions:
 
 jobs:
     build-toolchain:
-        name: Build LLVM + tt-mlir toolchain
+        name: Build LLVM + tt-mlir toolchain and cache it
         runs-on: mlir-large-runner-lang
         timeout-minutes: 360  # 6 hours for LLVM + tt-mlir build
 
@@ -61,17 +61,22 @@ jobs:
             - name: Maximize space
               uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
 
+            - name: Checkout tt-lang
+              uses: actions/checkout@v4
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.11'
+                  cache: 'pip'
+
             - name: Install build dependencies
               run: |
                   sudo apt-get update
                   sudo apt-get install -y \
                       build-essential ninja-build lld \
                       clang-17 clang++-17 \
-                      python3.11 python3.11-venv python3.11-dev \
                       libzstd-dev
-
-            - name: Checkout tt-lang
-              uses: actions/checkout@v4
 
             - name: Determine tt-mlir commit
               id: ttmlir-commit
