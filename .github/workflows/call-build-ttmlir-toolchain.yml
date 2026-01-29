@@ -8,6 +8,11 @@ name: Build tt-mlir Toolchain (Cache)
 # and save dependencies, which can then be restored by other jobs or workflows."
 
 on:
+    # TODO: Remove pull_request trigger after initial testing
+    pull_request:
+        paths:
+            - '.github/workflows/call-build-ttmlir-toolchain.yml'
+            - 'third-party/tt-mlir.commit'
     workflow_dispatch:
         inputs:
             tt-mlir-commit:
