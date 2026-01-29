@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -211,18 +212,30 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Emit tile ops in topological order
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
-    SmallVector<Value, 2> tileOperands;
-    for (Value operand : getElementwiseOperands(op)) {
-      auto it = tensorToTile.find(operand);
-      if (it == tensorToTile.end()) {
-        return op->emitError("fusion failed: operand not mapped to tile value");
-      }
-      tileOperands.push_back(it->second);
-    }
+    Value tileResult;
 
-    Value tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
-    if (!tileResult) {
-      return op->emitError("fusion failed: unsupported op type");
+    // Special case: BcastOp reads from CB, needs TileBcastOp
+    if (auto bcastOp = dyn_cast<BcastOp>(op)) {
+      Value inputTile = tensorToTile[bcastOp.getInput()];
+      Value outputTile = body->getArguments().back(); // output block arg
+      tileResult = rewriter.create<TileBcastOp>(
+          loc, tileType, inputTile, outputTile, bcastOp.getBcastTypeAttr());
+    } else {
+      // Elementwise ops
+      SmallVector<Value, 2> tileOperands;
+      for (Value operand : getElementwiseOperands(op)) {
+        auto it = tensorToTile.find(operand);
+        if (it == tensorToTile.end()) {
+          return op->emitError(
+              "fusion failed: operand not mapped to tile value");
+        }
+        tileOperands.push_back(it->second);
+      }
+
+      tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+      if (!tileResult) {
+        return op->emitError("fusion failed: unsupported op type");
+      }
     }
 
     tensorToTile[op->getResult(0)] = tileResult;
@@ -243,8 +256,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     rewriter.eraseOp(tensorStoreOp);
   }
 
-  // Erase the fused ops (they're now inside the compute body as tile ops)
-  for (Operation *op : trace.opsInOrder) {
+  // Erase the fused ops in reverse topological order (sink to roots).
+  // This ensures each op's users are erased before the op itself.
+  for (auto it = trace.opsInOrder.rbegin(); it != trace.opsInOrder.rend();
+       ++it) {
+    Operation *op = *it;
     if (op != sinkOp && op->use_empty()) {
       rewriter.eraseOp(op);
     }
@@ -543,6 +559,138 @@ struct LowerDirectTensorStore : OpRewritePattern<TensorStoreOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Bcast Lowering Pattern
+//===----------------------------------------------------------------------===//
+
+/// Build affine map for bcast shape expansion.
+/// For col bcast (N,1) -> (N,M): returns (i,j) -> (i,0)
+/// For row bcast (1,M) -> (N,M): returns (i,j) -> (0,j)
+/// For scalar bcast (1,1) -> (N,M): returns (i,j) -> (0,0)
+/// For no expansion: returns identity map.
+static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
+                                    bool expandCols) {
+  if (expandRows && expandCols) {
+    return AffineMap::get(
+        2, 0, {getAffineConstantExpr(0, ctx), getAffineConstantExpr(0, ctx)},
+        ctx);
+  }
+  if (expandCols) {
+    return AffineMap::get(
+        2, 0, {getAffineDimExpr(0, ctx), getAffineConstantExpr(0, ctx)}, ctx);
+  }
+  if (expandRows) {
+    return AffineMap::get(
+        2, 0, {getAffineConstantExpr(0, ctx), getAffineDimExpr(1, ctx)}, ctx);
+  }
+  return AffineMap::getMultiDimIdentityMap(2, ctx);
+}
+
+/// Validate that shape expansion is compatible with bcast type.
+static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
+                                            bool expandCols) {
+  auto bcastType = op.getBcastType();
+  if (expandRows && expandCols) {
+    if (bcastType != BcastType::Scalar) {
+      return op.emitError("row+col expansion requires scalar bcast type");
+    }
+  } else if (expandCols) {
+    if (bcastType != BcastType::Col) {
+      return op.emitError("col expansion requires col bcast type");
+    }
+  } else if (expandRows) {
+    if (bcastType != BcastType::Row) {
+      return op.emitError("row expansion requires row bcast type");
+    }
+  }
+  return success();
+}
+
+/// Pattern for bcast op: TTL tensor op -> ttl.compute with tile_bcast.
+/// Supports shape expansion where input CB can be smaller than output CB.
+struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
+  using OpRewritePattern<BcastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(BcastOp op,
+                                PatternRewriter &rewriter) const override {
+    auto outputType = getTensorType(op.getResult());
+    auto inputType = getTensorType(op.getInput());
+    if (!outputType || !inputType) {
+      return failure();
+    }
+
+    Value inputCb = getAttachedCB(op.getInput());
+    Value outCb = getAttachedCB(op.getOutput());
+    if (!inputCb) {
+      return op.emitError(
+          "broadcast input must come directly from a circular buffer, not from "
+          "an elementwise result; move the broadcast to its own compute block "
+          "or make it the first operation in a fused sequence");
+    }
+    if (!outCb) {
+      return op.emitError("bcast output must be attached to a circular buffer");
+    }
+
+    if (inputType.getRank() != 2 || outputType.getRank() != 2) {
+      return op.emitError("bcast requires rank-2 tensors");
+    }
+
+    auto inputShape = inputType.getShape();
+    auto outputShape = outputType.getShape();
+    bool expandRows = inputShape[0] != outputShape[0];
+    bool expandCols = inputShape[1] != outputShape[1];
+
+    if (expandRows && inputShape[0] != 1) {
+      return op.emitError("row expansion requires input dim 0 to be 1");
+    }
+    if (expandCols && inputShape[1] != 1) {
+      return op.emitError("col expansion requires input dim 1 to be 1");
+    }
+
+    if (failed(validateBcastExpansion(op, expandRows, expandCols))) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap outputMap = AffineMap::getMultiDimIdentityMap(2, ctx);
+    AffineMap inputMap = buildBcastInputMap(ctx, expandRows, expandCols);
+
+    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
+                                   AffineMapAttr::get(outputMap),
+                                   AffineMapAttr::get(outputMap)};
+
+    SmallVector<Attribute> iterTypes(outputType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{outputType}, ValueRange{op.getInput(), op.getOutput()},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = outputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
+
+    rewriter.setInsertionPointToStart(body);
+    Value result =
+        rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
+                                     body->getArgument(1), op.getBcastType());
+    rewriter.create<YieldOp>(loc, ValueRange{result});
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Pattern Type Aliases - Generated from TTLElementwiseOps.def (tile-based)
 //===----------------------------------------------------------------------===//
 
@@ -598,7 +746,9 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // Direct store pattern (lower priority - runs after compute patterns)
+  patterns.add<LowerBcastToCompute>(ctx);
+
+  // Direct store pattern (runs after compute patterns)
   patterns.add<LowerDirectTensorStore>(ctx);
 }
 

@@ -293,6 +293,7 @@ class TensorToBlockHandler:
         num_tiles = int(prod(shape_in_tiles))
         width_tiles = shape_in_tiles[1]
 
+        tiles = []
         for tile_idx in range(num_tiles):
             # Convert linear index to 2D tile coordinates
             h_tile = tile_idx // width_tiles
@@ -300,7 +301,9 @@ class TensorToBlockHandler:
 
             # Extract single tile using tile coordinates [h:h+1, w:w+1]
             tile = src[h_tile : h_tile + 1, w_tile : w_tile + 1]
-            dst[tile_idx] = tile
+            tiles.append(tile)
+
+        dst.copy_as_dest(tiles)
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
         return True
@@ -425,7 +428,7 @@ class PipeToBlockHandler:
                         f"does not match pipe data length ({len(src_data)})"
                     )
 
-                dst.store(src_data)
+                dst.copy_as_dest(src_data)
 
                 # Decrement receiver count and update queue
                 remaining_receivers -= 1
