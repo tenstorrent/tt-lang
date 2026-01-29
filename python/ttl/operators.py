@@ -250,7 +250,9 @@ def copy(src, dst) -> CopyTransferHandler:
         if dst_is_pipe:
             # CB -> Pipe (send via multicast)
             if not _is_block(src):
-                raise ValueError("copy() to pipe requires block src (from cb.reserve() or cb.wait())")
+                raise ValueError(
+                    "copy() to pipe requires block src (from cb.reserve() or cb.wait())"
+                )
             src_cb = _get_cb_from_block(src)
             pipe_val = _get_pipe_mlir_value(dst)
             ctx = src_cb.type.context
@@ -260,7 +262,9 @@ def copy(src, dst) -> CopyTransferHandler:
             # Pipe -> CB (receive, data arrives via multicast from source)
             # No transfer kind - data is already in CB after source's write barrier
             if not _is_block(dst):
-                raise ValueError("copy() from pipe requires block dst (from cb.reserve() or cb.wait())")
+                raise ValueError(
+                    "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"
+                )
             dst_cb = _get_cb_from_block(dst)
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst_cb.type.context
