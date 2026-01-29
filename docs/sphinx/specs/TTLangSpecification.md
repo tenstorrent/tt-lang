@@ -170,15 +170,15 @@ A *block* represents memory acquired from a circular buffer. Block size is deter
 # Element-wise with broadcast: Y = sqrt(A^2 + B^2)
 #
 # Tensor   Torch shape  Shape in tiles
-# A        1, N         1, NT
-# B        1, 1         1, 1
-# Y        1, N         1, NT
+# A        N            NT
+# B        1            1
+# Y        N            NT
 #
 # NT = N // TILE_SIZE
 
-a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1))
-b_cb = ttl.make_circular_buffer_like(B, shape = (1, 1))
-y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1))
+a_cb = ttl.make_circular_buffer_like(A, shape = (1, ))
+b_cb = ttl.make_circular_buffer_like(B, shape = (1, ))
+y_cb = ttl.make_circular_buffer_like(Y, shape = (1, ))
 
 @ttl.datamovement()
 def elwise_read():
@@ -189,8 +189,8 @@ def elwise_read():
             b_cb.reserve() as b_blk
         ):
             # then copy:
-            a_xf = ttl.copy(A[0, nt], a_blk)
-            b_xf = ttl.copy(B[0, 0], b_blk)
+            a_xf = ttl.copy(A[nt], a_blk)
+            b_xf = ttl.copy(B[0], b_blk)
 
             a_xf.wait()
             b_xf.wait()
@@ -209,7 +209,7 @@ def elwise_compute():
             # then compute y = sqrt(a^2 + b^2):
             a_squared = a_blk ** 2
             b_squared = b_blk ** 2
-            y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[1]))
+            y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[0]))
             y_blk.store(y)
 
             # release a_blk, b_blk and y_blk
@@ -222,7 +222,7 @@ def elwise_write():
         with y_cb.wait() as y_blk:
 
             # then copy:
-            y_xf = ttl.copy(y_blk, Y[0, nt])
+            y_xf = ttl.copy(y_blk, Y[nt])
             y_xf.wait()
 
             # release y_blk
@@ -235,87 +235,91 @@ def elwise_write():
 # Matmul with bias: Y = A @ B + C
 #
 # Tensor   Torch shape  Shape in tiles
-# A        M, K         MT, KT
+# A        I, M, K      IT, MT, KT
 # B        K, N         KT, NT
 # C        M, N         MT, NT
-# Y        M, N         MT, NT
+# Y        I, M, N      IT, MT, NT
 #
+# IT = I // TILE_SIZE
 # MT = M // TILE_SIZE
 # NT = N // TILE_SIZE
 # KT = K // TILE_SIZE
 
-a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1))
+a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1, 1))
 b_cb = ttl.make_circular_buffer_like(B, shape = (1, 1))
 c_cb = ttl.make_circular_buffer_like(C, shape = (1, 1))
-y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1))
+y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1, 1))
 
 @ttl.datamovement()
 def matmul_read():
-    for mt in range(MT):
-        for nt in range(NT):
-            # acquire c_blk from c_cb:
-            with c_cb.reserve() as c_blk:
-
-                # then copy:
-                c_xf = ttl.copy(C[mt, nt], c_blk)
-                c_xf.wait()
-
-                # release c_blk
-
-            for kt in range(KT):
-                # acquire a_blk and b_blk from a_cb and b_cb:
-                with (
-                    a_cb.reserve() as a_blk,
-                    b_cb.reserve() as b_blk
-                ):
-                    # then copy:
-                    a_xf = ttl.copy(A[mt, kt], a_blk)
-                    b_xf = ttl.copy(B[kt, nt], b_blk)
-
-                    a_xf.wait()
-                    b_xf.wait()
-
-                    # release a_blk and b_blk
-
-@ttl.compute()
-def matmul_compute():
-    for _ in range(MT):
-        for _ in range(NT):
-            # acquire y_blk from y_cb:
-            with y_cb.reserve() as y_blk:
+    for it in range(IT):
+        for mt in range(MT):
+            for nt in range(NT):
                 # acquire c_blk from c_cb:
-                with c_cb.wait() as c_blk:
+                with c_cb.reserve() as c_blk:
 
-                    # then compute: y = c:
-                    y_blk.store(c_blk, acc=True)
+                    # then copy:
+                    c_xf = ttl.copy(C[mt, nt], c_blk)
+                    c_xf.wait()
 
                     # release c_blk
 
-                for _ in range(KT):
+                for kt in range(KT):
                     # acquire a_blk and b_blk from a_cb and b_cb:
                     with (
-                        a_cb.wait() as a_blk,
-                        b_cb.wait() as b_blk
+                        a_cb.reserve() as a_blk,
+                        b_cb.reserve() as b_blk
                     ):
-                        # then compute y += a @ b:
-                        y_blk.store(a_blk @ b_blk, acc=True)
+                        # then copy:
+                        a_xf = ttl.copy(A[it, mt, kt], a_blk)
+                        b_xf = ttl.copy(B[kt, nt], b_blk)
+
+                        a_xf.wait()
+                        b_xf.wait()
 
                         # release a_blk and b_blk
 
-                # release y_blk
+@ttl.compute()
+def matmul_compute():
+    for _ in range(IT):
+        for _ in range(MT):
+            for _ in range(NT):
+                # acquire y_blk from y_cb:
+                with y_cb.reserve() as y_blk:
+                    # acquire c_blk from c_cb:
+                    with c_cb.wait() as c_blk:
+
+                        # then compute: y = c:
+                        y_blk.store(c_blk, acc=True)
+
+                        # release c_blk
+
+                    for _ in range(KT):
+                        # acquire a_blk and b_blk from a_cb and b_cb:
+                        with (
+                            a_cb.wait() as a_blk,
+                            b_cb.wait() as b_blk
+                        ):
+                            # then compute y += a @ b:
+                            y_blk.store(a_blk @ b_blk, acc=True)
+
+                            # release a_blk and b_blk
+
+                    # release y_blk
 
 @ttl.datamovement()
 def matmul_write():
-    for mt in range(MT):
-        for nt in range(NT):
-            # acquire y_blk from y_cb:
-            with y_cb.wait() as y_blk:
+    for it in range(IT):
+        for mt in range(MT):
+            for nt in range(NT):
+                # acquire y_blk from y_cb:
+                with y_cb.wait() as y_blk:
 
-                # then copy:
-                y_xf = ttl.copy(y_blk, Y[mt, nt])
-                y_xf.wait()
+                    # then copy:
+                    y_xf = ttl.copy(y_blk, Y[it, mt, nt])
+                    y_xf.wait()
 
-                # release y_blk
+                    # release y_blk
 ```
 
 | Function | Description |
