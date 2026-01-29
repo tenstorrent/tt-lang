@@ -717,8 +717,10 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   // Get CB read pointer (source L1 address)
   auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
-  auto cbReadPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
-  auto pageSizeIdx = rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+  auto cbReadPtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+  auto pageSizeIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
 
   // Destination coordinates for multicast - convert logical to virtual coords
   auto dstStartXLogical =
@@ -753,7 +755,8 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
             b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
         Value srcAddrIdx =
             b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
-        Value srcAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
+        Value srcAddr =
+            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
 
         // The destination L1 address is the same as source (same CB layout)
         // Get multicast NOC address
@@ -762,7 +765,8 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
             srcAddr, /*noc=*/Value());
 
         // Perform multicast write
-        // Optional attrs: linked=nullptr, multicast_path_reserve=nullptr, noc=nullptr
+        // Optional attrs: linked=nullptr, multicast_path_reserve=nullptr,
+        // noc=nullptr
         if (pipeType.srcInDstRange()) {
           // Source is in destination range - use loopback version
           b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
@@ -791,8 +795,8 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto incrVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     // Get NOC address of destination's semaphore for atomic increment.
-    auto dstSemNocAddr =
-        rewriter.create<ttk::GetNocAddrOp>(loc, dstStartXVal, dstStartYVal, semAddr);
+    auto dstSemNocAddr = rewriter.create<ttk::GetNocAddrOp>(
+        loc, dstStartXVal, dstStartYVal, semAddr);
 
     rewriter.create<ttk::NocSemaphoreIncOp>(loc, dstSemNocAddr.getResult(),
                                             incrVal, /*noc_id=*/Value());
@@ -1099,7 +1103,8 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
     auto isSrc = rewriter.create<arith::AndIOp>(loc, matchX, matchY);
 
     // Create scf.if with empty body (the builder adds a yield for us).
-    auto ifOp = rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
+    auto ifOp =
+        rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
@@ -1154,7 +1159,8 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
     auto isDst = rewriter.create<arith::AndIOp>(loc, inRangeX, inRangeY);
 
     // Create scf.if with empty body (the builder adds a yield for us).
-    auto ifOp = rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
+    auto ifOp =
+        rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
@@ -1320,9 +1326,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering, CoreXLowering, CoreYLowering,
-               IfSrcLowering, IfDstLowering, CreatePipeLowering>(typeConverter,
-                                                                  &ctx);
+               StoreLowering, CoreXLowering, CoreYLowering, IfSrcLowering,
+               IfDstLowering, CreatePipeLowering>(typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

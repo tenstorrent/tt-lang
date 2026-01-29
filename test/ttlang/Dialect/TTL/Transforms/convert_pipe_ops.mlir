@@ -71,4 +71,3 @@ func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread
   ttl.wait %xf : !ttl.transfer_handle<read>
   func.return
 }
-
