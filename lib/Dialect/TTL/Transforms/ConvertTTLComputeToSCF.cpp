@@ -25,21 +25,38 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 namespace {
 
+/// Compute total static elements in a tensor shape. Returns 0 for dynamic dims.
+static int64_t getTotalElements(RankedTensorType type) {
+  int64_t total = 1;
+  for (int64_t dim : type.getShape()) {
+    if (dim == ShapedType::kDynamic) {
+      return 0;
+    }
+    total *= dim;
+  }
+  return total;
+}
+
 /// Get the iteration domain for a ComputeOp. The verifier ensures that the
-/// maximum tensor rank equals iterator_types.size(). Use the max-rank tensor's
-/// shape for loop bounds (handles reductions/broadcasts where other tensors
-/// have lower rank).
+/// maximum tensor rank equals iterator_types.size(). Use the tensor with the
+/// largest shape for loop bounds (handles broadcasts where output is larger
+/// than input).
 static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   SmallVector<Range> domain;
   Location loc = op.getLoc();
 
-  // Find the tensor with maximum rank (matches iterator domain per verifier).
+  // Find the tensor with the largest iteration domain.
+  // Prefer higher rank, then larger element count for same rank.
   Value maxRankTensor;
   int64_t maxRank = 0;
+  int64_t maxElements = 0;
   for (Value operand : llvm::concat<Value>(op.getInputs(), op.getOutputs())) {
-    int64_t rank = cast<RankedTensorType>(operand.getType()).getRank();
-    if (rank > maxRank) {
+    auto type = cast<RankedTensorType>(operand.getType());
+    int64_t rank = type.getRank();
+    int64_t elements = getTotalElements(type);
+    if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
       maxRank = rank;
+      maxElements = elements;
       maxRankTensor = operand;
     }
   }

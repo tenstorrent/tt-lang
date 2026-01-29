@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 from ttmlir.dialects import arith
 from ttmlir.ir import RankedTensorType, Type
@@ -327,6 +327,37 @@ def signpost(name: str):
         name: Name for the profiling region (must be a string literal)
     """
     return ttl.signpost(name)
+
+
+@syntax("broadcast")
+def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> TensorBlock:
+    """
+    Broadcast over specified dimensions.
+
+    Args:
+        input: Input tensor (CB-attached)
+        output: Output tensor (CB-attached, used for output CB tracking)
+        dims: Dimensions to broadcast over
+
+    Returns:
+        Result tensor with broadcast values
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType
+
+    dims_set = set(dims)
+    if dims_set == {0}:
+        bcast_val = 2  # Row
+    elif dims_set == {1}:
+        bcast_val = 1  # Col
+    elif dims_set == {0, 1}:
+        bcast_val = 3  # Scalar
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    bcast_attr = IntegerAttr.get(i32_type, bcast_val)
+    return ttl.bcast(output.type, input, output, bcast_attr)
 
 
 __all__ = [
