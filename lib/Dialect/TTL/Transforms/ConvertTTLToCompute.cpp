@@ -570,6 +570,8 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 
 /// Pattern for matmul op: TTL tensor op -> ttl.compute with tile_matmul.
 /// Matmul reads A and B from CBs, accumulates into C.
+/// Uses 2D iteration over the output tile grid. K-dimension accumulation
+/// is handled by the TileMatmulOp and its lowering to TTKernel.
 struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
   using OpRewritePattern<MatmulOp>::OpRewritePattern;
 
@@ -603,28 +605,29 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
 
-    // Build indexing maps for matmul: C[m,n] += A[m,k] * B[k,n]
-    // Iteration space is [m, n, k] where k is a reduction dimension.
-    // Map for A: (m, n, k) -> (m, k)
-    // Map for B: (m, n, k) -> (k, n)
-    // Map for C: (m, n, k) -> (m, n)
+    // Build indexing maps for matmul with 2D iteration over output grid.
+    // The K-dimension accumulation is implicit in the CB shapes and handled
+    // by the TileMatmulOp lowering.
+    // Iteration space is [m, n] (output tile grid).
+    // Map for A: (m, n) -> (m, 0) - reads row m of A (K=0 for simplicity)
+    // Map for B: (m, n) -> (0, n) - reads col n of B (K=0 for simplicity)
+    // Map for C: (m, n) -> (m, n) - output at (m, n)
     auto d0 = getAffineDimExpr(0, ctx); // m
     auto d1 = getAffineDimExpr(1, ctx); // n
-    auto d2 = getAffineDimExpr(2, ctx); // k
+    auto c0 = getAffineConstantExpr(0, ctx);
 
-    AffineMap aMap = AffineMap::get(3, 0, {d0, d2}, ctx);
-    AffineMap bMap = AffineMap::get(3, 0, {d2, d1}, ctx);
-    AffineMap cMap = AffineMap::get(3, 0, {d0, d1}, ctx);
+    AffineMap aMap = AffineMap::get(2, 0, {d0, c0}, ctx);
+    AffineMap bMap = AffineMap::get(2, 0, {c0, d1}, ctx);
+    AffineMap cMap = AffineMap::get(2, 0, {d0, d1}, ctx);
 
     SmallVector<Attribute> maps = {AffineMapAttr::get(aMap),
                                    AffineMapAttr::get(bMap),
                                    AffineMapAttr::get(cMap),
                                    AffineMapAttr::get(cMap)};
 
-    // Iterator types: [parallel, parallel, reduction]
+    // Iterator types: [parallel, parallel]
     SmallVector<Attribute> iterTypes = {rewriter.getStringAttr("parallel"),
-                                        rewriter.getStringAttr("parallel"),
-                                        rewriter.getStringAttr("reduction")};
+                                        rewriter.getStringAttr("parallel")};
 
     Value init = buildInitTensor(rewriter, loc, outputType, op.getC());
     Value initAttached =

@@ -552,6 +552,216 @@ class TestMatmulFullMultitile:
         assert_allclose(result.float(), expected.float(), rtol=1e-1, atol=1.0)
 
 
+# =============================================================================
+# Large multi-tile kernel: [4x4] @ [4x4] = [4x4] tiles (128x128 elements)
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def matmul_large_multitile_kernel(a, b, c):
+    """Large multi-tile: C[4,4] = A[4,4] @ B[4,4].
+
+    128x128 elements = 4x4 tiles. K has 4 tiles requiring accumulation.
+    """
+    a_cb = ttl.make_circular_buffer_like(a, shape=(4, 4), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(b, shape=(4, 4), buffer_factor=2)
+    c_cb = ttl.make_circular_buffer_like(c, shape=(4, 4), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with a_cb.wait() as a_tile, b_cb.wait() as b_tile, c_cb.reserve() as c_out:
+            result = ttl.math.matmul(a_tile, b_tile, c_out)
+            c_out.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        a_blk = a_cb.reserve()
+        tx_a = ttl.copy(a[0:4, 0:4], a_blk)
+        tx_a.wait()
+        a_cb.push()
+
+        b_blk = b_cb.reserve()
+        tx_b = ttl.copy(b[0:4, 0:4], b_blk)
+        tx_b.wait()
+        b_cb.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        c_blk = c_cb.wait()
+        tx = ttl.copy(c_blk, c[0:4, 0:4])
+        tx.wait()
+        c_cb.pop()
+
+
+class TestMatmulRandomInputs:
+    """Test matmul with random inputs against PyTorch reference using PCC."""
+
+    def test_random_single_tile(self, device):
+        """Test single-tile matmul with random inputs."""
+        torch.manual_seed(42)
+        a_torch = torch.randn((32, 32), dtype=torch.bfloat16) * 0.1
+        b_torch = torch.randn((32, 32), dtype=torch.bfloat16) * 0.1
+        c_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+
+        expected = torch.matmul(a_torch.float(), b_torch.float()).to(torch.bfloat16)
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+
+        matmul_single_tile_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        from ttlang_test_utils import assert_pcc
+        pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
+        print(f"\n=== Random Single Tile Test ===")
+        print(f"PCC: {pcc:.6f}")
+
+    def test_random_k_accum(self, device):
+        """Test K-accumulation with random inputs."""
+        torch.manual_seed(123)
+        a_torch = torch.randn((32, 64), dtype=torch.bfloat16) * 0.1
+        b_torch = torch.randn((64, 32), dtype=torch.bfloat16) * 0.1
+        c_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+
+        expected = torch.matmul(a_torch.float(), b_torch.float()).to(torch.bfloat16)
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+
+        matmul_k_accum_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        from ttlang_test_utils import assert_pcc
+        pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
+        print(f"\n=== Random K-Accumulation Test ===")
+        print(f"PCC: {pcc:.6f}")
+
+    def test_random_full_multitile(self, device):
+        """Test full multi-tile with random inputs."""
+        torch.manual_seed(456)
+        a_torch = torch.randn((64, 64), dtype=torch.bfloat16) * 0.1
+        b_torch = torch.randn((64, 64), dtype=torch.bfloat16) * 0.1
+        c_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+
+        expected = torch.matmul(a_torch.float(), b_torch.float()).to(torch.bfloat16)
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+
+        matmul_full_multitile_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        from ttlang_test_utils import assert_pcc
+        pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
+        print(f"\n=== Random Full Multi-tile Test ===")
+        print(f"PCC: {pcc:.6f}")
+
+
+class TestMatmulLargeTiles:
+    """Test matmul with larger tile grids (4x4 = 128x128 elements)."""
+
+    def test_large_multitile_ones(self, device):
+        """Test large multi-tile with all ones.
+
+        A: [128, 128], B: [128, 128], C: [128, 128]
+        All 4x4 tiles. K has 4 tiles so each output accumulates 4 products.
+
+        C[i,j] = sum_k(A[i,k] * B[k,j]) = 128 * 1 = 128
+        """
+        a_torch = torch.ones((128, 128), dtype=torch.bfloat16)
+        b_torch = torch.ones((128, 128), dtype=torch.bfloat16)
+        c_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+
+        expected = torch.full((128, 128), 128.0, dtype=torch.bfloat16)
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+
+        matmul_large_multitile_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        print(f"\n=== Large Multi-tile Test (4x4 tiles) ===")
+        print(f"Expected all 128.0 (4 K-tiles accumulated)")
+        print(f"Got C[0,0]={result[0, 0].item()}, C[64,64]={result[64, 64].item()}")
+
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1.0)
+
+    def test_large_multitile_random(self, device):
+        """Test large multi-tile with random inputs."""
+        torch.manual_seed(789)
+        a_torch = torch.randn((128, 128), dtype=torch.bfloat16) * 0.1
+        b_torch = torch.randn((128, 128), dtype=torch.bfloat16) * 0.1
+        c_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+
+        expected = torch.matmul(a_torch.float(), b_torch.float()).to(torch.bfloat16)
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+
+        matmul_large_multitile_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        from ttlang_test_utils import assert_pcc
+        pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
+        print(f"\n=== Large Multi-tile Random Test ===")
+        print(f"PCC: {pcc:.6f}")
+
+
+class TestMatmulDRAM:
+    """Test matmul with DRAM memory configuration."""
+
+    def test_dram_single_tile(self, device):
+        """Test single-tile matmul with DRAM tensors."""
+        from ttlang_test_utils import to_dram
+
+        torch.manual_seed(111)
+        a_torch = torch.randn((32, 32), dtype=torch.bfloat16) * 0.1
+        b_torch = torch.randn((32, 32), dtype=torch.bfloat16) * 0.1
+        c_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+
+        expected = torch.matmul(a_torch.float(), b_torch.float()).to(torch.bfloat16)
+
+        a = to_dram(a_torch, device)
+        b = to_dram(b_torch, device)
+        c = to_dram(c_torch, device)
+
+        matmul_single_tile_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        from ttlang_test_utils import assert_pcc
+        pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
+        print(f"\n=== DRAM Single Tile Test ===")
+        print(f"PCC: {pcc:.6f}")
+
+    def test_dram_full_multitile(self, device):
+        """Test full multi-tile matmul with DRAM tensors."""
+        from ttlang_test_utils import to_dram
+
+        torch.manual_seed(222)
+        a_torch = torch.randn((64, 64), dtype=torch.bfloat16) * 0.1
+        b_torch = torch.randn((64, 64), dtype=torch.bfloat16) * 0.1
+        c_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+
+        expected = torch.matmul(a_torch.float(), b_torch.float()).to(torch.bfloat16)
+
+        a = to_dram(a_torch, device)
+        b = to_dram(b_torch, device)
+        c = to_dram(c_torch, device)
+
+        matmul_full_multitile_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        from ttlang_test_utils import assert_pcc
+        pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
+        print(f"\n=== DRAM Full Multi-tile Test ===")
+        print(f"PCC: {pcc:.6f}")
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

@@ -22,6 +22,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
@@ -654,6 +655,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 
 /// Lower ttl.tile_matmul to TTKernel mm_init_short + matmul_tiles.
 /// Reads A and B from CBs, accumulates into DST.
+/// Handles K-dimension accumulation by emitting a loop over K tiles.
 struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
   using OpConversionPattern<TileMatmulOp>::OpConversionPattern;
 
@@ -688,27 +690,8 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
     int64_t dstIdxVal = dstIdxAttr.getInt();
     Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
 
-    // Get CB tile indices from enclosing loops.
-    // For matmul C[m,n] += A[m,k] * B[k,n]:
-    // - A index comes from (m, k) dimensions
-    // - B index comes from (k, n) dimensions
-    // Loops are collected innermost-first: [k, n, m]
-    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-    if (loops.size() < 3) {
-      return rewriter.notifyMatchFailure(
-          op, "matmul requires at least 3 enclosing loops (m, n, k)");
-    }
-
-    // loops[0] = k (innermost, reduction)
-    // loops[1] = n (middle, parallel)
-    // loops[2] = m (outermost, parallel)
-    Value kIdx = loops[0].getInductionVar();
-    Value nIdx = loops[1].getInductionVar();
-    Value mIdx = loops[2].getInductionVar();
-
-    // Compute linearized CB tile indices.
-    // A has shape [M, K], index = m * K + k
-    // B has shape [K, N], index = k * N + n
+    // Get CB shapes to determine K dimension.
+    // A has shape [M, K], B has shape [K, N].
     auto aShape = getCBTileGridShape(op.getA(), funcOp);
     auto bShape = getCBTileGridShape(op.getB(), funcOp);
     if (!aShape || !bShape) {
@@ -716,27 +699,64 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
     }
 
     int64_t aK = aShape->second; // A is [M, K]
+    int64_t bK = bShape->first;  // B is [K, N]
     int64_t bN = bShape->second; // B is [K, N]
 
-    Value aKVal = rewriter.create<arith::ConstantIndexOp>(loc, aK);
-    Value bNVal = rewriter.create<arith::ConstantIndexOp>(loc, bN);
+    if (aK != bK) {
+      return rewriter.notifyMatchFailure(
+          op, "K dimension mismatch between A and B");
+    }
+    int64_t kDim = aK;
 
-    // A index = m * K + k
-    Value aIdxMulK = rewriter.create<arith::MulIOp>(loc, mIdx, aKVal);
-    Value aIdx = rewriter.create<arith::AddIOp>(loc, aIdxMulK, kIdx);
+    // Get M, N indices from enclosing loops (if any).
+    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value mIdx = zero;
+    Value nIdx = zero;
 
-    // B index = k * N + n
-    Value bIdxMulN = rewriter.create<arith::MulIOp>(loc, kIdx, bNVal);
-    Value bIdx = rewriter.create<arith::AddIOp>(loc, bIdxMulN, nIdx);
+    if (loops.size() >= 2) {
+      // loops[0] = n (innermost), loops[1] = m (outer)
+      nIdx = loops[0].getInductionVar();
+      mIdx = loops[1].getInductionVar();
+    } else if (loops.size() == 1) {
+      nIdx = loops[0].getInductionVar();
+    }
 
-    // Emit mm_init_short + matmul_tiles.
-    // mm_init_short(in0_cb, in1_cb, transpose=0) - can be called in loop
+    // Emit mm_init_short before the K loop.
     Value transpose = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getI32IntegerAttr(0));
     rewriter.create<ttk::MatmulInitShortOp>(loc, *aCB, *bCB, transpose);
 
-    // matmul_tiles(in0_cb, in1_cb, in0_tile_idx, in1_tile_idx, dst_tile_idx)
-    rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
+    // Create K loop if K > 1, otherwise just emit single matmul_tiles.
+    if (kDim > 1) {
+      Value kStart = zero;
+      Value kEnd = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
+      Value kStep = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+      auto kLoop = rewriter.create<scf::ForOp>(loc, kStart, kEnd, kStep);
+      rewriter.setInsertionPointToStart(kLoop.getBody());
+      Value kIdx = kLoop.getInductionVar();
+
+      // A index = m * K + k
+      Value aKVal = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
+      Value aIdxMulK = rewriter.create<arith::MulIOp>(loc, mIdx, aKVal);
+      Value aIdx = rewriter.create<arith::AddIOp>(loc, aIdxMulK, kIdx);
+
+      // B index = k * N + n
+      Value bNVal = rewriter.create<arith::ConstantIndexOp>(loc, bN);
+      Value bIdxMulN = rewriter.create<arith::MulIOp>(loc, kIdx, bNVal);
+      Value bIdx = rewriter.create<arith::AddIOp>(loc, bIdxMulN, nIdx);
+
+      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
+      rewriter.setInsertionPointAfter(kLoop);
+    } else {
+      // K=1: simple case, just compute indices directly.
+      // A index = m * 1 + 0 = m
+      // B index = 0 * N + n = n
+      Value aIdx = mIdx;
+      Value bIdx = nIdx;
+      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
+    }
 
     rewriter.replaceOp(op, adaptor.getA());
     return success();
