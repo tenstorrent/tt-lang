@@ -9,6 +9,11 @@ to enable cooperative multitasking and other program transformations.
 """
 
 import ast
+from typing import TYPE_CHECKING, Literal, Tuple, Union
+
+if TYPE_CHECKING:
+    from .cb import CircularBuffer
+    from .copy import CopyTransaction
 
 # Central registry of known generator-like functions exposed via ttl
 KNOWN_TTL_GENERATORS: set[str] = {
@@ -16,10 +21,21 @@ KNOWN_TTL_GENERATORS: set[str] = {
     "if_dst",  # PipeNet.if_dst method
 }
 
+# Type for values yielded by generator transformations
+# The AST transformation converts:
+# - cb.wait() to yield (cb, 'wait')
+# - cb.reserve() to yield (cb, 'reserve')
+# - tx.wait() to yield (tx, 'wait')
+YieldedValue = Union[
+    Tuple["CircularBuffer", Literal["wait", "reserve"]],
+    Tuple["CopyTransaction", Literal["wait"]],
+]
+
 __all__ = [
     "YieldInserter",
     "YieldingFunctionMarker",
     "YieldFromInserter",
+    "YieldedValue",
     "transform_wait_reserve_to_yield_ast",
     # Legacy alias for backward compatibility with tests
     "WaitReserveToYieldTransformer",

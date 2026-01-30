@@ -10,10 +10,11 @@ This module provides:
 - PipeIdentity classes: Wrappers exposing pipe source/destination information
 """
 
-from typing import Callable, Generic, List, TypeVar, Union
+from typing import Callable, Generator, Generic, List, Union
 
 from .kernel import core, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange, Pipe, DstT
+from .xformyield import YieldedValue
 
 
 class SrcPipeIdentity(Generic[DstT]):
@@ -215,7 +216,9 @@ class PipeNet(Generic[DstT]):
         """
         self._pipes = pipes
 
-    def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:
+    def if_src(
+        self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]
+    ) -> Generator[YieldedValue, None, None]:
         """Execute condition function for each pipe where current core is source.
 
         The condition function is called once for each pipe in the network where
@@ -225,6 +228,10 @@ class PipeNet(Generic[DstT]):
             cond_fun: Function to execute with pipe identity as argument.
                      The function receives a SrcPipeIdentity that exposes the
                      destination via its .dst property.
+
+        Yields:
+            Tuples of (CircularBuffer, 'wait'|'reserve') or (CopyTransaction, 'wait')
+            representing synchronization points from operations in the callback
         """
         current_core_linear = core(dims=1)
 
@@ -237,7 +244,9 @@ class PipeNet(Generic[DstT]):
                 if result is not None:
                     yield from result  # type: ignore[misc]
 
-    def if_dst(self, cond_fun: Callable[[DstPipeIdentity], None]) -> None:
+    def if_dst(
+        self, cond_fun: Callable[[DstPipeIdentity], None]
+    ) -> Generator[YieldedValue, None, None]:
         """Execute condition function for each pipe where current core is destination.
 
         The condition function is called once for each pipe in the network where
@@ -247,6 +256,10 @@ class PipeNet(Generic[DstT]):
             cond_fun: Function to execute with pipe identity as argument.
                      The function receives a DstPipeIdentity that exposes the
                      source via its .src property.
+
+        Yields:
+            Tuples of (CircularBuffer, 'wait'|'reserve') or (CopyTransaction, 'wait')
+            representing synchronization points from operations in the callback
         """
         for pipe in self._pipes:
             if _core_in_dst_range(pipe.dst_core_range):
