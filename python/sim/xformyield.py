@@ -93,6 +93,8 @@ class YieldInserter(ast.NodeTransformer):
                                 ctx=ast.Load(),
                             )
                             yield_stmt = ast.Expr(value=ast.Yield(value=yield_value))
+                            # Copy location from the call node so yield has same line number
+                            ast.copy_location(yield_stmt, call)
                             yields_to_insert.append(yield_stmt)
                         case _:
                             # Non-attribute call, skip
@@ -143,6 +145,8 @@ class YieldInserter(ast.NodeTransformer):
             elts=[obj, ast.Constant(value=operation)], ctx=ast.Load()
         )
         yield_stmt = ast.Expr(value=ast.Yield(value=yield_value))
+        # Copy location from the call node so yield has same line number
+        ast.copy_location(yield_stmt, call)
 
         # Return yield followed by original statement
         return [yield_stmt, stmt]

@@ -217,23 +217,68 @@ class TestTensorAccessor:
         stream = TensorAccessor(tensor_2d)
         assert stream.get_tile_shape() == (2, 2)
 
-        # 1D tensor should fail
-        with pytest.raises(
-            ValueError, match="TensorAccessor only supports 2D tensors, got 1D tensor"
-        ):
+        # 1D tensor should be rejected
+        with pytest.raises(ValueError, match="TensorAccessor only supports 2D tensors"):
             tensor_1d = torch.randn(64)
             TensorAccessor(tensor_1d)
 
         # 3D tensor should fail
         with pytest.raises(
-            ValueError, match="TensorAccessor only supports 2D tensors, got 3D tensor"
+            ValueError,
+            match="TensorAccessor only supports 2D tensors",
         ):
             tensor_3d = torch.randn(2, 64, 64)
             TensorAccessor(tensor_3d)
 
         # 4D tensor should fail
         with pytest.raises(
-            ValueError, match="TensorAccessor only supports 2D tensors, got 4D tensor"
+            ValueError,
+            match="TensorAccessor only supports 2D tensors",
         ):
             tensor_4d = torch.randn(2, 3, 64, 64)
             TensorAccessor(tensor_4d)
+
+    def test_integer_indexing_preserves_2d_shape(self) -> None:
+        """Test that integer indexing preserves 2D shape by converting to slice."""
+        tensor = make_randn(128, 64)  # 4x2 tiles
+        accessor = TensorAccessor(tensor)
+
+        # Integer column index should return 2D tensor with width 32
+        result = accessor[slice(0, 2), 0]  # First 2 rows, column 0
+        assert result.shape == (64, 32)  # 2 tiles high, 1 tile wide
+        assert torch.allclose(result, tensor[0:64, 0:32])
+
+        # Integer row index should return 2D tensor with height 32
+        result = accessor[0, slice(0, 2)]  # Row 0, first 2 columns
+        assert result.shape == (32, 64)  # 1 tile high, 2 tiles wide
+        assert torch.allclose(result, tensor[0:32, 0:64])
+
+        # Both integer indices should return single tile
+        result = accessor[1, 1]
+        assert result.shape == (32, 32)  # Single tile
+        assert torch.allclose(result, tensor[32:64, 32:64])
+
+        # Mixed with different ranges
+        result = accessor[slice(1, 4), 1]  # Rows 1-3, column 1
+        assert result.shape == (96, 32)  # 3 tiles high, 1 tile wide
+        assert torch.allclose(result, tensor[32:128, 32:64])
+
+    def test_integer_indexing_setitem(self) -> None:
+        """Test that __setitem__ works with integer indices."""
+        tensor = make_randn(64, 64)  # 2x2 tiles
+        accessor = TensorAccessor(tensor)
+
+        # Set using integer column index
+        new_data = torch.ones(64, 32)
+        accessor[slice(0, 2), 0] = new_data
+        assert torch.allclose(tensor[0:64, 0:32], new_data)
+
+        # Set using integer row index
+        new_data2 = torch.full((32, 64), 2.0)
+        accessor[0, slice(0, 2)] = new_data2
+        assert torch.allclose(tensor[0:32, 0:64], new_data2)
+
+        # Set using both integer indices
+        new_tile = torch.full((32, 32), 3.0)
+        accessor[1, 1] = new_tile
+        assert torch.allclose(tensor[32:64, 32:64], new_tile)

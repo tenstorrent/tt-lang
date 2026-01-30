@@ -17,6 +17,9 @@ from pathlib import Path
 
 import pytest
 import torch
+from utils.correctness import assert_with_ulp
+
+from .config import get_maximum_ulp_threshold
 
 
 class ME2ETestBase:
@@ -56,10 +59,10 @@ class ME2ETestBase:
     @pytest.mark.order(2)
     def test_compile_to_ttkernel(self):
         """Run TTL-to-TTKernel pass pipeline on the generated module."""
-        from .builder.pipeline import compile_ttl_to_ttkernel
-
         import ttl.dialects.ttl as ttl
         from ttmlir.ir import Context, Module
+
+        from .builder.pipeline import compile_ttl_to_ttkernel
 
         # Load module from file saved by test_build_module.
         module_file = self.output_file("module.mlir")
@@ -88,10 +91,10 @@ class ME2ETestBase:
     @pytest.mark.order(3)
     def test_translate_to_cpp(self):
         """Translate TTKernel ops to C++ kernel sources."""
-        from .builder.kernels import translate_module_to_kernels, write_kernels
-
         import ttl.dialects.ttl as ttl
         from ttmlir.ir import Context, Module
+
+        from .builder.kernels import translate_module_to_kernels, write_kernels
 
         compiled_file = self.output_file("compiled_module.mlir")
         if not compiled_file.exists():
@@ -206,8 +209,6 @@ class ME2ETestBase:
         Default implementation compares result with golden from files.
         Subclasses can override for custom validation logic.
         """
-        from .utils import compare_tensors_ulp
-
         result_file = self.output_file("result.pt")
         golden_file = self.output_file("golden.pt")
 
@@ -222,11 +223,9 @@ class ME2ETestBase:
         result = torch.load(result_file)
         golden = torch.load(golden_file)
 
-        # Compare using ULP.
-        max_ulp, _ = compare_tensors_ulp(result, golden)
-
-        # Default threshold - subclasses can override.
-        ulp_threshold = getattr(self, "ULP_THRESHOLD", None) or 10.0
-        assert (
-            max_ulp <= ulp_threshold
-        ), f"Max ULP {max_ulp} exceeds threshold {ulp_threshold}"
+        # Compare using ULP, specify None to use defaults based on dtype.
+        # Override self.ULP_THRESHOLD in subclasses as needed.
+        ulp_threshold = getattr(self, "ULP_THRESHOLD", None)
+        if not ulp_threshold:
+            ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+        assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)

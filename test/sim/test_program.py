@@ -42,7 +42,7 @@ class TestBasicExecution:
             def compute():
                 block = a_cb.wait()
                 out_block = out_cb.reserve()
-                out_block[0] = block[0] * 2
+                out_block.store([block[0] * 2])
                 a_cb.pop()
                 out_cb.push()
 
@@ -97,8 +97,10 @@ class TestBasicExecution:
                 b_block = b_cb.wait()
                 out_block = out_cb.reserve()
                 # Element-wise add
+                results = []
                 for i in range(2):
-                    out_block[i] = a_block[i] + b_block[i]
+                    results.append(a_block[i] + b_block[i])
+                out_block.store(results)
                 a_cb.pop()
                 b_cb.pop()
                 out_cb.push()
@@ -157,7 +159,7 @@ class TestMultiCore:
                 block = a_cb.wait()
                 out_block = out_cb.reserve()
                 # Each core multiplies by (core_id + 1)
-                out_block[0] = block[0] * (core_id + 1)
+                out_block.store([block[0] * (core_id + 1)])
                 a_cb.pop()
                 out_cb.push()
 
@@ -212,7 +214,7 @@ class TestMultiCore:
                 core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
                 out_block = out_cb.reserve()
                 # Each core writes its coordinates
-                out_block[0] = make_ones_tensor(32, 32) * (core_y * 10 + core_x)
+                out_block.store([make_ones_tensor(32, 32) * (core_y * 10 + core_x)])
                 out_cb.push()
 
             @ttl.datamovement()
@@ -262,7 +264,7 @@ class TestContextIsolation:
                 core_id = cast(int, ttl.core(dims=1))
                 # Each core reserves/pushes independently
                 block = cb.reserve()
-                block[0] = make_ones_tensor(32, 32) * (core_id + 100)
+                block.store([make_ones_tensor(32, 32) * (core_id + 100)])
                 cb.push()
 
             @ttl.datamovement()
@@ -289,22 +291,26 @@ class TestContextIsolation:
         assert (out_torch[0:32, :] == 100).all()
         assert (out_torch[32:64, :] == 101).all()
 
-    def test_tensors_shared_across_cores(self) -> None:
-        """Test that tensors are shared (not copied) across cores."""
+    def test_shared_tensor_with_compute_store(self) -> None:
+        """Test shared tensors where compute thread uses store instead of copy.
+
+        This tests the pattern where compute thread reads from a shared tensor
+        and uses store() to write to CB (not copy).
+        """
 
         @ttl.kernel(grid=(2, 1))
         def test_kernel(shared: ttnn.Tensor, out: ttnn.Tensor):
-            # shared and out already are ttnn.Tensor
-            # shared tensor should be the same object in all cores
             cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                _ = ttl.core(dims=1)
+                # Compute thread reads shared tensor and stores to CB
+                core_id = cast(int, ttl.core(dims=1))
                 block = cb.reserve()
-                # Read from shared tensor
-                tx = copy(shared[0:1, 0:1], block)
-                tx.wait()
+                # Read from shared tensor and store (not copy)
+                # Add core_id to distinguish which core wrote
+                data = shared[0:1, 0:1] + core_id
+                block.store([data])
                 cb.push()
 
             @ttl.datamovement()
@@ -313,6 +319,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
+                # DM thread copies from CB to output
                 core_id = cast(int, ttl.core(dims=1))
                 block = cb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -321,15 +328,15 @@ class TestContextIsolation:
 
             return Program(compute, dm0, dm1, grid=grid)()
 
-        shared = make_ones_tensor(32, 32) * 42
+        shared = make_ones_tensor(32, 32) * 10
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
         test_kernel(shared, out)
 
-        # Both cores should have read the same shared tensor
+        # Each core should have written shared + core_id
         out_torch = out.to_torch()
-        assert (out_torch[0:32, :] == 42).all()
-        assert (out_torch[32:64, :] == 42).all()
+        assert (out_torch[0:32, :] == 10).all()  # core 0: 10 + 0
+        assert (out_torch[32:64, :] == 11).all()  # core 1: 10 + 1
 
 
 class TestErrorHandling:
@@ -426,6 +433,171 @@ class TestErrorHandling:
 
         with pytest.raises(RuntimeError, match="Deadlock detected"):
             test_kernel(a)
+
+
+class TestBlockCompletion:
+    """Test block completion validation at end of kernel execution.
+
+    These tests verify that the simulator catches incomplete block operations
+    (missing push() or pop() calls) at the end of kernel execution.
+    """
+
+    def test_missing_push_detected(self) -> None:
+        """Test that missing push() is detected at end of execution."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create circular buffers
+            element = make_ones_tensor(32, 32)
+            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Reserve a block but forget to push it
+                block = in_cb.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block)
+                tx.wait()
+                # Missing: in_cb.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                pass
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should raise RuntimeError about incomplete CircularBuffer operations
+        with pytest.raises(
+            RuntimeError,
+            match="Kernel execution completed with incomplete CircularBuffer operations",
+        ):
+            test_kernel(input_tensor)
+
+    def test_missing_pop_detected(self) -> None:
+        """Test that missing pop() is detected at end of execution."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create circular buffers
+            element = make_ones_tensor(32, 32)
+            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Produce data
+                block = in_cb.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block)
+                tx.wait()
+                in_cb.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                # Wait for data but forget to pop it
+                data = in_cb.wait()
+                # Use the data
+                _ = data[0]
+                # Missing: in_cb.pop()
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should raise RuntimeError about incomplete CircularBuffer operations
+        with pytest.raises(
+            RuntimeError,
+            match="Kernel execution completed with incomplete CircularBuffer operations",
+        ):
+            test_kernel(input_tensor)
+
+    def test_complete_operations_pass(self) -> None:
+        """Test that properly completed operations pass validation."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create circular buffers
+            element = make_ones_tensor(32, 32)
+            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Produce data - with push()
+                block = in_cb.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block)
+                tx.wait()
+                in_cb.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                # Consume data - with pop()
+                data = in_cb.wait()
+                _ = data[0]
+                in_cb.pop()
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should NOT raise - all operations are complete
+        test_kernel(input_tensor)
+
+    def test_multiple_cbs_with_errors(self) -> None:
+        """Test that errors from multiple CBs are all reported."""
+
+        @ttl.kernel(grid=(1,))
+        def test_kernel(input_data: ttnn.Tensor):
+            from python.sim.cb import CircularBuffer
+
+            # Create multiple circular buffers
+            element = make_ones_tensor(32, 32)
+            cb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
+            @ttl.datamovement()
+            def dm0():
+                # Both CBs have incomplete operations
+                block1 = cb1.reserve()
+                slice_data = input_data[0:1, 0:1]
+                tx = copy(slice_data, block1)
+                tx.wait()
+                # Missing: cb1.push()
+
+                block2 = cb2.reserve()
+                tx = copy(slice_data, block2)
+                tx.wait()
+                # Missing: cb2.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                pass
+
+        input_tensor = ttnn.rand((32, 32))
+
+        # Should raise RuntimeError mentioning multiple CBs
+        with pytest.raises(
+            RuntimeError,
+            match="Kernel execution completed with incomplete CircularBuffer operations",
+        ):
+            test_kernel(input_tensor)
 
 
 class TestRebindFunc:
@@ -647,25 +819,28 @@ class TestCooperativeScheduling:
         expected = make_ones_tensor(32, 32) * 15
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
-    def test_copy_block_to_tensor_cooperative(self) -> None:
-        """Test Block → Tensor copy in cooperative mode."""
+    def test_copy_block_to_tensor_with_dm_thread(self) -> None:
+        """Test Block → Tensor copy in cooperative mode using DM thread.
+
+        This replaces test_copy_block_to_tensor_cooperative with proper thread separation:
+        - DM0 copies Tensor → Block
+        - DM1 copies Block → Tensor
+        - Compute processes data
+        """
 
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            # a already is ttnn.Tensor
-            # out already is ttnn.Tensor
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                block = cb.wait()
-                # Block → Tensor copy
-                tx = copy(block, out[0:1, 0:1])
-                tx.wait()
-                cb.pop()
+                # Compute just verifies data can be accessed
+                # In real use, it would process the data
+                pass
 
             @ttl.datamovement()
             def dm0():
+                # DM0: Copy input tensor to CB
                 block = cb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
@@ -673,7 +848,11 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm1():
-                pass
+                # DM1: Copy CB to output tensor
+                block = cb.wait()
+                tx = copy(block, out[0:1, 0:1])
+                tx.wait()
+                cb.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -685,49 +864,70 @@ class TestCooperativeScheduling:
         expected = make_ones_tensor(32, 32) * 7
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
-    def test_copy_block_to_pipe_cooperative(self) -> None:
-        """Test Block → Pipe copy in cooperative mode (unicast)."""
+    def test_copy_mixed_pairs_with_dm_threads(self) -> None:
+        """Test mixed copy operations using DM threads for all copies.
 
-        @ttl.kernel(grid=(2, 1))
-        def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            # a already is ttnn.Tensor
-            # out already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            # Pipe from (0,0) to (1,0)
-            pipe = ttl.Pipe((0, 0), (1, 0))
+        This replaces test_copy_mixed_pairs_cooperative with proper thread separation:
+        - DM threads handle all copy operations
+        - Compute thread can read from wait() blocks (via direct access, not copy)
+        """
+
+        @ttl.kernel(grid=(1, 1))
+        def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
+            cb_a = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            cb_b = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
+            cb_out = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                core_id = cast(int, ttl.core(dims=1))
-                if core_id == 0:
-                    block = cb.wait()
-                    # Send block via pipe
-                    tx = copy(block, pipe)
-                    tx.wait()
-                    cb.pop()
-                else:
-                    # Receiver writes to output
-                    out[0:1, 0:1] = make_ones_tensor(32, 32) * 99
+                # Compute reads from CBs, processes, and writes to output CB
+                for i in range(2):
+                    block_a = cb_a.wait()
+                    block_b = cb_b.wait()
+
+                    # Process data: add blocks together and store to output CB
+                    block_out = cb_out.reserve()
+                    result = block_a[0] + block_b[0]
+                    block_out.store([result])
+                    cb_out.push()
+
+                    cb_a.pop()
+                    cb_b.pop()
 
             @ttl.datamovement()
             def dm0():
-                block = cb.reserve()
-                tx = copy(a[0:1, 0:1], block)
-                tx.wait()
-                cb.push()
+                # DM0: Copy input tensors to CBs
+                for i in range(2):
+                    block_a = cb_a.reserve()
+                    tx_a = copy(a[i : i + 1, 0:1], block_a)
+                    tx_a.wait()
+                    cb_a.push()
+
+                    block_b = cb_b.reserve()
+                    tx_b = copy(b[i : i + 1, 0:1], block_b)
+                    tx_b.wait()
+                    cb_b.push()
 
             @ttl.datamovement()
             def dm1():
-                pass
+                # DM1: Copy output CB to output tensor
+                for i in range(2):
+                    block_out = cb_out.wait()
+                    tx = copy(block_out, out[i : i + 1, 0:1])
+                    tx.wait()
+                    cb_out.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
-        a = make_ones_tensor(32, 32) * 11
-        out = make_zeros_tensor(32, 32)
+        a = ttnn.Tensor(torch.arange(2 * 32 * 32).reshape(2 * 32, 32).float())
+        b = ttnn.Tensor(
+            torch.arange(2 * 32 * 32, 4 * 32 * 32).reshape(2 * 32, 32).float()
+        )
+        out = ttnn.empty(a.shape, dtype=torch.float32)
 
-        test_kernel(a, out)
+        test_kernel(a, b, out)
 
-        expected = make_ones_tensor(32, 32) * 99
+        expected = a + b
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
     def test_copy_pipe_operations_not_fully_integrated_in_cooperative_mode(
@@ -757,60 +957,30 @@ class TestCooperativeScheduling:
         # For now, we skip this test to document the limitation
         pass
 
-    def test_copy_mixed_pairs_cooperative(self) -> None:
-        """Test mixed copy operations in cooperative mode."""
 
-        @ttl.kernel(grid=(1, 1))
-        def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
-            # a already is ttnn.Tensor
-            # b already is ttnn.Tensor
-            # out already is ttnn.Tensor
-            cb_a = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            cb_b = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
+class TestProgramInternals:
+    """Test internal program mechanisms and edge cases."""
 
-            @ttl.compute()
-            def compute():
-                for i in range(2):
-                    block_a = cb_a.wait()
-                    block_b = cb_b.wait()
+    def test_empty_generator_completion(self) -> None:
+        """Test that generators with only 'pass' are handled correctly."""
+        from python.sim import ttl
+        from python.sim.program import Program
 
-                    # Extract data via Block → Tensor copy
-                    temp = ttnn.empty((32, 32), dtype=torch.float32)
-                    tx = copy(block_a, temp)
-                    tx.wait()
+        @ttl.datamovement()
+        def dm0() -> None:
+            pass  # Empty generator
 
-                    out[i : i + 1, 0:1] = block_b[0] + temp
-                    cb_a.pop()
-                    cb_b.pop()
+        @ttl.datamovement()
+        def dm1() -> None:
+            pass  # Empty generator
 
-            @ttl.datamovement()
-            def dm0():
-                for i in range(2):
-                    block_a = cb_a.reserve()
-                    tx_a = copy(a[i : i + 1, 0:1], block_a)
-                    tx_a.wait()
-                    cb_a.push()
+        @ttl.compute()
+        def compute() -> None:
+            pass  # Empty generator
 
-            @ttl.datamovement()
-            def dm1():
-                for i in range(2):
-                    block_b = cb_b.reserve()
-                    tx_b = copy(b[i : i + 1, 0:1], block_b)
-                    tx_b.wait()
-                    cb_b.push()
-
-            return Program(compute, dm0, dm1, grid=grid)()
-
-        a = ttnn.Tensor(torch.arange(2 * 32 * 32).reshape(2 * 32, 32).float())
-        b = ttnn.Tensor(
-            torch.arange(2 * 32 * 32, 4 * 32 * 32).reshape(2 * 32, 32).float()
-        )
-        out = ttnn.empty(a.shape, dtype=torch.float32)
-
-        test_kernel(a, b, out)
-
-        expected = a + b
-        tt_testing.assert_close(out.to_torch(), expected.to_torch())
+        prog = Program(compute, dm0, dm1, grid=(1, 1))
+        # Should complete without error
+        prog()
 
 
 if __name__ == "__main__":

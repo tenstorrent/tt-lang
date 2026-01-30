@@ -47,6 +47,11 @@ class _BlockContextManager:
         """Return the underlying Block object."""
         return self._block
 
+    @property
+    def _shape(self) -> "Shape":
+        """Delegate shape access to the underlying block."""
+        return self._block._shape
+
     def __enter__(self) -> Block:
         return self._block
 
@@ -56,8 +61,14 @@ class _BlockContextManager:
         exc_val: Optional[BaseException],
         exc_tb: Optional[TracebackType],
     ) -> None:
-        # Always invoke the cleanup action, even if an exception occurred
-        self._on_exit_func()
+        # Always attempt cleanup, but don't let cleanup errors mask original exceptions
+        try:
+            self._on_exit_func()
+        except Exception:
+            # Only re-raise if there wasn't already an exception
+            # Otherwise, suppress cleanup error to preserve original exception
+            if exc_type is None:
+                raise
 
     # Delegate Block operations for backward compatibility
     def __len__(self) -> int:
@@ -67,7 +78,9 @@ class _BlockContextManager:
         return self._block[idx]
 
     def __setitem__(self, idx: int, value: Tensor) -> None:
-        self._block[idx] = value
+        raise RuntimeError(
+            "Direct assignment to Block is not allowed. Use block.store() or copy() instead."
+        )
 
     def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
         """Store items into the block.
@@ -79,33 +92,20 @@ class _BlockContextManager:
         self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
 
     # Delegate arithmetic operations
-    def __add__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __add__(self, other: "Block") -> "Block":
         return self._block.__add__(other)
 
-    def __sub__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __sub__(self, other: "Block") -> "Block":
         return self._block.__sub__(other)
 
-    def __mul__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __mul__(self, other: "Block") -> "Block":
         return self._block.__mul__(other)
 
-    def __truediv__(self, other: Union["Block", List[Tensor]]) -> List[Tensor]:
+    def __truediv__(self, other: "Block") -> "Block":
         return self._block.__truediv__(other)
 
-    def __matmul__(self, other: "Block") -> List[Tensor]:
+    def __matmul__(self, other: "Block") -> "Block":
         return self._block.__matmul__(other)
-
-    # Reverse operators for when the left operand doesn't support the operation
-    def __radd__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__radd__(other)
-
-    def __rsub__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rsub__(other)
-
-    def __rmul__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rmul__(other)
-
-    def __rtruediv__(self, other: List[Tensor]) -> List[Tensor]:
-        return self._block.__rtruediv__(other)
 
 
 class ReserveContext(_BlockContextManager):
@@ -198,6 +198,11 @@ class CircularBuffer:
         # Store API instance (may be None)
         self._api: Optional[CBAPI] = api
 
+        # Track pending blocks for state machine completion
+        # At most one pending reserved block and one pending waited block at a time
+        self._pending_reserved_block: Optional[Block] = None
+        self._pending_waited_block: Optional[Block] = None
+
         # Calculate total capacity in tiles
         self._tiles_per_operation = shape[0] * shape[1]
         self._capacity_tiles = self._tiles_per_operation * buffer_factor
@@ -254,8 +259,18 @@ class CircularBuffer:
             RuntimeError: If CircularBuffer was not properly initialized with an API
         """
         api, cb_id = self._ensure_initialized()
+
+        # Enforce: at most one pending wait() operation at a time
+        if self._pending_waited_block is not None:
+            raise RuntimeError(
+                "Cannot call wait() again before pop(): "
+                "CircularBuffer already has a pending waited block. "
+                "You must call pop() before calling wait() again."
+            )
+
         api.cb_wait_front(cb_id, self._tiles_per_operation)
         block = api.get_read_ptr(cb_id)
+        self._pending_waited_block = block
         return WaitContext(self, block)
 
     def can_wait(self) -> bool:
@@ -301,14 +316,24 @@ class CircularBuffer:
             RuntimeError: If CircularBuffer was not properly initialized with an API
         """
         api, cb_id = self._ensure_initialized()
+
+        # Enforce: at most one pending reserve() operation at a time
+        if self._pending_reserved_block is not None:
+            raise RuntimeError(
+                "Cannot call reserve() again before push(): "
+                "CircularBuffer already has a pending reserved block. "
+                "You must call push() before calling reserve() again."
+            )
+
         api.cb_reserve_back(cb_id, self._tiles_per_operation)
         block = api.get_write_ptr(cb_id)
 
         # Initialize the reserved block with zero tensors
         zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
         for i in range(len(block)):
-            block[i] = zero_tensor
+            block._write_slot(i, zero_tensor)
 
+        self._pending_reserved_block = block
         return ReserveContext(self, block)
 
     def can_reserve(self) -> bool:
@@ -338,6 +363,11 @@ class CircularBuffer:
                            push amount exceeds what was reserved
             RuntimeError: If CircularBuffer was not properly initialized with an API
         """
+        # Update state machine for the pending reserved block
+        if self._pending_reserved_block is not None:
+            self._pending_reserved_block.mark_push_complete()
+            self._pending_reserved_block = None
+
         api, cb_id = self._ensure_initialized()
         api.cb_push_back(cb_id, self._tiles_per_operation)
 
@@ -357,6 +387,11 @@ class CircularBuffer:
                            pop amount exceeds what is visible
             RuntimeError: If CircularBuffer was not properly initialized with an API
         """
+        # Update state machine for the pending waited block
+        if self._pending_waited_block is not None:
+            self._pending_waited_block.mark_pop_complete()
+            self._pending_waited_block = None
+
         api, cb_id = self._ensure_initialized()
         api.cb_pop_front(cb_id, self._tiles_per_operation)
 
@@ -397,6 +432,41 @@ class CircularBuffer:
         """
         api, cb_id = self._ensure_initialized()
         api.host_reset_cb(cb_id)
+
+    def validate_no_pending_blocks(self) -> None:
+        """Validate that there are no pending blocks.
+
+        This should be called at the end of kernel execution to ensure
+        all blocks have been properly completed through push() or pop().
+
+        Raises:
+            RuntimeError: If there are any pending blocks
+        """
+        errors = []
+
+        if self._pending_reserved_block is not None:
+            block = self._pending_reserved_block
+            errors.append(
+                f"Pending reserved block: Block(acquisition={block._acquisition.name}, "
+                f"thread={block._thread_type.name}, access={block._access_state.name}, "
+                f"expected_ops={[op.name for op in block._expected_ops]}). "
+                f"Did you forget to call push()?"
+            )
+
+        if self._pending_waited_block is not None:
+            block = self._pending_waited_block
+            errors.append(
+                f"Pending waited block: Block(acquisition={block._acquisition.name}, "
+                f"thread={block._thread_type.name}, access={block._access_state.name}, "
+                f"expected_ops={[op.name for op in block._expected_ops]}). "
+                f"Did you forget to call pop()?"
+            )
+
+        if errors:
+            raise RuntimeError(
+                f"CircularBuffer {self} has incomplete blocks at end of execution:\n"
+                + "\n".join(f"  - {err}" for err in errors)
+            )
 
     def __repr__(self) -> str:
         return (

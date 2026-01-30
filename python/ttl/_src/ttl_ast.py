@@ -69,9 +69,6 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
             tensor, f"Only 2D tensors supported, got shape {tensor.shape}"
         )
 
-    # grid is (cols, rows) from tt-lang API
-    # tensor.shape is (rows, cols) standard convention
-    grid_cols, grid_rows = grid
     tensor_rows, tensor_cols = tensor.shape
 
     layout = create_ttnn_layout(
@@ -88,11 +85,10 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
-    # Device shape: [grid_rows, grid_cols, shard_row_tiles, shard_col_tiles]
-    # MLIR expects (rows, cols) order
-    shard_row_tiles = tensor_rows // grid_rows // DEFAULT_TILE_SIZE
-    shard_col_tiles = tensor_cols // grid_cols // DEFAULT_TILE_SIZE
-    device_shape = [grid_rows, grid_cols, shard_row_tiles, shard_col_tiles]
+    # Device shape: 2D tile counts [tiles_y, tiles_x] based on logical shape
+    total_row_tiles = (tensor_rows + DEFAULT_TILE_SIZE - 1) // DEFAULT_TILE_SIZE
+    total_col_tiles = (tensor_cols + DEFAULT_TILE_SIZE - 1) // DEFAULT_TILE_SIZE
+    device_shape = [total_row_tiles, total_col_tiles]
 
     return RankedTensorType.get(device_shape, element_type, layout)
 
@@ -394,10 +390,21 @@ class TTLGenericCompiler(TTCompilerBase):
             return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        elif isinstance(node.value, str):
+            return node.value
         else:
             self._raise_error(
                 node, f"constant type {type(node.value).__name__} not implemented"
             )
+
+    def visit_List(self, node):
+        """Parse a list of constants. Returns a Python list, not MLIR values."""
+        result = []
+        for elt in node.elts:
+            if not isinstance(elt, ast.Constant):
+                self._raise_error(node, "list elements must be constants")
+            result.append(elt.value)
+        return result
 
     def _emit_cb_from_capture(self, cb):
         """Emit ttl.bind_cb for a captured CircularBuffer instance."""

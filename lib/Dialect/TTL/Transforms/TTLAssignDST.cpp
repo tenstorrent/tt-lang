@@ -40,7 +40,9 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTCore/IR/Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -71,9 +73,79 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 /// Compute DST capacity based on operation types and device config.
-/// TODO(#150): Implement dynamic capacity based on datatype and device.
-/// Current: Returns default capacity (8 for f16/bf16 with double-buffering).
-static std::uint32_t computeDSTCapacity(ComputeOp /*computeOp*/) {
+/// TODO(#264): Handle mixed dtypes - if compute block has both f32 and bf16
+/// tile arguments, should we use f32 capacity (4 tiles, safer) or error?
+/// Consider emitting warning for mixed dtypes since f32 config reduces
+/// available DST capacity and may cause unexpected capacity overflow.
+static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
+  // Capacity by datatype and buffering mode (see )
+  //   Double-buffering (default):
+  //     - f16/bf16: 8 tiles
+  //     - f32: 4 tiles
+  //   Single-buffering (dst_full_sync_en=true):
+  //     - f16/bf16: 16 tiles
+  //     - f32: 8 tiles
+  bool fullSyncEn = false;
+  if (auto fullSyncAttr =
+          computeOp->getAttrOfType<mlir::BoolAttr>("dst_full_sync_en")) {
+    fullSyncEn = fullSyncAttr.getValue();
+  }
+
+  bool fp32DestAccEn = false;
+  if (auto fp32Attr =
+          computeOp->getAttrOfType<mlir::BoolAttr>("fp32_dest_acc_en")) {
+    fp32DestAccEn = fp32Attr.getValue();
+  }
+
+  Type elementType;
+  bool sawF32 = false;
+  bool sawNonF32 = false;
+  Block *body = &computeOp.getRegion().front();
+  if (body) {
+    for (BlockArgument arg : body->getArguments()) {
+      std::optional<Type> currentType = getTileElementType(arg.getType());
+      if (currentType) {
+        if (!elementType) {
+          elementType = *currentType;
+        }
+        if (currentType->isF32()) {
+          sawF32 = true;
+        } else {
+          sawNonF32 = true;
+        }
+      }
+    }
+  }
+
+  if (sawF32) {
+    fp32DestAccEn = true;
+    elementType = mlir::Float32Type::get(computeOp.getContext());
+  }
+
+  if (sawF32 && sawNonF32) {
+    computeOp.emitWarning(
+        "Mixed f32 and non-f32 tile arguments detected; "
+        "dst capacity uses f32 limits when fp32_dest_acc_en is enabled.");
+  }
+
+  if (!elementType) {
+    return kDefaultDSTCapacity;
+  }
+
+  if (fp32DestAccEn && !elementType.isF32()) {
+    elementType = mlir::Float32Type::get(computeOp.getContext());
+  }
+
+  if (auto moduleOp = computeOp->getParentOfType<mlir::ModuleOp>()) {
+    bool hasSystemDesc = moduleOp->hasAttr(ttcore::SystemDescAttr::name);
+    bool hasDevice = static_cast<bool>(moduleOp.lookupSymbol<ttcore::DeviceOp>(
+        ttcore::getDefaultDeviceName()));
+    if (hasSystemDesc && hasDevice) {
+      auto chipDesc = ttcore::getOpChipDescAttr(computeOp);
+      return chipDesc.getDstLogicalSizeTiles(elementType, fullSyncEn);
+    }
+  }
+
   return kDefaultDSTCapacity;
 }
 
@@ -144,9 +216,14 @@ static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
 //===----------------------------------------------------------------------===//
 
 /// Get consumers of a value sorted by their position in the block.
+/// Excludes CB-reading ops (bcast, etc.) since they don't use DST for input.
 static SmallVector<Operation *> getSortedConsumers(Value v) {
   SmallVector<Operation *> consumers;
   for (Operation *user : v.getUsers()) {
+    // Skip CB-input ops (bcast, reduce, transpose, etc.)
+    if (user->hasTrait<TTLCBInputTileOpTrait>()) {
+      continue;
+    }
     consumers.push_back(user);
   }
   // Sort by block position
@@ -270,18 +347,20 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   for (Operation &op : *body) {
     int64_t currentIdx = opIndex[&op];
 
-    // Extend input intervals to this use
-    for (Value operand : op.getOperands()) {
-      if (!isTileValue(operand)) {
-        continue;
-      }
-      if (intervals.find(operand) == intervals.end()) {
-        // Block argument: start at (first_use - 1) to enable register reuse.
-        // Args consumed at position N get allocated before outputs produced at
-        // N, allowing outputs to reuse the consumed args' registers.
-        intervals[operand] = {currentIdx - 1, currentIdx, operand};
-      } else {
-        intervals[operand].end = std::max(intervals[operand].end, currentIdx);
+    // Extend input intervals to this use (skipping ops with CB inputs)
+    if (!op.hasTrait<TTLCBInputTileOpTrait>()) {
+      for (Value operand : op.getOperands()) {
+        if (!isTileValue(operand)) {
+          continue;
+        }
+        if (intervals.find(operand) == intervals.end()) {
+          // Block argument: start at (first_use - 1) to enable register reuse.
+          // Args consumed at position N get allocated before outputs produced
+          // at N, allowing outputs to reuse the consumed args' registers.
+          intervals[operand] = {currentIdx - 1, currentIdx, operand};
+        } else {
+          intervals[operand].end = std::max(intervals[operand].end, currentIdx);
+        }
       }
     }
 
@@ -695,8 +774,11 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
 
       // Second: Process remaining block arguments - insert copy_tile at first
-      // use
+      // use. Skip CB-reading ops (bcast, etc.) which read from CB directly.
       for (Operation &op : *body) {
+        if (op.hasTrait<TTLCBInputTileOpTrait>()) {
+          continue;
+        }
         for (OpOperand &operand : op.getOpOperands()) {
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg)) {
@@ -748,12 +830,14 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
           arg.replaceUsesWithIf(copy.getDstTile(), [&](OpOperand &use) {
             // Don't replace in copy_tile ops - they need the original block arg
-            return use.getOwner() != copy && !isa<CopyTileOp>(use.getOwner());
+            // Don't replace in CB-reading ops - they read from CB, not DST
+            return use.getOwner() != copy && !isa<CopyTileOp>(use.getOwner()) &&
+                   !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
           });
         }
       }
 
-      // Set dst_idx attributes on tile compute ops
+      // Set dst_idx attributes on tile compute ops.
       for (Operation &op : *body) {
         if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op)) {
           continue;

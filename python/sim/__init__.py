@@ -17,6 +17,16 @@ from .program import Program
 from .typedefs import CoreCoord, CoreIndex, CoreRange, DstT, Pipe, Shape
 
 
+# Create ttl.math namespace object
+class _TTLMathNamespace:
+    """TT-Lang math namespace for block math functions."""
+
+    def __init__(self):
+        from . import math as math_module
+
+        self.broadcast = math_module.broadcast
+
+
 # Create ttl namespace object
 class _TTLNamespace:
     """TT-Lang namespace for DSL constructs."""
@@ -49,6 +59,7 @@ class _TTLNamespace:
         self.Shape = Shape
         self.TILE_SHAPE = TILE_SHAPE
         self.Program = Program
+        self.math = _TTLMathNamespace()
 
 
 ttl = _TTLNamespace()

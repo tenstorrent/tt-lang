@@ -84,7 +84,8 @@ def eltwise_pipe(
                 out_block = out_cb.reserve()  # blocking
 
                 # Use store() to properly populate the Block with computed results
-                result = a_block * b_block + c_block
+                # Broadcast c_block along dimension 0 (rows) to match a_block/b_block shape
+                result = a_block * b_block + ttl.math.broadcast(c_block, dims=[0])
                 out_block.store(result)
 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
