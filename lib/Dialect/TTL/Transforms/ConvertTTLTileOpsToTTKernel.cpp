@@ -764,6 +764,94 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Reduce Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Convert TTL ReduceType to TTKernel ReduceType.
+static ttk::ReduceType convertReduceType(ttl::ReduceType ttlType) {
+  switch (ttlType) {
+  case ttl::ReduceType::Sum:
+    return ttk::ReduceType::Sum;
+  case ttl::ReduceType::Max:
+    return ttk::ReduceType::Max;
+  }
+  llvm_unreachable("unknown ReduceType");
+}
+
+/// Convert TTL ReduceDim to TTKernel ReduceDim.
+static ttk::ReduceDim convertReduceDim(ttl::ReduceDim ttlDim) {
+  switch (ttlDim) {
+  case ttl::ReduceDim::Row:
+    return ttk::ReduceDim::Row;
+  case ttl::ReduceDim::Col:
+    return ttk::ReduceDim::Col;
+  case ttl::ReduceDim::Scalar:
+    return ttk::ReduceDim::Scalar;
+  }
+  llvm_unreachable("unknown ReduceDim");
+}
+
+/// Lower ttl.tile_reduce to TTKernel reduce_init + reduce_tile.
+/// Reads from input CB and scaler CB, writes to DST.
+struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
+  using OpConversionPattern<TileReduceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileReduceOp op, TileReduceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+    auto inCB =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
+    }
+
+    auto scalerCB = lookupAndConvertCB(op.getScaler(), funcOp, typeConverter,
+                                       rewriter, loc);
+    if (failed(scalerCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert scaler CB");
+    }
+
+    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
+                                    rewriter, loc);
+    if (failed(outCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
+    }
+
+    // Get DST index from attribute (assigned by TTLAssignDST pass).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdxVal = dstIdxAttr.getInt();
+    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+
+    // Get tile indices from loops.
+    Value inCBIdx =
+        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+    auto ttkReduceType = convertReduceType(op.getReduceType());
+    auto ttkReduceDim = convertReduceDim(op.getReduceDim());
+
+    rewriter.create<ttk::ReduceInitOp>(loc, *inCB, *scalerCB, *outCB,
+                                       ttkReduceType, ttkReduceDim);
+    rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx, zero,
+                                       dstIdx, ttkReduceType, ttkReduceDim);
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
 
@@ -823,6 +911,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   // CB -> DST ops with attribute need the type converter.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileMatmulToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)
