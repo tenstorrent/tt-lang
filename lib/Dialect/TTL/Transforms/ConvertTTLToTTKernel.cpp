@@ -806,6 +806,10 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         }
       });
 
+  // Wait for all async writes to complete before signaling the semaphore.
+  // Without this barrier, the receiver may wake up before all data arrives.
+  rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
+
   // Signal destinations that data has arrived.
   // For point-to-point pipes, use atomic increment to support gather pattern
   // (multiple sources to one destination). For multicast, use set+multicast.
