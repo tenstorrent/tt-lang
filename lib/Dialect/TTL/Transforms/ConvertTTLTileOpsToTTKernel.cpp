@@ -665,7 +665,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
 // Generate type aliases for special binary tile op lowerings (2-arg in-place)
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
+#define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   using TTL_OP##TileLowering =                                                 \
       TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -697,7 +697,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // Special binary ops (non-standard lowering template)
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
+#define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
