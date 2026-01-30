@@ -100,6 +100,11 @@ jobs:
                       "${{ steps.ttmlir-commit.outputs.commit }}" \
                       "${{ github.repository }}"
 
+            - name: Ensure venv has required packages
+              run: |
+                  # Install any missing packages (handles stale caches)
+                  $TTMLIR_TOOLCHAIN_DIR/venv/bin/pip install --quiet lit
+
             - name: Setup ccache
               uses: hendrikmuhs/ccache-action@v1.2
               with:

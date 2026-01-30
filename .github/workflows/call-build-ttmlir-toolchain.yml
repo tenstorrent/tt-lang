@@ -51,58 +51,9 @@ permissions:
     contents: read
 
 jobs:
-    # TEMPORARY: Migrate existing toolchain cache to LLVM-only format
-    # Set if: true to run once, then remove this entire job
-    migrate-cache:
-        name: Migrate toolchain cache to LLVM-only
-        runs-on: ubuntu-latest
-        if: false  # Migration complete - remove this job when PR is merged
-
-        env:
-            TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
-
-        steps:
-            - name: Checkout current branch
-              uses: actions/checkout@v4
-
-            - name: Determine tt-mlir commit
-              id: commit
-              run: |
-                  COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-                  echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-                  echo "Using commit: $COMMIT"
-
-            - name: Restore full toolchain cache (from main branch format)
-              id: restore-cache
-              uses: actions/cache/restore@v4
-              with:
-                  # Main branch saves with absolute path, so restore with same
-                  path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-                  key: Linux-ttlang-ttmlir-toolchain-${{ steps.commit.outputs.commit }}-v2
-                  restore-keys: |
-                      Linux-ttlang-ttmlir-toolchain-${{ steps.commit.outputs.commit }}
-                      Linux-ttlang-ttmlir-toolchain-
-
-            - name: Check cache was restored
-              run: |
-                  if [ "${{ steps.restore-cache.outputs.cache-hit }}" != "true" ]; then
-                      echo "No cache found matching key or restore-keys"
-                      echo "Searched for: Linux-ttlang-ttmlir-toolchain-${{ steps.commit.outputs.commit }}-v2"
-                      exit 1
-                  fi
-                  echo "Cache restored from: ${{ steps.restore-cache.outputs.cache-matched-key }}"
-
-            - name: Save as LLVM-only cache
-              uses: actions/cache/save@v4
-              with:
-                  path: ttmlir-toolchain
-                  key: Linux-ttlang-llvm-only-v1-${{ steps.commit.outputs.commit }}
-
     # First job: Check if caches exist (runs on standard runner)
     check-cache:
         name: Check toolchain cache
-        needs: migrate-cache
-        if: always()  # Run even if migrate-cache is skipped
         runs-on: ubuntu-latest
         timeout-minutes: 10
 
@@ -293,14 +244,14 @@ jobs:
                   key: ${{ needs.check-cache.outputs.llvm-cache-key }}
                   fail-on-cache-miss: true
 
-            - name: Recreate Python venv (cached venv has broken symlinks)
+            - name: Recreate Python venv (make portable for caching)
               run: |
-                  # The cached venv has symlinks to the original build machine's Python
-                  # Recreate using Python from setup-python action (has dev headers)
+                  # The cached venv has symlinks that break on different runners
+                  # Use --copies to make the venv portable across machines
                   rm -rf $TTMLIR_TOOLCHAIN_DIR/venv
-                  python3 -m venv $TTMLIR_TOOLCHAIN_DIR/venv
+                  python3 -m venv --copies $TTMLIR_TOOLCHAIN_DIR/venv
                   $TTMLIR_TOOLCHAIN_DIR/venv/bin/pip install --upgrade pip
-                  $TTMLIR_TOOLCHAIN_DIR/venv/bin/pip install pybind11 nanobind PyYAML numpy
+                  $TTMLIR_TOOLCHAIN_DIR/venv/bin/pip install pybind11 nanobind PyYAML numpy lit
                   echo "Venv Python: $($TTMLIR_TOOLCHAIN_DIR/venv/bin/python3 --version)"
 
             - name: Build and install tt-lang (includes tt-mlir via FetchContent)
