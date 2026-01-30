@@ -61,3 +61,7 @@ generated/pykernels/*
 **/temp/
 
 test/temp
+
+# VM testing infrastructure
+tools/vm/config.local.sh
+tools/vm/lima.yaml

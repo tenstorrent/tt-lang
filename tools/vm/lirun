@@ -1,0 +1,25 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+# Convenience wrapper for running commands in the Lima VM with tt-lang environment activated.
+# Usage: lirun <command>
+# Example: lirun cmake --build build-linux -t check-ttlang-all
+
+set -e
+
+VM_NAME="ttlang-ttsim"
+TTLANG_DIR="/home/bnorris.linux/tt/tt-lang"
+
+# Check if VM is running
+if ! limactl list | grep -q "^${VM_NAME}.*Running"; then
+    echo "Error: VM '${VM_NAME}' is not running. Start it with: limactl start ${VM_NAME}"
+    exit 1
+fi
+
+# Execute command in VM with environment activated
+limactl shell "${VM_NAME}" -- bash -c "
+cd ${TTLANG_DIR}
+source build-linux/env/activate -q
+$*
+"

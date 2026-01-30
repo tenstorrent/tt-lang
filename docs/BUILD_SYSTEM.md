@@ -97,13 +97,24 @@ If `TTMLIR_BUILD_DIR` is not specified:
 If tt-mlir is not found in scenarios 1 or 2:
 1. Reads the commit SHA from `third-party/tt-mlir.commit`
 2. Uses `FetchContent_Populate` to clone tt-mlir at the above SHA
-3. Configures tt-mlir with platform-specific options:
+3. Optionally builds the LLVM/MLIR toolchain if `TTLANG_BUILD_TTMLIR_TOOLCHAIN=ON`
+4. Configures tt-mlir with platform-specific options:
    - **Linux**: Runtime and runtime tests enabled
    - **macOS**: Runtime and runtime tests disabled
    - Common: StableHLO OFF, OPMODEL OFF, Python bindings ON, Debug strings ON
    - Performance trace: Controlled by `TTLANG_ENABLE_PERF_TRACE` (default: OFF)
-4. Builds and installs tt-mlir to `${TTMLIR_INSTALL_PREFIX}` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`)
-5. Uses the newly built tt-mlir for the tt-lang build
+5. Builds and installs tt-mlir to `${TTMLIR_INSTALL_PREFIX}` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`)
+6. Uses the newly built tt-mlir for the tt-lang build
+
+**Building the toolchain from source:**
+
+If you don't have a pre-built LLVM/MLIR toolchain, you can build it automatically:
+```bash
+export TTMLIR_TOOLCHAIN_DIR=/path/to/toolchain
+cmake -GNinja -Bbuild . -DTTLANG_BUILD_TTMLIR_TOOLCHAIN=ON
+```
+
+This builds the LLVM/MLIR toolchain from tt-mlir's `env/CMakeLists.txt` into `TTMLIR_TOOLCHAIN_DIR` before building tt-mlir itself. The toolchain build takes significant time (1-2 hours) but only needs to be done once.
 
 **Python Environment:**
 - **Scenarios 1 & 2**: Use Python from `${TTMLIR_TOOLCHAIN_DIR}/venv` with `Python3_FIND_VIRTUALENV=ONLY`
@@ -205,6 +216,7 @@ cmake --build build
 - `TTLANG_ENABLE_BINDINGS_PYTHON` (default: OFF) - Enable Python bindings
 - `TTLANG_ENABLE_RUNTIME` (default: OFF) - Enable runtime support
 - `TTLANG_ENABLE_PERF_TRACE` (default: OFF) - Enable performance trace (Scenario 3 only, passed to tt-mlir build)
+- `TTLANG_BUILD_TTMLIR_TOOLCHAIN` (default: OFF) - Build LLVM/MLIR toolchain from tt-mlir source (Scenario 3 only, requires `TTMLIR_TOOLCHAIN_DIR` env var)
 - `CODE_COVERAGE` (default: OFF) - Enable code coverage reporting
 
 **Examples:**

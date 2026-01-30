@@ -22,6 +22,7 @@ option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_PERF_TRACE "Enable performance trace" OFF)
 option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
+option(TTLANG_BUILD_TTMLIR_TOOLCHAIN "Build LLVM/MLIR toolchain from tt-mlir source (requires TTMLIR_TOOLCHAIN_DIR env var)" OFF)
 
 if(CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage")
