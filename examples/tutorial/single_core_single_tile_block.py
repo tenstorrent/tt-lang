@@ -5,9 +5,9 @@ import ttnn
 import torch
 
 
-def from_torch(t):
+def from_torch(tensor: ttnn.Tensor):
     return ttnn.from_torch(
-        t,
+        tensor,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
@@ -21,7 +21,7 @@ TILE_SIZE = 32
 
 
 @ttl.kernel(grid=(1, 1))
-def __demo_kernel(a, b, c, y):
+def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     rows = a.shape[0] // TILE_SIZE
     cols = a.shape[1] // TILE_SIZE
 
@@ -80,7 +80,7 @@ def __demo_kernel(a, b, c, y):
                     tx.wait()
 
 
-def demo_kernel(a, b, c):
+def demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
     __demo_kernel(a, b, c, y)
     return y

@@ -5,9 +5,9 @@ import ttnn
 import torch
 
 
-def from_torch(t):
+def from_torch(tensor: ttnn.Tensor):
     return ttnn.from_torch(
-        t,
+        tensor,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
@@ -22,7 +22,7 @@ GRANULARITY = 4
 
 
 @ttl.kernel(grid=(4, 4))
-def __demo_kernel(a, b, c, y):
+def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
@@ -126,7 +126,7 @@ def __demo_kernel(a, b, c, y):
                     tx.wait()
 
 
-def demo_kernel(a, b, c):
+def demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
     __demo_kernel(a, b, c, y)
     return y
