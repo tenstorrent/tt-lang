@@ -662,8 +662,44 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
 // Reduce Lowering Pattern
 //===----------------------------------------------------------------------===//
 
+/// Build affine map for reduce input based on reduce dimension.
+/// For scalar reduce: (i,j) -> (0,0) - all tiles reduce to one position
+/// For row reduce: (i,j) -> (i,0) - each row reduces to column 0
+/// For col reduce: (i,j) -> (0,j) - each column reduces to row 0
+static AffineMap buildReduceInputMap(MLIRContext *ctx, ReduceDim reduceDim) {
+  auto d0 = getAffineDimExpr(0, ctx);
+  auto d1 = getAffineDimExpr(1, ctx);
+  auto c0 = getAffineConstantExpr(0, ctx);
+
+  switch (reduceDim) {
+  case ReduceDim::Scalar:
+    return AffineMap::get(2, 0, {c0, c0}, ctx);
+  case ReduceDim::Row:
+    return AffineMap::get(2, 0, {d0, c0}, ctx);
+  case ReduceDim::Col:
+    return AffineMap::get(2, 0, {c0, d1}, ctx);
+  }
+  llvm_unreachable("unknown ReduceDim");
+}
+
+/// Compute the effective output shape for reduce based on reduce dimension.
+/// Scalar: [1, 1], Row: [M, 1], Col: [1, N]
+static SmallVector<int64_t> getReduceOutputIterShape(ArrayRef<int64_t> inShape,
+                                                      ReduceDim reduceDim) {
+  switch (reduceDim) {
+  case ReduceDim::Scalar:
+    return {1, 1};
+  case ReduceDim::Row:
+    return {inShape[0], 1};
+  case ReduceDim::Col:
+    return {1, inShape[1]};
+  }
+  llvm_unreachable("unknown ReduceDim");
+}
+
 /// Pattern for reduce op: TTL tensor op -> ttl.compute with tile_reduce.
 /// Reduce reads from input CB and scaler CB, writes result to DST.
+/// For multi-tile blocks, accumulation happens in the TileReduceOp lowering.
 struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
   using OpRewritePattern<ReduceOp>::OpRewritePattern;
 
@@ -695,23 +731,37 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
 
-    // Identity maps for 2D iteration.
+    auto reduceDim = op.getReduceDim();
+    auto inShape = inputType.getShape();
+
+    // Compute effective output iteration shape based on reduce dimension.
+    auto outIterShape = getReduceOutputIterShape(inShape, reduceDim);
+
+    // Build iteration type based on output iteration shape.
+    // Create a tensor type for iteration (this determines loop bounds).
+    auto iterOutputType = RankedTensorType::get(
+        outIterShape, outputType.getElementType(), outputType.getEncoding());
+
+    // Build affine maps for reduce.
+    // Input map depends on reduce dimension to read correct tiles.
+    // Scaler and output use identity maps.
+    AffineMap inputMap = buildReduceInputMap(ctx, reduceDim);
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(2, ctx);
 
-    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
+    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
                                    AffineMapAttr::get(identityMap),
                                    AffineMapAttr::get(identityMap),
                                    AffineMapAttr::get(identityMap)};
 
-    SmallVector<Attribute> iterTypes(outputType.getRank(),
-                                     rewriter.getStringAttr("parallel"));
+    SmallVector<Attribute> iterTypes(2, rewriter.getStringAttr("parallel"));
 
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    // Build init tensor with iteration output shape but keep original CB.
+    Value init = buildInitTensor(rewriter, loc, iterOutputType, op.getOutput());
     Value initAttached =
         rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
     auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType},
+        loc, TypeRange{iterOutputType},
         ValueRange{op.getInput(), op.getScaler(), op.getOutput()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
