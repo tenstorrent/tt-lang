@@ -84,8 +84,8 @@ def assert_success_output(code: int, out: str) -> None:
         "tutorial/single_core_multitile_block.py",
         "tutorial/multicore.py",
         "tutorial/multicore_grid_auto.py",
-        # "tutorial/single_core_broadcast_single_tile_block.py", TODO: needs broadcast changes
-        # "tutorial/single_core_broadcast_multitile_blocks.py", TODO: needs broadcast changes
+        "tutorial/single_core_broadcast_single_tile_block.py",
+        "tutorial/single_core_broadcast_multitile_blocks.py",
     ],
 )
 def test_example_cli(script_name: str) -> None:

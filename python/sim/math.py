@@ -9,37 +9,50 @@ This module provides math functions that operate on blocks, matching the
 ttl.math API from the TT-Lang specification.
 """
 
-from typing import List
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 from .block import Block
-from .typedefs import Shape
+
+if TYPE_CHECKING:
+    from .cb import ReserveContext, WaitContext
 
 
-def broadcast(block: Block, dims: List[int]) -> Block:
+def broadcast(
+    block: Union[Block, "ReserveContext", "WaitContext"],
+    _unused_arg: Optional[Any] = None,
+    dims: Optional[List[int]] = None,
+) -> Block:
     """Broadcast a block along specified dimensions.
 
-    Marks a block for explicit broadcasting along the specified dimensions.
-    The block must have size 1 in the dimensions being broadcast.
-    When used in a binary operation, the block will be expanded to match
-    the shape of the other operand.
+    Validates that the block has size 1 in the dimensions being broadcast.
+    The actual broadcasting happens automatically in binary operations.
+
+    Note: With implicit broadcasting enabled, this function is optional.
+    Binary operations like `a * b` will automatically broadcast if shapes
+    are compatible (one dimension is 1). This function can still be used
+    for explicit validation and documentation of broadcasting intent.
 
     Args:
         block: Input block to broadcast (can be Block or WaitContext)
+        _unused_arg: Unused argument for compatibility (typically output block shape hint)
         dims: List of dimension indices to broadcast along (0-indexed)
 
     Returns:
-        Block marked for broadcasting
+        The same block (unchanged, as broadcasting is now implicit)
 
     Raises:
         ValueError: If any of the specified dimensions don't have size 1
 
     Example:
-        # Broadcast a (1, 1) block along dimension 1 (columns)
+        # Explicit broadcasting (validated but automatic)
         b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
         with b_cb.wait() as b_blk:
             b_broadcast = ttl.math.broadcast(b_blk, dims=[1])
-            # b_broadcast can now be added to blocks with shape (1, N)
-            y = a_blk + b_broadcast
+            y = a_blk + b_broadcast  # Broadcasts automatically
+
+        # Implicit broadcasting (also works without ttl.math.broadcast)
+        with b_cb.wait() as b_blk:
+            y = a_blk + b_blk  # Broadcasts automatically if compatible
 
     From the specification:
         The broadcast function produces a block with shape expanded to be
@@ -49,12 +62,14 @@ def broadcast(block: Block, dims: List[int]) -> Block:
         Here the `*` is the outer expression, and if `b` has shape (N, M),
         then `a` must have shape (N, 1).
     """
+    if dims is None:
+        raise ValueError("dims parameter is required for broadcast()")
+
     # Unwrap WaitContext/ReserveContext if needed
-    if hasattr(block, "block"):
-        block = block.block()
+    actual_block: Block = block.block() if hasattr(block, "block") else block  # type: ignore[union-attr]
 
     # Validate that the dimensions being broadcast have size 1
-    block_shape = block._shape
+    block_shape = actual_block._shape  # type: ignore[attr-defined]
     for dim in dims:
         if dim >= len(block_shape):
             raise ValueError(
@@ -67,6 +82,5 @@ def broadcast(block: Block, dims: List[int]) -> Block:
                 f"but has size {block_shape[dim]}"
             )
 
-    # Create a new block with the same data but marked for broadcasting
-    tensors = block.to_list()
-    return Block.from_list(tensors, shape=block_shape, broadcast_dims=dims)
+    # Broadcasting is now implicit, so just return the block unchanged
+    return actual_block
