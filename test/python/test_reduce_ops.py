@@ -178,10 +178,10 @@ def reduce_sum_col_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_row_2x2_kernel(inp, scaler, out):
-    """Reduce sum rows over 2x2 tile grid (dims=[0])."""
+    """Reduce sum rows over 2x2 tile grid (dims=[0]) -> (2,1) output."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -202,16 +202,16 @@ def reduce_sum_row_2x2_kernel(inp, scaler, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[0:2, 0:2])
+            tx = ttl.copy(out_blk, out[0:2, 0])
             tx.wait()
 
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_col_2x2_kernel(inp, scaler, out):
-    """Reduce sum cols over 2x2 tile grid (dims=[1])."""
+    """Reduce sum cols over 2x2 tile grid (dims=[1]) -> (1,2) output."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -232,7 +232,7 @@ def reduce_sum_col_2x2_kernel(inp, scaler, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[0:2, 0:2])
+            tx = ttl.copy(out_blk, out[0, 0:2])
             tx.wait()
 
 
@@ -243,10 +243,10 @@ def reduce_sum_col_2x2_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_2x2_kernel(inp, scaler, out):
-    """Reduce sum over 2x2 tile grid (64x64 elements)."""
+    """Reduce sum over 2x2 tile grid (64x64 elements) -> scalar."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -267,16 +267,16 @@ def reduce_sum_2x2_kernel(inp, scaler, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[0:2, 0:2])
+            tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
 
 @ttl.kernel(grid=(1, 1))
 def reduce_max_2x2_kernel(inp, scaler, out):
-    """Reduce max over 2x2 tile grid (64x64 elements)."""
+    """Reduce max over 2x2 tile grid (64x64 elements) -> scalar."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -297,7 +297,7 @@ def reduce_max_2x2_kernel(inp, scaler, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[0:2, 0:2])
+            tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
 
@@ -308,10 +308,10 @@ def reduce_max_2x2_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_4x4_kernel(inp, scaler, out):
-    """Reduce sum over 4x4 tile grid (128x128 elements)."""
+    """Reduce sum over 4x4 tile grid (128x128 elements) -> scalar."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(4, 4), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -332,16 +332,16 @@ def reduce_sum_4x4_kernel(inp, scaler, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[0:4, 0:4])
+            tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
 
 @ttl.kernel(grid=(1, 1))
 def reduce_max_4x4_kernel(inp, scaler, out):
-    """Reduce max over 4x4 tile grid (128x128 elements)."""
+    """Reduce max over 4x4 tile grid (128x128 elements) -> scalar."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(4, 4), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -362,7 +362,7 @@ def reduce_max_4x4_kernel(inp, scaler, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[0:4, 0:4])
+            tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
 
@@ -479,10 +479,10 @@ def reduce_sum_multicore_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(2, 2))
 def reduce_sum_multicore_multitile_kernel(inp, scaler, out):
-    """Reduce sum with 2x2 grid, each core processes 2x2 tiles (128x128 total)."""
+    """Reduce sum with 2x2 grid, each core processes 2x2 tiles -> 1 tile output."""
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -506,10 +506,8 @@ def reduce_sum_multicore_multitile_kernel(inp, scaler, out):
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.core(dims=2)
-        row = y * 2
-        col = x * 2
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[row : row + 2, col : col + 2])
+            tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 
 
@@ -789,7 +787,7 @@ class TestReduceMultitile2x2:
         """Reduce sum over 2x2 tiles with all ones."""
         inp_torch = torch.ones((64, 64), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -798,19 +796,19 @@ class TestReduceMultitile2x2:
         reduce_sum_2x2_kernel(inp, scaler, out)
         result = ttnn.to_torch(out)
 
-        # Each tile reduces independently, sum of 32x32 ones = 1024
-        expected_tile_sum = torch.tensor(32 * 32, dtype=torch.float32)
-        assert_allclose(result[0, 0].float(), expected_tile_sum, rtol=0.1, atol=15)
+        # All 4 tiles accumulated: 64*64 = 4096
+        expected_sum = torch.tensor(64 * 64, dtype=torch.float32)
+        assert_allclose(result[0, 0].float(), expected_sum, rtol=0.1, atol=50)
 
     def test_reduce_sum_2x2_random(self, device):
         """Reduce sum over 2x2 tiles with random values."""
         torch.manual_seed(456)
         inp_torch = torch.randn((64, 64), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
-        # Expected: sum of first tile (top-left 32x32)
-        expected_sum = inp_torch[:32, :32].float().sum().item()
+        # Expected: sum of all 64x64 elements (all 4 tiles)
+        expected_sum = inp_torch.float().sum().item()
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -823,7 +821,7 @@ class TestReduceMultitile2x2:
             result[0, 0].float(),
             torch.tensor(expected_sum),
             rtol=0.15,
-            atol=max(abs(expected_sum) * 0.1, 5.0),
+            atol=max(abs(expected_sum) * 0.1, 10.0),
         )
 
     def test_reduce_max_2x2(self, device):
@@ -831,7 +829,7 @@ class TestReduceMultitile2x2:
         inp_torch = torch.ones((64, 64), dtype=torch.bfloat16)
         inp_torch[10, 10] = 25.0  # Max in first tile
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -843,10 +841,10 @@ class TestReduceMultitile2x2:
         assert_allclose(result[0, 0].float(), torch.tensor(25.0), rtol=0.1, atol=0.5)
 
     def test_reduce_sum_row_2x2(self, device):
-        """Row reduction over 2x2 tiles: each row sums to 32."""
+        """Row reduction over 2x2 tiles: each row sums across 64 columns."""
         inp_torch = torch.ones((64, 64), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        out_torch = torch.zeros((64, 32), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -855,15 +853,16 @@ class TestReduceMultitile2x2:
         reduce_sum_row_2x2_kernel(inp, scaler, out)
         result = ttnn.to_torch(out)
 
-        expected_row_sum = torch.tensor(32.0, dtype=torch.float32)
-        assert_allclose(result[0, 0].float(), expected_row_sum, rtol=0.1, atol=1.0)
-        assert_allclose(result[15, 0].float(), expected_row_sum, rtol=0.1, atol=1.0)
+        # Each row sums 64 columns (2 tiles of 32)
+        expected_row_sum = torch.tensor(64.0, dtype=torch.float32)
+        assert_allclose(result[0, 0].float(), expected_row_sum, rtol=0.1, atol=2.0)
+        assert_allclose(result[15, 0].float(), expected_row_sum, rtol=0.1, atol=2.0)
 
     def test_reduce_sum_col_2x2(self, device):
-        """Col reduction over 2x2 tiles: each col sums to 32."""
+        """Col reduction over 2x2 tiles: each col sums across 64 rows."""
         inp_torch = torch.ones((64, 64), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -872,9 +871,10 @@ class TestReduceMultitile2x2:
         reduce_sum_col_2x2_kernel(inp, scaler, out)
         result = ttnn.to_torch(out)
 
-        expected_col_sum = torch.tensor(32.0, dtype=torch.float32)
-        assert_allclose(result[0, 0].float(), expected_col_sum, rtol=0.1, atol=1.0)
-        assert_allclose(result[0, 15].float(), expected_col_sum, rtol=0.1, atol=1.0)
+        # Each column sums 64 rows (2 tiles of 32)
+        expected_col_sum = torch.tensor(64.0, dtype=torch.float32)
+        assert_allclose(result[0, 0].float(), expected_col_sum, rtol=0.1, atol=2.0)
+        assert_allclose(result[0, 15].float(), expected_col_sum, rtol=0.1, atol=2.0)
 
 
 # =============================================================================
@@ -889,7 +889,7 @@ class TestReduceMultitile4x4:
         """Reduce sum over 4x4 tiles with all ones."""
         inp_torch = torch.ones((128, 128), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -898,18 +898,19 @@ class TestReduceMultitile4x4:
         reduce_sum_4x4_kernel(inp, scaler, out)
         result = ttnn.to_torch(out)
 
-        # Each tile reduces independently
-        expected_tile_sum = torch.tensor(32 * 32, dtype=torch.float32)
-        assert_allclose(result[0, 0].float(), expected_tile_sum, rtol=0.1, atol=15)
+        # All 16 tiles accumulated: 128*128 = 16384
+        expected_sum = torch.tensor(128 * 128, dtype=torch.float32)
+        assert_allclose(result[0, 0].float(), expected_sum, rtol=0.1, atol=200)
 
     def test_reduce_sum_4x4_random(self, device):
         """Reduce sum over 4x4 tiles with random values."""
         torch.manual_seed(789)
         inp_torch = torch.randn((128, 128), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
-        expected_sum = inp_torch[:32, :32].float().sum().item()
+        # Expected: sum of all 128x128 elements (all 16 tiles)
+        expected_sum = inp_torch.float().sum().item()
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -922,7 +923,7 @@ class TestReduceMultitile4x4:
             result[0, 0].float(),
             torch.tensor(expected_sum),
             rtol=0.15,
-            atol=max(abs(expected_sum) * 0.1, 5.0),
+            atol=max(abs(expected_sum) * 0.1, 20.0),
         )
 
     def test_reduce_max_4x4(self, device):
@@ -930,7 +931,7 @@ class TestReduceMultitile4x4:
         inp_torch = torch.ones((128, 128), dtype=torch.bfloat16)
         inp_torch[20, 20] = 50.0  # Max in first tile
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -1059,7 +1060,7 @@ class TestReduceMulticoreMultitile:
         """2x2 grid, each core processes 2x2 tiles = 128x128 total."""
         inp_torch = torch.ones((128, 128), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -1068,26 +1069,26 @@ class TestReduceMulticoreMultitile:
         reduce_sum_multicore_multitile_kernel(inp, scaler, out)
         result = ttnn.to_torch(out)
 
-        # Each tile independently sums to 1024
-        expected_tile_sum = torch.tensor(32 * 32, dtype=torch.float32)
-        # Check first tile of each core's region
-        assert_allclose(result[0, 0].float(), expected_tile_sum, rtol=0.1, atol=15)
-        assert_allclose(result[0, 64].float(), expected_tile_sum, rtol=0.1, atol=15)
-        assert_allclose(result[64, 0].float(), expected_tile_sum, rtol=0.1, atol=15)
-        assert_allclose(result[64, 64].float(), expected_tile_sum, rtol=0.1, atol=15)
+        # Each core reduces 2x2 tiles = 64x64 elements = 4096
+        expected_sum = torch.tensor(64 * 64, dtype=torch.float32)
+        # Check each core's output position
+        assert_allclose(result[0, 0].float(), expected_sum, rtol=0.1, atol=50)
+        assert_allclose(result[0, 32].float(), expected_sum, rtol=0.1, atol=50)
+        assert_allclose(result[32, 0].float(), expected_sum, rtol=0.1, atol=50)
+        assert_allclose(result[32, 32].float(), expected_sum, rtol=0.1, atol=50)
 
     def test_reduce_sum_multicore_multitile_random(self, device):
         """2x2 grid with random values, verify each region independently."""
         torch.manual_seed(999)
         inp_torch = torch.randn((128, 128), dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
 
-        # Expected sums for first tile of each core's region
-        expected_00 = inp_torch[:32, :32].float().sum().item()
-        expected_01 = inp_torch[:32, 64:96].float().sum().item()
-        expected_10 = inp_torch[64:96, :32].float().sum().item()
-        expected_11 = inp_torch[64:96, 64:96].float().sum().item()
+        # Expected sums for each core's full 2x2 tile region (64x64 elements)
+        expected_00 = inp_torch[:64, :64].float().sum().item()
+        expected_01 = inp_torch[:64, 64:128].float().sum().item()
+        expected_10 = inp_torch[64:128, :64].float().sum().item()
+        expected_11 = inp_torch[64:128, 64:128].float().sum().item()
 
         inp = to_l1(inp_torch, device)
         scaler = to_l1(scaler_torch, device)
@@ -1101,25 +1102,25 @@ class TestReduceMulticoreMultitile:
             result[0, 0].float(),
             torch.tensor(expected_00),
             rtol=tol,
-            atol=max(abs(expected_00) * 0.1, 5.0),
+            atol=max(abs(expected_00) * 0.1, 10.0),
         )
         assert_allclose(
-            result[0, 64].float(),
+            result[0, 32].float(),
             torch.tensor(expected_01),
             rtol=tol,
-            atol=max(abs(expected_01) * 0.1, 5.0),
+            atol=max(abs(expected_01) * 0.1, 10.0),
         )
         assert_allclose(
-            result[64, 0].float(),
+            result[32, 0].float(),
             torch.tensor(expected_10),
             rtol=tol,
-            atol=max(abs(expected_10) * 0.1, 5.0),
+            atol=max(abs(expected_10) * 0.1, 10.0),
         )
         assert_allclose(
-            result[64, 64].float(),
+            result[32, 32].float(),
             torch.tensor(expected_11),
             rtol=tol,
-            atol=max(abs(expected_11) * 0.1, 5.0),
+            atol=max(abs(expected_11) * 0.1, 10.0),
         )
 
 
@@ -1135,14 +1136,14 @@ def bcast_then_reduce_kernel(inp, bcast_in, scaler, out):
     Pattern: reduce_sum(broadcast(bcast_in) + inp)
     - bcast_in: scalar to broadcast to full tile
     - inp: full tile input
-    - Result: sum of (broadcast_value + inp) for each tile
+    - Result: sum of (broadcast_value + inp) for all tiles in each core's region
     """
     inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     bcast_cb = ttl.make_circular_buffer_like(bcast_in, shape=(2, 2), buffer_factor=2)
     bcast_out_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     add_out_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -1160,7 +1161,7 @@ def bcast_then_reduce_kernel(inp, bcast_in, scaler, out):
             added = i + b_val
             a_out.store(added)
 
-        # Stage 3: Reduce the add result
+        # Stage 3: Reduce the add result across all 2x2 tiles
         with add_out_cb.wait() as a_in, scaler_cb.wait() as s, out_cb.reserve() as o:
             result = ttl.math.reduce_sum(a_in, s, o, dims=[0, 1])
             o.store(result)
@@ -1186,11 +1187,9 @@ def bcast_then_reduce_kernel(inp, bcast_in, scaler, out):
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.core(dims=2)
-        row = y * 2
-        col = x * 2
 
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[row : row + 2, col : col + 2])
+            tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 
 
@@ -1202,7 +1201,7 @@ class TestBcastThenReduce:
 
         inp = all 1.0
         bcast_in = scalar 2.0 (will be broadcast to full tiles)
-        Result: each tile sums (1.0 + 2.0) * 32 * 32 = 3072
+        Each core: sums (1.0 + 2.0) * 64 * 64 = 12288 (2x2 tiles = 64x64 elements)
         """
         inp_torch = torch.ones((128, 128), dtype=torch.bfloat16)
 
@@ -1226,7 +1225,7 @@ class TestBcastThenReduce:
         bcast_torch[96, 96] = 2.0
 
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
 
         inp = to_l1(inp_torch, device)
         bcast_in = to_l1(bcast_torch, device)
@@ -1236,12 +1235,12 @@ class TestBcastThenReduce:
         bcast_then_reduce_kernel(inp, bcast_in, scaler, out)
         result = ttnn.to_torch(out)
 
-        # Each tile: (1.0 + 2.0) * 32 * 32 = 3072
-        expected_sum = torch.tensor(3.0 * 32 * 32, dtype=torch.float32)
-        assert_allclose(result[0, 0].float(), expected_sum, rtol=0.1, atol=50)
-        assert_allclose(result[0, 64].float(), expected_sum, rtol=0.1, atol=50)
-        assert_allclose(result[64, 0].float(), expected_sum, rtol=0.1, atol=50)
-        assert_allclose(result[64, 64].float(), expected_sum, rtol=0.1, atol=50)
+        # Each core reduces 2x2 tiles (64x64 elements): (1.0 + 2.0) * 64 * 64 = 12288
+        expected_sum = torch.tensor(3.0 * 64 * 64, dtype=torch.float32)
+        assert_allclose(result[0, 0].float(), expected_sum, rtol=0.1, atol=150)
+        assert_allclose(result[0, 32].float(), expected_sum, rtol=0.1, atol=150)
+        assert_allclose(result[32, 0].float(), expected_sum, rtol=0.1, atol=150)
+        assert_allclose(result[32, 32].float(), expected_sum, rtol=0.1, atol=150)
 
 
 # =============================================================================
@@ -1254,22 +1253,22 @@ def matmul_then_reduce_kernel(a, b, scaler, out):
     """Combine matmul and reduce: matmul then reduce the result.
 
     Pattern: reduce_sum(matmul(a, b))
-    Each core does: C = A @ B, then sum = reduce_sum(C)
+    Each core does: C = A @ B (2x2 tiles), then sum = reduce_sum(C) (1 tile)
     """
     a_cb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
     b_cb = ttl.make_circular_buffer_like(b, shape=(2, 2), buffer_factor=2)
     c_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        # Stage 1: Matmul
+        # Stage 1: Matmul (2x2 tiles output)
         with a_cb.wait() as av, b_cb.wait() as bv, c_cb.reserve() as cv:
             result = ttl.math.matmul(av, bv, cv)
             cv.store(result)
 
-        # Stage 2: Reduce
+        # Stage 2: Reduce all 4 tiles to scalar
         with c_cb.wait() as c, scaler_cb.wait() as s, out_cb.reserve() as o:
             result = ttl.math.reduce_sum(c, s, o, dims=[0, 1])
             o.store(result)
@@ -1295,11 +1294,9 @@ def matmul_then_reduce_kernel(a, b, scaler, out):
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.core(dims=2)
-        row = y * 2
-        col = x * 2
 
         with out_cb.wait() as out_blk:
-            tx = ttl.copy(out_blk, out[row : row + 2, col : col + 2])
+            tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 
 
@@ -1311,19 +1308,18 @@ class TestMatmulThenReduce:
 
         a = all 0.1, b = all 0.1
         For 2x2 tile blocks (K=2 tiles): tile matmul accumulates over K tiles
-        Each tile matmul: 0.1 * 0.1 * 32 = 0.32 per element
-        With K=2 tiles: 0.32 * 2 = 0.64 per element
-        reduce_sum of 32x32: 0.64 * 1024 = 655.36 per tile
+        Each tile matmul element: 0.1 * 0.1 * 32 * 2 = 0.64 per element
+        Matmul produces 2x2 tiles = 64x64 elements
+        reduce_sum of 64x64: 0.64 * 64 * 64 = 2621.44
         """
         a_torch = torch.full((128, 128), 0.1, dtype=torch.bfloat16)
         b_torch = torch.full((128, 128), 0.1, dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-        out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
+        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
 
-        # K=2 tiles (64 elements), each tile matmul gives 0.1*0.1*32 = 0.32
-        # Two accumulations: 0.32 * 2 = 0.64 per element
-        # Reduce 32x32: 0.64 * 1024 = 655.36
-        expected_sum = torch.tensor(0.1 * 0.1 * 32 * 2 * 32 * 32, dtype=torch.float32)
+        # K=2 tiles (64 elements), each tile matmul gives 0.1*0.1*32*2 = 0.64 per element
+        # Reduce 2x2 tiles (64x64 elements): 0.64 * 64 * 64 = 2621.44
+        expected_sum = torch.tensor(0.1 * 0.1 * 32 * 2 * 64 * 64, dtype=torch.float32)
 
         a = to_l1(a_torch, device)
         b = to_l1(b_torch, device)
@@ -1334,10 +1330,10 @@ class TestMatmulThenReduce:
         result = ttnn.to_torch(out)
 
         # Relaxed tolerance for matmul + reduce chain
-        assert_allclose(result[0, 0].float(), expected_sum, rtol=0.15, atol=50)
-        assert_allclose(result[0, 64].float(), expected_sum, rtol=0.15, atol=50)
-        assert_allclose(result[64, 0].float(), expected_sum, rtol=0.15, atol=50)
-        assert_allclose(result[64, 64].float(), expected_sum, rtol=0.15, atol=50)
+        assert_allclose(result[0, 0].float(), expected_sum, rtol=0.15, atol=200)
+        assert_allclose(result[0, 32].float(), expected_sum, rtol=0.15, atol=200)
+        assert_allclose(result[32, 0].float(), expected_sum, rtol=0.15, atol=200)
+        assert_allclose(result[32, 32].float(), expected_sum, rtol=0.15, atol=200)
 
 
 if __name__ == "__main__":
