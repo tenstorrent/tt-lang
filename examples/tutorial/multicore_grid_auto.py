@@ -81,9 +81,6 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                         start_col_tile = col * col_tiles_per_block
                         end_col_tile = (col + 1) * col_tiles_per_block
 
-                        # if (core_col, core_row) == (2, 2):
-                        #     print("(start_row_tile, end_row_tile): ", (start_row_tile, end_row_tile), " (start_col_tile, end_col_tile): ", (start_col_tile, end_col_tile))
-
                         with (
                             a_cb.reserve() as a_blk,
                             b_cb.reserve() as b_blk,
