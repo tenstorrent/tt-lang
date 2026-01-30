@@ -65,8 +65,8 @@ Your code will be in `~/my-code`.
 - `ghcr.io/tenstorrent/tt-lang/tt-lang-dev-ubuntu-22-04:latest` - tt-mlir toolchain + dev tools (for building tt-lang)
 
 **Local (if built locally):**
-- `tt-lang-user:local` - Pre-built tt-lang (recommended for users)
-- `tt-lang-dev:local` - tt-mlir toolchain + dev tools (for building tt-lang)
+- `tt-lang-user-ubuntu-22-04:latest` - Pre-built tt-lang (recommended for users)
+- `tt-lang-dev-ubuntu-22-04:latest` - Development image
 
 ## Notes
 

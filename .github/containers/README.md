@@ -193,8 +193,7 @@ Both passed via `--build-context` to docker build.
 - `CONTAINER_README.md` - Welcome message shown to users inside container
 - `cleanup-toolchain.sh` - Replaces unnecessary LLVM tools with stubs to reduce size
 - `build-and-install.sh` - Configure, build, install tt-lang (used by Dockerfile and CI)
-- `build-docker-images.sh` - Main build orchestration script
-- `push-docker-images.sh` - Push locally built images to registry
+- `build-docker-images.sh` - Main build orchestration script (includes push unless `--no-push`)
 
 ## Related Documentation
 
