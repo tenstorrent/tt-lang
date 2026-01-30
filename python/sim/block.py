@@ -120,7 +120,6 @@ class Block:
         "_access_state",
         "_expected_ops",
         "_is_temporary",
-        "_broadcast_dims",
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -138,14 +137,12 @@ class Block:
         acquisition: BlockAcquisition,
         thread_type: ThreadType,
         is_temporary: bool = False,
-        broadcast_dims: List[int] | None = None,
     ):
         self._buf = buf
         self._capacity = capacity
         self._span = span
         self._shape = shape
         self._is_temporary = is_temporary
-        self._broadcast_dims = broadcast_dims or []
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
@@ -199,7 +196,6 @@ class Block:
         cls,
         tensors: List[Tensor],
         shape: Shape,
-        broadcast_dims: List[int] | None = None,
     ) -> "Block":
         """Create a temporary Block from a list of tensors (computation result).
 
@@ -213,7 +209,6 @@ class Block:
             acquisition=BlockAcquisition.RESERVE,  # Temporary blocks use RESERVE semantics
             thread_type=ThreadType.COMPUTE,  # Temporary blocks are from compute operations
             is_temporary=True,
-            broadcast_dims=broadcast_dims,
         )
 
     def _validate_state(self, operation: str, expected_op: ExpectedOp) -> None:
@@ -511,11 +506,6 @@ class Block:
         """Check if this Block is a temporary computation result (not CB-backed)."""
         return self._is_temporary
 
-    @property
-    def broadcast_dims(self) -> List[int]:
-        """Get the dimensions along which this block is marked for broadcasting."""
-        return self._broadcast_dims
-
     def _check_can_read(self) -> None:
         """Check if this Block can be read from.
 
@@ -727,64 +717,48 @@ class Block:
     ) -> List[Tensor]:
         """Element-wise binary op: left (op) right.
 
-        Broadcasting must be explicit via ttl.math.broadcast().
-        Implicit broadcasting (different shapes without explicit broadcast) is an error.
+        Supports NumPy-style implicit broadcasting when shapes are compatible.
         """
         len_left = len(left)
         len_right = len(right)
         left_shape = left._shape
         right_shape = right._shape
 
-        # Check if shapes match exactly
+        # Check if shapes match exactly - fast path
         if left_shape == right_shape and len_left == len_right:
             return [op(left[i], right[i]) for i in range(len_left)]
 
-        # Check if one operand is marked for broadcasting
-        left_broadcast = getattr(left, "_broadcast_dims", None)
-        right_broadcast = getattr(right, "_broadcast_dims", None)
-
-        # Exactly one operand should be marked for broadcast
-        if left_broadcast and right_broadcast:
+        # Check if broadcasting is valid using standard broadcasting rules
+        # For now, require same number of dimensions
+        if len(left_shape) != len(right_shape):
             raise ValueError(
-                f"Cannot perform operation: both operands are marked for broadcast "
-                f"(left dims={left_broadcast}, right dims={right_broadcast}). "
-                f"Only one operand should be marked for broadcast."
+                f"Cannot broadcast: dimension mismatch between shapes {left_shape} and {right_shape}. "
+                f"Shapes must have the same number of dimensions."
             )
 
-        if not left_broadcast and not right_broadcast:
-            raise ValueError(
-                f"Cannot perform operation: shape mismatch {left_shape} vs {right_shape}. "
-                f"Use ttl.math.broadcast() to explicitly broadcast one of the operands."
-            )
-
-        # One operand is marked for broadcast - handle symmetrically
-        broadcast_block = left if left_broadcast else right
-        other_block = right if left_broadcast else left
-        broadcast_dims = left_broadcast or right_broadcast
-        broadcast_shape = broadcast_block._shape
-        other_shape = other_block._shape
-
-        # Validate broadcast
-        if len(broadcast_shape) != len(other_shape):
-            raise ValueError(
-                f"Cannot broadcast: dimension mismatch between shapes {broadcast_shape} and {other_shape}"
-            )
-
-        for dim in broadcast_dims:
-            if dim >= len(broadcast_shape):
+        # Check each dimension is compatible for broadcasting
+        # Compatible means: equal, or one of them is 1
+        for i, (l_dim, r_dim) in enumerate(zip(left_shape, right_shape)):
+            if l_dim != r_dim and l_dim != 1 and r_dim != 1:
                 raise ValueError(
-                    f"Cannot broadcast: dimension {dim} out of range for shape {broadcast_shape}"
-                )
-            if broadcast_shape[dim] != 1:
-                raise ValueError(
-                    f"Cannot broadcast: dimension {dim} must have size 1, got {broadcast_shape[dim]}"
+                    f"Cannot broadcast: incompatible shapes {left_shape} and {right_shape}. "
+                    f"Dimension {i} has sizes {l_dim} and {r_dim} which are incompatible "
+                    f"(must be equal or one must be 1)."
                 )
 
-        # Perform the operation with broadcasting
+        # Shapes are compatible - perform the operation with broadcasting
         from .ttnnsim import broadcast_tensors
 
+        # Convert to list and ensure all slots are Tensors (not None)
+        left_list = left.to_list()
+        right_list = right.to_list()
+
+        # Type cast to assert these are Tensors (they should be, as blocks with data should have no None slots)
+        left_tensors: List[Tensor] = left_list  # type: ignore[assignment]
+        right_tensors: List[Tensor] = right_list  # type: ignore[assignment]
+
         return broadcast_tensors(
-            left.to_list(), right.to_list(), left_shape, right_shape, op
+            left_tensors, right_tensors, left_shape, right_shape, op
         )
 
     def _binary_op(
