@@ -60,7 +60,9 @@ function(ttlang_execute_with_env)
 
   set(_exec_args
     COMMAND_ECHO STDOUT
-    COMMAND_ERROR_IS_FATAL ANY
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _stdout
+    ERROR_VARIABLE _stderr
   )
 
   if(ARG_WORKING_DIRECTORY)
@@ -71,6 +73,20 @@ function(ttlang_execute_with_env)
     COMMAND /bin/bash -c ". ${ARG_ENV_SCRIPT} && ${ARG_COMMAND}"
     ${_exec_args}
   )
+
+  # Print output if TTLANG_CMAKE_DEBUG is set or on failure
+  if(DEFINED ENV{TTLANG_CMAKE_DEBUG} OR NOT _result EQUAL 0)
+    if(_stdout)
+      message(STATUS "Command output:\n${_stdout}")
+    endif()
+    if(_stderr)
+      message(STATUS "Command stderr:\n${_stderr}")
+    endif()
+  endif()
+
+  if(NOT _result EQUAL 0)
+    message(FATAL_ERROR "Command failed with exit code ${_result}")
+  endif()
 endfunction()
 
 # ttlang_collect_ttmlir_link_libs(OUTPUT_VAR)

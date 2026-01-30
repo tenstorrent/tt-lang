@@ -212,6 +212,7 @@ jobs:
         env:
             TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
             CMAKE_BUILD_PARALLEL_LEVEL: 2
+            TTLANG_CMAKE_DEBUG: 1  # TODO: remove after debugging
 
         steps:
             - name: Checkout tt-lang
