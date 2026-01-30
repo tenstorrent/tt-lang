@@ -262,7 +262,6 @@ struct TTLInsertTileRegsSyncPass
       }
 
       // Track which tiles (from tensor.insert) have stores.
-      // After loop lowering, tensor.insert ops correspond to outputs.
       llvm::DenseMap<Value, StoreOp> storeForTile;
       for (StoreOp store : storeOps) {
         storeForTile.try_emplace(store.getTile(), store);
@@ -285,17 +284,101 @@ struct TTLInsertTileRegsSyncPass
         tail = push.getOperation();
       }
 
-      // Verify all tensor.insert ops have corresponding ttl.store ops.
-      // Each tensor.insert corresponds to an output that must be stored to a
-      // CB.
+      // Get output CBs from loop attributes for auto-inserting stores.
+      SmallVector<Value> outputCBs =
+          getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
+
+      // Helper: find a cb_reserve view for auto-inserted stores.
+      // Prefers the last in-body reserve before the insertion point;
+      // otherwise scans the parent block before the loop.
+      auto findReserveViewForStore = [&](Value cb,
+                                         Operation *insertAfter) -> Value {
+        Value candidate;
+
+        // Scan the loop body up to (but not including) insertAfter.
+        for (Operation &op : body) {
+          if (&op == insertAfter) {
+            break;
+          }
+          if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
+            if (reserve.getCb() == cb) {
+              candidate = reserve.getResult();
+            }
+          }
+        }
+        if (candidate) {
+          return candidate;
+        }
+
+        // Scan the parent block backwards from the loop.
+        for (Operation *curr = outermostLoop->getPrevNode(); curr;
+             curr = curr->getPrevNode()) {
+          if (auto reserve = dyn_cast<CBReserveOp>(curr)) {
+            if (reserve.getCb() == cb) {
+              return reserve.getResult();
+            }
+          }
+        }
+
+        return Value();
+      };
+
+      // Insert missing stores for tiles that go through tensor.insert.
+      // Each tensor.insert corresponds to an output that should be stored.
+      // For multi-output computes, we match each insert to its output CB by
+      // tracing the insert destination back to the iter_arg block argument.
       for (tensor::InsertOp insertOp : insertOps) {
         Value tile = insertOp.getScalar();
-        if (!storeForTile.contains(tile)) {
+        if (storeForTile.contains(tile)) {
+          continue;
+        }
+
+        if (outputCBs.empty()) {
+          continue;
+        }
+
+        // Determine which output CB this insert corresponds to.
+        // For scf.for, block args are: [iv, iter_arg_0, iter_arg_1, ...]
+        // The iter_arg index maps directly to the output CB index.
+        Value cb;
+        Value dest = insertOp.getDest();
+        if (auto blockArg = dyn_cast<BlockArgument>(dest)) {
+          // iter_arg index = block_arg_number - 1 (subtract 1 for the iv)
+          size_t iterArgIdx = blockArg.getArgNumber() - 1;
+          if (iterArgIdx < outputCBs.size()) {
+            cb = outputCBs[iterArgIdx];
+          }
+        }
+
+        // Error if we couldn't determine the output CB mapping.
+        // This indicates an unexpected IR structure (e.g., insert destination
+        // is not a block argument from the loop's iter_args).
+        if (!cb) {
           insertOp.emitError()
-              << "tensor.insert tile has no corresponding ttl.store op; "
-              << "all compute outputs must be explicitly stored to a CB";
+              << "could not determine output CB for tensor.insert; "
+              << "destination must be an iter_arg block argument";
           return WalkResult::interrupt();
         }
+
+        Value view = findReserveViewForStore(cb, tail->getNextNode());
+        if (!view) {
+          // Get the tensor type from the insert op for the reserve result type.
+          auto tensorType = insertOp.getDest().getType();
+          builder.setInsertionPointAfter(tail);
+          auto newReserve = builder.create<CBReserveOp>(loc, tensorType, cb);
+          view = newReserve.getResult();
+          tail = newReserve.getOperation();
+        }
+
+        builder.setInsertionPointAfter(tail);
+        auto newStore = builder.create<StoreOp>(loc, tile, view);
+        tail = newStore.getOperation();
+        storeForTile.try_emplace(tile, newStore);
+
+        // Also insert cb_push after the store.
+        builder.setInsertionPointAfter(tail);
+        builder.create<CBPushOp>(loc, cb);
+        tail = tail->getNextNode();
       }
 
       // Release: at end of loop body (before scf.yield) if not present.

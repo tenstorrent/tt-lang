@@ -8,10 +8,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -52,53 +49,6 @@ static Value findOutputCB(Operation *op) {
     }
   }
   return nullptr;
-}
-
-/// Emit cb_reserve + store for a tensor_store op.
-static void emitStoreOps(OpBuilder &builder, Location loc, Value tile,
-                         TensorStoreOp tensorStoreOp) {
-  Value storeCb = tensorStoreOp.getCb();
-  auto cbType = dyn_cast<CircularBufferType>(storeCb.getType());
-  if (cbType) {
-    auto viewType =
-        RankedTensorType::get(cbType.getShape(), cbType.getElementType());
-    Value view = builder.create<CBReserveOp>(loc, viewType, storeCb);
-    builder.create<StoreOp>(loc, tile, view);
-  }
-}
-
-/// Find the tensor_store op that uses this operation's result, if any.
-static TensorStoreOp findTensorStore(Operation *op) {
-  if (op->getNumResults() == 0) {
-    return nullptr;
-  }
-  Value result = op->getResult(0);
-  for (OpOperand &use : result.getUses()) {
-    if (auto storeOp = dyn_cast<TensorStoreOp>(use.getOwner())) {
-      return storeOp;
-    }
-  }
-  return nullptr;
-}
-
-/// Finalize compute body: emit stores if needed, yield result, replace the
-/// original op, and erase the tensor_store op.
-static void finalizeComputeBody(Operation *op, PatternRewriter &rewriter,
-                                Location loc, Value result,
-                                ComputeOp computeOp) {
-  // Emit store ops ONLY if there's an explicit tensor_store op.
-  TensorStoreOp tensorStoreOp = findTensorStore(op);
-  if (tensorStoreOp) {
-    emitStoreOps(rewriter, loc, result, tensorStoreOp);
-  }
-
-  rewriter.create<YieldOp>(loc, ValueRange{result});
-  rewriter.replaceOp(op, computeOp.getResult(0));
-
-  // Erase the tensor_store op (now that stores are inside the compute body)
-  if (tensorStoreOp) {
-    rewriter.eraseOp(tensorStoreOp);
-  }
 }
 
 /// Find unused bind_cb ops in the function that can be used for output CBs.
@@ -262,7 +212,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  finalizeComputeBody(sinkOp, rewriter, loc, finalResult, computeOp);
+  rewriter.create<YieldOp>(loc, ValueRange{finalResult});
+  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -362,8 +313,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
+  rewriter.create<YieldOp>(loc, ValueRange{result});
 
-  finalizeComputeBody(op, rewriter, loc, result, computeOp);
+  rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
 
@@ -443,8 +395,9 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
+  rewriter.create<YieldOp>(loc, ValueRange{result});
 
-  finalizeComputeBody(op, rewriter, loc, result, computeOp);
+  rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
 
@@ -476,67 +429,6 @@ struct LowerUnaryToCompute : OpRewritePattern<TTLOp> {
                                 PatternRewriter &rewriter) const override {
     return buildUnaryCompute<TileOp>(op.getOperation(), rewriter,
                                      op.getInput());
-  }
-};
-
-/// Pattern for direct stores: tensor_store where the tensor is not the result
-/// of a computation. Generates loops to iterate over tiles and store each one
-/// to the output CB.
-struct LowerDirectTensorStore : OpRewritePattern<TensorStoreOp> {
-  using OpRewritePattern<TensorStoreOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(TensorStoreOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value tensor = op.getTensor();
-
-    auto tensorType = dyn_cast<RankedTensorType>(tensor.getType());
-    if (!tensorType) {
-      return rewriter.notifyMatchFailure(op, "tensor must be ranked");
-    }
-
-    // Check if input is attached to a CB
-    Value inputCb = getAttachedCB(tensor);
-    if (!inputCb) {
-      return rewriter.notifyMatchFailure(
-          op, "direct store input must be attached to a CB");
-    }
-
-    Value outCb = op.getCb();
-    auto cbType = dyn_cast<CircularBufferType>(outCb.getType());
-    if (!cbType) {
-      return rewriter.notifyMatchFailure(op, "output must be a CB");
-    }
-
-    // Build loop bounds from tensor shape
-    SmallVector<Value> lowerBounds;
-    SmallVector<Value> upperBounds;
-    SmallVector<Value> steps;
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-
-    for (int64_t dim : tensorType.getShape()) {
-      lowerBounds.push_back(c0);
-      upperBounds.push_back(rewriter.create<arith::ConstantIndexOp>(loc, dim));
-      steps.push_back(c1);
-    }
-
-    // Build nested loops to iterate over tiles
-    scf::buildLoopNest(
-        rewriter, loc, lowerBounds, upperBounds, steps,
-        [&](OpBuilder &builder, Location loc, ValueRange ivs) {
-          // Extract tile from input tensor at current indices
-          Value tile = builder.create<tensor::ExtractOp>(loc, tensor, ivs);
-
-          // Reserve output CB and store tile
-          auto viewType =
-              RankedTensorType::get(cbType.getShape(), cbType.getElementType());
-          Value view = builder.create<CBReserveOp>(loc, viewType, outCb);
-          builder.create<StoreOp>(loc, tile, view);
-        });
-
-    rewriter.eraseOp(op);
-    return success();
   }
 };
 
@@ -665,8 +557,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value result =
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
+    rewriter.create<YieldOp>(loc, ValueRange{result});
 
-    finalizeComputeBody(op, rewriter, loc, result, computeOp);
+    rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
 };
@@ -728,9 +621,6 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
-
-  // Direct store pattern (runs after compute patterns)
-  patterns.add<LowerDirectTensorStore>(ctx);
 }
 
 } // namespace mlir::tt::ttl
