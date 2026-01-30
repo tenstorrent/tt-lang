@@ -1336,6 +1336,206 @@ class TestMatmulThenReduce:
         assert_allclose(result[32, 32].float(), expected_sum, rtol=0.15, atol=200)
 
 
+# =============================================================================
+# Combined Operations: Reduce -> Bcast -> Matmul (4x4 multicore, 8x8 tiles)
+# =============================================================================
+
+
+@ttl.kernel(grid=(4, 4))
+def reduce_bcast_matmul_kernel(reduce_in, bcast_out_ref, matmul_b, scaler, out):
+    """Combined reduce -> bcast -> matmul test.
+
+    Pattern: matmul(broadcast(reduce_sum(reduce_in)), matmul_b)
+    1. Reduce input to scalar (8x8 tiles -> 1x1 tile)
+    2. Broadcast scalar back to full size (1x1 -> 8x8 tiles)
+    3. Matmul broadcasted result with B matrix (8x8 @ 8x8 -> 8x8)
+    """
+    # Input CBs
+    reduce_in_cb = ttl.make_circular_buffer_like(reduce_in, shape=(8, 8), buffer_factor=2)
+    scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    matmul_b_cb = ttl.make_circular_buffer_like(matmul_b, shape=(8, 8), buffer_factor=2)
+
+    # Intermediate CBs
+    reduce_out_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    bcast_out_cb = ttl.make_circular_buffer_like(bcast_out_ref, shape=(8, 8), buffer_factor=2)
+
+    # Output CB
+    out_cb = ttl.make_circular_buffer_like(out, shape=(8, 8), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        # Stage 1: Reduce 8x8 tiles to scalar
+        with (
+            reduce_in_cb.wait() as r_in,
+            scaler_cb.wait() as s,
+            reduce_out_cb.reserve() as r_out,
+        ):
+            reduced = ttl.math.reduce_sum(r_in, s, r_out, dims=[0, 1])
+            r_out.store(reduced)
+
+        # Stage 2: Broadcast scalar to 8x8 tiles
+        with reduce_out_cb.wait() as r_val, bcast_out_cb.reserve() as b_out:
+            broadcasted = ttl.math.broadcast(r_val, b_out, dims=[0, 1])
+            b_out.store(broadcasted)
+
+        # Stage 3: Matmul broadcasted with B
+        with (
+            bcast_out_cb.wait() as a,
+            matmul_b_cb.wait() as b,
+            out_cb.reserve() as c,
+        ):
+            result = ttl.math.matmul(a, b, c)
+            c.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        x, y = ttl.core(dims=2)
+        row = y * 8
+        col = x * 8
+
+        with reduce_in_cb.reserve() as blk:
+            tx = ttl.copy(reduce_in[row : row + 8, col : col + 8], blk)
+            tx.wait()
+
+        with scaler_cb.reserve() as blk:
+            tx = ttl.copy(scaler[0, 0], blk)
+            tx.wait()
+
+        with matmul_b_cb.reserve() as blk:
+            tx = ttl.copy(matmul_b[row : row + 8, col : col + 8], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        x, y = ttl.core(dims=2)
+        row = y * 8
+        col = x * 8
+
+        with out_cb.wait() as blk:
+            tx = ttl.copy(blk, out[row : row + 8, col : col + 8])
+            tx.wait()
+
+
+class TestReduceBcastMatmul:
+    """Tests for combined reduce -> bcast -> matmul with 4x4 multicore, 8x8 tiles."""
+
+    def test_reduce_bcast_matmul_random_pcc(self, device):
+        """Full PCC comparison against PyTorch for reduce->bcast->matmul.
+
+        4x4 multicore grid, 8x8 tiles per core = 32x32 tiles total = 1024x1024 elements.
+        Mix DRAM and L1: reduce_in in DRAM, matmul_b in L1, output in DRAM.
+        """
+        torch.manual_seed(12345)
+
+        # 4x4 cores * 8x8 tiles * 32x32 elements = 1024x1024
+        total_size = 4 * 8 * 32  # 1024
+
+        # Random inputs
+        reduce_in_torch = torch.randn((total_size, total_size), dtype=torch.bfloat16)
+        matmul_b_torch = torch.randn((total_size, total_size), dtype=torch.bfloat16)
+        scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
+
+        # Compute expected output with PyTorch (per-core computation)
+        expected_torch = torch.zeros((total_size, total_size), dtype=torch.float32)
+        for cy in range(4):
+            for cx in range(4):
+                row_start = cy * 256
+                row_end = row_start + 256
+                col_start = cx * 256
+                col_end = col_start + 256
+
+                # Step 1: Reduce this core's region to scalar
+                core_input = reduce_in_torch[row_start:row_end, col_start:col_end].float()
+                reduced_scalar = core_input.sum()
+
+                # Step 2: Broadcast scalar to full 256x256
+                broadcasted = torch.full((256, 256), reduced_scalar.item(), dtype=torch.float32)
+
+                # Step 3: Matmul with B (K=8 tiles = 256 elements)
+                core_b = matmul_b_torch[row_start:row_end, col_start:col_end].float()
+                matmul_result = torch.matmul(broadcasted, core_b)
+
+                expected_torch[row_start:row_end, col_start:col_end] = matmul_result
+
+        # Placeholders
+        bcast_out_ref_torch = torch.zeros((total_size, total_size), dtype=torch.bfloat16)
+        out_torch = torch.zeros((total_size, total_size), dtype=torch.bfloat16)
+
+        # Mix DRAM and L1
+        reduce_in = to_dram(reduce_in_torch, device)
+        matmul_b = to_l1(matmul_b_torch, device)
+        scaler = to_l1(scaler_torch, device)
+        bcast_out_ref = to_l1(bcast_out_ref_torch, device)
+        out = to_dram(out_torch, device)
+
+        # Run kernel
+        reduce_bcast_matmul_kernel(reduce_in, bcast_out_ref, matmul_b, scaler, out)
+        result = ttnn.to_torch(out).float()
+
+        # Full PCC comparison
+        result_flat = result.flatten()
+        expected_flat = expected_torch.flatten()
+
+        # Compute PCC (Pearson Correlation Coefficient)
+        result_mean = result_flat.mean()
+        expected_mean = expected_flat.mean()
+        result_centered = result_flat - result_mean
+        expected_centered = expected_flat - expected_mean
+
+        numerator = (result_centered * expected_centered).sum()
+        denominator = torch.sqrt((result_centered**2).sum() * (expected_centered**2).sum())
+        pcc = numerator / (denominator + 1e-10)
+
+        # Check PCC is high (> 0.99)
+        assert pcc > 0.99, f"PCC {pcc:.6f} is below threshold 0.99"
+
+        # Also check relative error for sanity
+        rel_error = (result - expected_torch).abs() / (expected_torch.abs() + 1e-6)
+        max_rel_error = rel_error.max().item()
+        mean_rel_error = rel_error.mean().item()
+
+        # Relaxed thresholds due to bfloat16 precision and chained operations
+        assert mean_rel_error < 0.2, f"Mean relative error {mean_rel_error:.4f} too high"
+
+    def test_reduce_bcast_matmul_uniform_values(self, device):
+        """Verify with uniform values for easier manual verification.
+
+        reduce_in = all 0.01 (sum of 256*256 = 65536 elements = 655.36)
+        matmul_b = all 0.01
+        After bcast: all elements = 655.36
+        After matmul: 655.36 * 0.01 * 256 = 1677.72 per element
+        """
+        total_size = 4 * 8 * 32  # 1024
+
+        reduce_in_torch = torch.full((total_size, total_size), 0.01, dtype=torch.bfloat16)
+        matmul_b_torch = torch.full((total_size, total_size), 0.01, dtype=torch.bfloat16)
+        scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
+        bcast_out_ref_torch = torch.zeros((total_size, total_size), dtype=torch.bfloat16)
+        out_torch = torch.zeros((total_size, total_size), dtype=torch.bfloat16)
+
+        # Mix DRAM and L1
+        reduce_in = to_dram(reduce_in_torch, device)
+        matmul_b = to_l1(matmul_b_torch, device)
+        scaler = to_l1(scaler_torch, device)
+        bcast_out_ref = to_l1(bcast_out_ref_torch, device)
+        out = to_dram(out_torch, device)
+
+        reduce_bcast_matmul_kernel(reduce_in, bcast_out_ref, matmul_b, scaler, out)
+        result = ttnn.to_torch(out).float()
+
+        # Per core: reduce 256x256 of 0.01 = 655.36
+        # Broadcast: all 655.36
+        # Matmul: 655.36 * 0.01 * 256 (K dimension) = 1677.72
+        expected_value = 0.01 * 256 * 256 * 0.01 * 256
+        expected = torch.tensor(expected_value, dtype=torch.float32)
+
+        # Check a few positions from different cores
+        assert_allclose(result[0, 0], expected, rtol=0.15, atol=200)
+        assert_allclose(result[256, 256], expected, rtol=0.15, atol=200)
+        assert_allclose(result[512, 512], expected, rtol=0.15, atol=200)
+        assert_allclose(result[768, 768], expected, rtol=0.15, atol=200)
+
+
 if __name__ == "__main__":
     import sys
 
