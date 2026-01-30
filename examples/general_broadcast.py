@@ -5,9 +5,9 @@ import ttnn
 import torch
 
 
-def from_torch(t):
+def from_torch(tensor: ttnn.Tensor):
     return ttnn.from_torch(
-        t,
+        tensor,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
