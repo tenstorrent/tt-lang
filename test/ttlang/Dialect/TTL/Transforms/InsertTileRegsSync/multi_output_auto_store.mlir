@@ -37,17 +37,15 @@ func.func @multi_output_auto_store()
       %ins1 = tensor.insert %neg into %arg3[%i, %j] : tensor<2x2x!ttcore.tile<32x32, f32>>
       // CHECK: ttl.tile_regs_commit
       // CHECK: ttl.tile_regs_wait
-      // CHECK: ttl.cb_reserve %[[CB1:.*]] :
-      // CHECK: ttl.store %{{.*}}, %{{.*}}
-      // CHECK: ttl.cb_push %[[CB1]]
-      // CHECK: ttl.cb_reserve %[[CB2:.*]] :
-      // CHECK: ttl.store %{{.*}}, %{{.*}}
-      // CHECK: ttl.cb_push %[[CB2]]
+      // CHECK: %[[VIEW1:.*]] = ttl.cb_reserve %{{.*}} :
+      // CHECK: ttl.store %{{.*}}, %[[VIEW1]]
+      // CHECK: %[[VIEW2:.*]] = ttl.cb_reserve %{{.*}} :
+      // CHECK: ttl.store %{{.*}}, %[[VIEW2]]
       // CHECK: ttl.tile_regs_release
       scf.yield %ins0, %ins1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
     } {ttl.tile_loop, ttl.tile_loop.input_cbs = [0], ttl.tile_loop.output_cbs = [1, 2]}
     scf.yield %inner#0, %inner#1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
-  } {ttl.tile_loop.outer}
+  } {ttl.tile_loop}
 
   return
 }

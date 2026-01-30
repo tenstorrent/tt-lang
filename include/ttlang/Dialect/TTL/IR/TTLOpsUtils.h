@@ -87,39 +87,23 @@ inline scf::ForOp findOutermostLoop(Operation *op) {
   return outermost;
 }
 
-/// Find the outermost compute loop for a tile loop, respecting markers.
-/// Walks up from the given loop (which should have kTileLoopAttrName) looking
-/// for the kTileLoopOuterAttrName marker. Stops at user loops (loops without
-/// any tile_loop markers) to correctly identify compute boundaries.
+/// Find the outermost compute loop for a tile loop.
+/// Walks up from the given loop (which should have kTileLoopAttrName) and
+/// continues while parent loops also have kTileLoopAttrName. Stops when a
+/// parent loop lacks the marker (user loop) or there are no more parent loops.
 ///
-/// Returns the input loop itself if no outer marker is found.
-///
-/// Note: This assumes 2D iteration spaces (row, col loops). > 2D shapes require
-/// a flattened loop representation which is handled in a separate pass.
+/// Returns the input loop itself if it has no marked parent loops.
 inline scf::ForOp findOutermostComputeLoop(scf::ForOp innerLoop) {
   scf::ForOp outermost = innerLoop;
   Operation *current = innerLoop.getOperation();
-  unsigned loopDepth = 1; // Count the inner loop itself.
   while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
-    if (parentFor->hasAttr(kTileLoopOuterAttrName)) {
-      outermost = parentFor;
-      ++loopDepth;
-      break;
-    }
     // Stop if we hit a loop without tile_loop marker - it's a user loop.
     if (!parentFor->hasAttr(kTileLoopAttrName)) {
       break;
     }
-    ++loopDepth;
+    outermost = parentFor;
     current = parentFor.getOperation();
   }
-
-  // Error on > 2D iteration spaces - not yet supported.
-  if (loopDepth > 2) {
-    innerLoop.emitError() << "> 2D iteration spaces not yet supported; found "
-                          << loopDepth << " nested tile loops";
-  }
-
   return outermost;
 }
 

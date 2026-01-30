@@ -242,17 +242,16 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
-    // Mark loops for later sync insertion passes.
-    // - kTileLoopAttrName on innermost: DST register sync ops inserted here
-    // - kTileLoopOuterAttrName on outermost: identifies compute boundary for
-    //   inter-loop CB sync (prevents confusion with user loops)
+    // Mark all compute loops for later sync insertion passes.
+    // All loops get kTileLoopAttrName; the outermost is found by walking up.
+    // CB indices are placed on the innermost loop for sync insertion.
     if (!loopNest.loops.empty()) {
-      scf::ForOp outermostLoop = loopNest.loops.front();
       scf::ForOp innermostLoop = loopNest.loops.back();
 
-      // Mark outermost loop (may be same as innermost for 1D iteration).
-      outermostLoop->setAttr(kTileLoopOuterAttrName, rewriter.getUnitAttr());
-      innermostLoop->setAttr(kTileLoopAttrName, rewriter.getUnitAttr());
+      // Mark ALL loops with the tile_loop marker.
+      for (scf::ForOp loop : loopNest.loops) {
+        loop->setAttr(kTileLoopAttrName, rewriter.getUnitAttr());
+      }
 
       // Collect all input CB indices for init_sfpu placement.
       SmallVector<int64_t> inputCBs;

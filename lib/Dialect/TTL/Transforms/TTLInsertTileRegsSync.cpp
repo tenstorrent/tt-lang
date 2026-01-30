@@ -374,11 +374,6 @@ struct TTLInsertTileRegsSyncPass
         auto newStore = builder.create<StoreOp>(loc, tile, view);
         tail = newStore.getOperation();
         storeForTile.try_emplace(tile, newStore);
-
-        // Also insert cb_push after the store.
-        builder.setInsertionPointAfter(tail);
-        builder.create<CBPushOp>(loc, cb);
-        tail = tail->getNextNode();
       }
 
       // Release: at end of loop body (before scf.yield) if not present.
@@ -388,10 +383,21 @@ struct TTLInsertTileRegsSyncPass
       }
 
       // Clean up marker attributes after processing.
+      // Remove from innermost loop.
       forOp->removeAttr(kTileLoopAttrName);
       forOp->removeAttr(kTileLoopInputCBsAttrName);
       forOp->removeAttr(kTileLoopOutputCBsAttrName);
-      outermostLoop->removeAttr(kTileLoopOuterAttrName);
+      // Remove from all outer loops (outermostLoop walks up to find them).
+      if (outermostLoop != forOp) {
+        Operation *current = forOp.getOperation();
+        while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
+          parentFor->removeAttr(kTileLoopAttrName);
+          if (parentFor == outermostLoop) {
+            break;
+          }
+          current = parentFor.getOperation();
+        }
+      }
 
       return WalkResult::skip();
     });

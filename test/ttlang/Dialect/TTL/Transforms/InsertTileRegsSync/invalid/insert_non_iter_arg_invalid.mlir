@@ -29,7 +29,7 @@ func.func @insert_into_non_iter_arg()
       // expected-error @below {{could not determine output CB for tensor.insert; destination must be an iter_arg block argument}}
       %inserted = tensor.insert %exp into %output[%i, %j] : tensor<2x2x!ttcore.tile<32x32, f32>>
     } {ttl.tile_loop, ttl.tile_loop.input_cbs = [0], ttl.tile_loop.output_cbs = [1]}
-  } {ttl.tile_loop.outer}
+  } {ttl.tile_loop}
 
   return
 }
