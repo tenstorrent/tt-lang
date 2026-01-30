@@ -460,6 +460,7 @@ class TestCopyWithStateMachine:
         from python.sim.cb import CircularBuffer
 
         _set_current_thread_type(ThreadType.DM)
+        grid = (100, 100)  # Set grid context for pipe operations
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
         src_cb = CircularBuffer(
@@ -468,7 +469,7 @@ class TestCopyWithStateMachine:
         dst_cb = CircularBuffer(
             element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
         )
-        pipe = Pipe((26, 3), ((26, 4), (26, 5)))
+        pipe = Pipe((26, 3), (26, slice(4, 6)))
 
         # Fill source CB
         with src_cb.reserve() as block:

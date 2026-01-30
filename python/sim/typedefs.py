@@ -34,7 +34,7 @@ CoreCoord = Union[Index, Tuple[Index, ...]]
 CoreRange = Tuple[Union[Index, slice], ...]
 
 # Type variable for Pipe destination type
-DstT = TypeVar("DstT", CoreCoord, CoreRange, Tuple[CoreCoord, CoreCoord])
+DstT = TypeVar("DstT", CoreCoord, CoreRange)
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ class Pipe(Generic[DstT]):
     Can be used for both unicast (single destination) and multicast (multiple destinations).
 
     Type Parameters:
-        DstT: The type of the destination - CoreCoord, CoreRange, or Tuple[CoreCoord, CoreCoord]
+        DstT: The type of the destination - CoreCoord or CoreRange
 
     Attributes:
         src_core: Core coordinates of the source/sender. Can be:
@@ -58,8 +58,6 @@ class Pipe(Generic[DstT]):
                          Example: 5 or (1, 2)
                        - CoreRange: Range of destination cores using slices (multicast)
                          Example: (0, slice(1, 4)) means cores (0,1), (0,2), (0,3)
-                       - Tuple[CoreCoord, CoreCoord]: Legacy rectangular range (deprecated, use CoreRange instead)
-                         Example: ((0, 0), (1, 1)) means cores (0,0), (0,1), (1,0), (1,1)
     """
 
     src_core: CoreCoord
