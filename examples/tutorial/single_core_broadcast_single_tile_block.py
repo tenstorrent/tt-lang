@@ -54,7 +54,7 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                 c_blk,
             )
 
-        tx_c.wait()
+            tx_c.wait()
 
         for row in range(rows):
             for col in range(cols):
