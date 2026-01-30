@@ -19,7 +19,7 @@ on:
                 options:
                     - ubuntu-latest
                     - mlir-large-runner-lang
-                default: "mlir-large-runner-lang"
+                default: "ubuntu-latest"
             build_docs:
                 description: "Build and deploy documentation."
                 type: boolean
@@ -34,7 +34,7 @@ on:
                 description: "Linux runner to use (ubuntu-latest or mlir-large-runner-lang)"
                 type: string
                 required: false
-                default: "mlir-large-runner-lang"
+                default: "ubuntu-latest"
             build_docs:
                 description: "Build and deploy documentation."
                 type: boolean

@@ -256,6 +256,7 @@ jobs:
 
             - name: Build and install tt-lang (includes tt-mlir via FetchContent)
               run: |
+                  echo "This will take ~1.5 hours..."
                   .github/containers/build-and-install.sh \
                       --ttmlir-src-dir=${{ github.workspace }}/tt-mlir-src
 
