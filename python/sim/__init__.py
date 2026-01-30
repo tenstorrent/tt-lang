@@ -14,7 +14,7 @@ from .decorators import compute, datamovement
 from .kernel import core, kernel
 from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
 from .program import Program
-from .typedefs import CoreCoord, CoreIndex, CoreRange, DstT, Pipe, Shape
+from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape
 
 
 # Create ttl.math namespace object
@@ -67,7 +67,6 @@ ttl = _TTLNamespace()
 __all__ = [
     "CBAPI",
     "CBStats",
-    "CoreIndex",
     "CoreCoord",
     "CoreRange",
     "DstT",

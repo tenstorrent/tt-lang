@@ -13,7 +13,7 @@ from typing import Any, Callable, List, Tuple, Union, cast
 import types
 
 from .block import ThreadType
-from .typedefs import CoreIndex, Index, Shape, Size
+from .typedefs import CoreCoord, Index, Shape, Size
 
 
 def _get_from_frame(var_name: str, error_msg: str) -> Any:
@@ -49,11 +49,11 @@ def _get_from_frame(var_name: str, error_msg: str) -> Any:
     raise RuntimeError(error_msg)
 
 
-def flatten_core_index(core_idx: CoreIndex) -> Index:
-    """Flatten a CoreIndex to a linear Index.
+def flatten_core_index(core_coord: CoreCoord) -> Index:
+    """Flatten a CoreCoord to a linear Index.
 
     Args:
-        core_idx: A CoreIndex which can be a single Index or a tuple of Indices
+        core_coord: A CoreCoord which can be a single Index or a tuple of Indices
 
     Returns:
         A linear Index (single integer)
@@ -65,9 +65,9 @@ def flatten_core_index(core_idx: CoreIndex) -> Index:
         >>> flatten_core_index((2, 3))
         19
     """
-    match core_idx:
+    match core_coord:
         case int():
-            return core_idx
+            return core_coord
         case _:
             # Convert to linear index using grid dimensions
             grid = _get_from_frame(
@@ -75,7 +75,7 @@ def flatten_core_index(core_idx: CoreIndex) -> Index:
                 "grid not available - function must be called within a kernel context",
             )
 
-            coords = list(core_idx)
+            coords = list(core_coord)
 
             # Calculate linear index: for (y, x) with grid (h, w), linear = y * w + x
             # For 3D: (z, y, x) with grid (d, h, w), linear = z * h * w + y * w + x
@@ -152,14 +152,14 @@ def grid_size(dims: Size = 2) -> Union[Size, Shape]:
         return result
 
 
-def core(dims: Size = 2) -> CoreIndex:
-    """Get the current core index from injected context.
+def core(dims: Size = 2) -> CoreCoord:
+    """Get the current core coordinates from injected context.
 
     Args:
-        dims: Number of dimensions for the core index. Default is 2
+        dims: Number of dimensions for the core coordinates. Default is 2
 
     Returns:
-        CoreIndex: The core index (int for 1D, tuple for > 1D)
+        CoreCoord: The core coordinates (int for 1D, tuple for > 1D)
 
     Raises:
         RuntimeError: If called outside of a Program context

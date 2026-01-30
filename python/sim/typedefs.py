@@ -31,7 +31,6 @@ Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
 CoreCoord = Union[Index, Tuple[Index, ...]]
-CoreIndex = CoreCoord  # Alias for backward compatibility
 CoreRange = Tuple[Union[Index, slice], ...]
 
 # Type variable for Pipe destination type
