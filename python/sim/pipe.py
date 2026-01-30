@@ -13,10 +13,7 @@ This module provides:
 from typing import Callable, Generic, List, TypeVar, Union
 
 from .kernel import core, flatten_core_index, grid_size
-from .typedefs import CoreCoord, CoreRange, Pipe
-
-# Type variable for destination type
-DstT = TypeVar("DstT", CoreCoord, CoreRange)
+from .typedefs import CoreCoord, CoreRange, Pipe, DstT
 
 
 class SrcPipeIdentity(Generic[DstT]):
