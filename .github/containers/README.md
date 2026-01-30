@@ -51,6 +51,41 @@ Configures, builds, installs, and cleans up tt-lang. Used by Dockerfile and CI.
 .github/containers/build-and-install.sh
 ```
 
+## Building and Testing Locally
+
+To build containers locally from an existing tt-lang build:
+
+```bash
+# 1. Build tt-lang (assumes toolchain exists at ttmlir-toolchain/)
+source build/env/activate
+cmake -G Ninja -B build .
+cmake --build build
+
+# 2. Create ttlang-install directory (toolchain + tt-lang)
+cp -a ttmlir-toolchain ttlang-install
+cmake --install build --prefix ttlang-install
+cp -prL build/python_packages/ttl ttlang-install/python_packages/
+cp -prL build/python_packages/pykernel ttlang-install/python_packages/
+cp -prL build/python_packages/sim ttlang-install/python_packages/
+cp -r examples ttlang-install/
+mkdir -p ttlang-install/env && cp build/env/activate ttlang-install/env/
+
+# 3. Build Docker images locally (no registry push)
+.github/containers/build-docker-images.sh \
+    --ttmlir-toolchain=ttmlir-toolchain \
+    --ttlang-install=ttlang-install \
+    --no-push
+
+# 4. Run smoke tests to verify the images work
+.github/containers/test-docker-smoke.sh
+```
+
+The smoke test verifies:
+- Python imports (`ttl`, `pykernel`, `sim`, `ttmlir.dialects.ttkernel`)
+- Editors are available (`vim`, `nano`)
+- Examples are present in `/root/examples/`
+- Hardware example runs (if `/dev/tenstorrent/0` exists)
+
 ## Hardware Access
 
 To access Tenstorrent hardware from containers:
