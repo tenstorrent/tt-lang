@@ -10,7 +10,7 @@ Development image with tt-mlir toolchain and dev tools. For developers who want 
 **Contents:** Ubuntu 22.04 + clang-17 + Python 3.11 + tt-mlir toolchain + dev tools (vim, tmux, ssh)
 
 ### `tt-lang-user-ubuntu-22-04`
-User image with pre-built tt-lang, ready to `import ttl`. Extends dev image.
+Distribution image with pre-built tt-lang, ready to `import ttl`. Extends dev image.
 
 **Contents:** dev image + installed tt-lang + examples
 
@@ -40,13 +40,15 @@ Orchestrates building all images with proper tagging and optional registry push.
     --check-only
 ```
 
-### `.github/containers/build-docker-local.sh`
-Simplified script for local testing.
+### `.github/containers/build-and-install.sh`
+Configures, builds, installs, and cleans up tt-lang. Used by Dockerfile and CI.
 
 ```bash
-.github/containers/build-docker-local.sh \
-    --ttmlir-toolchain=/path/to/toolchain \
-    --ttlang-install=/path/to/ttlang-install
+# Build tt-lang using pre-checked-out tt-mlir source
+.github/containers/build-and-install.sh --ttmlir-src-dir=/path/to/tt-mlir
+
+# Build tt-lang (fetches tt-mlir automatically)
+.github/containers/build-and-install.sh
 ```
 
 ## Hardware Access
@@ -146,17 +148,17 @@ Both passed via `--build-context` to docker build.
 
 ## Image Sizes (Approximate)
 
-- `tt-lang-dev`: ~4-5GB (tt-mlir toolchain + dev tools)
-- `tt-lang-user`: ~5-6GB (dev + tt-lang)
+- `tt-lang-dev-ubuntu-22-04`: ~4-5GB (tt-mlir toolchain + dev tools)
+- `tt-lang-user-ubuntu-22-04`: ~5-6GB (dev + tt-lang)
 
 ## Files
 
 - `Dockerfile` - Self-contained multi-stage build (base/dev/user targets)
 - `entrypoint.sh` - Container entrypoint that activates environments
 - `CONTAINER_README.md` - Welcome message shown to users inside container
-- `cleanup-toolchain.sh` - Removes unnecessary LLVM tools to reduce size
+- `cleanup-toolchain.sh` - Replaces unnecessary LLVM tools with stubs to reduce size
+- `build-and-install.sh` - Configure, build, install tt-lang (used by Dockerfile and CI)
 - `build-docker-images.sh` - Main build orchestration script
-- `build-docker-local.sh` - Local testing script
 - `push-docker-images.sh` - Push locally built images to registry
 
 ## Related Documentation

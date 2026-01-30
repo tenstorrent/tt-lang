@@ -163,8 +163,7 @@ jobs:
                   repository: tenstorrent/tt-mlir
                   ref: ${{ needs.check-cache.outputs.ttmlir-commit }}
                   path: tt-mlir-src
-                  fetch-depth: 0
-                  fetch-tags: true
+                  fetch-depth: 1
 
             - name: Create toolchain directory
               run: mkdir -p $TTMLIR_TOOLCHAIN_DIR
@@ -238,8 +237,7 @@ jobs:
                   repository: tenstorrent/tt-mlir
                   ref: ${{ needs.check-cache.outputs.ttmlir-commit }}
                   path: tt-mlir-src
-                  fetch-depth: 0
-                  fetch-tags: true
+                  fetch-depth: 1
                   submodules: recursive
 
             - name: Restore LLVM-only cache
