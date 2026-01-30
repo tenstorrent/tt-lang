@@ -84,6 +84,9 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 ## Additional Notes
 - **Agent Design Principle**: Implement only the minimum necessary
   functionality; avoid feature creep and arbitrary expansions
+- **DRY Principle**: Avoid duplicating code. If largely identical logic appears
+  in multiple places, extract it into a shared function, script, or module.
+  Applies to C++, Python, shell scripts, and workflow files.
 - **PR Descriptions**: Use this template:
   ```
   ### Problem description

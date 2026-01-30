@@ -73,6 +73,8 @@ jobs:
       RUNS_ON: ${{ inputs.runs-on }}
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
+      TT_LANG_HOME: ${{ github.workspace }}
+      TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
 
     steps:
       - name: Checkout tt-lang
@@ -95,15 +97,48 @@ jobs:
           ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
           tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
           rm -f "${ARTIFACT_FILE}"
-          echo "Checking tt-mlir-install structure..."
-          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
-          ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
-          find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
+
+      # TODO: Remove after debugging
+      - name: Debug - Check unpacked archive structure
+        run: |
+          echo "=== Top-level directories ==="
+          ls -la
+          echo "=== Container Python version ==="
+          python3 --version
+          which python3
+          echo "=== Venv Python version ==="
+          ttmlir-toolchain/venv/bin/python3 --version 2>/dev/null || echo "No venv python"
+          echo "=== ttmlir-toolchain/python_packages ==="
+          ls -la ttmlir-toolchain/python_packages/ || echo "No python_packages"
+          echo "=== Looking for _mlir.so ==="
+          find ttmlir-toolchain -name "_mlir*.so" 2>/dev/null
+          echo "=== Check _mlir.so dependencies ==="
+          MLIR_SO=$(find ttmlir-toolchain -name "_mlir*.so" 2>/dev/null | head -1)
+          if [ -n "$MLIR_SO" ]; then
+            echo "Found: $MLIR_SO"
+            ldd "$MLIR_SO" 2>&1 || echo "ldd failed"
+          fi
+          echo "=== build/env/activate PYTHONPATH line ==="
+          grep -A5 "PYTHONPATH" build/env/activate || echo "No PYTHONPATH in activate"
 
       - name: Install test dependencies
         run: |
           source build/env/activate
           pip install -r dev-requirements.txt
+
+      - name: Debug - Python environment after activation
+        run: |
+          source build/env/activate
+          echo "=== Python after activation ==="
+          which python3
+          python3 --version
+          echo "=== PYTHONPATH ==="
+          echo "$PYTHONPATH" | tr ':' '\n'
+          echo "=== LD_LIBRARY_PATH ==="
+          echo "$LD_LIBRARY_PATH" | tr ':' '\n'
+          echo "=== Try importing ttmlir ==="
+          python3 -c "import sys; print('sys.path:'); print('\\n'.join(sys.path))"
+          python3 -c "import ttmlir; print('ttmlir location:', ttmlir.__file__)" 2>&1 || echo "Import failed"
 
       - name: Smoketest
         run: |

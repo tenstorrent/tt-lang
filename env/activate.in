@@ -17,12 +17,14 @@ if [ -n "${TTLANG_ENV_ACTIVATED}" ]; then
   unset TTLANG_ENV_ACTIVATED
 fi
 
-# Set tt-lang home directory.
-export TT_LANG_HOME="@TT_LANG_HOME@"
+# Set tt-lang home directory (use existing value if set, otherwise use CMake default).
+: ${TT_LANG_HOME:="@TT_LANG_HOME@"}
+export TT_LANG_HOME
 export TTLANG_HAS_DEVICE="@TTLANG_HAS_DEVICE_INT@"
 
-# Set toolchain directory (configured by CMake).
-export TTMLIR_TOOLCHAIN_DIR="@TTMLIR_TOOLCHAIN_DIR@"
+# Set toolchain directory (use existing value if set, otherwise use CMake default).
+: ${TTMLIR_TOOLCHAIN_DIR:="@TTMLIR_TOOLCHAIN_DIR@"}
+export TTMLIR_TOOLCHAIN_DIR
 
 # Activate the Python virtual environment from the toolchain.
 if [ -f "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/activate" ]; then
@@ -39,6 +41,8 @@ export PYTHONPATH="\
 @CMAKE_BINARY_DIR@/python_packages:\
 ${TT_LANG_HOME}/python:\
 ${TT_LANG_HOME}/test:\
+${TTMLIR_TOOLCHAIN_DIR}/python_packages:\
+${TTMLIR_TOOLCHAIN_DIR}/python_packages/ttrt/runtime/ttnn:\
 @TTMLIR_PATH@/python_packages:\
 @TTMLIR_PATH@/ttrt/runtime/ttnn:\
 $PYTHONPATH"
@@ -47,14 +51,18 @@ $PYTHONPATH"
 export LD_LIBRARY_PATH="@TTMLIR_PATH@/lib:${TTMLIR_TOOLCHAIN_DIR}/lib:${LD_LIBRARY_PATH}"
 
 # Set TT_METAL_RUNTIME_ROOT if not already set
-# The path is determined by CMake at configure time in ExternTTMLIR.cmake
+# Search order: env var, CMake configured path, toolchain directory
 if [ -z "${TT_METAL_RUNTIME_ROOT}" ]; then
-  if [ -n "@TT_METAL_RUNTIME_ROOT@" ]; then
+  if [ -n "@TT_METAL_RUNTIME_ROOT@" ] && [ -d "@TT_METAL_RUNTIME_ROOT@" ]; then
     export TT_METAL_RUNTIME_ROOT="@TT_METAL_RUNTIME_ROOT@"
-    export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
+  elif [ -d "${TTMLIR_TOOLCHAIN_DIR}/tt-metal" ]; then
+    export TT_METAL_RUNTIME_ROOT="${TTMLIR_TOOLCHAIN_DIR}/tt-metal"
   else
     echo "WARNING: TT_METAL_RUNTIME_ROOT not configured. You may need to set it manually to run on TT hardware"
   fi
+fi
+if [ -n "${TT_METAL_RUNTIME_ROOT}" ]; then
+  export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
 fi
 
 # Mark environment as activated.
