@@ -49,7 +49,7 @@ if [ -e /dev/tenstorrent/0 ]; then
             --device=/dev/tenstorrent/0 \
             -v /dev/hugepages:/dev/hugepages \
             -v /dev/hugepages-1G:/dev/hugepages-1G \
-            tt-lang-user-ubuntu-22-04:latest python /opt/ttmlir-toolchain/examples/demo_one.py
+            tt-lang-dist-ubuntu-22-04:latest python /opt/ttmlir-toolchain/examples/tutorial/multicore_grid_auto.py
 else
     echo "Test 3: SKIPPED (no hardware)"
 fi
@@ -64,7 +64,7 @@ echo ""
 # Test 5: Examples in /root
 echo "Test 5: Examples in /root"
 run_test "Examples in /root" "Examples missing" \
-    sudo docker run --rm tt-lang-user-ubuntu-22-04:latest ls /root/examples/demo_one.py
+    sudo docker run --rm tt-lang-dist-ubuntu-22-04:latest ls /root/examples/tutorial/multicore_grid_auto.py
 echo ""
 
 echo "=== Smoke Test Complete ==="

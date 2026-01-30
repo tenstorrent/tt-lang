@@ -109,7 +109,7 @@ export TT_METAL_HOME=/workspace/tt-mlir/third_party/tt-metal/src/tt-metal
 export TT_METAL_DEVICE_PROFILER=1
 export TT_METAL_PROFILER_MID_RUN_DUMP=1
 export TTLANG_AUTO_PROFILE=1
-python examples/demo_one.py
+python examples/tutorial/multicore_grid_auto.py
 ```
 
 See [docs/auto-profiler-examples/](https://github.com/tenstorrent/tt-lang/tree/main/docs/auto-profiler-examples) for sample profile outputs showing the per-line cycle breakdown format.

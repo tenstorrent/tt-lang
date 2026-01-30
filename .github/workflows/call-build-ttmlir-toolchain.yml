@@ -56,9 +56,13 @@ jobs:
     migrate-cache:
         name: Migrate toolchain cache to LLVM-only
         runs-on: ubuntu-latest
-        if: true  # TODO: Set to false or remove after running once
+        if: false  # Migration complete - remove this job when PR is merged
+
+        env:
+            TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
+
         steps:
-            - name: Checkout
+            - name: Checkout current branch
               uses: actions/checkout@v4
 
             - name: Determine tt-mlir commit
@@ -66,14 +70,17 @@ jobs:
               run: |
                   COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
                   echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+                  echo "Using commit: $COMMIT"
 
             - name: Restore full toolchain cache (from main branch format)
               id: restore-cache
               uses: actions/cache/restore@v4
               with:
-                  path: ttmlir-toolchain
+                  # Main branch saves with absolute path, so restore with same
+                  path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
                   key: Linux-ttlang-ttmlir-toolchain-${{ steps.commit.outputs.commit }}-v2
                   restore-keys: |
+                      Linux-ttlang-ttmlir-toolchain-${{ steps.commit.outputs.commit }}
                       Linux-ttlang-ttmlir-toolchain-
 
             - name: Check cache was restored
@@ -85,9 +92,6 @@ jobs:
                   fi
                   echo "Cache restored from: ${{ steps.restore-cache.outputs.cache-matched-key }}"
 
-            - name: Cleanup toolchain (create stubs)
-              run: .github/containers/cleanup-toolchain.sh ttmlir-toolchain
-
             - name: Save as LLVM-only cache
               uses: actions/cache/save@v4
               with:
@@ -97,6 +101,8 @@ jobs:
     # First job: Check if caches exist (runs on standard runner)
     check-cache:
         name: Check toolchain cache
+        needs: migrate-cache
+        if: always()  # Run even if migrate-cache is skipped
         runs-on: ubuntu-latest
         timeout-minutes: 10
 
@@ -268,7 +274,7 @@ jobs:
                   sudo apt-get install -y \
                       build-essential ninja-build lld \
                       clang-17 clang++-17 \
-                      libzstd-dev doxygen graphviz python3-sphinx \
+                      libzstd-dev doxygen graphviz python3-sphinx python3-dev \
                       libnuma-dev libhwloc-dev libopenmpi-dev openmpi-bin libcapstone-dev
 
             - name: Checkout tt-mlir
@@ -286,6 +292,16 @@ jobs:
                   path: ttmlir-toolchain
                   key: ${{ needs.check-cache.outputs.llvm-cache-key }}
                   fail-on-cache-miss: true
+
+            - name: Recreate Python venv (cached venv has broken symlinks)
+              run: |
+                  # The cached venv has symlinks to the original build machine's Python
+                  # Recreate using Python from setup-python action (has dev headers)
+                  rm -rf $TTMLIR_TOOLCHAIN_DIR/venv
+                  python3 -m venv $TTMLIR_TOOLCHAIN_DIR/venv
+                  $TTMLIR_TOOLCHAIN_DIR/venv/bin/pip install --upgrade pip
+                  $TTMLIR_TOOLCHAIN_DIR/venv/bin/pip install pybind11 nanobind PyYAML numpy
+                  echo "Venv Python: $($TTMLIR_TOOLCHAIN_DIR/venv/bin/python3 --version)"
 
             - name: Build and install tt-lang (includes tt-mlir via FetchContent)
               run: |
