@@ -565,6 +565,97 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Matmul Lowering Pattern
+//===----------------------------------------------------------------------===//
+
+/// Pattern for matmul op: TTL tensor op -> ttl.compute with tile_matmul.
+/// Matmul reads A and B from CBs, accumulates into C.
+struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
+  using OpRewritePattern<MatmulOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MatmulOp op,
+                                PatternRewriter &rewriter) const override {
+    auto outputType = getTensorType(op.getResult());
+    auto aType = getTensorType(op.getA());
+    auto bType = getTensorType(op.getB());
+    if (!outputType || !aType || !bType) {
+      return failure();
+    }
+
+    Value aCb = getAttachedCB(op.getA());
+    Value bCb = getAttachedCB(op.getB());
+    Value cCb = getAttachedCB(op.getC());
+    if (!aCb) {
+      return op.emitError("matmul input A must be attached to a circular buffer");
+    }
+    if (!bCb) {
+      return op.emitError("matmul input B must be attached to a circular buffer");
+    }
+    if (!cCb) {
+      return op.emitError("matmul output C must be attached to a circular buffer");
+    }
+
+    if (aType.getRank() != 2 || bType.getRank() != 2 ||
+        outputType.getRank() != 2) {
+      return op.emitError("matmul requires rank-2 tensors");
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    // Build indexing maps for matmul: C[m,n] += A[m,k] * B[k,n]
+    // Iteration space is [m, n, k] where k is a reduction dimension.
+    // Map for A: (m, n, k) -> (m, k)
+    // Map for B: (m, n, k) -> (k, n)
+    // Map for C: (m, n, k) -> (m, n)
+    auto d0 = getAffineDimExpr(0, ctx); // m
+    auto d1 = getAffineDimExpr(1, ctx); // n
+    auto d2 = getAffineDimExpr(2, ctx); // k
+
+    AffineMap aMap = AffineMap::get(3, 0, {d0, d2}, ctx);
+    AffineMap bMap = AffineMap::get(3, 0, {d2, d1}, ctx);
+    AffineMap cMap = AffineMap::get(3, 0, {d0, d1}, ctx);
+
+    SmallVector<Attribute> maps = {AffineMapAttr::get(aMap),
+                                   AffineMapAttr::get(bMap),
+                                   AffineMapAttr::get(cMap),
+                                   AffineMapAttr::get(cMap)};
+
+    // Iterator types: [parallel, parallel, reduction]
+    SmallVector<Attribute> iterTypes = {rewriter.getStringAttr("parallel"),
+                                        rewriter.getStringAttr("parallel"),
+                                        rewriter.getStringAttr("reduction")};
+
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getC());
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, cCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{outputType},
+        ValueRange{op.getA(), op.getB(), op.getC()}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = outputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // A tile
+    body->addArgument(tileType, loc); // B tile
+    body->addArgument(tileType, loc); // C tile (input)
+    body->addArgument(tileType, loc); // C tile (output)
+
+    rewriter.setInsertionPointToStart(body);
+    Value result = rewriter.create<TileMatmulOp>(loc, tileType,
+                                                  body->getArgument(0),
+                                                  body->getArgument(1),
+                                                  body->getArgument(2));
+    rewriter.create<YieldOp>(loc, ValueRange{result});
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Pattern Type Aliases - Generated from TTLElementwiseOps.def (tile-based)
 //===----------------------------------------------------------------------===//
 
@@ -621,6 +712,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
+  patterns.add<LowerMatmulToCompute>(ctx);
 }
 
 } // namespace mlir::tt::ttl

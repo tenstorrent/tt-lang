@@ -712,6 +712,39 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
+//===----------------------------------------------------------------------===//
+// Matmul Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_MatmulOp : TTL_Op<"matmul", []> {
+  let summary = "Matrix multiplication on tiled tensors";
+  let description = [{
+    Performs tile-level matrix multiplication C += A * B.
+    Reads A and B from CBs, accumulates into C (which is both input and output).
+    All operands must be CB-attached tensors.
+
+    The operation computes the standard matrix multiply where the inner
+    dimension (K) of A matches the outer dimension of B. The result
+    accumulates into C, supporting multi-tile K-dimension reduction.
+  }];
+  let arguments = (ins AnyType:$a, AnyType:$b, AnyType:$c);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` `(` type($a) `,` type($b) `,` type($c) `)` `->` type($result)";
+}
+
+def TTL_TileMatmulOp : TTL_TileOp<"tile_matmul", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level matrix multiplication operation";
+  let description = [{
+    Performs tile-sized matrix multiplication C += A * B.
+    Maps to ttkernel.mm_init_short + ttkernel.matmul_tiles.
+    Reads A and B directly from circular buffers (not DST), accumulates into DST.
+    The C operand provides the output CB for data format configuration.
+  }];
+  let arguments = (ins AnyType:$a, AnyType:$b, AnyType:$c);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` `(` type($a) `,` type($b) `,` type($c) `)` `->` type($result)";
+}
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 
