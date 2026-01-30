@@ -51,6 +51,49 @@ permissions:
     contents: read
 
 jobs:
+    # TEMPORARY: Migrate existing toolchain cache to LLVM-only format
+    # Set if: true to run once, then remove this entire job
+    migrate-cache:
+        name: Migrate toolchain cache to LLVM-only
+        runs-on: ubuntu-latest
+        if: true  # TODO: Set to false or remove after running once
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Determine tt-mlir commit
+              id: commit
+              run: |
+                  COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+                  echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+
+            - name: Restore full toolchain cache (from main branch format)
+              id: restore-cache
+              uses: actions/cache/restore@v4
+              with:
+                  path: ttmlir-toolchain
+                  key: Linux-ttlang-ttmlir-toolchain-${{ steps.commit.outputs.commit }}-v2
+                  restore-keys: |
+                      Linux-ttlang-ttmlir-toolchain-
+
+            - name: Check cache was restored
+              run: |
+                  if [ "${{ steps.restore-cache.outputs.cache-hit }}" != "true" ]; then
+                      echo "No cache found matching key or restore-keys"
+                      echo "Searched for: Linux-ttlang-ttmlir-toolchain-${{ steps.commit.outputs.commit }}-v2"
+                      exit 1
+                  fi
+                  echo "Cache restored from: ${{ steps.restore-cache.outputs.cache-matched-key }}"
+
+            - name: Cleanup toolchain (create stubs)
+              run: .github/containers/cleanup-toolchain.sh ttmlir-toolchain
+
+            - name: Save as LLVM-only cache
+              uses: actions/cache/save@v4
+              with:
+                  path: ttmlir-toolchain
+                  key: Linux-ttlang-llvm-only-v1-${{ steps.commit.outputs.commit }}
+
     # First job: Check if caches exist (runs on standard runner)
     check-cache:
         name: Check toolchain cache
@@ -179,11 +222,6 @@ jobs:
                   echo "=== LLVM toolchain complete ==="
                   df -h
 
-            - name: Cleanup LLVM toolchain
-              run: |
-                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
-                  df -h
-
             - name: Save LLVM-only cache
               uses: actions/cache/save@v4
               with:
@@ -249,10 +287,6 @@ jobs:
                   key: ${{ needs.check-cache.outputs.llvm-cache-key }}
                   fail-on-cache-miss: true
 
-            - name: Ensure LLVM stubs exist
-              run: |
-                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
-
             - name: Build and install tt-lang (includes tt-mlir via FetchContent)
               run: |
                   .github/containers/build-and-install.sh \
@@ -263,6 +297,11 @@ jobs:
                   test -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake" || \
                       { echo "ERROR: TTMLIRConfig.cmake not found - tt-mlir install failed"; exit 1; }
                   echo "tt-mlir installed successfully"
+
+            - name: Cleanup toolchain (create stubs for unused binaries)
+              run: |
+                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
+                  df -h
 
             - name: Save toolchain to cache
               uses: actions/cache/save@v4

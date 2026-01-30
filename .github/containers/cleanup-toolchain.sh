@@ -48,7 +48,7 @@ BINARIES_TO_STUB=(
     mlir-minimal-opt mlir-minimal-opt-canonicalize mlir-pdll
     mlir-query mlir-reduce mlir-rewrite mlir-runner mlir-transform-opt
     dsymutil sancov sanstats obj2yaml yaml2obj verify-uselistorder
-    yaml-bench flatc reduce-chunk-list run-clang-tidy.py
+    yaml-bench reduce-chunk-list run-clang-tidy.py
 )
 
 cd "$TOOLCHAIN_DIR/bin"
