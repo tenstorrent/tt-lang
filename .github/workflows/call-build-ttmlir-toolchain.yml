@@ -199,9 +199,9 @@ jobs:
                   test -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake" && echo "MLIR: OK"
                   test -x "$TTMLIR_TOOLCHAIN_DIR/venv/bin/python3" && echo "Python venv: OK"
 
-    # Third job: Build tt-mlir (large runner)
+    # Third job: Build tt-mlir via tt-lang FetchContent (large runner)
     build-ttmlir:
-        name: Build tt-mlir
+        name: Build tt-mlir (via tt-lang)
         needs: [check-cache, build-llvm]
         if: |
             always() &&
@@ -240,6 +240,7 @@ jobs:
                   path: tt-mlir-src
                   fetch-depth: 0
                   fetch-tags: true
+                  submodules: recursive
 
             - name: Restore LLVM-only cache
               uses: actions/cache/restore@v4
@@ -252,42 +253,16 @@ jobs:
               run: |
                   .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
 
-            - name: Configure tt-mlir
-              working-directory: tt-mlir-src
+            - name: Build and install tt-lang (includes tt-mlir via FetchContent)
               run: |
-                  source env/activate
-                  cmake -G Ninja -B build \
-                      -DCMAKE_BUILD_TYPE=Release \
-                      -DCMAKE_CXX_COMPILER=clang++-17 \
-                      -DCMAKE_C_COMPILER=clang-17 \
-                      -DCMAKE_INSTALL_PREFIX=$TTMLIR_TOOLCHAIN_DIR \
-                      -DTTMLIR_ENABLE_RUNTIME=ON \
-                      -DTTMLIR_ENABLE_STABLEHLO=OFF
+                  .github/containers/build-and-install.sh \
+                      --ttmlir-src-dir=${{ github.workspace }}/tt-mlir-src
 
-            - name: Build tt-mlir
-              working-directory: tt-mlir-src
+            - name: Verify tt-mlir was installed
               run: |
-                  echo "=== Building tt-mlir ==="
-                  source env/activate
-                  cmake --build build
-                  df -h
-
-            - name: Install tt-mlir
-              working-directory: tt-mlir-src
-              run: |
-                  source env/activate
-                  cmake --install build
-
-            - name: Copy ttrt runtime to toolchain
-              run: |
-                  mkdir -p $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime
-                  cp -prL tt-mlir-src/build/python_packages/ttrt/runtime/* \
-                      $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/
-
-            - name: Normalize and cleanup toolchain
-              run: |
-                  .github/scripts/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR
-                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
+                  test -f "$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir/TTMLIRConfig.cmake" || \
+                      { echo "ERROR: TTMLIRConfig.cmake not found - tt-mlir install failed"; exit 1; }
+                  echo "tt-mlir installed successfully"
 
             - name: Save toolchain to cache
               uses: actions/cache/save@v4
