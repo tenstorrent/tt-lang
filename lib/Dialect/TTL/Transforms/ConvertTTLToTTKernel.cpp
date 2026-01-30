@@ -745,6 +745,22 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto pageSizeVal = rewriter.create<arith::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(pageSizeBytes));
 
+  // For unicast gather pipes (srcX > dstX), each source writes to a different
+  // slot in the destination CB to avoid overwrites when multiple sources send
+  // to the same destination. Slot index = srcX - dstX - 1 (0-based).
+  // For forward pipes (srcX < dstX), slot offset is 0 since there's one source.
+  int64_t slotIdx = 0;
+  if (pipeType.isUnicast()) {
+    int64_t srcX = pipeType.getSrcX();
+    int64_t dstX = pipeType.getDstStartX();
+    if (srcX > dstX) {
+      // Gather pattern: offset by source position relative to destination
+      slotIdx = srcX - dstX - 1;
+    }
+    // Forward pattern (srcX <= dstX): slotIdx stays 0
+  }
+  int64_t slotByteOffset = slotIdx * pageSizeBytes * cbRows * cbCols;
+
   emitTileLoop(
       rewriter, loc, cbRows, cbCols,
       [&](OpBuilder &b, Location bodyLoc, Value loopRow, Value loopCol) {
@@ -758,11 +774,19 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         Value srcAddr =
             b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
 
-        // The destination L1 address is the same as source (same CB layout)
-        // Get multicast NOC address
+        // Compute destination address. For gather patterns (unicast), offset by
+        // slot index so each source writes to a different CB slot.
+        Value dstAddr = srcAddr;
+        if (slotByteOffset > 0) {
+          auto slotOffsetVal = b.create<arith::ConstantOp>(
+              bodyLoc, i32Ty, b.getI32IntegerAttr(slotByteOffset));
+          dstAddr = b.create<arith::AddIOp>(bodyLoc, srcAddr, slotOffsetVal);
+        }
+
+        // Get multicast NOC address using destination address
         auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
             bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-            srcAddr, /*noc=*/Value());
+            dstAddr, /*noc=*/Value());
 
         // Perform multicast write
         // Optional attrs: linked=nullptr, multicast_path_reserve=nullptr,
