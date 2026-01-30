@@ -155,8 +155,7 @@ jobs:
                   sudo apt-get install -y \
                       build-essential ninja-build lld \
                       clang-17 clang++-17 \
-                      libzstd-dev \
-                      coreutils
+                      libzstd-dev
 
             - name: Checkout tt-mlir
               uses: actions/checkout@v4
@@ -175,8 +174,8 @@ jobs:
               run: |
                   echo "=== Building LLVM toolchain ==="
                   echo "This will take 2-3 hours..."
-                  stdbuf -oL cmake -G Ninja -B env/build env
-                  stdbuf -oL cmake --build env/build
+                  cmake -G Ninja -B env/build env
+                  cmake --build env/build
                   rm -rf env/build  # Clean up build directory
                   echo "=== LLVM toolchain complete ==="
                   df -h
@@ -231,8 +230,7 @@ jobs:
                   sudo apt-get install -y \
                       build-essential ninja-build lld \
                       clang-17 clang++-17 \
-                      libzstd-dev \
-                      coreutils
+                      libzstd-dev
 
             - name: Checkout tt-mlir
               uses: actions/checkout@v4
@@ -250,11 +248,15 @@ jobs:
                   key: ${{ needs.check-cache.outputs.llvm-cache-key }}
                   fail-on-cache-miss: true
 
+            - name: Ensure LLVM stubs exist
+              run: |
+                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
+
             - name: Configure tt-mlir
               working-directory: tt-mlir-src
               run: |
                   source env/activate
-                  stdbuf -oL cmake -G Ninja -B build \
+                  cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
@@ -267,7 +269,7 @@ jobs:
               run: |
                   echo "=== Building tt-mlir ==="
                   source env/activate
-                  stdbuf -oL cmake --build build
+                  cmake --build build
                   df -h
 
             - name: Install tt-mlir
@@ -282,9 +284,10 @@ jobs:
                   cp -prL tt-mlir-src/build/python_packages/ttrt/runtime/* \
                       $TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime/
 
-            - name: Normalize toolchain
+            - name: Normalize and cleanup toolchain
               run: |
                   .github/scripts/normalize-ttmlir-install.sh $TTMLIR_TOOLCHAIN_DIR
+                  .github/containers/cleanup-toolchain.sh $TTMLIR_TOOLCHAIN_DIR
 
             - name: Save toolchain to cache
               uses: actions/cache/save@v4
