@@ -79,7 +79,13 @@ def assert_success_output(code: int, out: str) -> None:
         "eltwise_pipe_core3.py",  # Now supported: reserve() DM blocks can do multiple copies
         "singlecore_matmul.py",
         "multicore_matmul.py",
-        "demo_one.py",
+        # "tutorial/ttnn_base.py", TODO: needs simulation for ttnn.add
+        "tutorial/single_core_single_tile_block.py",
+        "tutorial/single_core_multitile_block.py",
+        "tutorial/multicore.py",
+        "tutorial/multicore_grid_auto.py",
+        # "tutorial/single_core_broadcast_single_tile_block.py", TODO: needs broadcast changes
+        # "tutorial/single_core_broadcast_multitile_blocks.py", TODO: needs broadcast changes
     ],
 )
 def test_example_cli(script_name: str) -> None:
@@ -167,9 +173,9 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
 
 
 def test_demo_one_deadlock_detection() -> None:
-    """Test that demo_one.py with incorrect wait() instead of reserve() triggers deadlock detection.
+    """Test that tutorial/multicore_grid_auto.py with incorrect wait() instead of reserve() triggers deadlock detection.
 
-    This test modifies demo_one.py to use wait() instead of reserve() for the output
+    This test modifies tutorial/multicore_grid_auto.py to use wait() instead of reserve() for the output
     buffer, which causes a deadlock. The deadlock detection should clearly show:
     1. Which threads are blocked
     2. What operation they're blocked on
@@ -179,8 +185,8 @@ def test_demo_one_deadlock_detection() -> None:
     import tempfile
     import re
 
-    # Read the original demo_one.py
-    source_file = EXAMPLES_DIR / "demo_one.py"
+    # Read the original tutorial/multicore_grid_auto.py
+    source_file = EXAMPLES_DIR / "tutorial/multicore_grid_auto.py"
     with open(source_file) as f:
         lines = f.readlines()
         content = "".join(lines)
@@ -192,7 +198,9 @@ def test_demo_one_deadlock_detection() -> None:
     )
 
     # Verify we actually modified something
-    assert modified_content != content, "Failed to modify demo_one.py content"
+    assert (
+        modified_content != content
+    ), "Failed to modify tutorial/multicore_grid_auto.py content"
 
     # Find the line numbers where wait() and reserve() calls are made
     # We'll verify the deadlock message points to these exact lines
@@ -229,7 +237,7 @@ def test_demo_one_deadlock_detection() -> None:
         # Should fail with non-zero exit code
         assert (
             code != 0
-        ), f"Expected modified demo_one.py to fail, but it exited with code 0"
+        ), f"Expected modified tutorial/multicore_grid_auto.py to fail, but it exited with code 0"
 
         # Check for deadlock detection message
         assert (
@@ -254,7 +262,7 @@ def test_demo_one_deadlock_detection() -> None:
             " at " in out and ".py:" in out
         ), f"Expected source location (file:line) in deadlock output:\n{out}"
 
-        # Check for multiple cores being blocked (demo_one uses multiple cores)
+        # Check for multiple cores being blocked (tutorial/multicore_grid_auto.py uses multiple cores)
         assert (
             "core0-compute:" in out
         ), f"Expected core0-compute in deadlock output:\n{out}"
