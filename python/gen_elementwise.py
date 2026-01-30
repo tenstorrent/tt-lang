@@ -76,10 +76,10 @@ def parse_def_file(def_path: Path) -> tuple[list[str], list[str]]:
     binary_ops = []
     unary_ops = []
 
-    # Match TTL_BINARY_TILE_OP(Name, ...) and TTL_BINARY_TILE_OP_SPECIAL(Name, ...)
-    # but skip #define lines
+    # Match TTL_BINARY_TILE_OP(Name, ...), TTL_BINARY_TILE_OP_SPECIAL(Name, ...),
+    # and TTL_BINARY_TILE_OP_MINMAX(Name, ...) but skip #define lines
     for match in re.finditer(
-        r"^TTL_BINARY_TILE_OP(?:_SPECIAL)?\((\w+),", content, re.MULTILINE
+        r"^TTL_BINARY_TILE_OP(?:_SPECIAL|_MINMAX)?\((\w+),", content, re.MULTILINE
     ):
         name = match.group(1).lower()
         # Skip macro parameter names (lowercase indicates it's a parameter)
