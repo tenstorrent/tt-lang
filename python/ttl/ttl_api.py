@@ -30,6 +30,8 @@ from ttmlir.passes import (
 )
 from ttmlir.passmanager import PassManager
 
+import tempfile
+
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
     build_dma_producer_to_cb_map,
@@ -1075,8 +1077,20 @@ def _compile_kernel(
                 enable_debug_info=True,
             )
 
-        # Run the pass manager with error handling for source-aware diagnostics
+        # Set up pipe graph JSON path for compiler to write and runtime to read.
+        # This enables pipe synchronization for gather patterns.
+        pipe_graph_fd = None
+        pipe_graph_path = None
+        original_env = os.environ.get("TTLANG_PIPE_GRAPH_JSON")
         try:
+            pipe_graph_fd = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.json', delete=False
+            )
+            pipe_graph_path = pipe_graph_fd.name
+            pipe_graph_fd.close()
+            os.environ["TTLANG_PIPE_GRAPH_JSON"] = pipe_graph_path
+
+            # Run the pass manager with error handling for source-aware diagnostics
             pm.run(module.operation)
         except Exception as e:
             error_msg = str(e)
@@ -1090,6 +1104,10 @@ def _compile_kernel(
                 source_file = all_source_files.get(first_thread)
             formatted = format_mlir_error(error_msg, source_lines, source_file)
             raise RuntimeError(formatted) from None
+        finally:
+            # Restore original environment variable if it was set
+            if original_env is not None:
+                os.environ["TTLANG_PIPE_GRAPH_JSON"] = original_env
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
         if final_mlir_path:
