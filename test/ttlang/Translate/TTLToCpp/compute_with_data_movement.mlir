@@ -101,65 +101,34 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK-DAG:   size_t [[ONE:.*]] = 1;
 // CHECK-DAG:   size_t [[ZERO:.*]] = 0;
 
-// Wait for inputs from reader
-// CHECK:   cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
-// CHECK-NEXT:   cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
-
-// Initialize SFPU for CB data formats
-// CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
-
-// Nested loops over 2x2 tile grid
-// CHECK-NEXT:   for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[ONE]]) {
-// CHECK-NEXT:     for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[ONE]]) {
-
-// Acquire DST registers (at start of loop body)
-// CHECK-NEXT:       tile_regs_acquire();
-
-// Compute linear tile index: i * cols + j
-// CHECK:            size_t [[COL_SIZE:.*]] = 2;
-// CHECK-NEXT:       size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
-// CHECK-NEXT:       size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
-
-// Load tile from CB0 into DST[0]
-// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
-
-// Load tile from CB1 into DST[1]
-// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
-
-// Compute: A + B
-// CHECK-NEXT:       add_binary_tile_init();
-// CHECK-NEXT:       add_binary_tile([[ZERO]], [[ONE]], [[ZERO]]);
-
-// Compute: exp(A + B)
-// CHECK-NEXT:       exp_tile_init();
-// CHECK-NEXT:       exp_tile([[ZERO]]);
-
-// Synchronize DST registers before pack
-// CHECK-NEXT:       tile_regs_commit();
-// CHECK-NEXT:       tile_regs_wait();
-
-// Reserve output CB2
-// CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// Compute CB tile index: i * 2 + j (linearized row-major index)
-// CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
-
-// Pack result to output CB2
-// CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
-
-// Push to signal data ready
-// CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// Release DST registers (inside loop)
-// CHECK-NEXT:       tile_regs_release();
-
-// End loops
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-NEXT:   return;
+// CHECK:       cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
+// CHECK-NEXT:  cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
+// CHECK-NEXT:  init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// CHECK-NEXT:  cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CHECK-NEXT:  for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[ONE]]) {
+// CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[ONE]]) {
+// CHECK-NEXT:      tile_regs_acquire();
+// CHECK:           size_t [[COL_SIZE:.*]] = 2;
+// CHECK-NEXT:      size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
+// CHECK-NEXT:      size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
+// CHECK-NEXT:      add_binary_tile_init();
+// CHECK-NEXT:      add_binary_tile([[ZERO]], [[ONE]], [[ZERO]]);
+// CHECK-NEXT:      exp_tile_init();
+// CHECK-NEXT:      exp_tile([[ZERO]]);
+// CHECK-NEXT:      tile_regs_commit();
+// CHECK-NEXT:      tile_regs_wait();
+// CHECK:           size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
+// CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// CHECK-NEXT:      tile_regs_release();
+// CHECK-NEXT:    }
+// CHECK-NEXT:  }
+// CHECK-NEXT:  cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// CHECK-NEXT:  return;
 
 // Compute kernel: reads from CB0, CB1, computes f(A+B), writes to CB2
 func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -189,9 +158,6 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %sum : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

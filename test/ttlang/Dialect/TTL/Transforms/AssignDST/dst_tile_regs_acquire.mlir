@@ -12,6 +12,7 @@
 // CHECK-DAG:       %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK-DAG:       %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      %[[V:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:      %[[RES:.*]] = scf.for
 // CHECK:             scf.for
 // CHECK:               ttl.tile_regs_acquire
@@ -21,7 +22,6 @@
 // CHECK-NEXT:          %[[INS:.*]] = tensor.insert %[[ADD]]
 // CHECK-NEXT:          ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
-// CHECK-NEXT:          %[[V:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:          ttl.store %[[ADD]], %[[V]]
 // CHECK-NEXT:          ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield %[[INS]]
@@ -48,8 +48,6 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -66,6 +64,7 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG:       %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // First compute loop
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:      %[[R0:.*]] = scf.for
 // CHECK:             scf.for
 // CHECK:               ttl.tile_regs_acquire
@@ -73,14 +72,15 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:          %[[INS0:.*]] = tensor.insert %[[SUM0]]
 // CHECK-NEXT:          ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
-// CHECK-NEXT:          %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:          ttl.store %[[SUM0]], %[[V0]]
 // CHECK-NEXT:          ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield %[[INS0]]
+// CHECK:           ttl.cb_push %[[CB2]]
 // Second compute loop
 // CHECK:           %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // CHECK-NEXT:      %[[R0CB:.*]] = ttl.attach_cb %[[R0]], %[[CB3]]
 // CHECK-NEXT:      ttl.init_sfpu(%[[CB3]], %[[CB2]])
+// CHECK-NEXT:      %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:      %[[R1:.*]] = scf.for
 // CHECK:             scf.for
 // CHECK:               ttl.tile_regs_acquire
@@ -88,10 +88,10 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:          %[[INS1:.*]] = tensor.insert %[[SUM1]]
 // CHECK-NEXT:          ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
-// CHECK-NEXT:          %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:          ttl.store %[[SUM1]], %[[V1]]
 // CHECK-NEXT:          ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield %[[INS1]]
+// CHECK:           ttl.cb_push %[[CB2]]
 func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -115,8 +115,6 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %result_view0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -135,8 +133,6 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %result_view1 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view1 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -152,6 +148,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG:       %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK-DAG:       %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB3]])
+// CHECK:           %[[V:.*]] = ttl.cb_reserve %[[CB3]]
 // CHECK:           scf.for
 // CHECK:             scf.for
 // CHECK:               ttl.tile_regs_acquire
@@ -162,7 +159,6 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:          %[[INS:.*]] = tensor.insert %[[EXP]]
 // CHECK-NEXT:          ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
-// CHECK-NEXT:          %[[V:.*]] = ttl.cb_reserve %[[CB3]]
 // CHECK-NEXT:          ttl.store %[[EXP]], %[[V]]
 // CHECK-NEXT:          ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield %[[INS]]
@@ -196,8 +192,6 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sum, %c_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -220,7 +214,8 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[OUT_CB:.*]] = ttl.attach_cb %[[EMPTY]], %[[CB2]]
 // No duplicate init_sfpu before loops
 // CHECK-NOT:       ttl.init_sfpu
-// CHECK:           %[[OUTER:.*]] = scf.for {{.*}} iter_args(%[[ACC0:.*]] = %[[OUT_CB]])
+// CHECK:           %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
+// CHECK-NEXT:      %[[OUTER:.*]] = scf.for {{.*}} iter_args(%[[ACC0:.*]] = %[[OUT_CB]])
 // CHECK-NEXT:        %[[INNER:.*]] = scf.for {{.*}} iter_args(%[[ACC1:.*]] = %[[ACC0]])
 // Sync ops inserted inside loop body
 // CHECK-NEXT:          ttl.tile_regs_acquire
@@ -233,7 +228,6 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:          %[[INS:.*]] = tensor.insert %[[SUM]]
 // CHECK-NEXT:          ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
-// CHECK-NEXT:          %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:          ttl.store %[[SUM]], %[[VIEW]]
 // CHECK-NEXT:          ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield %[[INS]]
@@ -265,8 +259,6 @@ func.func @preexisting_init_sfpu_not_duplicated(%a: tensor<2x2x!ttcore.tile<32x3
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -286,12 +278,14 @@ func.func @preexisting_init_sfpu_not_duplicated(%a: tensor<2x2x!ttcore.tile<32x3
 // CHECK:           ttl.tile_regs_acquire
 // CHECK-NEXT:      ttl.tile_regs_release
 // CHECK-NEXT:      ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NEXT:      %[[V:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:      %[[OUTER:.*]] = scf.for {{.*}} iter_args
 // CHECK-NEXT:        %[[INNER:.*]] = scf.for {{.*}} iter_args
 // Sync ops inserted inside loop body
 // CHECK-NEXT:          ttl.tile_regs_acquire
 // CHECK:               ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
+// CHECK:               ttl.store {{.*}}, %[[V]]
 // CHECK:               ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield
 func.func @matched_acquire_release_before_loop(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -321,8 +315,6 @@ func.func @matched_acquire_release_before_loop(%a: tensor<2x2x!ttcore.tile<32x32
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

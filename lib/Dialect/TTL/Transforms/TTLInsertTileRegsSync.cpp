@@ -47,15 +47,14 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find an input CB that is extracted in the loop body, preferring one whose
-/// shape matches the output CB shape, or the largest input CB. This handles:
-/// - Broadcast ops: prefers full-sized input over broadcast input
-/// - Reduction ops: prefers largest input (the one being reduced)
-/// - Broadcast + reduction: prefers largest input
+/// Find an input CB from which tiles are read (via copy_tile) in the loop body.
+/// Prefers a CB whose shape matches the output CB shape, or the largest input
+/// CB. This handles broadcast/reduction cases where inputs have different
+/// shapes.
 ///
 /// Only considers CBs from AttachCBOp/CBWaitOp, not iter_args (accumulators).
 /// Returns nullptr if no CB is found.
-static Value findExtractedInputCB(scf::ForOp forOp, Value outputCB) {
+static Value findInputCBWithTileReads(scf::ForOp forOp, Value outputCB) {
   // Get output CB shape for matching.
   ArrayRef<int64_t> outputShape;
   if (outputCB) {
@@ -99,6 +98,47 @@ static Value findExtractedInputCB(scf::ForOp forOp, Value outputCB) {
 
   // Prefer: 1) CB matching output shape, 2) largest CB.
   return matchingShapeCB ? matchingShapeCB : largestCB;
+}
+
+/// Find an unconsumed cb_reserve for the given CB that dominates the target.
+/// A reserve is "unconsumed" if there is no cb_push for the same CB that:
+/// - properly dominates the target (comes before on all paths), AND
+/// - is dominated by the reserve (comes after the reserve)
+/// Returns the reserve's result Value, or std::nullopt if none found.
+static std::optional<Value>
+findUnconsumedDominatingReserve(func::FuncOp funcOp, Value cb,
+                                Operation *target, DominanceInfo &domInfo) {
+  // Collect all push ops for this CB that properly dominate the target.
+  SmallVector<CBPushOp> dominatingPushes;
+  funcOp.walk([&](CBPushOp push) {
+    if (push.getCb() == cb &&
+        domInfo.properlyDominates(push.getOperation(), target)) {
+      dominatingPushes.push_back(push);
+    }
+  });
+
+  // Find a reserve for this CB that dominates target and has no intervening
+  // push.
+  std::optional<Value> result;
+  funcOp.walk([&](CBReserveOp reserve) {
+    if (reserve.getCb() != cb ||
+        !domInfo.properlyDominates(reserve.getOperation(), target)) {
+      return;
+    }
+
+    // Check if there's a push that "consumes" this reserve:
+    // - The push must properly dominate the target (already filtered above)
+    // - The push must be dominated by the reserve (comes after it)
+    bool hasConsumingPush = llvm::any_of(dominatingPushes, [&](CBPushOp push) {
+      return domInfo.dominates(reserve.getOperation(), push.getOperation());
+    });
+
+    if (!hasConsumingPush) {
+      result = reserve.getResult();
+    }
+  });
+
+  return result;
 }
 
 /// Find an unmatched tile_regs_acquire that dominates the given operation.
@@ -146,12 +186,21 @@ struct TTLInsertTileRegsSyncPass
     : public impl::TTLInsertTileRegsSyncBase<TTLInsertTileRegsSyncPass> {
   using Base::Base;
 
+  // Steps performed for the tile loop resulting from ttl.compute
+  // lowering:
+  //   1. Validate: reject unmatched acquire outside loop (would cause
+  //   imbalance)
+  //   2. init_sfpu: insert before outermost loop for hardware configuration
+  //   3. DST sync: insert acquire/commit/wait/release in loop body
+  //   4. Validate CB op placement: error if cb_reserve/cb_push inside loop
+  //   5. Auto-store: for tensor.inserts without stores, insert reserve (before
+  //      loop), store (inside loop), push (after loop)
+  //   6. Cleanup: remove tile_loop marker attributes
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
     DominanceInfo domInfo(funcOp);
 
     WalkResult result = funcOp.walk([&](scf::ForOp forOp) -> WalkResult {
-      // Only process loops marked with the tile loop attribute.
       if (!forOp->hasAttr(kTileLoopAttrName)) {
         return WalkResult::advance();
       }
@@ -160,18 +209,14 @@ struct TTLInsertTileRegsSyncPass
       Block &body = forOp.getRegion().front();
       OpBuilder builder(forOp);
 
-      // Find outermost compute loop for init_sfpu placement.
       scf::ForOp outermostLoop = findOutermostComputeLoop(forOp);
 
-      // Find existing sync ops preceding the outermost loop.
       auto stopAtLoop = [](Operation *op) { return isa<scf::ForOp>(op); };
       InitSFPUOp existingInitSfpu =
           findPrecedingOp<InitSFPUOp>(outermostLoop.getOperation(), stopAtLoop);
 
-      // Check for an unmatched tile_regs_acquire that dominates the loop.
-      // An acquire is "unmatched" if there's no release between it and the
-      // loop. This would create an unbalanced acquire/release pair since this
-      // pass inserts acquire inside the loop body.
+      // Step 1: Validate - reject pre-existing acquire without matching
+      // release.
       TileRegsAcquireOp unmatchedAcquire = findUnmatchedDominatingAcquire(
           funcOp, outermostLoop.getOperation(), domInfo);
       if (unmatchedAcquire) {
@@ -181,41 +226,38 @@ struct TTLInsertTileRegsSyncPass
         return WalkResult::interrupt();
       }
 
-      // Insert init_sfpu before outermost loop if not present.
-      // init_sfpu only uses CB metadata (format, num_faces, face_dim) to
-      // configure hardware. It does not access CB data. We use the CB that is
-      // actually extracted in the loop body, preferring one whose shape matches
-      // the output shape. This ensures correct configuration for broadcast ops
-      // where inputs have different shapes.
+      // Step 2: init_sfpu - configure hardware using an input CB from which
+      // tiles are read (handles broadcast/reduction where inputs have different
+      // shapes).
       if (!existingInitSfpu) {
         SmallVector<Value> outputCBs =
             getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
-        // Find the input CB that is extracted in the loop body.
+        // Find an input CB from which tiles are read in the loop body.
         // Prefer one whose shape matches the output CB shape.
         Value outputCB = outputCBs.empty() ? Value() : outputCBs.front();
-        Value extractedInputCB = findExtractedInputCB(forOp, outputCB);
+        Value inputCB = findInputCBWithTileReads(forOp, outputCB);
 
-        // Error if loop attributes declare input CBs but nothing extracts from
-        // them - init_sfpu needs an extracted CB for hardware configuration.
-        if (!extractedInputCB) {
+        // Error if loop attributes declare input CBs but no tiles are read from
+        // them - init_sfpu needs an input CB for hardware configuration.
+        if (!inputCB) {
           SmallVector<Value> inputCBs =
               getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
           if (!inputCBs.empty()) {
             forOp.emitOpError()
-                << "init_sfpu: input CBs declared but none extracted in loop "
+                << "init_sfpu: input CBs declared but no tiles read in loop "
                    "body; ensure compute body uses its inputs";
             return WalkResult::interrupt();
           }
         }
 
-        if (extractedInputCB && !outputCBs.empty()) {
+        if (inputCB && !outputCBs.empty()) {
           builder.setInsertionPoint(outermostLoop);
-          builder.create<InitSFPUOp>(loc, extractedInputCB, outputCBs.front());
+          builder.create<InitSFPUOp>(loc, inputCB, outputCBs.front());
         }
       }
 
-      // Collect operations in the loop body.
+      // Step 3: DST sync - collect existing ops, then insert missing sync ops.
       SmallVector<StoreOp> storeOps;
       SmallVector<CBReserveOp> reserveOps;
       SmallVector<CBPushOp> pushOps;
@@ -260,59 +302,46 @@ struct TTLInsertTileRegsSyncPass
         commitOp->moveBefore(waitOp);
       }
 
-      // Track which tiles (from tensor.insert) have stores.
       llvm::DenseMap<Value, StoreOp> storeForTile;
       for (StoreOp store : storeOps) {
         storeForTile.try_emplace(store.getTile(), store);
       }
 
-      // Reorder existing cb_reserve, stores, and cb_push after wait in original
-      // order. Order: commit -> wait -> [cb_reserve -> store -> cb_push] ->
-      // yield
-      Operation *tail = waitOp.getOperation();
+      // Step 4: Validate CB op placement - cb_reserve and cb_push must not be
+      // inside the loop body. The correct pattern is: reserve BEFORE loop,
+      // store INSIDE loop, push AFTER loop.
       for (CBReserveOp reserve : reserveOps) {
-        reserve.getOperation()->moveAfter(tail);
-        tail = reserve.getOperation();
+        reserve.emitError()
+            << "cb_reserve inside tile loop body; must be placed before "
+            << "the loop (reserves space for all tiles at once)";
+        return WalkResult::interrupt();
       }
+      for (CBPushOp push : pushOps) {
+        push.emitError()
+            << "cb_push inside tile loop body; must be placed after "
+            << "the loop (signals all tiles ready at once)";
+        return WalkResult::interrupt();
+      }
+
+      // Move existing stores after wait (stores stay inside loop for per-tile
+      // packing). Packing multiple tiles simultaneously is a future
+      // optimization.
+      Operation *tail = waitOp.getOperation();
       for (StoreOp store : storeOps) {
         store.getOperation()->moveAfter(tail);
         tail = store.getOperation();
       }
-      for (CBPushOp push : pushOps) {
-        push.getOperation()->moveAfter(tail);
-        tail = push.getOperation();
-      }
 
-      // Get output CBs from loop attributes for auto-inserting stores.
+      // Step 5: Auto-store - insert stores for tensor.inserts that lack them.
+      // Pattern: reserve BEFORE loop, store INSIDE loop, push AFTER loop.
       SmallVector<Value> outputCBs =
           getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
-      // Helper: find an existing cb_reserve view for the given CB.
-      // Searches both the loop body and the parent block before the loop.
-      auto findExistingReserve = [&](Value cb) -> Value {
-        // Scan the loop body for a reserve.
-        for (Operation &op : body) {
-          if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
-            if (reserve.getCb() == cb) {
-              return reserve.getResult();
-            }
-          }
-        }
-
-        // Scan the parent block backwards from the outermost loop.
-        for (Operation *curr = outermostLoop->getPrevNode(); curr;
-             curr = curr->getPrevNode()) {
-          if (auto reserve = dyn_cast<CBReserveOp>(curr)) {
-            if (reserve.getCb() == cb) {
-              return reserve.getResult();
-            }
-          }
-        }
-
-        return Value();
+      auto findExistingReserve = [&](Value cb) -> std::optional<Value> {
+        return findUnconsumedDominatingReserve(
+            funcOp, cb, outermostLoop.getOperation(), domInfo);
       };
 
-      // Helper: check if a cb_push exists for the given CB after the loop.
       auto hasExistingPush = [&](Value cb) -> bool {
         for (Operation *curr = outermostLoop->getNextNode(); curr;
              curr = curr->getNextNode()) {
@@ -325,13 +354,9 @@ struct TTLInsertTileRegsSyncPass
         return false;
       };
 
-      // Track CBs that need new reserve/push (created by this pass).
       llvm::DenseMap<Value, Value> newReserveViews; // cb -> reserve view
 
-      // Insert missing stores for tiles that go through tensor.insert.
-      // Each tensor.insert corresponds to an output that should be stored.
-      // For multi-output computes, we match each insert to its output CB by
-      // tracing the insert destination back to the iter_arg block argument.
+      // Match each tensor.insert to its output CB via iter_arg index.
       for (tensor::InsertOp insertOp : insertOps) {
         Value tile = insertOp.getScalar();
         if (storeForTile.contains(tile)) {
@@ -365,15 +390,16 @@ struct TTLInsertTileRegsSyncPass
           return WalkResult::interrupt();
         }
 
-        // Find or create reserve view for this CB.
-        Value view = findExistingReserve(cb);
-        if (!view) {
-          // Check if we already created a reserve for this CB.
+        std::optional<Value> existingReserve = findExistingReserve(cb);
+        Value view;
+        if (existingReserve) {
+          view = *existingReserve;
+        } else {
           auto it = newReserveViews.find(cb);
           if (it != newReserveViews.end()) {
             view = it->second;
           } else {
-            // Create reserve BEFORE outermost loop (not inside loop body).
+            // Reserve before outermost loop (reserves space for all tiles).
             auto tensorType = insertOp.getDest().getType();
             builder.setInsertionPoint(outermostLoop);
             auto newReserve = builder.create<CBReserveOp>(loc, tensorType, cb);
@@ -382,16 +408,14 @@ struct TTLInsertTileRegsSyncPass
           }
         }
 
-        // Store goes INSIDE the loop body, after wait.
+        // Store inside loop (packs each tile).
         builder.setInsertionPointAfter(tail);
         auto newStore = builder.create<StoreOp>(loc, tile, view);
         tail = newStore.getOperation();
         storeForTile.try_emplace(tile, newStore);
       }
 
-      // Create cb_push AFTER outermost loop for CBs that need it.
-      // Only create push if we created a new reserve (no existing
-      // reserve/push).
+      // Push after outermost loop (signals all tiles ready).
       for (auto &[cb, reserveView] : newReserveViews) {
         if (!hasExistingPush(cb)) {
           builder.setInsertionPointAfter(outermostLoop);
@@ -399,18 +423,16 @@ struct TTLInsertTileRegsSyncPass
         }
       }
 
-      // Release: at end of loop body (before scf.yield) if not present.
+      // Release at end of loop body.
       if (!releaseOp) {
         builder.setInsertionPoint(terminator);
         builder.create<TileRegsReleaseOp>(loc);
       }
 
-      // Clean up marker attributes after processing.
-      // Remove from innermost loop.
+      // Step 6: Cleanup - remove marker attributes.
       forOp->removeAttr(kTileLoopAttrName);
       forOp->removeAttr(kTileLoopInputCBsAttrName);
       forOp->removeAttr(kTileLoopOutputCBsAttrName);
-      // Remove from all outer loops (outermostLoop walks up to find them).
       if (outermostLoop != forOp) {
         Operation *current = forOp.getOperation();
         while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
@@ -422,8 +444,7 @@ struct TTLInsertTileRegsSyncPass
         }
       }
 
-      // Skip: post-order walk processes innermost first; outer loops already
-      // had their markers removed above.
+      // Skip outer loops (already processed via marker removal).
       return WalkResult::skip();
     });
 

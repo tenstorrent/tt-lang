@@ -19,6 +19,7 @@
 // CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, buffer_factor = 1}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK:           %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK:           scf.for
 // CHECK:             scf.for
 // CHECK:               ttl.tile_regs_acquire
@@ -36,7 +37,6 @@
 // CHECK-NEXT:          tensor.insert %[[SQRT]]
 // CHECK-NEXT:          ttl.tile_regs_commit
 // CHECK-NEXT:          ttl.tile_regs_wait
-// CHECK-NEXT:          %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:          ttl.store %[[SQRT]], %[[VIEW]]
 // CHECK-NEXT:          ttl.tile_regs_release
 // CHECK-NEXT:          scf.yield
@@ -70,8 +70,6 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %log = ttl.tile_log %exp : !ttcore.tile<32x32, f32>
     %neg = ttl.tile_neg %log : !ttcore.tile<32x32, f32>
     %sqrt = ttl.tile_sqrt %neg : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sqrt, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sqrt : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

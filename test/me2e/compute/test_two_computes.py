@@ -182,6 +182,8 @@ class TestTwoComputesChained(TwoComputeTestBase):
     %init_cb = ttl.attach_cb %init, %cb2 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
     // First compute: a + b -> r0
+    // Note: cb_reserve/store/cb_push are auto-inserted by the compiler.
+    // Reserve goes BEFORE the loop, store INSIDE, push AFTER.
     %r0 = ttl.compute
         ins(%a_ready, %b_ready : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>,
                                  tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>)
@@ -194,9 +196,6 @@ class TestTwoComputesChained(TwoComputeTestBase):
          %b_tile: !ttcore.tile<32x32, {dtype}>,
          %out_tile: !ttcore.tile<32x32, {dtype}>):
       %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, {dtype}>
-      %view0 = ttl.cb_reserve %cb2 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.store %sum, %view0 : !ttcore.tile<32x32, {dtype}>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.cb_push %cb2 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
       ttl.yield %sum : !ttcore.tile<32x32, {dtype}>
     }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
@@ -222,9 +221,6 @@ class TestTwoComputesChained(TwoComputeTestBase):
          %r0_tile2: !ttcore.tile<32x32, {dtype}>,
          %out_tile: !ttcore.tile<32x32, {dtype}>):
       %product = ttl.tile_mul %r0_tile1, %r0_tile2 : !ttcore.tile<32x32, {dtype}>
-      %view1 = ttl.cb_reserve %cb4 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.store %product, %view1 : !ttcore.tile<32x32, {dtype}>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.cb_push %cb4 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
       ttl.yield %product : !ttcore.tile<32x32, {dtype}>
     }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
@@ -387,9 +383,6 @@ func.func @writer(%out0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>, #lay
          %b_tile: !ttcore.tile<32x32, {dtype}>,
          %out_tile: !ttcore.tile<32x32, {dtype}>):
       %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, {dtype}>
-      %view0 = ttl.cb_reserve %cb2 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.store %sum, %view0 : !ttcore.tile<32x32, {dtype}>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.cb_push %cb2 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
       ttl.yield %sum : !ttcore.tile<32x32, {dtype}>
     }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
@@ -409,9 +402,6 @@ func.func @writer(%out0: tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>, #lay
          %b_tile2: !ttcore.tile<32x32, {dtype}>,
          %out_tile2: !ttcore.tile<32x32, {dtype}>):
       %product = ttl.tile_mul %a_tile2, %b_tile2 : !ttcore.tile<32x32, {dtype}>
-      %view1 = ttl.cb_reserve %cb2 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.store %product, %view1 : !ttcore.tile<32x32, {dtype}>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-      ttl.cb_push %cb2 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
       ttl.yield %product : !ttcore.tile<32x32, {dtype}>
     }} -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 

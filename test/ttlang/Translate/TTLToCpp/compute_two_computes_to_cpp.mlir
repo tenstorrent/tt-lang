@@ -19,6 +19,7 @@
 // CHECK:       cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
 // CHECK-NEXT:  cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
 // CHECK-NEXT:  init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// CHECK-NEXT:  cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 // CHECK-NEXT:  for (size_t [[I1:.*]] = [[ZERO]]; [[I1]] < [[BOUND]]; [[I1]] += [[STEP]]) {
 // CHECK-NEXT:    for (size_t [[J1:.*]] = [[ZERO]]; [[J1]] < [[BOUND]]; [[J1]] += [[STEP]]) {
 // CHECK-NEXT:      tile_regs_acquire();
@@ -33,15 +34,15 @@
 // CHECK-NEXT:      add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
 // CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
-// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 // CHECK:           size_t [[CB_OFF1:.*]] = [[I1]] * {{.*}};
 // CHECK-NEXT:      size_t [[CB_IDX1:.*]] = [[CB_OFF1]] + [[J1]];
 // CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX1]]);
-// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 // CHECK-NEXT:      tile_regs_release();
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
+// CHECK-NEXT:  cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 // CHECK-NEXT:  init_sfpu(get_compile_time_arg_val(3), get_compile_time_arg_val(4));
+// CHECK-NEXT:  cb_reserve_back(get_compile_time_arg_val(4), [[TILES]]);
 // CHECK-NEXT:  for (size_t [[I2:.*]] = [[ZERO]]; [[I2]] < [[BOUND]]; [[I2]] += [[STEP]]) {
 // CHECK-NEXT:    for (size_t [[J2:.*]] = [[ZERO]]; [[J2]] < [[BOUND]]; [[J2]] += [[STEP]]) {
 // CHECK-NEXT:      tile_regs_acquire();
@@ -56,14 +57,13 @@
 // CHECK-NEXT:      mul_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
 // CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
-// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(4), [[TILES]]);
 // CHECK:           size_t [[CB_OFF2:.*]] = [[I2]] * {{.*}};
 // CHECK-NEXT:      size_t [[CB_IDX2:.*]] = [[CB_OFF2]] + [[J2]];
 // CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(4), [[CB_IDX2]]);
-// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(4), [[TILES]]);
 // CHECK-NEXT:      tile_regs_release();
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
+// CHECK-NEXT:  cb_push_back(get_compile_time_arg_val(4), [[TILES]]);
 // CHECK-NEXT:  return;
 // CHECK-NOT:   tensor.extract
 // CHECK-NOT:   tensor.insert
@@ -95,9 +95,6 @@ func.func @two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %view0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %view0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -121,9 +118,6 @@ func.func @two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %r0_tile2: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %product = ttl.tile_mul %r0_tile1, %r0_tile2 : !ttcore.tile<32x32, f32>
-    %view1 = ttl.cb_reserve %cb4 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %product, %view1 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.cb_push %cb4 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield %product : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
