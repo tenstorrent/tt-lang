@@ -49,27 +49,6 @@ inline SmallVector<int64_t> getCBIndicesFromLoopAttr(scf::ForOp forOp,
   return indices;
 }
 
-/// Get CB values from a loop's array attribute by looking up bind_cb ops.
-/// Returns empty vector if attribute is not present or CBs are not found.
-inline SmallVector<Value> getCBValuesFromLoopAttr(func::FuncOp funcOp,
-                                                  scf::ForOp forOp,
-                                                  llvm::StringRef attrName) {
-  SmallVector<Value> cbs;
-  auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName);
-  if (!cbArrayAttr) {
-    return cbs;
-  }
-  for (Attribute attr : cbArrayAttr) {
-    auto intAttr = dyn_cast<IntegerAttr>(attr);
-    assert(intAttr);
-
-    if (auto bindOp = findBindCBByIndex(funcOp, intAttr.getInt())) {
-      cbs.push_back(bindOp.getResult());
-    }
-  }
-  return cbs;
-}
-
 //===----------------------------------------------------------------------===//
 // Loop Utilities
 //===----------------------------------------------------------------------===//

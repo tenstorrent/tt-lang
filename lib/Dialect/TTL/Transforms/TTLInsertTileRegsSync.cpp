@@ -185,6 +185,29 @@ findUnmatchedDominatingAcquire(func::FuncOp funcOp, Operation *target,
   return unmatchedAcquire;
 }
 
+/// Get CB values from a loop's array attribute by looking up bind_cb ops.
+/// Returns empty vector if attribute is not present or CBs are not found (e.g., 
+/// when the loop is a user loop, not a tile loop generated from a compute op)
+static SmallVector<Value> getCBValuesFromLoopAttr(func::FuncOp funcOp,
+                                                  scf::ForOp forOp,
+                                                  llvm::StringRef attrName) {
+  SmallVector<Value> cbs;
+  auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName);
+  if (!cbArrayAttr) {
+    return cbs;
+  }
+  for (Attribute attr : cbArrayAttr) {
+    auto intAttr = dyn_cast<IntegerAttr>(attr);
+    assert(intAttr);
+
+    if (auto bindOp = findBindCBByIndex(funcOp, intAttr.getInt())) {
+      cbs.push_back(bindOp.getResult());
+    }
+  }
+  return cbs;
+}
+
+
 struct TTLInsertTileRegsSyncPass
     : public impl::TTLInsertTileRegsSyncBase<TTLInsertTileRegsSyncPass> {
   using Base::Base;
