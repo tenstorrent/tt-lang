@@ -23,6 +23,9 @@ func.func @multi_output_auto_store()
   %out1 = ttl.attach_cb %init1, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.init_sfpu
+  // Reserve goes BEFORE outermost loop (auto-inserted for missing stores)
+  // CHECK: %[[VIEW1:.*]] = ttl.cb_reserve %{{.*}} :
+  // CHECK: %[[VIEW2:.*]] = ttl.cb_reserve %{{.*}} :
   // CHECK: scf.for
   %r:2 = scf.for %i = %c0 to %c2 step %c1 iter_args(%arg0 = %out0, %arg1 = %out1) -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) {
     // CHECK: scf.for
@@ -37,15 +40,17 @@ func.func @multi_output_auto_store()
       %ins1 = tensor.insert %neg into %arg3[%i, %j] : tensor<2x2x!ttcore.tile<32x32, f32>>
       // CHECK: ttl.tile_regs_commit
       // CHECK: ttl.tile_regs_wait
-      // CHECK: %[[VIEW1:.*]] = ttl.cb_reserve %{{.*}} :
+      // Stores go INSIDE the loop (pack each tile)
       // CHECK: ttl.store %{{.*}}, %[[VIEW1]]
-      // CHECK: %[[VIEW2:.*]] = ttl.cb_reserve %{{.*}} :
       // CHECK: ttl.store %{{.*}}, %[[VIEW2]]
       // CHECK: ttl.tile_regs_release
       scf.yield %ins0, %ins1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
     } {ttl.tile_loop, ttl.tile_loop.input_cbs = [0], ttl.tile_loop.output_cbs = [1, 2]}
     scf.yield %inner#0, %inner#1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
   } {ttl.tile_loop}
+  // Push goes AFTER outermost loop (signals all tiles ready)
+  // CHECK: ttl.cb_push
+  // CHECK: ttl.cb_push
 
   return
 }

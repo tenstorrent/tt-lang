@@ -12,48 +12,59 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: void kernel_main()
-
-// --- First compute loop: add ---
-// CHECK:       for (size_t [[I1:.*]] = {{.*}}; [[I1]] < {{.*}}; [[I1]] += {{.*}}) {
-// CHECK-NEXT:    for (size_t [[J1:.*]] = {{.*}}; [[J1]] < {{.*}}; [[J1]] += {{.*}}) {
+// CHECK-DAG:   int32_t [[TILES:v[0-9]+]] = 4
+// CHECK-DAG:   size_t [[BOUND:v[0-9]+]] = 2
+// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1
+// CHECK-DAG:   size_t [[ZERO:v[0-9]+]] = 0
+// CHECK:       cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
+// CHECK-NEXT:  cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
+// CHECK-NEXT:  init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// CHECK-NEXT:  for (size_t [[I1:.*]] = [[ZERO]]; [[I1]] < [[BOUND]]; [[I1]] += [[STEP]]) {
+// CHECK-NEXT:    for (size_t [[J1:.*]] = [[ZERO]]; [[J1]] < [[BOUND]]; [[J1]] += [[STEP]]) {
 // CHECK-NEXT:      tile_regs_acquire();
-// CHECK:           copy_tile_init(
-// CHECK:           copy_tile(
-// CHECK:           copy_tile_init(
-// CHECK:           copy_tile(
-// CHECK:           add_binary_tile_init();
-// CHECK:           add_binary_tile(
-// CHECK:           tile_regs_commit();
+// CHECK:           size_t [[COL_SIZE1:.*]] = 2;
+// CHECK-NEXT:      size_t [[IOFF1:.*]] = [[I1]] * [[COL_SIZE1]];
+// CHECK-NEXT:      size_t [[LINIDX1:.*]] = [[IOFF1]] + [[J1]];
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX1]], [[ZERO]]);
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX1]], [[STEP]]);
+// CHECK-NEXT:      add_binary_tile_init();
+// CHECK-NEXT:      add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+// CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
-// CHECK:           cb_reserve_back(
-// CHECK:           pack_tile
-// CHECK:           cb_push_back(
-// CHECK:           tile_regs_release();
+// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CHECK:           size_t [[CB_OFF1:.*]] = [[I1]] * {{.*}};
+// CHECK-NEXT:      size_t [[CB_IDX1:.*]] = [[CB_OFF1]] + [[J1]];
+// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX1]]);
+// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// CHECK-NEXT:      tile_regs_release();
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
-
-// --- Second compute loop: mul ---
-// CHECK:       for (size_t [[I2:.*]] = {{.*}}; [[I2]] < {{.*}}; [[I2]] += {{.*}}) {
-// CHECK-NEXT:    for (size_t [[J2:.*]] = {{.*}}; [[J2]] < {{.*}}; [[J2]] += {{.*}}) {
+// CHECK-NEXT:  init_sfpu(get_compile_time_arg_val(3), get_compile_time_arg_val(4));
+// CHECK-NEXT:  for (size_t [[I2:.*]] = [[ZERO]]; [[I2]] < [[BOUND]]; [[I2]] += [[STEP]]) {
+// CHECK-NEXT:    for (size_t [[J2:.*]] = [[ZERO]]; [[J2]] < [[BOUND]]; [[J2]] += [[STEP]]) {
 // CHECK-NEXT:      tile_regs_acquire();
-// CHECK:           copy_tile_init(
-// CHECK:           copy_tile(
-// CHECK:           copy_tile_init(
-// CHECK:           copy_tile(
-// CHECK:           mul_binary_tile_init();
-// CHECK:           mul_binary_tile(
-// CHECK:           tile_regs_commit();
+// CHECK:           size_t [[COL_SIZE2:.*]] = 2;
+// CHECK-NEXT:      size_t [[IOFF2:.*]] = [[I2]] * [[COL_SIZE2]];
+// CHECK-NEXT:      size_t [[LINIDX2:.*]] = [[IOFF2]] + [[J2]];
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(3));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(3), [[LINIDX2]], [[ZERO]]);
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(3));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(3), [[LINIDX2]], [[STEP]]);
+// CHECK-NEXT:      mul_binary_tile_init();
+// CHECK-NEXT:      mul_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+// CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
-// CHECK:           cb_reserve_back(
-// CHECK:           pack_tile
-// CHECK:           cb_push_back(
-// CHECK:           tile_regs_release();
+// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(4), [[TILES]]);
+// CHECK:           size_t [[CB_OFF2:.*]] = [[I2]] * {{.*}};
+// CHECK-NEXT:      size_t [[CB_IDX2:.*]] = [[CB_OFF2]] + [[J2]];
+// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(4), [[CB_IDX2]]);
+// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(4), [[TILES]]);
+// CHECK-NEXT:      tile_regs_release();
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
-
-// CHECK:       return;
-
-// --- Verify no tensor operations remain ---
+// CHECK-NEXT:  return;
 // CHECK-NOT:   tensor.extract
 // CHECK-NOT:   tensor.insert
 // CHECK-NOT:   tensor.empty

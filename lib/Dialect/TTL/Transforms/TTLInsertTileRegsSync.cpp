@@ -287,29 +287,19 @@ struct TTLInsertTileRegsSyncPass
       SmallVector<Value> outputCBs =
           getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
-      // Helper: find a cb_reserve view for auto-inserted stores.
-      // Prefers the last in-body reserve before the insertion point;
-      // otherwise scans the parent block before the loop.
-      auto findReserveViewForStore = [&](Value cb,
-                                         Operation *insertAfter) -> Value {
-        Value candidate;
-
-        // Scan the loop body up to (but not including) insertAfter.
+      // Helper: find an existing cb_reserve view for the given CB.
+      // Searches both the loop body and the parent block before the loop.
+      auto findExistingReserve = [&](Value cb) -> Value {
+        // Scan the loop body for a reserve.
         for (Operation &op : body) {
-          if (&op == insertAfter) {
-            break;
-          }
           if (auto reserve = dyn_cast<CBReserveOp>(&op)) {
             if (reserve.getCb() == cb) {
-              candidate = reserve.getResult();
+              return reserve.getResult();
             }
           }
         }
-        if (candidate) {
-          return candidate;
-        }
 
-        // Scan the parent block backwards from the loop.
+        // Scan the parent block backwards from the outermost loop.
         for (Operation *curr = outermostLoop->getPrevNode(); curr;
              curr = curr->getPrevNode()) {
           if (auto reserve = dyn_cast<CBReserveOp>(curr)) {
@@ -321,6 +311,22 @@ struct TTLInsertTileRegsSyncPass
 
         return Value();
       };
+
+      // Helper: check if a cb_push exists for the given CB after the loop.
+      auto hasExistingPush = [&](Value cb) -> bool {
+        for (Operation *curr = outermostLoop->getNextNode(); curr;
+             curr = curr->getNextNode()) {
+          if (auto push = dyn_cast<CBPushOp>(curr)) {
+            if (push.getCb() == cb) {
+              return true;
+            }
+          }
+        }
+        return false;
+      };
+
+      // Track CBs that need new reserve/push (created by this pass).
+      llvm::DenseMap<Value, Value> newReserveViews; // cb -> reserve view
 
       // Insert missing stores for tiles that go through tensor.insert.
       // Each tensor.insert corresponds to an output that should be stored.
@@ -359,20 +365,38 @@ struct TTLInsertTileRegsSyncPass
           return WalkResult::interrupt();
         }
 
-        Value view = findReserveViewForStore(cb, tail->getNextNode());
+        // Find or create reserve view for this CB.
+        Value view = findExistingReserve(cb);
         if (!view) {
-          // Get the tensor type from the insert op for the reserve result type.
-          auto tensorType = insertOp.getDest().getType();
-          builder.setInsertionPointAfter(tail);
-          auto newReserve = builder.create<CBReserveOp>(loc, tensorType, cb);
-          view = newReserve.getResult();
-          tail = newReserve.getOperation();
+          // Check if we already created a reserve for this CB.
+          auto it = newReserveViews.find(cb);
+          if (it != newReserveViews.end()) {
+            view = it->second;
+          } else {
+            // Create reserve BEFORE outermost loop (not inside loop body).
+            auto tensorType = insertOp.getDest().getType();
+            builder.setInsertionPoint(outermostLoop);
+            auto newReserve = builder.create<CBReserveOp>(loc, tensorType, cb);
+            view = newReserve.getResult();
+            newReserveViews.try_emplace(cb, view);
+          }
         }
 
+        // Store goes INSIDE the loop body, after wait.
         builder.setInsertionPointAfter(tail);
         auto newStore = builder.create<StoreOp>(loc, tile, view);
         tail = newStore.getOperation();
         storeForTile.try_emplace(tile, newStore);
+      }
+
+      // Create cb_push AFTER outermost loop for CBs that need it.
+      // Only create push if we created a new reserve (no existing
+      // reserve/push).
+      for (auto &[cb, reserveView] : newReserveViews) {
+        if (!hasExistingPush(cb)) {
+          builder.setInsertionPointAfter(outermostLoop);
+          builder.create<CBPushOp>(loc, cb);
+        }
       }
 
       // Release: at end of loop body (before scf.yield) if not present.
