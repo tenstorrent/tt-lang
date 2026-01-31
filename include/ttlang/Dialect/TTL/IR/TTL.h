@@ -29,6 +29,14 @@ class TTLTileOpTrait
 /// Attribute names.
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
+inline constexpr llvm::StringRef kExecutionTargetAttrName = "execution_target";
+
+/// Execution target strategy values for binary operations.
+/// Set by TTLAnnotateBinaryOpStrategy pass, consumed by TTLAssignDST and
+/// ConvertTTLToTTKernel passes.
+inline constexpr llvm::StringRef kExecutionTargetFPU = "fpu";
+inline constexpr llvm::StringRef kExecutionTargetDestReuse = "dest_reuse";
+inline constexpr llvm::StringRef kExecutionTargetSFPU = "sfpu";
 
 /// Runtime configuration attributes
 inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";
@@ -60,6 +68,13 @@ class TTLTileUnaryOpTrait
 template <typename ConcreteType>
 class TTLTileBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileBinaryOpTrait> {};
+
+/// Operations with this trait can optionally have execution_target attribute
+/// set to "fpu" or "dest_reuse" to indicate that they execute on FPU hardware.
+template <typename ConcreteType>
+class TTLFPUElementwiseOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLFPUElementwiseOpTrait> {
+};
 
 /// Trait for tile-level operations that read from CB rather than DST.
 template <typename ConcreteType>
