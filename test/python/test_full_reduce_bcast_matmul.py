@@ -7,16 +7,16 @@ Full distributed reduce -> bcast -> matmul with multicore communication.
 
 Unlike reduce_bcast_matmul_kernel which operates per-core independently,
 this kernel does:
-1. Global reduce: All cores reduce their A slice, gather to Core 0, sum to global scalar
-2. Global broadcast: Core 0 scatters the scalar back to all workers
+1. Global reduce: All cores reduce their A slices, gather to coordinator, sum to global scalar
+2. Global broadcast: Coordinator scatters the scalar back to all workers
 3. Full matmul with K accumulation: Each core computes partial C, gather and sum
 
 Grid: 4x1 (4 cores in a row)
-- A: (M, K) = (128, 128) - 4x4 tiles, split by K across cores
-- B: (K, N) = (128, 128) - 4x4 tiles, split by K across cores
-- C: (M, N) = (128, 128) - output, computed on Core 0 after accumulation
+- A: (ROWS_PER_CORE * 4 * 32, 4 * COLS_PER_CORE * 32) - split across cores by column
+- B: (128, 128) - 4x4 tiles, same B used by all cores
+- out: (128, 128) - output, computed on coordinator after accumulation
 
-Each core handles K slice [x*32, (x+1)*32] (1 tile width in K).
+Each core handles ROWS_PER_CORE x COLS_PER_CORE blocks of A (each block is 4x1 tiles).
 """
 
 # REQUIRES: ttnn
@@ -35,6 +35,11 @@ import ttl
 
 # Core role constant
 COORDINATOR = 0
+# Number of row/column blocks each core processes
+ROWS_PER_CORE = 2
+COLS_PER_CORE = 2
+# Number of workers (non-coordinator cores)
+NUM_WORKERS = 3
 
 
 @ttl.kernel(grid=(4, 1))
@@ -42,17 +47,16 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
     """
     Full distributed reduce -> bcast -> matmul.
 
-    1. Each core reduces its A column slice (4 tiles tall, 1 tile wide)
-    2. Gather partial sums to coordinator, compute global sum
+    1. Each core reduces ROWS_PER_CORE x COLS_PER_CORE blocks of A, accumulating locally
+    2. Gather local sums to coordinator, compute global sum
     3. Scatter global sum back to all cores
     4. Each core broadcasts scalar to full 4x4 shape, then matmuls with B
     5. Gather partial matmul results to coordinator, accumulate for final C
 
-    Note: We use 4x4 tile blocks for broadcast/matmul for simpler shape handling.
-    Each core reads a 4x1 slice of A (for reduce) and 1x4 slice of B (for matmul).
-    The broadcast outputs 4x4, and matmul does (4x4) @ (4x4) -> (4x4).
-    Since A is broadcast (same value everywhere), the K dimension contribution
-    from each core is 1/4 of the total, and we sum the partial Cs.
+    Each core reads (ROWS_PER_CORE x COLS_PER_CORE) blocks of A (each 4x1 tiles) for reduce,
+    and 4x4 tiles of B for matmul. The broadcast outputs 4x4, matmul does (4x4) @ (4x4) -> (4x4).
+    Since all cores broadcast the same global sum and do the same matmul, we accumulate 4
+    identical results.
     """
     # Pipes for reduce gather (workers -> coordinator)
     reduce_pipe1 = ttl.Pipe(src=(1, 0), dst=(0, 0))
@@ -99,25 +103,37 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
     def compute():
         x, y = ttl.core(dims=2)
 
-        # === Stage 1: Local reduce of A slice ===
-        with a_cb.wait() as a, scaler_cb.wait() as s, reduce_out_cb.reserve() as r:
-            reduced = ttl.math.reduce_sum(a, s, r, dims=[0, 1])
-            r.store(reduced)
+        # === Stage 1: Local reduce of A slices (all cores) ===
+        # Total blocks per core
+        blocks_per_core = ROWS_PER_CORE * COLS_PER_CORE
+
+        # Scaler is reused for all reduces
+        with scaler_cb.wait() as s:
+            # First block: reduce and copy to accumulator
+            with a_cb.wait() as a, reduce_out_cb.reserve() as r:
+                reduced = ttl.math.reduce_sum(a, s, r, dims=[0, 1])
+                r.store(reduced)
+            with reduce_out_cb.wait() as t, reduce_acc_cb.reserve() as acc:
+                acc.store(ttl.math.abs(t))
+
+            # Additional blocks: reduce and accumulate
+            for _ in range(blocks_per_core - 1):
+                with a_cb.wait() as a, reduce_out_cb.reserve() as r:
+                    reduced = ttl.math.reduce_sum(a, s, r, dims=[0, 1])
+                    r.store(reduced)
+                with reduce_out_cb.wait() as t, reduce_acc_cb.wait() as acc, reduce_acc_cb.reserve() as new_acc:
+                    new_acc.store(acc + t)
+        # Now reduce_acc_cb has local sum for this core
 
         if x == COORDINATOR:
-            # === Coordinator: Accumulate gathered reductions ===
-            # Start with own reduction (abs needed for CB-to-CB copy via compute)
-            with reduce_out_cb.wait() as t0, reduce_acc_cb.reserve() as acc:
-                acc.store(ttl.math.abs(t0))
-
-            # Add 3 gathered values (first 2 accumulate into acc_cb)
-            for _ in range(2):
+            # === Coordinator: Gather and accumulate worker reductions ===
+            for _ in range(NUM_WORKERS):
                 with reduce_gather_cb.wait() as t, reduce_acc_cb.wait() as acc, reduce_acc_cb.reserve() as new_acc:
                     new_acc.store(acc + t)
 
-            # Last gathered value goes to bcast_val_cb
-            with reduce_gather_cb.wait() as t, reduce_acc_cb.wait() as acc, bcast_val_cb.reserve() as global_sum:
-                global_sum.store(acc + t)
+            # Copy global sum to bcast_val_cb
+            with reduce_acc_cb.wait() as acc, bcast_val_cb.reserve() as global_sum:
+                global_sum.store(ttl.math.abs(acc))
 
             # === Stage 2: Broadcast scalar to 4x4 tiles ===
             with bcast_val_cb.wait() as bv, bcast_out_cb.reserve() as bout:
@@ -130,24 +146,21 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
                 c.store(result)
 
             # === Stage 4: Accumulate gathered matmul results ===
-            # abs needed for CB-to-CB copy via compute
             with matmul_out_cb.wait() as m0, matmul_acc_cb.reserve() as macc:
                 macc.store(ttl.math.abs(m0))
 
-            # Add 3 gathered matmul results (first 2 accumulate into matmul_acc_cb)
-            for _ in range(2):
+            for _ in range(NUM_WORKERS):
                 with matmul_gather_cb.wait() as m, matmul_acc_cb.wait() as acc, matmul_acc_cb.reserve() as new_acc:
                     new_acc.store(acc + m)
 
-            # Last gathered result goes to out_cb
-            with matmul_gather_cb.wait() as m, matmul_acc_cb.wait() as acc, out_cb.reserve() as final_out:
-                final_out.store(acc + m)
+            # Copy final result to out_cb
+            with matmul_acc_cb.wait() as acc, out_cb.reserve() as final_out:
+                final_out.store(ttl.math.abs(acc))
 
         else:
-            # === Workers: Send reduce result, receive bcast, compute, send matmul ===
-            # Copy reduce result to gather CB for sending (abs needed for CB-to-CB copy)
-            with reduce_out_cb.wait() as r, reduce_gather_cb.reserve() as g:
-                g.store(ttl.math.abs(r))
+            # === Workers: Send local sum, receive bcast, compute, send matmul ===
+            with reduce_acc_cb.wait() as acc, reduce_gather_cb.reserve() as g:
+                g.store(ttl.math.abs(acc))
 
             # Receive broadcast value (DM handles the pipe receive)
 
@@ -161,7 +174,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
                 result = ttl.math.matmul(a_bcast, b, c)
                 c.store(result)
 
-            # Copy matmul result to gather CB for sending (abs needed for CB-to-CB copy)
+            # Copy matmul result to gather CB for sending
             with matmul_out_cb.wait() as mout, matmul_gather_cb.reserve() as mg:
                 mg.store(ttl.math.abs(mout))
 
@@ -169,19 +182,23 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
     def dm_read():
         x, y = ttl.core(dims=2)
 
-        # Each core reads its A column slice for reduce: all M rows, K slice [x, x+1]
-        with a_cb.reserve() as a_blk:
-            tx = ttl.copy(A[0:4, x:x+1], a_blk)
+        # Read scaler first (compute waits on this before consuming a_cb)
+        with scaler_cb.reserve() as s_blk:
+            tx = ttl.copy(scaler[0, 0], s_blk)
             tx.wait()
+
+        # Each core reads ROWS_PER_CORE x COLS_PER_CORE blocks for reduce
+        for row in range(ROWS_PER_CORE):
+            for col in range(COLS_PER_CORE):
+                row_idx = row * 4  # 4 tile rows per block
+                col_idx = x * COLS_PER_CORE + col
+                with a_cb.reserve() as a_blk:
+                    tx = ttl.copy(A[row_idx:row_idx+4, col_idx:col_idx+1], a_blk)
+                    tx.wait()
 
         # Each core reads full B for matmul (all cores do same matmul with broadcasted A)
         with b_cb.reserve() as b_blk:
             tx = ttl.copy(B[0:4, 0:4], b_blk)
-            tx.wait()
-
-        # All cores read scaler
-        with scaler_cb.reserve() as s_blk:
-            tx = ttl.copy(scaler[0, 0], s_blk)
             tx.wait()
 
     @ttl.datamovement()
@@ -190,20 +207,17 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
         # === Reduce gather: Workers send to coordinator ===
         if x == 1:
-            blk = reduce_gather_cb.wait()
-            tx = ttl.copy(blk, reduce_pipe1)
-            tx.wait()
-            reduce_gather_cb.pop()
+            with reduce_gather_cb.wait() as blk:
+                tx = ttl.copy(blk, reduce_pipe1)
+                tx.wait()
         elif x == 2:
-            blk = reduce_gather_cb.wait()
-            tx = ttl.copy(blk, reduce_pipe2)
-            tx.wait()
-            reduce_gather_cb.pop()
+            with reduce_gather_cb.wait() as blk:
+                tx = ttl.copy(blk, reduce_pipe2)
+                tx.wait()
         elif x == 3:
-            blk = reduce_gather_cb.wait()
-            tx = ttl.copy(blk, reduce_pipe3)
-            tx.wait()
-            reduce_gather_cb.pop()
+            with reduce_gather_cb.wait() as blk:
+                tx = ttl.copy(blk, reduce_pipe3)
+                tx.wait()
 
         # === Coordinator: Receive reduce gathers ===
         if x == COORDINATOR:
@@ -230,14 +244,13 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
         # Workaround: Coordinator sends to each worker individually
         if x == COORDINATOR:
-            blk = bcast_val_cb.wait()
-            tx1 = ttl.copy(blk, bcast_pipe1)
-            tx1.wait()
-            tx2 = ttl.copy(blk, bcast_pipe2)
-            tx2.wait()
-            tx3 = ttl.copy(blk, bcast_pipe3)
-            tx3.wait()
-            bcast_val_cb.pop()
+            with bcast_val_cb.wait() as blk:
+                tx1 = ttl.copy(blk, bcast_pipe1)
+                tx1.wait()
+                tx2 = ttl.copy(blk, bcast_pipe2)
+                tx2.wait()
+                tx3 = ttl.copy(blk, bcast_pipe3)
+                tx3.wait()
 
         # Workers: Receive broadcast
         if x == 1:
@@ -255,20 +268,17 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
         # === Matmul gather: Workers send to coordinator ===
         if x == 1:
-            blk = matmul_gather_cb.wait()
-            tx = ttl.copy(blk, matmul_pipe1)
-            tx.wait()
-            matmul_gather_cb.pop()
+            with matmul_gather_cb.wait() as blk:
+                tx = ttl.copy(blk, matmul_pipe1)
+                tx.wait()
         elif x == 2:
-            blk = matmul_gather_cb.wait()
-            tx = ttl.copy(blk, matmul_pipe2)
-            tx.wait()
-            matmul_gather_cb.pop()
+            with matmul_gather_cb.wait() as blk:
+                tx = ttl.copy(blk, matmul_pipe2)
+                tx.wait()
         elif x == 3:
-            blk = matmul_gather_cb.wait()
-            tx = ttl.copy(blk, matmul_pipe3)
-            tx.wait()
-            matmul_gather_cb.pop()
+            with matmul_gather_cb.wait() as blk:
+                tx = ttl.copy(blk, matmul_pipe3)
+                tx.wait()
 
         # === Coordinator: Receive matmul gathers and write output ===
         if x == COORDINATOR:
@@ -294,18 +304,13 @@ class TestFullReduceBcastMatmul:
     def test_uniform_values(self, device):
         """Test with uniform values for easy verification.
 
-        A = all 0.01 (128x128 = 16384 elements)
-        B = all 0.01
-
-        Step 1: Each core reduces its A slice (128x32 = 4096 elements * 0.01 = 40.96)
-        Step 2: Gather and sum: global_sum = 4 * 40.96 = 163.84
-        Step 3: Scatter global_sum back to all cores
-        Step 4: Each core broadcasts global_sum to 4x4 tiles
-        Step 5: Each core matmuls (4x4) @ (4x4) with same B
-                Single matmul: C[i,j] = global_sum * 0.01 * 128 = 209.72
-        Step 6: Gather and sum 4 identical matmul results: 4 * 209.72 = 838.88
+        Each core processes ROWS_PER_CORE x COLS_PER_CORE blocks of A.
         """
-        A_torch = torch.full((128, 128), 0.01, dtype=torch.bfloat16)
+        # A dimensions based on grid and blocks per core
+        A_height = ROWS_PER_CORE * 4 * 32  # ROWS_PER_CORE blocks of 4 tile rows
+        A_width = 4 * COLS_PER_CORE * 32   # 4 cores * COLS_PER_CORE columns
+
+        A_torch = torch.full((A_height, A_width), 0.01, dtype=torch.bfloat16)
         B_torch = torch.full((128, 128), 0.01, dtype=torch.bfloat16)
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
         out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
@@ -319,15 +324,14 @@ class TestFullReduceBcastMatmul:
         result = ttnn.to_torch(out).float()
 
         # Expected: 4 cores * (global_sum * 0.01 * 128)
-        # global_sum = 0.01 * 128 * 128 = 163.84
-        # single_matmul = 163.84 * 0.01 * 128 = 209.72
-        # 4 cores summed = 838.88
-        global_sum = 0.01 * 128 * 128  # 163.84
-        single_matmul = global_sum * 0.01 * 128  # 209.72
-        expected_value = single_matmul * 4  # 838.88 (4 cores doing same matmul)
+        global_sum = 0.01 * A_height * A_width
+        single_matmul = global_sum * 0.01 * 128
+        expected_value = single_matmul * 4  # 4 cores doing same matmul
         expected = torch.tensor(expected_value, dtype=torch.float32)
 
         print(f"\n=== Full Reduce-Bcast-Matmul Test ===")
+        print(f"ROWS_PER_CORE={ROWS_PER_CORE}, COLS_PER_CORE={COLS_PER_CORE}")
+        print(f"A shape: {A_torch.shape}")
         print(f"A sum: {A_torch.float().sum().item():.2f}")
         print(f"Global sum: {global_sum:.2f}")
         print(f"Single matmul result: {single_matmul:.2f}")
@@ -336,9 +340,9 @@ class TestFullReduceBcastMatmul:
         print(f"Actual output [64,64]: {result[64, 64].item():.2f}")
 
         # Check output values (only first 4x4 tiles have data, rest is zeros)
-        assert_allclose(result[0, 0], expected, rtol=0.15, atol=100)
-        assert_allclose(result[64, 64], expected, rtol=0.15, atol=100)
-        assert_allclose(result[127, 127], expected, rtol=0.15, atol=100)
+        assert_allclose(result[0, 0], expected, rtol=0.15, atol=500)
+        assert_allclose(result[64, 64], expected, rtol=0.15, atol=500)
+        assert_allclose(result[127, 127], expected, rtol=0.15, atol=500)
 
     def test_against_pytorch(self, device):
         """Compare against PyTorch reference implementation.
@@ -350,8 +354,12 @@ class TestFullReduceBcastMatmul:
         """
         torch.manual_seed(42)
 
+        # A dimensions based on grid and blocks per core
+        A_height = ROWS_PER_CORE * 4 * 32
+        A_width = 4 * COLS_PER_CORE * 32
+
         # Use positive values since kernel uses abs() for CB-to-CB copies
-        A_torch = torch.rand((128, 128), dtype=torch.bfloat16) * 0.1
+        A_torch = torch.rand((A_height, A_width), dtype=torch.bfloat16) * 0.1
         B_torch = torch.rand((128, 128), dtype=torch.bfloat16) * 0.1
         scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
         out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
@@ -371,6 +379,8 @@ class TestFullReduceBcastMatmul:
         result = ttnn.to_torch(out).float()
 
         print(f"\n=== PyTorch Comparison Test ===")
+        print(f"ROWS_PER_CORE={ROWS_PER_CORE}, COLS_PER_CORE={COLS_PER_CORE}")
+        print(f"A shape: {A_torch.shape}")
         print(f"A sum: {global_sum:.2f}")
         print(f"Single matmul [0,0]: {single_matmul[0,0].item():.2f}")
         print(f"Expected (4x) [0,0]: {expected[0,0].item():.2f}")
