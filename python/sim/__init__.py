@@ -12,9 +12,9 @@ from .constants import MAX_CBS, TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
 from .kernel import core, kernel
-from .pipe import core_in_pipe, if_pipe_dst, if_pipe_src
+from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
 from .program import Program
-from .typedefs import CoreIndex, Pipe, Shape
+from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape
 
 
 # Create ttl.math namespace object
@@ -37,9 +37,9 @@ class _TTLNamespace:
         from .copy import copy
         from .decorators import compute, datamovement
         from .kernel import core, grid_size, kernel
-        from .pipe import core_in_pipe, if_pipe_dst, if_pipe_src
+        from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
         from .program import Program
-        from .typedefs import Pipe, Shape, Size
+        from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape, Size
 
         self.kernel = kernel
         self.grid_size = grid_size
@@ -49,13 +49,16 @@ class _TTLNamespace:
         self.core = core
         self.copy = copy
         self.Pipe = Pipe
+        self.PipeNet = PipeNet
+        self.SrcPipeIdentity = SrcPipeIdentity
+        self.DstPipeIdentity = DstPipeIdentity
+        self.CoreCoord = CoreCoord
+        self.CoreRange = CoreRange
+        self.DstT = DstT
         self.Size = Size
         self.Shape = Shape
         self.TILE_SHAPE = TILE_SHAPE
         self.Program = Program
-        self.if_pipe_src = if_pipe_src
-        self.if_pipe_dst = if_pipe_dst
-        self.core_in_pipe = core_in_pipe
         self.math = _TTLMathNamespace()
 
 
@@ -64,9 +67,14 @@ ttl = _TTLNamespace()
 __all__ = [
     "CBAPI",
     "CBStats",
-    "CoreIndex",
+    "CoreCoord",
+    "CoreRange",
+    "DstT",
     "Shape",
     "Pipe",
+    "PipeNet",
+    "SrcPipeIdentity",
+    "DstPipeIdentity",
     "TILE_SHAPE",
     "MAX_CBS",
     "copy",
@@ -76,9 +84,6 @@ __all__ = [
     "compute",
     "datamovement",
     "kernel",
-    "if_pipe_src",
-    "if_pipe_dst",
-    "core_in_pipe",
     "ttl",
     "ttnn",
 ]

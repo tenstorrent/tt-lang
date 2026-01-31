@@ -629,11 +629,11 @@ class TestCore:
         test_kernel(a, b)
 
 
-class TestFlattenCoreIndex:
+class TestFlattenCoreCoord:
     """Test flatten_core_index() function."""
 
-    def test_flatten_already_linear_index(self):
-        """Test flattening an already linear index returns it unchanged."""
+    def test_flatten_already_linear_coord(self):
+        """Test flattening an already linear coordinate returns it unchanged."""
 
         @ttl.kernel(grid=(8, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -641,7 +641,7 @@ class TestFlattenCoreIndex:
 
             @ttl.compute()
             def compute_func():
-                # Linear index should be returned unchanged
+                # Linear coordinate should be returned unchanged
                 result = flatten_core_index(5)
                 assert result == 5
                 assert isinstance(result, int)
@@ -658,8 +658,8 @@ class TestFlattenCoreIndex:
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
 
-    def test_flatten_2d_core_index(self):
-        """Test flattening a 2D core index to linear."""
+    def test_flatten_2d_core_coord(self):
+        """Test flattening a 2D core coordinate to linear."""
 
         @ttl.kernel(grid=(4, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -694,8 +694,8 @@ class TestFlattenCoreIndex:
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
 
-    def test_flatten_3d_core_index(self):
-        """Test flattening a 3D core index to linear."""
+    def test_flatten_3d_core_coord(self):
+        """Test flattening a 3D core coordinate to linear."""
 
         @ttl.kernel(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -831,7 +831,7 @@ class TestFlattenCoreIndex:
 
             @ttl.compute()
             def compute_func():
-                # Test with linear index
+                # Test with linear coordinate
                 result1 = flatten_core_index(3)
                 assert isinstance(result1, int)
 
