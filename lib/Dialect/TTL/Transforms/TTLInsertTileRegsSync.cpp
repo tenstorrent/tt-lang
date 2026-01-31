@@ -52,7 +52,7 @@ namespace {
 
 /// Find an input CB from which tiles are read (via tensor.extract) in the loop
 /// body. Prefers a CB whose shape matches the output CB shape, or the largest
-/// input CB. This handles broadcast/reduction cases where inputs have different
+/// input CB. This handles broadcast cases where inputs have different
 /// shapes.
 ///
 /// Only considers CBs from AttachCBOp/CBWaitOp, not iter_args (accumulators).

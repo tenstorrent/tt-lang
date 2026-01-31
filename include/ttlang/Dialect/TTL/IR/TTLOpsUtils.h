@@ -61,9 +61,8 @@ inline SmallVector<Value> getCBValuesFromLoopAttr(func::FuncOp funcOp,
   }
   for (Attribute attr : cbArrayAttr) {
     auto intAttr = dyn_cast<IntegerAttr>(attr);
-    if (!intAttr) {
-      continue;
-    }
+    assert(intAttr);
+
     if (auto bindOp = findBindCBByIndex(funcOp, intAttr.getInt())) {
       cbs.push_back(bindOp.getResult());
     }
