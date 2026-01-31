@@ -90,8 +90,12 @@ inline scf::ForOp findOutermostLoop(Operation *op) {
 /// Find the outermost compute loop for a tile loop.
 /// Walks up from the given loop while parent loops have kTileLoopAttrName.
 /// Stops at unmarked loops (user loops) or when no more parents exist.
-/// Always returns a valid loop (the input itself if it has no marked parents).
+/// Returns the input loop if it has no marked parents.
+///
+/// Precondition: innerLoop must have kTileLoopAttrName.
 inline scf::ForOp findOutermostComputeLoop(scf::ForOp innerLoop) {
+  assert(innerLoop->hasAttr(kTileLoopAttrName) &&
+         "findOutermostComputeLoop requires a tile loop");
   scf::ForOp outermost = innerLoop;
   Operation *current = innerLoop.getOperation();
   while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
