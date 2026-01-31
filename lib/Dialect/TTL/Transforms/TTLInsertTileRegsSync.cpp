@@ -14,15 +14,18 @@
 // the ttl.tile_loop attribute. It performs the following transformations:
 //    - Inserts init_sfpu before the outermost loop (if not present)
 //    - Inserts tile_regs_acquire at the beginning of the innermost loop body
-//    - Inserts tile_regs_commit immediately before ttl.store
-//    - Inserts tile_regs_wait before ttl.store
+//    - Inserts tile_regs_commit before the terminator
+//    - Inserts tile_regs_wait after commit
+//    - Moves ttl.store ops after wait (stores pack each tile to the output CB)
 //    - Inserts tile_regs_release at the end of the loop body (before scf.yield)
 //
 // This establishes the correct DST lifecycle per tile:
-//   acquire -> [compute] -> commit -> wait -> [pack] -> release
+//   acquire -> [compute] -> commit -> wait -> [store/pack] -> release
 //
-// The pass requires that all tensor.insert ops in the loop body have a
-// corresponding ttl.store op. Missing stores result in an error.
+// For tensor.insert ops without explicit stores, the pass auto-inserts:
+//   - cb_reserve before the outermost loop
+//   - store inside the loop (after wait)
+//   - cb_push after the outermost loop
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,7 +50,7 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find an input CB from which tiles are read (via copy_tile) in the loop body.
+/// Find an input CB from which tiles are read (via tensor.extract) in the loop body.
 /// Prefers a CB whose shape matches the output CB shape, or the largest input
 /// CB. This handles broadcast/reduction cases where inputs have different
 /// shapes.
