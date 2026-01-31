@@ -171,9 +171,10 @@ class TestPipeMulticast:
         from python.sim.copy import copy
 
         _set_current_thread_type(ThreadType.DM)
+        grid = (100, 100)  # Set grid context for pipe operations
 
-        # Rectangular range covering 2 cores: (10,0) to (10,1)
-        pipe = Pipe((10, 0), ((10, 0), (10, 1)))
+        # Range covering 2 cores: (10,0) and (10,1)
+        pipe = Pipe((10, 0), (10, slice(0, 2)))
 
         tile = make_full_tile(42.0)
         src_cb = CircularBuffer(
@@ -506,16 +507,17 @@ class TestPipeCoreRangeTypes:
 
         assert tensors_equal(result, tile)
 
-    def test_pipe_rectangular_range(self, api: "CBAPI") -> None:
-        """Test pipe with rectangular range (2x2 = 4 receivers)."""
+    def test_pipe_core_range(self, api: "CBAPI") -> None:
+        """Test pipe with core range (2x2 = 4 receivers)."""
         from python.sim.block import _set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy
 
         _set_current_thread_type(ThreadType.DM)
+        grid = (100, 100)  # Set grid context for pipe operations
 
-        # Rectangular range: (20,20) to (21,21) = 2x2 = 4 cores
-        pipe = Pipe((20, 20), ((20, 20), (21, 21)))
+        # Core range: (20,20) to (21,21) = 2x2 = 4 cores
+        pipe = Pipe((20, 20), (slice(20, 22), slice(20, 22)))
 
         tile = make_full_tile(19.0)
         src_cb = CircularBuffer(
