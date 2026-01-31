@@ -1,6 +1,6 @@
-// RUN: ttlang-opt --convert-ttl-to-ttkernel --canonicalize --cse --split-input-file %s | FileCheck %s --check-prefix=TTKERNEL
-// Summary: Lower a loopback DRAM copy (read → wait → write → wait in a loop)
-// to TTKernel using global NOC barriers (TRID ops not yet available).
+// RUN: ttlang-opt --convert-ttl-to-ttkernel="use-trid-barriers=1" --canonicalize --cse --split-input-file %s | FileCheck %s --check-prefix=TTKERNEL
+// Summary: Lower a loopback DRAM copy (read -> wait -> write -> wait in a loop)
+// to TTKernel using TRID-specific NOC barriers.
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>,
@@ -13,14 +13,16 @@
 // TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL:   %[[ACC_R:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL:   %[[CB_W_PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
+// TTKERNEL:   ttkernel.noc_async_read_set_trid({{.*}}, {{.*}}) : (i32, i8) -> ()
 // TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[ACC_R]], %[[CB_W_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
+// TTKERNEL:   ttkernel.noc_async_read_barrier_with_trid({{.*}}, {{.*}}) : (i32, i8) -> ()
 // Write: runtime arg for dst tensor, accessor, read ptr for CB
 // TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL:   %[[ACC_W:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL:   %[[CB_R_PTR:.*]] = ttkernel.get_read_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
+// TTKERNEL:   ttkernel.noc_async_write_set_trid({{.*}}, {{.*}}) : (i32, i8) -> ()
 // TTKERNEL:   ttkernel.noc_async_write_tile({{.*}}, %[[ACC_W]], %[[CB_R_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
-// TTKERNEL:   ttkernel.noc_async_write_barrier() : () -> ()
+// TTKERNEL:   ttkernel.noc_async_write_barrier_with_trid({{.*}}, {{.*}}) : (i32, i8) -> ()
 
 module {
   func.func @loopback_dram_copy(%src: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>,

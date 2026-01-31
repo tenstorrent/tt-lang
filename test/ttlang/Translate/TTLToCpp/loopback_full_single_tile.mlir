@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
@@ -22,15 +22,17 @@
 // CHECK:     auto [[ARGS_READ:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK:     TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[RT_ARG_R]], [[ADDR]]);
 // CHECK:     int32_t [[CB_WRITE_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
+// CHECK:     noc_async_read_set_trid({{.*}}, {{.*}});
 // CHECK:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[CB_WRITE_PTR]]);
-// CHECK:     noc_async_read_barrier();
+// CHECK:     noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 // Write: CB → tensor (uses get_read_ptr for CB source)
 // CHECK:     int32_t [[RT_ARG_W:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
 // CHECK:     auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 1>();
 // CHECK:     TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[RT_ARG_W]], [[ADDR]]);
 // CHECK:     int32_t [[CB_READ_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
+// CHECK:     noc_async_write_set_trid({{.*}}, {{.*}});
 // CHECK:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[CB_READ_PTR]]);
-// CHECK:     noc_async_write_barrier();
+// CHECK:     noc_async_write_barrier_with_trid({{.*}}, {{.*}});
 // CHECK:   }
 // CHECK:   return;
 // CHECK-NEXT: }

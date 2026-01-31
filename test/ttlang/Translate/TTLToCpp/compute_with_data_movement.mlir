@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,canonicalize,cse,lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel{use-trid-barriers=1},canonicalize,cse,lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
@@ -28,6 +28,7 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
 // CHECK-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
+// CHECK-NEXT:   noc_async_read_set_trid({{.*}}, {{.*}});
 // CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
 // Tile offset computation: i * cols + j
@@ -44,7 +45,7 @@
 // CHECK-NEXT:       noc_async_read_tile([[TILE_OFF_A]], [[ACC_A]], [[CB_ADDR_A]]);
 // CHECK:     }
 // CHECK-NEXT:   }
-// CHECK-NEXT:   noc_async_read_barrier();
+// CHECK-NEXT:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 
 // Read tensor B into CB1
 // CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
@@ -54,6 +55,7 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
 // CHECK-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
+// CHECK-NEXT:   noc_async_read_set_trid({{.*}}, {{.*}});
 // CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
 // Tile offset computation: i * cols + j
@@ -70,7 +72,7 @@
 // CHECK-NEXT:       noc_async_read_tile([[TILE_OFF_B]], [[ACC_B]], [[CB_ADDR_B]]);
 // CHECK:     }
 // CHECK-NEXT:   }
-// CHECK-NEXT:   noc_async_read_barrier();
+// CHECK-NEXT:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 // CHECK-NEXT:   return;
 // CHECK-NEXT: }
 
@@ -213,6 +215,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // Cast CB ptr to size_t for index arithmetic
 // CHECK-NEXT:   ptrdiff_t [[CB2_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB2_PTR]];
 // CHECK-NEXT:   size_t [[CB2_PTR_IDX:v[0-9]+]] = (size_t) [[CB2_PTR_PTRDIFF]];
+// CHECK-NEXT:   noc_async_write_set_trid({{.*}}, {{.*}});
 // CHECK-NEXT:   for (size_t [[I_OUT:.*]] = [[ZERO]]; [[I_OUT]] < [[BOUND]]; [[I_OUT]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J_OUT:.*]] = [[ZERO]]; [[J_OUT]] < [[BOUND]]; [[J_OUT]] += [[ONE]]) {
 // Tile offset computation: i * cols + j
@@ -229,7 +232,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:       noc_async_write_tile([[TILE_OFF_OUT]], [[ACC_OUT]], [[CB_ADDR_OUT]]);
 // CHECK:     }
 // CHECK-NEXT:   }
-// CHECK-NEXT:   noc_async_write_barrier();
+// CHECK-NEXT:   noc_async_write_barrier_with_trid({{.*}}, {{.*}});
 // CHECK-NEXT:   return;
 // CHECK-NEXT: }
 

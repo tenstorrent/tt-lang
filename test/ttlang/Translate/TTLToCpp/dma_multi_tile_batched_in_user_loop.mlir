@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
@@ -49,6 +49,7 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:     ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR1]];
 // CHECK:     size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
+// CHECK:     noc_async_read_set_trid({{.*}}, {{.*}});
 // Tile loops: for tile_y in 0..2, for tile_x in 0..2
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[STEP]]) {
 // CHECK:       for (size_t [[TILE1_X:[a-z][0-9]+]] = [[LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[STEP]]) {
@@ -74,6 +75,7 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:     ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB_PTR2]];
 // CHECK:     size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
+// CHECK:     noc_async_read_set_trid({{.*}}, {{.*}});
 // Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[STEP]]) {
 // CHECK:       for (size_t [[TILE2_X:[a-z][0-9]+]] = [[LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[STEP]]) {
@@ -91,8 +93,9 @@
 // CHECK:       }
 // CHECK:     }
 
-// Consecutive barriers deduplicated to single barrier.
-// CHECK:     noc_async_read_barrier();
+// Each wait lowers to a TRID barrier (no global barrier).
+// CHECK:     noc_async_read_barrier_with_trid({{.*}}, {{.*}});
+// CHECK:     noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 // CHECK:   }
 // CHECK:   return;
 // CHECK-NEXT: }
