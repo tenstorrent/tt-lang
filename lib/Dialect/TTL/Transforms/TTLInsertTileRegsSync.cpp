@@ -196,16 +196,15 @@ struct TTLInsertTileRegsSyncPass
         Value outputCB = outputCBs.empty() ? Value() : outputCBs.front();
         Value extractedInputCB = findExtractedInputCB(forOp, outputCB);
 
-        // Error if no input CB is extracted in the loop body.
-        // This indicates the loop doesn't read from any input, which is
-        // invalid for init_sfpu configuration.
+        // Error if loop attributes declare input CBs but nothing extracts from
+        // them - init_sfpu needs an extracted CB for hardware configuration.
         if (!extractedInputCB) {
           SmallVector<Value> inputCBs =
               getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
           if (!inputCBs.empty()) {
             forOp.emitOpError()
-                << "init_sfpu: no input CB is extracted in the loop body; "
-                   "cannot determine correct CB for hardware configuration";
+                << "init_sfpu: input CBs declared but none extracted in loop "
+                   "body; ensure compute body uses its inputs";
             return WalkResult::interrupt();
           }
         }
@@ -399,6 +398,8 @@ struct TTLInsertTileRegsSyncPass
         }
       }
 
+      // Skip: post-order walk processes innermost first; outer loops already
+      // had their markers removed above.
       return WalkResult::skip();
     });
 

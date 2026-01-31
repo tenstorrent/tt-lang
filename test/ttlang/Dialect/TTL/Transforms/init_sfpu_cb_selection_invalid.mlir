@@ -26,7 +26,7 @@ func.func @no_input_cb_extracted(%arg0: tensor<2x2x!ttcore.tile<32x32, bf16>>)
 
   // Compute where the body doesn't actually use the input - it just yields a constant tile.
   // This is a pathological case where the loop has an input but doesn't extract from it.
-  // expected-error @below {{init_sfpu: no input CB is extracted in the loop body}}
+  // expected-error @below {{init_sfpu: input CBs declared but none extracted in loop body}}
   %result = ttl.compute
       ins(%a_attached : tensor<2x2x!ttcore.tile<32x32, bf16>>)
       outs(%out_attached : tensor<2x2x!ttcore.tile<32x32, bf16>>)
