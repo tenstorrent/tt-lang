@@ -787,6 +787,234 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Transpose Lowering Pattern
+//===----------------------------------------------------------------------===//
+
+/// Pattern for transpose op: TTL tensor op -> ttl.compute with tile_transpose.
+/// Transpose reads from input CB, writes to output DST.
+/// For multi-tile blocks, both tile positions are swapped AND each tile
+/// is transposed. Input [M, N] -> Output [N, M].
+struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
+  using OpRewritePattern<TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto inputType = getTensorType(op.getInput());
+    auto outputType = getTensorType(op.getResult());
+    if (!inputType || !outputType) {
+      return failure();
+    }
+
+    Value inputCb = getAttachedCB(op.getInput());
+    Value outCb = getAttachedCB(op.getOutput());
+    if (!inputCb) {
+      return op.emitError(
+          "transpose input must be attached to a circular buffer");
+    }
+    if (!outCb) {
+      return op.emitError(
+          "transpose output must be attached to a circular buffer");
+    }
+
+    if (inputType.getRank() != 2 || outputType.getRank() != 2) {
+      return op.emitError("transpose requires rank-2 tensors");
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    // For transpose: input [M, N] -> output [N, M].
+    // Iteration is over output shape [N, M].
+    // Input map: (i, j) -> (j, i) to read from transposed position.
+    // Output map: (i, j) -> (i, j) identity.
+    auto d0 = getAffineDimExpr(0, ctx);
+    auto d1 = getAffineDimExpr(1, ctx);
+    AffineMap inputMap = AffineMap::get(2, 0, {d1, d0}, ctx);
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(2, ctx);
+
+    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
+                                   AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap)};
+
+    SmallVector<Attribute> iterTypes(outputType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{outputType}, ValueRange{op.getInput(), op.getOutput()},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = outputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // input tile
+    body->addArgument(tileType, loc); // output tile (for CB tracking)
+    body->addArgument(tileType, loc); // output tile (result)
+
+    rewriter.setInsertionPointToStart(body);
+    Value result = rewriter.create<TileTransposeOp>(
+        loc, tileType, body->getArgument(0), body->getArgument(1));
+    rewriter.create<YieldOp>(loc, ValueRange{result});
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Power Lowering Pattern
+//===----------------------------------------------------------------------===//
+
+/// Pattern for power op: TTL tensor op -> ttl.compute with tile_power.
+/// Power operates in-place in DST with an integer exponent.
+struct LowerPowerToCompute : OpRewritePattern<PowerOp> {
+  using OpRewritePattern<PowerOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(PowerOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = getTensorType(op.getResult());
+    if (!type) {
+      return failure();
+    }
+
+    Value inputCb = getAttachedCB(op.getInput());
+    if (!inputCb) {
+      return op.emitError("power input must be attached to a circular buffer");
+    }
+
+    Value outCb = findOutputCB(op);
+    if (!outCb) {
+      auto unusedCBs = findUnusedBindCBs(op);
+      if (unusedCBs.empty()) {
+        return op.emitError("no unused bind_cb found for output");
+      }
+      outCb = unusedCBs.front().getResult();
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap)};
+
+    SmallVector<Attribute> iterTypes(type.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    Value init = buildInitTensor(rewriter, loc, type, op.getInput());
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{type}, ValueRange{op.getInput()},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = type.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // input tile
+    body->addArgument(tileType, loc); // output tile
+
+    rewriter.setInsertionPointToStart(body);
+    Value result = rewriter.create<TilePowerOp>(loc, tileType,
+                                                 body->getArgument(0),
+                                                 op.getExponentAttr());
+    rewriter.create<YieldOp>(loc, ValueRange{result});
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Where Lowering Pattern
+//===----------------------------------------------------------------------===//
+
+/// Pattern for where op: TTL tensor op -> ttl.compute with tile_where.
+/// Where is a ternary DST-based op: cond ? true : false.
+struct LowerWhereToCompute : OpRewritePattern<WhereOp> {
+  using OpRewritePattern<WhereOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhereOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = getTensorType(op.getResult());
+    if (!type) {
+      return failure();
+    }
+
+    Value condCb = getAttachedCB(op.getCondition());
+    Value trueCb = getAttachedCB(op.getTrueValue());
+    Value falseCb = getAttachedCB(op.getFalseValue());
+    if (!condCb) {
+      return op.emitError(
+          "where condition must be attached to a circular buffer");
+    }
+    if (!trueCb) {
+      return op.emitError(
+          "where true_value must be attached to a circular buffer");
+    }
+    if (!falseCb) {
+      return op.emitError(
+          "where false_value must be attached to a circular buffer");
+    }
+
+    Value outCb = findOutputCB(op);
+    if (!outCb) {
+      auto unusedCBs = findUnusedBindCBs(op);
+      if (unusedCBs.empty()) {
+        return op.emitError("no unused bind_cb found for output");
+      }
+      outCb = unusedCBs.front().getResult();
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap)};
+
+    SmallVector<Attribute> iterTypes(type.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    Value init = buildInitTensor(rewriter, loc, type, op.getCondition());
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{type},
+        ValueRange{op.getCondition(), op.getTrueValue(), op.getFalseValue()},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = type.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // condition tile
+    body->addArgument(tileType, loc); // true tile
+    body->addArgument(tileType, loc); // false tile
+    body->addArgument(tileType, loc); // output tile
+
+    rewriter.setInsertionPointToStart(body);
+    Value result = rewriter.create<TileWhereOp>(loc, tileType,
+                                                 body->getArgument(0),
+                                                 body->getArgument(1),
+                                                 body->getArgument(2));
+    rewriter.create<YieldOp>(loc, ValueRange{result});
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Pattern Type Aliases - Generated from TTLElementwiseOps.def (tile-based)
 //===----------------------------------------------------------------------===//
 
@@ -845,6 +1073,9 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<LowerBcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
+  patterns.add<LowerTransposeToCompute>(ctx);
+  patterns.add<LowerPowerToCompute>(ctx);
+  patterns.add<LowerWhereToCompute>(ctx);
 }
 
 } // namespace mlir::tt::ttl
