@@ -519,6 +519,70 @@ def reduce_max(
     return ttl.reduce(output.type, input, scaler, output, reduce_type_attr, reduce_dim_attr)
 
 
+@syntax("transpose")
+def transpose(input: TensorBlock, output: TensorBlock) -> TensorBlock:
+    """
+    Transpose a 2D tile tensor (swap width and height).
+
+    Performs width-height transpose on input tiles. Each 32x32 tile has its
+    rows and columns swapped.
+
+    Args:
+        input: Input tensor (CB-attached)
+        output: Output tensor (CB-attached)
+
+    Returns:
+        Transposed tensor
+    """
+    return ttl.transpose(output.type, input, output)
+
+
+@syntax("power")
+def power(input: TensorBlock, exponent: int) -> TensorBlock:
+    """
+    Raise tensor elements to an integer power.
+
+    Computes element-wise power: output = input ^ exponent.
+
+    Args:
+        input: Input tensor (CB-attached)
+        exponent: Integer exponent
+
+    Returns:
+        Result tensor with each element raised to the power
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    exp_attr = IntegerAttr.get(i32_type, exponent)
+    return ttl.power(input.type, input, exp_attr)
+
+
+@syntax("where")
+def where(
+    condition: TensorBlock, true_value: TensorBlock, false_value: TensorBlock
+) -> TensorBlock:
+    """
+    Element-wise conditional selection.
+
+    Performs element-wise conditional selection:
+    output = condition ? true_value : false_value
+
+    For each element, if condition is non-zero, selects from true_value,
+    otherwise selects from false_value.
+
+    Args:
+        condition: Condition tensor (CB-attached)
+        true_value: Values to select when condition is true (CB-attached)
+        false_value: Values to select when condition is false (CB-attached)
+
+    Returns:
+        Result tensor with selected values
+    """
+    return ttl.where(true_value.type, condition, true_value, false_value)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -529,5 +593,8 @@ __all__ = [
     "matmul",
     "reduce_sum",
     "reduce_max",
+    "transpose",
+    "power",
+    "where",
     *_generated_all,
 ]

@@ -948,6 +948,173 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Transpose Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_transpose to TTKernel transpose_wh_init + transpose_wh_tile.
+/// Reads from input CB, writes to DST.
+/// For multi-tile transpose, computes transposed input CB index:
+/// Output position (i, j) reads from input position (j, i).
+struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
+  using OpConversionPattern<TileTransposeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTransposeOp op, TileTransposeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+    auto inCB =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
+    }
+
+    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
+                                    rewriter, loc);
+    if (failed(outCB)) {
+      funcOp->walk([&](InitSFPUOp initOp) {
+        outCB = utils::convertTTLCBToTTKernel(initOp.getOcb(), rewriter, loc,
+                                              typeConverter);
+        return WalkResult::interrupt();
+      });
+      if (failed(outCB)) {
+        return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
+      }
+    }
+
+    // Get DST index from attribute (assigned by TTLAssignDST pass).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdxVal = dstIdxAttr.getInt();
+    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+
+    // Get input CB shape to compute transposed index.
+    auto inShape = getCBTileGridShape(op.getInput(), funcOp);
+    if (!inShape) {
+      return rewriter.notifyMatchFailure(op, "cannot determine input CB shape");
+    }
+    int64_t inCols = inShape->second; // Input is [M, N], so N columns
+
+    // Compute transposed input CB index.
+    // Loop iterates over output shape [N, M]. For output position (i, j),
+    // we read from input position (j, i).
+    // Input CB index = j * N + i (linearized for input shape [M, N]).
+    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value inCBIdx = zero;
+
+    if (loops.size() >= 2) {
+      // loops[0] = j (innermost, cols), loops[1] = i (outer, rows)
+      Value colIdx = loops[0].getInductionVar(); // j
+      Value rowIdx = loops[1].getInductionVar(); // i
+      // inCBIdx = colIdx * inCols + rowIdx (transposed indexing)
+      Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+      Value colMulN = rewriter.create<arith::MulIOp>(loc, colIdx, inColsVal);
+      inCBIdx = rewriter.create<arith::AddIOp>(loc, colMulN, rowIdx);
+    } else if (loops.size() == 1) {
+      inCBIdx = loops[0].getInductionVar();
+    }
+
+    rewriter.create<ttk::TransposeInitOp>(loc, *inCB, *outCB);
+    rewriter.create<ttk::TransposeTileOp>(loc, *inCB, inCBIdx, dstIdx);
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Power Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_power to TTKernel power_tile_init + power_tile.
+/// Operates in-place in DST with an integer exponent.
+struct TTLTilePowerToTTKernel : OpConversionPattern<TilePowerOp> {
+  using OpConversionPattern<TilePowerOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TilePowerOp op, TilePowerOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdx = dstIdxAttr.getInt();
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+
+    // Get the exponent from the op's attribute.
+    Value exponent = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI32IntegerAttr(op.getExponent()));
+
+    rewriter.create<ttk::PowerTileInitOp>(loc);
+    rewriter.create<ttk::PowUnaryTileOp>(loc, dstIdxVal, exponent);
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Where Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_where to TTKernel where_tile_init + where_tile.
+/// Ternary DST-based op: cond ? true : false.
+struct TTLTileWhereToTTKernel : OpConversionPattern<TileWhereOp> {
+  using OpConversionPattern<TileWhereOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileWhereOp op, TileWhereOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t odstIdx = dstIdxAttr.getInt();
+
+    auto condIdxOpt = getDstIndexFromValue(op.getCondition());
+    auto trueIdxOpt = getDstIndexFromValue(op.getTrueValue());
+    auto falseIdxOpt = getDstIndexFromValue(op.getFalseValue());
+
+    if (!condIdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from condition operand");
+    }
+    if (!trueIdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from true_value operand");
+    }
+    if (!falseIdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from false_value operand");
+    }
+
+    Value condIdx = rewriter.create<arith::ConstantIndexOp>(loc, *condIdxOpt);
+    Value trueIdx = rewriter.create<arith::ConstantIndexOp>(loc, *trueIdxOpt);
+    Value falseIdx = rewriter.create<arith::ConstantIndexOp>(loc, *falseIdxOpt);
+    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
+
+    rewriter.create<ttk::WhereTileInitOp>(loc);
+    rewriter.create<ttk::WhereTileOp>(loc, condIdx, trueIdx, falseIdx, odst);
+
+    rewriter.replaceOp(op, adaptor.getCondition());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
 
@@ -1008,6 +1175,11 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileMatmulToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileTransposeToTTKernel>(*typeConverter, ctx);
+
+  // DST-based ops.
+  patterns.add<TTLTilePowerToTTKernel>(ctx);
+  patterns.add<TTLTileWhereToTTKernel>(ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)

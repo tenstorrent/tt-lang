@@ -746,6 +746,36 @@ def TTL_TileMatmulOp : TTL_TileOp<"tile_matmul", [TTL_CBInputTileOpTrait]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Transpose Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_TransposeOp : TTL_Op<"transpose", []> {
+  let summary = "Transpose a 2D tile tensor (swap width and height)";
+  let description = [{
+    Performs width-height transpose on input tiles. Reads from input CB,
+    writes result to output CB. Both operands must be CB-attached tensors.
+
+    This operation transposes each 32x32 tile, swapping rows and columns.
+    The input tensor shape [M, N] becomes output shape [N, M] in tiles.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level width-height transpose operation";
+  let description = [{
+    Transposes a single 32x32 tile, swapping rows and columns.
+    Maps to ttkernel.transpose_wh_init + ttkernel.transpose_wh_tile.
+    Reads directly from circular buffer (not DST), writes to DST.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
 // Reduce Operation
 //===----------------------------------------------------------------------===//
 
@@ -797,6 +827,71 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", [TTL_CBInputTileOpTrait]> {
   let assemblyFormat = [{
     $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
     `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Power Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_PowerOp : TTL_Op<"power", []> {
+  let summary = "Raise tensor elements to an integer power";
+  let description = [{
+    Computes element-wise power: output = input ^ exponent.
+    Both input and output must be CB-attached tensors.
+    The exponent is a compile-time constant integer.
+  }];
+  let arguments = (ins AnyType:$input, I32Attr:$exponent);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $exponent attr-dict `:` type($input) `->` type($result)";
+}
+
+def TTL_TilePowerOp : TTL_TileOp<"tile_power", []> {
+  let summary = "Tile-level power operation";
+  let description = [{
+    Raises each element of a tile to an integer power.
+    Maps to ttkernel.power_tile_init + ttkernel.power_tile.
+    Operates in-place in DST: DST[dst_idx] = DST[dst_idx] ^ exponent.
+  }];
+  let arguments = (ins AnyType:$input, I32Attr:$exponent);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $exponent attr-dict `:` type($input) `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Where (Conditional Select) Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_WhereOp : TTL_Op<"where", []> {
+  let summary = "Element-wise conditional selection";
+  let description = [{
+    Performs element-wise conditional selection:
+    output = condition ? true_value : false_value
+
+    All three input tensors and output must be CB-attached tensors with the
+    same shape. For each element, if condition is non-zero, selects from
+    true_value, otherwise selects from false_value.
+  }];
+  let arguments = (ins AnyType:$condition, AnyType:$true_value, AnyType:$false_value);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $condition `,` $true_value `,` $false_value attr-dict `:`
+    `(` type($condition) `,` type($true_value) `,` type($false_value) `)` `->` type($result)
+  }];
+}
+
+def TTL_TileWhereOp : TTL_TileOp<"tile_where", []> {
+  let summary = "Tile-level conditional selection operation";
+  let description = [{
+    Performs element-wise conditional selection on tiles.
+    Maps to ttkernel.where_tile_init + ttkernel.where_tile.
+    All operands read from DST: DST[odst] = DST[cond] ? DST[true] : DST[false].
+  }];
+  let arguments = (ins AnyType:$condition, AnyType:$true_value, AnyType:$false_value);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $condition `,` $true_value `,` $false_value attr-dict `:`
+    `(` type($condition) `,` type($true_value) `,` type($false_value) `)` `->` type($result)
   }];
 }
 
