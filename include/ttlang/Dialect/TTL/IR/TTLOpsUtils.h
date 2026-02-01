@@ -9,10 +9,87 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/SetVector.h"
 #include <optional>
 
 namespace mlir::tt::ttl {
+
+//===----------------------------------------------------------------------===//
+// Circular Buffer Utilities
+//===----------------------------------------------------------------------===//
+
+/// Find a bind_cb op with the given cb_index in the function.
+/// Returns nullptr if no matching bind_cb is found.
+inline BindCBOp findBindCBByIndex(func::FuncOp funcOp, int64_t cbIndex) {
+  BindCBOp result = nullptr;
+  funcOp.walk([&](BindCBOp bindOp) {
+    if (bindOp.getCbIndex() == cbIndex) {
+      result = bindOp;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return result;
+}
+
+/// Get CB indices from a loop's array attribute.
+/// Returns empty vector if attribute is not present.
+inline SmallVector<int64_t> getCBIndicesFromLoopAttr(scf::ForOp forOp,
+                                                     llvm::StringRef attrName) {
+  SmallVector<int64_t> indices;
+  if (auto cbArrayAttr = forOp->getAttrOfType<ArrayAttr>(attrName)) {
+    for (Attribute attr : cbArrayAttr) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+        indices.push_back(intAttr.getInt());
+      }
+    }
+  }
+  return indices;
+}
+
+//===----------------------------------------------------------------------===//
+// Loop Utilities
+//===----------------------------------------------------------------------===//
+
+/// Find the outermost scf.for loop containing this operation.
+/// Returns nullptr if the operation is not inside any scf.for loop.
+inline scf::ForOp findOutermostLoop(Operation *op) {
+  scf::ForOp outermost = nullptr;
+  Operation *current = op;
+  while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
+    outermost = parentFor;
+    current = parentFor.getOperation();
+  }
+  return outermost;
+}
+
+/// Find the outermost compute loop for a tile loop.
+/// Walks up from the given loop while parent loops have kTileLoopAttrName.
+/// Stops at unmarked loops (user loops) or when no more parents exist.
+/// Returns the input loop if it has no marked parents.
+///
+/// Precondition: innerLoop must have kTileLoopAttrName.
+inline scf::ForOp findOutermostComputeLoop(scf::ForOp innerLoop) {
+  assert(innerLoop->hasAttr(kTileLoopAttrName) &&
+         "findOutermostComputeLoop requires a tile loop");
+  scf::ForOp outermost = innerLoop;
+  Operation *current = innerLoop.getOperation();
+  while (auto parentFor = current->getParentOfType<scf::ForOp>()) {
+    // Stop if we hit a loop without tile_loop marker - it's a user loop.
+    if (!parentFor->hasAttr(kTileLoopAttrName)) {
+      break;
+    }
+    outermost = parentFor;
+    current = parentFor.getOperation();
+  }
+  return outermost;
+}
+
+//===----------------------------------------------------------------------===//
+// Value Tracing Utilities
+//===----------------------------------------------------------------------===//
 
 /// Trace through unrealized conversion casts to find the original value.
 /// This is useful during dialect conversion when values are wrapped in
