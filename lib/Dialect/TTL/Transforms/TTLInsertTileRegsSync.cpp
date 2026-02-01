@@ -50,59 +50,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find an input CB from which tiles are read (via tensor.extract) in the loop
-/// body. Prefers a CB whose shape matches the output CB shape, or the largest
-/// input CB. This handles broadcast cases where inputs have different
-/// shapes.
-///
-/// Only considers CBs from AttachCBOp/CBWaitOp, not iter_args (accumulators).
-/// Returns nullptr if no CB is found.
-static Value findInputCBWithTileReads(scf::ForOp forOp, Value outputCB) {
-  // Get output CB shape for matching.
-  ArrayRef<int64_t> outputShape;
-  if (outputCB) {
-    if (auto cbType = dyn_cast<CircularBufferType>(outputCB.getType())) {
-      outputShape = cbType.getShape();
-    }
-  }
-
-  Value matchingShapeCB;
-  Value largestCB;
-  int64_t largestSize = 0;
-
-  forOp.walk([&](tensor::ExtractOp extractOp) {
-    Value tensor = extractOp.getTensor();
-    if (Value cb = getAttachedCB(tensor)) {
-      auto cbType = dyn_cast<CircularBufferType>(cb.getType());
-      if (!cbType) {
-        return WalkResult::advance();
-      }
-
-      // Track the largest CB (by total number of elements).
-      ArrayRef<int64_t> shape = cbType.getShape();
-      int64_t size = 1;
-      for (int64_t dim : shape) {
-        size *= dim;
-      }
-      if (size > largestSize) {
-        largestSize = size;
-        largestCB = cb;
-      }
-
-      // Check if this CB's shape matches the output shape.
-      if (!matchingShapeCB && !outputShape.empty()) {
-        if (shape == outputShape) {
-          matchingShapeCB = cb;
-        }
-      }
-    }
-    return WalkResult::advance();
-  });
-
-  // Prefer: 1) CB matching output shape, 2) largest CB.
-  return matchingShapeCB ? matchingShapeCB : largestCB;
-}
-
 /// Find an unconsumed cb_reserve for the given CB that dominates the target.
 /// A reserve is "unconsumed" if there is no cb_push for the same CB that:
 /// - properly dominates the target (comes before on all paths), AND
@@ -186,7 +133,7 @@ findUnmatchedDominatingAcquire(func::FuncOp funcOp, Operation *target,
 }
 
 /// Get CB values from a loop's array attribute by looking up bind_cb ops.
-/// Returns empty vector if attribute is not present or CBs are not found (e.g., 
+/// Returns empty vector if attribute is not present or CBs are not found (e.g.,
 /// when the loop is a user loop, not a tile loop generated from a compute op)
 static SmallVector<Value> getCBValuesFromLoopAttr(func::FuncOp funcOp,
                                                   scf::ForOp forOp,
@@ -206,7 +153,6 @@ static SmallVector<Value> getCBValuesFromLoopAttr(func::FuncOp funcOp,
   }
   return cbs;
 }
-
 
 struct TTLInsertTileRegsSyncPass
     : public impl::TTLInsertTileRegsSyncBase<TTLInsertTileRegsSyncPass> {
@@ -252,34 +198,30 @@ struct TTLInsertTileRegsSyncPass
         return WalkResult::interrupt();
       }
 
-      // Step 2: init_sfpu - configure hardware using an input CB from which
-      // tiles are read (handles broadcast/reduction where inputs have different
-      // shapes).
+      // Step 2: init_sfpu - configure unpack/pack hardware for tile operations.
+      //
+      // init_sfpu configures hardware based on the CB's tile data format
+      // (element type, num_faces, face_r_dim, tile_size). The CB's shape
+      // (number of tiles) doesn't matter - only the tile format does.
+      // init_sfpu forwards icb and ocb to unary_op_init_common,
+      // which performs the low-level LLK configuration:
+      //    tt_metal/include/compute_kernel_api/eltwise_unary/eltwise_unary.h
+      //
+      // We use the first input CB following tt-metal convention (LHS for
+      // binary ops). When CBs have different formats, copy_tile_init is used
+      // to reconfigure the hardware dynamically. For broadcast scenarios where
+      // inputs have different tile geometries, the hardware is reconfigured
+      // dynamically (with unary_bcast_init), so the init CB just needs to
+      // provide a valid initial state.
       if (!existingInitSfpu) {
+        SmallVector<Value> inputCBs =
+            getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
         SmallVector<Value> outputCBs =
             getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
-        // Find an input CB from which tiles are read in the loop body.
-        // Prefer one whose shape matches the output CB shape.
-        Value outputCB = outputCBs.empty() ? Value() : outputCBs.front();
-        Value inputCB = findInputCBWithTileReads(forOp, outputCB);
-
-        // Error if loop attributes declare input CBs but no tiles are read from
-        // them - init_sfpu needs an input CB for hardware configuration.
-        if (!inputCB) {
-          SmallVector<Value> inputCBs =
-              getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopInputCBsAttrName);
-          if (!inputCBs.empty()) {
-            forOp.emitOpError()
-                << "init_sfpu: input CBs declared but no tiles read in loop "
-                   "body; ensure compute body uses its inputs";
-            return WalkResult::interrupt();
-          }
-        }
-
-        if (inputCB && !outputCBs.empty()) {
+        if (!inputCBs.empty() && !outputCBs.empty()) {
           builder.setInsertionPoint(outermostLoop);
-          builder.create<InitSFPUOp>(loc, inputCB, outputCBs.front());
+          builder.create<InitSFPUOp>(loc, inputCBs.front(), outputCBs.front());
         }
       }
 
