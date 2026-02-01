@@ -441,6 +441,15 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
         "requires at least one output for SFPU packer configuration");
   }
 
+  // Verify all input block arguments are used in the body.
+  // Unused inputs indicate a malformed compute op - if an input isn't needed,
+  // it shouldn't be passed. This also ensures init_sfpu can use any input CB.
+  auto inputArgs = bodyBlock.getArguments().take_front(numInputs);
+  if (!llvm::all_of(inputArgs,
+                    [](BlockArgument arg) { return !arg.use_empty(); })) {
+    return emitOpError("all input block arguments must be used in the body");
+  }
+
   // Verify indexing maps compatibility.
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;

@@ -219,6 +219,8 @@ struct TTLInsertTileRegsSyncPass
         SmallVector<Value> outputCBs =
             getCBValuesFromLoopAttr(funcOp, forOp, kTileLoopOutputCBsAttrName);
 
+        // This check is not really needed, ttl.compute does not allow zero
+        // inputs/outputs
         if (!inputCBs.empty() && !outputCBs.empty()) {
           builder.setInsertionPoint(outermostLoop);
           builder.create<InitSFPUOp>(loc, inputCBs.front(), outputCBs.front());
