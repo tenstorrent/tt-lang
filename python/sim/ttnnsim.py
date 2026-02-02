@@ -860,16 +860,22 @@ if TTNN_AVAILABLE:
         if _op_name in globals() or _op_name in _EXCLUDE_FROM_WRAPPING:
             continue
 
+        _op = getattr(ttnn, _op_name)
+        
+        # Skip non-callable attributes (classes, constants, etc.)
+        if not callable(_op):
+            continue
+            
         try:
-            _op = getattr(ttnn, _op_name)
             _golden_fn = ttnn.get_golden_function(_op)
-
             # Create wrapper and add to module globals
             globals()[_op_name] = _create_golden_wrapper(_op_name, _golden_fn)
-
-        except Exception:
-            # Operation doesn't have a golden function or isn't callable, skip it
+        except (RuntimeError, AttributeError):
+            # RuntimeError: Operation doesn't have a golden function
+            # AttributeError: Object doesn't have golden_function attribute (e.g., enums, classes)
+            # Both are expected for many ttnn attributes - skip them
             continue
+        # Let other exceptions propagate - they indicate real bugs
 
     # Clean up temporary variables
     del _operations_to_wrap, _op_name, _op, _golden_fn
