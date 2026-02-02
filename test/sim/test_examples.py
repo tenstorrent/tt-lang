@@ -93,7 +93,7 @@ def assert_success_output(code: int, out: str) -> None:
         "eltwise_pipe_core3.py",  # Now supported: reserve() DM blocks can do multiple copies
         "singlecore_matmul.py",
         "multicore_matmul.py",
-        # "tutorial/ttnn_base.py", TODO: needs simulation for ttnn.add
+        "tutorial/ttnn_base.py",
         "tutorial/single_core_single_tile_block.py",
         "tutorial/single_core_multitile_block.py",
         "tutorial/multicore.py",
