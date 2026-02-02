@@ -20,6 +20,7 @@ import pytest
 # Check if ttnn is available
 try:
     import ttnn
+
     TTNN_AVAILABLE = True
 except ImportError:
     TTNN_AVAILABLE = False
@@ -27,7 +28,7 @@ except ImportError:
 # Marker for tests that require ttnn
 requires_ttnn = pytest.mark.skipif(
     not TTNN_AVAILABLE,
-    reason="ttnn not available (required for tests using ttnn golden functions)"
+    reason="ttnn not available (required for tests using ttnn golden functions)",
 )
 
 # Paths
@@ -121,6 +122,7 @@ def test_metal_example_cli(example_path: str) -> None:
     assert_success_output(code, out)
 
 
+@requires_ttnn
 def test_eltwise_add2_fails_with_expected_error() -> None:
     """Test that eltwise_add_error.py fails with the expected copy validation error.
 
@@ -155,6 +157,7 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
         )
 
 
+@requires_ttnn
 def test_copy_lock_error_fails_with_expected_error() -> None:
     """Test that copy_lock_error.py fails with the expected copy locking error.
 
@@ -186,6 +189,7 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
         )
 
 
+@requires_ttnn
 def test_demo_one_deadlock_detection() -> None:
     """Test that tutorial/multicore_grid_auto.py with incorrect wait() instead of reserve() triggers deadlock detection.
 
