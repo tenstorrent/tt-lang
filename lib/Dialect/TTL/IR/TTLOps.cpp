@@ -190,6 +190,15 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << rankedTensorTy;
   }
 
+  // Non-pipe transfers require direction-typed handles so lowering can select
+  // the appropriate barrier (read vs write).
+  auto handleType = mlir::cast<TransferHandleType>(getXf().getType());
+  if (!handleType.getKind()) {
+    return emitOpError() << "expects transfer handle to be direction-typed "
+                            "(!ttl.transfer_handle<read> or "
+                            "!ttl.transfer_handle<write>)";
+  }
+
   // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
   // use ensures we do not silently drop transfers.
   if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
