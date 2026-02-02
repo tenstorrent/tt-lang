@@ -5,6 +5,7 @@
 Tests for kernel.py module (kernel decorator, grid_size, etc.).
 """
 
+import torch
 from typing import cast
 
 import pytest
@@ -628,11 +629,11 @@ class TestCore:
         test_kernel(a, b)
 
 
-class TestFlattenCoreIndex:
+class TestFlattenCoreCoord:
     """Test flatten_core_index() function."""
 
-    def test_flatten_already_linear_index(self):
-        """Test flattening an already linear index returns it unchanged."""
+    def test_flatten_already_linear_coord(self):
+        """Test flattening an already linear coordinate returns it unchanged."""
 
         @ttl.kernel(grid=(8, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -640,7 +641,7 @@ class TestFlattenCoreIndex:
 
             @ttl.compute()
             def compute_func():
-                # Linear index should be returned unchanged
+                # Linear coordinate should be returned unchanged
                 result = flatten_core_index(5)
                 assert result == 5
                 assert isinstance(result, int)
@@ -657,8 +658,8 @@ class TestFlattenCoreIndex:
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
 
-    def test_flatten_2d_core_index(self):
-        """Test flattening a 2D core index to linear."""
+    def test_flatten_2d_core_coord(self):
+        """Test flattening a 2D core coordinate to linear."""
 
         @ttl.kernel(grid=(4, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -693,8 +694,8 @@ class TestFlattenCoreIndex:
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
 
-    def test_flatten_3d_core_index(self):
-        """Test flattening a 3D core index to linear."""
+    def test_flatten_3d_core_coord(self):
+        """Test flattening a 3D core coordinate to linear."""
 
         @ttl.kernel(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
@@ -830,7 +831,7 @@ class TestFlattenCoreIndex:
 
             @ttl.compute()
             def compute_func():
-                # Test with linear index
+                # Test with linear coordinate
                 result1 = flatten_core_index(3)
                 assert isinstance(result1, int)
 
@@ -849,3 +850,151 @@ class TestFlattenCoreIndex:
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
         test_kernel(a, b)
+
+
+class TestThreadOrderIndependence:
+    """Test that thread definition order doesn't matter in kernels."""
+
+    def test_thread_order_dm_compute_dm(self):
+        """Test kernel with order: DM, compute, DM (like broadcast_demo.py)."""
+
+        @ttl.kernel(grid=(1, 1))
+        def kernel_dm_compute_dm(
+            A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
+        ) -> None:
+            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
+            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
+            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+
+            @ttl.datamovement()
+            def dm_read():
+                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    a_xf = ttl.copy(A[0, 0], a_blk)
+                    b_xf = ttl.copy(B[0, 0], b_blk)
+                    a_xf.wait()
+                    b_xf.wait()
+
+            @ttl.compute()
+            def compute():
+                with (
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    y_cb.reserve() as y_blk,
+                ):
+                    result = a_blk + b_blk
+                    y_blk.store(result)
+
+            @ttl.datamovement()
+            def dm_write():
+                with y_cb.wait() as y_blk:
+                    y_xf = ttl.copy(y_blk, Y[0, 0])
+                    y_xf.wait()
+
+        # Create test tensors
+        A = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32))
+        B = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32) * 2)
+        Y = ttnn.empty((32, 32), dtype=torch.float32)
+
+        # Run kernel
+        kernel_dm_compute_dm(A, B, Y)
+
+        # Verify result
+        Y_torch = Y.to_torch()
+        expected = torch.ones((32, 32), dtype=torch.float32) * 3
+        assert torch.allclose(Y_torch, expected)
+
+    def test_thread_order_compute_dm_dm(self):
+        """Test kernel with order: compute, DM, DM (traditional order)."""
+
+        @ttl.kernel(grid=(1, 1))
+        def kernel_compute_dm_dm(
+            A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
+        ) -> None:
+            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
+            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
+            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+
+            @ttl.compute()
+            def compute():
+                with (
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    y_cb.reserve() as y_blk,
+                ):
+                    result = a_blk + b_blk
+                    y_blk.store(result)
+
+            @ttl.datamovement()
+            def dm_read():
+                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    a_xf = ttl.copy(A[0, 0], a_blk)
+                    b_xf = ttl.copy(B[0, 0], b_blk)
+                    a_xf.wait()
+                    b_xf.wait()
+
+            @ttl.datamovement()
+            def dm_write():
+                with y_cb.wait() as y_blk:
+                    y_xf = ttl.copy(y_blk, Y[0, 0])
+                    y_xf.wait()
+
+        # Create test tensors
+        A = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32))
+        B = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32) * 2)
+        Y = ttnn.empty((32, 32), dtype=torch.float32)
+
+        # Run kernel
+        kernel_compute_dm_dm(A, B, Y)
+
+        # Verify result
+        Y_torch = Y.to_torch()
+        expected = torch.ones((32, 32), dtype=torch.float32) * 3
+        assert torch.allclose(Y_torch, expected)
+
+    def test_thread_order_dm_dm_compute(self):
+        """Test kernel with order: DM, DM, compute."""
+
+        @ttl.kernel(grid=(1, 1))
+        def kernel_dm_dm_compute(
+            A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
+        ) -> None:
+            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
+            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
+            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+
+            @ttl.datamovement()
+            def dm_read():
+                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    a_xf = ttl.copy(A[0, 0], a_blk)
+                    b_xf = ttl.copy(B[0, 0], b_blk)
+                    a_xf.wait()
+                    b_xf.wait()
+
+            @ttl.datamovement()
+            def dm_write():
+                with y_cb.wait() as y_blk:
+                    y_xf = ttl.copy(y_blk, Y[0, 0])
+                    y_xf.wait()
+
+            @ttl.compute()
+            def compute():
+                with (
+                    a_cb.wait() as a_blk,
+                    b_cb.wait() as b_blk,
+                    y_cb.reserve() as y_blk,
+                ):
+                    result = a_blk + b_blk
+                    y_blk.store(result)
+
+        # Create test tensors
+        A = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32))
+        B = ttnn.from_torch(torch.ones((32, 32), dtype=torch.float32) * 2)
+        Y = ttnn.empty((32, 32), dtype=torch.float32)
+
+        # Run kernel
+        kernel_dm_dm_compute(A, B, Y)
+
+        # Verify result
+        Y_torch = Y.to_torch()
+        expected = torch.ones((32, 32), dtype=torch.float32) * 3
+        assert torch.allclose(Y_torch, expected)

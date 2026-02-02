@@ -1,0 +1,172 @@
+====================================================================================================
+TTLANG AUTO-PROFILE REPORT
+====================================================================================================
+
+Total operations: 25728
+Longest thread: 160,260 cycles
+
+====================================================================================================
+THREAD: NCRISC     [demo_read] (8000 ops, 160,260 cycles, 100.0% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+105                       def demo_read():
+106      2.5%  18-50          core_x, core_y = ttl.core(dims=2)  (x192, avg=21.3, total=4,086)
+108                           for core_row in range(rows_per_core):
+109      3.7%  18-49              row = core_x * rows_per_core + core_row  (x256, avg=23.4, total=5,996)
+110      3.4%  18-41              start_row_tile = row * row_tiles_per_block  (x256, avg=21.6, total=5,517)
+111      5.1%  18-60              end_row_tile = (row + 1) * row_tiles_per_block  (x384, avg=21.1, total=8,109)
+113                               for core_col in range(cols_per_core):
+114      6.5%  18-49                  col = core_y * cols_per_core + core_col  (x512, avg=20.2, total=10,349)
+115      6.7%  18-43                  start_col_tile = col * col_tiles_per_block  (x512, avg=20.8, total=10,669)
+116      6.8%  18-55                  end_col_tile = (col + 1) * col_tiles_per_block  (x512, avg=21.2, total=10,863)
+118                                   with (
+119     11.3%  18,068                     a_cb.reserve() as a_blk,
+                                                                   ├─ 10,162 cb_reserve (x512)
+                                                                   ╰─ 7,906 cb_push (implicit) (x384)
+120     11.0%  17,651                     b_cb.reserve() as b_blk,
+                                                                   ├─ 10,073 cb_reserve (x512)
+                                                                   ╰─ 7,578 cb_push (implicit) (x384)
+121     10.7%  17,147                     c_cb.reserve() as c_blk,
+                                                                   ├─ 9,809 cb_reserve (x512)
+                                                                   ╰─ 7,338 cb_push (implicit) (x384)
+122                                   ):
+123      6.0%  18-25                      tx_a = ttl.copy(  (x512, avg=18.9, total=9,658)
+124                                           a[
+125                                               start_row_tile:end_row_tile,
+126                                               start_col_tile:end_col_tile,
+127                                           ],
+128                                           a_blk,
+129                                       )
+130      6.1%  18-24                      tx_b = ttl.copy(  (x512, avg=19.0, total=9,747)
+131                                           b[
+132                                               start_row_tile:end_row_tile,
+133                                               start_col_tile:end_col_tile,
+134                                           ],
+135                                           b_blk,
+136                                       )
+137      6.1%  18-28                      tx_c = ttl.copy(  (x512, avg=19.0, total=9,753)
+138                                           c[
+139                                               start_row_tile:end_row_tile,
+140                                               start_col_tile:end_col_tile,
+141                                           ],
+142                                           c_blk,
+143                                       )
+145      6.2%  18-32                      tx_a.wait()  (x512, avg=19.3, total=9,900)
+146      5.5%  18-32                      tx_b.wait()  (x448, avg=19.7, total=8,837)
+147      2.4%  18-32                      tx_c.wait()  (x192, avg=20.4, total=3,910)
+
+====================================================================================================
+THREAD: BRISC      [demo_write] (4480 ops, 88,772 cycles, 55.4% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+105                       def demo_write():
+106      5.5%  18-71          core_x, core_y = ttl.core(dims=2)  (x192, avg=25.3, total=4,849)
+108                           for core_row in range(rows_per_core):
+109      6.3%  18-50              row = core_x * rows_per_core + core_row  (x256, avg=21.8, total=5,593)
+110      6.2%  18-45              start_row_tile = row * row_tiles_per_block  (x256, avg=21.5, total=5,516)
+111      8.6%  18-35              end_row_tile = (row + 1) * row_tiles_per_block  (x384, avg=19.8, total=7,592)
+113                               for core_col in range(cols_per_core):
+114     11.2%  18-43                  col = core_y * cols_per_core + core_col  (x512, avg=19.4, total=9,932)
+115     11.0%  18-31                  start_col_tile = col * col_tiles_per_block  (x512, avg=19.0, total=9,750)
+116     11.5%  18-52                  end_col_tile = (col + 1) * col_tiles_per_block  (x512, avg=20.0, total=10,222)
+118     21.9%  19,476                 with y_cb.wait() as y_blk:
+                                                                 ├─ 9,954 cb_wait (x512)
+                                                                 ╰─ 9,522 cb_pop (implicit) (x512)
+119     11.2%  18-34                      tx = ttl.copy(  (x512, avg=19.4, total=9,913)
+120                                           y_blk,
+121                                           y[
+122                                               start_row_tile:end_row_tile,
+123                                               start_col_tile:end_col_tile,
+124                                           ],
+125                                       )
+126      6.7%  18-47                      tx.wait()  (x320, avg=18.5, total=5,929)
+
+====================================================================================================
+THREAD: TRISC_0    [demo_compute] (4416 ops, 90,303 cycles, 56.3% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+105                       def demo_compute():
+106                           for _ in range(rows_per_core):
+107                               for _ in range(cols_per_core):
+108                                   with (
+109     25.0%  22,614                     a_cb.wait() as a_blk,
+                                                                ├─ 12,054 cb_wait (x512)
+                                                                ╰─ 10,560 cb_pop (implicit) (x512)
+110     21.8%  19,690                     b_cb.wait() as b_blk,
+                                                                ├─ 10,075 cb_wait (x512)
+                                                                ╰─ 9,615 cb_pop (implicit) (x512)
+111     22.6%  20,373                     c_cb.wait() as c_blk,
+                                                                ├─ 10,582 cb_wait (x512)
+                                                                ╰─ 9,791 cb_pop (implicit) (x512)
+112     23.3%  21,005                     y_cb.reserve() as y_blk,
+                                                                   ├─ 11,089 cb_reserve (x512)
+                                                                   ╰─ 9,916 cb_push (implicit) (x512)
+113                                   ):
+114      7.3%  18-69                      y_blk.store(a_blk * b_blk + c_blk)  (x320, avg=20.7, total=6,621)
+
+====================================================================================================
+THREAD: TRISC_1    [demo_compute] (4416 ops, 91,282 cycles, 57.0% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+105                       def demo_compute():
+106                           for _ in range(rows_per_core):
+107                               for _ in range(cols_per_core):
+108                                   with (
+109     23.0%  20,975                     a_cb.wait() as a_blk,
+                                                                ├─ 10,017 cb_wait (x512)
+                                                                ╰─ 10,958 cb_pop (implicit) (x512)
+110     22.5%  20,575                     b_cb.wait() as b_blk,
+                                                                ├─ 10,448 cb_wait (x512)
+                                                                ╰─ 10,127 cb_pop (implicit) (x512)
+111     23.2%  21,167                     c_cb.wait() as c_blk,
+                                                                ├─ 10,452 cb_wait (x512)
+                                                                ╰─ 10,715 cb_pop (implicit) (x512)
+112     24.4%  22,267                     y_cb.reserve() as y_blk,
+                                                                   ├─ 10,440 cb_reserve (x512)
+                                                                   ╰─ 11,827 cb_push (implicit) (x512)
+113                                   ):
+114      6.9%  18-36                      y_blk.store(a_blk * b_blk + c_blk)  (x320, avg=19.7, total=6,298)
+
+====================================================================================================
+THREAD: TRISC_2    [demo_compute] (4416 ops, 93,396 cycles, 58.3% of total)
+====================================================================================================
+
+LINE   %TIME   CYCLES     SOURCE
+------ ------- ---------- ----------------------------------------------------------------------
+105                       def demo_compute():
+106                           for _ in range(rows_per_core):
+107                               for _ in range(cols_per_core):
+108                                   with (
+109     23.6%  22,030                     a_cb.wait() as a_blk,
+                                                                ├─ 11,562 cb_wait (x512)
+                                                                ╰─ 10,468 cb_pop (implicit) (x512)
+110     23.9%  22,351                     b_cb.wait() as b_blk,
+                                                                ├─ 11,765 cb_wait (x512)
+                                                                ╰─ 10,586 cb_pop (implicit) (x512)
+111     22.8%  21,283                     c_cb.wait() as c_blk,
+                                                                ├─ 10,765 cb_wait (x512)
+                                                                ╰─ 10,518 cb_pop (implicit) (x512)
+112     22.6%  21,123                     y_cb.reserve() as y_blk,
+                                                                   ├─ 10,684 cb_reserve (x512)
+                                                                   ╰─ 10,439 cb_push (implicit) (x512)
+113                                   ):
+114      7.1%  18-38                      y_blk.store(a_blk * b_blk + c_blk)  (x320, avg=20.7, total=6,609)
+
+====================================================================================================
+THREAD SUMMARY
+====================================================================================================
+  NCRISC               [demo_read]    160,260 cycles (8000 ops) [100.0%]
+  BRISC               [demo_write]     88,772 cycles (4480 ops) [ 55.4%]
+  TRISC_0           [demo_compute]     90,303 cycles (4416 ops) [ 56.3%]
+  TRISC_1           [demo_compute]     91,282 cycles (4416 ops) [ 57.0%]
+  TRISC_2           [demo_compute]     93,396 cycles (4416 ops) [ 58.3%]
+
+====================================================================================================

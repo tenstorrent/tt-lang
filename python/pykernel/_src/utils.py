@@ -6,11 +6,24 @@
 # and cleaned up to remove unused code (_discover_dialect_ops).
 
 import inspect
+import re
 import textwrap
 from typing import Callable
 
 from ttmlir.dialects import arith
 from ttmlir.ir import *
+
+
+def _format_tensor_type(ty_str: str) -> str:
+    """Convert MLIR tensor type to user-friendly format.
+
+    Example: tensor<2x2x!ttcore.tile<32x32, bf16>> -> (2, 2) bf16 tensor
+    """
+    match = re.match(r"tensor<(\d+)x(\d+)x!ttcore\.tile<\d+x\d+,\s*(\w+)>>", ty_str)
+    if match:
+        rows, cols, dtype = match.groups()
+        return f"({rows}, {cols}) {dtype} tensor"
+    return ty_str
 
 
 def _cleanup_source_code(f: Callable):
@@ -32,6 +45,14 @@ def _cast(val, ty):
     elif isinstance(val.type, IndexType) and isinstance(ty, IntegerType):
         return arith.index_cast(ty, val)
     else:
+        # Check for tensor shape mismatch and provide helpful error
+        val_str, ty_str = str(val.type), str(ty)
+        if val_str.startswith("tensor<") and ty_str.startswith("tensor<"):
+            raise TypeError(
+                f"shape mismatch between {_format_tensor_type(val_str)} and "
+                f"{_format_tensor_type(ty_str)}; "
+                f"note: you can use ttl.math.broadcast() to expand the smaller tensor"
+            )
         raise TypeError(f"Unhandled cast from {val.type} to {ty}")
 
 

@@ -4,11 +4,11 @@ Welcome to the tt-lang containerized environment!
 
 ## Quick Start
 
-You're currently in `/root`. tt-lang examples are in `./examples/`
+tt-lang examples are available in `$TTMLIR_TOOLCHAIN_DIR/examples`.
 
 Try running an example:
 ```bash
-python examples/demo_one.py
+python $TTMLIR_TOOLCHAIN_DIR/examples/tutorial/multicore_grid_auto.py
 ```
 
 ## Available Tools
@@ -24,22 +24,22 @@ Full documentation: https://docs.tenstorrent.com/tt-lang
 ## Running Tests
 
 ```bash
-cd /opt/ttmlir-toolchain/test
+cd $TTMLIR_TOOLCHAIN_DIR/test
 pytest
 ```
 
 ## Installed Locations
 
-- **Toolchain**: `/opt/ttmlir-toolchain`
-- **Examples**: `/opt/ttmlir-toolchain/examples` (also copied to `~/examples`)
-- **Tests**: `/opt/ttmlir-toolchain/test`
-- **Python packages**: `/opt/ttmlir-toolchain/python_packages`
+- **Toolchain**: `$TTMLIR_TOOLCHAIN_DIR` (typically `/opt/ttmlir-toolchain`)
+- **Examples**: `$TTMLIR_TOOLCHAIN_DIR/examples`
+- **Tests**: `$TTMLIR_TOOLCHAIN_DIR/test`
+- **Python packages**: `$TTMLIR_TOOLCHAIN_DIR/python_packages`
   - `ttl` - tt-lang API
   - `pykernel` - Kernel generation utilities
   - `sim` - Simulator
   - `ttmlir` - tt-mlir Python bindings
   - `ttnn` - TT-NN runtime
-- **Environment**: Activated automatically via `/opt/ttmlir-toolchain/env/activate`
+- **Environment**: Activated automatically via `$TTMLIR_TOOLCHAIN_DIR/env/activate`
 
 ## Mounting Your Code
 
@@ -64,12 +64,12 @@ Your code will be in `~/my-code`.
 - `ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest` - Development tools for building tt-lang
 
 **Local (if built locally):**
-- `tt-lang-dist:local` - Pre-built tt-lang (recommended for users)
-- `tt-lang-ci:local` - tt-mlir toolchain (for building tt-lang)
-- `tt-lang-ird:local` - Development image
+- `tt-lang-dist-ubuntu-22-04:latest` - Pre-built tt-lang (recommended for users)
+- `tt-lang-ci-ubuntu-22-04:latest` - tt-mlir toolchain (for building tt-lang)
+- `tt-lang-ird-ubuntu-22-04:latest` - Development image
 
 ## Notes
 
 - The environment is automatically activated when the container starts
 - All tt-lang dependencies are pre-installed
-- Examples can be modified and re-run directly from `~/examples`
+- Examples can be copied and modified: `cp -r $TTMLIR_TOOLCHAIN_DIR/examples ~/my-examples`

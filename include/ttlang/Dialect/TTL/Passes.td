@@ -68,13 +68,36 @@ def TTLAssignDST
 
   let options = [
     Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
-           "Override DST register capacity (testing only, default auto-computed).">,
+           "Override DST register capacity (auto-computed by default). "
+           "For single-buffering mode (dst_full_sync_en=true), use: "
+           "f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8.">,
     Option<"separateOutputRegion", "separate-output-region", "bool", "false",
            "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
   ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLSetComputeKernelConfig
+    : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
+  let summary = "Set ttl.compute kernel configuration attributes";
+  let description = [{
+    Sets fp32_dest_acc_en and dst_full_sync_en attributes on ttl.compute
+    operations when they are not already configured. This allows downstream
+    passes to use consistent compute kernel configuration decisions.
+  }];
+
+  let options = [
+    Option<"fp32DestAccEn", "fp32-dest-acc-en", "bool", "false",
+           "Set default fp32_dest_acc_en when not already configured.">,
+    Option<"dstFullSyncEn", "dst-full-sync-en", "bool", "false",
+           "Set default dst_full_sync_en when not already configured.">
+  ];
+
+  let dependentDialects = [
     "::mlir::tt::ttl::TTLDialect"
   ];
 }
@@ -157,6 +180,50 @@ def TTLAnnotateCBAssociations
   }];
 
   let dependentDialects = [];
+}
+
+def TTLLowerSignpostToEmitC
+    : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
+  let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";
+  let description = [{
+    Converts ttl.signpost operations to EmitC verbatim code that emits
+    DeviceZoneScopedN markers for Tracy profiling. This pass runs after
+    convert-ttl-to-ttkernel to keep profiling concerns separate from
+    the main dialect conversion.
+  }];
+}
+
+def TTLDumpCBFlowGraph
+    : Pass<"ttl-dump-cb-flow-graph", "::mlir::ModuleOp"> {
+  let summary = "Analyze and dump CB producer/consumer flow graph";
+  let description = [{
+    Analysis pass that builds a flow graph showing how data moves through
+    circular buffers between kernels. For each CB, identifies:
+    - Producers: operations that write to the CB (cb_reserve + copy/store)
+    - Consumers: operations that read from the CB (cb_wait)
+    - DMA operations: copy ops with their direction (read/write)
+    - Wait operations: ttl.wait barriers
+
+    Outputs the graph in a human-readable format and optionally as JSON
+    for consumption by the auto-profiler. The graph maps source locations
+    to CB operations, enabling correlation with runtime profiler data.
+
+    Example output:
+    ```
+    CB Flow Graph:
+    CB[0] "inp_cb":
+      producers: dm_read:74 (copy DRAM->CB)
+      consumers: compute:52 (cb_wait)
+    CB[1] "out_cb":
+      producers: compute:55 (cb_reserve)
+      consumers: dm_write:106 (cb_wait)
+    ```
+  }];
+
+  let options = [
+    Option<"outputPath", "output", "std::string", "\"\"",
+           "Path to write JSON output (empty for stderr debug only)">
+  ];
 }
 
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

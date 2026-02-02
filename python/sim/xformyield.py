@@ -9,17 +9,33 @@ to enable cooperative multitasking and other program transformations.
 """
 
 import ast
+from typing import TYPE_CHECKING, Literal, Tuple, Union
+
+if TYPE_CHECKING:
+    from .cb import CircularBuffer
+    from .copy import CopyTransaction
 
 # Central registry of known generator-like functions exposed via ttl
 KNOWN_TTL_GENERATORS: set[str] = {
-    "if_pipe_src",
-    "if_pipe_dst",
+    "if_src",  # PipeNet.if_src method
+    "if_dst",  # PipeNet.if_dst method
 }
+
+# Type for values yielded by generator transformations
+# The AST transformation converts:
+# - cb.wait() to yield (cb, 'wait')
+# - cb.reserve() to yield (cb, 'reserve')
+# - tx.wait() to yield (tx, 'wait')
+YieldedValue = Union[
+    Tuple["CircularBuffer", Literal["wait", "reserve"]],
+    Tuple["CopyTransaction", Literal["wait"]],
+]
 
 __all__ = [
     "YieldInserter",
     "YieldingFunctionMarker",
     "YieldFromInserter",
+    "YieldedValue",
     "transform_wait_reserve_to_yield_ast",
     # Legacy alias for backward compatibility with tests
     "WaitReserveToYieldTransformer",
@@ -93,6 +109,8 @@ class YieldInserter(ast.NodeTransformer):
                                 ctx=ast.Load(),
                             )
                             yield_stmt = ast.Expr(value=ast.Yield(value=yield_value))
+                            # Copy location from the call node so yield has same line number
+                            ast.copy_location(yield_stmt, call)
                             yields_to_insert.append(yield_stmt)
                         case _:
                             # Non-attribute call, skip
@@ -143,6 +161,8 @@ class YieldInserter(ast.NodeTransformer):
             elts=[obj, ast.Constant(value=operation)], ctx=ast.Load()
         )
         yield_stmt = ast.Expr(value=ast.Yield(value=yield_value))
+        # Copy location from the call node so yield has same line number
+        ast.copy_location(yield_stmt, call)
 
         # Return yield followed by original statement
         return [yield_stmt, stmt]
@@ -265,7 +285,7 @@ class YieldFromInserter(ast.NodeTransformer):
             # Yield from function parameters (potential generator callbacks)
             case ast.Name(id=param_name) if param_name in self.current_function_params:
                 return True
-            # Handle attribute access calls: ttl.if_pipe_src(...), obj.method(...)
+            # Handle attribute access calls: pipe_net.if_src(...), obj.method(...)
             case ast.Attribute(attr=attr_name) if attr_name in KNOWN_TTL_GENERATORS:
                 return True
             case _:

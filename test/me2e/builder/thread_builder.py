@@ -369,9 +369,11 @@ class StringBasedThreadBuilder:
 
         Note: Named dram_tensor_type_str for historical reasons, but now supports
         any buffer type (DRAM or L1) based on config.
+
+        Uses 2D shape [tiles_y, tiles_x] to match Python DSL approach.
         """
         return (
-            f"tensor<{self._rows}x{self._cols}x1x1x"
+            f"tensor<{self._rows}x{self._cols}x"
             f"!ttcore.tile<32x32, {self._dtype_str}>, {self._layout_ref}>"
         )
 
@@ -393,9 +395,13 @@ class StringBasedThreadBuilder:
 
     @property
     def slice_type_str(self) -> str:
-        """Get slice type string for tensor_slice."""
+        """Get slice type string for tensor_slice result.
+
+        Slice result has CB shape [cb_rows, cb_cols], matching the tile block
+        being transferred.
+        """
         return (
-            f"tensor<{self._rows}x{self._cols}x{self._cb_rows}x{self._cb_cols}x"
+            f"tensor<{self._cb_rows}x{self._cb_cols}x"
             f"!ttcore.tile<32x32, {self._dtype_str}>, {self._layout_ref}>"
         )
 
@@ -603,8 +609,9 @@ def generate_layout_attrs(config: E2EConfig) -> str:
     buffer_attr = f"#buffer = #ttnn.buffer_type<{buffer_type}>"
 
     # Memory layout (interleaved or sharded variants).
+    # Uses 2D memref [tiles_y, tiles_x] to match Python DSL approach.
     layout_type = config.memory_layout.value  # "interleaved", "height_sharded", etc.
-    layout_attr = f"#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<{rows}x{cols}x1x1x!ttcore.tile<32x32, {dtype_str}>, #buffer>, <{layout_type}>>"
+    layout_attr = f"#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>, #buffer>, <{layout_type}>>"
 
     return f"""
 {buffer_attr}

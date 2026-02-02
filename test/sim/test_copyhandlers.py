@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+"""
+Tests for copy transfer handlers.
 
-from typing import List
+Tests the validation, error handling, and edge cases of copy handlers
+using proper reserve()/wait() patterns conforming to the state machine.
+"""
+
+from typing import TYPE_CHECKING
 
 import pytest
 from test_utils import (
-    make_arange_tensor,
     make_full_tile,
     make_ones_tile,
     make_rand_tensor,
@@ -15,9 +20,8 @@ from test_utils import (
 )
 
 from python.sim import ttnn
-from python.sim.block import Block, Span
-from python.sim.cbstate import CBSlot
-from python.sim.constants import TILE_SHAPE
+from python.sim.block import Block
+from python.sim.cbapi import CBAPI
 from python.sim.copyhandlers import (
     BlockToPipeHandler,
     BlockToTensorHandler,
@@ -26,6 +30,15 @@ from python.sim.copyhandlers import (
     handler_registry,
 )
 from python.sim.typedefs import Pipe
+
+if TYPE_CHECKING:
+    pass
+
+
+@pytest.fixture
+def api():
+    """Provide a fresh CBAPI instance for each test."""
+    return CBAPI()
 
 
 class TestHandlerRegistry:
@@ -46,307 +59,607 @@ class TestHandlerRegistry:
         assert isinstance(handler_registry[(Pipe, Block)], PipeToBlockHandler)
 
 
-class TestTensorToBlockHandler:
-    """Test TensorToBlockHandler validation and transfer."""
+class TestCopyValidationErrors:
+    """Test validation and error handling in copy handlers."""
 
-    def test_validate_success(self):
-        """Test validation succeeds for matching shapes."""
-        handler = TensorToBlockHandler()
-        tensor = make_rand_tensor(64, 32)  # 2 tiles
-        buf: List[CBSlot] = [None, None]
-        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
-
-        # Should not raise
-        handler.validate(tensor, block)
-
-    def test_validate_non_2d_tensor(self):
-        """Test validation fails for non-2D tensors."""
+    def test_non_2d_tensor_to_block_fails(self, api: "CBAPI") -> None:
+        """Test that copying a non-2D tensor to Block raises ValueError."""
         import torch
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
 
-        handler = TensorToBlockHandler()
-        # Create a 3D torch tensor and wrap it
+        _set_current_thread_type(ThreadType.DM)
+
+        # Create a 3D torch tensor
         torch_3d = torch.ones(32, 32, 32)
-        tensor = ttnn.Tensor(torch_3d)
-        buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
+        tensor_3d = ttnn.Tensor(torch_3d)
 
-        with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
-            handler.validate(tensor, block)
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
 
-    def test_validate_tile_count_mismatch(self):
-        """Test validation fails when tile counts don't match."""
-        handler = TensorToBlockHandler()
-        tensor = make_rand_tensor(96, 32)  # 3 tiles
-        buf: List[CBSlot] = [None, None]
-        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
+        with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
+            with cb.reserve() as block:
+                copy(tensor_3d, block)
 
-        with pytest.raises(
-            ValueError, match="Tensor shape.*does not match.*Block shape"
-        ):
-            handler.validate(tensor, block)
+    def test_tile_count_mismatch_tensor_to_block(self, api: "CBAPI") -> None:
+        """Test that tile count mismatch raises ValueError (Tensor -> Block)."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
 
-    def test_transfer_single_tile(self):
-        """Test transferring a single tile."""
-        handler = TensorToBlockHandler()
-        tensor = make_full_tile(42.0)
-        buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
+        _set_current_thread_type(ThreadType.DM)
 
-        handler.transfer(tensor, block)
-
-        assert block[0] is not None
-        assert tensors_equal(block[0], tensor)
-
-    def test_transfer_multiple_tiles(self):
-        """Test transferring multiple tiles."""
-        handler = TensorToBlockHandler()
-        # Create a 2x2 tile tensor (64x64)
-        tensor = make_arange_tensor(64, 64)
-        buf: List[CBSlot] = [None, None, None, None]
-        block = Block(buf, 4, Span(0, 4), shape=(2, 2))
-
-        handler.transfer(tensor, block)
-
-        # Verify all tiles are populated and have correct tile shape (1x1 in tile coords)
-        for i in range(4):
-            assert block[i] is not None
-            # Each tile is a ttnn.Tensor with shape (32, 32) in elements
-            assert block[i].shape == TILE_SHAPE
-
-
-class TestBlockToTensorHandler:
-    """Test BlockToTensorHandler validation and transfer."""
-
-    def test_validate_success(self):
-        """Test validation succeeds for matching shapes."""
-        handler = BlockToTensorHandler()
-        tile1 = make_ones_tile()
-        tile2 = make_zeros_tile()
-        buf: List[CBSlot] = [tile1, tile2]
-        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
-        tensor = make_rand_tensor(64, 32)
-
-        # Should not raise
-        handler.validate(block, tensor)
-
-    def test_validate_non_2d_tensor(self):
-        """Test validation fails for non-2D tensors."""
-        import torch
-
-        handler = BlockToTensorHandler()
-        tile1 = make_ones_tile()
-        buf: List[CBSlot] = [tile1]
-        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
-        # Create a 3D torch tensor and wrap it
-        torch_3d = torch.zeros(32, 32, 32)
-        tensor = ttnn.Tensor(torch_3d)
-
-        with pytest.raises(ValueError, match="Copy only supports 2D tensors"):
-            handler.validate(block, tensor)
-
-    def test_validate_tile_count_mismatch(self):
-        """Test validation fails when tile counts don't match."""
-        handler = BlockToTensorHandler()
-        tile1 = make_ones_tile()
-        tile2 = make_zeros_tile()
-        buf: List[CBSlot] = [tile1, tile2]
-        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
-        tensor = make_rand_tensor(96, 32)  # 3 tiles
+        # 3 tiles in tensor but CB expects 2 tiles
+        source = make_rand_tensor(96, 32)  # 3x1 tiles
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
+        )
 
         with pytest.raises(
-            ValueError, match="Tensor shape.*does not match.*Block shape"
+            ValueError, match="Tensor shape .* does not match.*Block shape"
         ):
-            handler.validate(block, tensor)
-
-    def test_transfer_single_tile(self):
-        """Test transferring a single tile."""
-        handler = BlockToTensorHandler()
-        tile = make_full_tile(3.14)
-        buf: List[CBSlot] = [tile]
-        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
-        tensor = make_zeros_tile()
-
-        handler.transfer(block, tensor)
-
-        assert tensors_equal(tensor, tile)
-
-    def test_transfer_multiple_tiles(self):
-        """Test transferring multiple tiles."""
-        handler = BlockToTensorHandler()
-        tile1 = make_full_tile(1.0)
-        tile2 = make_full_tile(2.0)
-        buf: List[CBSlot] = [tile1, tile2]
-        block = Block(buf, 2, Span(0, 2), shape=(2, 1))
-        tensor = make_rand_tensor(64, 32)
-
-        handler.transfer(block, tensor)
-
-        # Verify tiles are combined correctly using tile-level indexing
-        dest_tile1 = tensor[0:1, 0:1]
-        dest_tile2 = tensor[1:2, 0:1]
-        assert tensors_equal(dest_tile1, tile1)
-        assert tensors_equal(dest_tile2, tile2)
+            with cb.reserve() as block:
+                copy(source, block)
 
 
-class TestBlockToPipeHandler:
-    """Test BlockToPipeHandler validation and transfer."""
+class TestPipeErrorHandling:
+    """Test error handling for pipe operations."""
 
-    def test_validate_always_succeeds(self):
-        """Test that validation always succeeds (no-op)."""
-        handler = BlockToPipeHandler()
-        tile = make_ones_tile()
-        buf: List[CBSlot] = [tile]
-        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
-        pipe = Pipe(0, (1, 2))
+    def test_pipe_receive_timeout_no_sender(self, api: "CBAPI") -> None:
+        """Test that receiving from pipe with no sender times out."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
 
-        # Should not raise
-        handler.validate(block, pipe)
+        _set_current_thread_type(ThreadType.DM)
 
-    def test_transfer_and_receive_single_tile(self):
-        """Test pipe send and receive with single tile."""
-        send_handler = BlockToPipeHandler()
-        recv_handler = PipeToBlockHandler()
-
-        # Sender prepares data
-        tile = make_full_tile(42.0)
-        src_buf: List[CBSlot] = [tile]
-        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
-        pipe = Pipe(0, 1)
-
-        # Send via pipe
-        send_handler.transfer(src_block, pipe)
-
-        # Receiver retrieves data
-        dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
-        recv_handler.transfer(pipe, dst_block)
-
-        # Verify data was received correctly
-        assert dst_block[0] is not None
-        assert tensors_equal(dst_block[0], tile)
-
-    def test_transfer_multiple_tiles(self):
-        """Test transferring multiple tiles via pipe."""
-        send_handler = BlockToPipeHandler()
-        recv_handler = PipeToBlockHandler()
-
-        # Sender prepares data
-        tile1 = make_full_tile(1.0)
-        tile2 = make_full_tile(2.0)
-        src_buf: List[CBSlot] = [tile1, tile2]
-        src_block = Block(src_buf, 2, Span(0, 2), shape=(2, 1))
-        pipe = Pipe(0, 1)
-
-        # Send via pipe
-        send_handler.transfer(src_block, pipe)
-
-        # Receiver retrieves data
-        dst_buf: List[CBSlot] = [None, None]
-        dst_block = Block(dst_buf, 2, Span(0, 2), shape=(2, 1))
-        recv_handler.transfer(pipe, dst_block)
-
-        # Verify data was received correctly
-        assert dst_block[0] is not None
-        assert dst_block[1] is not None
-        assert tensors_equal(dst_block[0], tile1)
-        assert tensors_equal(dst_block[1], tile2)
-
-
-class TestPipeToBlockHandler:
-    """Test PipeToBlockHandler validation and transfer."""
-
-    def test_validate_always_succeeds(self):
-        """Test that validation always succeeds (no-op)."""
-        handler = PipeToBlockHandler()
-        pipe = Pipe(0, 1)
-        buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
-
-        # Should not raise
-        handler.validate(pipe, block)
-
-    def test_transfer_timeout_no_data(self):
-        """Test that transfer times out when no data is available."""
-        recv_handler = PipeToBlockHandler()
-        # Use a unique address to avoid interference from other tests
-        pipe = Pipe(99, 100)
-        buf: List[CBSlot] = [None]
-        block = Block(buf, 1, Span(0, 1), shape=(1, 1))
+        # Use a unique pipe address to avoid interference
+        pipe = Pipe(9999, 10000)
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
 
         with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
-            recv_handler.transfer(pipe, block)
+            with cb.reserve() as block:
+                tx = copy(pipe, block)
+                tx.wait()
 
-    def test_transfer_success_single_receiver(self):
-        """Test successful transfer with single receiver."""
-        send_handler = BlockToPipeHandler()
-        recv_handler = PipeToBlockHandler()
-        pipe = Pipe(0, 1)
+    def test_pipe_length_mismatch(self, api: "CBAPI") -> None:
+        """Test that pipe receive fails when Block length doesn't match sent data."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
 
-        # Sender: send data
-        tile = make_full_tile(99.0)
-        src_buf: List[CBSlot] = [tile]
-        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
-        send_handler.transfer(src_block, pipe)
+        _set_current_thread_type(ThreadType.DM)
 
-        # Receiver: consume from pipe buffer
-        dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
-        recv_handler.transfer(pipe, dst_block)
+        pipe = Pipe(5000, 5001)
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
+        )
+        dst_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
 
-        # Verify data was transferred
-        assert dst_block[0] is not None
-        assert tensors_equal(dst_block[0], tile)
+        # Send 2 tiles
+        with src_cb.reserve() as src_block:
+            tx_send = copy(make_rand_tensor(64, 32), src_block)
+            tx_send.wait()
 
-    def test_transfer_success_multiple_receivers(self):
-        """Test successful transfer with multiple receivers."""
-        send_handler = BlockToPipeHandler()
-        recv_handler = PipeToBlockHandler()
-        # Rectangular range from (0,1) to (0,2) covers 2 cores
-        pipe = Pipe((0, 0), ((0, 1), (0, 2)))
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
 
-        # Sender: send data for 2 receivers
-        tile = make_full_tile(77.0)
-        src_buf: List[CBSlot] = [tile]
-        src_block = Block(src_buf, 1, Span(0, 1), shape=(1, 1))
-        send_handler.transfer(src_block, pipe)
-
-        # First receiver
-        buf1: List[CBSlot] = [None]
-        block1 = Block(buf1, 1, Span(0, 1), shape=(1, 1))
-        recv_handler.transfer(pipe, block1)
-        assert block1[0] is not None
-        assert tensors_equal(block1[0], tile)
-
-        # Second receiver
-        buf2: List[CBSlot] = [None]
-        block2 = Block(buf2, 1, Span(0, 1), shape=(1, 1))
-        recv_handler.transfer(pipe, block2)
-        assert block2[0] is not None
-        assert tensors_equal(block2[0], tile)
-
-    def test_transfer_length_mismatch(self):
-        """Test that transfer fails when Block length doesn't match data."""
-        send_handler = BlockToPipeHandler()
-        recv_handler = PipeToBlockHandler()
-        # Single core unicast
-        pipe = Pipe((0, 0), (0, 1))
-
-        # Sender: send 2 tiles
-        tile1 = make_ones_tile()
-        tile2 = make_zeros_tile()
-        src_buf: List[CBSlot] = [tile1, tile2]
-        src_block = Block(src_buf, 2, Span(0, 2), shape=(2, 1))
-        send_handler.transfer(src_block, pipe)
-
-        # Receiver: try to receive into 1-tile Block
-        dst_buf: List[CBSlot] = [None]
-        dst_block = Block(dst_buf, 1, Span(0, 1), shape=(1, 1))
-
+        # Try to receive into 1-tile block
         with pytest.raises(
             ValueError,
             match="Destination Block length .* does not match pipe data length",
         ):
-            recv_handler.transfer(pipe, dst_block)
+            with dst_cb.reserve() as dst_block:
+                tx_recv = copy(pipe, dst_block)
+                tx_recv.wait()
+
+
+class TestPipeMulticast:
+    """Test pipe multicast to multiple receivers."""
+
+    def test_pipe_multiple_receivers(self, api: "CBAPI") -> None:
+        """Test that pipe correctly handles multiple receivers."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+        grid = (100, 100)  # Set grid context for pipe operations
+
+        # Range covering 2 cores: (10,0) and (10,1)
+        pipe = Pipe((10, 0), (10, slice(0, 2)))
+
+        tile = make_full_tile(42.0)
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        dst_cb1 = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        dst_cb2 = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        # Send data
+        with src_cb.reserve() as src_block:
+            tx = copy(tile, src_block)
+            tx.wait()
+
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
+
+        # First receiver
+        result1 = make_zeros_tile()
+        with dst_cb1.reserve() as dst_block:
+            tx_recv1 = copy(pipe, dst_block)
+            tx_recv1.wait()
+        with dst_cb1.wait() as dst_block:
+            tx = copy(dst_block, result1)
+            tx.wait()
+        assert tensors_equal(result1, tile)
+
+        # Second receiver
+        result2 = make_zeros_tile()
+        with dst_cb2.reserve() as dst_block:
+            tx_recv2 = copy(pipe, dst_block)
+            tx_recv2.wait()
+        with dst_cb2.wait() as dst_block:
+            tx = copy(dst_block, result2)
+            tx.wait()
+        assert tensors_equal(result2, tile)
+
+
+class TestTileCountUtility:
+    """Test tile_count utility function."""
+
+    def test_tile_count_basic(self) -> None:
+        """Test basic tile counting."""
+        from python.sim.copyhandlers import tile_count
+        from python.sim.constants import TILE_SHAPE
+
+        # 64x64 tensor with 32x32 tiles = 4 tiles (2x2 grid)
+        assert tile_count((64, 64), TILE_SHAPE) == 4
+
+        # 32x32 tensor with 32x32 tiles = 1 tile
+        assert tile_count((32, 32), TILE_SHAPE) == 1
+
+        # 96x64 tensor with 32x32 tiles = 6 tiles (3x2 grid)
+        assert tile_count((96, 64), TILE_SHAPE) == 6
+
+    def test_tile_count_dimension_mismatch(self) -> None:
+        """Test that dimension mismatch raises ValueError."""
+        from python.sim.copyhandlers import tile_count
+
+        with pytest.raises(
+            ValueError,
+            match="tensor_shape and tile_shape must have same dimensions",
+        ):
+            tile_count((64, 64), (32,))  # 2D vs 1D
+
+        with pytest.raises(
+            ValueError,
+            match="tensor_shape and tile_shape must have same dimensions",
+        ):
+            tile_count((64,), (32, 32))  # 1D vs 2D
+
+
+class TestContextManagerHandlers:
+    """Test context manager wrapper handler delegation."""
+
+    def test_tensor_to_reserve_context(self, api: "CBAPI") -> None:
+        """Test Tensor → ReserveContext handler delegation."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        source = make_full_tile(5.0)
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        with cb.reserve() as block:
+            tx = copy(source, block)
+            tx.wait()
+
+        # Read back and verify
+        result = make_zeros_tile()
+        with cb.wait() as block:
+            tx = copy(block, result)
+            tx.wait()
+
+        assert tensors_equal(result, source)
+
+    def test_wait_context_to_tensor(self, api: "CBAPI") -> None:
+        """Test WaitContext → Tensor handler delegation."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        source = make_full_tile(7.0)
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        # Write to CB
+        with cb.reserve() as block:
+            tx = copy(source, block)
+            tx.wait()
+
+        # Read using context manager
+        result = make_zeros_tile()
+        with cb.wait() as block:
+            tx = copy(block, result)
+            tx.wait()
+
+        assert tensors_equal(result, source)
+
+    def test_pipe_to_reserve_context(self, api: "CBAPI") -> None:
+        """Test Pipe → ReserveContext handler delegation."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        pipe = Pipe(7000, 7001)
+        tile = make_full_tile(9.0)
+
+        # Send data
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        with src_cb.reserve() as src_block:
+            tx = copy(tile, src_block)
+            tx.wait()
+
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
+
+        # Receive using ReserveContext
+        dst_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        result = make_zeros_tile()
+        with dst_cb.reserve() as dst_block:
+            tx_recv = copy(pipe, dst_block)
+            tx_recv.wait()
+
+        with dst_cb.wait() as dst_block:
+            tx = copy(dst_block, result)
+            tx.wait()
+
+        assert tensors_equal(result, tile)
+
+    def test_wait_context_to_pipe(self, api: "CBAPI") -> None:
+        """Test WaitContext → Pipe handler delegation."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        pipe = Pipe(8000, 8001)
+        tile = make_full_tile(11.0)
+
+        # Send using WaitContext
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        with src_cb.reserve() as src_block:
+            tx = copy(tile, src_block)
+            tx.wait()
+
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
+
+        # Receive
+        dst_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        result = make_zeros_tile()
+        with dst_cb.reserve() as dst_block:
+            tx_recv = copy(pipe, dst_block)
+            tx_recv.wait()
+
+        with dst_cb.wait() as dst_block:
+            tx = copy(dst_block, result)
+            tx.wait()
+
+        assert tensors_equal(result, tile)
+
+    def test_reserve_context_to_pipe(self, api: "CBAPI") -> None:
+        """Test ReserveContext → Pipe handler delegation."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        pipe = Pipe(9000, 9001)
+        tile = make_full_tile(13.0)
+
+        # Send using ReserveContext
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        with src_cb.reserve() as src_block:
+            tx1 = copy(tile, src_block)
+            tx1.wait()
+            # Note: Can't use reserve context as pipe source directly since
+            # reserve() blocks are in WO state initially. Need to read from wait() instead.
+
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
+
+        # Receive
+        dst_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        result = make_zeros_tile()
+        with dst_cb.reserve() as dst_block:
+            tx_recv = copy(pipe, dst_block)
+            tx_recv.wait()
+
+        with dst_cb.wait() as dst_block:
+            tx = copy(dst_block, result)
+            tx.wait()
+
+        assert tensors_equal(result, tile)
+
+
+class TestPipeCoreRangeTypes:
+    """Test pipe multicast with different dst_core_range types."""
+
+    def test_pipe_single_core_int(self, api: "CBAPI") -> None:
+        """Test pipe with single 1D core (int)."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        # Single 1D core
+        pipe = Pipe(0, 1)  # src_core=0, dst_core_range=1 (single int)
+
+        tile = make_full_tile(15.0)
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        dst_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        # Send
+        with src_cb.reserve() as src_block:
+            tx = copy(tile, src_block)
+            tx.wait()
+
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
+
+        # Receive
+        result = make_zeros_tile()
+        with dst_cb.reserve() as dst_block:
+            tx_recv = copy(pipe, dst_block)
+            tx_recv.wait()
+
+        with dst_cb.wait() as dst_block:
+            tx = copy(dst_block, result)
+            tx.wait()
+
+        assert tensors_equal(result, tile)
+
+    def test_pipe_single_core_tuple(self, api: "CBAPI") -> None:
+        """Test pipe with single multi-dimensional core (tuple)."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        # Single 2D core
+        pipe = Pipe(
+            (0, 0), (1, 1)
+        )  # src_core=(0,0), dst_core_range=(1,1) (single tuple)
+
+        tile = make_full_tile(17.0)
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+        dst_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        # Send
+        with src_cb.reserve() as src_block:
+            tx = copy(tile, src_block)
+            tx.wait()
+
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
+
+        # Receive
+        result = make_zeros_tile()
+        with dst_cb.reserve() as dst_block:
+            tx_recv = copy(pipe, dst_block)
+            tx_recv.wait()
+
+        with dst_cb.wait() as dst_block:
+            tx = copy(dst_block, result)
+            tx.wait()
+
+        assert tensors_equal(result, tile)
+
+    def test_pipe_core_range(self, api: "CBAPI") -> None:
+        """Test pipe with core range (2x2 = 4 receivers)."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+        grid = (100, 100)  # Set grid context for pipe operations
+
+        # Core range: (20,20) to (21,21) = 2x2 = 4 cores
+        pipe = Pipe((20, 20), (slice(20, 22), slice(20, 22)))
+
+        tile = make_full_tile(19.0)
+        src_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        # Send data
+        with src_cb.reserve() as src_block:
+            tx = copy(tile, src_block)
+            tx.wait()
+
+        with src_cb.wait() as src_block:
+            tx_send = copy(src_block, pipe)
+            tx_send.wait()
+
+        # Receive from all 4 receivers
+        for i in range(4):
+            dst_cb = CircularBuffer(
+                element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            )
+            result = make_zeros_tile()
+
+            with dst_cb.reserve() as dst_block:
+                tx_recv = copy(pipe, dst_block)
+                tx_recv.wait()
+
+            with dst_cb.wait() as dst_block:
+                tx = copy(dst_block, result)
+                tx.wait()
+
+            assert tensors_equal(result, tile), f"Receiver {i} data mismatch"
+
+
+class TestCanWaitBehavior:
+    """Test can_wait() behavior for different handlers."""
+
+    def test_tensor_to_block_can_wait_immediate(self, api: "CBAPI") -> None:
+        """Test that Tensor → Block copy can_wait returns True immediately."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        source = make_ones_tile()
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        with cb.reserve() as block:
+            tx = copy(source, block)
+            # can_wait should return True immediately for Tensor → Block
+            assert tx.can_wait() is True
+            tx.wait()
+
+    def test_block_to_tensor_can_wait_immediate(self, api: "CBAPI") -> None:
+        """Test that Block → Tensor copy can_wait returns True immediately."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        source = make_full_tile(21.0)
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        # Store data
+        with cb.reserve() as block:
+            tx = copy(source, block)
+            tx.wait()
+
+        # Copy to tensor
+        result = make_zeros_tile()
+        with cb.wait() as block:
+            tx = copy(block, result)
+            # can_wait should return True immediately for Block → Tensor
+            assert tx.can_wait() is True
+            tx.wait()
+
+    def test_block_to_pipe_can_wait_immediate(self, api: "CBAPI") -> None:
+        """Test that Block → Pipe copy can_wait returns True immediately."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        pipe = Pipe(11000, 11001)
+        tile = make_full_tile(23.0)
+        cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        # Store data
+        with cb.reserve() as block:
+            tx = copy(tile, block)
+            tx.wait()
+
+        # Send to pipe
+        with cb.wait() as block:
+            tx_send = copy(block, pipe)
+            # can_wait should return True immediately for Block → Pipe
+            assert tx_send.can_wait() is True
+            tx_send.wait()
+
+    def test_pipe_to_block_can_wait_blocks_until_data(self, api: "CBAPI") -> None:
+        """Test that Pipe → Block copy can_wait blocks until data is available."""
+        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.cb import CircularBuffer
+        from python.sim.copy import copy
+
+        _set_current_thread_type(ThreadType.DM)
+
+        pipe = Pipe(12000, 12001)
+        dst_cb = CircularBuffer(
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+        )
+
+        with dst_cb.reserve() as dst_block:
+            tx_recv = copy(pipe, dst_block)
+            # can_wait should return False before data is sent
+            assert tx_recv.can_wait() is False
+
+            # Now send data in a separate "thread" (simulated by just doing it)
+            src_cb = CircularBuffer(
+                element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            )
+            tile = make_full_tile(25.0)
+
+            with src_cb.reserve() as src_block:
+                tx_store = copy(tile, src_block)
+                tx_store.wait()
+
+            with src_cb.wait() as src_block:
+                tx_send = copy(src_block, pipe)
+                tx_send.wait()
+
+            # Now can_wait should return True
+            assert tx_recv.can_wait() is True
+            tx_recv.wait()
 
 
 if __name__ == "__main__":

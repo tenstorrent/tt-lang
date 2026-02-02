@@ -30,6 +30,10 @@ class TTLTileOpTrait
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 
+/// Runtime configuration attributes
+inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";
+inline constexpr llvm::StringRef kDstFullSyncEnAttrName = "dst_full_sync_en";
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait
@@ -56,6 +60,11 @@ class TTLTileUnaryOpTrait
 template <typename ConcreteType>
 class TTLTileBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileBinaryOpTrait> {};
+
+/// Trait for tile-level operations that read from CB rather than DST.
+template <typename ConcreteType>
+class TTLCBInputTileOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBInputTileOpTrait> {};
 
 //===----------------------------------------------------------------------===//
 // CB Index Attribute Helpers

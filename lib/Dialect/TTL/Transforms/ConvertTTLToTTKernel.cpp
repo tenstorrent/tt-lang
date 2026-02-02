@@ -134,68 +134,6 @@ static bool isNocKernel(Operation *op) {
   return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
-/// Compute linearized CB tile index from enclosing scf.for loops.
-/// For nested loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
-/// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
-///
-/// When cbShapeRank > 0, only the innermost cbShapeRank loops are used,
-/// computing a relative index within a CB block rather than an absolute
-/// tensor-wide index.
-///
-/// Returns constant 0 if not inside any loops (single-tile case).
-static Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
-                                         size_t cbShapeRank = 0) {
-  Location loc = op->getLoc();
-
-  SmallVector<scf::ForOp> loops;
-  Operation *parent = op->getParentOp();
-  while (parent) {
-    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      loops.push_back(forOp);
-    }
-    parent = parent->getParentOp();
-  }
-
-  if (loops.empty()) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
-  }
-
-  // Only use innermost cbShapeRank loops for relative CB index.
-  if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
-    loops.resize(cbShapeRank);
-  }
-
-  // Validate assumptions: all loops have step=1 and lower bound=0.
-  for (auto loop : loops) {
-    auto lb = getConstantIntValue(loop.getLowerBound());
-    assert(lb && *lb == 0 &&
-           "computeCBTileIndexFromLoops: expected lower bound of 0");
-    auto ub = getConstantIntValue(loop.getUpperBound());
-    assert(ub && "computeCBTileIndexFromLoops: expected constant upper bound");
-    auto step = getConstantIntValue(loop.getStep());
-    assert(step && *step == 1 &&
-           "computeCBTileIndexFromLoops: expected step of 1");
-  }
-
-  // Process in reverse order (innermost-first) without mutating the vector.
-  Value linearIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
-  for (auto [i, loop] : llvm::enumerate(llvm::reverse(loops))) {
-    Value iv = loop.getInductionVar();
-
-    // Stride = product of upper bounds of more-nested loops.
-    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
-    for (auto innerLoop : llvm::drop_begin(llvm::reverse(loops), i + 1)) {
-      stride =
-          builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
-    }
-
-    Value term = builder.create<arith::MulIOp>(loc, iv, stride);
-    linearIdx = builder.create<arith::AddIOp>(loc, linearIdx, term);
-  }
-
-  return linearIdx;
-}
-
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
 /// ctaIndex: Index into compile-time args where tensor config starts.
 /// crtaIndex: Index into compile-runtime args (typically 0).
@@ -412,20 +350,20 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    // Trace from the view back to the CB.
     auto cb = getCBFromView(adaptor.getView());
     if (failed(cb)) {
       return rewriter.notifyMatchFailure(
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // Get the DST index from the tile value's dst_idx attribute.
-    // The DST assignment pass (ttl-assign-dst) should run before this
-    // pass and annotates tile-producing operations with DST register indices.
-    // If the attribute is missing, we default to DST index 0.
-    auto tileValue = adaptor.getTile();
-    Value dstIndex;
+    auto cbTileIndex =
+        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
 
+    // Determine DST index based on the source operation type:
+    // - DST-to-DST ops (binary ops): have dst_idx attribute
+    // - CB-reading ops (bcast, reduce): no dst_idx attribute, use loop index
+    Value dstIndex;
+    auto tileValue = adaptor.getTile();
     if (auto defOp = tileValue.getDefiningOp()) {
       if (auto dstIdxAttr =
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
@@ -434,15 +372,10 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       }
     }
 
-    // Default to DST index 0 if no attribute is found.
-    // This can happen in unit tests or if DST assignment hasn't run.
     if (!dstIndex) {
-      dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      dstIndex = cbTileIndex;
     }
 
-    // Compute CB tile index from innermost 2 loops (CB is always 2D).
-    auto cbTileIndex =
-        computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
@@ -580,36 +513,20 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
                              pageSize);
 }
 
-static std::pair<int64_t, int64_t>
-getTileGridShape(const RankedTensorType &tensorTy) {
-  auto dims = tensorTy.getShape();
-  assert(dims.size() == 2 && "only rank-2 tensors supported currently");
-  auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
-  int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
-  int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
-  return {tilesY, tilesX};
-}
-
 /// Extract tile grid shape from a Value if it's a static tensor.
-/// Handles both rank-2 tensors (logical shape) and rank-4 tensors
-/// (device shape: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]).
-/// Returns the TOTAL tile grid shape (grid * shard) for linearization.
+/// Tensor shape must be [tiles_y, tiles_x] with TileType elements.
+/// Returns the tile grid shape for linearization.
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
   assert(tensorTy && "expected RankedTensorType");
   assert(tensorTy.hasStaticShape() && "expected static shape");
 
   auto dims = tensorTy.getShape();
-  if (dims.size() == 2) {
-    return getTileGridShape(tensorTy);
-  } else if (dims.size() == 4) {
-    // Rank-4 tensor: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
-    // Return total tile grid: grid_y * shard_y, grid_x * shard_x
-    // This is needed for correct linearization across multi-core grids.
-    return {dims[0] * dims[2], dims[1] * dims[3]};
-  }
+  assert(dims.size() == 2 && "expected rank-2 tensor [tiles_y, tiles_x]");
+  assert(llvm::isa<ttcore::TileType>(tensorTy.getElementType()) &&
+         "expected TileType element type");
 
-  llvm_unreachable("expected rank-2 or rank-4 tensor");
+  return {dims[0], dims[1]};
 }
 
 // Emit a tile loop (or single tile body). The callback receives (row, col)
@@ -1036,6 +953,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // tile ops lowering phase.
   target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
                     TileRegsWaitOp, TileRegsReleaseOp>();
+
+  // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
+  target.addLegalOp<SignpostOp>();
 
   // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
   // lowering phase.

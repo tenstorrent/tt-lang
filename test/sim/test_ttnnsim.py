@@ -24,6 +24,18 @@ def test_device_open_close():
     assert ttnn.close_device(dev) is None
 
 
+def test_device_compute_with_storage_grid_size():
+    """Test that Device.compute_with_storage_grid_size() returns 8x8 grid."""
+    device = ttnn.open_device(device_id=0)
+    grid = device.compute_with_storage_grid_size()
+
+    assert isinstance(grid, ttnn.CoreCoord)
+    assert grid.x == 8, f"Expected grid.x=8, got {grid.x}"
+    assert grid.y == 8, f"Expected grid.y=8, got {grid.y}"
+
+    ttnn.close_device(device)
+
+
 def test_tensor_rand_and_empty_and_to_torch():
     shape = (4, 8)
     t1 = ttnn.rand(shape, dtype=ttnn.float32)
@@ -120,12 +132,12 @@ def test_tensor_tile_based_setitem():
 
 def test_tensor_tile_indexing_invalid_shape():
     """Test that tile indexing fails for non-2D tensors."""
-    # 1D tensor
+    # 1D tensor should fail
     t1d = ttnn.Tensor(torch.randn(64))
     with pytest.raises(ValueError, match="requires a 2D tensor"):
         _ = t1d[0:1, 0:1]
 
-    # 3D tensor
+    # 3D tensor should fail
     t3d = ttnn.Tensor(torch.randn(2, 64, 64))
     with pytest.raises(ValueError, match="requires a 2D tensor"):
         _ = t3d[0:1, 0:1]
@@ -135,7 +147,7 @@ def test_tensor_tile_indexing_invalid_tile_alignment():
     """Test that tile indexing fails for non-tile-aligned tensors."""
     # Create a tensor that's not a multiple of tile size
     t = ttnn.Tensor(torch.randn(60, 60))
-    with pytest.raises(ValueError, match="not a multiple of tile shape"):
+    with pytest.raises(ValueError, match="not a multiple of tile dimension"):
         _ = t[0:1, 0:1]
 
 

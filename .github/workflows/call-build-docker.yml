@@ -1,6 +1,9 @@
 name: Build Docker Image
 
 on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       ttlang_sha_override:
@@ -20,17 +23,17 @@ on:
     outputs:
       docker-image:
         description: "Built Docker image name with tag"
-        value: ${{ jobs.check-if-docker-exist.outputs.docker-image || jobs.build-image.outputs.docker-image }}
+        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image || jobs.build-image.outputs.docker-image }}
       docker-image-base:
         description: "Base Docker image name with tag"
-        value: ${{ jobs.check-if-docker-exist.outputs.docker-image-base || jobs.build-image.outputs.docker-image-base }}
+        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image-base || jobs.build-image.outputs.docker-image-base }}
 
 permissions:
   packages: write
   checks: write
 
 jobs:
-  check-if-docker-exist:
+  check-if-images-already-exist:
     runs-on: ubuntu-latest
     outputs:
       docker-image: ${{ steps.check.outputs.docker-image }}
@@ -39,49 +42,127 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Determine tt-mlir commit
-        id: mlir-commit
+      - name: Read tt-mlir commit
+        id: ttmlir-commit
         run: |
-          if [ -n "${{ inputs.mlir_override }}" ]; then
-            echo "commit=${{ inputs.mlir_override }}" >> $GITHUB_OUTPUT
-          else
-            COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-            echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-          fi
+          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
 
       - name: Check if Docker image exists
         id: check
-        run: |
-          set +e
-          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" --check-only | tee docker.log
-          EXIT_CODE=$?
+        run: .github/scripts/check-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}"
 
-          if [ $EXIT_CODE -eq 0 ]; then
-            # Extract image name from last line
-            DOCKER_IMAGE=$(tail -n 1 docker.log)
-            echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
+  build-toolchain-if-needed:
+    needs: check-if-images-already-exist
+    if: needs.check-if-images-already-exist.outputs.docker-image == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
 
-            # Create base variant by replacing -ubuntu- with -base-ubuntu-
-            DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
-            echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
+    env:
+      TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
 
-            echo "✓ Docker images already exist"
-          else
-            echo "✗ Docker images need to be built"
-          fi
-
-  build-image:
-    needs: check-if-docker-exist
-    if: needs.check-if-docker-exist.outputs.docker-image == ''
-    runs-on: test1-large-runner-lang
     outputs:
-      docker-image: ${{ steps.build.outputs.docker-image }}
-      docker-image-base: ${{ steps.build.outputs.docker-image-base }}
+      ttmlir-commit: ${{ steps.ttmlir-commit.outputs.commit }}
+      cache-hit: ${{ steps.cache-ttmlir-toolchain.outputs.cache-hit }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
+
+      - name: Read tt-mlir commit
+        id: ttmlir-commit
+        run: |
+          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+
+      - name: Cache TT-MLIR Toolchain (LLVM)
+        id: cache-ttmlir-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+          key: ${{ runner.os }}-ttlang-ttmlir-toolchain-${{ steps.ttmlir-commit.outputs.commit }}-v2
+
+      - name: Checkout tt-mlir
+        if: steps.cache-ttmlir-toolchain.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tenstorrent/tt-mlir
+          ref: ${{ steps.ttmlir-commit.outputs.commit }}
+          path: tt-mlir
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install dependencies
+        if: steps.cache-ttmlir-toolchain.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt install software-properties-common
+          sudo add-apt-repository ppa:deadsnakes/ppa
+          sudo apt-get install -y python3.11 python3.11-venv python3.11-dev build-essential ninja-build lld libzstd-dev
+
+      - name: Build tt-mlir toolchain (LLVM, StableHLO, Python)
+        if: steps.cache-ttmlir-toolchain.outputs.cache-hit != 'true'
+        working-directory: tt-mlir
+        run: |
+          mkdir -p ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+          cmake -B env/build env
+          cmake --build env/build
+          echo "tt-mlir toolchain built successfully and installed in ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
+          rm -rf env/build
+
+      - name: Verify toolchain directory exists
+        run: |
+          if [ ! -d "${{ env.TTMLIR_TOOLCHAIN_DIR }}/venv" ]; then
+            echo "ERROR: Toolchain not found at ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
+            echo "Cache hit: ${{ steps.cache-ttmlir-toolchain.outputs.cache-hit }}"
+            exit 1
+          fi
+          echo "✓ Toolchain verified at ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
+          ls -lh ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+
+  build-image:
+    needs: [check-if-images-already-exist, build-toolchain-if-needed]
+    if: needs.check-if-images-already-exist.outputs.docker-image == ''
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 360
+
+    env:
+      TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
+
+    outputs:
+      docker-image: ${{ steps.build.outputs.docker-image }}
+      docker-image-base: ${{ steps.build.outputs.docker-image-base }}
+
+    steps:
+      - name: Maximize space
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Free up some more space
+        run: |
+          .github/scripts/cleanup-ci-space.sh
+
+      - name: Read tt-mlir commit
+        id: ttmlir-commit
+        run: |
+          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+
+      - name: Restore TT-MLIR Toolchain from cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
+          key: ${{ runner.os }}-ttlang-ttmlir-toolchain-${{ steps.ttmlir-commit.outputs.commit }}-v2
+          fail-on-cache-miss: true
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -90,20 +171,30 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      - name: Determine tt-mlir commit
-        id: mlir-commit
+      - name: Clean up Docker before build
         run: |
-          if [ -n "${{ inputs.mlir_override }}" ]; then
-            echo "commit=${{ inputs.mlir_override }}" >> $GITHUB_OUTPUT
-          else
-            COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-            echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-          fi
+          echo "Cleaning up Docker system before build..."
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
+          echo "Docker cleanup complete"
+          df -h
 
       - name: Build Docker images
         id: build
+        env:
+          DOCKER_BUILDKIT: 1
+          BUILDKIT_STEP_LOG_MAX_SIZE: -1
         run: |
-          .github/containers/build-docker-images.sh "${{ steps.mlir-commit.outputs.commit }}" | tee docker.log
+          set -o pipefail
+          set -x  # Show all commands
+          echo "Space usage: " && df -h
+          .github/containers/build-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}" | tee docker.log
+
+          # Check if build was successful
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "ERROR: Docker build failed"
+            exit 1
+          fi
 
           # Extract image name from last line
           DOCKER_IMAGE=$(tail -n 1 docker.log)
@@ -113,10 +204,31 @@ jobs:
           DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
           echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
 
+          echo "Space usage after build: " && df -h
           echo "✓ Docker images built successfully"
 
+      - name: Clean up Docker after build
+        if: always()
+        run: |
+          echo "Cleaning up Docker build cache after build..."
+          docker builder prune -af || true
+          echo "Docker cleanup complete"
+          df -h
+
+      - name: Show disk usage on failure
+        if: failure()
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Disk Usage by Directory ==="
+          du -h --max-depth=2 ${{ github.workspace }} 2>/dev/null | sort -hr | head -20 || true
+          echo ""
+          echo "=== Docker Disk Usage ==="
+          docker system df || true
+
   set-latest-tag:
-    needs: [check-if-docker-exist, build-image]
+    needs: [check-if-images-already-exist, build-image]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure()
     steps:
@@ -130,7 +242,7 @@ jobs:
       - name: Set latest tag
         run: |
           # Get the image name (from either check or build job)
-          DOCKER_IMAGE="${{ needs.check-if-docker-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
+          DOCKER_IMAGE="${{ needs.check-if-images-already-exist.outputs.docker-image || needs.build-image.outputs.docker-image }}"
 
           # Extract the tag from the full image name
           TAG="${DOCKER_IMAGE##*:}"

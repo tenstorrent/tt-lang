@@ -10,7 +10,7 @@ from sim.testing import assert_pcc
 
 
 @ttl.kernel(
-    grid="auto",  # NOTE: allow compiler to choose grid
+    grid="auto",
 )
 def eltwise_add(
     a_in: ttnn.Tensor,

@@ -29,11 +29,13 @@ from typing import (
 from .block import Block
 from .cb import ReserveContext, WaitContext
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
+from .pipe import DstPipeIdentity, SrcPipeIdentity
 from .ttnnsim import Tensor, tensor_shape_in_tiles
 from .typedefs import Count, Pipe, Shape
 
 if TYPE_CHECKING:
     from .cb import ReserveContext, WaitContext
+    from .pipe import SrcPipeIdentity
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
@@ -47,13 +49,23 @@ if TYPE_CHECKING:
 
 # Copy endpoint types - these are the valid types for copy transfers
 # To add a new endpoint type, add it to the Unions and implement a handler for it
-CopyEndpoint = Union[Tensor, Block, Pipe, "ReserveContext", "WaitContext"]
+CopyEndpoint = Union[
+    Tensor,
+    Block,
+    Pipe,
+    "ReserveContext",
+    "WaitContext",
+    "SrcPipeIdentity",
+    DstPipeIdentity,
+]
 CopyEndpointType = Union[
     Type[Tensor],
     Type[Block],
     Type[Pipe],
     Type["ReserveContext"],
     Type["WaitContext"],
+    Type["SrcPipeIdentity"],
+    Type[DstPipeIdentity],
 ]
 
 
@@ -85,6 +97,37 @@ def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
                 for tensor_dim, tile_dim in zip(tensor_shape, tile_shape)
             ]
         )
+    )
+
+
+def tensor_shape_in_tiles_with_skip(
+    tensor_shape: Shape, tile_shape: Shape
+) -> Tuple[int, ...]:
+    """Convert tensor shape to tile dimensions, preserving size-1 dimensions.
+
+    Unlike tensor_shape_in_tiles, this returns 1 for dimensions that are already
+    size 1, rather than attempting to divide by tile dimension. This allows
+    tensors like (N, 1) or (1, N) to be properly validated against blocks.
+
+    Args:
+        tensor_shape: Shape of the tensor (height, width, ...)
+        tile_shape: Shape of each tile (height, width, ...)
+
+    Returns:
+        Shape in tiles, with size-1 dimensions preserved as 1
+
+    Example:
+        tensor_shape_in_tiles_with_skip((2048, 1), (32, 32)) = (64, 1)
+        tensor_shape_in_tiles_with_skip((1, 64), (32, 32)) = (1, 2)
+    """
+    if len(tensor_shape) != len(tile_shape):
+        raise ValueError(
+            f"tensor_shape and tile_shape must have same dimensions: "
+            f"{len(tensor_shape)} vs {len(tile_shape)}"
+        )
+    return tuple(
+        1 if dim_size == 1 else dim_size // tile_dim
+        for dim_size, tile_dim in zip(tensor_shape, tile_shape)
     )
 
 
@@ -207,20 +250,35 @@ class BlockToPipeHandler:
                 entry = new_entry
 
         # Calculate number of receivers based on dst_core_range type
-        match dst.dst_core_range:
-            case (tuple() as first, tuple() as second):
-                # Rectangular range: count all cores in the rectangle
-                dims = len(first)
-                num_receivers = 1
+        num_receivers = 1
+
+        # Check if it's a CoreRange with slices (by examining elements)
+        if isinstance(dst.dst_core_range, tuple) and len(dst.dst_core_range) > 0:
+            has_slice = any(isinstance(item, slice) for item in dst.dst_core_range)
+
+            if has_slice:
+                # CoreRange with slices: expand and count
+                from .pipe import expand_core_range
+                from .typedefs import CoreRange
+
+                expanded_cores = expand_core_range(dst.dst_core_range)  # type: ignore[arg-type]
+                num_receivers = len(expanded_cores)
+            elif (
+                all(isinstance(item, tuple) for item in dst.dst_core_range)
+                and len(dst.dst_core_range) == 2
+            ):
+                # Legacy rectangular range: ((x1,y1), (x2,y2))
+                first, second = dst.dst_core_range
+                dims = len(first)  # type: ignore[arg-type]
                 for i in range(dims):
-                    range_size = abs(second[i] - first[i]) + 1
+                    range_size = abs(second[i] - first[i]) + 1  # type: ignore[index]
                     num_receivers *= range_size
-            case tuple():
+            else:
                 # Single multi-dimensional core
                 num_receivers = 1
-            case int():
-                # Single 1D core
-                num_receivers = 1
+        elif isinstance(dst.dst_core_range, int):
+            # Single 1D core
+            num_receivers = 1
 
         # Add to the queue for this pipe with receiver count
         # and notify any waiting receivers via event
@@ -240,13 +298,11 @@ class TensorToBlockHandler:
 
     def validate(self, src: Tensor, dst: Block) -> None:
         if len(src.shape) != 2:
-            raise ValueError(
-                f"Copy only supports 2D tensors, got {len(src.shape)}D tensor with shape {src.shape}"
-            )
+            raise ValueError(f"Tensor must be 2-dimensional, got shape {src.shape}")
 
         # Validate tensor shape matches block shape (in tiles)
         block_shape = dst.shape
-        src_shape_in_tiles = tensor_shape_in_tiles(src, TILE_SHAPE)
+        src_shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
         if src_shape_in_tiles != block_shape:
             raise ValueError(
                 f"Tensor shape {src.shape} (={src_shape_in_tiles} tiles) does not match "
@@ -259,18 +315,22 @@ class TensorToBlockHandler:
         Extracts tiles from src using tile coordinates and stores them as
         ttnn.Tensor objects in the Block slots.
         """
-        num_tiles = tile_count(src.shape, TILE_SHAPE)
-        width_tiles = src.shape[1] // TILE_SHAPE[1]
+        # Calculate tile count, handling size-1 dimensions properly
+        shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
+        num_tiles = int(prod(shape_in_tiles))
+        width_tiles = shape_in_tiles[1]
 
+        tiles = []
         for tile_idx in range(num_tiles):
             # Convert linear index to 2D tile coordinates
             h_tile = tile_idx // width_tiles
             w_tile = tile_idx % width_tiles
 
             # Extract single tile using tile coordinates [h:h+1, w:w+1]
-            # This returns a ttnn.Tensor with shape (TILE_HEIGHT, TILE_WIDTH)
             tile = src[h_tile : h_tile + 1, w_tile : w_tile + 1]
-            dst[tile_idx] = tile
+            tiles.append(tile)
+
+        dst.copy_as_dest(tiles)
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
         return True
@@ -281,14 +341,13 @@ class BlockToTensorHandler:
     """Handler for Block → TTNN.Tensor transfers using tile-level indexing."""
 
     def validate(self, src: Block, dst: Tensor) -> None:
+        # Validate tensor is 2D
         if len(dst.shape) != 2:
-            raise ValueError(
-                f"Copy only supports 2D tensors, got {len(dst.shape)}D tensor with shape {dst.shape}"
-            )
+            raise ValueError(f"Tensor must be 2-dimensional, got shape {dst.shape}")
 
         # Validate tensor shape matches block shape (in tiles)
         block_shape = src.shape
-        dst_shape_in_tiles = tensor_shape_in_tiles(dst, TILE_SHAPE)
+        dst_shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
         if dst_shape_in_tiles != block_shape:
             raise ValueError(
                 f"Tensor shape {dst.shape} (={dst_shape_in_tiles} tiles) does not match "
@@ -301,8 +360,10 @@ class BlockToTensorHandler:
         Retrieves ttnn.Tensor objects from Block slots and places them into
         the destination tensor using tile coordinates.
         """
-        dst_tiles = tile_count(dst.shape, TILE_SHAPE)
-        width_tiles = dst.shape[1] // TILE_SHAPE[1]
+        # Calculate tile count, handling size-1 dimensions properly
+        shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
+        dst_tiles = int(prod(shape_in_tiles))
+        width_tiles = shape_in_tiles[1]
 
         for tile_idx in range(dst_tiles):
             # Convert linear index to 2D tile coordinates
@@ -394,7 +455,7 @@ class PipeToBlockHandler:
                         f"does not match pipe data length ({len(src_data)})"
                     )
 
-                dst.store(src_data)
+                dst.copy_as_dest(src_data)
 
                 # Decrement receiver count and update queue
                 remaining_receivers -= 1
@@ -407,6 +468,42 @@ class PipeToBlockHandler:
                     queue[0] = (src_data, remaining_receivers)
 
                 return
+
+
+# ===== Pipe Identity Wrapper Handlers =====
+# These handlers delegate to the underlying Pipe handlers for SrcPipeIdentity and DstPipeIdentity
+
+
+@register_copy_handler(Block, SrcPipeIdentity)
+class BlockToSrcPipeIdentityHandler:
+    """Handler for Block → SrcPipeIdentity (delegates to Block → Pipe)."""
+
+    def validate(self, src: Block, dst: SrcPipeIdentity) -> None:
+        # Delegate to the Pipe handler
+        BlockToPipeHandler().validate(src, dst.pipe)
+
+    def transfer(self, src: Block, dst: SrcPipeIdentity) -> None:
+        # Delegate to the Pipe handler
+        BlockToPipeHandler().transfer(src, dst.pipe)
+
+    def can_wait(self, src: Block, dst: SrcPipeIdentity) -> bool:
+        return BlockToPipeHandler().can_wait(src, dst.pipe)
+
+
+@register_copy_handler(DstPipeIdentity, Block)
+class DstPipeIdentityToBlockHandler:
+    """Handler for DstPipeIdentity → Block (delegates to Pipe → Block)."""
+
+    def validate(self, src: DstPipeIdentity, dst: Block) -> None:
+        # Delegate to the Pipe handler
+        PipeToBlockHandler().validate(src.pipe, dst)
+
+    def transfer(self, src: DstPipeIdentity, dst: Block) -> None:
+        # Delegate to the Pipe handler
+        PipeToBlockHandler().transfer(src.pipe, dst)
+
+    def can_wait(self, src: DstPipeIdentity, dst: Block) -> bool:
+        return PipeToBlockHandler().can_wait(src.pipe, dst)
 
 
 # ===== Context Manager Wrapper Handlers =====

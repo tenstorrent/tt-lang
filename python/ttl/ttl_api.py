@@ -11,6 +11,7 @@ import functools
 import inspect
 import os
 import random
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
 try:
@@ -29,6 +30,15 @@ from ttmlir.passes import (
 )
 from ttmlir.passmanager import PassManager
 
+from ._src.auto_profile import (
+    build_cb_wait_to_dma_map,
+    build_dma_producer_to_cb_map,
+    get_line_mapper,
+    is_auto_profile_enabled,
+    load_cb_flow_graph,
+    parse_device_profile_csv,
+    print_profile_report,
+)
 from ._src.tensor_registry import (
     get_tensor_global_index,
     get_tensor_source,
@@ -55,6 +65,7 @@ from .kernel_runner import (
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .ttl_utils import get_thread_type_string
+from .config import HAS_TT_DEVICE
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -89,14 +100,107 @@ def _get_tensor_cache_info(tensor) -> tuple:
     return (shape, dtype, memory_space, layout)
 
 
-def _make_cache_key(args: tuple) -> tuple:
-    """Create cache key from tensor properties that affect compilation."""
-    return tuple(_get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg))
+def _make_cache_key(
+    args: tuple,
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+) -> tuple:
+    """Create cache key from tensor properties and runtime compute config parameters."""
+    tensor_key = tuple(
+        _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
+    )
+    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en)
 
 
 def _should_execute() -> bool:
     """Check if kernel execution should proceed (not compile-only mode)."""
     return os.environ.get("TTLANG_COMPILE_ONLY", "0") != "1"
+
+
+def _run_profiling_pipeline(
+    tensors: tuple,
+    all_source_lines: Dict[str, List[str]],
+    thread_to_kernel: Dict[str, str],
+    kernel_line_offsets: Optional[Dict[str, int]] = None,
+):
+    """
+    Read device profiler data and display profile report.
+
+    Called after kernel execution when auto-profiling is enabled.
+
+    Args:
+        tensors: Tuple of tensor arguments passed to the kernel
+        all_source_lines: Dict mapping kernel name to source lines
+        thread_to_kernel: Dict mapping RISC thread name to kernel name
+    """
+    if not is_auto_profile_enabled():
+        return
+
+    if ttnn is None:
+        print("[Auto-profile] ttnn not available, skipping profiling")
+        return
+
+    from pathlib import Path
+
+    # Get device from first ttnn tensor
+    device = None
+    for tensor in tensors:
+        if is_ttnn_tensor(tensor) and hasattr(tensor, "device"):
+            device = tensor.device()
+            break
+
+    if device is None:
+        print("[Auto-profile] No device found in tensors, skipping profiling")
+        return
+
+    # Read profiler data from device
+    try:
+        ttnn.ReadDeviceProfiler(device)
+    except Exception as e:
+        print(f"[Auto-profile] Failed to read device profiler: {e}")
+        return
+
+    # Find the profile CSV - default location is $TT_METAL_HOME/generated/profiler/.logs/
+    if "TTLANG_PROFILE_CSV" in os.environ:
+        csv_path = Path(os.environ["TTLANG_PROFILE_CSV"])
+    else:
+        tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+        if not tt_metal_home:
+            print("[Auto-profile] TT_METAL_HOME not set, cannot find profile CSV")
+            return
+        csv_path = (
+            Path(tt_metal_home) / "generated/profiler/.logs/profile_log_device.csv"
+        )
+
+    if not csv_path.exists():
+        print(f"[Auto-profile] Profile CSV not found at {csv_path}")
+        print("[Auto-profile] Ensure TT_METAL_DEVICE_PROFILER=1 is set before running")
+        return
+
+    # Parse and display results
+    line_mapper = get_line_mapper()
+
+    # Load CB flow graph for DMA attribution
+    cb_flow = load_cb_flow_graph(csv_path)
+    cb_wait_to_dma = build_cb_wait_to_dma_map(cb_flow)
+    dma_producer_to_cb = build_dma_producer_to_cb_map(cb_flow)
+
+    try:
+        results = parse_device_profile_csv(csv_path, line_mapper)
+        if results:
+            print_profile_report(
+                results,
+                all_source_lines,
+                thread_to_kernel,
+                line_mapper,
+                cb_wait_to_dma,
+                dma_producer_to_cb,
+                kernel_line_offsets,
+            )
+        else:
+            print("[Auto-profile] No signpost results found in profile CSV")
+    except Exception as e:
+        print(f"[Auto-profile] Failed to parse profile CSV: {e}")
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -119,9 +223,62 @@ def _is_interleaved_tensor(tensor) -> bool:
     return False
 
 
+def _has_float32_args(args) -> bool:
+    """
+    Check if any input tensor uses float32 dtype.
+
+    Inspects the tensor arguments to detect float32. This is used to
+    automatically enable fp32_dest_acc_en configuration for compute kernels.
+
+    Args:
+        args: List of tensor arguments (torch or ttnn)
+
+    Returns:
+        True if any tensor uses float32 dtype, False otherwise
+    """
+    try:
+        for tensor in args:
+            if tensor is None:
+                continue
+
+            # Check ttnn tensor
+            if is_ttnn_tensor(tensor):
+                tensor_dtype = tensor.dtype
+                # ttnn.float32
+                if (
+                    hasattr(tensor_dtype, "name")
+                    and "float32" in str(tensor_dtype.name).lower()
+                ):
+                    return True
+                if "float32" in str(tensor_dtype).lower():
+                    return True
+            # Check torch tensor
+            elif hasattr(tensor, "dtype"):
+                import torch
+
+                if tensor.dtype == torch.float32:
+                    return True
+    except (AttributeError, TypeError, ImportError):
+        pass
+
+    return False
+
+
 def _resolve_grid(grid, args, kwargs):
-    """Resolve grid, evaluating callable if needed."""
-    return grid(*args, **kwargs) if callable(grid) else grid
+    """Resolve grid, evaluating callable or 'auto' if needed."""
+    if callable(grid):
+        return grid(*args, **kwargs)
+    if grid == "auto":
+        for arg in args:
+            if is_ttnn_tensor(arg) and hasattr(arg, "device"):
+                device = arg.device()
+                device_grid = device.compute_with_storage_grid_size()
+                return (device_grid.x, device_grid.y)
+        raise ValueError(
+            "grid='auto' requires at least one ttnn tensor argument "
+            "to determine device compute grid"
+        )
+    return grid
 
 
 def _get_source_line_offset(f) -> int:
@@ -191,6 +348,10 @@ class CompiledTTNNKernel:
         kernel_tensor_indices,
         cb_configs=None,
         program_hash=None,
+        source_lines=None,
+        all_source_lines=None,
+        thread_to_kernel=None,
+        kernel_line_offsets=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -204,6 +365,10 @@ class CompiledTTNNKernel:
             kernel_tensor_indices: List of global tensor indices used by each kernel
             cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index
             program_hash: Hash for tt-metal program cache
+            source_lines: Source code lines for auto-profiling reports (deprecated)
+            all_source_lines: Dict mapping kernel name to source lines
+            thread_to_kernel: Dict mapping RISC thread name to kernel name
+            kernel_line_offsets: Dict mapping kernel name to line offset
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -213,11 +378,26 @@ class CompiledTTNNKernel:
         self.kernel_tensor_indices = kernel_tensor_indices
         self.cb_configs = cb_configs or []
         self.program_hash = program_hash
+        self.source_lines = source_lines
+        self.all_source_lines = all_source_lines or {}
+        self.thread_to_kernel = thread_to_kernel or {}
+        self.kernel_line_offsets = kernel_line_offsets or {}
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
+
+        # Validate grid against device's compute grid.
+        device = args[0].device()
+        device_grid = device.compute_with_storage_grid_size()
+        kernel_grid = self.core_ranges.bounding_box().grid_size()
+        if kernel_grid.x > device_grid.x or kernel_grid.y > device_grid.y:
+            raise ValueError(
+                f"Kernel grid ({kernel_grid.x}, {kernel_grid.y}) exceeds device "
+                f"compute grid ({device_grid.x}, {device_grid.y}). "
+                f"Reduce grid size to fit within available cores."
+            )
 
         # Build kernel specs from stored kernel info.
         kernel_specs = []
@@ -268,7 +448,12 @@ def _compile_ttnn_kernel(
     thread_tensor_indices,
     cb_configs=None,
     program_hash=None,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
     verbose=True,
+    source_lines=None,
+    all_source_lines=None,
+    kernel_line_offsets=None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -282,6 +467,7 @@ def _compile_ttnn_kernel(
         num_outs: Number of output tensors
         program_hash: Hash for tt-metal program cache
         verbose: Print compilation info
+        source_lines: Source code lines for auto-profiling reports
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -346,13 +532,12 @@ def _compile_ttnn_kernel(
         return None
 
     # Build CoreRangeSet from grid dimensions
-    # Grid is (rows, cols), CoreCoord is (x=col, y=row)
-    grid_rows, grid_cols = grid
+    # Grid is (cols, rows) = (x, y), matching tt-metal CoreCoord convention
+    grid_cols, grid_rows = grid
     core_start = ttnn.CoreCoord(0, 0)
     core_end = ttnn.CoreCoord(grid_cols - 1, grid_rows - 1)
     core_range = ttnn.CoreRange(core_start, core_end)
     core_ranges = ttnn.CoreRangeSet([core_range])
-
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
@@ -361,6 +546,13 @@ def _compile_ttnn_kernel(
     kernel_arg_specs = []
     noc_kernel_idx = 0
 
+    # Check if input args use f32 to auto-configure compute kernels
+    has_f32 = _has_float32_args(args)
+
+    # Build thread-to-kernel mapping for profiling
+    # Maps RISC thread names to kernel names
+    thread_to_kernel = {}
+
     for name, thread_type in kernel_info:
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
@@ -368,11 +560,27 @@ def _compile_ttnn_kernel(
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
+            if fp32_dest_acc_en is not None:
+                config.fp32_dest_acc_en = fp32_dest_acc_en
+            if dst_full_sync_en is not None:
+                config.dst_full_sync_en = dst_full_sync_en
+            if fp32_dest_acc_en is None and has_f32:
+                config.fp32_dest_acc_en = True
+                if verbose:
+                    print(
+                        "  [fp32 detected] Enabling fp32_dest_acc_en for compute kernel"
+                    )
+            # Compute kernels run on TRISC threads
+            thread_to_kernel["TRISC_0"] = name
+            thread_to_kernel["TRISC_1"] = name
+            thread_to_kernel["TRISC_2"] = name
         elif thread_type == "noc":
             if noc_kernel_idx == 0:
                 config = ttnn.ReaderConfigDescriptor()
+                thread_to_kernel["NCRISC"] = name  # Reader
             else:
                 config = ttnn.WriterConfigDescriptor()
+                thread_to_kernel["BRISC"] = name  # Writer
             noc_kernel_idx += 1
         else:
             config = ttnn.ReaderConfigDescriptor()
@@ -395,6 +603,10 @@ def _compile_ttnn_kernel(
         kernel_tensor_indices=thread_tensor_indices,
         cb_configs=cb_configs,
         program_hash=program_hash,
+        source_lines=source_lines,
+        all_source_lines=all_source_lines,
+        thread_to_kernel=thread_to_kernel,
+        kernel_line_offsets=kernel_line_offsets,
     )
 
     if verbose:
@@ -614,6 +826,8 @@ def _compile_kernel(
     memory_space: str,
     tiled: bool,
     program_hash: int,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -629,6 +843,8 @@ def _compile_kernel(
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
         program_hash: Hash for tt-metal program cache
+        fp32_dest_acc_en: Optional override for fp32_dest_acc_en
+        dst_full_sync_en: Optional override for dst_full_sync_en
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -715,6 +931,9 @@ def _compile_kernel(
         all_source_lines = {}
         all_source_files = {}
 
+        # Track per-kernel line offsets for correct display
+        kernel_line_offsets = {}
+
         for compile_thread in program.threads:
             try:
                 ct = compile_thread(*program.args, **program.kwargs)
@@ -748,6 +967,9 @@ def _compile_kernel(
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
                 all_source_files[ct.name] = ct.source_file
                 all_source_lines[ct.name] = ct.source_lines
+            # Track per-kernel line offset
+            if hasattr(ct, "line_offset"):
+                kernel_line_offsets[ct.name] = ct.line_offset
 
         module = Module.create(loc)
 
@@ -770,19 +992,60 @@ def _compile_kernel(
         verify = True
 
         # fmt: off
+        set_compute_config_pass = "func.func(ttl-set-compute-kernel-config)"
+        config_options = []
+        if fp32_dest_acc_en is not None:
+            config_options.append(
+                f"fp32-dest-acc-en={1 if fp32_dest_acc_en else 0}"
+            )
+        if dst_full_sync_en is not None:
+            config_options.append(
+                f"dst-full-sync-en={1 if dst_full_sync_en else 0}"
+            )
+        if config_options:
+            set_compute_config_pass = (
+                "func.func(ttl-set-compute-kernel-config{"
+                + " ".join(config_options)
+                + "})"
+            )
+
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
+            set_compute_config_pass,
             "func.func(ttl-assign-dst)",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
             "func.func(ttl-annotate-cb-associations)",
+        ]
+
+        # Add auto-profiling passes if enabled
+        if is_auto_profile_enabled():
+            if "TTLANG_PROFILE_CSV" in os.environ:
+                cb_flow_json = str(Path(os.environ["TTLANG_PROFILE_CSV"]).parent / "cb_flow_graph.json")
+            else:
+                tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+                if not tt_metal_home:
+                    raise ValueError("TTLANG_AUTO_PROFILE=1 requires TT_METAL_HOME or TTLANG_PROFILE_CSV to be set")
+                cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
+            pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
+
+        pipeline_passes += [
             "convert-ttl-to-ttkernel",
+        ]
+
+        if is_auto_profile_enabled():
+            pipeline_passes.append("ttl-lower-signpost-to-emitc")
+
+        pipeline_passes += [
             "canonicalize",
             "cse",
             "lower-affine",
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
+
+        if HAS_TT_DEVICE:
+            pipeline_passes.insert(0, "ttcore-register-device")
 
         pipeline = ",".join(pipeline_passes)
 
@@ -835,6 +1098,12 @@ def _compile_kernel(
                 )
             print(f"SAVED FINAL TO {final_mlir_path}")
 
+        # Extract source lines for auto-profiling (use first thread's source)
+        profile_source_lines = None
+        if all_source_lines:
+            first_thread = next(iter(all_source_lines.keys()))
+            profile_source_lines = all_source_lines[first_thread]
+
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(
             module,
@@ -844,6 +1113,11 @@ def _compile_kernel(
             thread_tensor_indices,
             cb_configs,
             program_hash=program_hash,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+            source_lines=profile_source_lines,
+            all_source_lines=all_source_lines,
+            kernel_line_offsets=kernel_line_offsets,
         )
         return compiled_kernel
 
@@ -855,6 +1129,8 @@ def pykernel_gen(
     num_outs: int = 1,
     memory_space: str = "L1",
     tiled: bool = True,
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -870,6 +1146,8 @@ def pykernel_gen(
         num_outs: Number of output arguments
         memory_space: "L1" or "DRAM"
         tiled: Whether to use tiled layout
+        fp32_dest_acc_en: Optional override for fp32_dest_acc_en
+        dst_full_sync_en: Optional override for dst_full_sync_en
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -914,9 +1192,16 @@ def pykernel_gen(
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
             resolved_grid = _resolve_grid(grid, args, kwargs)
+            fp32_override = fp32_dest_acc_en
+            dst_sync_override = dst_full_sync_en
 
             # Build cache key from tensor properties
-            cache_key = _make_cache_key(args)
+            cache_key = _make_cache_key(
+                args,
+                # Runtime options:
+                fp32_dest_acc_en=fp32_override,
+                dst_full_sync_en=dst_sync_override,
+            )
 
             # Check cache for previously compiled kernel
             if cache_key in cache:
@@ -937,6 +1222,8 @@ def pykernel_gen(
                     memory_space,
                     tiled,
                     program_hash,
+                    fp32_dest_acc_en=fp32_override,
+                    dst_full_sync_en=dst_sync_override,
                 )
 
                 if compiled_kernel is not None:
@@ -944,7 +1231,18 @@ def pykernel_gen(
 
             # Execute (unless compile-only mode)
             if compiled_kernel is not None and _should_execute():
-                return compiled_kernel(*args)
+                result = compiled_kernel(*args)
+
+                # Run auto-profiling after execution
+                if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
+                    _run_profiling_pipeline(
+                        args,
+                        compiled_kernel.all_source_lines,
+                        compiled_kernel.thread_to_kernel,
+                        compiled_kernel.kernel_line_offsets,
+                    )
+
+                return result
 
         return _wrapper
 
