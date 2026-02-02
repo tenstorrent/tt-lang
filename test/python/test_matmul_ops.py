@@ -381,7 +381,9 @@ class TestMatmulMTiling:
         result = ttnn.to_torch(c)
 
         print("\n=== M-Tiling Test ===")
-        print(f"Expected all 32.0, got C[0,0]={result[0, 0].item()}, C[32,0]={result[32, 0].item()}")
+        print(
+            f"Expected all 32.0, got C[0,0]={result[0, 0].item()}, C[32,0]={result[32, 0].item()}"
+        )
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-1)
 
@@ -441,7 +443,9 @@ class TestMatmulNTiling:
         result = ttnn.to_torch(c)
 
         print("\n=== N-Tiling Test ===")
-        print(f"Expected all 32.0, got C[0,0]={result[0, 0].item()}, C[0,32]={result[0, 32].item()}")
+        print(
+            f"Expected all 32.0, got C[0,0]={result[0, 0].item()}, C[0,32]={result[0, 32].item()}"
+        )
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-1)
 
@@ -521,13 +525,13 @@ class TestMatmulFullMultitile:
         b_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
 
         # Fill A tiles with distinct values
-        a_torch[0:32, 0:32] = 0.1   # A[0,0]
+        a_torch[0:32, 0:32] = 0.1  # A[0,0]
         a_torch[0:32, 32:64] = 0.2  # A[0,1]
         a_torch[32:64, 0:32] = 0.3  # A[1,0]
         a_torch[32:64, 32:64] = 0.4  # A[1,1]
 
         # Fill B tiles with distinct values
-        b_torch[0:32, 0:32] = 1.0   # B[0,0]
+        b_torch[0:32, 0:32] = 1.0  # B[0,0]
         b_torch[0:32, 32:64] = 2.0  # B[0,1]
         b_torch[32:64, 0:32] = 3.0  # B[1,0]
         b_torch[32:64, 32:64] = 4.0  # B[1,1]
@@ -546,8 +550,12 @@ class TestMatmulFullMultitile:
 
         print("\n=== Full Multi-tile PyTorch Reference Test ===")
         print(f"A tiles: [0.1, 0.2; 0.3, 0.4], B tiles: [1, 2; 3, 4]")
-        print(f"Expected C[0,0]={expected[0, 0].item():.2f}, got {result[0, 0].item():.2f}")
-        print(f"Expected C[32,32]={expected[32, 32].item():.2f}, got {result[32, 32].item():.2f}")
+        print(
+            f"Expected C[0,0]={expected[0, 0].item():.2f}, got {result[0, 0].item():.2f}"
+        )
+        print(
+            f"Expected C[32,32]={expected[32, 32].item():.2f}, got {result[32, 32].item():.2f}"
+        )
 
         assert_allclose(result.float(), expected.float(), rtol=1e-1, atol=1.0)
 
@@ -613,6 +621,7 @@ class TestMatmulRandomInputs:
         result = ttnn.to_torch(c)
 
         from ttlang_test_utils import assert_pcc
+
         pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
         print(f"\n=== Random Single Tile Test ===")
         print(f"PCC: {pcc:.6f}")
@@ -634,6 +643,7 @@ class TestMatmulRandomInputs:
         result = ttnn.to_torch(c)
 
         from ttlang_test_utils import assert_pcc
+
         pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
         print(f"\n=== Random K-Accumulation Test ===")
         print(f"PCC: {pcc:.6f}")
@@ -655,6 +665,7 @@ class TestMatmulRandomInputs:
         result = ttnn.to_torch(c)
 
         from ttlang_test_utils import assert_pcc
+
         pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
         print(f"\n=== Random Full Multi-tile Test ===")
         print(f"PCC: {pcc:.6f}")
@@ -707,6 +718,7 @@ class TestMatmulLargeTiles:
         result = ttnn.to_torch(c)
 
         from ttlang_test_utils import assert_pcc
+
         pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
         print(f"\n=== Large Multi-tile Random Test ===")
         print(f"PCC: {pcc:.6f}")
@@ -734,6 +746,7 @@ class TestMatmulDRAM:
         result = ttnn.to_torch(c)
 
         from ttlang_test_utils import assert_pcc
+
         pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
         print(f"\n=== DRAM Single Tile Test ===")
         print(f"PCC: {pcc:.6f}")
@@ -757,6 +770,7 @@ class TestMatmulDRAM:
         result = ttnn.to_torch(c)
 
         from ttlang_test_utils import assert_pcc
+
         pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
         print(f"\n=== DRAM Full Multi-tile Test ===")
         print(f"PCC: {pcc:.6f}")
@@ -764,4 +778,5 @@ class TestMatmulDRAM:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))

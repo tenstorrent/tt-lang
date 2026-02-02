@@ -723,8 +723,8 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
     }
 
     // Emit mm_init_short before the K loop.
-    Value transpose = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getI32IntegerAttr(0));
+    Value transpose =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
     rewriter.create<ttk::MatmulInitShortOp>(loc, *aCB, *bCB, transpose);
 
     // Create K loop if K > 1, otherwise just emit single matmul_tiles.

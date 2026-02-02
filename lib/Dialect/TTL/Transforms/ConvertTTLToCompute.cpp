@@ -588,13 +588,16 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     Value bCb = getAttachedCB(op.getB());
     Value cCb = getAttachedCB(op.getC());
     if (!aCb) {
-      return op.emitError("matmul input A must be attached to a circular buffer");
+      return op.emitError(
+          "matmul input A must be attached to a circular buffer");
     }
     if (!bCb) {
-      return op.emitError("matmul input B must be attached to a circular buffer");
+      return op.emitError(
+          "matmul input B must be attached to a circular buffer");
     }
     if (!cCb) {
-      return op.emitError("matmul output C must be attached to a circular buffer");
+      return op.emitError(
+          "matmul output C must be attached to a circular buffer");
     }
 
     if (aType.getRank() != 2 || bType.getRank() != 2 ||
@@ -620,10 +623,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     AffineMap bMap = AffineMap::get(2, 0, {c0, d1}, ctx);
     AffineMap cMap = AffineMap::get(2, 0, {d0, d1}, ctx);
 
-    SmallVector<Attribute> maps = {AffineMapAttr::get(aMap),
-                                   AffineMapAttr::get(bMap),
-                                   AffineMapAttr::get(cMap),
-                                   AffineMapAttr::get(cMap)};
+    SmallVector<Attribute> maps = {
+        AffineMapAttr::get(aMap), AffineMapAttr::get(bMap),
+        AffineMapAttr::get(cMap), AffineMapAttr::get(cMap)};
 
     // Iterator types: [parallel, parallel]
     SmallVector<Attribute> iterTypes = {rewriter.getStringAttr("parallel"),
@@ -634,9 +636,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
         rewriter.create<AttachCBOp>(loc, init.getType(), init, cCb);
 
     auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType},
-        ValueRange{op.getA(), op.getB(), op.getC()}, ValueRange{initAttached},
-        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+        loc, TypeRange{outputType}, ValueRange{op.getA(), op.getB(), op.getC()},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
@@ -647,10 +649,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     body->addArgument(tileType, loc); // C tile (output)
 
     rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TileMatmulOp>(loc, tileType,
-                                                  body->getArgument(0),
-                                                  body->getArgument(1),
-                                                  body->getArgument(2));
+    Value result = rewriter.create<TileMatmulOp>(
+        loc, tileType, body->getArgument(0), body->getArgument(1),
+        body->getArgument(2));
     rewriter.create<YieldOp>(loc, ValueRange{result});
 
     rewriter.replaceOp(op, computeOp.getResult(0));
