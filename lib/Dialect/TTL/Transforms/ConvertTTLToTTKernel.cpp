@@ -103,7 +103,8 @@ public:
   /// Get receiver CB info for a pipe. Returns nullptr if not found.
   const ReceiverCBInfo *getReceiverInfo(int64_t srcX, int64_t srcY,
                                         int64_t dstStartX, int64_t dstStartY,
-                                        int64_t dstEndX, int64_t dstEndY) const {
+                                        int64_t dstEndX,
+                                        int64_t dstEndY) const {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY};
     auto it = receiverCBs.find(key);
     if (it == receiverCBs.end()) {

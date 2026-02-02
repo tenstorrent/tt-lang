@@ -1084,7 +1084,7 @@ def _compile_kernel(
         original_env = os.environ.get("TTLANG_PIPE_GRAPH_JSON")
         try:
             pipe_graph_fd = tempfile.NamedTemporaryFile(
-                mode='w', suffix='.json', delete=False
+                mode="w", suffix=".json", delete=False
             )
             pipe_graph_path = pipe_graph_fd.name
             pipe_graph_fd.close()

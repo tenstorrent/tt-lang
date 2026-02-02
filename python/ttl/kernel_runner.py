@@ -171,7 +171,9 @@ def build_kernel_descriptors(
             print(
                 f"  Pipe: src=({p.srcX},{p.srcY}) -> dst=({p.dstStartX},{p.dstStartY})-({p.dstEndX},{p.dstEndY})"
             )
-            print(f"    receiverCBIndex={p.receiverCBIndex}, runtimeArgSlot={p.runtimeArgSlot}")
+            print(
+                f"    receiverCBIndex={p.receiverCBIndex}, runtimeArgSlot={p.runtimeArgSlot}"
+            )
 
     for spec in kernel_specs:
         # runtime_args structure: [x][y][args_per_core].
@@ -341,7 +343,9 @@ def run_kernel_on_device(
         # Allocate semaphores 0 through max_sem_idx, initialized to 0
         for sem_id in range(max_sem_idx + 1):
             semaphore_descriptors.append(
-                ttnn.SemaphoreDescriptor(sem_id, core_ranges=core_ranges, initial_value=0)
+                ttnn.SemaphoreDescriptor(
+                    sem_id, core_ranges=core_ranges, initial_value=0
+                )
             )
 
     # Build and execute program.
