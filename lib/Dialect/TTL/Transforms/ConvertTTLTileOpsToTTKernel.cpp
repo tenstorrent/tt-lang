@@ -764,6 +764,190 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Reduce Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Convert TTL ReduceType to TTKernel ReduceType.
+static ttk::ReduceType convertReduceType(ttl::ReduceType ttlType) {
+  switch (ttlType) {
+  case ttl::ReduceType::Sum:
+    return ttk::ReduceType::Sum;
+  case ttl::ReduceType::Max:
+    return ttk::ReduceType::Max;
+  }
+  llvm_unreachable("unknown ReduceType");
+}
+
+/// Convert TTL ReduceDim to TTKernel ReduceDim.
+static ttk::ReduceDim convertReduceDim(ttl::ReduceDim ttlDim) {
+  switch (ttlDim) {
+  case ttl::ReduceDim::Row:
+    return ttk::ReduceDim::Row;
+  case ttl::ReduceDim::Col:
+    return ttk::ReduceDim::Col;
+  case ttl::ReduceDim::Scalar:
+    return ttk::ReduceDim::Scalar;
+  }
+  llvm_unreachable("unknown ReduceDim");
+}
+
+/// Lower ttl.tile_reduce to TTKernel reduce_init + reduce_tile.
+/// Reads from input CB and scaler CB, writes to DST.
+/// Handles multi-tile accumulation by emitting loops over tiles to reduce.
+struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
+  using OpConversionPattern<TileReduceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileReduceOp op, TileReduceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+    auto inCB =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
+    }
+
+    auto scalerCB = lookupAndConvertCB(op.getScaler(), funcOp, typeConverter,
+                                       rewriter, loc);
+    if (failed(scalerCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert scaler CB");
+    }
+
+    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
+                                    rewriter, loc);
+    if (failed(outCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
+    }
+
+    // Get DST index from attribute (assigned by TTLAssignDST pass).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdxVal = dstIdxAttr.getInt();
+    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+
+    // Get input CB shape to determine reduction dimensions.
+    auto inShape = getCBTileGridShape(op.getInput(), funcOp);
+    if (!inShape) {
+      return rewriter.notifyMatchFailure(op, "cannot determine input CB shape");
+    }
+    int64_t inRows = inShape->first;
+    int64_t inCols = inShape->second;
+
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+    // Get M, N indices from enclosing loops (current output tile position).
+    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
+    Value mIdx = zero;
+    Value nIdx = zero;
+    if (loops.size() >= 2) {
+      nIdx = loops[0].getInductionVar();
+      mIdx = loops[1].getInductionVar();
+    } else if (loops.size() == 1) {
+      nIdx = loops[0].getInductionVar();
+    }
+
+    auto ttkReduceType = convertReduceType(op.getReduceType());
+    auto ttkReduceDim = convertReduceDim(op.getReduceDim());
+
+    // Emit reduce_init before accumulation loops.
+    rewriter.create<ttk::ReduceInitOp>(loc, *inCB, *scalerCB, *outCB,
+                                       ttkReduceType, ttkReduceDim);
+
+    auto reduceDim = op.getReduceDim();
+
+    if (reduceDim == ttl::ReduceDim::Scalar) {
+      // Scalar reduce: loop over all M*N tiles and accumulate.
+      if (inRows > 1 || inCols > 1) {
+        Value rowEnd = rewriter.create<arith::ConstantIndexOp>(loc, inRows);
+        Value colEnd = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+        auto rowLoop = rewriter.create<scf::ForOp>(loc, zero, rowEnd, one);
+        rewriter.setInsertionPointToStart(rowLoop.getBody());
+        Value rowIdx = rowLoop.getInductionVar();
+
+        auto colLoop = rewriter.create<scf::ForOp>(loc, zero, colEnd, one);
+        rewriter.setInsertionPointToStart(colLoop.getBody());
+        Value colIdx = colLoop.getInductionVar();
+
+        // inCBIdx = rowIdx * inCols + colIdx
+        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value rowMulCols = rewriter.create<arith::MulIOp>(loc, rowIdx, inColsVal);
+        Value inCBIdx = rewriter.create<arith::AddIOp>(loc, rowMulCols, colIdx);
+
+        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx, zero,
+                                           dstIdx, ttkReduceType, ttkReduceDim);
+        rewriter.setInsertionPointAfter(rowLoop);
+      } else {
+        // Single tile: no loop needed.
+        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, zero, zero,
+                                           dstIdx, ttkReduceType, ttkReduceDim);
+      }
+    } else if (reduceDim == ttl::ReduceDim::Row) {
+      // Row reduce (sum across columns): for current row, loop over columns.
+      if (inCols > 1) {
+        Value colEnd = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+        auto colLoop = rewriter.create<scf::ForOp>(loc, zero, colEnd, one);
+        rewriter.setInsertionPointToStart(colLoop.getBody());
+        Value colIdx = colLoop.getInductionVar();
+
+        // inCBIdx = mIdx * inCols + colIdx
+        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value rowMulCols = rewriter.create<arith::MulIOp>(loc, mIdx, inColsVal);
+        Value inCBIdx = rewriter.create<arith::AddIOp>(loc, rowMulCols, colIdx);
+
+        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx, zero,
+                                           dstIdx, ttkReduceType, ttkReduceDim);
+        rewriter.setInsertionPointAfter(colLoop);
+      } else {
+        // Single column: no loop needed.
+        Value inCBIdx = mIdx;
+        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx, zero,
+                                           dstIdx, ttkReduceType, ttkReduceDim);
+      }
+    } else if (reduceDim == ttl::ReduceDim::Col) {
+      // Col reduce (sum across rows): for current column, loop over rows.
+      if (inRows > 1) {
+        Value rowEnd = rewriter.create<arith::ConstantIndexOp>(loc, inRows);
+        Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+        auto rowLoop = rewriter.create<scf::ForOp>(loc, zero, rowEnd, one);
+        rewriter.setInsertionPointToStart(rowLoop.getBody());
+        Value rowIdx = rowLoop.getInductionVar();
+
+        // inCBIdx = rowIdx * inCols + nIdx
+        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value rowMulCols = rewriter.create<arith::MulIOp>(loc, rowIdx, inColsVal);
+        Value inCBIdx = rewriter.create<arith::AddIOp>(loc, rowMulCols, nIdx);
+
+        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx, zero,
+                                           dstIdx, ttkReduceType, ttkReduceDim);
+        rewriter.setInsertionPointAfter(rowLoop);
+      } else {
+        // Single row: no loop needed.
+        Value inCBIdx = nIdx;
+        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx, zero,
+                                           dstIdx, ttkReduceType, ttkReduceDim);
+      }
+    }
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
 
@@ -823,6 +1007,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   // CB -> DST ops with attribute need the type converter.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileMatmulToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)

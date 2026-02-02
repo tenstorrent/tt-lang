@@ -629,6 +629,61 @@ def TTL_TileMatmulOp : TTL_TileOp<"tile_matmul", [TTL_CBInputTileOpTrait]> {
   let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` `(` type($a) `,` type($b) `,` type($c) `)` `->` type($result)";
 }
 
+//===----------------------------------------------------------------------===//
+// Reduce Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceOp : TTL_Op<"reduce", []> {
+  let summary = "Reduce a tensor along a dimension";
+  let description = [{
+    Reduces the input tensor along the specified dimension using the specified
+    reduce type (sum or max). The scaler tensor provides scaling factors.
+    Reads from CB, writes result to DST then packs to output CB.
+
+    reduce_type specifies the reduction function:
+    - Sum: sum reduction
+    - Max: max reduction
+
+    reduce_dim specifies the dimension to reduce:
+    - Row: reduce across rows (output has 1 row)
+    - Col: reduce across columns (output has 1 column)
+    - Scalar: reduce to a single scalar (output is 1x1)
+  }];
+  let arguments = (ins
+    AnyType:$input,
+    AnyType:$scaler,
+    AnyType:$output,
+    TTL_ReduceTypeAttr:$reduce_type,
+    TTL_ReduceDimAttr:$reduce_dim
+  );
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
+    `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+  }];
+}
+
+def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level reduce operation";
+  let description = [{
+    Reduces a tile along the specified dimension.
+    Maps to ttkernel.reduce_init + ttkernel.reduce_tile.
+    Reads directly from circular buffer (not DST), writes to DST.
+  }];
+  let arguments = (ins
+    AnyType:$input,
+    AnyType:$scaler,
+    AnyType:$output,
+    TTL_ReduceTypeAttr:$reduce_type,
+    TTL_ReduceDimAttr:$reduce_dim
+  );
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
+    `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+  }];
+}
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 
