@@ -392,6 +392,118 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Pipe operations (for multi-core communication)
+//===----------------------------------------------------------------------===//
+
+def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
+  let summary = "Create a pipe for core-to-core communication";
+  let description = [{
+    Creates a pipe that defines a communication channel from a source core to
+    one or more destination cores.
+
+    For unicast (single destination), only specify `dst(x, y)`.
+    For multicast (rectangular grid), specify `dst(x1, y1) to (x2, y2)`.
+
+    Example:
+    ```mlir
+    // Unicast: (0,0) -> (1,0)
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) : !ttl.pipe
+
+    // Multicast: (0,0) -> rectangular region (1,0)-(1,3)
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to (1, 3) : !ttl.pipe
+    ```
+  }];
+  let arguments = (ins
+    I64Attr:$srcX,
+    I64Attr:$srcY,
+    I64Attr:$dstStartX,
+    I64Attr:$dstStartY,
+    I64Attr:$dstEndX,
+    I64Attr:$dstEndY
+  );
+  let results = (outs TTL_Pipe:$result);
+  let assemblyFormat = [{
+    `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` attr-dict `:` type($result)
+  }];
+  let hasVerifier = 1;
+
+  let builders = [
+    // Builder for unicast pipe (single destination)
+    OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
+                   "int64_t":$dstX, "int64_t":$dstY), [{
+      build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY);
+    }]>,
+    // Builder with all coordinates
+    OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
+                   "int64_t":$dstStartX, "int64_t":$dstStartY,
+                   "int64_t":$dstEndX, "int64_t":$dstEndY), [{
+      auto pipeType = PipeType::get($_builder.getContext(),
+                                    srcX, srcY, dstStartX, dstStartY,
+                                    dstEndX, dstEndY);
+      build($_builder, $_state, pipeType,
+            $_builder.getI64IntegerAttr(srcX),
+            $_builder.getI64IntegerAttr(srcY),
+            $_builder.getI64IntegerAttr(dstStartX),
+            $_builder.getI64IntegerAttr(dstStartY),
+            $_builder.getI64IntegerAttr(dstEndX),
+            $_builder.getI64IntegerAttr(dstEndY));
+    }]>
+  ];
+}
+
+def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
+  let summary = "Execute region if current core is the source of a pipe";
+  let description = [{
+    Executes the body region if the current core's coordinates match the
+    source coordinates of the given pipe. Used for implementing pipe-based
+    communication patterns where the source core sends data.
+
+    The body region has no block arguments. Inside the body, the pipe's
+    destination coordinates can be accessed from the pipe type directly.
+
+    Example:
+    ```mlir
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) : !ttl.pipe<...>
+    ttl.if_src %p : !ttl.pipe<...> {
+      // Only executes on core (0, 0)
+      // Can use ttl.copy to send data through the pipe
+    }
+    ```
+  }];
+  let arguments = (ins TTL_Pipe:$pipe);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    $pipe `:` type($pipe) $body attr-dict
+  }];
+}
+
+def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
+  let summary = "Execute region if current core is a destination of a pipe";
+  let description = [{
+    Executes the body region if the current core's coordinates fall within
+    the destination range of the given pipe. Used for implementing pipe-based
+    communication patterns where destination cores receive data.
+
+    The body region has no block arguments. Inside the body, the pipe's
+    source coordinates can be accessed from the pipe type directly.
+
+    Example:
+    ```mlir
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) : !ttl.pipe<...>
+    ttl.if_dst %p : !ttl.pipe<...> {
+      // Executes on cores (1, 0), (1, 1), (1, 2), (1, 3)
+      // Can use ttl.copy to receive data from the pipe
+    }
+    ```
+  }];
+  let arguments = (ins TTL_Pipe:$pipe);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    $pipe `:` type($pipe) $body attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Profiling operations
 //===----------------------------------------------------------------------===//
 

@@ -131,16 +131,35 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
   const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
   const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
+  const bool srcIsPipe = mlir::isa<PipeType>(srcTy);
+  const bool dstIsPipe = mlir::isa<PipeType>(dstTy);
 
+  // Pipe transfers: CB <-> Pipe
+  if (srcIsPipe || dstIsPipe) {
+    // For pipe transfers, one side must be a pipe and the other must be a CB.
+    if (srcIsPipe && dstIsPipe) {
+      return emitOpError() << "cannot copy directly between pipes";
+    }
+    if (!srcIsCb && !dstIsCb) {
+      return emitOpError()
+             << "pipe transfers require one operand to be !ttl.cb";
+    }
+    // Valid combinations: CB->Pipe (send) or Pipe->CB (receive)
+    // MVP: require explicit wait for all transfers.
+    if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
+                                                           getXf()))) {
+      return failure();
+    }
+    return success();
+  }
+
+  // Non-pipe transfers: CB <-> TensorSlice
   // Exactly one side must be a CB.
   if (srcIsCb == dstIsCb) {
     return emitOpError()
            << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
            << " dst=" << dstTy;
   }
-
-  // TODO(#88): Add support for pipes and blocks as ttl.copy operands once those
-  // IR types/ops land.
 
   // Extract the underlying tensor type from the non-CB operand.
   // For slices, get the original tensor from the defining TensorSliceOp.
@@ -171,8 +190,14 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << rankedTensorTy;
   }
 
-  // TODO(#89): Verify that the tensor tile/block shape and element type match
-  // the CB element_type and shape/buffer_factor semantics.
+  // Non-pipe transfers require direction-typed handles so lowering can select
+  // the appropriate barrier (read vs write).
+  auto handleType = mlir::cast<TransferHandleType>(getXf().getType());
+  if (!handleType.getKind()) {
+    return emitOpError() << "expects transfer handle to be direction-typed "
+                            "(!ttl.transfer_handle<read> or "
+                            "!ttl.transfer_handle<write>)";
+  }
 
   // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
   // use ensures we do not silently drop transfers.
@@ -601,6 +626,37 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
   if (viewElemTy != tileType) {
     return emitOpError() << "view element type (" << viewElemTy
                          << ") must match tile type (" << tileType << ")";
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
+  auto pipeType = mlir::cast<PipeType>(getResult().getType());
+
+  // Verify consistency between attributes and result type.
+  // Cast to int64_t to match the type's storage.
+  int64_t srcX = static_cast<int64_t>(getSrcX());
+  int64_t srcY = static_cast<int64_t>(getSrcY());
+  int64_t dstStartX = static_cast<int64_t>(getDstStartX());
+  int64_t dstStartY = static_cast<int64_t>(getDstStartY());
+  int64_t dstEndX = static_cast<int64_t>(getDstEndX());
+  int64_t dstEndY = static_cast<int64_t>(getDstEndY());
+
+  if (pipeType.getSrcX() != srcX || pipeType.getSrcY() != srcY ||
+      pipeType.getDstStartX() != dstStartX ||
+      pipeType.getDstStartY() != dstStartY ||
+      pipeType.getDstEndX() != dstEndX || pipeType.getDstEndY() != dstEndY) {
+    return emitOpError()
+           << "attributes must match result pipe type coordinates";
+  }
+
+  // Validate coordinates are non-negative.
+  if (srcX < 0 || srcY < 0) {
+    return emitOpError() << "source coordinates must be non-negative";
+  }
+  if (dstStartX < 0 || dstStartY < 0 || dstEndX < 0 || dstEndY < 0) {
+    return emitOpError() << "destination coordinates must be non-negative";
   }
 
   return success();
