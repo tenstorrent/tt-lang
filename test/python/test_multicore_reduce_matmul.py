@@ -28,6 +28,7 @@ import ttl
 # 2-core gather (working baseline)
 # =============================================================================
 
+
 @ttl.kernel(grid=(2, 1))
 def gather_2core(inp, out):
     """Core 1 sends its tile to Core 0."""
@@ -324,7 +325,7 @@ class TestGather:
     def test_gather_2core(self, device):
         """Core 1 sends tile (value 2.0) to Core 0."""
         inp_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
-        inp_torch[:, 0:32] = 1.0   # Core 0's tile (not used)
+        inp_torch[:, 0:32] = 1.0  # Core 0's tile (not used)
         inp_torch[:, 32:64] = 2.0  # Core 1's tile
 
         out_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
@@ -344,9 +345,9 @@ class TestGather:
     def test_gather_3core(self, device):
         """Cores 1,2 send tiles to Core 0: sum = 10 + 100 = 110."""
         inp_torch = torch.zeros((32, 96), dtype=torch.bfloat16)
-        inp_torch[:, 0:32] = 1.0      # Core 0's tile (not used)
-        inp_torch[:, 32:64] = 10.0    # Core 1's tile
-        inp_torch[:, 64:96] = 100.0   # Core 2's tile
+        inp_torch[:, 0:32] = 1.0  # Core 0's tile (not used)
+        inp_torch[:, 32:64] = 10.0  # Core 1's tile
+        inp_torch[:, 64:96] = 100.0  # Core 2's tile
 
         out_torch = torch.zeros((32, 96), dtype=torch.bfloat16)
 
@@ -368,9 +369,9 @@ class TestGather:
         # Total input: 128 rows x 512 cols (4 cores x 128 cols each)
         # Use distinct values to identify which cores contribute to each tile
         inp_torch = torch.zeros((128, 512), dtype=torch.bfloat16)
-        inp_torch[:, 0:128] = 1.0       # Core 0's 4x4 block
-        inp_torch[:, 128:256] = 10.0    # Core 1's 4x4 block
-        inp_torch[:, 256:384] = 100.0   # Core 2's 4x4 block
+        inp_torch[:, 0:128] = 1.0  # Core 0's 4x4 block
+        inp_torch[:, 128:256] = 10.0  # Core 1's 4x4 block
+        inp_torch[:, 256:384] = 100.0  # Core 2's 4x4 block
         inp_torch[:, 384:512] = 1000.0  # Core 3's 4x4 block
 
         out_torch = torch.zeros((128, 512), dtype=torch.bfloat16)
@@ -399,4 +400,5 @@ class TestGather:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))
