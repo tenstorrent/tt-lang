@@ -899,9 +899,9 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         });
       }
 
-      // Set dst_idx attributes on tile compute ops, copy_tile ops, and copy_dst.
-      // CopyTileOp needs dst_idx so StoreLowering can determine the DST slot
-      // to pack from.
+      // Set dst_idx attributes on tile compute ops, copy_tile ops, and
+      // copy_dst. CopyTileOp needs dst_idx so StoreLowering can determine the
+      // DST slot to pack from.
       for (Operation &op : *body) {
         if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op) &&
             !isa<CopyTileOp>(&op)) {

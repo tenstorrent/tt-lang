@@ -588,8 +588,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 
 /// Pattern for tensor_store with CB-attached input (passthrough case).
 /// Creates a ComputeOp that copies input tiles to output CB.
-/// For elementwise ops, tensor_store's input is from ComputeOp (not CB-attached),
-/// so this pattern won't match. Those tensor_stores are erased in TTKernel lowering.
+/// For elementwise ops, tensor_store's input is from ComputeOp (not
+/// CB-attached), so this pattern won't match. Those tensor_stores are erased in
+/// TTKernel lowering.
 struct LowerTensorStoreToCompute : OpRewritePattern<TensorStoreOp> {
   using OpRewritePattern<TensorStoreOp>::OpRewritePattern;
 

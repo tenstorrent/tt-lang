@@ -325,7 +325,9 @@ def make_passthrough_kernel():
         f.write(code)
         temp_path = f.name
 
-    spec = importlib.util.spec_from_file_location("passthrough_kernel_module", temp_path)
+    spec = importlib.util.spec_from_file_location(
+        "passthrough_kernel_module", temp_path
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     temp_kernel_files.append(temp_path)
