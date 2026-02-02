@@ -14,6 +14,7 @@ from .decorators import compute, datamovement
 from .kernel import core, kernel
 from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
 from .program import Program
+from .ttnnsim import TTNN_AVAILABLE
 from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape
 
 
@@ -86,4 +87,5 @@ __all__ = [
     "kernel",
     "ttl",
     "ttnn",
+    "TTNN_AVAILABLE",
 ]

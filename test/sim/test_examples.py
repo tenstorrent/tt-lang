@@ -17,6 +17,19 @@ from pathlib import Path
 
 import pytest
 
+# Check if ttnn is available
+try:
+    import ttnn
+    TTNN_AVAILABLE = True
+except ImportError:
+    TTNN_AVAILABLE = False
+
+# Marker for tests that require ttnn
+requires_ttnn = pytest.mark.skipif(
+    not TTNN_AVAILABLE,
+    reason="ttnn not available (required for tests using ttnn golden functions)"
+)
+
 # Paths
 THIS_DIR = Path(__file__).resolve().parent
 
@@ -68,6 +81,7 @@ def assert_success_output(code: int, out: str) -> None:
     assert code == 0, f"ttlang-sim exited with code {code}. Output:\n{out}"
 
 
+@requires_ttnn
 @pytest.mark.parametrize(
     "script_name",
     [

@@ -21,7 +21,14 @@ from __future__ import annotations
 from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import torch
-import ttnn
+
+# Try to import actual ttnn, track if available
+try:
+    import ttnn
+    TTNN_AVAILABLE = True
+except ImportError:
+    ttnn = None  # type: ignore
+    TTNN_AVAILABLE = False
 
 from .constants import TILE_SHAPE
 from .tensoraccessor import TensorAccessor
@@ -845,23 +852,24 @@ _EXCLUDE_FROM_WRAPPING = {
 }
 
 # Get all operations with golden functions and create wrappers at module load time
-_operations_to_wrap = [name for name in dir(ttnn) if not name.startswith("_")]
+if TTNN_AVAILABLE:
+    _operations_to_wrap = [name for name in dir(ttnn) if not name.startswith("_")]
 
-for _op_name in _operations_to_wrap:
-    # Skip if already in our namespace or in exclude list
-    if _op_name in globals() or _op_name in _EXCLUDE_FROM_WRAPPING:
-        continue
+    for _op_name in _operations_to_wrap:
+        # Skip if already in our namespace or in exclude list
+        if _op_name in globals() or _op_name in _EXCLUDE_FROM_WRAPPING:
+            continue
 
-    try:
-        _op = getattr(ttnn, _op_name)
-        _golden_fn = ttnn.get_golden_function(_op)
+        try:
+            _op = getattr(ttnn, _op_name)
+            _golden_fn = ttnn.get_golden_function(_op)
 
-        # Create wrapper and add to module globals
-        globals()[_op_name] = _create_golden_wrapper(_op_name, _golden_fn)
+            # Create wrapper and add to module globals
+            globals()[_op_name] = _create_golden_wrapper(_op_name, _golden_fn)
 
-    except Exception:
-        # Operation doesn't have a golden function or isn't callable, skip it
-        continue
+        except Exception:
+            # Operation doesn't have a golden function or isn't callable, skip it
+            continue
 
-# Clean up temporary variables
-del _operations_to_wrap, _op_name, _op, _golden_fn
+    # Clean up temporary variables
+    del _operations_to_wrap, _op_name, _op, _golden_fn
