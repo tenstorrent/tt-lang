@@ -744,6 +744,25 @@ def split_work_to_cores(
     )
 
 
+def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
+    """Remove dimensions of size 1 from a tensor.
+
+    Args:
+        input_tensor: Input tensor
+        dim: If specified, only squeeze this dimension if it has size 1.
+             If None, squeeze all dimensions of size 1.
+
+    Returns:
+        Tensor with singleton dimensions removed
+    """
+    torch_tensor = input_tensor.to_torch()
+    if dim is None:
+        result = torch_tensor.squeeze()
+    else:
+        result = torch_tensor.squeeze(dim)
+    return Tensor(result)
+
+
 # Dynamically generate wrapper functions for all ttnn operations with golden functions
 def _create_golden_wrapper(operation_name: str, golden_fn: Callable) -> Callable:
     """Create a wrapper function that calls the golden function and wraps result in Tensor.
@@ -812,6 +831,7 @@ _EXCLUDE_FROM_WRAPPING = {
     "permute",
     "concat",
     "pad",
+    "squeeze",
     # Sharding/memory functions
     "interleaved_to_sharded",
     "interleaved_to_sharded_partial",
