@@ -86,11 +86,16 @@ class TensorBlock:
         raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Store result tensor to CB by propagating CB association from output view."""
+        """Store result tensor to CB.
+
+        This generates ttl.tensor_store which represents actual data movement
+        from the input tensor to the output CB. The tensor will be copied
+        through DST registers to the output circular buffer.
+        """
         # ast_self is the result of attach_cb(tensor, cb) from reserve()
-        # Extract the CB operand and attach it to the result tensor
+        # Extract the CB operand and store rhs to it
         cb = ast_self.owner.operands[1]
-        return ttl.attach_cb(rhs.type, rhs, cb)
+        return ttl.tensor_store(rhs.type, rhs, cb)
 
 
 @syntax("!ttl.transfer_handle")

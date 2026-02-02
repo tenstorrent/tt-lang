@@ -36,16 +36,19 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                    dynDims);
 }
 
-/// Find the CB that this operation's result will be attached to.
-/// Looks for an attach_cb op that uses this operation's result.
+/// Find the CB that this operation's result will be stored to.
+/// Looks for attach_cb or tensor_store ops that use this operation's result.
 static Value findOutputCB(Operation *op) {
   if (op->getNumResults() == 0) {
     return nullptr;
   }
-  Value result = op->getResult(0);
-  for (OpOperand &use : result.getUses()) {
+  Value opResult = op->getResult(0);
+  for (OpOperand &use : opResult.getUses()) {
     if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
       return attachOp.getCb();
+    }
+    if (auto storeOp = dyn_cast<TensorStoreOp>(use.getOwner())) {
+      return storeOp.getCb();
     }
   }
   return nullptr;
@@ -259,8 +262,8 @@ static LogicalResult buildBinaryCompute(Operation *op,
     return failure();
   }
 
-  // Find the output CB. First check if there's an attach_cb that uses this
-  // result, and use that CB. Otherwise, find an unused bind_cb.
+  // Find the output CB. First check if there's an attach_cb or tensor_store
+  // that uses this result. Otherwise, find an unused bind_cb.
   Value outCb = findOutputCB(op);
   if (!outCb) {
     auto unusedCBs = findUnusedBindCBs(op);
@@ -344,8 +347,8 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
 
-  // Find the output CB. First check if there's an attach_cb that uses this
-  // result, and use that CB. Otherwise, find an unused bind_cb.
+  // Find the output CB. First check if there's an attach_cb or tensor_store
+  // that uses this result. Otherwise, find an unused bind_cb.
   Value outCb = findOutputCB(op);
   if (!outCb) {
     auto unusedCBs = findUnusedBindCBs(op);
@@ -580,6 +583,69 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
 //===----------------------------------------------------------------------===//
+// TensorStore Lowering (passthrough case only)
+//===----------------------------------------------------------------------===//
+
+/// Pattern for tensor_store with CB-attached input (passthrough case).
+/// Creates a ComputeOp that copies input tiles to output CB.
+/// For elementwise ops, tensor_store's input is from ComputeOp (not CB-attached),
+/// so this pattern won't match. Those tensor_stores are erased in TTKernel lowering.
+struct LowerTensorStoreToCompute : OpRewritePattern<TensorStoreOp> {
+  using OpRewritePattern<TensorStoreOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TensorStoreOp op,
+                                PatternRewriter &rewriter) const override {
+    Value input = op.getTensor();
+    Value outputCb = op.getCb();
+
+    // Only handle passthrough case where input is CB-attached.
+    // Elementwise case: input is from ComputeOp, not CB-attached - skip.
+    if (!getAttachedCB(input)) {
+      return failure();
+    }
+
+    auto inputType = getTensorType(input);
+    if (!inputType) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    // Build identity maps for input and output
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(inputType.getRank(), ctx);
+    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap)};
+    SmallVector<Attribute> iterTypes(inputType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    // Create output init tensor attached to output CB
+    Value init = buildInitTensor(rewriter, loc, inputType, input);
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outputCb);
+
+    // Create compute op with passthrough body
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{inputType}, ValueRange{input}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+    // Build the body: just yield the input tile (passthrough)
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = inputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // Input tile
+    body->addArgument(tileType, loc); // Output tile (unused)
+
+    rewriter.setInsertionPointToEnd(body);
+    rewriter.create<YieldOp>(loc, body->getArgument(0));
+
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Pass Implementations
 //===----------------------------------------------------------------------===//
 
@@ -621,6 +687,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
+  patterns.add<LowerTensorStoreToCompute>(ctx);
 }
 
 } // namespace mlir::tt::ttl
