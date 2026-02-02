@@ -878,4 +878,6 @@ if TTNN_AVAILABLE:
         # Let other exceptions propagate - they indicate real bugs
 
     # Clean up temporary variables
-    del _operations_to_wrap, _op_name, _op, _golden_fn
+    for name in ['_operations_to_wrap', '_op_name', '_op', '_golden_fn']:                                                                                              
+        if name in dir():                                                                                                                                              
+            del globals()[name]
