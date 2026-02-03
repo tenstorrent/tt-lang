@@ -431,6 +431,29 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     return ttl.bcast(output.type, input, output, bcast_attr)
 
 
+@syntax("matmul")
+def matmul(a: TensorBlock, b: TensorBlock, c: TensorBlock) -> TensorBlock:
+    """
+    Tile-level matrix multiplication C += A * B.
+
+    Performs matrix multiplication where A and B are read from circular buffers
+    and the result is accumulated into C. All operands must be CB-attached tensors.
+
+    Args:
+        a: Left matrix operand (CB-attached), shape [M, K] tiles
+        b: Right matrix operand (CB-attached), shape [K, N] tiles
+        c: Output/accumulator matrix (CB-attached), shape [M, N] tiles
+
+    Returns:
+        Result tensor with accumulated matrix product
+
+    Example:
+        # Inside compute block:
+        result = ttl.matmul(a_view, b_view, c_view)
+    """
+    return ttl.matmul(c.type, a, b, c)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -438,5 +461,6 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "matmul",
     *_generated_all,
 ]
