@@ -1583,8 +1583,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   pipeGraph.emitJSON();
 
   RewritePatternSet patterns(&ctx);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
   patterns
-      .add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
+      .add<BindCBLowering, TensorSliceLowering, WaitLowering,
            CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
            StoreLowering, CoreXLowering, CoreYLowering, TensorStoreLowering,
            IfSrcLowering, IfDstLowering, CreatePipeLowering>(
