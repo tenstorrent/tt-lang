@@ -5,6 +5,12 @@ argument-hint: <kernel-file-or-code>
 
 ## Tools Available
 
+NOTE: these tools are already in PATH. You do not need to find them in a relative directory, you can invoke them directly from any directory.
+
+NOTE: flags on run-test.sh must come before file argument. You can use --help if unsure on how to use.
+
+NOTE: run-test.sh will copy the file. You do not need to copy the test file each time.
+
 ```bash
 run-test.sh /path/to/kernel.py    # Run kernel on VM simulator (ONLY way to test)
 copy-file.sh /path/to/file.py     # Copy a file to the VM
