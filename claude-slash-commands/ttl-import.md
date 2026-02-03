@@ -271,6 +271,12 @@ with inp_cb.wait() as i, scaler_cb.wait() as s, out_cb.reserve() as o:
     o.store(result)
 ```
 
+**IMPORTANT - Dimension semantics differ from PyTorch:**
+- `dims=[0]` for reduce gives **per-row results** (stored in column 0) - output shape [M, 1]
+- `dims=[1]` for reduce gives **per-column results** (stored in row 0) - output shape [1, N]
+
+In PyTorch, `dim=0` means "reduce along dimension 0" (collapse rows). In TT-Lang, `dims=[0]` means "keep dimension 0" (keep rows, collapse columns). The semantics are inverted.
+
 **Multi-tile reduce:** Reduces across ALL tiles in the input CB. For example, a 4x1 tile input CB reduced with `dims=[0, 1]` produces a single scalar value (in a 1x1 output CB). The reduction sums all elements across all 4 tiles into position [0,0].
 
 ### Broadcast
@@ -294,6 +300,12 @@ with col_cb.wait() as c, out_cb.reserve() as o:
     result = ttl.math.broadcast(c, o, dims=[1])
     o.store(result)
 ```
+
+**IMPORTANT - Broadcast dimension semantics:**
+- `dims=[1]` for broadcast **copies column 0 to all columns** - input (N, 1) -> output (N, M)
+- `dims=[0]` for broadcast **copies row 0 to all rows** - input (1, M) -> output (N, M)
+
+Note: Reduce and broadcast dims have complementary semantics. `dims=[0]` reduce produces a single column (per-row results), `dims=[1]` broadcast replicates that column across all columns.
 
 ### Conditional Select (DO NOT USE - has simulator issues)
 
