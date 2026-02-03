@@ -1057,7 +1057,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
                 reduced = ttl.math.reduce_sum(a, s, r, dims=[0, 1])
                 r.store(reduced)
             with reduce_out_cb.wait() as t, reduce_acc_cb.reserve() as acc:
-                acc.store(ttl.math.abs(t))
+                acc.store(t)
 
             # Additional blocks: reduce and accumulate
             for _ in range(blocks_per_core - 1):
@@ -1080,17 +1080,17 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
         # === Stage 4: Gather and accumulate matmul results ===
         if x == COORDINATOR:
             with matmul_out_cb.wait() as m0, matmul_acc_cb.reserve() as macc:
-                macc.store(ttl.math.abs(m0))
+                macc.store(m0)
 
             for _ in range(NUM_WORKERS):
                 with matmul_gather_cb.wait() as m, matmul_acc_cb.wait() as acc, matmul_acc_cb.reserve() as new_acc:
                     new_acc.store(acc + m)
 
             with matmul_acc_cb.wait() as acc, out_cb.reserve() as final_out:
-                final_out.store(ttl.math.abs(acc))
+                final_out.store(acc)
         else:
             with matmul_out_cb.wait() as mout, matmul_gather_cb.reserve() as mg:
-                mg.store(ttl.math.abs(mout))
+                mg.store(mout)
 
     @ttl.datamovement()
     def dm_read():
@@ -1455,7 +1455,7 @@ def streaming_mlp_kernel(x, w_fc, w_proj, out):
 
             # Copy to output
             with out_acc_cb.wait() as acc, out_cb.reserve() as o:
-                o.store(ttl.math.abs(acc))
+                o.store(acc)
 
     @ttl.datamovement()
     def dm_read():
@@ -1621,3 +1621,219 @@ def rmsnorm_kernel(x, weight, scaler, out):
             tx = ttl.copy(blk, out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
 ```
+
+---
+
+## Pattern 7: Multicore Output Partitioning (No Pipes)
+
+Multiple cores compute independent output columns in parallel. All cores read the same input, but each reads different weight columns and writes different output columns. No inter-core communication needed.
+
+**Key ideas:**
+- `grid=(NUM_CORES, 1)` distributes work across cores
+- All cores read the SAME input tensor (broadcast read)
+- Each core reads DIFFERENT weight/bias slices based on `core_x`
+- Each core writes DIFFERENT output slices based on `core_x`
+- `buffer_factor=1` for data used only once (bias)
+
+```python
+# MNIST Layer 1: hidden = relu(x @ w1 + bias1)
+# 8 cores compute 8 chunks of the 1024-wide hidden layer in parallel
+
+BATCH_TILES = 1
+INPUT_TILES = 25   # 800 input features / 32 = 25 tiles
+CHUNK_TILES = 4    # Each core handles 128 hidden units = 4 tiles
+NUM_CHUNKS = 8     # 1024 hidden / 128 per core = 8 cores
+
+
+@ttl.kernel(grid=(NUM_CHUNKS, 1))
+def layer1_kernel(x, w1, bias1, hidden_out):
+    # Input CB - same data read by all cores
+    x_cb = ttl.make_circular_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
+
+    # Weight/bias CBs - each core reads different columns
+    w1_cb = ttl.make_circular_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1)
+    bias1_cb = ttl.make_circular_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
+
+    # Intermediate and output CBs
+    hidden_mm_cb = ttl.make_circular_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
+    hidden_cb = ttl.make_circular_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
+
+    @ttl.compute()
+    def compute():
+        # Matmul: x @ w1_chunk -> hidden_mm
+        with x_cb.wait() as xv, w1_cb.wait() as w1v:
+            with hidden_mm_cb.reserve() as hmm:
+                hmm.store(ttl.math.matmul(xv, w1v, hmm))
+
+        # Bias add + ReLU: relu(hidden_mm + bias) -> hidden
+        with hidden_mm_cb.wait() as hmmv, bias1_cb.wait() as b1v:
+            with hidden_cb.reserve() as h:
+                h.store(ttl.math.relu(hmmv + b1v))
+
+    @ttl.datamovement()
+    def dm_read():
+        core_x, _ = ttl.core(dims=2)
+
+        # All cores read the SAME input x
+        with x_cb.reserve() as blk:
+            tx = ttl.copy(x[0:BATCH_TILES, 0:INPUT_TILES], blk)
+            tx.wait()
+
+        # Each core reads DIFFERENT weight columns based on core_x
+        col_start = core_x * CHUNK_TILES
+        col_end = col_start + CHUNK_TILES
+
+        with w1_cb.reserve() as blk:
+            tx = ttl.copy(w1[0:INPUT_TILES, col_start:col_end], blk)
+            tx.wait()
+
+        with bias1_cb.reserve() as blk:
+            tx = ttl.copy(bias1[0:BATCH_TILES, col_start:col_end], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        core_x, _ = ttl.core(dims=2)
+
+        # Each core writes DIFFERENT output columns
+        col_start = core_x * CHUNK_TILES
+        col_end = col_start + CHUNK_TILES
+
+        with hidden_cb.wait() as blk:
+            tx = ttl.copy(blk, hidden_out[0:BATCH_TILES, col_start:col_end])
+            tx.wait()
+```
+
+---
+
+## Pattern 8: Accumulating Matmul + Row-wise Softmax
+
+Stream weight chunks, accumulate partial matmul results, then apply row-wise softmax. Shows the init-then-accumulate pattern and row-wise (not scalar) reduce/broadcast.
+
+**Key ideas:**
+- First matmul initializes accumulator, subsequent iterations add partials
+- `dims=[0]` reduce gives per-row results (column vector output)
+- `dims=[1]` broadcast replicates column across all columns
+- Keep values in scope with nested `with` blocks for reuse (lgv used twice)
+
+```python
+# MNIST Layer 2: out = softmax(sum_over_chunks(hidden_chunk @ w2_chunk) + bias2)
+# Single core streams 8 chunks and accumulates, then applies row-wise softmax
+
+BATCH_TILES = 1
+CHUNK_TILES = 4    # 128 hidden units per chunk = 4 tiles
+OUTPUT_TILES = 1   # 32 output classes = 1 tile
+NUM_CHUNKS = 8     # 1024 hidden / 128 per chunk = 8 chunks
+
+
+@ttl.kernel(grid=(1, 1))
+def layer2_kernel(hidden, w2, bias2, scaler, out):
+    # Streaming input CBs - buffer_factor=2 for double buffering
+    hidden_cb = ttl.make_circular_buffer_like(hidden, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
+    w2_cb = ttl.make_circular_buffer_like(w2, shape=(CHUNK_TILES, OUTPUT_TILES), buffer_factor=2)
+
+    # Accumulator and partial result CBs
+    acc_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    part_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+
+    # Single-use inputs - buffer_factor=1
+    bias2_cb = ttl.make_circular_buffer_like(bias2, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
+    scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+
+    # Softmax intermediate CBs
+    logits_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    max_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    max_bcast_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    exp_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    sum_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    sum_bcast_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
+
+    @ttl.compute()
+    def compute():
+        # === Stage 1: Accumulating matmul over chunks ===
+
+        # First chunk - initialize accumulator
+        with hidden_cb.wait() as hc, w2_cb.wait() as wc:
+            with acc_cb.reserve() as acc:
+                acc.store(ttl.math.matmul(hc, wc, acc))
+
+        # Remaining chunks - compute partial and add to accumulator
+        for _ in range(NUM_CHUNKS - 1):
+            with hidden_cb.wait() as hc, w2_cb.wait() as wc:
+                with part_cb.reserve() as part:
+                    part.store(ttl.math.matmul(hc, wc, part))
+            with part_cb.wait() as pv, acc_cb.wait() as av:
+                with acc_cb.reserve() as new_acc:
+                    new_acc.store(av + pv)
+
+        # === Stage 2: Add bias to get logits ===
+        with acc_cb.wait() as accv, bias2_cb.wait() as b2v:
+            with logits_cb.reserve() as lg:
+                lg.store(accv + b2v)
+
+        # === Stage 3: Row-wise softmax ===
+        # Keep logits (lgv) and scaler (sc) in scope - lgv is used twice
+        with logits_cb.wait() as lgv, scaler_cb.wait() as sc:
+            # Row-wise max: dims=[0] reduces across columns, keeps rows
+            # Output shape: (BATCH_TILES, 1) stored in (1, 1) CB
+            with max_cb.reserve() as mx:
+                mx.store(ttl.math.reduce_max(lgv, sc, mx, dims=[0]))
+
+            # Broadcast max back: dims=[1] replicates column across all columns
+            with max_cb.wait() as mxv, max_bcast_cb.reserve() as mxb:
+                mxb.store(ttl.math.broadcast(mxv, mxb, dims=[1]))
+
+            # Compute exp(logits - max) and sum, then final softmax
+            with max_bcast_cb.wait() as mxbv:
+                # exp(logits - max)
+                with exp_cb.reserve() as ex:
+                    ex.store(ttl.math.exp(lgv - mxbv))
+
+                # Row-wise sum of exp values
+                with exp_cb.wait() as exv, sum_cb.reserve() as sm:
+                    sm.store(ttl.math.reduce_sum(exv, sc, sm, dims=[0]))
+
+                # Broadcast sum back
+                with sum_cb.wait() as smv, sum_bcast_cb.reserve() as smb:
+                    smb.store(ttl.math.broadcast(smv, smb, dims=[1]))
+
+                # Final softmax: exp(logits - max) / sum
+                # Note: lgv and mxbv still in scope, recompute exp for numerator
+                with sum_bcast_cb.wait() as smbv, out_cb.reserve() as o:
+                    o.store(ttl.math.exp(lgv - mxbv) / smbv)
+
+    @ttl.datamovement()
+    def dm_read():
+        # Stream hidden and weight chunks - loop count must match compute
+        for i in range(NUM_CHUNKS):
+            col_start = i * CHUNK_TILES
+            col_end = col_start + CHUNK_TILES
+
+            with hidden_cb.reserve() as blk:
+                tx = ttl.copy(hidden[0:BATCH_TILES, col_start:col_end], blk)
+                tx.wait()
+
+            with w2_cb.reserve() as blk:
+                tx = ttl.copy(w2[col_start:col_end, 0:OUTPUT_TILES], blk)
+                tx.wait()
+
+        # Load bias and scaler once (after streaming loop)
+        with bias2_cb.reserve() as blk:
+            tx = ttl.copy(bias2[0:BATCH_TILES, 0:OUTPUT_TILES], blk)
+            tx.wait()
+
+        with scaler_cb.reserve() as blk:
+            tx = ttl.copy(scaler[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_cb.wait() as blk:
+            tx = ttl.copy(blk, out[0:BATCH_TILES, 0:OUTPUT_TILES])
+            tx.wait()
+```
+
+**Row-wise vs Scalar Softmax:**
+- **Scalar** (Pattern 5): `dims=[0, 1]` for both reduce and broadcast - entire tensor becomes one value
+- **Row-wise** (this pattern): `dims=[0]` reduce (per-row results), `dims=[1]` broadcast (replicate across columns)
