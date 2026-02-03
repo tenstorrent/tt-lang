@@ -85,8 +85,15 @@ class ExpectedOp(Enum):
     TX_WAIT = auto()  # Expect tx.wait()
     PUSH = auto()  # Expect cb.push()
     POP = auto()  # Expect cb.pop()
-    STORE = auto()  # Expect blk.store(...) - regular store (acc=False)
-    STORE_ACC = auto()  # Expect blk.store(..., acc=True) - accumulator store
+    STORE = (
+        auto()
+    )  # Expect blk.store(...) - block as destination, regular store (acc=False)
+    STORE_ACC = (
+        auto()
+    )  # Expect blk.store(..., acc=True) - block as destination, accumulator store
+    STORE_SRC = (
+        auto()
+    )  # Expect other_blk.store(blk, ...) - block as source/input to store
     DONE = auto()  # No more operations expected
 
 
@@ -120,6 +127,7 @@ class Block:
         "_access_state",
         "_expected_ops",
         "_is_temporary",
+        "_source_blocks",  # Track wait() blocks that contributed to this temporary block
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -143,6 +151,7 @@ class Block:
         self._span = span
         self._shape = shape
         self._is_temporary = is_temporary
+        self._source_blocks: List["Block"] = []  # Track source wait() blocks
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
@@ -186,10 +195,10 @@ class Block:
                     ExpectedOp.COPY_SRC
                 }  # DM threads copy data out first
             elif self._thread_type == ThreadType.COMPUTE:
+                # Compute threads: wait() blocks start in RO state
+                # Must be used as source in at least one store operation before pop
                 self._access_state = AccessState.RO
-                self._expected_ops = {
-                    ExpectedOp.POP
-                }  # Compute threads can read then pop directly
+                self._expected_ops = {ExpectedOp.STORE_SRC}
 
     @classmethod
     def from_list(
@@ -382,10 +391,42 @@ class Block:
                 f"Invalid acquisition type for tx.wait(): {self._acquisition.name}"
             )
 
-    def mark_store_complete(self, acc: bool = False) -> None:
-        """Mark that store() has completed.
+    def mark_store_read_complete(self) -> None:
+        """Mark that this block was used as source (input) in a store operation.
 
         Valid states (per state machine diagram):
+        - wait() Compute RO STORE_SRC -> Block used as source in store(), transitions to allow pop
+
+        This is called when a wait() Compute block is used as the source argument
+        in another block's store() call (e.g., output_block.store(input_block)).
+        """
+        # Validate that STORE_SRC is expected in current state
+        self._validate_state("store (as source)", ExpectedOp.STORE_SRC)
+
+        # Validate complete state
+        if self._acquisition != BlockAcquisition.WAIT:
+            raise RuntimeError(
+                f"Invalid acquisition for store source: Expected WAIT, got {self._acquisition.name}"
+            )
+        if self._thread_type != ThreadType.COMPUTE:
+            raise RuntimeError(
+                f"Invalid thread type for store source: Expected COMPUTE, got {self._thread_type.name}"
+            )
+        if self._access_state != AccessState.RO:
+            raise RuntimeError(
+                f"Invalid access state for store source: Expected RO, got {self._access_state.name}"
+            )
+
+        # After being used as source in store, can be used in more stores or popped
+        self._access_state = AccessState.RO
+        self._expected_ops = {ExpectedOp.STORE_SRC, ExpectedOp.POP}
+
+    def mark_store_complete(self, acc: bool = False) -> None:
+        """Mark that store() has completed on this block (as destination).
+
+        Valid states (per state machine diagram):
+
+        For reserve() Compute blocks:
         Two distinct paths from initial reserve() Compute WO {STORE, STORE_ACC}:
 
         Path 1 (single non-acc store):
@@ -396,6 +437,9 @@ class Block:
           reserve() Compute WO {STORE, STORE_ACC} → store(acc=True) → reserve() Compute RW {STORE_ACC, PUSH}
           Can continue with more store(acc=True) or push
 
+        Note: wait() blocks are never destinations for store operations in compute threads.
+        They are used as sources (see mark_store_read_complete).
+
         These paths cannot be mixed - once you choose one path, you must follow it.
         """
         if acc:
@@ -403,7 +447,7 @@ class Block:
             # First call expects STORE_ACC (from WO), subsequent calls also expect STORE_ACC (from RW)
             self._validate_state("store(acc=True)", ExpectedOp.STORE_ACC)
 
-            # Validate complete state
+            # Validate complete state - only reserve() blocks can use acc=True
             if self._acquisition != BlockAcquisition.RESERVE:
                 raise RuntimeError(
                     f"Invalid acquisition for store(acc=True): Expected RESERVE, got {self._acquisition.name}"
@@ -422,10 +466,10 @@ class Block:
             self._access_state = AccessState.RW
             self._expected_ops = {ExpectedOp.STORE_ACC, ExpectedOp.PUSH}
         else:
-            # Regular non-acc store - only ONE allowed, then must push
+            # Regular non-acc store - only for reserve() blocks
             self._validate_state("store()", ExpectedOp.STORE)
 
-            # Validate complete state
+            # Validate complete state - only reserve() blocks are store destinations
             if self._acquisition != BlockAcquisition.RESERVE:
                 raise RuntimeError(
                     f"Invalid acquisition for store(): Expected RESERVE, got {self._acquisition.name}"
@@ -478,7 +522,7 @@ class Block:
         """Mark that pop() has completed.
 
         Valid states (per state machine diagram):
-        - wait() Compute RO POP -> Direct pop after wait
+        - wait() Compute RO POP -> Pop after being used as source in at least one store
         - wait() DM RO POP -> Pop after copy and tx.wait()
         """
         self._validate_state("pop()", ExpectedOp.POP)
@@ -677,9 +721,24 @@ class Block:
             acc: If True, accumulate with existing values (+=), otherwise assign (=)
                  Note: First store(acc=True) does assignment (y=x), subsequent ones accumulate (y+=x)
         """
-        # Convert Block to sequence if needed
+        # Convert Block to sequence if needed, and track source blocks
+        source_blocks_to_mark: List["Block"] = []
         if isinstance(items, Block):
             items_seq = items.to_list()
+            # Check if this is a wait() Compute block being stored directly
+            if (
+                items._acquisition == BlockAcquisition.WAIT
+                and items._thread_type == ThreadType.COMPUTE
+                and ExpectedOp.STORE_SRC in items._expected_ops
+            ):
+                source_blocks_to_mark.append(items)
+            # Check if this is a temporary block with tracked source wait() blocks
+            elif items._is_temporary and items._source_blocks:
+                source_blocks_to_mark.extend(
+                    blk
+                    for blk in items._source_blocks
+                    if ExpectedOp.STORE_SRC in blk._expected_ops
+                )
         else:
             items_seq = items
 
@@ -688,6 +747,10 @@ class Block:
 
         # Check write access first (provides better error message for NA state)
         self._check_can_write()
+
+        # Mark all wait() Compute source blocks as used
+        for source_block in source_blocks_to_mark:
+            source_block.mark_store_read_complete()
 
         # Determine if this is the first store(acc=True) by checking if we're in WO state
         is_first_acc_store = acc and self._access_state == AccessState.WO
@@ -766,13 +829,39 @@ class Block:
         other: "Block",
         op: Callable[[Any, Any], Any],
     ) -> "Block":
-        """Element-wise binary op: self (op) other."""
+        """Element-wise binary op: self (op) other.
+
+        Tracks wait() Compute blocks that contribute to the result.
+        """
         result_list = self._apply_binary_op(self, other, op)
 
         # Infer result shape using broadcasting rules
         result_shape = self._infer_broadcast_shape(self._shape, other._shape)
 
-        return Block.from_list(result_list, result_shape)
+        result_block = Block.from_list(result_list, result_shape)
+
+        # Track source wait() blocks that contributed to this result
+        for block in [self, other]:
+            # Unwrap if this is a context manager wrapper (WaitContext, ReserveContext)
+            actual_block = block
+            if hasattr(block, "_block"):
+                actual_block = block._block  # type: ignore[attr-defined]
+
+            # Only track if this is actually a Block object
+            if not isinstance(actual_block, Block):
+                continue
+
+            if (
+                not actual_block._is_temporary
+                and actual_block._acquisition == BlockAcquisition.WAIT
+                and actual_block._thread_type == ThreadType.COMPUTE
+            ):
+                result_block._source_blocks.append(actual_block)
+            elif actual_block._is_temporary:
+                # Temporary blocks may have their own source blocks to propagate
+                result_block._source_blocks.extend(actual_block._source_blocks)
+
+        return result_block
 
     # ---- forward operators ----
 
@@ -802,7 +891,25 @@ class Block:
         if isinstance(other, int):
             # Scalar power - apply to each tensor in the block
             result_tensors = [t**other for t in self.to_list()]
-            return Block.from_list(result_tensors, shape=self._shape)
+            result_block = Block.from_list(result_tensors, shape=self._shape)
+
+            # Track source wait() blocks
+            # Unwrap if this is a context manager wrapper
+            actual_self = self
+            if hasattr(self, "_block"):
+                actual_self = self._block  # type: ignore[attr-defined]
+
+            if isinstance(actual_self, Block):
+                if (
+                    not actual_self._is_temporary
+                    and actual_self._acquisition == BlockAcquisition.WAIT
+                    and actual_self._thread_type == ThreadType.COMPUTE
+                ):
+                    result_block._source_blocks.append(actual_self)
+                elif actual_self._is_temporary:
+                    result_block._source_blocks.extend(actual_self._source_blocks)
+
+            return result_block
 
         # Block power
         return self._binary_op(other, _op.pow)
