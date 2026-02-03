@@ -10,8 +10,7 @@ from sim import ttnn, TTNN_AVAILABLE
 
 # Marker for tests that require ttnn golden functions
 requires_ttnn = pytest.mark.skipif(
-    not TTNN_AVAILABLE,
-    reason="ttnn not available (required for golden function tests)"
+    not TTNN_AVAILABLE, reason="ttnn not available (required for golden function tests)"
 )
 
 
@@ -363,6 +362,7 @@ def test_multiply_negative_values():
     expected = torch.tensor([[-2.0, -6.0], [-12.0, -20.0]], dtype=torch.float32)
     assert torch.allclose(c.to_torch(), expected)
 
+
 @requires_ttnn
 def test_multiply_large_tensors():
     """Test multiply with larger tensors."""
@@ -572,6 +572,7 @@ def test_isclose():
     # Tighter tolerances should say they're not close
     result2 = ttnn.isclose(a, b, rtol=1e-6, atol=1e-6)
     assert not result2.to_torch().all().item()
+
 
 @requires_ttnn
 def test_isclose_with_nan():
@@ -853,6 +854,7 @@ def test_golden_function_wrappers_unary():
     expected = torch.exp(torch.tensor([[0.0, 1.0]], dtype=torch.float32))
     assert torch.allclose(result.to_torch(), expected)
 
+
 @requires_ttnn
 def test_golden_function_wrappers_trigonometric():
     """Test dynamically generated golden function wrappers for trigonometric operations."""
@@ -880,6 +882,8 @@ def test_golden_function_wrappers_trigonometric():
     result = ttnn.tan(b)
     expected = torch.tan(b.to_torch())
     assert torch.allclose(result.to_torch(), expected, atol=1e-6)
+
+
 @requires_ttnn
 def test_golden_function_wrappers_activation():
     """Test dynamically generated golden function wrappers for activation functions."""

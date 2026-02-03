@@ -25,6 +25,7 @@ import torch
 # Try to import actual ttnn, track if available
 try:
     import ttnn
+
     TTNN_AVAILABLE = True
 except ImportError:
     ttnn = None  # type: ignore
@@ -861,11 +862,11 @@ if TTNN_AVAILABLE:
             continue
 
         _op = getattr(ttnn, _op_name)
-        
+
         # Skip non-callable attributes (classes, constants, etc.)
         if not callable(_op):
             continue
-            
+
         try:
             _golden_fn = ttnn.get_golden_function(_op)
             # Create wrapper and add to module globals
@@ -878,6 +879,6 @@ if TTNN_AVAILABLE:
         # Let other exceptions propagate - they indicate real bugs
 
     # Clean up temporary variables
-    for name in ['_operations_to_wrap', '_op_name', '_op', '_golden_fn']:                                                                                              
-        if name in dir():                                                                                                                                              
+    for name in ["_operations_to_wrap", "_op_name", "_op", "_golden_fn"]:
+        if name in dir():
             del globals()[name]
