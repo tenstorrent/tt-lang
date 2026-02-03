@@ -40,13 +40,16 @@ static int64_t getTotalElements(RankedTensorType type) {
 /// Get the iteration domain for a ComputeOp. The verifier ensures that the
 /// maximum tensor rank equals iterator_types.size(). Use the tensor with the
 /// largest shape for loop bounds (handles broadcasts where output is larger
-/// than input).
+/// than input). When element counts are equal, prefer outputs over inputs
+/// since we iterate to produce outputs (e.g., transpose [4,2] -> [2,4]).
 static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   SmallVector<Range> domain;
   Location loc = op.getLoc();
 
   // Find the tensor with the largest iteration domain.
   // Prefer higher rank, then larger element count for same rank.
+  // Use >= to prefer later tensors (outputs) when equal, since outputs
+  // determine the iteration shape for ops like transpose.
   Value maxRankTensor;
   int64_t maxRank = 0;
   int64_t maxElements = 0;
@@ -54,7 +57,7 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
     auto type = cast<RankedTensorType>(operand.getType());
     int64_t rank = type.getRank();
     int64_t elements = getTotalElements(type);
-    if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
+    if (rank > maxRank || (rank == maxRank && elements >= maxElements)) {
       maxRank = rank;
       maxElements = elements;
       maxRankTensor = operand;
