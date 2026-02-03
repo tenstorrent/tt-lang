@@ -315,12 +315,13 @@ static bool isDerivedFromCopy(mlir::Value v,
 
 mlir::LogicalResult isEventuallyWaitedOn(mlir::Operation *op,
                                          mlir::Value handle) {
-  // Require a direction-typed transfer handle so wait lowering can select a
-  // specific barrier (and never fall back to emitting both barriers).
-  if (!isTypedTransferHandleType(handle.getType())) {
+  // Accept any TransferHandleType (typed or untyped).
+  // Typed handles get barriers, untyped handles (e.g., pipe receive) are
+  // no-ops.
+  if (!mlir::isa<mlir::tt::ttl::TransferHandleType>(handle.getType())) {
     return op->emitOpError()
-           << "expects transfer handle to be direction-typed "
-              "(!ttl.transfer_handle<read> or !ttl.transfer_handle<write>).";
+           << "expects transfer handle (!ttl.transfer_handle), got "
+           << handle.getType();
   }
 
   llvm::SmallPtrSet<mlir::Value, 16> visited;
@@ -346,12 +347,14 @@ mlir::LogicalResult isEventuallyWaitedOn(mlir::Operation *op,
 
 mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
                                        mlir::Value handle) {
-  // Require a direction-typed transfer handle so wait lowering can select a
-  // specific barrier (and never fall back to emitting both barriers).
-  if (!isTypedTransferHandleType(handle.getType())) {
+  // Accept any TransferHandleType (typed or untyped).
+  // Typed handles (read/write) get corresponding barriers.
+  // Untyped handles (e.g., pipe receive) are no-ops since data arrives via
+  // multicast from source core.
+  if (!mlir::isa<mlir::tt::ttl::TransferHandleType>(handle.getType())) {
     return op->emitOpError()
-           << "expects transfer handle to be direction-typed "
-              "(!ttl.transfer_handle<read> or !ttl.transfer_handle<write>).";
+           << "expects transfer handle (!ttl.transfer_handle), got "
+           << handle.getType();
   }
 
   llvm::SmallPtrSet<mlir::Value, 16> visited;
