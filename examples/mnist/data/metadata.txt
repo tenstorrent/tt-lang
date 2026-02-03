@@ -1,0 +1,4 @@
+Training samples: 60000
+Test samples: 10000
+Input dimensions: 784
+Number of classes: 10
