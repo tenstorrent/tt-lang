@@ -360,7 +360,7 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
         utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
 
     // Determine DST index based on the source operation type:
-    // - DST-to-DST ops (binary ops): have dst_idx attribute
+    // - DST-to-DST ops (binary ops, copy_tile): have dst_idx attribute
     // - CB-reading ops (bcast, reduce): no dst_idx attribute, use loop index
     Value dstIndex;
     auto tileValue = adaptor.getTile();
@@ -369,10 +369,15 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
         dstIndex =
             rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+      } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
+        // Fallback: get dst_index directly from copy_tile operand
+        dstIndex = copyTile.getDstIndex();
+      } else {
+        return op.emitError("ttl.store source op lacks dst_idx attribute: ")
+               << defOp->getName();
       }
-    }
-
-    if (!dstIndex) {
+    } else {
+      // Block argument (e.g., from bcast/reduce) - use CB tile index
       dstIndex = cbTileIndex;
     }
 
@@ -879,6 +884,34 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
+/// Lowering for tensor_store: handles cleanup after elementwise lowering.
+/// For elementwise ops, the ComputeOp already writes to the output CB, so
+/// tensor_store becomes a no-op. For passthrough (CB-attached input), we
+/// would need to emit copy_tile + pack_tile, but that case should be handled
+/// by LowerTensorStoreToCompute creating a passthrough ComputeOp.
+struct TensorStoreLowering : OpConversionPattern<TensorStoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TensorStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value input = op.getTensor();
+
+    // If input is CB-attached, this is a passthrough case that should have
+    // been handled by LowerTensorStoreToCompute. Emit error.
+    if (getAttachedCB(input)) {
+      return op.emitError(
+          "passthrough tensor_store should be lowered to ComputeOp first; "
+          "ensure convert-ttl-to-compute runs before this pass");
+    }
+
+    // For elementwise case: the ComputeOp already wrote to the output CB.
+    // tensor_store is now a no-op - just erase it.
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -979,10 +1012,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   });
 
   RewritePatternSet patterns(&ctx);
-  patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
-               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering, CoreXLowering, CoreYLowering>(typeConverter,
-                                                            &ctx);
+  patterns
+      .add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
+           CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
+           StoreLowering, CoreXLowering, CoreYLowering, TensorStoreLowering>(
+          typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

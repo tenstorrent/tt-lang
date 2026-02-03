@@ -837,9 +837,74 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
-      // Set dst_idx attributes on tile compute ops.
+      // Handle passthrough case: block args directly yielded without compute.
+      // These args are not consumed by any tile compute op, so the loop above
+      // doesn't insert copy_tile for them. We need to copy them to DST so that
+      // the subsequent ttl.store (inserted by ttl-insert-tile-regs-sync) can
+      // pack from DST to the output CB.
+      for (Value yielded : yieldOp.getValues()) {
+        auto arg = dyn_cast<BlockArgument>(yielded);
+        if (!arg || !isTileValue(arg)) {
+          continue;
+        }
+
+        // Skip if already copied (was used by some compute op)
+        if (dstIndexForValue.count(arg)) {
+          continue;
+        }
+
+        // Allocate DST slot
+        std::uint32_t assignedDstIndex = 0;
+        auto it = dstAssignment.find(arg);
+        if (it != dstAssignment.end()) {
+          assignedDstIndex = it->second;
+        } else {
+          int freeReg = inUse.find_first_unset();
+          if (freeReg < 0) {
+            computeOp.emitOpError("no free DST register for passthrough");
+            signalPassFailure();
+            return;
+          }
+          assignedDstIndex = static_cast<std::uint32_t>(freeReg);
+        }
+        inUse.set(assignedDstIndex);
+
+        // Insert copy_tile just before yield
+        builder.setInsertionPoint(yieldOp);
+        Location loc = yieldOp.getLoc();
+
+        auto indexMapAttr = computeIndexMapAttr(arg, computeOp, builder);
+        if (failed(indexMapAttr)) {
+          yieldOp.emitOpError("passthrough block argument not found in inputs");
+          signalPassFailure();
+          return;
+        }
+        Value srcIndex = builder.create<LinearizedIndexOp>(loc, *indexMapAttr);
+        Value dstIndex =
+            builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
+        auto copy = builder.create<CopyTileOp>(
+            loc,
+            TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
+            ValueRange{arg, srcIndex, dstIndex});
+        dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
+        dstIndexForValue[arg] = assignedDstIndex;
+
+        // Replace the yielded arg with the copy result
+        yieldOp->replaceUsesOfWith(arg, copy.getDstTile());
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "Passthrough: Inserted copy_tile for yielded block "
+                       << "arg " << arg << " -> DST[" << assignedDstIndex
+                       << "]\n";
+        });
+      }
+
+      // Set dst_idx attributes on tile compute ops, copy_tile ops, and
+      // copy_dst. CopyTileOp needs dst_idx so StoreLowering can determine the
+      // DST slot to pack from.
       for (Operation &op : *body) {
-        if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op)) {
+        if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op) &&
+            !isa<CopyTileOp>(&op)) {
           continue;
         }
 

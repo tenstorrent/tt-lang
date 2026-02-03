@@ -92,8 +92,8 @@ def add_kernel(lhs, rhs, out):
 # Add operation (from l + r dunder method)
 # CHECK: ttl.add
 
-# Attach result to output CB
-# CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
+# Store result to output CB
+# CHECK: ttl.tensor_store %{{.+}}, %[[CB2]]
 
 # Finalize: pop inputs, push output
 # CHECK: ttl.cb_pop %[[CB0]]

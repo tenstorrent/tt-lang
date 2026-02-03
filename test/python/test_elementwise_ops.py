@@ -276,6 +276,168 @@ def test_unary_op(device, op_name):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
+# =============================================================================
+# Passthrough Test - no compute, just copy input to output
+# =============================================================================
+
+PASSTHROUGH_KERNEL_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=(1, 1))
+def passthrough_kernel(inp, out):
+    """Passthrough kernel - no compute, just copy input to output through DST."""
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        x = inp_cb.wait()
+        o = out_cb.reserve()
+        # No compute - just store the input directly to output
+        o.store(x)
+        inp_cb.pop()
+        out_cb.push()
+
+    @ttl.datamovement()
+    def dm_read():
+        inp_blk = inp_cb.reserve()
+        tx_inp = ttl.copy(inp[0, 0], inp_blk)
+        tx_inp.wait()
+        inp_cb.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0, 0])
+        tx.wait()
+        out_cb.pop()
+
+'''
+
+
+def make_passthrough_kernel():
+    """Generate a passthrough kernel (no compute, input goes directly to output)."""
+    code = PASSTHROUGH_KERNEL_TEMPLATE
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="kernel_passthrough_"
+    ) as f:
+        f.write(code)
+        temp_path = f.name
+
+    spec = importlib.util.spec_from_file_location(
+        "passthrough_kernel_module", temp_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
+
+    return module.passthrough_kernel
+
+
+def test_passthrough(device):
+    """Test passthrough kernel - no compute, just copy input to output.
+
+    This tests the case where a block argument is directly yielded without
+    any compute operations. The compiler must insert copy_tile to move the
+    input from CB to DST, then pack_tile to move it from DST to output CB.
+    """
+    kernel = make_passthrough_kernel()
+
+    inp_torch = torch.full((32, 32), 42.0, dtype=torch.bfloat16)
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    expected = inp_torch.clone()
+
+    inp = to_l1(inp_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+# =============================================================================
+# Multi-tile Passthrough Test - 2x2 tiles
+# =============================================================================
+
+PASSTHROUGH_MULTITILE_KERNEL_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=(1, 1))
+def passthrough_multitile_kernel(inp, out):
+    """Multi-tile passthrough kernel - 2x2 tiles, no compute."""
+    inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        x = inp_cb.wait()
+        o = out_cb.reserve()
+        # No compute - just store the input directly to output
+        o.store(x)
+        inp_cb.pop()
+        out_cb.push()
+
+    @ttl.datamovement()
+    def dm_read():
+        inp_blk = inp_cb.reserve()
+        tx_inp = ttl.copy(inp[0:2, 0:2], inp_blk)
+        tx_inp.wait()
+        inp_cb.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_cb.wait()
+        tx = ttl.copy(out_blk, out[0:2, 0:2])
+        tx.wait()
+        out_cb.pop()
+
+'''
+
+
+def make_passthrough_multitile_kernel():
+    """Generate a multi-tile passthrough kernel (2x2 tiles, no compute)."""
+    code = PASSTHROUGH_MULTITILE_KERNEL_TEMPLATE
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="kernel_passthrough_multitile_"
+    ) as f:
+        f.write(code)
+        temp_path = f.name
+
+    spec = importlib.util.spec_from_file_location(
+        "passthrough_multitile_kernel_module", temp_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
+
+    return module.passthrough_multitile_kernel
+
+
+def test_passthrough_multitile(device):
+    """Test multi-tile passthrough kernel (2x2 tiles) - no compute.
+
+    This tests the passthrough case with multiple tiles, ensuring the
+    copy_tile/pack_tile pattern works correctly across tile iterations.
+    """
+    kernel = make_passthrough_multitile_kernel()
+
+    # 2x2 tiles = 64x64 elements
+    inp_torch = torch.full((64, 64), 42.0, dtype=torch.bfloat16)
+    out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+    expected = inp_torch.clone()
+
+    inp = to_l1(inp_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
 if __name__ == "__main__":
     import sys
 
