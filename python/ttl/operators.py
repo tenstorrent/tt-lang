@@ -454,6 +454,76 @@ def matmul(a: TensorBlock, b: TensorBlock, c: TensorBlock) -> TensorBlock:
     return ttl.matmul(c.type, a, b, c)
 
 
+@syntax("reduce_sum")
+def reduce_sum(
+    input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dims: List[int]
+) -> TensorBlock:
+    """
+    Reduce tensor by summing along specified dimensions.
+
+    Args:
+        input: Input tensor (CB-attached)
+        scaler: Scaler tensor for reduction (CB-attached)
+        output: Output tensor (CB-attached)
+        dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
+
+    Returns:
+        Reduced tensor
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType
+
+    dims_set = set(dims)
+    if dims_set == {0}:
+        reduce_dim_val = 0  # Row
+    elif dims_set == {1}:
+        reduce_dim_val = 1  # Col
+    elif dims_set == {0, 1}:
+        reduce_dim_val = 2  # Scalar
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_type_attr = IntegerAttr.get(i32_type, 0)  # Sum = 0
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce(output.type, input, scaler, output, reduce_type_attr, reduce_dim_attr)
+
+
+@syntax("reduce_max")
+def reduce_max(
+    input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dims: List[int]
+) -> TensorBlock:
+    """
+    Reduce tensor by taking max along specified dimensions.
+
+    Args:
+        input: Input tensor (CB-attached)
+        scaler: Scaler tensor for reduction (CB-attached)
+        output: Output tensor (CB-attached)
+        dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
+
+    Returns:
+        Reduced tensor
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType
+
+    dims_set = set(dims)
+    if dims_set == {0}:
+        reduce_dim_val = 0  # Row
+    elif dims_set == {1}:
+        reduce_dim_val = 1  # Col
+    elif dims_set == {0, 1}:
+        reduce_dim_val = 2  # Scalar
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_type_attr = IntegerAttr.get(i32_type, 1)  # Max = 1
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce(output.type, input, scaler, output, reduce_type_attr, reduce_dim_attr)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -462,5 +532,7 @@ __all__ = [
     "grid_size",
     "signpost",
     "matmul",
+    "reduce_sum",
+    "reduce_max",
     *_generated_all,
 ]
