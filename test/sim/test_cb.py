@@ -73,6 +73,12 @@ def test_circular_buffer_basic(api: CBAPI) -> None:
     read_data = read_view[0]
     assert read_data is not None
 
+    # Use waited block as source (STORE_SRC) before pop
+    out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_block = out_cb.reserve()
+    out_block.store(read_view)
+    out_cb.push()
+
     cb.pop()
 
     print("Basic CircularBuffer test passed!")
@@ -110,6 +116,12 @@ def test_circular_buffer_multi_tile(api: CBAPI) -> None:
     for i in range(2):
         data = read_view[i]
         assert data is not None
+
+    # Use waited block as source (STORE_SRC) before pop
+    out_cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
+    out_block = out_cb.reserve()
+    out_block.store(read_view)
+    out_cb.push()
 
     cb.pop()
 
@@ -270,8 +282,19 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
         assert c_data[0] is not None
         assert a_data[0] is not None
 
-        # In COMPUTE thread, wait() blocks can be directly popped
+        # In COMPUTE thread, wait() blocks must be used as STORE_SRC before pop
+        out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        out_block = out_cb.reserve()
+        out_block.store(c_data)
+        out_cb.push()
         c_in_cb.pop()
+
+        out_cb2 = CircularBuffer(
+            element=element, shape=(granularity, 1), buffer_factor=2, api=api
+        )
+        out_block2 = out_cb2.reserve()
+        out_block2.store(a_data)
+        out_cb2.push()
         a_in_cb.pop()
 
     finally:
@@ -358,6 +381,11 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
             cb.wait()
 
         # After pop(), should be able to wait() again (if there's more data)
+        # Use waited block as STORE_SRC before pop
+        out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        out_block = out_cb.reserve()
+        out_block.store(data1)
+        out_cb.push()
         cb.pop()
 
         # Add more data (using DM thread)
@@ -370,6 +398,10 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
         _set_current_thread_type(ThreadType.COMPUTE)
         data2 = cb.wait()
         assert data2 is not None
+        # Use second waited block as STORE_SRC before pop
+        out_block2 = out_cb.reserve()
+        out_block2.store(data2)
+        out_cb.push()
         cb.pop()
     finally:
         from python.sim.block import _clear_current_thread_type
@@ -400,10 +432,15 @@ def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:
         write_block.store(data)
 
     # Consumer: wait -> read -> pop
+    out_cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=4, api=api)
     with cb.wait() as read_block:
         # Verify data
         assert read_block[0].to_torch()[0, 0].item() == 5.0
         assert read_block[1].to_torch()[0, 0].item() == 10.0
+        # Use waited block as STORE_SRC before context exit
+        out_block = out_cb.reserve()
+        out_block.store(read_block)
+        out_cb.push()
 
     # Test multiple iterations
     for i in range(3):
@@ -417,6 +454,10 @@ def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:
         with cb.wait() as read_block:
             assert read_block[0].to_torch()[0, 0].item() == float(i * 2)
             assert read_block[1].to_torch()[0, 0].item() == float(i * 2 + 1)
+            # Use waited block as STORE_SRC before context exit
+            out_block = out_cb.reserve()
+            out_block.store(read_block)
+            out_cb.push()
 
     print("Reserve-store-push-pop workflow test passed!")
 
@@ -575,16 +616,29 @@ def test_can_wait_and_can_reserve(api: CBAPI) -> None:
     assert cb.can_wait() is True  # Still have data to read
     assert cb.can_reserve() is False  # No free space
 
-    # Pop one tile
-    _ = cb.wait()
+    # Wait for the first tile
+    out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    read1 = cb.wait()
+
+    # After wait(), we have 1 tile read-locked, 1 tile still visible, 0 tiles free
+    assert cb.can_wait() is True  # Can still wait for the second visible tile
+    assert cb.can_reserve() is False  # No free tiles (both occupied)
+
+    # Pop the first tile - use waited block as STORE_SRC first
+    out_block = out_cb.reserve()
+    out_block.store(read1)
+    out_cb.push()
     cb.pop()
 
     # Now we have 1 tile visible, 1 tile free
     assert cb.can_wait() is True  # Still have 1 tile to read
     assert cb.can_reserve() is True  # Have 1 free tile
 
-    # Pop the last tile
-    _ = cb.wait()
+    # Pop the last tile - use waited block as STORE_SRC first
+    read2 = cb.wait()
+    out_block2 = out_cb.reserve()
+    out_block2.store(read2)
+    out_cb.push()
     cb.pop()
 
     # Back to empty state
@@ -679,9 +733,14 @@ def test_context_manager_syntax(api: CBAPI) -> None:
         # push() is automatically called on exit
 
     # Test wait with context manager
+    out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
     with cb.wait() as read_view:
         read_data = read_view[0]
         assert read_data is not None
+        # Use waited block as STORE_SRC before pop() is automatically called on exit
+        out_block = out_cb.reserve()
+        out_block.store(read_view)
+        out_cb.push()
         # pop() is automatically called on exit
 
     # Verify that we can still use the old style (backward compatibility)
@@ -692,6 +751,10 @@ def test_context_manager_syntax(api: CBAPI) -> None:
     read_view2 = cb.wait()
     data2 = read_view2[0]
     assert data2 is not None
+    # Use waited block as STORE_SRC before pop
+    out_block2 = out_cb.reserve()
+    out_block2.store(read_view2)
+    out_cb.push()
     cb.pop()
 
     # Test with multiple context managers on same line
@@ -707,11 +770,20 @@ def test_context_manager_syntax(api: CBAPI) -> None:
         w2.store([make_zeros_tile()])
 
     # Test multiple wait contexts (simulating the matmul pattern)
+    out_cb3 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_cb4 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
     with cb.wait() as r1, cb2.wait() as r2:
         d1 = r1[0]
         d2 = r2[0]
         assert d1 is not None
         assert d2 is not None
+        # Use waited blocks as STORE_SRC before context managers exit and call pop
+        out_block3 = out_cb3.reserve()
+        out_block3.store(r1)
+        out_cb3.push()
+        out_block4 = out_cb4.reserve()
+        out_block4.store(r2)
+        out_cb4.push()
 
     print("Context manager syntax test passed!")
 
@@ -776,9 +848,14 @@ def test_store_accumulate_vs_regular_store(api: CBAPI) -> None:
         assert block1[1].to_torch()[0, 0].item() == 14.0
 
     # Verify we can read it back
+    out_cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
     with cb.wait() as block_read:
         assert block_read[0].to_torch()[0, 0].item() == 7.0
         assert block_read[1].to_torch()[0, 0].item() == 14.0
+        # Use waited block as STORE_SRC before context exit
+        out_block = out_cb.reserve()
+        out_block.store(block_read)
+        out_cb.push()
 
     # Test 2: store(acc=True) path - can be called multiple times
     with cb.reserve() as block2:
@@ -812,7 +889,7 @@ def test_block_state_machine_restrictions(api: CBAPI) -> None:
     block = cb.reserve()
 
     # Attempting to read from WO state should fail
-    with pytest.raises(RuntimeError, match="Cannot read from Block.*write-only"):
+    with pytest.raises(RuntimeError, match="Cannot read from Block.*must-write.*MW"):
         _ = block[0]
 
     # Store makes it RO (for regular store) or RW (for acc store)
@@ -830,12 +907,15 @@ def test_block_state_machine_restrictions(api: CBAPI) -> None:
     # Can read
     assert read_block[0].to_torch()[0, 0].item() == 5.0
 
-    # Cannot write - wait() blocks expect POP, not STORE
-    with pytest.raises(
-        RuntimeError, match="Cannot perform store.*Expected one of.*POP"
-    ):
+    # Cannot write - wait() blocks expect STORE_SRC, not STORE
+    with pytest.raises(RuntimeError, match="Impossible.*Invalid state for store"):
         read_block.store([ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))])
 
+    # Use waited block as STORE_SRC before pop
+    out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_block = out_cb.reserve()
+    out_block.store(read_block)
+    out_cb.push()
     cb.pop()
 
     print("Block state machine restrictions test passed!")
@@ -869,11 +949,13 @@ def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
         # Start copy - block should transition to NA state
         tx = copy(source_tensor, block)
 
-        # Cannot read or write while copy is in progress (NA state)
-        with pytest.raises(RuntimeError, match="Cannot read from Block.*no access"):
+        # Cannot read or write while copy is in progress (NAW state)
+        with pytest.raises(RuntimeError, match="Cannot read from Block.*NAW state"):
             _ = block[0]
 
-        with pytest.raises(RuntimeError, match="Cannot write to Block.*no access"):
+        with pytest.raises(
+            RuntimeError, match="Cannot write to Block.*copy lock error.*NAW"
+        ):
             from python.sim import TILE_SHAPE
 
             # Need 2 items for block with span length 2
@@ -943,7 +1025,11 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
             # Manually try to mark push (bypassing CB's push method which checks pending_reserved_block)
             waited_block.mark_push_complete()
 
-        # Clean up properly
+        # Clean up properly - use waited block as STORE_SRC before pop
+        out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        out_block = out_cb.reserve()
+        out_block.store(waited_context)
+        out_cb.push()
         cb.pop()
 
         print("Push validates expected state test passed!")

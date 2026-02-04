@@ -190,16 +190,14 @@ class TestCopySourceLocking:
         # But more fundamentally, wait() blocks don't support store() - they expect POP
         with pytest.raises(
             RuntimeError,
-            match="Cannot perform store\\(\\):|Cannot write to Block: Block is locked as copy source",
+            match="Cannot write to Block.*has no access.*NAR state",
         ):
             source_block.store([make_zeros_tile(), make_zeros_tile()])
 
         # After wait(), the block still doesn't support store() because it's a wait() block
         tx.wait()
-        # wait() blocks cannot use store() per state machine - they expect POP
-        with pytest.raises(
-            RuntimeError, match="Expected one of \\[POP\\], but got store\\(\\)"
-        ):
+        # wait() blocks cannot use store() per state machine - they expect STORE_SRC
+        with pytest.raises(RuntimeError, match="Impossible.*Invalid state for store"):
             source_block.store(
                 [make_zeros_tile(), make_zeros_tile()]
             )  # Should still fail
@@ -229,10 +227,10 @@ class TestCopyDestinationLocking:
         # Start copy
         tx = copy(source_tensor, dest_block)
 
-        # Attempt to read from destination should fail (dest is in NA state)
+        # Attempt to read from destination should fail (dest is in NAW state)
         with pytest.raises(
             RuntimeError,
-            match="Cannot read from Block: Block has no access \\(NA state\\)",
+            match="Cannot read from Block.*NAW state",
         ):
             _ = dest_block[0]
 
@@ -260,10 +258,10 @@ class TestCopyDestinationLocking:
         # Start copy
         tx = copy(source_tensor, dest_block)
 
-        # Attempt to write to destination should fail (dest is in NA state)
+        # Attempt to write to destination should fail (dest is in NAW state)
         with pytest.raises(
             RuntimeError,
-            match="Cannot write to Block: Block has no access \\(NA state\\)",
+            match="Cannot write to Block.*copy destination.*copy lock error.*NAW",
         ):
             dest_block.store([make_ones_tile(), make_ones_tile()])
 
@@ -272,7 +270,7 @@ class TestCopyDestinationLocking:
         # Cannot store on DM block - only Compute blocks support store
         with pytest.raises(
             RuntimeError,
-            match="Expected one of \\[COPY_DST, COPY_SRC, PUSH\\], but got store\\(\\)",
+            match="Impossible.*Invalid state for store",
         ):
             dest_block.store([make_ones_tile(), make_ones_tile()])
 
