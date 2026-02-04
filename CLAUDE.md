@@ -410,6 +410,9 @@ sed -n '/After D2MAllocate/,/^\/\/ -----\/\/ IR Dump Before/p' /tmp/full_pipelin
 
 ## Tips for Claude
 
+### D2M Integration
+- **Essential update**: the d2m dependency has been COMPLETELY CUT. Some out dated docs may reference d2m dialect but this project currently DOES NOT lower to d2m dialect, use any d2m instruction, or any d2m passes. The ONLY dialect that is used from tt-mlir is ttkernel. This project mostly goes from python -> ttl -> ttkernel (in addition to some upstream mlir dialects).
+
 ### Environment Management
 - Always source `env/activate` before running commands
 - Check `$TTLANG_ENV_ACTIVATED` to verify environment is active
