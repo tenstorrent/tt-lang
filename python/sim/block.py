@@ -694,9 +694,12 @@ class Block:
             )
         # Note: We allow writing in MR/RW/A states as appropriate for the operation
 
-    @validate_call
-    def __getitem__(self, idx: Index) -> Tensor:
-        """Get item with lock checking."""
+    def _get_item(self, idx: Index) -> Tensor:
+        """Internal method to get item with lock checking.
+
+        This is used internally by copy handlers and other internal operations.
+        External code should not index blocks.
+        """
         self._check_can_read()
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
@@ -710,6 +713,15 @@ class Block:
         if value is None:
             raise ValueError(f"Reading uninitialized or consumed slot at index {idx}")
         return value
+
+    @validate_call
+    def __getitem__(self, idx: Index) -> Tensor:
+        """Block indexing is not allowed. Blocks should be used as whole units."""
+        raise RuntimeError(
+            "Block indexing (block[index]) is not allowed. "
+            "Blocks must be used as whole units in operations like store() or arithmetic. "
+            "Use block directly without indexing."
+        )
 
     # TODO: Why does validate_call fail here? Maybe because Tensor could
     # resolve to tensor which is similar to a list?
@@ -742,7 +754,12 @@ class Block:
         self._buf[(self._span.start + idx) % self._capacity] = None
 
     def to_list(self) -> List[CBSlot]:
-        return [self[i] for i in range(len(self))]
+        """Convert block contents to a list.
+
+        This is a convenience method for tests and debugging.
+        Returns the actual tensor values from the buffer.
+        """
+        return [self._get_item(i) for i in range(len(self))]
 
     def copy_as_dest(self, items: Sequence[Tensor]) -> None:
         """Store items into the block as part of a copy operation.
@@ -844,7 +861,7 @@ class Block:
             else:
                 # Subsequent store(acc=True): Accumulate (y += x)
                 for i, v in enumerate(items_seq):
-                    self._write_slot(i, self[i] + v)
+                    self._write_slot(i, self._get_item(i) + v)
         else:
             # Regular assignment
             for i, v in enumerate(items_seq):
@@ -867,7 +884,7 @@ class Block:
 
         # Check if shapes match exactly - fast path
         if left_shape == right_shape and len_left == len_right:
-            return [op(left[i], right[i]) for i in range(len_left)]
+            return [op(left._get_item(i), right._get_item(i)) for i in range(len_left)]
 
         # Check if broadcasting is valid using standard broadcasting rules
         # For now, require same number of dimensions
