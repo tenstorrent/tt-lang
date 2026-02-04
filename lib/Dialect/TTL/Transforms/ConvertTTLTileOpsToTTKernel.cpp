@@ -22,6 +22,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
@@ -649,6 +650,120 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Matmul Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_matmul to TTKernel mm_init_short + matmul_tiles.
+/// Reads A and B from CBs, accumulates into DST.
+/// Handles K-dimension accumulation by emitting a loop over K tiles.
+struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
+  using OpConversionPattern<TileMatmulOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileMatmulOp op, TileMatmulOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+    auto aCB =
+        lookupAndConvertCB(op.getA(), funcOp, typeConverter, rewriter, loc);
+    if (failed(aCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert A CB");
+    }
+
+    auto bCB =
+        lookupAndConvertCB(op.getB(), funcOp, typeConverter, rewriter, loc);
+    if (failed(bCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert B CB");
+    }
+
+    // Get DST index from attribute (assigned by TTLAssignDST pass).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdxVal = dstIdxAttr.getInt();
+    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+
+    // Get CB shapes to determine K dimension.
+    // A has shape [M, K], B has shape [K, N].
+    auto aShape = getCBTileGridShape(op.getA(), funcOp);
+    auto bShape = getCBTileGridShape(op.getB(), funcOp);
+    if (!aShape || !bShape) {
+      return rewriter.notifyMatchFailure(op, "cannot determine CB shapes");
+    }
+
+    int64_t aK = aShape->second; // A is [M, K]
+    int64_t bK = bShape->first;  // B is [K, N]
+    int64_t bN = bShape->second; // B is [K, N]
+
+    if (aK != bK) {
+      return rewriter.notifyMatchFailure(
+          op, "K dimension mismatch between A and B");
+    }
+    int64_t kDim = aK;
+
+    // Get M, N indices from enclosing loops (if any).
+    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value mIdx = zero;
+    Value nIdx = zero;
+
+    if (loops.size() >= 2) {
+      // loops[0] = n (innermost), loops[1] = m (outer)
+      nIdx = loops[0].getInductionVar();
+      mIdx = loops[1].getInductionVar();
+    } else if (loops.size() == 1) {
+      nIdx = loops[0].getInductionVar();
+    }
+
+    // Emit mm_init_short before the K loop.
+    Value transpose =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
+    rewriter.create<ttk::MatmulInitShortOp>(loc, *aCB, *bCB, transpose);
+
+    // Create K loop if K > 1, otherwise just emit single matmul_tiles.
+    if (kDim > 1) {
+      Value kStart = zero;
+      Value kEnd = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
+      Value kStep = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+      auto kLoop = rewriter.create<scf::ForOp>(loc, kStart, kEnd, kStep);
+      rewriter.setInsertionPointToStart(kLoop.getBody());
+      Value kIdx = kLoop.getInductionVar();
+
+      // A index = m * K + k
+      Value aKVal = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
+      Value aIdxMulK = rewriter.create<arith::MulIOp>(loc, mIdx, aKVal);
+      Value aIdx = rewriter.create<arith::AddIOp>(loc, aIdxMulK, kIdx);
+
+      // B index = k * N + n
+      Value bNVal = rewriter.create<arith::ConstantIndexOp>(loc, bN);
+      Value bIdxMulN = rewriter.create<arith::MulIOp>(loc, kIdx, bNVal);
+      Value bIdx = rewriter.create<arith::AddIOp>(loc, bIdxMulN, nIdx);
+
+      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
+      rewriter.setInsertionPointAfter(kLoop);
+    } else {
+      // K=1: simple case, just compute indices directly.
+      // A index = m * 1 + 0 = m
+      // B index = 0 * N + n = n
+      Value aIdx = mIdx;
+      Value bIdx = nIdx;
+      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
+    }
+
+    rewriter.replaceOp(op, adaptor.getA());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
 
@@ -707,6 +822,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // CB -> DST ops with attribute need the type converter.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileMatmulToTTKernel>(*typeConverter, ctx);
 
   // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
   // (acquire/commit/wait/release + copy_tile/pack_tile)
