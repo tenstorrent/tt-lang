@@ -97,7 +97,7 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *tensorOp,
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##Op>(tensorOp))                                               \
     return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1]);
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
+#define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -572,7 +572,7 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 // (TTK_INIT and TTK_COMPUTE are unused here, only needed for TTKernel lowering)
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   using Lower##TTL_OP = LowerBinaryToCompute<TTL_OP##Op, TILE_OP>;
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
+#define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   using Lower##TTL_OP = LowerBinaryToCompute<TTL_OP##Op, TILE_OP>;
 // Generate type aliases for unary operations using tile ops
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
@@ -614,7 +614,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   // lowering)
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   patterns.add<Lower##TTL_OP>(ctx);
-#define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)     \
+#define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   patterns.add<Lower##TTL_OP>(ctx);
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   patterns.add<Lower##TTL_OP>(ctx);
