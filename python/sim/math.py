@@ -23,6 +23,33 @@ if TYPE_CHECKING:
     from .cb import ReserveContext, WaitContext
 
 
+def _track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
+    """Track source wait() blocks for proper state management.
+
+    Adds input wait() blocks to the result block's _source_blocks list so that
+    when the result is stored, the sources can be marked as consumed.
+
+    Args:
+        result_block: The result block to track sources for
+        *input_blocks: Input blocks that contributed to the result
+    """
+    for block in input_blocks:
+        # Unwrap context managers if needed
+        actual_block = block
+        if hasattr(block, "_block"):
+            actual_block = block._block  # type: ignore[attr-defined]
+
+        if isinstance(actual_block, Block):
+            if (
+                not actual_block._is_temporary  # type: ignore[attr-defined]
+                and actual_block._acquisition == BlockAcquisition.WAIT  # type: ignore[attr-defined]
+                and actual_block._thread_type == ThreadType.COMPUTE  # type: ignore[attr-defined]
+            ):
+                result_block._source_blocks.append(actual_block)  # type: ignore[attr-defined]
+            elif actual_block._is_temporary:  # type: ignore[attr-defined]
+                result_block._source_blocks.extend(actual_block._source_blocks)  # type: ignore[attr-defined]
+
+
 def broadcast(
     block: Union[Block, "ReserveContext", "WaitContext"],
     _unused_arg: Optional[Any] = None,
@@ -132,7 +159,9 @@ def _create_unary_op_wrapper(name: str, torch_fn: Callable) -> Callable:
         from .ttnnsim import Tensor
 
         result_list = [Tensor(t) for t in result_tensors]
-        return Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
+        result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
+        _track_source_blocks(result_block, block)
+        return result_block
 
     wrapper.__name__ = name
     wrapper.__doc__ = f"""{name.replace('_', ' ').title()} operation.
@@ -207,7 +236,9 @@ def _apply_binary_op(a: Block, b: Block, op: Callable) -> Block:
     result_tensors = [op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)]
     result_list = [Tensor(t) for t in result_tensors]
 
-    return Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
+    result_block = Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
+    _track_source_blocks(result_block, a, b)
+    return result_block
 
 
 # Helper function for unary operations with parameters
@@ -226,7 +257,9 @@ def _apply_unary_with_params(block: Block, op: Callable) -> Block:
     result_tensors = [op(t.to_torch()) for t in block.to_list()]
     result_list = [Tensor(t) for t in result_tensors]
 
-    return Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
+    result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
+    _track_source_blocks(result_block, block)
+    return result_block
 
 
 # Binary operations
@@ -254,6 +287,74 @@ def min(a: Block, b: Block) -> Block:
         Block with element-wise minimum
     """
     return _apply_binary_op(a, b, torch.minimum)
+
+
+def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
+    """Matrix multiplication of two blocks.
+
+    Performs matrix multiplication across the tile grid. If block a has shape (M, K)
+    and block b has shape (K, N), the result will have shape (M, N).
+
+    Each output tile [i, j] is computed as the sum of torch.matmul(a[i, k], b[k, j])
+    for all k from 0 to K-1.
+
+    Args:
+        a: First input block with shape (M, K)
+        b: Second input block with shape (K, N)
+        _output_hint: Optional output block hint (unused in simulator)
+
+    Returns:
+        Block with shape (M, N) containing the matrix multiplication result
+
+    Note:
+        This is equivalent to the @ operator. In the spec, matmul is BlockExpr.__matmul__,
+        but this function is provided for convenience in the simulator.
+    """
+    from .ttnnsim import Tensor
+
+    # Get block shapes
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+
+    if len(a_shape) != 2 or len(b_shape) != 2:
+        raise ValueError(
+            f"matmul requires 2D blocks, got shapes {a_shape} and {b_shape}"
+        )
+
+    M, K = a_shape
+    K_b, N = b_shape
+
+    if K != K_b:
+        raise ValueError(
+            f"Inner dimensions must match for matmul: {a_shape} @ {b_shape}"
+        )
+
+    # Get all tiles as torch tensors
+    a_tensors = a.to_list()
+    b_tensors = b.to_list()
+
+    # Compute result tile-by-tile
+    # Output tile [i, j] = sum over k of (a[i, k] @ b[k, j])
+    result_tensors = []
+    for i in range(M):
+        for j in range(N):
+            # Accumulate contributions from all k
+            acc = None
+            for k in range(K):
+                a_tile = a_tensors[i * K + k].to_torch()
+                b_tile = b_tensors[k * N + j].to_torch()
+                partial = torch.matmul(a_tile, b_tile)
+
+                if acc is None:
+                    acc = partial
+                else:
+                    acc = acc + partial
+
+            result_tensors.append(Tensor(acc))
+
+    result_block = Block.from_list(result_tensors, shape=(M, N))
+    _track_source_blocks(result_block, a, b)
+    return result_block
 
 
 # Unary operations with scalar parameters
@@ -406,7 +507,8 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
 def reduce_max(
     block: Block,
     scaler: Block,
-    dims: List[int],
+    _output_hint: Optional[Block] = None,
+    dims: Optional[List[int]] = None,
 ) -> Block:
     """Scaled maximum reduction.
 
@@ -416,6 +518,7 @@ def reduce_max(
     Args:
         block: Input block to reduce
         scaler: Scaler block
+        _output_hint: Optional output block hint (unused in simulator)
         dims: List of dimension indices to reduce over (0-indexed)
               Example: [0] for rows, [1] for columns, [0, 1] for all
 
@@ -433,72 +536,64 @@ def reduce_max(
         Example for reduction over rows and columns: ttl.math.reduce_max(a, s, dims=[0, 1])
     """
 
-    if not dims:
+    if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
 
     # Import Tensor here to avoid circular dependency
     from .ttnnsim import Tensor
 
-    # Get the block shape
+    # Reduction operates on TILE GRID: combines tiles along specified grid dimensions
+    # dims=[0] means combine tiles along grid rows (element-wise max)
+    # dims=[1] means combine tiles along grid columns (element-wise max)
+    # The result tile grid shrinks in the reduced dimensions
     block_shape = block._shape  # type: ignore[attr-defined]
-
-    # Calculate the result shape based on reduced dimensions
-    result_shape = tuple(
-        1 if i in dims else block_shape[i] for i in range(len(block_shape))
-    )
-
-    # Stack tensors into a batched tensor and reshape to include tile grid dimensions
+    M, N = block_shape
     input_tensors = [t.to_torch() for t in block.to_list()]
-    input_batched = torch.stack(input_tensors)
-    tile_hw = input_tensors[0].shape  # Get tile height and width
 
-    # Reshape to (block_shape[0], block_shape[1], tile_h, tile_w)
-    input_reshaped = input_batched.reshape(*block_shape, *tile_hw)
-
-    # Determine which dimensions to reduce in the reshaped tensor
-    # dims are in block space (0 for rows, 1 for cols)
-    # We need to reduce along those dimensions in the reshaped tensor
-    reduce_dims = []
+    # Validate dims
     for dim in dims:
-        if dim >= len(block_shape):
+        if dim >= 2:
             raise ValueError(
-                f"Cannot reduce along dimension {dim}: block has shape {block_shape} "
-                f"with only {len(block_shape)} dimensions"
+                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
             )
-        reduce_dims.append(dim)
 
-    # Apply max reduction along the specified dimensions
-    result = input_reshaped
-    for dim in sorted(
-        reduce_dims, reverse=True
-    ):  # Reduce in reverse order to maintain indices
-        result = torch.max(result, dim=dim, keepdim=True)[0]
+    # Calculate result grid shape
+    result_M = 1 if 0 in dims else M
+    result_N = 1 if 1 in dims else N
 
-    # Flatten back to tiles
-    num_result_tiles = result_shape[0] * result_shape[1]
-    result_flat = result.reshape(num_result_tiles, *tile_hw)
+    # For each result tile position, gather and combine input tiles element-wise
+    result_tensors = []
+    for res_i in range(result_M):
+        for res_j in range(result_N):
+            # Collect all tiles that contribute
+            tiles_to_max = []
+            for i in range(M):
+                for j in range(N):
+                    # Include if dims match or dimension is being reduced
+                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
+                        tile_idx = i * N + j
+                        tiles_to_max.append(input_tensors[tile_idx])
 
-    # Apply scaling
-    scaler_tensors = [t.to_torch() for t in scaler.to_list()]
-    scaler_batched = torch.stack(scaler_tensors)
-    scaler_shape = scaler._shape  # type: ignore[attr-defined]
-    scaler_reshaped = scaler_batched.reshape(*scaler_shape, *tile_hw)
+            # Take element-wise max across all contributing tiles
+            result_tile = tiles_to_max[0]
+            for tile in tiles_to_max[1:]:
+                result_tile = torch.maximum(result_tile, tile)
 
-    # Broadcast scaler to result shape if needed
-    result_flat_reshaped = result_flat.reshape(*result_shape, *tile_hw)
-    scaled_result = result_flat_reshaped * scaler_reshaped
+            # Apply scaling
+            scaler_tile = scaler.to_list()[0].to_torch()
+            result_tile = result_tile * scaler_tile
+            result_tensors.append(Tensor(result_tile))
 
-    # Flatten again to tiles
-    scaled_result_flat = scaled_result.reshape(num_result_tiles, *tile_hw)
-
-    result_list = [Tensor(scaled_result_flat[i]) for i in range(num_result_tiles)]
-    return Block.from_list(result_list, shape=result_shape)
+    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
+    _track_source_blocks(result_block, block, scaler)
+    return result_block
 
 
 def reduce_sum(
     block: Block,
     scaler: Block,
-    dims: List[int],
+    _output_hint: Optional[Block] = None,
+    dims: Optional[List[int]] = None,
 ) -> Block:
     """Scaled sum reduction.
 
@@ -508,6 +603,7 @@ def reduce_sum(
     Args:
         block: Input block to reduce
         scaler: Scaler block
+        _output_hint: Optional output block hint (unused in simulator)
         dims: List of dimension indices to reduce over (0-indexed)
               Example: [0] for rows, [1] for columns, [0, 1] for all
 
@@ -525,67 +621,92 @@ def reduce_sum(
         Example for reduction over rows and columns: ttl.math.reduce_sum(a, s, dims=[0, 1])
     """
 
-    if not dims:
+    if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
 
     # Import Tensor here to avoid circular dependency
     from .ttnnsim import Tensor
 
-    # Get the block shape
+    # Reduction operates on TILE GRID: combines tiles along specified grid dimensions
+    # dims=[0] means combine tiles along grid rows (element-wise sum)
+    # dims=[1] means combine tiles along grid columns (element-wise sum)
+    # The result tile grid shrinks in the reduced dimensions
     block_shape = block._shape  # type: ignore[attr-defined]
-
-    # Calculate the result shape based on reduced dimensions
-    result_shape = tuple(
-        1 if i in dims else block_shape[i] for i in range(len(block_shape))
-    )
-
-    # Stack tensors into a batched tensor and reshape to include tile grid dimensions
+    M, N = block_shape
     input_tensors = [t.to_torch() for t in block.to_list()]
-    input_batched = torch.stack(input_tensors)
-    tile_hw = input_tensors[0].shape  # Get tile height and width
 
-    # Reshape to (block_shape[0], block_shape[1], tile_h, tile_w)
-    input_reshaped = input_batched.reshape(*block_shape, *tile_hw)
-
-    # Determine which dimensions to reduce in the reshaped tensor
-    # dims are in block space (0 for rows, 1 for cols)
-    # We need to reduce along those dimensions in the reshaped tensor
-    reduce_dims = []
+    # Validate dims
     for dim in dims:
-        if dim >= len(block_shape):
+        if dim >= 2:
             raise ValueError(
-                f"Cannot reduce along dimension {dim}: block has shape {block_shape} "
-                f"with only {len(block_shape)} dimensions"
+                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
             )
-        reduce_dims.append(dim)
 
-    # Apply sum reduction along the specified dimensions
-    result = input_reshaped
-    for dim in sorted(
-        reduce_dims, reverse=True
-    ):  # Reduce in reverse order to maintain indices
-        result = torch.sum(result, dim=dim, keepdim=True)
+    # Calculate result grid shape
+    result_M = 1 if 0 in dims else M
+    result_N = 1 if 1 in dims else N
 
-    # Flatten back to tiles
-    num_result_tiles = result_shape[0] * result_shape[1]
-    result_flat = result.reshape(num_result_tiles, *tile_hw)
+    # For each result tile position, gather and combine input tiles element-wise
+    result_tensors = []
+    for res_i in range(result_M):
+        for res_j in range(result_N):
+            # Collect all tiles that contribute
+            tiles_to_sum = []
+            for i in range(M):
+                for j in range(N):
+                    # Include if dims match or dimension is being reduced
+                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
+                        tile_idx = i * N + j
+                        tiles_to_sum.append(input_tensors[tile_idx])
 
-    # Apply scaling
-    scaler_tensors = [t.to_torch() for t in scaler.to_list()]
-    scaler_batched = torch.stack(scaler_tensors)
-    scaler_shape = scaler._shape  # type: ignore[attr-defined]
-    scaler_reshaped = scaler_batched.reshape(*scaler_shape, *tile_hw)
+            # Take element-wise sum across all contributing tiles
+            result_tile = tiles_to_sum[0].clone()
+            for tile in tiles_to_sum[1:]:
+                result_tile = result_tile + tile
 
-    # Broadcast scaler to result shape if needed
-    result_flat_reshaped = result_flat.reshape(*result_shape, *tile_hw)
-    scaled_result = result_flat_reshaped * scaler_reshaped
+            # Apply scaling
+            scaler_tile = scaler.to_list()[0].to_torch()
+            result_tile = result_tile * scaler_tile
+            result_tensors.append(Tensor(result_tile))
 
-    # Flatten again to tiles
-    scaled_result_flat = scaled_result.reshape(num_result_tiles, *tile_hw)
-
-    result_list = [Tensor(scaled_result_flat[i]) for i in range(num_result_tiles)]
-    return Block.from_list(result_list, shape=result_shape)
+    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
+    _track_source_blocks(result_block, block, scaler)
+    return result_block
 
 
 # Clean up temporary variables
 del _op_name, _torch_fn
+
+
+def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
+    """Transpose a 2D tile tensor (swap width and height).
+
+    Performs width-height transpose on input tiles. Each 32x32 tile has its
+    rows and columns swapped.
+
+    The input tensor shape [M, N] becomes output shape [N, M] in tiles.
+
+    Args:
+        block: Input block with shape (M, N)
+        _output_hint: Optional output block hint (unused in simulator)
+
+    Returns:
+        Block with shape (N, M), where each tile is transposed
+    """
+    from .ttnnsim import Tensor
+
+    # Transpose each tile (swap rows/columns within tiles)
+    transposed_tiles = [Tensor(t.to_torch().T) for t in block.to_list()]
+
+    # Also swap the tile grid dimensions: (M, N) -> (N, M)
+    M, N = block._shape  # type: ignore[attr-defined]
+
+    # Reorder tiles to match transposed grid: tile[i,j] -> tile[j,i]
+    reordered_tiles = []
+    for j in range(N):
+        for i in range(M):
+            reordered_tiles.append(transposed_tiles[i * N + j])
+
+    result_block = Block.from_list(reordered_tiles, shape=(N, M))
+    _track_source_blocks(result_block, block)
+    return result_block

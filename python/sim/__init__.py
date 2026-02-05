@@ -53,6 +53,7 @@ class _TTLNamespace:
         from .copy import copy
         from .decorators import compute, datamovement
         from .kernel import core, grid_size, kernel
+        from . import math as math_module
         from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
         from .program import Program
         from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape, Size
@@ -64,6 +65,7 @@ class _TTLNamespace:
         self.datamovement = datamovement
         self.core = core
         self.copy = copy
+        self.transpose = math_module.transpose
         self.Pipe = Pipe
         self.PipeNet = PipeNet
         self.SrcPipeIdentity = SrcPipeIdentity
