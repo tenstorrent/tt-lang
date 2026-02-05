@@ -196,7 +196,7 @@ def core(dims: Size = 2) -> CoreCoord:
     if dims == 1:
         return coords[0]
     else:
-        return cast(Tuple[Index, Index, *tuple[Index, ...]], tuple(coords))
+        return cast(tuple, tuple(coords))
 
 
 def kernel(

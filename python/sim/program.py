@@ -296,7 +296,26 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
                 # Get source code - unwrap to get original function
                 func = inspect.unwrap(bound_func)
-                source = textwrap.dedent(inspect.getsource(func))
+
+                # Try to get source with better error handling
+                try:
+                    import linecache
+
+                    source_file = inspect.getsourcefile(func)
+                    if source_file:
+                        # Force linecache to check the file
+                        linecache.checkcache(source_file)
+                    source = textwrap.dedent(inspect.getsource(func))
+                except OSError as e:
+                    # Provide better error message with debugging info
+                    source_file = inspect.getsourcefile(func) or inspect.getfile(func)
+                    raise RuntimeError(
+                        f"Failed to get source code for function {func.__name__} "
+                        f"from file {source_file}. "
+                        f"This can happen if the file was modified after import or "
+                        f"if running tests from the wrong directory. "
+                        f"Original error: {e}"
+                    ) from e
 
                 # Capture original file and line number for error reporting
                 orig_file = inspect.getsourcefile(func) or "<unknown>"

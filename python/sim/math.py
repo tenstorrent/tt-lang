@@ -11,7 +11,7 @@ ttl.math API from the TT-Lang specification.
 
 from typing import TYPE_CHECKING, Any, List, Optional, Union
 
-from .block import Block
+from .block import Block, BlockAcquisition, ThreadType
 
 if TYPE_CHECKING:
     from .cb import ReserveContext, WaitContext
@@ -82,5 +82,25 @@ def broadcast(
                 f"but has size {block_shape[dim]}"
             )
 
-    # Broadcasting is now implicit, so just return the block unchanged
-    return actual_block
+    # Broadcasting is now implicit - return a new temporary block that preserves source tracking
+    # Create a new block to avoid modifying the original, and preserve source blocks
+    result_block = Block.from_list(actual_block.to_list(), actual_block._shape)  # type: ignore[attr-defined]
+
+    # Preserve source block tracking for wait() blocks
+    if hasattr(actual_block, "_source_blocks"):
+        result_block._source_blocks = actual_block._source_blocks.copy()  # type: ignore[attr-defined]
+
+    # If actual_block itself is a wait() block, add it to source_blocks
+    if (
+        hasattr(actual_block, "_is_temporary")
+        and not actual_block._is_temporary  # type: ignore[attr-defined]
+        and hasattr(actual_block, "_acquisition")
+        and actual_block._acquisition
+        == BlockAcquisition.WAIT  # type: ignore[attr-defined]
+        and hasattr(actual_block, "_thread_type")
+        and actual_block._thread_type
+        == ThreadType.COMPUTE  # type: ignore[attr-defined]
+    ):
+        result_block._source_blocks.append(actual_block)  # type: ignore[attr-defined]
+
+    return result_block
