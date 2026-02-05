@@ -8,7 +8,7 @@
 * [3. Grid](#3-grid)
     * [3.1. Grid size function](#31-grid-size-function)
     * [3.2. Core function](#32-core-function)
-* [4. Circular buffer](#4-circular-buffer)
+* [4. Dataflow buffer](#4-dataflow-buffer)
 * [5. Block](#5-block)
 * [6. Pipe](#6-pipe)
     * [6.1. Pipe net](#61-pipe-net)
@@ -26,12 +26,13 @@
 | 0.2 | 01/20/2026 | Remove `ttl.Program` |
 | 0.3 | 01/23/2026 | Add specification for block operators and math functions |
 | 0.4 | 01/26/2026 | Add `ttl.math.broadcast` |
+| 0.5 | 02/05/2026 | Use dataflow buffer instead of circular buffer term |
 
 ## 1. Introduction
 
 TT-Lang is a Python based *domain specific language (DSL)* designed to express kernel programs for TT hardware. While based on Python the language maintains a number of constraints to what parts of Python can be used in what context, hence the DSL nature of it. TT-Lang is tightly integrated with [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html) to provide seamless experience of mixing existing TT-NN operations and user-defined kernel programs.
 
-The programming model of TT-Lang is centered around explicit specification of data movement and compute threads and explicit synchronization between them. This allows the user to have fine grained control of the execution schedule and its performance implications. TT-Lang offers abstractions familiar to TT-Metalium users such as *circular buffers* and *semaphores*. TT-Lang also offers new, higher level abstractions, such as *tensor slices*, *blocks* and *pipes* that wrap the complexity of dealing with tensor memory layout, compute API and core-to-core communication correspondingly.
+The programming model of TT-Lang is centered around explicit specification of data movement and compute threads and explicit synchronization between them. This allows the user to have fine grained control of the execution schedule and its performance implications. TT-Lang offers abstractions familiar to TT-Metalium users such as *dataflow buffers* and *semaphores*. TT-Lang also offers new, higher level abstractions, such as *tensor slices*, *blocks* and *pipes* that wrap the complexity of dealing with tensor memory layout, compute API and core-to-core communication correspondingly.
 
 ## 2. Kernel program
 
@@ -117,51 +118,51 @@ x, y = ttl.core(dims = 2)
 x, y, z = ttl.core(dims = 3)
 ```
 
-## 4. Circular buffer
+## 4. Dataflow buffer
 
-A *circular buffer* is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. A circular buffer is created with the `ttl.make_circular_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit is a whole tile if the tensor has a tiled layout and is a scalar if the tensor has a row-major layout. Shape determines the shape of a *block* returned by one of the *acquisition functions* and is expressed in shape units. Buffer factor determines the total size of L1 memory allocated as a product of block size and buffer factor. For the most common case buffer factor defaults to 2 to enable double buffering.
+A *dataflow buffer* is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit is a whole tile if the tensor has a tiled layout and is a scalar if the tensor has a row-major layout. Shape determines the shape of a *block* returned by one of the *acquisition functions* and is expressed in shape units. Buffer factor determines the total size of L1 memory allocated as a product of block size and buffer factor. For the most common case buffer factor defaults to 2 to enable double buffering.
 
-There are two acquisition functions on a circular buffer object: `wait` and `reserve`. A circular buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function: `pop` for `wait` and `push` for `reserve`.
+There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function: `pop` for `wait` and `push` for `reserve`.
 
 #### Example
 
 ```py
-x_cb = ttl.make_circular_buffer_like(x,
+x_dfb = ttl.make_dataflow_buffer_like(x,
     shape = (2, 2),
     buffer_factor = 2)
 
 @ttl.datamovement()
 def some_read():
-    # acquire x_blk from x_cb
-    with x_cb.reserve() as x_blk:
+    # acquire x_blk from x_dfb
+    with x_dfb.reserve() as x_blk:
 
         # produce data into x_blk
         # ...
 
-        # release x_blk implicitly by x_cb.push() at the end of the with scope
+        # release x_blk implicitly by x_dfb.push() at the end of the with scope
 
 @ttl.compute()
 def some_compute():
-    # acquire x_blk from x_cb
-    x_blk = x_cb.wait()
+    # acquire x_blk from x_dfb
+    x_blk = x_dfb.wait()
 
     # consume data in x_blk
     # ...
 
-    x_cb.pop() # release x_blk explicitly
+    x_dfb.pop() # release x_blk explicitly
 ```
 
 | Type alias/Function | Description |
 | :---- | :---- |
-|  `ttl.make_circular_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   buffer_factor: ttl.Size) -> ttl.CircularBuffer` | Create a circular buffer by inheriting basic properties from `likeness_tensor`. |
-|  `ttl.CircularBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a circular buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
-| `ttl.CircularBuffer.push(self)` | Push a block to a circular buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
-| `ttl.CircularBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a circular buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
-| `ttl.CircularBuffer.pop(self)` | Pop a block from a circular buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
+|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   buffer_factor: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+|  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
+| `ttl.DataflowBuffer.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
+| `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
+| `ttl.DataflowBuffer.pop(self)` | Pop a block from a dataflow buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
 
 ## 5. Block
 
-A *block* represents memory acquired from a circular buffer. Block size is determined by the shape of a circular buffer and its memory is allocated when a circular buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). It is illegal to have multiple `store` invocations  for the same block with different values of `acc` parameter. Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
+A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). It is illegal to have multiple `store` invocations  for the same block with different values of `acc` parameter. Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
 
 #### Element-wise with broadcast example
 
@@ -176,17 +177,17 @@ A *block* represents memory acquired from a circular buffer. Block size is deter
 #
 # NT = N // TILE_SIZE
 
-a_cb = ttl.make_circular_buffer_like(A, shape = (1, ))
-b_cb = ttl.make_circular_buffer_like(B, shape = (1, ))
-y_cb = ttl.make_circular_buffer_like(Y, shape = (1, ))
+a_dfb = ttl.make_dataflow_buffer_like(A, shape = (1, ))
+b_dfb = ttl.make_dataflow_buffer_like(B, shape = (1, ))
+y_dfb = ttl.make_dataflow_buffer_like(Y, shape = (1, ))
 
 @ttl.datamovement()
 def elwise_read():
     for nt in range(NT):
-        # acquire a_blk and b_blk from a_cb and b_cb:
+        # acquire a_blk and b_blk from a_dfb and b_dfb:
         with (
-            a_cb.reserve() as a_blk,
-            b_cb.reserve() as b_blk
+            a_dfb.reserve() as a_blk,
+            b_dfb.reserve() as b_blk
         ):
             # then copy:
             a_xf = ttl.copy(A[nt], a_blk)
@@ -200,11 +201,11 @@ def elwise_read():
 @ttl.compute()
 def elwise_compute():
     for _ in range(NT):
-        # acquire a_blk, b_blk and y_blk from a_cb, b_cb and y_cb:
+        # acquire a_blk, b_blk and y_blk from a_dfb, b_dfb and y_dfb:
         with (
-            a_cb.wait() as a_blk,
-            b_cb.wait() as b_blk,
-            y_cb.reserve() as y_blk,
+            a_dfb.wait() as a_blk,
+            b_dfb.wait() as b_blk,
+            y_dfb.reserve() as y_blk,
         ):
             # then compute y = sqrt(a^2 + b^2):
             a_squared = a_blk ** 2
@@ -218,8 +219,8 @@ def elwise_compute():
 @ttl.datamovement()
 def elwise_write():
     for nt in range(NT):
-        # acquire y_blk from y_cb:
-        with y_cb.wait() as y_blk:
+        # acquire y_blk from y_dfb:
+        with y_dfb.wait() as y_blk:
 
             # then copy:
             y_xf = ttl.copy(y_blk, Y[nt])
@@ -245,18 +246,18 @@ def elwise_write():
 # NT = N // TILE_SIZE
 # KT = K // TILE_SIZE
 
-a_cb = ttl.make_circular_buffer_like(A, shape = (1, 1, 1))
-b_cb = ttl.make_circular_buffer_like(B, shape = (1, 1))
-c_cb = ttl.make_circular_buffer_like(C, shape = (1, 1))
-y_cb = ttl.make_circular_buffer_like(Y, shape = (1, 1, 1))
+a_dfb = ttl.make_dataflow_buffer_like(A, shape = (1, 1, 1))
+b_dfb = ttl.make_dataflow_buffer_like(B, shape = (1, 1))
+c_dfb = ttl.make_dataflow_buffer_like(C, shape = (1, 1))
+y_dfb = ttl.make_dataflow_buffer_like(Y, shape = (1, 1, 1))
 
 @ttl.datamovement()
 def matmul_read():
     for it in range(IT):
         for mt in range(MT):
             for nt in range(NT):
-                # acquire c_blk from c_cb:
-                with c_cb.reserve() as c_blk:
+                # acquire c_blk from c_dfb:
+                with c_dfb.reserve() as c_blk:
 
                     # then copy:
                     c_xf = ttl.copy(C[mt, nt], c_blk)
@@ -265,10 +266,10 @@ def matmul_read():
                     # release c_blk
 
                 for kt in range(KT):
-                    # acquire a_blk and b_blk from a_cb and b_cb:
+                    # acquire a_blk and b_blk from a_dfb and b_dfb:
                     with (
-                        a_cb.reserve() as a_blk,
-                        b_cb.reserve() as b_blk
+                        a_dfb.reserve() as a_blk,
+                        b_dfb.reserve() as b_blk
                     ):
                         # then copy:
                         a_xf = ttl.copy(A[it, mt, kt], a_blk)
@@ -284,10 +285,10 @@ def matmul_compute():
     for _ in range(IT):
         for _ in range(MT):
             for _ in range(NT):
-                # acquire y_blk from y_cb:
-                with y_cb.reserve() as y_blk:
-                    # acquire c_blk from c_cb:
-                    with c_cb.wait() as c_blk:
+                # acquire y_blk from y_dfb:
+                with y_dfb.reserve() as y_blk:
+                    # acquire c_blk from c_dfb:
+                    with c_dfb.wait() as c_blk:
 
                         # then compute: y = c:
                         y_blk.store(c_blk, acc=True)
@@ -295,10 +296,10 @@ def matmul_compute():
                         # release c_blk
 
                     for _ in range(KT):
-                        # acquire a_blk and b_blk from a_cb and b_cb:
+                        # acquire a_blk and b_blk from a_dfb and b_dfb:
                         with (
-                            a_cb.wait() as a_blk,
-                            b_cb.wait() as b_blk
+                            a_dfb.wait() as a_blk,
+                            b_dfb.wait() as b_blk
                         ):
                             # then compute y += a @ b:
                             y_blk.store(a_blk @ b_blk, acc=True)
@@ -312,8 +313,8 @@ def matmul_write():
     for it in range(IT):
         for mt in range(MT):
             for nt in range(NT):
-                # acquire y_blk from y_cb:
-                with y_cb.wait() as y_blk:
+                # acquire y_blk from y_dfb:
+                with y_dfb.wait() as y_blk:
 
                     # then copy:
                     y_xf = ttl.copy(y_blk, Y[it, mt, nt])
@@ -392,7 +393,7 @@ net = ttl.PipeNet([ttl.Pipe(
 @ttl.datamovement()
 def dm():
     # reserve blk:
-    with cb.reserve() as blk:
+    with dfb.reserve() as blk:
 
         def pipe_src(pipe):
             # write data into blk
@@ -433,7 +434,7 @@ net = ttl.PipeNet([ttl.Pipe(
 @ttl.datamovement()
 def dm():
     # reserve blk:
-    with cb.reserve() as blk:
+    with dfb.reserve() as blk:
 
         def pipe_src(pipe):
             # write data into blk
@@ -478,7 +479,7 @@ net = ttl.PipeNet([ttl.Pipe(
 @ttl.datamovement()
 def dm():
     # reserve blk
-    with cb.reserve() as blk:
+    with dfb.reserve() as blk:
 
         def pipe_src(pipe):
             # write data into blk
@@ -528,8 +529,8 @@ def dm():
 
     # reserve blk_to_send and blk_received:
     with (
-        cb_to_send.reserve() as blk_to_send,
-        cb_received.reserve() as blk_received
+        dfb_to_send.reserve() as blk_to_send,
+        dfb_received.reserve() as blk_received
     ):
 
         def pipe_src(pipe):
@@ -564,7 +565,7 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 
 ```py
 g = 2 # granularity
-a_cb = ttl.make_circular_buffer_like(A, shape = (g, 1))
+a_dfb = ttl.make_dataflow_buffer_like(A, shape = (g, 1))
 
 row_tiles = A.shape[0] // ttl.TILE_SHAPE[0]
 col_tiles = A.shape[1] // ttl.TILE_SHAPE[1]
@@ -578,8 +579,8 @@ end_ct = min(start_ct + cols_per_core, col_tiles)
 def dm():
     for ct in range(start_ct, end_ct):
         for rt in range(row_tiles // g):
-            # acquire a_blk from a_cb:
-            with a_cb.reserve() as a_blk:
+            # acquire a_blk from a_dfb:
+            with a_dfb.reserve() as a_blk:
 
                 # then copy from a tensor slice of matching shape:
                 row_slice = slice(rt * g, (rt + 1) * g) # explicit row slice
@@ -663,13 +664,13 @@ def dm():
 | *TT-NN tensor* | Tensor representation in TT-NN environment. Encapsulates key meta information such as shape, data type, layout, storage and memory configuration. |
 | *Grid* | A multidimensional space of Tensix cores. A single chip is represented by a 2D grid. A multichip system is represented by 3D and higher dimensional grids. |
 | *Core coordinates* | Coordinates of a given Tensix core within a grid. Each dimension is zero based and contiguous, which corresponds to logical indexing. |
-| *Circular buffer* | A communication primitive for synchronizing the passing of data between threads within one Tensix core. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
-| *Circular buffer’s shape* | A shape of a block of memory acquired from a circular buffer to be either written by the producer or read by the consumer. |
-| *Circular buffer’s shape unit* | A unit in which circular buffer shape is expressed. When a circular buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar. |
-| *Circular buffer’s buffer factor* | A buffer factor determines how many block sized pages are allocated by the circular buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
-| *Circular buffer’s acquisition function* | A blocking function that keeps a thread waiting until a block becomes available in the circular buffer. |
-| *Circular buffer’s release function* | A non-blocking function that releases a block back to the circular buffer to make it available to other threads. |
-| *Block* | A block of memory acquired from a circular buffer. In a compute thread a block can participate in an expression as input, and also be used to store the expression's result. In a data movement thread a block can participate in copy operation as a source or destination. |
+| *Dataflow buffer* | A communication primitive for synchronizing the passing of data between threads within one Tensix core. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
+| *Dataflow buffer’s shape* | A shape of a block of memory acquired from a dataflow buffer to be either written by the producer or read by the consumer. |
+| *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar. |
+| *Dataflow buffer’s buffer factor* | A buffer factor determines how many block sized pages are allocated by the dataflow buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
+| *Dataflow buffer’s acquisition function* | A blocking function that keeps a thread waiting until a block becomes available in the dataflow buffer. |
+| *Dataflow buffer’s release function* | A non-blocking function that releases a block back to the dataflow buffer to make it available to other threads. |
+| *Block* | A block of memory acquired from a dataflow buffer. In a compute thread a block can participate in an expression as input, and also be used to store the expression's result. In a data movement thread a block can participate in copy operation as a source or destination. |
 | *Block expression* | A block expression is a Python expression using built-in Python operators as well as TT-Lang math functions where operands are either blocks or block expressions. |
 | *Pipe* | A pipe is a communication primitive for organizing the passing of data between data movement threads on different Tensix cores. |
 | *Pipe net* | A pipe net is a communication primitive that groups pipes into a network. While a single pipe is capable of representing the passing of data from a single core, a network of pipes generalizes to a data passing pattern over the entire grid. A pipe net is constructed from the list of pipes, which is typically created by Python list comprehension over one or more aspects of a grid. |
