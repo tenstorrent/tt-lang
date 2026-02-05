@@ -169,7 +169,8 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy access violation)
     assert (
-        "Cannot write to Block: Block has no access (NA state)" in out
+        "Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error)"
+        in out
     ), f"Expected error message not found in output:\n{out}"
     # Verify source location is shown (line 88 where we attempt to write to a_block)
     assert (
