@@ -73,6 +73,33 @@ def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
   let hasVerifier = 1;
 }
 
+def TTL_TensorStoreOp : TTL_Op<"tensor_store", []> {
+  let summary = "Store a tensor to a circular buffer";
+  let description = [{
+    Stores a tensor value to a circular buffer. Unlike `attach_cb` which is
+    purely metadata (associating a tensor with a CB), `tensor_store` represents
+    actual data movement: the tensor's tiles will be copied through DST
+    registers to the output CB.
+
+    This op is used when explicitly storing data from one CB to another,
+    such as in passthrough kernels where input is directly copied to output
+    without compute operations.
+
+    Example:
+    ```mlir
+    %result = ttl.tensor_store %input, %out_cb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], bf16, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$tensor,
+    TTL_CircularBuffer:$cb
+  );
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$tensor `,` $cb attr-dict `:` functional-type(operands, results)";
+}
+
 def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
   let summary = "Create a view into a tensor at specific tile indices";
   let description = [{

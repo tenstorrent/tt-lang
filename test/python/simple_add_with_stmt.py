@@ -91,8 +91,8 @@ def add_with_kernel(lhs, rhs, out):
 # Add operation
 # CHECK: ttl.add
 
-# store() attaches result to output CB
-# CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
+# store() emits tensor_store to output CB
+# CHECK: ttl.tensor_store %{{.+}}, %[[CB2]]
 
 # 'with' exit: push output, pop inputs (reverse order)
 # CHECK: ttl.cb_push %[[CB2]]
