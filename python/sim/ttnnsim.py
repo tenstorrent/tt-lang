@@ -18,9 +18,18 @@ Scope:
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import torch
+
+# Try to import actual ttnn, track if available
+try:
+    import ttnn
+
+    TTNN_AVAILABLE = True
+except ImportError:
+    ttnn = None  # type: ignore
+    TTNN_AVAILABLE = False
 
 from .constants import TILE_SHAPE
 from .tensoraccessor import TensorAccessor
@@ -53,6 +62,51 @@ def tensor_shape_in_tiles(
         assert shape == (2, 1)  # 64/32=2 rows, 32/32=1 col
     """
     return tuple(dim // tile_dim for dim, tile_dim in zip(tensor.shape, tile_shape))
+
+
+def broadcast_tensors(
+    left_tensors: List["Tensor"],
+    right_tensors: List["Tensor"],
+    left_shape: Shape,
+    right_shape: Shape,
+    op: Any,
+) -> List["Tensor"]:
+    """Apply binary operation to tensor lists with broadcasting.
+
+    Stacks tensors into batched tensors, reshapes according to tile grid shapes,
+    applies PyTorch broadcasting, and flattens back to list of tensors.
+
+    Args:
+        left_tensors: List of left operand tensors
+        right_tensors: List of right operand tensors
+        left_shape: Tile grid shape for left operand (e.g., (4, 4) for 16 tiles)
+        right_shape: Tile grid shape for right operand
+        op: Binary operation to apply (e.g., operator.add)
+
+    Returns:
+        List of result tensors after broadcasting
+    """
+    # Extract underlying torch tensors
+    left_torch = [t._tensor if hasattr(t, "_tensor") else t for t in left_tensors]
+    right_torch = [t._tensor if hasattr(t, "_tensor") else t for t in right_tensors]
+
+    # Stack into batched tensors
+    left_batched = torch.stack(left_torch)
+    right_batched = torch.stack(right_torch)
+
+    # Reshape to include tile grid dimensions
+    left_reshaped = left_batched.reshape(*left_shape, *left_batched.shape[1:])
+    right_reshaped = right_batched.reshape(*right_shape, *right_batched.shape[1:])
+
+    # Apply operation with PyTorch broadcasting
+    result_batched = op(left_reshaped, right_reshaped)
+
+    # Flatten back to list of tiles
+    num_result_tiles = result_batched.shape[0] * result_batched.shape[1]
+    result_flat = result_batched.reshape(num_result_tiles, *result_batched.shape[2:])
+
+    # Wrap each result tile in Tensor
+    return [Tensor(result_flat[i]) for i in range(num_result_tiles)]
 
 
 # Memory config placeholder (no-op in simulator)
@@ -191,8 +245,25 @@ class Tensor:
     def dtype(self) -> torch.dtype:
         return self._tensor.dtype
 
+    def _is_tile_indexable(self) -> bool:
+        """Check if tensor can use tile-based indexing.
+
+        A tensor is tile-indexable if it's 2D and each dimension is either:
+        - A multiple of the corresponding TILE_SHAPE dimension, OR
+        - A degenerate dimension (size 1)
+        """
+        if len(self._tensor.shape) != 2:
+            return False
+
+        for dim_size, tile_dim in zip(self._tensor.shape, TILE_SHAPE):
+            # Allow degenerate dimensions (size 1) or tile-aligned dimensions
+            if dim_size != 1 and dim_size % tile_dim != 0:
+                return False
+
+        return True
+
     def __getitem__(self, key: Any) -> "Tensor":
-        # If key looks like tile-style indexing (two slices), use TensorAccessor
+        # If key looks like tile-style indexing (two slices/ints), use TensorAccessor
         if isinstance(key, tuple):
             key_t = cast(Tuple[Any, ...], key)
             if len(key_t) == 2:
@@ -201,29 +272,21 @@ class Tensor:
 
                 # Check if both are integers (tile indexing like a[m, k])
                 if isinstance(row_key, int) and isinstance(col_key, int):
-                    # Check if tensor is tile-aligned; if not, use regular indexing
-                    if (
-                        len(self._tensor.shape) != 2
-                        or self._tensor.shape[0] % TILE_SHAPE[0] != 0
-                        or self._tensor.shape[1] % TILE_SHAPE[1] != 0
-                    ):
+                    # Check if tensor is tile-indexable
+                    if not self._is_tile_indexable():
                         return Tensor(self._tensor.__getitem__(cast(Any, key)))
-                    # Use tile indexing for tile-aligned tensors
-                    row_slice: slice = slice(row_key, row_key + 1)
-                    col_slice: slice = slice(col_key, col_key + 1)
+                    # Use tile indexing for tile-indexable tensors
                     self._ensure_accessor()
                     assert self._accessor is not None
-                    return Tensor(self._accessor.get_tiles(row_slice, col_slice))
+                    return Tensor(self._accessor[row_key, col_key])
 
-                # Check if both are slices (slice indexing)
-                if isinstance(row_key, slice) and isinstance(col_key, slice):
+                # Check if either or both are slices (mixed or full slice indexing)
+                if isinstance(row_key, (slice, int)) and isinstance(
+                    col_key, (slice, int)
+                ):
                     self._ensure_accessor()
                     assert self._accessor is not None
-                    return Tensor(
-                        self._accessor.get_tiles(
-                            cast(slice, row_key), cast(slice, col_key)
-                        )
-                    )
+                    return Tensor(self._accessor[row_key, col_key])
 
         return Tensor(self._tensor.__getitem__(cast(Any, key)))
 
@@ -237,12 +300,8 @@ class Tensor:
 
                 # Check if both are integers (tile indexing like a[m, k])
                 if isinstance(row_key, int) and isinstance(col_key, int):
-                    # Check if tensor is tile-aligned; if not, use regular indexing
-                    if (
-                        len(self._tensor.shape) != 2
-                        or self._tensor.shape[0] % TILE_SHAPE[0] != 0
-                        or self._tensor.shape[1] % TILE_SHAPE[1] != 0
-                    ):
+                    # Check if tensor is tile-indexable
+                    if not self._is_tile_indexable():
                         match value:
                             case Tensor() as tval:
                                 self._tensor.__setitem__(cast(Any, key), tval._tensor)
@@ -251,37 +310,31 @@ class Tensor:
                             case _:
                                 self._tensor.__setitem__(cast(Any, key), value)
                         return
-                    # Use tile indexing for tile-aligned tensors
-                    row_slice: slice = slice(row_key, row_key + 1)
-                    col_slice: slice = slice(col_key, col_key + 1)
+                    # Use tile indexing for tile-indexable tensors
                     self._ensure_accessor()
                     assert self._accessor is not None
                     match value:
                         case Tensor() as tval:
-                            self._accessor.set_tiles(row_slice, col_slice, tval._tensor)
+                            self._accessor[row_key, col_key] = tval._tensor
                         case torch.Tensor() as tt:
-                            self._accessor.set_tiles(row_slice, col_slice, tt)
+                            self._accessor[row_key, col_key] = tt
                         case _:
-                            self._accessor.set_tiles(row_slice, col_slice, value)
+                            self._accessor[row_key, col_key] = value
                     return
 
-                # Check if both are slices (slice indexing)
-                if isinstance(row_key, slice) and isinstance(col_key, slice):
+                # Check if either or both are slices (mixed or full slice indexing)
+                if isinstance(row_key, (slice, int)) and isinstance(
+                    col_key, (slice, int)
+                ):
                     self._ensure_accessor()
                     assert self._accessor is not None
                     match value:
                         case Tensor() as tval:
-                            self._accessor.set_tiles(
-                                cast(slice, row_key), cast(slice, col_key), tval._tensor
-                            )
+                            self._accessor[row_key, col_key] = tval._tensor
                         case torch.Tensor() as tt:
-                            self._accessor.set_tiles(
-                                cast(slice, row_key), cast(slice, col_key), tt
-                            )
+                            self._accessor[row_key, col_key] = tt
                         case _:
-                            self._accessor.set_tiles(
-                                cast(slice, row_key), cast(slice, col_key), value
-                            )
+                            self._accessor[row_key, col_key] = value
                     return
 
         match value:
@@ -302,23 +355,27 @@ class Tensor:
     def _ensure_accessor(self) -> None:
         """Create a TensorAccessor for tile-based indexing when possible.
 
-        Raises ValueError if the underlying tensor is not compatible with
-        tile-based access (i.e., not 2D or not multiple of tile dims).
+        Raises ValueError if the underlying tensor is not 2D or if non-degenerate
+        dimensions are not multiples of tile dimensions.
         """
         if self._accessor is not None:
             return
 
-        # Only create accessor when the tensor dimensions align with TILE_SHAPE
+        # Only 2D tensors are supported
         if len(self._tensor.shape) != 2:
             raise ValueError("Tile-style indexing requires a 2D tensor")
 
-        if (
-            self._tensor.shape[0] % TILE_SHAPE[0] != 0
-            or self._tensor.shape[1] % TILE_SHAPE[1] != 0
-        ):
-            raise ValueError(
-                "Tensor shape is not a multiple of tile shape; cannot create TensorAccessor"
-            )
+        # Validate non-degenerate dimensions are multiples of tile shape
+        # Degenerate dimensions (size 1) are always valid
+        if True:
+            for i, dim_size in enumerate(self._tensor.shape):
+                if dim_size == 1:
+                    continue
+                if dim_size % TILE_SHAPE[i] != 0:
+                    raise ValueError(
+                        f"Tensor dimension {i} has size {dim_size} which is not "
+                        f"a multiple of tile dimension {TILE_SHAPE[i]}"
+                    )
 
         self._accessor = TensorAccessor(self._tensor, index_type=IndexType.TILE)
 
@@ -523,87 +580,6 @@ def from_torch(
     return Tensor(tensor)
 
 
-def isclose(
-    a: Tensor,
-    b: Tensor,
-    rtol: float = 1e-05,
-    atol: float = 1e-08,
-    equal_nan: bool = False,
-) -> Tensor:
-    """
-    Element-wise comparison of two tensors, returning a boolean tensor indicating
-    whether |a - b| <= atol + rtol * |b|.
-
-    Accepts either sim.ttnnsim.Tensor or torch.Tensor (or objects coercible to
-    torch tensors). Returns a sim.ttnnsim.Tensor wrapping a torch.bool tensor.
-
-    Args:
-        a, b: operands to compare (ttnn.Tensor or torch.Tensor or array-like)
-        rtol: relative tolerance
-        atol: absolute tolerance
-        equal_nan: if True, NaNs in the same position are treated as equal
-
-    Behavior follows numpy/torch isclose semantics.
-    """
-
-    # Normalize inputs to torch.Tensor
-    ta = a.to_torch()
-    tb = b.to_torch()
-
-    # Promote to a floating dtype for safe relative comparison if needed
-    if not ta.is_floating_point() or not tb.is_floating_point():
-        promoted = torch.float32
-    else:
-        promoted = torch.promote_types(ta.dtype, tb.dtype)
-
-    ta = ta.to(promoted)
-    tb = tb.to(promoted)
-
-    # Compute closeness
-    diff = torch.abs(ta - tb)
-    tol = atol + rtol * torch.abs(tb)
-    result = diff <= tol
-
-    if equal_nan:
-        both_nan = torch.isnan(ta) & torch.isnan(tb)
-        result = result | both_nan
-
-    # Wrap result in ttnn.Tensor for public API consistency
-    return Tensor(result)
-
-
-def repeat(input_tensor: Tensor, repetition_vector: Shape) -> Tensor:
-    """Repeat the input tensor according to the repetition vector.
-
-    Returns a new tensor filled with repetition of input_tensor according to
-    the number of times specified in repetition_vector.
-
-    Note: This function is not fully defined after the original TTNN API.
-    The original API includes additional keyword arguments (e.g., memory_config)
-    which are not implemented in this simulator version.
-
-    Args:
-        input_tensor (Tensor): The input tensor to repeat.
-        repetition_vector (Shape): The number of repetitions for each dimension.
-
-    Returns:
-        Tensor: The output tensor with repeated values.
-
-    Example:
-        >>> a = ttnn.rand((2, 3), dtype=ttnn.float32)
-        >>> b = ttnn.repeat(a, (2, 3))  # Shape becomes (4, 9)
-    """
-
-    # Convert input tensor to torch
-    t = input_tensor.to_torch()
-
-    # Use torch.repeat to perform the repetition
-    repeated_t = t.repeat(*repetition_vector)
-
-    # Wrap result back in simulator Tensor
-    return Tensor(repeated_t)
-
-
 def split_work_to_cores(
     core_grid: Union[CoreCoord, CoreRangeSet],
     units_to_divide: int,
@@ -776,30 +752,133 @@ def split_work_to_cores(
     )
 
 
-def multiply(input_tensor_a: Tensor, input_tensor_b: Tensor) -> Tensor:
-    """Element-wise multiplication of two tensors.
-
-    Performs element-wise multiplication on two input tensors and returns the result.
+def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
+    """Remove dimensions of size 1 from a tensor.
 
     Args:
-        input_tensor_a: First input tensor
-        input_tensor_b: Second input tensor
+        input_tensor: Input tensor
+        dim: If specified, only squeeze this dimension if it has size 1.
+             If None, squeeze all dimensions of size 1.
 
     Returns:
-        Tensor: Output tensor with element-wise multiplication result
-
-    Example:
-        >>> a = ttnn.from_torch(torch.tensor([[1, 2], [3, 4]], dtype=torch.bfloat16))
-        >>> b = ttnn.from_torch(torch.tensor([[5, 6], [7, 8]], dtype=torch.bfloat16))
-        >>> c = ttnn.multiply(a, b)
-        >>> # c contains [[5, 12], [21, 32]]
+        Tensor with singleton dimensions removed
     """
-    # Convert both tensors to torch
-    ta = input_tensor_a.to_torch()
-    tb = input_tensor_b.to_torch()
-
-    # Perform element-wise multiplication
-    result = ta * tb
-
-    # Wrap result back in simulator Tensor
+    torch_tensor = input_tensor.to_torch()
+    if dim is None:
+        result = torch_tensor.squeeze()
+    else:
+        result = torch_tensor.squeeze(dim)
     return Tensor(result)
+
+
+# Dynamically generate wrapper functions for all ttnn operations with golden functions
+def _create_golden_wrapper(operation_name: str, golden_fn: Callable) -> Callable:
+    """Create a wrapper function that calls the golden function and wraps result in Tensor.
+
+    Args:
+        operation_name: Name of the operation (for documentation)
+        golden_fn: The golden function to wrap
+
+    Returns:
+        Wrapper function that converts inputs/outputs appropriately
+    """
+
+    def wrapper(*args, **kwargs):
+        # Convert Tensor arguments to torch.Tensor
+        torch_args = tuple(
+            arg.to_torch() if isinstance(arg, Tensor) else arg for arg in args
+        )
+        torch_kwargs = {
+            k: v.to_torch() if isinstance(v, Tensor) else v for k, v in kwargs.items()
+        }
+
+        # Call golden function
+        result = golden_fn(*torch_args, **torch_kwargs)
+
+        # Wrap result in Tensor if it's a torch.Tensor
+        if isinstance(result, torch.Tensor):
+            return Tensor(result)
+        return result
+
+    # Set proper function name and docstring
+    wrapper.__name__ = operation_name
+    wrapper.__doc__ = (
+        f"Wrapper for ttnn.{operation_name} using golden function implementation."
+    )
+
+    return wrapper
+
+
+# Functions that should NOT be auto-wrapped (already implemented or would break things)
+_EXCLUDE_FROM_WRAPPING = {
+    # Core infrastructure functions that are already implemented
+    "from_torch",
+    "to_torch",
+    "from_device",
+    "to_device",
+    "to_dtype",
+    "to_layout",
+    "to_memory_config",
+    # Tensor creation functions that are already implemented
+    "empty",
+    "empty_like",
+    "zeros",
+    "zeros_like",
+    "ones",
+    "ones_like",
+    "full",
+    "full_like",
+    "arange",
+    # Built-in functions that shouldn't be wrapped
+    "min",
+    "max",
+    "sum",
+    # Functions that return non-tensor types
+    "clone",
+    "reshape",
+    "permute",
+    "concat",
+    "pad",
+    "squeeze",
+    # Sharding/memory functions
+    "interleaved_to_sharded",
+    "interleaved_to_sharded_partial",
+    "sharded_to_interleaved",
+    "sharded_to_interleaved_partial",
+    "reallocate",
+    "reshard",
+    "tilize",
+    "bitcast",
+    "typecast",
+}
+
+# Get all operations with golden functions and create wrappers at module load time
+if TTNN_AVAILABLE:
+    _operations_to_wrap = [name for name in dir(ttnn) if not name.startswith("_")]
+
+    for _op_name in _operations_to_wrap:
+        # Skip if already in our namespace or in exclude list
+        if _op_name in globals() or _op_name in _EXCLUDE_FROM_WRAPPING:
+            continue
+
+        _op = getattr(ttnn, _op_name)
+
+        # Skip non-callable attributes (classes, constants, etc.)
+        if not callable(_op):
+            continue
+
+        try:
+            _golden_fn = ttnn.get_golden_function(_op)
+            # Create wrapper and add to module globals
+            globals()[_op_name] = _create_golden_wrapper(_op_name, _golden_fn)
+        except (RuntimeError, AttributeError):
+            # RuntimeError: Operation doesn't have a golden function
+            # AttributeError: Object doesn't have golden_function attribute (e.g., enums, classes)
+            # Both are expected for many ttnn attributes - skip them
+            continue
+        # Let other exceptions propagate - they indicate real bugs
+
+    # Clean up temporary variables
+    for name in ["_operations_to_wrap", "_op_name", "_op", "_golden_fn"]:
+        if name in dir():
+            del globals()[name]

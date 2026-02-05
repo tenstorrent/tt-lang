@@ -7,9 +7,9 @@
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 module {
-  func.func @tensor_to_tensor_invalid(%arg0: tensor<32x32xf32, #layout>, %arg1: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @tensor_to_tensor_invalid(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-error @below {{expects exactly one operand to be !ttl.cb}}
-    %xf = ttl.copy %arg0, %arg1 : (tensor<32x32xf32, #layout>, tensor<32x32xf32, #layout>) -> !ttl.transfer_handle<read>
+    %xf = ttl.copy %arg0, %arg1 : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
@@ -33,11 +33,11 @@ module {
 
 // Tensor operand must carry TTNNLayout encoding.
 module {
-  func.func @tensor_missing_layout_invalid(%arg0: tensor<32x32xf32>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @tensor_missing_layout_invalid(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects tensor operand to carry TTNNLayout encoding}}
-    %xf = ttl.copy %arg0, %cb : (tensor<32x32xf32>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf = ttl.copy %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
   }
@@ -64,11 +64,11 @@ module {
 
 // Copy without a corresponding wait is invalid in the MVP.
 module {
-  func.func @copy_without_wait_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @copy_without_wait_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
-    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     func.return
   }
 }
@@ -109,7 +109,7 @@ module {
 // Two-phase loops with fewer wait iterations than copy iterations is invalid.
 // This exercises the verifier's loop iteration space comparison.
 module {
-  func.func @two_phase_loops_missing_wait_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @two_phase_loops_missing_wait_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c3 = arith.constant 3 : index
@@ -119,7 +119,7 @@ module {
 
     %handles = scf.for %i = %c0 to %c4 step %c1 iter_args(%h = %handles0) -> tensor<?x!ttl.transfer_handle<read>> {
       // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
-      %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       %h2 = tensor.insert %xf into %h[%i] : tensor<?x!ttl.transfer_handle<read>>
       scf.yield %h2 : tensor<?x!ttl.transfer_handle<read>>
     }
@@ -141,11 +141,11 @@ module {
 // Using an untyped transfer handle is invalid: direction typing is required so
 // lowering can always select a specific barrier.
 module {
-  func.func @untyped_transfer_handle_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @untyped_transfer_handle_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     // expected-error @below {{expects transfer handle to be direction-typed (!ttl.transfer_handle<read> or !ttl.transfer_handle<write>)}}
-    %xf = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
+    %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
     func.return
   }
 }
@@ -158,16 +158,16 @@ module {
 // Pipelined loop with a loop-carried handle but no wait in the loop body is
 // invalid: it drops intermediate transfers without synchronization.
 module {
-  func.func @pipelined_loop_missing_wait_invalid(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @pipelined_loop_missing_wait_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
     %c2 = arith.constant 2 : index
     %c1 = arith.constant 1 : index
 
     // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
-    %xf_init = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    %xf_init = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     %last = scf.for %i = %c0 to %c2 step %c1 iter_args(%prev = %xf_init) -> (!ttl.transfer_handle<read>) {
-      %xf_next = ttl.copy %t, %cb : (tensor<32x32xf32, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf_next = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
       // Intentionally missing: ttl.wait %prev
       scf.yield %xf_next : !ttl.transfer_handle<read>
     }

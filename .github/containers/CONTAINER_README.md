@@ -8,7 +8,7 @@ tt-lang examples are available in `$TTMLIR_TOOLCHAIN_DIR/examples`.
 
 Try running an example:
 ```bash
-python $TTMLIR_TOOLCHAIN_DIR/examples/demo_one.py
+python $TTMLIR_TOOLCHAIN_DIR/examples/tutorial/multicore_grid_auto.py
 ```
 
 ## Available Tools
@@ -64,9 +64,9 @@ Your code will be in `~/my-code`.
 - `ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest` - Development tools for building tt-lang
 
 **Local (if built locally):**
-- `tt-lang-dist:local` - Pre-built tt-lang (recommended for users)
-- `tt-lang-ci:local` - tt-mlir toolchain (for building tt-lang)
-- `tt-lang-ird:local` - Development image
+- `tt-lang-dist-ubuntu-22-04:latest` - Pre-built tt-lang (recommended for users)
+- `tt-lang-ci-ubuntu-22-04:latest` - tt-mlir toolchain (for building tt-lang)
+- `tt-lang-ird-ubuntu-22-04:latest` - Development image
 
 ## Notes
 

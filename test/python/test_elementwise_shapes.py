@@ -18,9 +18,7 @@ Total test cases: 13 ops x 5 shapes = 65 tests
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-import atexit
 import importlib.util
-import os
 import tempfile
 from typing import Callable
 
@@ -29,6 +27,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
+from conftest import temp_kernel_files
 from ttlang_test_utils import assert_allclose, to_dram
 
 # =============================================================================
@@ -183,21 +182,6 @@ def _get_slice_syntax(tile_rows: int, tile_cols: int) -> str:
 # Cache for generated kernels: (name, op, tile_rows, tile_cols) -> kernel
 _kernel_cache: dict[tuple, Callable] = {}
 
-# Track temp files for cleanup
-_temp_files: list[str] = []
-
-
-def _cleanup_temp_files() -> None:
-    """Clean up all temporary kernel files at exit."""
-    for path in _temp_files:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-
-
-atexit.register(_cleanup_temp_files)
-
 
 def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Callable:
     """Generate a binary kernel for the given shape."""
@@ -224,7 +208,7 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Ca
         f.write(code)
         temp_path = f.name
 
-    _temp_files.append(temp_path)
+    temp_kernel_files.append(temp_path)
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -261,7 +245,7 @@ def make_binary_fn_kernel(
         f.write(code)
         temp_path = f.name
 
-    _temp_files.append(temp_path)
+    temp_kernel_files.append(temp_path)
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -296,7 +280,7 @@ def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Cal
         f.write(code)
         temp_path = f.name
 
-    _temp_files.append(temp_path)
+    temp_kernel_files.append(temp_path)
     spec = importlib.util.spec_from_file_location(f"{name}_kernel_module", temp_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

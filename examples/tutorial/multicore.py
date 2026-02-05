@@ -5,9 +5,9 @@ import ttnn
 import torch
 
 
-def from_torch(t):
+def from_torch(tensor: ttnn.Tensor):
     return ttnn.from_torch(
-        t,
+        tensor,
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
         device=device,
@@ -21,15 +21,15 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-@ttl.kernel(grid="auto")
-def __demo_kernel(a, b, c, y):
+@ttl.kernel(grid=(4, 4))
+def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
     grid_cols, grid_rows = ttl.grid_size(dims=2)
 
-    rows_per_core = a.shape[0] // TILE_SIZE // grid_rows // row_tiles_per_block
-    cols_per_core = a.shape[1] // TILE_SIZE // grid_cols // col_tiles_per_block
+    rows_per_core = a.shape[0] // TILE_SIZE // row_tiles_per_block // grid_rows
+    cols_per_core = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_rows
 
     a_cb = ttl.make_circular_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
@@ -126,7 +126,7 @@ def __demo_kernel(a, b, c, y):
                     tx.wait()
 
 
-def demo_kernel(a, b, c):
+def demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
     __demo_kernel(a, b, c, y)
     return y
@@ -136,22 +136,8 @@ torch.manual_seed(42)
 
 device = ttnn.open_device(device_id=0)
 
-
-def get_shape(device):
-    NUM_BLOCKS = 2
-    device_grid = device.compute_with_storage_grid_size()
-    grid_cols, grid_rows = device_grid.x, device_grid.y
-    # Shape must be divisible by (TILE_SIZE * grid_dim * GRANULARITY) per dimension
-    shape_rows = TILE_SIZE * grid_rows * GRANULARITY * NUM_BLOCKS
-    shape_cols = TILE_SIZE * grid_cols * GRANULARITY * NUM_BLOCKS
-    print(
-        f"Using grid ({grid_cols}, {grid_rows}) with shape ({shape_rows}, {shape_cols})"
-    )
-    return (shape_rows, shape_cols)
-
-
 try:
-    shape = get_shape(device)
+    shape = (2048, 2048)
 
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)

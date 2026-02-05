@@ -25,9 +25,9 @@ def eltwise_pipe(
     assert a_in.shape == b_in.shape == out.shape
     assert a_in.shape[0] % granularity == 0
 
-    # Check that c_in is 1x1 and expand it to ttl.TILE_SHAPE
+    # Check that c_in is 1x1 and expand it to tile shape (1, 1) -> (1, 1, 32, 32) -> (32, 32)
     assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
-    c_expanded = ttnn.repeat(c_in, ttl.TILE_SHAPE)
+    c_expanded = ttnn.squeeze(ttnn.repeat(c_in, (1, 1, *ttl.TILE_SHAPE)))
 
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
@@ -54,13 +54,15 @@ def eltwise_pipe(
     )
 
     # Create multicast address for C using 2D coordinates
-    # Source: (0,0) (core 0), Destinations: rectangular range from (0,1) to (0,3)
+    # Source: (0,0) (core 0), Destinations: cores at row 0, columns 1-3
+    # CoreRange format: (row_index, slice(start_col, end_col))
     # This expands to cores (0,1), (0,2), (0,3)
-    pipe = ttl.Pipe((0, 0), ((0, 1), (0, 3)))
+    pipe = ttl.Pipe((0, 0), (0, slice(1, 4)))
+    pipe_net = ttl.PipeNet([pipe])
 
     @ttl.compute()
     def compute_func():
-        if not ttl.core_in_pipe(pipe):
+        if not pipe.has_current_core():
             return  # This core is not participating in C multicast
         core_num = ttl.core(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
@@ -82,7 +84,8 @@ def eltwise_pipe(
                 out_block = out_cb.reserve()  # blocking
 
                 # Use store() to properly populate the Block with computed results
-                result = a_block * b_block + c_block
+                # Broadcast c_block along dimension 0 (rows) to match a_block/b_block shape
+                result = a_block * b_block + ttl.math.broadcast(c_block, dims=[0])
                 out_block.store(result)
 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
@@ -96,36 +99,29 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm0():
-        if not ttl.core_in_pipe(pipe):
+        if not pipe.has_current_core():
             return  # This core is not participating in C multicast
 
-        def pipe_src(p: Pipe) -> None:
-            print("dm0 (C multicast SRC): ", f"core={core_num}")
-            # C is only 1 tile
-            c_block = c_in_cb.reserve()
-            tx = ttl.copy(c_expanded[slice(0, 1), slice(0, 1)], c_block)
-            tx.wait()
-            tx2 = ttl.copy(
-                c_block, p
-            )  # start sending the data to all cores in the mcast address. Non-blocking
-            tx2.wait()  # wait for all cores to do their corresponding copy receive
-            # NoC layer meaning: receive ACKs from all cores in the mcast(?)
-            c_in_cb.push()
-
-        def pipe_dst(p: Pipe) -> None:
-            print("dm0 (C multicast DST): ", f"core={core_num}")
-            c_block = c_in_cb.reserve()
-            tx = ttl.copy(
-                p, c_block
-            )  # start receiving data from the mcast address and store them in c_block. Non-blocking
-            # NoC layer meaning: wait for packets with that mcast address
-            tx.wait()  # Wait until all data from the mcast address is in c_block and sender is informed
-            # NoC layer meaning: all data received and ACK is sent back to sender core, assuming reliable delivery
-            c_in_cb.push()
-
         core_num = ttl.core(dims=1)  # linear core index
-        ttl.if_pipe_src(pipe, pipe_src)
-        ttl.if_pipe_dst(pipe, pipe_dst)
+
+        # Pipe communication setup - must happen before main loop
+        with c_in_cb.reserve() as c_block:
+
+            def pipe_src(pipe_id):
+                print(f"dm0 (C multicast SRC): core={core_num}")
+                # C is only 1 tile
+                tx = ttl.copy(c_expanded[slice(0, 1), slice(0, 1)], c_block)
+                tx.wait()
+                tx2 = ttl.copy(c_block, pipe_id)
+                tx2.wait()
+
+            def pipe_dst(pipe_id):
+                print(f"dm0 (C multicast DST): core={core_num}")
+                tx = ttl.copy(pipe_id, c_block)
+                tx.wait()
+
+            pipe_net.if_src(pipe_src)
+            pipe_net.if_dst(pipe_dst)
 
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
@@ -147,7 +143,7 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm1():
-        if not ttl.core_in_pipe(pipe):
+        if not pipe.has_current_core():
             return  # This core is not participating in C multicast
         core_num = ttl.core(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core

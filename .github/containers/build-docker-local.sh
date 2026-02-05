@@ -40,7 +40,7 @@ sudo docker build \
     --build-arg FROM_TAG=local \
     --build-arg MLIR_TAG=${MLIR_TAG} \
     --target ci \
-    -t tt-lang-ci:local \
+    -t tt-lang-ci-ubuntu-22-04:latest \
     -f .github/containers/Dockerfile .
 echo "✓ CI image built"
 echo ""
@@ -51,7 +51,7 @@ sudo docker build \
     --build-arg FROM_TAG=local \
     --build-arg MLIR_TAG=${MLIR_TAG} \
     --target dist \
-    -t tt-lang-dist:local \
+    -t tt-lang-dist-ubuntu-22-04:latest \
     -f .github/containers/Dockerfile .
 echo "✓ Dist image built"
 echo ""
@@ -62,7 +62,7 @@ sudo docker build \
     --build-arg FROM_TAG=local \
     --build-arg MLIR_TAG=${MLIR_TAG} \
     --target ird \
-    -t tt-lang-ird:local \
+    -t tt-lang-ird-ubuntu-22-04:latest \
     -f .github/containers/Dockerfile .
 echo "✓ IRD image built"
 echo ""
@@ -71,9 +71,9 @@ echo "=== Build Complete ==="
 echo ""
 echo "Images created:"
 echo "  - tt-lang-base:local"
-echo "  - tt-lang-ci:local (also tagged as tt-lang-dist:local)"
-echo "  - tt-lang-ird:local"
+echo "  - tt-lang-ci-ubuntu-22-04:latest (also tagged as tt-lang-dist-ubuntu-22-04:latest)"
+echo "  - tt-lang-ird-ubuntu-22-04:latest"
 echo ""
 echo "Test the CI/dist image:"
-echo "  sudo docker run -it tt-lang-ci:local python -c \"import ttl\""
-echo "  sudo docker run -it tt-lang-dist:local python -c \"import ttl\""
+echo "  sudo docker run -it tt-lang-ci-ubuntu-22-04:latest python -c \"import ttl\""
+echo "  sudo docker run -it tt-lang-dist-ubuntu-22-04:latest python -c \"import ttl\""

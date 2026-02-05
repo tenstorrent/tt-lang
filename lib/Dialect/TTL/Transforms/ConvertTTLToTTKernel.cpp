@@ -350,20 +350,20 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    // Trace from the view back to the CB.
     auto cb = getCBFromView(adaptor.getView());
     if (failed(cb)) {
       return rewriter.notifyMatchFailure(
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // Get the DST index from the tile value's dst_idx attribute.
-    // The DST assignment pass (ttl-assign-dst) should run before this
-    // pass and annotates tile-producing operations with DST register indices.
-    // If the attribute is missing, we default to DST index 0.
-    auto tileValue = adaptor.getTile();
-    Value dstIndex;
+    auto cbTileIndex =
+        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
 
+    // Determine DST index based on the source operation type:
+    // - DST-to-DST ops (binary ops): have dst_idx attribute
+    // - CB-reading ops (bcast, reduce): no dst_idx attribute, use loop index
+    Value dstIndex;
+    auto tileValue = adaptor.getTile();
     if (auto defOp = tileValue.getDefiningOp()) {
       if (auto dstIdxAttr =
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
@@ -372,15 +372,10 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
       }
     }
 
-    // Default to DST index 0 if no attribute is found.
-    // This can happen in unit tests or if DST assignment hasn't run.
     if (!dstIndex) {
-      dstIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      dstIndex = cbTileIndex;
     }
 
-    // Compute CB tile index from innermost 2 loops (CB is always 2D).
-    auto cbTileIndex =
-        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/false);
 
@@ -518,36 +513,20 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
                              pageSize);
 }
 
-static std::pair<int64_t, int64_t>
-getTileGridShape(const RankedTensorType &tensorTy) {
-  auto dims = tensorTy.getShape();
-  assert(dims.size() == 2 && "only rank-2 tensors supported currently");
-  auto ceilDiv = [](int64_t num, int64_t den) { return (num + den - 1) / den; };
-  int64_t tilesY = ceilDiv(dims[0], kDefaultTileHeight);
-  int64_t tilesX = ceilDiv(dims[1], kDefaultTileWidth);
-  return {tilesY, tilesX};
-}
-
 /// Extract tile grid shape from a Value if it's a static tensor.
-/// Handles both rank-2 tensors (logical shape) and rank-4 tensors
-/// (device shape: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]).
-/// Returns the TOTAL tile grid shape (grid * shard) for linearization.
+/// Tensor shape must be [tiles_y, tiles_x] with TileType elements.
+/// Returns the tile grid shape for linearization.
 static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
   assert(tensorTy && "expected RankedTensorType");
   assert(tensorTy.hasStaticShape() && "expected static shape");
 
   auto dims = tensorTy.getShape();
-  if (dims.size() == 2) {
-    return getTileGridShape(tensorTy);
-  } else if (dims.size() == 4) {
-    // Rank-4 tensor: [grid_y, grid_x, shard_tiles_y, shard_tiles_x]
-    // Return total tile grid: grid_y * shard_y, grid_x * shard_x
-    // This is needed for correct linearization across multi-core grids.
-    return {dims[0] * dims[2], dims[1] * dims[3]};
-  }
+  assert(dims.size() == 2 && "expected rank-2 tensor [tiles_y, tiles_x]");
+  assert(llvm::isa<ttcore::TileType>(tensorTy.getElementType()) &&
+         "expected TileType element type");
 
-  llvm_unreachable("expected rank-2 or rank-4 tensor");
+  return {dims[0], dims[1]};
 }
 
 // Emit a tile loop (or single tile body). The callback receives (row, col)

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 from ttmlir.dialects import arith
 from ttmlir.ir import RankedTensorType, Type
@@ -119,21 +119,19 @@ def _make_tensor_slice(tensor, indices, slice_shape):
     if not isinstance(tensor_type, RankedTensorType):
         raise ValueError(f"Expected RankedTensorType, got {tensor_type}")
 
-    # TTL tensors are 4D internally: [grid_row, grid_col, shard_row, shard_col]
+    # TTL tensors are 2D: [tiles_y, tiles_x]
     # User provides 2D tile coordinates
-    if tensor_type.rank != 4:
-        raise ValueError(f"Expected rank-4 TTL tensor, got rank {tensor_type.rank}")
+    if tensor_type.rank != 2:
+        raise ValueError(f"Expected rank-2 TTL tensor, got rank {tensor_type.rank}")
 
     if len(indices) != 2:
         raise ValueError(f"Expected 2 tile indices (row, col), got {len(indices)}")
 
     row_idx, col_idx = indices
 
-    # Build result type: [grid_row, grid_col, slice_rows, slice_cols]
-    orig_shape = list(tensor_type.shape)
-    reduced_shape = orig_shape[:2] + list(slice_shape)
+    # Build result type: [slice_rows, slice_cols]
     result_type = RankedTensorType.get(
-        reduced_shape, tensor_type.element_type, tensor_type.encoding
+        list(slice_shape), tensor_type.element_type, tensor_type.encoding
     )
     return ttl.tensor_slice(result_type, tensor, row_idx, col_idx)
 
@@ -329,6 +327,37 @@ def signpost(name: str):
         name: Name for the profiling region (must be a string literal)
     """
     return ttl.signpost(name)
+
+
+@syntax("broadcast")
+def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> TensorBlock:
+    """
+    Broadcast over specified dimensions.
+
+    Args:
+        input: Input tensor (CB-attached)
+        output: Output tensor (CB-attached, used for output CB tracking)
+        dims: Dimensions to broadcast over
+
+    Returns:
+        Result tensor with broadcast values
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType
+
+    dims_set = set(dims)
+    if dims_set == {0}:
+        bcast_val = 2  # Row
+    elif dims_set == {1}:
+        bcast_val = 1  # Col
+    elif dims_set == {0, 1}:
+        bcast_val = 3  # Scalar
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    bcast_attr = IntegerAttr.get(i32_type, bcast_val)
+    return ttl.bcast(output.type, input, output, bcast_attr)
 
 
 __all__ = [

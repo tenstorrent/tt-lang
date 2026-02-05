@@ -98,7 +98,7 @@
 // CHECK-NEXT: }
 
 module {
-  func.func @batched_multi_tile_user_loop(%arg0: tensor<64x64xf32, #layout>, %arg1: tensor<64x64xf32, #layout>)
+  func.func @batched_multi_tile_user_loop(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb1 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
@@ -107,13 +107,13 @@ module {
     %c1 = arith.constant 1 : index
 
     // User loop (0..3)
-    %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<64x64xf32, #layout> -> tensor<64x64xf32, #layout>
-    %slice1 = ttl.tensor_slice %arg1[%c0, %c0] : tensor<64x64xf32, #layout> -> tensor<64x64xf32, #layout>
+    %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
+    %slice1 = ttl.tensor_slice %arg1[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
     scf.for %i = %c0 to %c3 step %c1 {
       // Batch: issue both copies before barrier
       // Both tensors have same tile grid (2x2) - potential for shared tile loop
-      %xf1 = ttl.copy %slice0, %cb1 : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
-      %xf2 = ttl.copy %slice1, %cb2 : (tensor<64x64xf32, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf1 = ttl.copy %slice0, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
+      %xf2 = ttl.copy %slice1, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], f32, 2>) -> !ttl.transfer_handle<read>
 
       // Single barrier waits for both transfers
       ttl.wait %xf1 : !ttl.transfer_handle<read>

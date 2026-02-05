@@ -50,6 +50,12 @@
 #define TTL_BINARY_TILE_OP_SPECIAL(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
+// CB -> DST unary ops with an attribute (e.g., bcast).
+// These read from CB (not DST), write to DST, and have an extra attribute.
+#ifndef TTL_CB_UNARY_ATTR_OP
+#define TTL_CB_UNARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#endif
+
 // Binary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
 // These use the standard 3-arg binary template: DST[odst] = op(DST[src0], DST[src1])
 TTL_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
@@ -72,6 +78,10 @@ TTL_UNARY_TILE_OP(Neg, NegTileOp, NegativeTileInitOp, NegativeTileOp)
 TTL_UNARY_TILE_OP(Relu, ReluTileOp, ReluTileInitOp, ReluTileOp)
 TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp, SigmoidTileInitOp, SigmoidTileOp)
 
+// CB -> DST ops with attribute
+TTL_CB_UNARY_ATTR_OP(Bcast, TileBcastOp, UnaryBcastInitOp, UnaryBcastTileOp)
+
 #undef TTL_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
 #undef TTL_BINARY_TILE_OP_SPECIAL
+#undef TTL_CB_UNARY_ATTR_OP
