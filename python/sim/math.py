@@ -149,54 +149,258 @@ def _create_unary_op_wrapper(name: str, torch_fn: Callable) -> Callable:
 
 
 # Mapping of ttl.math unary operations to PyTorch functions
+# Only includes simple unary functions from TTLangSpecification.md
+# Note: abs and neg are operators (__abs__, __neg__), not ttl.math functions
 _TORCH_UNARY_OPS = {
-    # Exponential and logarithmic functions
+    # Basic unary math functions (from spec)
     "exp": torch.exp,
     "exp2": torch.exp2,
     "expm1": torch.expm1,
     "log": torch.log,
-    "log2": torch.log2,
-    "log10": torch.log10,
-    "log1p": torch.log1p,
-    # Square root and reciprocal functions
+    "logp1": torch.log1p,  # spec calls it logp1, PyTorch calls it log1p
     "sqrt": torch.sqrt,
-    "rsqrt": torch.rsqrt,
     "square": torch.square,
+    "rsqrt": torch.rsqrt,
     "recip": torch.reciprocal,
-    # Activation functions
+    # Trigonometric unary math functions (from spec)
+    "tan": torch.tan,
+    "tanh": torch.tanh,
+    "atan": torch.atan,
+    "atanh": torch.atanh,
+    "sin": torch.sin,
+    "asin": torch.asin,
+    "asinh": torch.asinh,
+    "cos": torch.cos,
+    "acos": torch.acos,
+    "acosh": torch.acosh,
+    # Simple activation functions (from spec) - no parameters
     "relu": torch.relu,
     "sigmoid": torch.sigmoid,
-    "tanh": torch.tanh,
-    # Trigonometric functions
-    "sin": torch.sin,
-    "cos": torch.cos,
-    "tan": torch.tan,
-    "asin": torch.asin,
-    "acos": torch.acos,
-    "atan": torch.atan,
-    "sinh": torch.sinh,
-    "cosh": torch.cosh,
-    "asinh": torch.asinh,
-    "acosh": torch.acosh,
-    "atanh": torch.atanh,
-    # Absolute value, negation, sign
-    "abs": torch.abs,
-    "neg": torch.neg,
-    "sign": torch.sign,
-    # Logical operations
-    "logical_not": torch.logical_not,
-    "signbit": torch.signbit,
-    # Finite/infinite/NaN checks
-    "isfinite": torch.isfinite,
-    "isinf": torch.isinf,
-    "isnan": torch.isnan,
-    "isneginf": torch.isneginf,
-    "isposinf": torch.isposinf,
+    "gelu": torch.nn.functional.gelu,
+    "silu": torch.nn.functional.silu,
+    "softsign": torch.nn.functional.softsign,
+    "hardsigmoid": torch.nn.functional.hardsigmoid,
+    "selu": torch.nn.functional.selu,
 }
 
-# Auto-generate all unary operation functions
+# Auto-generate all simple unary operation functions
 for _op_name, _torch_fn in _TORCH_UNARY_OPS.items():
     globals()[_op_name] = _create_unary_op_wrapper(_op_name, _torch_fn)
+
+
+# Helper function for binary operations
+def _apply_binary_op(a: Block, b: Block, op: Callable) -> Block:
+    """Apply a binary operation element-wise to two blocks.
+
+    Args:
+        a: First input block
+        b: Second input block
+        op: Binary operation to apply (takes two torch tensors)
+
+    Returns:
+        Block with operation applied element-wise
+    """
+    from .ttnnsim import Tensor
+
+    a_tensors = [t.to_torch() for t in a.to_list()]
+    b_tensors = [t.to_torch() for t in b.to_list()]
+    result_tensors = [op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)]
+    result_list = [Tensor(t) for t in result_tensors]
+
+    return Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
+
+
+# Helper function for unary operations with parameters
+def _apply_unary_with_params(block: Block, op: Callable) -> Block:
+    """Apply a unary operation with parameters to each tensor in a block.
+
+    Args:
+        block: Input block
+        op: Unary operation to apply (takes a torch tensor, returns a torch tensor)
+
+    Returns:
+        Block with operation applied element-wise
+    """
+    from .ttnnsim import Tensor
+
+    result_tensors = [op(t.to_torch()) for t in block.to_list()]
+    result_list = [Tensor(t) for t in result_tensors]
+
+    return Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
+
+
+# Binary operations
+def max(a: Block, b: Block) -> Block:
+    """Element-wise maximum of two blocks.
+
+    Args:
+        a: First input block
+        b: Second input block
+
+    Returns:
+        Block with element-wise maximum
+    """
+    return _apply_binary_op(a, b, torch.maximum)
+
+
+def min(a: Block, b: Block) -> Block:
+    """Element-wise minimum of two blocks.
+
+    Args:
+        a: First input block
+        b: Second input block
+
+    Returns:
+        Block with element-wise minimum
+    """
+    return _apply_binary_op(a, b, torch.minimum)
+
+
+# Unary operations with scalar parameters
+def rsub(a: Block, b: int) -> Block:
+    """Subtract a from b where b is scalar unsigned integer (b - a).
+
+    Args:
+        a: Input block
+        b: Scalar unsigned integer
+
+    Returns:
+        Block with b - a computed element-wise
+    """
+    return _apply_unary_with_params(a, lambda t: b - t)
+
+
+# Activation functions with parameters
+def relu_max(expr: Block, upper_limit: int) -> Block:
+    """ReLU with upper limit.
+
+    Equivalent to: ttl.math.relu(ttl.math.min(x, upper_limit))
+
+    Args:
+        expr: Input block
+        upper_limit: Positive integer upper limit
+
+    Returns:
+        Block with ReLU applied with upper clipping
+    """
+    return _apply_unary_with_params(
+        expr, lambda t: torch.clamp(torch.relu(t), max=upper_limit)
+    )
+
+
+def relu_min(expr: Block, lower_limit: int) -> Block:
+    """ReLU with lower limit.
+
+    Equivalent to: ttl.math.relu(ttl.math.max(x, lower_limit))
+
+    Args:
+        expr: Input block
+        lower_limit: Positive integer lower limit
+
+    Returns:
+        Block with ReLU applied with lower clipping
+    """
+    return _apply_unary_with_params(
+        expr, lambda t: torch.relu(torch.clamp(t, min=lower_limit))
+    )
+
+
+def leaky_relu(expr: Block, slope: float) -> Block:
+    """Leaky ReLU activation.
+
+    Args:
+        expr: Input block
+        slope: Slope for negative values
+
+    Returns:
+        Block with Leaky ReLU applied
+    """
+    return _apply_unary_with_params(
+        expr, lambda t: torch.nn.functional.leaky_relu(t, negative_slope=slope)
+    )
+
+
+def elu(expr: Block, alpha: float) -> Block:
+    """ELU activation.
+
+    Args:
+        expr: Input block
+        alpha: Alpha parameter
+
+    Returns:
+        Block with ELU applied
+    """
+    return _apply_unary_with_params(
+        expr, lambda t: torch.nn.functional.elu(t, alpha=alpha)
+    )
+
+
+def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
+    """CELU activation.
+
+    Args:
+        expr: Input block
+        alpha: Alpha parameter
+        alpha_recip: Reciprocal of alpha (for API compatibility)
+
+    Returns:
+        Block with CELU applied
+    """
+    return _apply_unary_with_params(
+        expr, lambda t: torch.nn.functional.celu(t, alpha=alpha)
+    )
+
+
+def prelu(expr: Block, alpha: float) -> Block:
+    """PReLU activation.
+
+    Args:
+        expr: Input block
+        alpha: Slope for negative values
+
+    Returns:
+        Block with PReLU applied
+    """
+    # PyTorch's prelu expects weight parameter, use leaky_relu for scalar alpha
+    return _apply_unary_with_params(
+        expr, lambda t: torch.nn.functional.leaky_relu(t, negative_slope=alpha)
+    )
+
+
+def softplus(
+    expr: Block, beta: float, beta_reciprocal: float, threshold: float
+) -> Block:
+    """Softplus activation.
+
+    Args:
+        expr: Input block
+        beta: Beta parameter
+        beta_reciprocal: Reciprocal of beta (for API compatibility)
+        threshold: Threshold value
+
+    Returns:
+        Block with Softplus applied
+    """
+    return _apply_unary_with_params(
+        expr, lambda t: torch.nn.functional.softplus(t, beta=beta, threshold=threshold)
+    )
+
+
+def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
+    """Hardtanh activation.
+
+    Args:
+        expr: Input block
+        min_val: Minimum value
+        max_val: Maximum value
+
+    Returns:
+        Block with Hardtanh applied
+    """
+    return _apply_unary_with_params(
+        expr,
+        lambda t: torch.nn.functional.hardtanh(t, min_val=min_val, max_val=max_val),
+    )
 
 
 def reduce_max(

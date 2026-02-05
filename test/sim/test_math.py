@@ -362,20 +362,6 @@ def test_sqrt():
     assert torch.allclose(result_tensor, expected)
 
 
-def test_abs():
-    """Test abs function."""
-    input_data = torch.tensor([[-1.0, 2.0], [-3.0, 4.0]])
-    expected = torch.abs(input_data)
-
-    input_tensor = Tensor(input_data)
-    input_block = Block.from_list([input_tensor], shape=(1, 1))
-
-    result = ttl.math.abs(input_block)
-    result_tensor = result.to_list()[0].to_torch()
-
-    assert torch.allclose(result_tensor, expected)
-
-
 def test_sin():
     """Test sin function."""
     input_data = torch.tensor([[0.0, torch.pi / 2], [torch.pi, 3 * torch.pi / 2]])
@@ -441,48 +427,6 @@ def test_sigmoid():
     input_block = Block.from_list([input_tensor], shape=(1, 1))
 
     result = ttl.math.sigmoid(input_block)
-    result_tensor = result.to_list()[0].to_torch()
-
-    assert torch.allclose(result_tensor, expected)
-
-
-def test_isnan():
-    """Test isnan check function."""
-    input_data = torch.tensor([[1.0, float("nan")], [3.0, float("nan")]])
-    expected = torch.isnan(input_data)
-
-    input_tensor = Tensor(input_data)
-    input_block = Block.from_list([input_tensor], shape=(1, 1))
-
-    result = ttl.math.isnan(input_block)
-    result_tensor = result.to_list()[0].to_torch()
-
-    assert torch.equal(result_tensor, expected)
-
-
-def test_isfinite():
-    """Test isfinite check function."""
-    input_data = torch.tensor([[1.0, float("inf")], [float("-inf"), float("nan")]])
-    expected = torch.isfinite(input_data)
-
-    input_tensor = Tensor(input_data)
-    input_block = Block.from_list([input_tensor], shape=(1, 1))
-
-    result = ttl.math.isfinite(input_block)
-    result_tensor = result.to_list()[0].to_torch()
-
-    assert torch.equal(result_tensor, expected)
-
-
-def test_neg():
-    """Test negation function."""
-    input_data = torch.tensor([[1.0, -2.0], [3.0, -4.0]])
-    expected = torch.neg(input_data)
-
-    input_tensor = Tensor(input_data)
-    input_block = Block.from_list([input_tensor], shape=(1, 1))
-
-    result = ttl.math.neg(input_block)
     result_tensor = result.to_list()[0].to_torch()
 
     assert torch.allclose(result_tensor, expected)
