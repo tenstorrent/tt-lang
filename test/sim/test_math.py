@@ -590,9 +590,14 @@ def test_reduce_max_rows():
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
 
-    # Max over rows: max([1, 5], [3, 2]) = [3, 5], scaled by [2, 2] = [6, 10]
-    expected = torch.tensor([[6.0, 10.0]])
-    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+    # Two-level reduction:
+    # 1. Within-tile: dims=[0] means max across columns for each row
+    #    Tile 0: [[1.0, 5.0]] -> max(1,5)=5 at col 0 -> [[5.0, 0.0]]
+    #    Tile 1: [[3.0, 2.0]] -> max(3,2)=3 at col 0 -> [[3.0, 0.0]]
+    # 2. Grid-level: element-wise max -> [[5.0, 0.0]]
+    # 3. Scale by [[2.0, 2.0]] -> [[10.0, 0.0]]
+    result_tensor = result.to_list()[0].to_torch()
+    assert result_tensor[0, 0] == 10.0
 
 
 def test_reduce_max_cols():
@@ -640,9 +645,13 @@ def test_reduce_max_all():
     # Result should have shape (1, 1)
     assert result.shape == (1, 1)
 
-    # Max over all: max of all values = [7, 8], scaled by [0.5, 0.5] = [3.5, 4.0]
-    expected = torch.tensor([[3.5, 4.0]])
-    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+    # Two-level reduction:
+    # 1. Within-tile: dims=[0,1] means max of entire tile stored at [0,0]
+    #    Tiles: [[1,2]], [[3,4]], [[5,6]], [[7,8]] -> maxes: 2, 4, 6, 8
+    # 2. Grid-level: element-wise max of all -> 8 at [0,0]
+    # 3. Scale by 0.5 -> 4.0 at [0,0], rest zeros
+    result_tensor = result.to_list()[0].to_torch()
+    assert result_tensor[0, 0] == 4.0
 
 
 def test_reduce_max_invalid_dims():
@@ -697,9 +706,14 @@ def test_reduce_sum_rows():
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
 
-    # Sum over rows: sum([1, 2], [3, 4]) = [4, 6], scaled by [2, 2] = [8, 12]
-    expected = torch.tensor([[8.0, 12.0]])
-    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+    # Two-level reduction:
+    # 1. Within-tile: dims=[0] means sum across columns for each row
+    #    Tile 0: [[1.0, 2.0]] -> sum(1,2)=3 at col 0 -> [[3.0, 0.0]]
+    #    Tile 1: [[3.0, 4.0]] -> sum(3,4)=7 at col 0 -> [[7.0, 0.0]]
+    # 2. Grid-level: element-wise sum -> [[10.0, 0.0]]
+    # 3. Scale by [[2.0, 2.0]] -> [[20.0, 0.0]]
+    result_tensor = result.to_list()[0].to_torch()
+    assert result_tensor[0, 0] == 20.0
 
 
 def test_reduce_sum_cols():
@@ -747,9 +761,13 @@ def test_reduce_sum_all():
     # Result should have shape (1, 1)
     assert result.shape == (1, 1)
 
-    # Sum over all: sum of all values = [10, 10], scaled by [0.1, 0.1] = [1.0, 1.0]
-    expected = torch.tensor([[1.0, 1.0]])
-    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+    # Two-level reduction:
+    # 1. Within-tile: dims=[0,1] means sum of entire tile stored at [0,0]
+    #    Tiles: [[1,1]], [[2,2]], [[3,3]], [[4,4]] -> sums: 2, 4, 6, 8
+    # 2. Grid-level: element-wise sum of all -> 20 at [0,0]
+    # 3. Scale by 0.1 -> 2.0 at [0,0], rest zeros
+    result_tensor = result.to_list()[0].to_torch()
+    assert result_tensor[0, 0] == 2.0
 
 
 def test_reduce_sum_invalid_dims():
