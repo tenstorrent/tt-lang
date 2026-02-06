@@ -776,6 +776,6 @@ def dm():
 | Function | Description |
 | :---- | :---- |
 | `ttl.math.fill(expr: ttl.BlockExpr, value: float) -> ttl.BlockExpr` | Fill a block with specified `value` |
-| `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked elements with 0. |
-| `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (equals 1) elements with positive infinity. |
-| `ttl.math.where(expr: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in a block return the corresponding element from `true_value` if true (equals 1) and `false_value` otherwise (equals 0) |
+| `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
+| `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
+| `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
