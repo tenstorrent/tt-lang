@@ -288,7 +288,6 @@ def test_tensor_binary_ops_reject_torch_tensor():
 # ---- multiply function tests ----
 
 
-@requires_ttnn
 def test_multiply_basic():
     """Test basic element-wise multiplication."""
     a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.bfloat16))
@@ -303,7 +302,6 @@ def test_multiply_basic():
     assert torch.allclose(c.to_torch(), expected, rtol=1e-2)
 
 
-@requires_ttnn
 def test_multiply_same_shape():
     """Test multiply with same-shaped tensors."""
     a = ttnn.from_torch(torch.ones(4, 4, dtype=torch.float32) * 3.0)
@@ -315,7 +313,6 @@ def test_multiply_same_shape():
     assert torch.allclose(c.to_torch(), torch.ones(4, 4) * 21.0)
 
 
-@requires_ttnn
 def test_multiply_tile_sized_tensors():
     """Test multiply with tile-sized tensors (32x32)."""
     a = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
@@ -329,7 +326,6 @@ def test_multiply_tile_sized_tensors():
     assert torch.allclose(c.to_torch(), expected, rtol=1e-2)
 
 
-@requires_ttnn
 def test_multiply_zeros():
     """Test multiply with zeros."""
     a = ttnn.from_torch(torch.randn(4, 4, dtype=torch.float32))
@@ -340,7 +336,6 @@ def test_multiply_zeros():
     assert torch.allclose(c.to_torch(), torch.zeros(4, 4))
 
 
-@requires_ttnn
 def test_multiply_ones():
     """Test multiply with ones (identity)."""
     a = ttnn.from_torch(torch.randn(4, 4, dtype=torch.float32))
@@ -351,7 +346,6 @@ def test_multiply_ones():
     assert torch.allclose(c.to_torch(), a.to_torch())
 
 
-@requires_ttnn
 def test_multiply_negative_values():
     """Test multiply with negative values."""
     a = ttnn.from_torch(torch.tensor([[-1.0, 2.0], [-3.0, 4.0]], dtype=torch.float32))
@@ -363,7 +357,6 @@ def test_multiply_negative_values():
     assert torch.allclose(c.to_torch(), expected)
 
 
-@requires_ttnn
 def test_multiply_large_tensors():
     """Test multiply with larger tensors."""
     a = ttnn.rand((64, 64), dtype=ttnn.bfloat16)
@@ -558,7 +551,6 @@ def test_split_work_core_range_set_input():
 # ---- Helper functions tests ----
 
 
-@requires_ttnn
 def test_isclose():
     """Test isclose function."""
     a = ttnn.Tensor(torch.tensor([1.0, 2.0, 3.0]))
@@ -574,7 +566,6 @@ def test_isclose():
     assert not result2.to_torch().all().item()
 
 
-@requires_ttnn
 def test_isclose_with_nan():
     """Test isclose with NaN values."""
     a = ttnn.Tensor(torch.tensor([1.0, float("nan"), 3.0]))
@@ -592,7 +583,6 @@ def test_isclose_with_nan():
     assert result2.to_torch().all().item()
 
 
-@requires_ttnn
 def test_repeat():
     """Test repeat function."""
     a = ttnn.Tensor(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))  # 2x2
@@ -618,7 +608,6 @@ def test_repeat():
     assert torch.allclose(b.to_torch(), expected)
 
 
-@requires_ttnn
 def test_repeat_single_dimension():
     """Test repeat with repetition in only one dimension."""
     a = ttnn.Tensor(torch.tensor([[1.0, 2.0]]))  # 1x2
@@ -778,7 +767,6 @@ def test_from_torch_large_tensor():
 # ---- Golden function wrapper tests ----
 
 
-@requires_ttnn
 def test_golden_function_wrappers_arithmetic():
     """Test dynamically generated golden function wrappers for arithmetic operations."""
     a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32))
@@ -803,7 +791,6 @@ def test_golden_function_wrappers_arithmetic():
     assert torch.allclose(e.to_torch(), expected)
 
 
-@requires_ttnn
 def test_golden_function_wrappers_comparisons():
     """Test dynamically generated golden function wrappers for comparison operations."""
     a = ttnn.from_torch(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32))
@@ -831,7 +818,6 @@ def test_golden_function_wrappers_comparisons():
     assert torch.equal(result.to_torch(), expected)
 
 
-@requires_ttnn
 def test_golden_function_wrappers_unary():
     """Test dynamically generated golden function wrappers for unary operations."""
     a = ttnn.from_torch(torch.tensor([[1.0, 4.0], [9.0, 16.0]], dtype=torch.float32))
@@ -855,7 +841,6 @@ def test_golden_function_wrappers_unary():
     assert torch.allclose(result.to_torch(), expected)
 
 
-@requires_ttnn
 def test_golden_function_wrappers_trigonometric():
     """Test dynamically generated golden function wrappers for trigonometric operations."""
     import math
@@ -884,7 +869,6 @@ def test_golden_function_wrappers_trigonometric():
     assert torch.allclose(result.to_torch(), expected, atol=1e-6)
 
 
-@requires_ttnn
 def test_golden_function_wrappers_activation():
     """Test dynamically generated golden function wrappers for activation functions."""
     a = ttnn.from_torch(
@@ -908,7 +892,6 @@ def test_golden_function_wrappers_activation():
     assert torch.allclose(result.to_torch(), expected, atol=1e-5)
 
 
-@requires_ttnn
 def test_golden_function_wrappers_logical():
     """Test dynamically generated golden function wrappers for logical operations."""
     a = ttnn.from_torch(torch.tensor([[True, True], [False, False]]))

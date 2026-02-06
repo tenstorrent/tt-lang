@@ -882,3 +882,27 @@ if TTNN_AVAILABLE:
     for name in ["_operations_to_wrap", "_op_name", "_op", "_golden_fn"]:
         if name in dir():
             del globals()[name]
+else:
+    # When ttnn is not available, import pure Python fallback implementations
+    from .golden_ops import (
+        abs,
+        add,
+        cos,
+        eq,
+        exp,
+        gelu,
+        gt,
+        isclose,
+        logical_and,
+        logical_or,
+        lt,
+        multiply,
+        ne,
+        relu,
+        repeat,
+        sigmoid,
+        sin,
+        sqrt,
+        subtract,
+        tan,
+    )

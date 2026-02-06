@@ -82,7 +82,6 @@ def assert_success_output(code: int, out: str) -> None:
     assert code == 0, f"ttlang-sim exited with code {code}. Output:\n{out}"
 
 
-@requires_ttnn
 @pytest.mark.parametrize(
     "script_name",
     [
@@ -122,7 +121,6 @@ def test_metal_example_cli(example_path: str) -> None:
     assert_success_output(code, out)
 
 
-@requires_ttnn
 def test_eltwise_add2_fails_with_expected_error() -> None:
     """Test that eltwise_add_error.py fails with the expected copy validation error.
 
@@ -157,7 +155,6 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
         )
 
 
-@requires_ttnn
 def test_copy_lock_error_fails_with_expected_error() -> None:
     """Test that copy_lock_error.py fails with the expected copy locking error.
 
@@ -190,7 +187,6 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
         )
 
 
-@requires_ttnn
 def test_demo_one_deadlock_detection() -> None:
     """Test that tutorial/multicore_grid_auto.py with incorrect wait() instead of reserve() triggers deadlock detection.
 
