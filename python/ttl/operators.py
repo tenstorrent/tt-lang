@@ -86,9 +86,14 @@ class TensorBlock:
         raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Store result tensor to CB by propagating CB association from output view."""
+        """Associate result tensor with output CB for auto-store insertion.
+
+        This attaches the CB to the result tensor. The ttl-insert-tile-regs-sync
+        pass will automatically generate cb_reserve + store + cb_push operations
+        for outputs that go through tensor.insert in the lowered loop.
+        """
         # ast_self is the result of attach_cb(tensor, cb) from reserve()
-        # Extract the CB operand and attach it to the result tensor
+        # Extract the CB operand and attach it to the result for data flow tracking
         cb = ast_self.owner.operands[1]
         return ttl.attach_cb(rhs.type, rhs, cb)
 

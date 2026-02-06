@@ -78,7 +78,8 @@ func.func @bf16_enable_options(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       {indexing_maps = [#map, #map, #map],
        iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_arg: !ttcore.tile<32x32, bf16>, %b_arg: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
-      ttl.yield %out : !ttcore.tile<32x32, bf16>
+      %sum = ttl.tile_add %a_arg, %b_arg : !ttcore.tile<32x32, bf16>
+      ttl.yield %sum : !ttcore.tile<32x32, bf16>
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   return %res : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -121,7 +122,8 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
        fp32_dest_acc_en = false,
        dst_full_sync_en = false} {
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
-      ttl.yield %out : !ttcore.tile<32x32, f32>
+      %sum = ttl.tile_add %a_arg, %b_arg : !ttcore.tile<32x32, f32>
+      ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
   return %res : tensor<1x1x!ttcore.tile<32x32, f32>>

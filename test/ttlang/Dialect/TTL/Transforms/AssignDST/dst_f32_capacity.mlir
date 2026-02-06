@@ -78,8 +78,9 @@ func.func @mixed_f32_bf16(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, f32>):
       %c0 = arith.constant 0 : index
       %dtok0, %dtile0 = ttl.copy_tile %a_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %dtok1, %dtile1 = ttl.copy_tile %a_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %add = ttl.tile_add %dtile0, %dtile1 : !ttcore.tile<32x32, f32>
+      %dtok1, %dtile1 = ttl.copy_tile %b_arg, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+      // Note: tile_add on mixed types is just for verifier test, real code would typecast
+      %add = ttl.tile_add %dtile0, %dtile0 : !ttcore.tile<32x32, f32>
       ttl.yield %add : !ttcore.tile<32x32, f32>
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

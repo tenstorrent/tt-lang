@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -239,6 +240,48 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     if (processingFailed) {
       return rewriter.notifyMatchFailure(
           op, "copy_tile index computation failed (mismatched rank/IVs)");
+    }
+
+    // Mark all compute loops for later sync insertion passes.
+    // All loops get kTileLoopAttrName; the outermost is found by walking up.
+    // CB indices are placed on the innermost loop for sync insertion.
+    if (!loopNest.loops.empty()) {
+      scf::ForOp innermostLoop = loopNest.loops.back();
+
+      // Mark ALL loops with the tile_loop marker.
+      for (scf::ForOp loop : loopNest.loops) {
+        loop->setAttr(kTileLoopAttrName, rewriter.getUnitAttr());
+      }
+
+      // Collect all input CB indices for init_sfpu placement.
+      SmallVector<int64_t> inputCBs;
+      for (Value input : op.getInputs()) {
+        Value cb = getAttachedCB(input);
+        if (cb) {
+          if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+            inputCBs.push_back(bindOp.getCbIndex().getSExtValue());
+          }
+        }
+      }
+      if (!inputCBs.empty()) {
+        innermostLoop->setAttr(kTileLoopInputCBsAttrName,
+                               rewriter.getI64ArrayAttr(inputCBs));
+      }
+
+      // Collect all output CB indices for stores and inter-loop sync.
+      SmallVector<int64_t> outputCBs;
+      for (Value output : op.getOutputs()) {
+        Value cb = getAttachedCB(output);
+        if (cb) {
+          if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
+            outputCBs.push_back(bindOp.getCbIndex().getSExtValue());
+          }
+        }
+      }
+      if (!outputCBs.empty()) {
+        innermostLoop->setAttr(kTileLoopOutputCBsAttrName,
+                               rewriter.getI64ArrayAttr(outputCBs));
+      }
     }
 
     rewriter.replaceOp(op, loopNest.results);

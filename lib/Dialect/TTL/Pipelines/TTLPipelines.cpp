@@ -24,10 +24,19 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(mlir::tt::ttcore::createTTCoreRegisterDevicePass());
   }
   pm.addPass(createTTLConvertTTLToCompute());
+  // DST register assignment and synchronization (strict ordering required):
+  // 1. ttl-assign-dst: DST allocation with linear scan and unary merging.
+  //    Inserts copy_tile for block args, copy_dst for multi-consumer values,
+  //    and assigns dst_idx attributes.
+  // 2. ttl-lower-to-loops: Lowers ttl.compute to scf.for loops and marks the
+  //    innermost loop with ttl.tile_loop attribute for sync insertion.
+  // 3. ttl-insert-tile-regs-sync: Inserts DST lifecycle ops
+  //    (acquire/commit/wait/release) inside the marked loops. Runs after loop
+  //    lowering to enable future inter-loop CB synchronization.
   pm.addPass(createTTLSetComputeKernelConfig());
   pm.addPass(createTTLAssignDST());
-  pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLLowerToLoops());
+  pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());
