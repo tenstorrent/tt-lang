@@ -5,14 +5,24 @@ include "mlir/Pass/PassBase.td"
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
+  let summary = "Lower TTL DMA ops to TTKernel noc ops";
   let description = [{
-    Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers bind_cb, copy, wait MVP path.
+    Converts TTL DMA ops to TTKernel noc ops. Covers bind_cb, copy, wait MVP
+    path.
+
+    Two lowering modes are supported:
+    - Default: global barriers (noc_async_{read,write}_barrier).
+    - Optional: TRID-aware barriers (noc_async_*_set_trid +
+      noc_async_*_barrier_with_trid).
 
     TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
     Issue: #77 (umbrella issue with subtasks #78-#89).
   }];
+
+  let options = [
+    Option<"useTridBarriers", "use-trid-barriers", "bool", "false",
+           "Use TRID-aware DMA waits (barrier_with_trid) instead of global barriers.">,
+  ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",

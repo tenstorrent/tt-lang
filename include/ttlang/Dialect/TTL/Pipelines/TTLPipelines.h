@@ -18,6 +18,10 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
+  Option<bool> useTridBarriers{
+      *this, "use-trid-barriers",
+      llvm::cl::desc("Use TRID-aware DMA waits (barrier_with_trid)."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

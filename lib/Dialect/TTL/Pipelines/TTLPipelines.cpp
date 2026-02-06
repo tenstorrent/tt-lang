@@ -29,7 +29,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLLowerToLoops());
   pm.addPass(createTTLAnnotateCBAssociations());
-  pm.addPass(createTTLConvertTTLToTTKernel());
+  {
+    TTLConvertTTLToTTKernelOptions passOptions;
+    passOptions.useTridBarriers = options.useTridBarriers;
+    pm.addPass(createTTLConvertTTLToTTKernel(passOptions));
+  }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   if (options.lowerToEmitC) {
