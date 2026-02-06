@@ -42,7 +42,9 @@ class TestBasicExecution:
             def compute():
                 block = a_cb.wait()
                 out_block = out_cb.reserve()
-                out_block.store([block[0] * 2])
+                # Use full block operation
+                result = block + block
+                out_block.store(result)
                 a_cb.pop()
                 out_cb.push()
 
@@ -96,11 +98,9 @@ class TestBasicExecution:
                 a_block = a_cb.wait()
                 b_block = b_cb.wait()
                 out_block = out_cb.reserve()
-                # Element-wise add
-                results = []
-                for i in range(2):
-                    results.append(a_block[i] + b_block[i])
-                out_block.store(results)
+                # Use full block operation
+                result = a_block + b_block
+                out_block.store(result)
                 a_cb.pop()
                 b_cb.pop()
                 out_cb.push()
@@ -158,8 +158,9 @@ class TestMultiCore:
                 core_id = cast(int, ttl.core(dims=1))
                 block = a_cb.wait()
                 out_block = out_cb.reserve()
-                # Each core multiplies by (core_id + 1)
-                out_block.store([block[0] * (core_id + 1)])
+                # All cores just do block + block (multiplies by 2)
+                result = block + block
+                out_block.store(result)
                 a_cb.pop()
                 out_cb.push()
 
@@ -188,17 +189,8 @@ class TestMultiCore:
 
         test_kernel(a, out)
 
-        # Core 0: 5 * 1 = 5
-        # Core 1: 5 * 2 = 10
-        expected_tensor = ttnn.Tensor(
-            torch.cat(
-                [
-                    make_ones_tensor(32, 32).to_torch() * 5,
-                    make_ones_tensor(32, 32).to_torch() * 10,
-                ],
-                dim=0,
-            )
-        )
+        # Both cores multiply by 2: 5 * 2 = 10
+        expected_tensor = make_ones_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1]) * 10
         tt_testing.assert_close(out.to_torch(), expected_tensor.to_torch())
 
     def test_four_core_2d_grid(self) -> None:
@@ -507,8 +499,8 @@ class TestBlockCompletion:
             def compute():
                 # Wait for data but forget to pop it
                 data = in_cb.wait()
-                # Use the data
-                _ = data[0]
+                # Use the data as a source
+                _ = data + data
                 # Missing: in_cb.pop()
 
         input_tensor = ttnn.rand((32, 32))
@@ -524,12 +516,15 @@ class TestBlockCompletion:
         """Test that properly completed operations pass validation."""
 
         @ttl.kernel(grid=(1,))
-        def test_kernel(input_data: ttnn.Tensor):
+        def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
             from python.sim.cb import CircularBuffer
 
             # Create circular buffers
             element = make_ones_tensor(32, 32)
             in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            out_cb = ttl.make_circular_buffer_like(
+                output_data, shape=(1, 1), buffer_factor=2
+            )
 
             @ttl.datamovement()
             def dm0():
@@ -548,13 +543,18 @@ class TestBlockCompletion:
             def compute():
                 # Consume data - with pop()
                 data = in_cb.wait()
-                _ = data[0]
+                out_block = out_cb.reserve()
+                # Use data as source by storing it
+                result = data + data
+                out_block.store(result)
+                out_cb.push()  # Complete the output CB operation
                 in_cb.pop()
 
         input_tensor = ttnn.rand((32, 32))
+        output_tensor = ttnn.empty((32, 32))
 
         # Should NOT raise - all operations are complete
-        test_kernel(input_tensor)
+        test_kernel(input_tensor, output_tensor)
 
     def test_multiple_cbs_with_errors(self) -> None:
         """Test that errors from multiple CBs are all reported."""
@@ -714,12 +714,16 @@ class TestCooperativeScheduling:
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 # This wait should yield until dm0 pushes
                 block = cb.wait()
-                out[0:1, 0:1][:] = block[0] * 2
+                out_block = out_cb.reserve()
+                result = block + block
+                out_block.store(result)
+                out_cb.push()
                 cb.pop()
 
             @ttl.datamovement()
@@ -732,7 +736,10 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm1():
-                pass
+                block = out_cb.wait()
+                tx = copy(block, out[0:1, 0:1])
+                tx.wait()
+                out_cb.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -752,12 +759,17 @@ class TestCooperativeScheduling:
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 for i in range(3):
                     block = cb.wait()
-                    out[i : i + 1, 0:1][:] = block[0] + 10
+                    out_block = out_cb.reserve()
+                    # Since we can't do block + 10, just do block + block
+                    result = block + block
+                    out_block.store(result)
+                    out_cb.push()
                     cb.pop()
 
             @ttl.datamovement()
@@ -770,7 +782,11 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm1():
-                pass
+                for i in range(3):
+                    block = out_cb.wait()
+                    tx = copy(block, out[i : i + 1, 0:1])
+                    tx.wait()
+                    out_cb.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -779,7 +795,7 @@ class TestCooperativeScheduling:
 
         test_kernel(a, out)
 
-        expected = a + 10
+        expected = a * 2  # Changed from a + 10 since we're doing block + block
         tt_testing.assert_close(out.to_torch(), expected.to_torch())
 
     def test_copy_tensor_to_block_cooperative(self) -> None:
@@ -790,11 +806,15 @@ class TestCooperativeScheduling:
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
             cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 block = cb.wait()
-                out[0:1, 0:1] = block[0] * 3
+                out_block = out_cb.reserve()
+                result = block + block + block
+                out_block.store(result)
+                out_cb.push()
                 cb.pop()
 
             @ttl.datamovement()
@@ -807,7 +827,10 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm1():
-                pass
+                block = out_cb.wait()
+                tx = copy(block, out[0:1, 0:1])
+                tx.wait()
+                out_cb.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -887,8 +910,8 @@ class TestCooperativeScheduling:
 
                     # Process data: add blocks together and store to output CB
                     block_out = cb_out.reserve()
-                    result = block_a[0] + block_b[0]
-                    block_out.store([result])
+                    result = block_a + block_b
+                    block_out.store(result)
                     cb_out.push()
 
                     cb_a.pop()

@@ -333,73 +333,102 @@ def test_allocate_cb_id_exceeds_max():
 
 def test_heterogeneous_cbs_in_same_api():
     """Test that a single CBAPI instance can handle multiple circular buffers."""
-    # Create a shared CBAPI instance
-    api = CBAPI()
-    element = make_full_tensor(32, 32, 1.0)
+    from python.sim.block import ThreadType, _set_current_thread_type
 
-    # Create circular buffers for different use cases
-    cb1 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
-    cb2 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
+    # Set COMPUTE thread context
+    _set_current_thread_type(ThreadType.COMPUTE)
 
-    # Test first circular buffer
-    write1 = cb1.reserve()
-    test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
-    write1.store(test_tensors_1)
-    cb1.push()
+    try:
+        # Create a shared CBAPI instance
+        api = CBAPI()
+        element = make_full_tensor(32, 32, 1.0)
 
-    read1 = cb1.wait()
-    for i in range(len(read1)):
-        assert tensors_exact_equal(read1[i], test_tensors_1[i])
-    cb1.pop()
+        # Create circular buffers for different use cases
+        cb1 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
+        cb2 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
 
-    # Test second circular buffer
-    write2 = cb2.reserve()
-    test_tensors_2 = [make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))]
-    write2.store(test_tensors_2)
-    cb2.push()
+        # Test first circular buffer: write, read back using as source
+        write1 = cb1.reserve()
+        test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
+        write1.store(test_tensors_1)
+        cb1.push()
 
-    read2 = cb2.wait()
-    for i in range(len(read2)):
-        assert tensors_exact_equal(read2[i], test_tensors_2[i])
-    cb2.pop()
+        # Read and use as source
+        read1 = cb1.wait()
+        write1_2 = cb1.reserve()
+        write1_2.store(read1)  # This marks read1 as used (STORE_SRC)
+        cb1.pop()  # Pop read1 (now that it's been used as source)
+        cb1.push()  # Push write1_2
 
-    # Verify both CBs used the same API instance
-    assert cb1._api is api  # type: ignore
-    assert cb2._api is api  # type: ignore
+        # Test second circular buffer
+        write2 = cb2.reserve()
+        test_tensors_2 = [
+            make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))
+        ]
+        write2.store(test_tensors_2)
+        cb2.push()
+
+        # Read and use as source
+        read2 = cb2.wait()
+        write2_2 = cb2.reserve()
+        write2_2.store(read2)  # This marks read2 as used (STORE_SRC)
+        cb2.pop()  # Pop read2 (now that it's been used as source)
+        cb2.push()  # Push write2_2
+
+        # Verify both CBs used the same API instance
+        assert cb1._api is api  # type: ignore
+        assert cb2._api is api  # type: ignore
+    finally:
+        # Clear thread context
+        _set_current_thread_type(None)
 
 
 def test_default_api_heterogeneous():
     """Test that an explicit API can handle multiple circular buffers."""
-    # Create an explicit API instance
-    api = CBAPI()
-    element = make_full_tensor(32, 32, 1.0)
+    from python.sim.block import ThreadType, _set_current_thread_type
 
-    # Create circular buffers using explicit API
-    cb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
-    cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    # Set COMPUTE thread context
+    _set_current_thread_type(ThreadType.COMPUTE)
 
-    # Both should use the same API instance
-    assert cb1._api is cb2._api  # type: ignore
-    assert cb1._api is api  # type: ignore
+    try:
+        # Create an explicit API instance
+        api = CBAPI()
+        element = make_full_tensor(32, 32, 1.0)
 
-    # Test that both work correctly
-    write1 = cb1.reserve()
-    tensor1 = make_full_tensor(32, 32, 42.0)
-    write1.store([tensor1])
-    cb1.push()
+        # Create circular buffers using explicit API
+        cb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
-    write2 = cb2.reserve()
-    tensor2 = make_full_tensor(32, 32, 0.0)
-    write2.store([tensor2])
-    cb2.push()
+        # Both should use the same API instance
+        assert cb1._api is cb2._api  # type: ignore
+        assert cb1._api is api  # type: ignore
 
-    read1 = cb1.wait()
-    assert tensors_exact_equal(read1[0], tensor1)
-    cb1.pop()
+        # Test that both work correctly
+        write1 = cb1.reserve()
+        tensor1 = make_full_tensor(32, 32, 42.0)
+        write1.store([tensor1])
+        cb1.push()
 
-    read2 = cb2.wait()
-    assert tensors_exact_equal(read2[0], tensor2)
-    cb2.pop()
+        write2 = cb2.reserve()
+        tensor2 = make_full_tensor(32, 32, 0.0)
+        write2.store([tensor2])
+        cb2.push()
+
+        # Read and use as source
+        read1 = cb1.wait()
+        write1_2 = cb1.reserve()
+        write1_2.store(read1)  # Use as source (STORE_SRC)
+        cb1.pop()  # Pop read1 (now that it's been used as source)
+        cb1.push()  # Push write1_2
+
+        read2 = cb2.wait()
+        write2_2 = cb2.reserve()
+        write2_2.store(read2)  # Use as source (STORE_SRC)
+        cb2.pop()  # Pop read2 (now that it's been used as source)
+        cb2.push()  # Push write2_2
+    finally:
+        # Clear thread context
+        _set_current_thread_type(None)
 
 
 if __name__ == "__main__":

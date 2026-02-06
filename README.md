@@ -208,30 +208,6 @@ llvm-lit -sv test/python/     # Python runtime tests
 
 For more information on testing, including how to write new tests and interpret results, see [test/TESTING.md](test/TESTING.md).
 
-## Python Package Structure
-
-The `ttlang` Python package provides a DSL for authoring custom data movement and compute kernels:
-
-```
-python/ttl/
-├── __init__.py           # Main package exports
-├── ttl_api.py            # Core decorator and compilation orchestration
-├── operators.py          # TensorBlock, MemTx, DMA operations
-├── circular_buffer.py    # CircularBuffer for inter-thread communication
-├── semaphore.py          # Semaphore for multi-core synchronization
-├── layouts.py            # MetalLayoutAttr creation and accessor layout utilities
-├── dtype_utils.py        # PyTorch/runtime data type conversions
-├── constants.py          # Shared constants (tile sizes, memory spaces)
-└── _src/                 # Internal implementation modules
-    ├── ttl_ast.py        # TTL dialect AST compiler
-    ├── kernel_ast.py     # Base kernel compilation infrastructure
-    ├── kernel_types.py   # CircularBuffer, Kernel, and other types
-    ├── base_ast.py       # AST base classes
-    ├── tensor_accessor.py  # TensorAccessor type for indexed tile-level access
-    ├── utils.py          # Utility functions
-    └── codegen.py        # D2M generic function creation and code generation
-```
-
 ## Developer Guidelines
 
 ### Updating tt-mlir version

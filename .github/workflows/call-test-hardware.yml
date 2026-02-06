@@ -131,6 +131,11 @@ jobs:
           # Run pytest directly instead of through ninja
           python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
+      - name: Simulator tests
+        run: |
+          source build/env/activate
+          python3 -m pytest test/sim -v --tb=short --junitxml=build/test/sim-report.xml
+
       - name: Upload test reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -140,4 +145,5 @@ jobs:
             build/test/python-lit-report.xml
             build/test/me2e-report.xml
             build/test/pytest-report.xml
+            build/test/sim-report.xml
           retention-days: 7

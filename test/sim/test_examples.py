@@ -17,6 +17,20 @@ from pathlib import Path
 
 import pytest
 
+# Check if ttnn is available
+try:
+    import ttnn
+
+    TTNN_AVAILABLE = True
+except ImportError:
+    TTNN_AVAILABLE = False
+
+# Marker for tests that require ttnn
+requires_ttnn = pytest.mark.skipif(
+    not TTNN_AVAILABLE,
+    reason="ttnn not available (required for tests using ttnn golden functions)",
+)
+
 # Paths
 THIS_DIR = Path(__file__).resolve().parent
 
@@ -68,6 +82,7 @@ def assert_success_output(code: int, out: str) -> None:
     assert code == 0, f"ttlang-sim exited with code {code}. Output:\n{out}"
 
 
+@requires_ttnn
 @pytest.mark.parametrize(
     "script_name",
     [
@@ -79,7 +94,7 @@ def assert_success_output(code: int, out: str) -> None:
         "eltwise_pipe_core3.py",  # Now supported: reserve() DM blocks can do multiple copies
         "singlecore_matmul.py",
         "multicore_matmul.py",
-        # "tutorial/ttnn_base.py", TODO: needs simulation for ttnn.add
+        "tutorial/ttnn_base.py",
         "tutorial/single_core_single_tile_block.py",
         "tutorial/single_core_multitile_block.py",
         "tutorial/multicore.py",
@@ -107,6 +122,7 @@ def test_metal_example_cli(example_path: str) -> None:
     assert_success_output(code, out)
 
 
+@requires_ttnn
 def test_eltwise_add2_fails_with_expected_error() -> None:
     """Test that eltwise_add_error.py fails with the expected copy validation error.
 
@@ -141,6 +157,7 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
         )
 
 
+@requires_ttnn
 def test_copy_lock_error_fails_with_expected_error() -> None:
     """Test that copy_lock_error.py fails with the expected copy locking error.
 
@@ -152,7 +169,8 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy access violation)
     assert (
-        "Cannot write to Block: Block has no access (NA state)" in out
+        "Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error)"
+        in out
     ), f"Expected error message not found in output:\n{out}"
     # Verify source location is shown (line 88 where we attempt to write to a_block)
     assert (
@@ -172,6 +190,7 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
         )
 
 
+@requires_ttnn
 def test_demo_one_deadlock_detection() -> None:
     """Test that tutorial/multicore_grid_auto.py with incorrect wait() instead of reserve() triggers deadlock detection.
 
