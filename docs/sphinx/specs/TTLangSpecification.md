@@ -767,8 +767,8 @@ def dm():
 | `ttl.math.floor(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Floor |
 | `ttl.math.ceil(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Ceil |
 | `ttl.math.clamp(expr: ttl.BlockExpr, min: ttl.PositiveInt, max: ttl.PositiveInt) -> ttl.BlockExpr` | Clamp to specified `min` and `max` |
-| `ttl.math.threshold(expr: ttl.BlockExpr, threshold: ttl.PositiveInt, replacement: ttl.PositiveInt) -> ttl.BlockExpr` | For all values greater than specified `threshold` replace with specified `value` |
-| `ttl.math.sign(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Replace positive element with 1 and negative elements with -1 |
+| `ttl.math.threshold(expr: ttl.BlockExpr, threshold: ttl.PositiveInt, value: ttl.PositiveInt) -> ttl.BlockExpr` | For all values greater than specified `threshold` replace with specified `value` |
+| `ttl.math.sign(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Replace positive element with 1, negative elements with -1 and leave zeroes as zero. |
 | `ttl.math.signbit(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Replace positive and positive zero elements with 1 and the rest with 0 |
 
 ### Fill, mask and where functions
