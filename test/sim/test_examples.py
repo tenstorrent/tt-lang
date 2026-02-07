@@ -90,8 +90,8 @@ def assert_success_output(code: int, out: str) -> None:
         "broadcast_demo.py",
         "general_broadcast.py",
         "eltwise_add.py",
-        "eltwise_pipe.py",  # Now supported: reserve() DM blocks can do multiple copies
-        "eltwise_pipe_core3.py",  # Now supported: reserve() DM blocks can do multiple copies
+        "eltwise_pipe.py",
+        "eltwise_pipe_core3.py",
         "singlecore_matmul.py",
         "multicore_matmul.py",
         "tutorial/ttnn_base.py",

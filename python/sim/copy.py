@@ -123,6 +123,11 @@ class CopyTransaction:
         if self._completed:
             return
 
+        # Block if copy cannot proceed
+        from .greenlet_scheduler import block_if_needed
+
+        block_if_needed(self, "wait")
+
         # Extract underlying Blocks from context managers if needed
         src_block = _extract_block(self._src)
         dst_block = _extract_block(self._dst)

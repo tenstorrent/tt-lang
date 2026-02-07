@@ -55,13 +55,7 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 # rebuild function with per-core closure
                 bound_func = rebind_func_with_ctx(func, ctx)
-
-                def runner() -> Any:
-                    return bound_func()
-
-                # Store original function on runner for cooperative mode
-                runner.__wrapped__ = func  # type: ignore[reportFunctionMemberAccess]
-                return runner
+                return bound_func
 
         template = ComputeTemplate()
         _register_thread(template)
@@ -89,13 +83,7 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 bound_func = rebind_func_with_ctx(func, ctx)
-
-                def runner() -> Any:
-                    return bound_func()
-
-                # Store original function on runner for cooperative mode
-                runner.__wrapped__ = func  # type: ignore[reportFunctionMemberAccess]
-                return runner
+                return bound_func
 
         template = DMTemplate()
         _register_thread(template)

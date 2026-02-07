@@ -108,23 +108,38 @@ class TestPipeErrorHandling:
     """Test error handling for pipe operations."""
 
     def test_pipe_receive_timeout_no_sender(self, api: "CBAPI") -> None:
-        """Test that receiving from pipe with no sender times out."""
+        """Test that receiving from pipe with no sender is detected as deadlock."""
         from python.sim.block import _set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy
+        from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
 
-        _set_current_thread_type(ThreadType.DM)
+        # Create a minimal scheduler context for this test
+        scheduler = GreenletScheduler()
+        set_scheduler(scheduler)
 
-        # Use a unique pipe address to avoid interference
-        pipe = Pipe(9999, 10000)
-        cb = CircularBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        try:
 
-        with pytest.raises(TimeoutError, match="Timeout waiting for pipe data"):
-            with cb.reserve() as block:
-                tx = copy(pipe, block)
-                tx.wait()
+            def test_thread() -> None:
+                _set_current_thread_type(ThreadType.DM)
+
+                # Use a unique pipe address to avoid interference
+                pipe = Pipe(9999, 10000)
+                cb = CircularBuffer(
+                    element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+                )
+
+                with cb.reserve() as block:
+                    tx = copy(pipe, block)
+                    tx.wait()
+
+            scheduler.add_thread("test-dm", test_thread, ThreadType.DM)
+
+            # With scheduler, waiting on pipe with no sender is detected as deadlock
+            with pytest.raises(RuntimeError, match="Deadlock detected"):
+                scheduler.run()
+        finally:
+            set_scheduler(None)
 
     def test_pipe_length_mismatch(self, api: "CBAPI") -> None:
         """Test that pipe receive fails when Block length doesn't match sent data."""

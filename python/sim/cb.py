@@ -280,6 +280,11 @@ class CircularBuffer:
                 "You must call pop() before calling wait() again."
             )
 
+        # Block if data not available
+        from .greenlet_scheduler import block_if_needed
+
+        block_if_needed(self, "wait")
+
         api.cb_wait_front(cb_id, self._tiles_per_operation)
         block = api.get_read_ptr(cb_id)
         self._pending_waited_block = block
@@ -336,6 +341,11 @@ class CircularBuffer:
                 "CircularBuffer already has a pending reserved block. "
                 "You must call push() before calling reserve() again."
             )
+
+        # Block if space not available
+        from .greenlet_scheduler import block_if_needed
+
+        block_if_needed(self, "reserve")
 
         api.cb_reserve_back(cb_id, self._tiles_per_operation)
         block = api.get_write_ptr(cb_id)
