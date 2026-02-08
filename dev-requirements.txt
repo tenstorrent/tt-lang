@@ -1,4 +1,5 @@
 # Development dependencies
+-r requirements.txt
 pytest-order>=1.0.0
 black
 myst-parser
