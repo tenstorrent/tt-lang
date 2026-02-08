@@ -74,8 +74,20 @@ class _BlockContextManager:
     def __len__(self) -> int:
         return len(self._block)
 
+    def _get_item(self, idx: int) -> Tensor:
+        """Internal method to get an item from the block for operations like arithmetic."""
+        return self._block._get_item(idx)
+
+    def to_list(self) -> List[Tensor]:
+        """Get all tiles as a list. Useful for test verification."""
+        return self._block.to_list()
+
     def __getitem__(self, idx: int) -> Tensor:
-        return self._block[idx]
+        raise RuntimeError(
+            "Block indexing (block[index]) is not allowed. "
+            "Blocks must be used as whole units in operations like store() or arithmetic. "
+            "Use block directly without indexing."
+        )
 
     def __setitem__(self, idx: int, value: Tensor) -> None:
         raise RuntimeError(

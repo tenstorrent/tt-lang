@@ -57,10 +57,21 @@ def _clear_current_thread_type() -> None:
 class AccessState(Enum):
     """Access state for a block in the state machine."""
 
-    RO = auto()  # Read Only
-    WO = auto()  # Write Only
-    RW = auto()  # Read Write
-    NA = auto()  # No Access
+    MW = (
+        auto()
+    )  # Must be Written: block was reserved and contains garbage data, must be written to
+    MR = (
+        auto()
+    )  # Must be Read: block was waited on or written to and never read, must be read from or pushed
+    RW = (
+        auto()
+    )  # Read-Write: block was waited on or written to (MR) and then read from, can be read more or overwritten
+    A = (
+        auto()
+    )  # Accumulate: block has been accumulated to, can continue accumulating or must be read or pushed
+    NAR = auto()  # No Access while Reading: block is being asynchronously read from
+    NAW = auto()  # No Access while Writing: block is being asynchronously written to
+    OS = auto()  # Out of Scope: block was pushed or popped
 
 
 class ThreadType(Enum):
@@ -85,8 +96,15 @@ class ExpectedOp(Enum):
     TX_WAIT = auto()  # Expect tx.wait()
     PUSH = auto()  # Expect cb.push()
     POP = auto()  # Expect cb.pop()
-    STORE = auto()  # Expect blk.store(...) - regular store (acc=False)
-    STORE_ACC = auto()  # Expect blk.store(..., acc=True) - accumulator store
+    STORE = (
+        auto()
+    )  # Expect blk.store(...) - block as destination, regular store (acc=False)
+    STORE_ACC = (
+        auto()
+    )  # Expect blk.store(..., acc=True) - block as destination, accumulator store
+    STORE_SRC = (
+        auto()
+    )  # Expect other_blk.store(blk, ...) - block as source/input to store
     DONE = auto()  # No more operations expected
 
 
@@ -120,6 +138,7 @@ class Block:
         "_access_state",
         "_expected_ops",
         "_is_temporary",
+        "_source_blocks",  # Track wait() blocks that contributed to this temporary block
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -143,11 +162,12 @@ class Block:
         self._span = span
         self._shape = shape
         self._is_temporary = is_temporary
+        self._source_blocks: List["Block"] = []  # Track source wait() blocks
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
         self._thread_type: ThreadType = thread_type
-        self._access_state: AccessState = AccessState.NA
+        self._access_state: AccessState = AccessState.OS
         self._expected_ops: set[ExpectedOp] = set()  # Empty set = not initialized
 
         # Initialize state based on acquisition method and thread type
@@ -167,29 +187,29 @@ class Block:
         # Set initial state based on acquisition method and thread type
         if self._acquisition == BlockAcquisition.RESERVE:
             if self._thread_type == ThreadType.DM:
-                self._access_state = AccessState.WO
+                self._access_state = AccessState.MW
                 self._expected_ops = {
                     ExpectedOp.COPY_DST
                 }  # DM reserves to receive data
             elif self._thread_type == ThreadType.COMPUTE:
-                # Compute threads start in WO (write-only) state
+                # Compute threads start in MW (must-write) state
                 # Can choose either store(acc=False) or store(acc=True)
-                # Note: store(acc=True) will transition to RW before reading
-                self._access_state = AccessState.WO
+                # Note: store(acc=True) will transition to A before reading
+                self._access_state = AccessState.MW
                 self._expected_ops = {ExpectedOp.STORE, ExpectedOp.STORE_ACC}
         elif self._acquisition == BlockAcquisition.WAIT:
             # wait() blocks have data already present
             # DM threads copy out the data first, compute threads can read it directly
             if self._thread_type == ThreadType.DM:
-                self._access_state = AccessState.RO
+                self._access_state = AccessState.MR
                 self._expected_ops = {
                     ExpectedOp.COPY_SRC
                 }  # DM threads copy data out first
             elif self._thread_type == ThreadType.COMPUTE:
-                self._access_state = AccessState.RO
-                self._expected_ops = {
-                    ExpectedOp.POP
-                }  # Compute threads can read then pop directly
+                # Compute threads: wait() blocks start in MR state
+                # Can only be used as source in another block's store operation
+                self._access_state = AccessState.MR
+                self._expected_ops = {ExpectedOp.STORE_SRC}
 
     @classmethod
     def from_list(
@@ -243,205 +263,294 @@ class Block:
             )
 
     def mark_copy_as_source(self) -> None:
-        """Mark that this block is being used as a copy source.
+        """Mark that this block is being used as a copy source."""
 
-        Valid states (per state machine diagram):
-        - wait() DM RO COPY_SRC -> Expect copy(blk, ...) - single copy only
-        - reserve() DM RW COPY_SRC -> Expect copy(blk, ...) - can do multiple copies
-
-        Note:
-        - wait() blocks: Only ONE copy operation allowed per block retrieval
-        - reserve() DM blocks: Multiple copy operations allowed (loop back to RW COPY_SRC)
-        - Only DM thread can use blocks as copy sources
-
-        Block remains readable but writes are blocked until tx.wait().
-        """
         # Validate that COPY_SRC is expected in current state
         self._validate_state("copy (as source)", ExpectedOp.COPY_SRC)
 
         # Validate complete state based on acquisition type
-        if self._acquisition == BlockAcquisition.WAIT:
-            # wait() DM RO COPY_SRC
-            if self._thread_type != ThreadType.DM:
-                raise RuntimeError(
-                    f"Invalid state for copy source: wait() blocks must be in DM thread, got {self._thread_type.name}"
-                )
-            if self._access_state != AccessState.RO:
-                raise RuntimeError(
-                    f"Invalid state for copy source: wait() blocks must be in RO state, got {self._access_state.name}"
-                )
-            # Transition: keep RO state, expect TX_WAIT
+        if (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.MR
+        ):
+            self._access_state = AccessState.NAR
             self._expected_ops = {ExpectedOp.TX_WAIT}
-
-        elif self._acquisition == BlockAcquisition.RESERVE:
-            # reserve() DM RW COPY_SRC (or COPY_DST/PUSH in loop)
-            if self._thread_type != ThreadType.DM:
-                raise RuntimeError(
-                    f"Invalid state for copy source: reserve() blocks must be in DM thread, got {self._thread_type.name}"
-                )
-            if self._access_state != AccessState.RW:
-                raise RuntimeError(
-                    f"Invalid state for copy source: reserve() DM blocks must be in RW state, got {self._access_state.name}"
-                )
-            # Transition: RW -> RO, expect TX_WAIT
-            self._access_state = AccessState.RO
+        elif (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.RW
+        ):
+            self._access_state = AccessState.NAR
+            self._expected_ops = {ExpectedOp.TX_WAIT}
+        elif (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.MR
+        ):
+            self._access_state = AccessState.NAR
+            self._expected_ops = {ExpectedOp.TX_WAIT}
+        elif (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.RW
+        ):
+            self._access_state = AccessState.NAR
             self._expected_ops = {ExpectedOp.TX_WAIT}
         else:
             raise RuntimeError(
-                f"Invalid acquisition type for copy source: {self._acquisition.name}"
+                f"Impossible! Invalid state for copy as source: Acquisition={self._acquisition.name}, "
+                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
             )
 
     def mark_copy_as_dest(self) -> None:
-        """Mark that this block is being used as a copy destination.
+        """Mark that this block is being used as a copy destination."""
 
-        Valid states (per state machine diagram):
-        - reserve() DM WO COPY_DST -> First copy destination (initial state)
-        - reserve() DM RW COPY_DST -> Can also be copy destination (after tx.wait() from previous copy)
-
-        Note:
-        - wait() blocks cannot be copy destinations per state machine
-        - reserve() Compute blocks expect STORE, not copy as destination
-        - Only DM thread can use blocks as copy destinations
-        - reserve() DM blocks can do multiple copy operations (loop back to RW after tx.wait())
-
-        This is called when a CopyTransaction is created to transition the block to NA state.
-        """
         # Validate that COPY_DST is expected in current state
         self._validate_state("copy (as destination)", ExpectedOp.COPY_DST)
 
-        # Validate complete state - only reserve() DM blocks can be copy destinations
-        if self._acquisition != BlockAcquisition.RESERVE:
+        if (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.MW
+        ):
+            self._access_state = AccessState.NAW
+            self._expected_ops = {ExpectedOp.TX_WAIT}
+        elif (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.RW
+        ):
+            self._access_state = AccessState.NAW
+            self._expected_ops = {ExpectedOp.TX_WAIT}
+        elif (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.RW
+        ):
+            self._access_state = AccessState.NAW
+            self._expected_ops = {ExpectedOp.TX_WAIT}
+        else:
             raise RuntimeError(
-                f"Invalid acquisition for copy destination: Expected RESERVE, got {self._acquisition.name}"
+                f"Impossible! Invalid state for copy as destination: Acquisition={self._acquisition.name}, "
+                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
             )
-        if self._thread_type != ThreadType.DM:
-            raise RuntimeError(
-                f"Invalid thread type for copy destination: Expected DM, got {self._thread_type.name}"
-            )
-        # Access state can be WO (initial) or RW (after tx.wait() in loop)
-        if self._access_state not in (AccessState.WO, AccessState.RW):
-            raise RuntimeError(
-                f"Invalid access state for copy destination: Expected WO or RW, got {self._access_state.name}"
-            )
-
-        # After copy, block becomes NA (user cannot access) and expects TX_WAIT
-        self._access_state = AccessState.NA
-        self._expected_ops = {ExpectedOp.TX_WAIT}
 
     def mark_tx_wait_complete(self) -> None:
-        """Mark that tx.wait() has completed for a copy operation.
+        """Mark that tx.wait() has completed for a copy operation."""
 
-        Valid states (per state machine diagram):
-        - wait() DM RO TX_WAIT -> After copy as source, goes to RO POP
-        - reserve() DM NA TX_WAIT -> After copy as destination, goes to RW (can do more copies or push)
-        - reserve() DM RO TX_WAIT -> After copy as source, goes to RW (can do more copies or push)
-
-        Only DM thread performs copy operations, so only DM blocks should call tx.wait().
-
-        Note: reserve() DM blocks can now do multiple copy operations (as source or dest)
-        before finally pushing.
-        """
         # Validate expected operation
         self._validate_state("tx.wait()", ExpectedOp.TX_WAIT)
 
-        # Validate complete state and transition based on acquisition type
-        if self._acquisition == BlockAcquisition.RESERVE:
-            # reserve() DM NA/RO TX_WAIT
-            if self._thread_type != ThreadType.DM:
-                raise RuntimeError(
-                    f"Invalid thread type for tx.wait(): Expected DM for reserve() blocks, got {self._thread_type.name}"
-                )
-            # Can be NA (after copy dest) or RO (after copy src)
-            if self._access_state not in (AccessState.NA, AccessState.RO):
-                raise RuntimeError(
-                    f"Invalid access state for tx.wait(): Expected NA or RO for reserve() blocks, got {self._access_state.name}"
-                )
-            # Transition: NA/RO -> RW (can do more copies or push)
+        if (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.NAW
+        ):
+            self._access_state = AccessState.MR
+            self._expected_ops = {ExpectedOp.PUSH, ExpectedOp.COPY_SRC}
+        elif (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.NAR
+        ):
             self._access_state = AccessState.RW
             self._expected_ops = {
-                ExpectedOp.COPY_SRC,
                 ExpectedOp.COPY_DST,
+                ExpectedOp.COPY_SRC,
                 ExpectedOp.PUSH,
             }
-
-        elif self._acquisition == BlockAcquisition.WAIT:
-            # wait() DM RO TX_WAIT
-            if self._thread_type != ThreadType.DM:
-                raise RuntimeError(
-                    f"Invalid thread type for tx.wait(): Expected DM for wait() blocks, got {self._thread_type.name}"
-                )
-            if self._access_state != AccessState.RO:
-                raise RuntimeError(
-                    f"Invalid access state for tx.wait(): Expected RO for wait() blocks, got {self._access_state.name}"
-                )
-            # Transition: RO -> RO, expecting pop
-            self._access_state = AccessState.RO
-            self._expected_ops = {ExpectedOp.POP}
+        elif (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.NAR
+        ):
+            self._access_state = AccessState.RW
+            self._expected_ops = {
+                ExpectedOp.COPY_DST,
+                ExpectedOp.COPY_SRC,
+                ExpectedOp.POP,
+            }
+        elif (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.DM
+            and self._access_state == AccessState.NAW
+        ):
+            self._access_state = AccessState.MR
+            self._expected_ops = {ExpectedOp.COPY_SRC}
         else:
             raise RuntimeError(
-                f"Invalid acquisition type for tx.wait(): {self._acquisition.name}"
+                f"Impossible! Invalid state for tx.wait(): Acquisition={self._acquisition.name}, "
+                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
+            )
+
+    def mark_store_read_complete(self) -> None:
+        """Mark that this block was used as source (input) in a store operation."""
+        # Validate that STORE_SRC is expected in current state
+        self._validate_state("store (as source)", ExpectedOp.STORE_SRC)
+
+        # Validate complete state
+        if (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.COMPUTE
+            and self._access_state == AccessState.MR
+        ):
+            self._access_state = AccessState.RW
+            self._expected_ops = {
+                ExpectedOp.STORE_SRC,
+                ExpectedOp.STORE,
+                ExpectedOp.STORE_ACC,
+                ExpectedOp.POP,
+            }
+        elif (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.COMPUTE
+            and self._access_state == AccessState.RW
+        ):
+            self._access_state = AccessState.RW
+            self._expected_ops = {
+                ExpectedOp.STORE_SRC,
+                ExpectedOp.STORE,
+                ExpectedOp.STORE_ACC,
+                ExpectedOp.POP,
+            }
+        elif (
+            self._acquisition == BlockAcquisition.WAIT
+            and self._thread_type == ThreadType.COMPUTE
+            and self._access_state == AccessState.A
+        ):
+            self._access_state = AccessState.RW
+            self._expected_ops = {
+                ExpectedOp.STORE_SRC,
+                ExpectedOp.STORE,
+                ExpectedOp.STORE_ACC,
+                ExpectedOp.POP,
+            }
+        elif (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.COMPUTE
+            and self._access_state == AccessState.MR
+        ):
+            self._access_state = AccessState.RW
+            self._expected_ops = {
+                ExpectedOp.STORE_SRC,
+                ExpectedOp.STORE,
+                ExpectedOp.STORE_ACC,
+                ExpectedOp.PUSH,
+            }
+        elif (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.COMPUTE
+            and self._access_state == AccessState.RW
+        ):
+            self._access_state = AccessState.RW
+            self._expected_ops = {
+                ExpectedOp.STORE_SRC,
+                ExpectedOp.STORE,
+                ExpectedOp.STORE_ACC,
+                ExpectedOp.PUSH,
+            }
+        elif (
+            self._acquisition == BlockAcquisition.RESERVE
+            and self._thread_type == ThreadType.COMPUTE
+            and self._access_state == AccessState.A
+        ):
+            self._access_state = AccessState.RW
+            self._expected_ops = {
+                ExpectedOp.STORE_SRC,
+                ExpectedOp.STORE,
+                ExpectedOp.STORE_ACC,
+                ExpectedOp.PUSH,
+            }
+        else:
+            raise RuntimeError(
+                f"Impossible! Invalid state for store read: Acquisition={self._acquisition.name}, "
+                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
             )
 
     def mark_store_complete(self, acc: bool = False) -> None:
-        """Mark that store() has completed.
+        """Mark that store() has completed on this block (as destination)."""
 
-        Valid states (per state machine diagram):
-        Two distinct paths from initial reserve() Compute WO {STORE, STORE_ACC}:
-
-        Path 1 (single non-acc store):
-          reserve() Compute WO {STORE, STORE_ACC} → store(acc=False) → reserve() Compute RO {PUSH}
-          After single non-acc store, MUST push (no more stores allowed)
-
-        Path 2 (multiple acc stores):
-          reserve() Compute WO {STORE, STORE_ACC} → store(acc=True) → reserve() Compute RW {STORE_ACC, PUSH}
-          Can continue with more store(acc=True) or push
-
-        These paths cannot be mixed - once you choose one path, you must follow it.
-        """
         if acc:
-            # Accumulator store path - multiple stores allowed
-            # First call expects STORE_ACC (from WO), subsequent calls also expect STORE_ACC (from RW)
-            self._validate_state("store(acc=True)", ExpectedOp.STORE_ACC)
-
-            # Validate complete state
-            if self._acquisition != BlockAcquisition.RESERVE:
+            if (
+                self._acquisition == BlockAcquisition.RESERVE
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.MW
+            ):
+                self._access_state = AccessState.A
+                self._expected_ops = {
+                    ExpectedOp.STORE_SRC,
+                    ExpectedOp.STORE_ACC,
+                    ExpectedOp.PUSH,
+                }
+            elif (
+                self._acquisition == BlockAcquisition.RESERVE
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.RW
+            ):
+                self._access_state = AccessState.A
+                self._expected_ops = {
+                    ExpectedOp.STORE_SRC,
+                    ExpectedOp.STORE_ACC,
+                    ExpectedOp.PUSH,
+                }
+            elif (
+                self._acquisition == BlockAcquisition.RESERVE
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.A
+            ):
+                self._access_state = AccessState.A
+                self._expected_ops = {
+                    ExpectedOp.STORE_SRC,
+                    ExpectedOp.STORE_ACC,
+                    ExpectedOp.PUSH,
+                }
+            elif (
+                self._acquisition == BlockAcquisition.WAIT
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.RW
+            ):
+                self._access_state = AccessState.A
+                self._expected_ops = {ExpectedOp.STORE_SRC, ExpectedOp.STORE_ACC}
+            elif (
+                self._acquisition == BlockAcquisition.WAIT
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.A
+            ):
+                self._access_state = AccessState.A
+                self._expected_ops = {ExpectedOp.STORE_SRC, ExpectedOp.STORE_ACC}
+            else:
                 raise RuntimeError(
-                    f"Invalid acquisition for store(acc=True): Expected RESERVE, got {self._acquisition.name}"
+                    f"Impossible! Invalid state for store(acc=True): Acquisition={self._acquisition.name}, "
+                    f"Thread={self._thread_type.name}, Access={self._access_state.name}"
                 )
-            if self._thread_type != ThreadType.COMPUTE:
-                raise RuntimeError(
-                    f"Invalid thread type for store(acc=True): Expected COMPUTE, got {self._thread_type.name}"
-                )
-            # Can be WO (first store) or RW (subsequent stores)
-            if self._access_state not in (AccessState.WO, AccessState.RW):
-                raise RuntimeError(
-                    f"Invalid access state for store(acc=True): Expected WO or RW, got {self._access_state.name}"
-                )
-
-            # After acc store, transition to RW and expect more acc stores (or push)
-            self._access_state = AccessState.RW
-            self._expected_ops = {ExpectedOp.STORE_ACC, ExpectedOp.PUSH}
         else:
-            # Regular non-acc store - only ONE allowed, then must push
-            self._validate_state("store()", ExpectedOp.STORE)
-
-            # Validate complete state
-            if self._acquisition != BlockAcquisition.RESERVE:
+            if (
+                self._acquisition == BlockAcquisition.RESERVE
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.MW
+            ):
+                self._access_state = AccessState.MR
+                self._expected_ops = {ExpectedOp.STORE_SRC, ExpectedOp.PUSH}
+            elif (
+                self._acquisition == BlockAcquisition.RESERVE
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.RW
+            ):
+                self._access_state = AccessState.MR
+                self._expected_ops = {ExpectedOp.STORE_SRC, ExpectedOp.PUSH}
+            elif (
+                self._acquisition == BlockAcquisition.WAIT
+                and self._thread_type == ThreadType.COMPUTE
+                and self._access_state == AccessState.RW
+            ):
+                self._access_state = AccessState.MR
+                self._expected_ops = {ExpectedOp.STORE_SRC}
+            else:
                 raise RuntimeError(
-                    f"Invalid acquisition for store(): Expected RESERVE, got {self._acquisition.name}"
+                    f"Impossible! Invalid state for store(acc=False): Acquisition={self._acquisition.name}, "
+                    f"Thread={self._thread_type.name}, Access={self._access_state.name}"
                 )
-            if self._thread_type != ThreadType.COMPUTE:
-                raise RuntimeError(
-                    f"Invalid thread type for store(): Expected COMPUTE, got {self._thread_type.name}"
-                )
-            if self._access_state != AccessState.WO:
-                raise RuntimeError(
-                    f"Invalid access state for store(): Expected WO, got {self._access_state.name}"
-                )
-
-            # After non-acc store, transition to RO and expect push
-            self._access_state = AccessState.RO
-            self._expected_ops = {ExpectedOp.PUSH}
 
     def mark_push_complete(self) -> None:
         """Mark that push() has completed.
@@ -470,16 +579,16 @@ class Block:
                 f"Thread={self._thread_type.name}, Access={self._access_state.name}"
             )
 
-        # Transition to DONE
-        self._access_state = AccessState.NA
+        # Transition to DONE (Out of Scope)
+        self._access_state = AccessState.OS
         self._expected_ops = set()  # Empty = DONE
 
     def mark_pop_complete(self) -> None:
         """Mark that pop() has completed.
 
         Valid states (per state machine diagram):
-        - wait() Compute RO POP -> Direct pop after wait
-        - wait() DM RO POP -> Pop after copy and tx.wait()
+        - wait() Compute RW POP -> Pop after being used as source in at least one store
+        - wait() DM MR POP -> Pop after copy and tx.wait()
         """
         self._validate_state("pop()", ExpectedOp.POP)
 
@@ -488,14 +597,15 @@ class Block:
             raise RuntimeError(
                 f"Invalid acquisition for pop(): Expected WAIT, got {self._acquisition.name}"
             )
-        if self._access_state != AccessState.RO:
+        # Can pop from MR (never used as source), RW (used as source), or A (accumulated)
+        if self._access_state not in (AccessState.MR, AccessState.RW, AccessState.A):
             raise RuntimeError(
-                f"Invalid access state for pop(): Expected RO, got {self._access_state.name}"
+                f"Invalid access state for pop(): Expected MR, RW, or A, got {self._access_state.name}"
             )
         # Thread type can be either DM or COMPUTE for wait() blocks
 
-        # After pop, block is done
-        self._access_state = AccessState.NA
+        # After pop, block is done (Out of Scope)
+        self._access_state = AccessState.OS
         self._expected_ops = set()  # Empty = DONE
 
     def __len__(self) -> Size:
@@ -517,7 +627,7 @@ class Block:
             return
 
         # State machine check
-        if self._access_state == AccessState.WO:
+        if self._access_state == AccessState.MW:
             expected_ops_str = (
                 ", ".join(
                     op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
@@ -526,10 +636,10 @@ class Block:
                 else "DONE"
             )
             raise RuntimeError(
-                f"Cannot read from Block: Block is in write-only (WO) state. "
+                f"Cannot read from Block: Block is in must-write (MW) state. "
                 f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
             )
-        if self._access_state == AccessState.NA:
+        if self._access_state in (AccessState.NAW, AccessState.OS):
             expected_ops_str = (
                 ", ".join(
                     op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
@@ -538,9 +648,10 @@ class Block:
                 else "DONE"
             )
             raise RuntimeError(
-                f"Cannot read from Block: Block has no access (NA state). "
+                f"Cannot read from Block: Block has no access ({self._access_state.name} state). "
                 f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
             )
+        # NAR state (async read in progress) allows reads since we're copying FROM this block
 
     def _check_can_write(self) -> None:
         """Check if this Block can be written to.
@@ -553,7 +664,13 @@ class Block:
             return
 
         # State machine check
-        if self._access_state == AccessState.NA:
+        if self._access_state == AccessState.NAW:
+            # NAW: Block is locked as copy destination until tx.wait() completes
+            raise RuntimeError(
+                f"Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error). "
+                f"Current state: {self._access_state.name}, Expected operations: [TX_WAIT]"
+            )
+        if self._access_state in (AccessState.NAR, AccessState.OS):
             expected_ops_str = (
                 ", ".join(
                     op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
@@ -562,25 +679,27 @@ class Block:
                 else "DONE"
             )
             raise RuntimeError(
-                f"Cannot write to Block: Block has no access (NA state). "
+                f"Cannot write to Block: Block has no access ({self._access_state.name} state). "
                 f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
             )
         # Block writes during copy operations (when expecting TX_WAIT)
-        # This applies to both copy sources (RO, TX_WAIT) and destinations (NA, TX_WAIT)
+        # This applies to copy sources in NAR state
         if (
             ExpectedOp.TX_WAIT in self._expected_ops
-            and self._access_state == AccessState.RO
+            and self._access_state == AccessState.NAR
         ):
             raise RuntimeError(
                 f"Cannot write to Block: Block is locked as copy source until tx.wait() completes. "
                 f"Current state: {self._access_state.name}, Expected operations: [TX_WAIT]"
             )
-        # Note: We allow writing in RO state for reserve() blocks that can call store() multiple times
-        # (when expected_op is STORE or PUSH, not TX_WAIT)
+        # Note: We allow writing in MR/RW/A states as appropriate for the operation
 
-    @validate_call
-    def __getitem__(self, idx: Index) -> Tensor:
-        """Get item with lock checking."""
+    def _get_item(self, idx: Index) -> Tensor:
+        """Internal method to get item with lock checking.
+
+        This is used internally by copy handlers and other internal operations.
+        External code should not index blocks.
+        """
         self._check_can_read()
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
@@ -594,6 +713,15 @@ class Block:
         if value is None:
             raise ValueError(f"Reading uninitialized or consumed slot at index {idx}")
         return value
+
+    @validate_call
+    def __getitem__(self, idx: Index) -> Tensor:
+        """Block indexing is not allowed. Blocks should be used as whole units."""
+        raise RuntimeError(
+            "Block indexing (block[index]) is not allowed. "
+            "Blocks must be used as whole units in operations like store() or arithmetic. "
+            "Use block directly without indexing."
+        )
 
     # TODO: Why does validate_call fail here? Maybe because Tensor could
     # resolve to tensor which is similar to a list?
@@ -626,7 +754,12 @@ class Block:
         self._buf[(self._span.start + idx) % self._capacity] = None
 
     def to_list(self) -> List[CBSlot]:
-        return [self[i] for i in range(len(self))]
+        """Convert block contents to a list.
+
+        This is a convenience method for tests and debugging.
+        Returns the actual tensor values from the buffer.
+        """
+        return [self._get_item(i) for i in range(len(self))]
 
     def copy_as_dest(self, items: Sequence[Tensor]) -> None:
         """Store items into the block as part of a copy operation.
@@ -677,11 +810,32 @@ class Block:
             acc: If True, accumulate with existing values (+=), otherwise assign (=)
                  Note: First store(acc=True) does assignment (y=x), subsequent ones accumulate (y+=x)
         """
-        # Convert Block to sequence if needed
-        if isinstance(items, Block):
-            items_seq = items.to_list()
+        # Convert Block to sequence if needed, and track source blocks
+        source_blocks_to_mark: List["Block"] = []
+
+        # Unwrap context managers (WaitContext, ReserveContext) if needed
+        actual_items = items
+        if hasattr(items, "_block"):
+            actual_items = items._block  # type: ignore[attr-defined]
+
+        if isinstance(actual_items, Block):
+            items_seq = actual_items.to_list()
+            # Check if this is a wait() Compute block being stored directly
+            if (
+                actual_items._acquisition == BlockAcquisition.WAIT
+                and actual_items._thread_type == ThreadType.COMPUTE
+                and ExpectedOp.STORE_SRC in actual_items._expected_ops
+            ):
+                source_blocks_to_mark.append(actual_items)
+            # Check if this is a temporary block with tracked source wait() blocks
+            elif actual_items._is_temporary and actual_items._source_blocks:
+                source_blocks_to_mark.extend(
+                    blk
+                    for blk in actual_items._source_blocks
+                    if ExpectedOp.STORE_SRC in blk._expected_ops
+                )
         else:
-            items_seq = items
+            items_seq = actual_items
 
         if len(items_seq) != self._span.length:
             raise ValueError("Length mismatch in store()")
@@ -689,8 +843,12 @@ class Block:
         # Check write access first (provides better error message for NA state)
         self._check_can_write()
 
-        # Determine if this is the first store(acc=True) by checking if we're in WO state
-        is_first_acc_store = acc and self._access_state == AccessState.WO
+        # Mark all wait() Compute source blocks as used
+        for source_block in source_blocks_to_mark:
+            source_block.mark_store_read_complete()
+
+        # Determine if this is the first store(acc=True) by checking if we're in MW state
+        is_first_acc_store = acc and self._access_state == AccessState.MW
 
         # Mark state machine transition BEFORE actual store (needed for acc=True to read)
         self.mark_store_complete(acc=acc)
@@ -703,7 +861,7 @@ class Block:
             else:
                 # Subsequent store(acc=True): Accumulate (y += x)
                 for i, v in enumerate(items_seq):
-                    self._write_slot(i, self[i] + v)
+                    self._write_slot(i, self._get_item(i) + v)
         else:
             # Regular assignment
             for i, v in enumerate(items_seq):
@@ -726,7 +884,7 @@ class Block:
 
         # Check if shapes match exactly - fast path
         if left_shape == right_shape and len_left == len_right:
-            return [op(left[i], right[i]) for i in range(len_left)]
+            return [op(left._get_item(i), right._get_item(i)) for i in range(len_left)]
 
         # Check if broadcasting is valid using standard broadcasting rules
         # For now, require same number of dimensions
@@ -766,13 +924,39 @@ class Block:
         other: "Block",
         op: Callable[[Any, Any], Any],
     ) -> "Block":
-        """Element-wise binary op: self (op) other."""
+        """Element-wise binary op: self (op) other.
+
+        Tracks wait() Compute blocks that contribute to the result.
+        """
         result_list = self._apply_binary_op(self, other, op)
 
         # Infer result shape using broadcasting rules
         result_shape = self._infer_broadcast_shape(self._shape, other._shape)
 
-        return Block.from_list(result_list, result_shape)
+        result_block = Block.from_list(result_list, result_shape)
+
+        # Track source wait() blocks that contributed to this result
+        for block in [self, other]:
+            # Unwrap if this is a context manager wrapper (WaitContext, ReserveContext)
+            actual_block = block
+            if hasattr(block, "_block"):
+                actual_block = block._block  # type: ignore[attr-defined]
+
+            # Only track if this is actually a Block object
+            if not isinstance(actual_block, Block):
+                continue
+
+            if (
+                not actual_block._is_temporary
+                and actual_block._acquisition == BlockAcquisition.WAIT
+                and actual_block._thread_type == ThreadType.COMPUTE
+            ):
+                result_block._source_blocks.append(actual_block)
+            elif actual_block._is_temporary:
+                # Temporary blocks may have their own source blocks to propagate
+                result_block._source_blocks.extend(actual_block._source_blocks)
+
+        return result_block
 
     # ---- forward operators ----
 
@@ -802,7 +986,25 @@ class Block:
         if isinstance(other, int):
             # Scalar power - apply to each tensor in the block
             result_tensors = [t**other for t in self.to_list()]
-            return Block.from_list(result_tensors, shape=self._shape)
+            result_block = Block.from_list(result_tensors, shape=self._shape)
+
+            # Track source wait() blocks
+            # Unwrap if this is a context manager wrapper
+            actual_self = self
+            if hasattr(self, "_block"):
+                actual_self = self._block  # type: ignore[attr-defined]
+
+            if isinstance(actual_self, Block):
+                if (
+                    not actual_self._is_temporary
+                    and actual_self._acquisition == BlockAcquisition.WAIT
+                    and actual_self._thread_type == ThreadType.COMPUTE
+                ):
+                    result_block._source_blocks.append(actual_self)
+                elif actual_self._is_temporary:
+                    result_block._source_blocks.extend(actual_self._source_blocks)
+
+            return result_block
 
         # Block power
         return self._binary_op(other, _op.pow)

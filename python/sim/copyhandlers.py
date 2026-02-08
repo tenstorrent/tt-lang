@@ -235,7 +235,7 @@ class BlockToPipeHandler:
 
     def transfer(self, src: Block, dst: Pipe) -> None:
         """Pipe send: store data in shared buffer accessible by all cores."""
-        src_data = [src[i] for i in range(len(src))]
+        src_data = [src._get_item(i) for i in range(len(src))]
         # Initialize per-pipe state atomically so all threads see the
         # same entry (and therefore the same per-entry lock).
         with _pipe_registry_lock:
@@ -371,7 +371,7 @@ class BlockToTensorHandler:
             w_tile = tile_idx % width_tiles
 
             # Get tile from Block (this is a ttnn.Tensor)
-            tile = src[tile_idx]
+            tile = src._get_item(tile_idx)
 
             # Place tile into destination using tile coordinates [h:h+1, w:w+1]
             dst[h_tile : h_tile + 1, w_tile : w_tile + 1] = tile

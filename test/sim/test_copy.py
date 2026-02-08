@@ -190,16 +190,14 @@ class TestCopySourceLocking:
         # But more fundamentally, wait() blocks don't support store() - they expect POP
         with pytest.raises(
             RuntimeError,
-            match="Cannot perform store\\(\\):|Cannot write to Block: Block is locked as copy source",
+            match="Cannot write to Block.*has no access.*NAR state",
         ):
             source_block.store([make_zeros_tile(), make_zeros_tile()])
 
         # After wait(), the block still doesn't support store() because it's a wait() block
         tx.wait()
-        # wait() blocks cannot use store() per state machine - they expect POP
-        with pytest.raises(
-            RuntimeError, match="Expected one of \\[POP\\], but got store\\(\\)"
-        ):
+        # wait() blocks cannot use store() per state machine - they expect STORE_SRC
+        with pytest.raises(RuntimeError, match="Impossible.*Invalid state for store"):
             source_block.store(
                 [make_zeros_tile(), make_zeros_tile()]
             )  # Should still fail
@@ -229,17 +227,15 @@ class TestCopyDestinationLocking:
         # Start copy
         tx = copy(source_tensor, dest_block)
 
-        # Attempt to read from destination should fail (dest is in NA state)
+        # Attempt to read from destination should fail (block indexing not allowed)
         with pytest.raises(
             RuntimeError,
-            match="Cannot read from Block: Block has no access \\(NA state\\)",
+            match="Block indexing.*not allowed",
         ):
             _ = dest_block[0]
 
-        # After wait(), reading should work
+        # After wait(), block indexing still not allowed (by design)
         tx.wait()
-        tile = dest_block[0]  # Should succeed
-        assert tile is not None
 
     def test_cannot_write_to_block_destination_before_wait(self) -> None:
         """Test that writing to Block destination before wait() raises RuntimeError."""
@@ -260,10 +256,10 @@ class TestCopyDestinationLocking:
         # Start copy
         tx = copy(source_tensor, dest_block)
 
-        # Attempt to write to destination should fail (dest is in NA state)
+        # Attempt to write to destination should fail (dest is in NAW state)
         with pytest.raises(
             RuntimeError,
-            match="Cannot write to Block: Block has no access \\(NA state\\)",
+            match="Cannot write to Block.*copy destination.*copy lock error.*NAW",
         ):
             dest_block.store([make_ones_tile(), make_ones_tile()])
 
@@ -272,7 +268,7 @@ class TestCopyDestinationLocking:
         # Cannot store on DM block - only Compute blocks support store
         with pytest.raises(
             RuntimeError,
-            match="Expected one of \\[COPY_DST, COPY_SRC, PUSH\\], but got store\\(\\)",
+            match="Impossible.*Invalid state for store",
         ):
             dest_block.store([make_ones_tile(), make_ones_tile()])
 
@@ -345,9 +341,10 @@ class TestCopyWithStateMachine:
         with cb.reserve() as block:
             tx = copy(source, block)
             tx.wait()
-            # Verify data transferred correctly
-            assert block[0] is not None
-            assert block[1] is not None
+
+            # Verify data was copied correctly
+            block_data = block.to_list()
+            assert tensors_equal(block_data[0], source[0:1, 0:1])
 
     def test_copy_block_to_tensor_with_wait(self, api: "CBAPI") -> None:
         """Test Block -> Tensor copy using wait() in DM thread."""
@@ -395,8 +392,10 @@ class TestCopyWithStateMachine:
         with cb.reserve() as block:
             tx = copy(source, block)
             tx.wait()
-            assert block[0] is not None
-            assert tensors_equal(block[0], source)
+
+            # Verify data in block matches source
+            block_data = block.to_list()
+            assert tensors_equal(block_data[0], source)
 
     def test_copy_multi_tile_tensor_to_block(self, api: "CBAPI") -> None:
         """Test multi-tile Tensor -> Block copy."""
@@ -413,9 +412,11 @@ class TestCopyWithStateMachine:
         with cb.reserve() as block:
             tx = copy(source, block)
             tx.wait()
-            # Verify all tiles transferred
+
+            # Verify data in block matches source tiles
+            block_data = block.to_list()
             for i in range(4):
-                assert block[i] is not None
+                assert tensors_equal(block_data[i], source[i : i + 1, 0:1])
 
     def test_copy_with_pipe_single_tile(self, api: "CBAPI") -> None:
         """Test Block -> Pipe -> Block copy with single tile."""
@@ -515,8 +516,6 @@ class TestCopyWithStateMachine:
         with cb.reserve() as block:
             tx1 = copy(source, block)
             tx1.wait()
-            assert block[0] is not None
-            assert block[1] is not None
 
         # Stage 2: Extract from CB to result tensor
         with cb.wait() as block:
@@ -549,8 +548,10 @@ class TestCopyWithStateMachine:
             tx.wait()
             tx.wait()
             tx.wait()
-            # Should still work
-            assert block[0] is not None
+
+            # Verify data was copied correctly
+            block_data = block.to_list()
+            assert tensors_equal(block_data[0], source)
 
     def test_copy_can_wait_before_and_after(self, api: "CBAPI") -> None:
         """Test can_wait() functionality."""
@@ -689,10 +690,6 @@ class TestCopyTransactionProperties:
             assert tx.is_completed is True
             tx.wait()
             assert tx.is_completed is True
-
-            # Data should still be correct
-            assert block[0] is not None
-            assert block[1] is not None
 
     def test_can_wait_reflects_handler_behavior(self, api: "CBAPI") -> None:
         """Test that can_wait() correctly delegates to handler."""

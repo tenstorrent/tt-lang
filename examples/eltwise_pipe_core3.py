@@ -25,9 +25,9 @@ def eltwise_pipe_core3(
     assert a_in.shape == b_in.shape == out.shape
     assert a_in.shape[0] % granularity == 0
 
-    # Check that c_in is 1x1 and expand it to ttl.TILE_SHAPE
+    # Check that c_in is 1x1 and expand it to tile shape (1, 1) -> (1, 1, 32, 32) -> (32, 32)
     assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
-    c_expanded = ttnn.repeat(c_in, ttl.TILE_SHAPE)
+    c_expanded = ttnn.squeeze(ttnn.repeat(c_in, (1, 1, *ttl.TILE_SHAPE)))
 
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
