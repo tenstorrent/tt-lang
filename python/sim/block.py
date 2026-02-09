@@ -1010,7 +1010,12 @@ class Block:
         return self._binary_op(other, _op.pow)
 
     def __matmul__(self, other: "Block") -> "Block":
-        return self._binary_op(other, _op.matmul)
+        # Matrix multiplication is not a broadcasting operation
+        # It has its own shape rules: (M, K) @ (K, N) -> (M, N)
+        # Delegate to the dedicated matmul implementation in math.py
+        from . import math as sim_math
+
+        return sim_math.matmul(self, other)
 
     @property
     def shape(self) -> Shape:
