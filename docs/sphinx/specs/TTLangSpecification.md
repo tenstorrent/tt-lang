@@ -10,6 +10,7 @@
     * [3.2. Core function](#32-core-function)
 * [4. Dataflow buffer](#4-dataflow-buffer)
 * [5. Block](#5-block)
+    * [5.1. Block states](#51-block-states)
 * [6. Pipe](#6-pipe)
     * [6.1. Pipe net](#61-pipe-net)
 * [7. Tensor slice](#7-tensor-slice)
@@ -29,6 +30,7 @@
 | 0.5 | 02/05/2026 | Use dataflow buffer instead of circular buffer term |
 | 0.6 | 02/06/2026 | Add rounding, mask, `ttl.math.transpose`, `ttl.math.fill` and `ttl.math.where` functions |
 | 0.7 | 02/09/2026 | Move `push` and `pop` from `ttl.DataflowBuffer` to `ttl.Block` |
+| 0.8 | 02/09/2026 | Formal block states |
 
 ## 1. Introduction
 
@@ -333,6 +335,28 @@ def matmul_write():
 | `ttl.math.sqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Example of TT-Lang math function. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
 
 ![ttl.Block diagram](ttl-block.png)
+
+## 5.1. Block states
+
+Blocks have a life cycle that starts with acquisition by using dataflow buffer's `reserve` or `wait` functions and ends with release by block's `push` and `pop` functions correspondingly. During this life cycle there are restrictions on what operations and in what sequences a block can participate in. These restrictions are formalized by the table below, which summarizes the states, and the accompanying diagrams, which illustrate the legal transitions.
+
+| Block State | Description |
+| :---- | :---- |
+| **MW** | **Must be Written**: the block was reserved and contains garbage data and therefore must be written to. |
+| **MR** | **Must be Read**: the block was waited on or written to and never read and therefore must be read from or pushed. |
+| **RW** | **Read-Write**: the block was waited on or written to (MR) and then read from and therefore can be either read from more times or overwritten. |
+| **A** | **Accumulate**: the block has been accumulated to and can be either continued to be accumulated to or must be read or pushed. |
+| **NAR** | **No Access while Reading**: the block is being asynchronously read from. |
+| **NAW** | **No Access while Writing**: the block is being asynchronously written to. |
+| **OS** | **Out of Scope**: the block was pushed or popped. |
+
+![Compute Thread reserve-push](c-reserve-push.png)
+
+![Compute Thread wait-pop](c-wait-pop.png)
+
+![Datamovement Thread reserve-push](dm-reserve-push.png)
+
+![Datamovement Thread wait-pop](dm-wait-pop.png)
 
 ## 6. Pipe
 
