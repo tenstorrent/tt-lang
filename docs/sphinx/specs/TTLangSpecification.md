@@ -28,6 +28,7 @@
 | 0.4 | 01/26/2026 | Add `ttl.math.broadcast` |
 | 0.5 | 02/05/2026 | Use dataflow buffer instead of circular buffer term |
 | 0.6 | 02/06/2026 | Add rounding, mask, `ttl.math.transpose`, `ttl.math.fill` and `ttl.math.where` functions |
+| 0.7 | 02/09/2026 | Move `push` and `pop` from `ttl.DataflowBuffer` to `ttl.Block` |
 
 ## 1. Introduction
 
@@ -123,7 +124,7 @@ x, y, z = ttl.core(dims = 3)
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit is a whole tile if the tensor has a tiled layout and is a scalar if the tensor has a row-major layout. Shape determines the shape of a *block* returned by one of the *acquisition functions* and is expressed in shape units. Buffer factor determines the total size of L1 memory allocated as a product of block size and buffer factor. For the most common case buffer factor defaults to 2 to enable double buffering.
 
-There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function: `pop` for `wait` and `push` for `reserve`.
+There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
 
 #### Example
 
@@ -140,7 +141,7 @@ def some_read():
         # produce data into x_blk
         # ...
 
-        # release x_blk implicitly by x_dfb.push() at the end of the with scope
+        # release x_blk implicitly by x_blk.push() at the end of the "with" scope
 
 @ttl.compute()
 def some_compute():
@@ -150,16 +151,16 @@ def some_compute():
     # consume data in x_blk
     # ...
 
-    x_dfb.pop() # release x_blk explicitly
+    x_blk.pop() # release x_blk explicitly
 ```
 
 | Type alias/Function | Description |
 | :---- | :---- |
 |  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   buffer_factor: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
-| `ttl.DataflowBuffer.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
+| `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
 | `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
-| `ttl.DataflowBuffer.pop(self)` | Pop a block from a dataflow buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
+| `ttl.Block.pop(self)` | Pop a block from a dataflow buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
 
 ## 5. Block
 
