@@ -362,15 +362,12 @@ struct TTLInsertTileRegsSyncPass
           return WalkResult::interrupt();
         }
 
-        // Skip tiles that already have explicit stores.
-        if (explicitlyStoredTiles.contains(tile)) {
+        // Skip tiles with explicit stores or duplicate (tile, cb) pairs.
+        if (explicitlyStoredTiles.contains(tile) ||
+            autoStoredTileCBs.contains({tile, cb})) {
           continue;
         }
-
-        // Skip if we already auto-generated a store for this (tile, cb) pair.
-        if (!autoStoredTileCBs.insert({tile, cb}).second) {
-          continue;
-        }
+        autoStoredTileCBs.insert({tile, cb});
 
         std::optional<Value> existingReserve = findExistingReserve(cb);
         Value view;

@@ -116,3 +116,60 @@ func.func @same_tile_two_outputs()
 
   return
 }
+
+// -----
+
+// Test: same tile inserted into the same output CB multiple times produces
+// only one store. The (tile, cb) dedup correctly collapses duplicates.
+
+#map = affine_map<(d0, d1) -> (d0 * 2 + d1)>
+
+// CHECK-LABEL: func.func @same_tile_same_output_dedup
+func.func @same_tile_same_output_dedup()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+
+  %input = ttl.cb_wait %cb0 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out = ttl.attach_cb %init, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // Only one reserve (single output CB).
+  // CHECK: ttl.cb_reserve
+  // CHECK-NOT: ttl.cb_reserve
+  // CHECK: scf.for
+  %r = scf.for %i = %c0 to %c2 step %c1 iter_args(%arg0 = %out) -> (tensor<2x2x!ttcore.tile<32x32, f32>>) {
+    // CHECK: scf.for
+    %inner = scf.for %j = %c0 to %c2 step %c1 iter_args(%arg2 = %arg0) -> (tensor<2x2x!ttcore.tile<32x32, f32>>) {
+      // CHECK: ttl.tile_regs_acquire
+      %tile = tensor.extract %input[%i, %j] : tensor<2x2x!ttcore.tile<32x32, f32>>
+      %idx = affine.apply #map(%i, %j)
+      %dst_token, %dst_tile = ttl.copy_tile %tile, %idx, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %exp = ttl.tile_exp %dst_tile {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+
+      // Same tile (%exp) inserted into the same output twice.
+      %ins0 = tensor.insert %exp into %arg2[%i, %j] : tensor<2x2x!ttcore.tile<32x32, f32>>
+      %ins1 = tensor.insert %exp into %arg2[%j, %i] : tensor<2x2x!ttcore.tile<32x32, f32>>
+
+      // Only ONE store: dedup by (tile, cb) collapses the duplicate.
+      // CHECK: ttl.tile_regs_commit
+      // CHECK-NEXT: ttl.tile_regs_wait
+      // CHECK-NEXT: ttl.store
+      // CHECK-NOT: ttl.store
+      // CHECK: ttl.tile_regs_release
+      scf.yield %ins1 : tensor<2x2x!ttcore.tile<32x32, f32>>
+    } {ttl.tile_loop, ttl.tile_loop.input_cbs = [0], ttl.tile_loop.output_cbs = [1]}
+    scf.yield %inner : tensor<2x2x!ttcore.tile<32x32, f32>>
+  } {ttl.tile_loop}
+
+  // Only one push (single output CB).
+  // CHECK: ttl.cb_push
+  // CHECK-NOT: ttl.cb_push
+  // CHECK: return
+
+  return
+}
