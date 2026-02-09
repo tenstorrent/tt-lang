@@ -27,6 +27,7 @@
 | 0.3 | 01/23/2026 | Add specification for block operators and math functions |
 | 0.4 | 01/26/2026 | Add `ttl.math.broadcast` |
 | 0.5 | 02/05/2026 | Use dataflow buffer instead of circular buffer term |
+| 0.6 | 02/06/2026 | Add rounding, mask, `ttl.math.transpose`, `ttl.math.fill` and `ttl.math.where` functions |
 
 ## 1. Introduction
 
@@ -747,15 +748,34 @@ def dm():
 | `ttl.math.hardtanh(expr: ttl.BlockExpr, min: ttl.PositiveInt, max: ttl.PositiveInt) -> ttl.BlockExpr` | [Hardtanh](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.activation.Hardtanh.html) |
 | `ttl.math.selu(expr: ttl.BlockExpr, scale: ttl.PositiveInt, alpha: ttl.PositiveInt) -> ttl.BlockExpr` | [SELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.activation.SELU.html) |
 
-### Reduction functions
+### Reduction, broadcast and transpose functions
 
 | Function | Description |
 | :---- | :---- |
 | `ttl.math.reduce_sum(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled sum reduction over specified dimensions. Example for reduction over rows: `ttl.math.reduce_sum(a, s, dims=[0])`. Example for reduction over rows and columns: `ttl.math.reduce_sum(a, s, dims=[0, 1])`.  |
 | `ttl.math.reduce_max(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled maximum reduction over specified dimensions. Example for reduction over rows: `ttl.math.reduce_max(a, s, dims=[0])`. Example for reduction over rows and columns: `ttl.math.reduce_max(a, s, dims=[0, 1])`. |
+| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Broadcast a block over specified dimensions. Produces block with shape expanded to be compatible with the outer part of the expression.<br><br>Example for broadcast over dimension 0: `y.store(ttl.math.broadcast(a, dims=[0]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(1, M)`.<br><br>Example for broadcast over dimension 1: `y.store(b * ttl.math.broadcast(a, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`.<br><br>Example for broadcast over both dimensions: `y.store(b + ttl.math.broadcast(a, dims=[0, 1]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[0,1]` `a` must have shape of `(1, 1)`. |
+| `ttl.math.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for 2-dimensional blocks. |
 
-### Broadcast function
+### Rounding functions
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Broadcasts over specified dimensions. Produces block with shape expanded to be compatible with the outer part of the expression.<br><br>Example for broadcast over dimension 0: `y.store(ttl.math.broadcast(a, dims=[0]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(1, M)`.<br><br>Example for broadcast over dimension 1: `y.store(b * ttl.math.broadcast(a, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`.<br><br>Example for broadcast over both dimensions: `y.store(b + ttl.math.broadcast(a, dims=[0, 1]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[0,1]` `a` must have shape of `(1, 1)`. |
+| `ttl.math.frac(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Fractional portion |
+| `ttl.math.trunc(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Truncated integer portion |
+| `ttl.math.round(expr: ttl.BlockExpr, decimals: ttl.PositiveInt) -> ttl.BlockExpr` | Rounds to the number of decimal places specified in `decimals` |
+| `ttl.math.floor(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Floor |
+| `ttl.math.ceil(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Ceil |
+| `ttl.math.clamp(expr: ttl.BlockExpr, min: ttl.PositiveInt, max: ttl.PositiveInt) -> ttl.BlockExpr` | Clamp to specified `min` and `max` |
+| `ttl.math.threshold(expr: ttl.BlockExpr, threshold: ttl.PositiveInt, value: ttl.PositiveInt) -> ttl.BlockExpr` | For all values greater than specified `threshold` replace with specified `value` |
+| `ttl.math.sign(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Replace positive element with 1, negative elements with -1 and leave zeroes as zero. |
+| `ttl.math.signbit(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Replace positive and positive zero elements with 1 and the rest with 0 |
+
+### Fill, mask and where functions
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.math.fill(expr: ttl.BlockExpr, value: float) -> ttl.BlockExpr` | Fill a block with specified `value` |
+| `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
+| `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
+| `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
