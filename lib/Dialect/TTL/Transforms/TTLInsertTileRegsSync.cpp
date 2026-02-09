@@ -272,9 +272,9 @@ struct TTLInsertTileRegsSyncPass
         commitOp->moveBefore(waitOp);
       }
 
-      llvm::DenseMap<Value, StoreOp> storeForTile;
+      llvm::DenseSet<Value> explicitlyStoredTiles;
       for (StoreOp store : storeOps) {
-        storeForTile.try_emplace(store.getTile(), store);
+        explicitlyStoredTiles.insert(store.getTile());
       }
 
       // Step 4: Validate CB op placement - cb_reserve and cb_push must not be
@@ -326,19 +326,21 @@ struct TTLInsertTileRegsSyncPass
 
       llvm::DenseMap<Value, Value> newReserveViews; // cb -> reserve view
 
+      // Track auto-generated (tile, cb) pairs to prevent duplicate stores.
+      // Keyed by (tile, cb) instead of just tile so the same tile can be
+      // stored to different output CBs.
+      llvm::DenseSet<std::pair<Value, Value>> autoStoredTileCBs;
+
       // Match each tensor.insert to its output CB via iter_arg index.
       for (tensor::InsertOp insertOp : insertOps) {
         Value tile = insertOp.getScalar();
-        if (storeForTile.contains(tile)) {
-          continue;
-        }
 
         if (outputCBs.empty()) {
           continue;
         }
 
-        // Determine which output CB this insert corresponds to.
-        // For scf.for, block args are: [iv, iter_arg_0, iter_arg_1, ...]
+        // Determine which output CB this insert corresponds to BEFORE dedup
+        // check. For scf.for, block args are: [iv, iter_arg_0, iter_arg_1, ...]
         // The iter_arg index maps directly to the output CB index.
         Value cb;
         Value dest = insertOp.getDest();
@@ -358,6 +360,16 @@ struct TTLInsertTileRegsSyncPass
               << "could not determine output CB for tensor.insert; "
               << "destination must be an iter_arg block argument";
           return WalkResult::interrupt();
+        }
+
+        // Skip tiles that already have explicit stores.
+        if (explicitlyStoredTiles.contains(tile)) {
+          continue;
+        }
+
+        // Skip if we already auto-generated a store for this (tile, cb) pair.
+        if (!autoStoredTileCBs.insert({tile, cb}).second) {
+          continue;
         }
 
         std::optional<Value> existingReserve = findExistingReserve(cb);
@@ -382,7 +394,6 @@ struct TTLInsertTileRegsSyncPass
         builder.setInsertionPointAfter(tail);
         auto newStore = builder.create<StoreOp>(loc, tile, view);
         tail = newStore.getOperation();
-        storeForTile.try_emplace(tile, newStore);
       }
 
       // Push after outermost loop (signals all tiles ready).
