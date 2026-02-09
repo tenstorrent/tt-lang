@@ -104,20 +104,13 @@ def broadcast(
     result_tensors = []
 
     for tile in input_tensors:
-        result_tile = tile.clone()
-        if 0 in dims and 1 in dims:
-            # Broadcast both dimensions: replicate (0,0) to entire tile
-            result_tile = torch.full_like(tile, tile[0, 0].item())
-        elif 1 in dims:
-            # Broadcast along columns: replicate column 0 across all columns
-            # Each row gets its value from column 0 replicated
-            col0 = tile[:, 0:1]  # Shape: (32, 1)
-            result_tile = col0.expand(-1, tile.shape[1]).clone()
-        elif 0 in dims:
-            # Broadcast along rows: replicate row 0 across all rows
-            # Each column gets its value from row 0 replicated
-            row0 = tile[0:1, :]  # Shape: (1, 32)
-            result_tile = row0.expand(tile.shape[0], -1).clone()
+        # Create a slice that selects index 0 for each dimension in dims
+        slices = [slice(None)] * tile.ndim
+        for dim in dims:
+            slices[dim] = slice(0, 1)
+
+        # Extract the slice and expand back to original shape
+        result_tile = tile[tuple(slices)].expand(tile.shape).clone()
         result_tensors.append(Tensor(result_tile))
 
     result_block = Block.from_list(result_tensors, block_shape)
