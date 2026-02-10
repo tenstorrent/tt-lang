@@ -1,16 +1,18 @@
 #!/bin/bash
 # Run a tt-lang test on a remote machine
-# Usage: ./run-test.sh [-v|--verbose] [--emit-runner] <test_path> [extra_args...]
+# Usage: ./run-test.sh [-v|--verbose] [--hw] [--emit-runner] <test_path> [extra_args...]
 #
-# By default, output is saved to /tmp/ttlang_test_output.log on the remote (silent mode).
+# By default, runs through the functional simulator (ttlang-sim).
+# Use --hw to run on real hardware instead (for final validation).
+# Output is saved to /tmp/ttlang_test_output.log on the remote (silent mode).
 # Use -v to stream output to terminal AND enable verbose MLIR passes.
 # Use --emit-runner to generate C++ kernels and Python runner in /tmp/$USER/.
 #
 # Examples:
-#   ./run-test.sh test/python/test_dram_interleaved_add.py   # Silent, check log after
-#   ./run-test.sh -v test/python/test_dram_interleaved_add.py # Stream + verbose passes
-#   ./run-test.sh --emit-runner /absolute/path/to/my_test.py  # Emit kernels + runner
-#   ./run-test.sh /absolute/path/to/my_test.py
+#   ./run-test.sh test/python/test_add.py              # Run in simulator (default)
+#   ./run-test.sh --hw test/python/test_add.py         # Run on real hardware
+#   ./run-test.sh -v test/python/test_add.py           # Simulator + verbose
+#   ./run-test.sh --emit-runner /absolute/path/test.py # Emit kernels + runner
 #
 # Output locations on remote:
 #   /tmp/ttlang_test_output.log  - Test stdout/stderr (always saved)
@@ -27,11 +29,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VERBOSE=""
 STREAM_OUTPUT=""
 EMIT_RUNNER=""
+USE_HW=""
 while [[ "$1" == -* ]]; do
     case "$1" in
         -v|--verbose)
             VERBOSE=1
             STREAM_OUTPUT=1
+            shift
+            ;;
+        --hw)
+            USE_HW=1
             shift
             ;;
         --emit-runner)
@@ -58,16 +65,18 @@ else
 fi
 
 if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
-    echo "Usage: $0 [-v|--verbose] [--emit-runner] <test_path> [extra_args...]"
+    echo "Usage: $0 [-v|--verbose] [--hw] [--emit-runner] <test_path> [extra_args...]"
     echo ""
     echo "Options:"
+    echo "  --hw             Run on real hardware (default: functional simulator)"
     echo "  -v, --verbose    Stream output to terminal + enable verbose MLIR passes"
     echo "                   (default: silent mode, output saved to log)"
     echo "  --emit-runner    Emit C++ kernels and Python runner to /tmp/\$USER/"
     echo ""
     echo "Examples:"
-    echo "  $0 test/python/test_dram_interleaved_add.py"
-    echo "  $0 -v test/python/test_dram_interleaved_add.py"
+    echo "  $0 test/python/test_add.py              # Simulator (default)"
+    echo "  $0 --hw test/python/test_add.py         # Real hardware"
+    echo "  $0 -v test/python/test_add.py           # Simulator + verbose"
     echo "  $0 --emit-runner /Users/you/my_kernel.py"
     echo ""
     echo "Path handling:"
@@ -106,12 +115,22 @@ else
     REMOTE_TEST_PATH="$TEST_PATH"
 fi
 
+# Select runner
+if [ -n "$USE_HW" ]; then
+    RUNNER="python3"
+    MODE_LABEL="hardware"
+else
+    RUNNER="ttlang-sim"
+    MODE_LABEL="simulator"
+fi
+
 echo "========================================"
 echo "Running: $REMOTE_TEST_PATH"
+echo "Runner: $MODE_LABEL"
 if [ -n "$STREAM_OUTPUT" ]; then
-    echo "Mode: verbose (streaming to terminal)"
+    echo "Output: streaming to terminal"
 else
-    echo "Mode: silent (output saved to /tmp/ttlang_test_output.log)"
+    echo "Output: /tmp/ttlang_test_output.log"
 fi
 echo "========================================"
 
@@ -130,7 +149,7 @@ if [ -n "$STREAM_OUTPUT" ]; then
     TEST_CMD="
         exec > >(tee /tmp/ttlang_test_output.log) 2>&1
         $ENV_VARS
-        python3 $REMOTE_TEST_PATH $EXTRA_ARGS
+        $RUNNER $REMOTE_TEST_PATH $EXTRA_ARGS
     "
     $REMOTE_SHELL bash -c "$TEST_CMD"
     EXIT_CODE=$?
@@ -139,7 +158,7 @@ else
     TEST_CMD="
         exec > /tmp/ttlang_test_output.log 2>&1
         $ENV_VARS
-        python3 $REMOTE_TEST_PATH $EXTRA_ARGS
+        $RUNNER $REMOTE_TEST_PATH $EXTRA_ARGS
     "
     $REMOTE_SHELL bash -c "$TEST_CMD"
     EXIT_CODE=$?

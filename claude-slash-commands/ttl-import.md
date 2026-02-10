@@ -20,10 +20,13 @@ NOTE: flags on run-test.sh must come before file argument. You can use --help if
 NOTE: run-test.sh will copy the file. You do not need to copy the test file each time.
 
 ```bash
-~/.claude/commands/tools/run-test.sh /path/to/kernel.py    # Run kernel on remote (ONLY way to test)
-~/.claude/commands/tools/copy-file.sh /path/to/file.py     # Copy a file to the remote
-~/.claude/commands/tools/remote-run.sh <command>            # Run an arbitrary command on the remote
+~/.claude/commands/tools/run-test.sh /path/to/kernel.py       # Run in functional simulator (default)
+~/.claude/commands/tools/run-test.sh --hw /path/to/kernel.py  # Run on real hardware (final validation)
+~/.claude/commands/tools/copy-file.sh /path/to/file.py        # Copy a file to the remote
+~/.claude/commands/tools/remote-run.sh <command>               # Run an arbitrary command on the remote
 ```
+
+By default, run-test.sh uses the functional simulator (`ttlang-sim`). Use `--hw` for real hardware. **Iterate with the simulator first.** Only move to `--hw` for final validation or if the simulator has a bug that blocks your work.
 
 **Reading remote logs (output is saved, not streamed):**
 ```bash
@@ -470,6 +473,8 @@ def large_tensor_kernel(inp, out):
 
 **WARNING: Use pipes sparingly.** Pipes enable communication between cores but are error-prone and a common cause of hangs. Get your kernel working without pipes first, then add them only if needed for performance.
 
+**WARNING: pipes do not work in the simulator.** The pipes APIs below are not implemented in the simulator, you may find partial support, but the APIs in the simulator and the compiler are different, and when you go to run on HW, you will hit issues. If you need to use pipes, do it after you have the base program working in sim. 
+
 ### Pipe API
 
 ```python
@@ -879,7 +884,11 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 
 ## Iteration Workflow (REQUIRED)
 
-**The remote is the ONLY place to test kernels. You MUST test every kernel you write.**
+**You MUST test every kernel you write.** The workflow has two phases:
+
+### Phase 1: Iterate with the Functional Simulator (default)
+
+The functional simulator (`ttlang-sim`) is the primary development tool. It catches CB mismatches, shape errors, type errors, and functional bugs via dynamic analysis. Use it for all iteration.
 
 ```
 1. Write kernel to file
@@ -888,6 +897,17 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 4. If errors: fix and go to step 2
 5. If success: verify numerical output is correct
 ```
+
+### Phase 2: Validate on Real Hardware
+
+Once the kernel passes in the simulator, do a final hardware run:
+```
+~/.claude/commands/tools/run-test.sh --hw /path/to/kernel.py
+```
+
+NOTE: it is possible that the sim and hw diverge which may require you to either use --hw early or iterate on a program that passes in the sim but not on HW. If your program works with the sim but not on HW you can use the same iteration flow from phase 1 to debug (you may need to isolate patterns and iterate). You can also ask the user for guidance, they may care more about HW or sim working. 
+
+**When to use `--hw` early:** If the simulator has a bug or is overly conservative for your use case, you can bypass it with `--hw` at any point. But prefer the simulator for iteration since it gives better error diagnostics.
 
 **IMPORTANT:**
 - Exit code 0 does NOT mean success - always read the log
@@ -978,10 +998,11 @@ print("Expected:", torch.exp(inp_torch))
 ## Output
 
 1. Save the translated TT-Lang kernel to a file
-2. Run `~/.claude/commands/tools/run-test.sh` on the kernel and verify it works
-3. Read the log and confirm numerical correctness
-4. Report any TTNN ops used to fill gaps
-5. Only mark complete after the kernel runs successfully on the remote
+2. Run `~/.claude/commands/tools/run-test.sh` on the kernel and verify it passes in the simulator
+3. Run `~/.claude/commands/tools/run-test.sh --hw` for final hardware validation
+4. Read the log and confirm numerical correctness
+5. Report any TTNN ops used to fill gaps
+6. Only mark complete after the kernel runs successfully
 
 ---
 
