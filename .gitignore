@@ -61,3 +61,6 @@ generated/pykernels/*
 **/temp/
 
 test/temp
+
+# User-specific remote config (only .example is tracked)
+claude-slash-commands/tools/remote.conf

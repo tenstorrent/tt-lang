@@ -3,26 +3,35 @@ description: Import and translate a CUDA, Triton, PyTorch kernel, or TTNN progra
 argument-hint: <kernel-file-or-code>
 ---
 
-## Tools Available
+## Prerequisites
 
-NOTE: these tools are already in PATH. You do not need to find them in a relative directory, you can invoke them directly from any directory.
+All tools are installed at `~/.claude/commands/tools/`. Use this full path when invoking them.
+
+Before doing anything else, run the smoke test to verify your remote setup:
+```bash
+~/.claude/commands/tools/smoke-test.sh
+```
+If the smoke test fails, STOP. Do NOT continue. Ask the user to fix their remote setup first.
+
+## Tools Available
 
 NOTE: flags on run-test.sh must come before file argument. You can use --help if unsure on how to use.
 
 NOTE: run-test.sh will copy the file. You do not need to copy the test file each time.
 
 ```bash
-run-test.sh /path/to/kernel.py    # Run kernel on VM simulator (ONLY way to test)
-copy-file.sh /path/to/file.py     # Copy a file to the VM
+~/.claude/commands/tools/run-test.sh /path/to/kernel.py    # Run kernel on remote (ONLY way to test)
+~/.claude/commands/tools/copy-file.sh /path/to/file.py     # Copy a file to the remote
+~/.claude/commands/tools/remote-run.sh <command>            # Run an arbitrary command on the remote
 ```
 
-**Reading VM logs (output is saved, not streamed):**
+**Reading remote logs (output is saved, not streamed):**
 ```bash
-limactl shell ttsim -- cat /tmp/ttlang_test_output.log        # Full log
-limactl shell ttsim -- tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
-limactl shell ttsim -- grep -i "error" /tmp/ttlang_test_output.log
-limactl shell ttsim -- cat /tmp/ttlang_initial.mlir           # Initial MLIR
-limactl shell ttsim -- cat /tmp/ttlang_final.mlir             # Final MLIR
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log        # Full log
+~/.claude/commands/tools/remote-run.sh tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
+~/.claude/commands/tools/remote-run.sh grep -i "error" /tmp/ttlang_test_output.log
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_initial.mlir           # Initial MLIR
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_final.mlir             # Final MLIR
 ```
 
 ## Task
@@ -554,7 +563,7 @@ def gather_kernel(inp, out):
 - **IMPORTANT: Set a low timeout** when testing pipes for faster iteration
 - **Start without pipes** - get single-core or independent multi-core working first
 - **Add pipes incrementally** - test after adding each pipe
-- **Kill zombie processes** if hung: `limactl shell ttsim -- pkill -9 python`
+- **Kill zombie processes** if hung: `~/.claude/commands/tools/remote-run.sh pkill -9 python`
 
 ### Hardware Limits
 
@@ -870,12 +879,12 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 
 ## Iteration Workflow (REQUIRED)
 
-**The VM is the ONLY place to test kernels. You MUST test every kernel you write.**
+**The remote is the ONLY place to test kernels. You MUST test every kernel you write.**
 
 ```
 1. Write kernel to file
-2. Run: run-test.sh /path/to/kernel.py
-3. Read log: limactl shell ttsim -- tail -100 /tmp/ttlang_test_output.log
+2. Run: ~/.claude/commands/tools/run-test.sh /path/to/kernel.py
+3. Read log: ~/.claude/commands/tools/remote-run.sh tail -100 /tmp/ttlang_test_output.log
 4. If errors: fix and go to step 2
 5. If success: verify numerical output is correct
 ```
@@ -890,7 +899,7 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 **Handling Hangs:**
 - If a kernel hangs, the most common cause is **CB mismatch** - every `wait()` needs a corresponding `push()` from producer, every `reserve()` needs a corresponding `pop()` from consumer
 - Verify loop counts match between compute and datamovement threads
-- Kill zombie processes on VM: `limactl shell ttsim -- pkill -9 python`
+- Kill zombie processes on remote: `~/.claude/commands/tools/remote-run.sh pkill -9 python`
 
 ## Compiler Errors: Workaround or Exit Early
 
@@ -969,10 +978,10 @@ print("Expected:", torch.exp(inp_torch))
 ## Output
 
 1. Save the translated TT-Lang kernel to a file
-2. Run `run-test.sh` on the kernel and verify it works
+2. Run `~/.claude/commands/tools/run-test.sh` on the kernel and verify it works
 3. Read the log and confirm numerical correctness
 4. Report any TTNN ops used to fill gaps
-5. Only mark complete after the kernel runs successfully on the VM
+5. Only mark complete after the kernel runs successfully on the remote
 
 ---
 
