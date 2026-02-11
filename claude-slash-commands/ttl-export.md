@@ -38,8 +38,10 @@ NOTE: run-test.sh will copy the file. You do not need to copy the test file each
 ```bash
 ~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log        # Full log
 ~/.claude/commands/tools/remote-run.sh tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
-~/.claude/commands/tools/remote-run.sh grep -i "error" /tmp/ttlang_test_output.log
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log | grep -i "error"  # Search log
 ```
+
+**NOTE:** Grep with quoted patterns containing spaces does not work via `remote-run.sh` due to quoting through the SSH+docker chain. Always pipe through grep locally: `remote-run.sh cat /path/to/file | grep "pattern"`
 
 ## Task
 
@@ -81,7 +83,7 @@ This generates files in `/tmp/$USER/` on the remote (one set per `@ttl.kernel` f
 
 Find the exact file paths in the log:
 ```bash
-~/.claude/commands/tools/remote-run.sh grep -i "written" /tmp/ttlang_test_output.log
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log | grep -i "written"
 ```
 
 NOTE: if there are multiple kernels, you will have a copy of all of these files per kernel (that's OK! many tt-lang programs utalize multiple kernels)

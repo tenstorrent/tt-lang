@@ -34,10 +34,12 @@ By default, run-test.sh uses the functional simulator (`ttlang-sim`). Use `--hw`
 ```bash
 ~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log        # Full log
 ~/.claude/commands/tools/remote-run.sh tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
-~/.claude/commands/tools/remote-run.sh grep -i "error" /tmp/ttlang_test_output.log
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log | grep -i "error"  # Search log
 ~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_initial.mlir           # Initial MLIR
 ~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_final.mlir             # Final MLIR
 ```
+
+**NOTE:** Grep with quoted patterns containing spaces does not work via `remote-run.sh` due to quoting through the SSH+docker chain. Always pipe through grep locally: `remote-run.sh cat /path/to/file | grep "pattern"`
 
 ## Task
 
@@ -913,7 +915,7 @@ NOTE: it is possible that the sim and hw diverge which may require you to either
 
 **IMPORTANT:**
 - Exit code 0 does NOT mean success - always read the log
-- The log can be thousands of lines - use `tail`, `head`, `grep` to navigate
+- The log can be thousands of lines - use `tail`, `head` remotely, or pipe through `grep` locally (e.g., `remote-run.sh cat /tmp/ttlang_test_output.log | grep "pattern"`)
 - Look for: `AssertionError`, `Exception`, `error:`, `FAIL`, `mismatch`
 - Never guess at fixes - always read the actual error message
 - **IMPORTANT:** Set a low timeout for faster iteration - tests should execute in under 1 second. Hangs are common (especially with pipes or CB mismatches) and a low timeout helps detect them quickly.
