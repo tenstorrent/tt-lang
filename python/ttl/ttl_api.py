@@ -1106,6 +1106,13 @@ def _compile_kernel(
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
+        if perf_dump:
+            # Remove stale outputs from previous runs
+            for stale in ("/tmp/ttlang_cb_flow_graph.json", "/tmp/ttlang_pipe_graph.json"):
+                try:
+                    os.remove(stale)
+                except FileNotFoundError:
+                    pass
         if is_auto_profile_enabled():
             if "TTLANG_PROFILE_CSV" in os.environ:
                 cb_flow_json = str(Path(os.environ["TTLANG_PROFILE_CSV"]).parent / "cb_flow_graph.json")
