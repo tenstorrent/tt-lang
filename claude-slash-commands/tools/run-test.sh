@@ -33,6 +33,7 @@ STREAM_OUTPUT=""
 EMIT_RUNNER=""
 USE_HW=""
 PERF=""
+AUTO_PROFILE=""
 while [[ "$1" == -* ]]; do
     case "$1" in
         -v|--verbose)
@@ -49,6 +50,11 @@ while [[ "$1" == -* ]]; do
             shift
             ;;
         --perf)
+            PERF=1
+            shift
+            ;;
+        --auto-profile)
+            AUTO_PROFILE=1
             PERF=1
             shift
             ;;
@@ -80,6 +86,7 @@ if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo "                   (default: silent mode, output saved to log)"
     echo "  --emit-runner    Emit C++ kernels and Python runner to /tmp/\$USER/"
     echo "  --perf           Enable NOC profiling, CB flow graph, and pipe graph dumps"
+    echo "  --auto-profile   Enable --perf + per-line cycle profiling (auto-profiler)"
     echo ""
     echo "Examples:"
     echo "  $0 test/python/test_add.py              # Simulator (default)"
@@ -153,6 +160,11 @@ if [ -n "$VERBOSE" ]; then
 fi
 if [ -n "$EMIT_RUNNER" ]; then
     ENV_VARS="$ENV_VARS export TTLANG_EMIT_RUNNER=1;"
+fi
+if [ -n "$AUTO_PROFILE" ]; then
+    ENV_VARS="$ENV_VARS export TTLANG_AUTO_PROFILE=1;"
+    ENV_VARS="$ENV_VARS export TT_METAL_DEVICE_PROFILER=1;"
+    ENV_VARS="$ENV_VARS export TT_METAL_PROFILER_MID_RUN_DUMP=1;"
 fi
 if [ -n "$PERF" ]; then
     if [ -z "$USE_HW" ]; then
