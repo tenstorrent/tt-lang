@@ -17,6 +17,7 @@ COMMANDS=(
     "ttl-profile.md"
     "ttl-simulate.md"
     "ttl-test.md"
+    "ttl-bug.md"
 )
 
 # List of tool scripts to install
@@ -110,6 +111,7 @@ echo "  /ttl-optimize - Profile and optimize kernel performance"
 echo "  /ttl-profile  - Run profiler and show per-line cycle counts"
 echo "  /ttl-simulate - Run simulator and suggest improvements"
 echo "  /ttl-test     - Generate tests for a kernel"
+echo "  /ttl-bug      - File a bug report with reproducer"
 echo ""
 echo "Use these commands in Claude Code by typing the command name,"
 echo "e.g., '/ttl-import my_cuda_kernel.cu'"

@@ -42,6 +42,7 @@ claude
 #   /ttl-test my_kernel.py  "generate tests for edge cases"
 #   /ttl-simulate my_kernel.py
 #   /ttl-optimize my_kernel.py
+#   /ttl-bug "compiler crashes on broadcast after reduce"
 ```
 
 ### Available Commands
@@ -78,6 +79,10 @@ Run `/ttl-help` in Claude Code to see all available commands. Here is a summary:
     Generate comprehensive test cases and a test runner for a kernel. Creates
     edge case coverage, reference implementations, and TTNN integration code
     with proper assertions and reproducible test inputs.
+
+/ttl-bug <description>
+    File a bug report with a reproducer. Gathers context, attempts to minimize
+    the reproducer, and creates a GitHub issue.
 
 /ttl-help
     List all available TT-Lang slash commands with descriptions and examples.

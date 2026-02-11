@@ -14,6 +14,7 @@ The following commands are available for TT-Lang kernel development:
 | `/ttl-profile <kernel>` | Run profiler with per-line cycle counts |
 | `/ttl-simulate <kernel>` | Run functional simulator and suggest improvements |
 | `/ttl-test <kernel>` | Generate test cases and test runner |
+| `/ttl-bug <description>` | File a bug report with reproducer |
 | `/ttl-help` | Show this help message |
 
 ### Usage Examples
@@ -25,6 +26,7 @@ The following commands are available for TT-Lang kernel development:
 /ttl-profile my_kernel.py
 /ttl-simulate my_kernel.py
 /ttl-test my_kernel.py "test edge cases for small matrices"
+/ttl-bug "compiler crashes on broadcast after reduce"
 ```
 
 ### Typical Workflow
@@ -35,3 +37,4 @@ The following commands are available for TT-Lang kernel development:
 4. **Profile**: Use `/ttl-profile` to identify performance bottlenecks
 5. **Optimize**: Apply `/ttl-optimize` to improve performance
 6. **Export**: Generate production C++ code with `/ttl-export`
+7. **Bug**: Hit an issue? File a report with `/ttl-bug`
