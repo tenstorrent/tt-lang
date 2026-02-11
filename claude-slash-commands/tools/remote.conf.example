@@ -11,3 +11,11 @@
 #   Lima VM:       REMOTE_SHELL="limactl shell ttsim --"
 
 REMOTE_SHELL="ssh user@server docker exec -i tt-lang"
+
+# For Docker setups: set these for reliable file copying.
+# Stdin piping can fail when sudo or other intermediaries are in the chain.
+# When set, file copies use scp + docker cp instead of stdin piping.
+#
+# REMOTE_HOST="user@server"
+# REMOTE_CONTAINER="tt-lang"
+# DOCKER_SUDO=0    # Set to 1 if docker requires sudo

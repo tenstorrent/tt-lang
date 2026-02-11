@@ -13,6 +13,8 @@ Before doing anything else, run the smoke test to verify your remote setup:
 ```
 If the smoke test fails, STOP. Do NOT continue. Ask the user to fix their remote setup first.
 
+If the smoke test fails due to remote.conf not existing, STOP, offer to help them create it from remote.conf.example. Then work on getting the smoke test passing before exploring or continuing.
+
 ## Tools Available
 
 NOTE: flags on run-test.sh must come before file argument. You can use --help if unsure on how to use.

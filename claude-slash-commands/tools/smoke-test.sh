@@ -14,6 +14,8 @@ else
     exit 1
 fi
 
+source "$SCRIPT_DIR/_lib.sh"
+
 echo "========================================"
 echo "TT-Lang Remote Smoke Test"
 echo "REMOTE_SHELL=$REMOTE_SHELL"
@@ -22,7 +24,7 @@ echo "========================================"
 # Test 1: remote shell works
 echo ""
 echo "[1/3] Testing remote shell..."
-OUTPUT=$($REMOTE_SHELL echo "remote-shell-ok" 2>&1)
+OUTPUT=$(remote_run echo "remote-shell-ok" 2>&1)
 if [[ "$OUTPUT" == *"remote-shell-ok"* ]]; then
     echo "  PASS: remote shell works"
 else
@@ -39,13 +41,13 @@ cat > "$TEMP_FILE" << 'EOF'
 import ttnn
 print("ttl-smoke-ok")
 EOF
-cat "$TEMP_FILE" | $REMOTE_SHELL bash -c "cat > /tmp/ttl_smoke_test.py"
-LINE_COUNT=$($REMOTE_SHELL wc -l /tmp/ttl_smoke_test.py 2>&1)
-if [[ "$LINE_COUNT" == *"3"* ]]; then
-    echo "  PASS: file copied (wc -l = $LINE_COUNT)"
+remote_copy_file "$TEMP_FILE" "/tmp/ttl_smoke_test.py"
+VERIFY=$(remote_run cat /tmp/ttl_smoke_test.py 2>&1)
+if [[ "$VERIFY" == *"ttl-smoke-ok"* ]]; then
+    echo "  PASS: file copied and verified"
 else
-    echo "  FAIL: file copy or wc -l failed"
-    echo "  Output: $LINE_COUNT"
+    echo "  FAIL: file copy failed or content mismatch"
+    echo "  Output: $VERIFY"
     rm "$TEMP_FILE"
     exit 1
 fi
@@ -54,7 +56,7 @@ rm "$TEMP_FILE"
 # Test 3: run Python with ttnn
 echo ""
 echo "[3/3] Testing Python + ttnn import..."
-OUTPUT=$($REMOTE_SHELL python3 /tmp/ttl_smoke_test.py 2>&1)
+OUTPUT=$(remote_run python3 /tmp/ttl_smoke_test.py 2>&1)
 if [[ "$OUTPUT" == *"ttl-smoke-ok"* ]]; then
     echo "  PASS: python3 + ttnn works"
 else

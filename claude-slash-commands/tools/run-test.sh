@@ -77,6 +77,8 @@ else
     exit 1
 fi
 
+source "$SCRIPT_DIR/_lib.sh"
+
 if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo "Usage: $0 [-v|--verbose] [--hw] [--emit-runner] [--perf] <test_path> [extra_args...]"
     echo ""
@@ -119,7 +121,7 @@ if [[ "$TEST_PATH" = /* ]]; then
     if [ -f "$TEST_PATH" ]; then
         TEST_NAME=$(basename "$TEST_PATH")
         echo "Copying $TEST_NAME to remote..."
-        cat "$TEST_PATH" | $REMOTE_SHELL bash -c "cat > /tmp/ttl_test_temp.py"
+        remote_copy_file "$TEST_PATH" "/tmp/ttl_test_temp.py"
         REMOTE_TEST_PATH="/tmp/ttl_test_temp.py"
     else
         echo "Error: File not found: $TEST_PATH"
@@ -182,7 +184,7 @@ if [ -n "$STREAM_OUTPUT" ]; then
         $ENV_VARS
         $RUNNER $REMOTE_TEST_PATH $EXTRA_ARGS
     "
-    $REMOTE_SHELL bash -c "$TEST_CMD"
+    remote_run "$TEST_CMD"
     EXIT_CODE=$?
 else
     # Silent mode: redirect all output to log file
@@ -191,7 +193,7 @@ else
         $ENV_VARS
         $RUNNER $REMOTE_TEST_PATH $EXTRA_ARGS
     "
-    $REMOTE_SHELL bash -c "$TEST_CMD"
+    remote_run "$TEST_CMD"
     EXIT_CODE=$?
 fi
 
@@ -207,7 +209,7 @@ if [ -z "$STREAM_OUTPUT" ]; then
     echo ""
     echo "Last 30 lines:"
     echo "----------------------------------------"
-    $REMOTE_SHELL tail -30 /tmp/ttlang_test_output.log
+    remote_run tail -30 /tmp/ttlang_test_output.log
 fi
 echo "========================================"
 

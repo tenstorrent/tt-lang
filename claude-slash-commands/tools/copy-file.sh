@@ -19,6 +19,8 @@ else
     exit 1
 fi
 
+source "$SCRIPT_DIR/_lib.sh"
+
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <local_path> [remote_dest_path]"
     echo ""
@@ -50,12 +52,12 @@ if [ -z "$REMOTE_DEST" ]; then
     REMOTE_DEST="/tmp/$FILENAME"
 elif [[ "$REMOTE_DEST" == */ ]]; then
     # Dest ends with /, it's a directory
-    $REMOTE_SHELL mkdir -p "$REMOTE_DEST"
+    remote_run mkdir -p "$REMOTE_DEST"
     REMOTE_DEST="$REMOTE_DEST$FILENAME"
 fi
 
 echo "Copying: $LOCAL_PATH -> remote:$REMOTE_DEST"
-cat "$LOCAL_PATH" | $REMOTE_SHELL bash -c "cat > '$REMOTE_DEST'"
+remote_copy_file "$LOCAL_PATH" "$REMOTE_DEST"
 
 if [ $? -eq 0 ]; then
     echo "Done. File available at: $REMOTE_DEST"

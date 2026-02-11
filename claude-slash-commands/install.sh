@@ -22,6 +22,7 @@ COMMANDS=(
 
 # List of tool scripts to install
 TOOLS=(
+    "_lib.sh"
     "run-test.sh"
     "copy-file.sh"
     "copy-from-remote.sh"

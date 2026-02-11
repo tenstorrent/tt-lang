@@ -16,6 +16,8 @@ else
     exit 1
 fi
 
+source "$SCRIPT_DIR/_lib.sh"
+
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <remote_path> <local_path>"
     echo ""
@@ -31,7 +33,7 @@ REMOTE_PATH="$1"
 LOCAL_PATH="$2"
 
 echo "Copying: remote:$REMOTE_PATH -> $LOCAL_PATH"
-$REMOTE_SHELL cat "$REMOTE_PATH" > "$LOCAL_PATH"
+remote_copy_from "$REMOTE_PATH" "$LOCAL_PATH"
 
 if [ $? -eq 0 ]; then
     echo "Done."

@@ -18,6 +18,8 @@ else
     exit 1
 fi
 
+source "$SCRIPT_DIR/_lib.sh"
+
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <command> [args...]"
     echo ""
@@ -31,4 +33,4 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
-$REMOTE_SHELL "$@"
+remote_run "$@"
