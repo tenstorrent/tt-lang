@@ -6,7 +6,7 @@ import ttnn
 import torch
 
 
-def from_torch(tensor: ttnn.Tensor):
+def from_torch(tensor: torch.Tensor):
     return ttnn.from_torch(
         tensor,
         dtype=ttnn.bfloat16,
