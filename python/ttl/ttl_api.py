@@ -203,6 +203,48 @@ def _run_profiling_pipeline(
         print(f"[Auto-profile] Failed to parse profile CSV: {e}")
 
 
+def _run_perf_dump(tensors: tuple, kernel_name: str):
+    """
+    Run NOC profiler summary and print CB flow / pipe graph after execution.
+
+    Called after kernel execution when TTLANG_PERF_DUMP=1 is set.
+    Reads NOC traces from $TT_METAL_HOME/generated/profiler/.logs/,
+    CB flow graph from /tmp/ttlang_cb_flow_graph.json (written by
+    ttl-dump-cb-flow-graph pass), and pipe graph from
+    /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
+    """
+    from ._src.noc_summary import run as noc_summary_run
+
+    tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+    if not tt_metal_home:
+        raise ValueError("TTLANG_PERF_DUMP=1 requires TT_METAL_HOME to be set")
+
+    # NOC profiler summary
+    logs_path = Path(tt_metal_home) / "generated" / "profiler" / ".logs"
+    if not logs_path.exists():
+        raise ValueError(
+            f"Profiler logs directory not found: {logs_path}\n"
+            "Ensure TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1 is set"
+        )
+    result = noc_summary_run(logs_path, names=[kernel_name])
+    if result:
+        print(result)
+
+    # CB flow graph (written by ttl-dump-cb-flow-graph pass)
+    cb_flow_path = Path("/tmp/ttlang_cb_flow_graph.json")
+    if not cb_flow_path.exists():
+        raise ValueError(f"CB flow graph not found: {cb_flow_path}")
+    print("=== CB FLOW GRAPH ===")
+    print(cb_flow_path.read_text())
+
+    # Pipe graph (copied from compiler temp file)
+    pipe_graph_path = Path("/tmp/ttlang_pipe_graph.json")
+    if not pipe_graph_path.exists():
+        raise ValueError(f"Pipe graph not found: {pipe_graph_path}")
+    print("=== PIPE GRAPH ===")
+    print(pipe_graph_path.read_text())
+
+
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
@@ -1018,7 +1060,8 @@ def _compile_kernel(
             "func.func(ttl-annotate-cb-associations)",
         ]
 
-        # Add auto-profiling passes if enabled
+        # Add CB flow graph dump if auto-profiling or perf dump is enabled
+        perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
         if is_auto_profile_enabled():
             if "TTLANG_PROFILE_CSV" in os.environ:
                 cb_flow_json = str(Path(os.environ["TTLANG_PROFILE_CSV"]).parent / "cb_flow_graph.json")
@@ -1027,6 +1070,9 @@ def _compile_kernel(
                 if not tt_metal_home:
                     raise ValueError("TTLANG_AUTO_PROFILE=1 requires TT_METAL_HOME or TTLANG_PROFILE_CSV to be set")
                 cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
+            pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
+        elif perf_dump:
+            cb_flow_json = "/tmp/ttlang_cb_flow_graph.json"
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         pipeline_passes += [
@@ -1087,6 +1133,16 @@ def _compile_kernel(
                 source_file = all_source_files.get(first_thread)
             formatted = format_mlir_error(error_msg, source_lines, source_file)
             raise RuntimeError(formatted) from None
+
+        # Copy pipe graph to stable path for perf tooling
+        if perf_dump and pipe_graph_path:
+            import shutil
+
+            stable_pipe_path = "/tmp/ttlang_pipe_graph.json"
+            try:
+                shutil.copy2(pipe_graph_path, stable_pipe_path)
+            except OSError:
+                pass
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
         if final_mlir_path:
@@ -1241,6 +1297,10 @@ def pykernel_gen(
                         compiled_kernel.thread_to_kernel,
                         compiled_kernel.kernel_line_offsets,
                     )
+
+                # Run perf dump after execution
+                if os.environ.get("TTLANG_PERF_DUMP") == "1":
+                    _run_perf_dump(args, f.__name__)
 
                 return result
 
