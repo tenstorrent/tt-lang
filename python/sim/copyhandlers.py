@@ -133,14 +133,18 @@ def tensor_shape_in_tiles_with_skip(
 
 # Global pipe state for simulating NoC pipe communication
 # For each pipe we keep a small structure with:
-# - queue: deque of (data, remaining_receiver_count)
+# - queue: deque of (data, remaining_receiver_count, message_id, receivers_set)
 # - event: threading.Event set when queue is non-empty
 # - lock: threading.Lock to guard queue and receiver count updates
+# - next_msg_id: counter for assigning unique IDs to messages
 # In a real implementation this would be handled by NoC hardware.
 class _PipeEntry(TypedDict):
-    queue: Deque[Tuple[List[Tensor], Count]]
+    queue: Deque[
+        Tuple[List[Tensor], Count, int, set]
+    ]  # (data, remaining, msg_id, receivers_who_got_it)
     event: threading.Event
     lock: threading.Lock
+    next_msg_id: int
 
 
 _pipe_buffer: Dict[Pipe, _PipeEntry] = {}
@@ -245,6 +249,7 @@ class BlockToPipeHandler:
                     "queue": deque(),
                     "event": threading.Event(),
                     "lock": threading.Lock(),
+                    "next_msg_id": 0,
                 }
                 _pipe_buffer[dst] = new_entry
                 entry = new_entry
@@ -280,10 +285,12 @@ class BlockToPipeHandler:
             # Single 1D core
             num_receivers = 1
 
-        # Add to the queue for this pipe with receiver count
+        # Add to the queue for this pipe with receiver count, message ID, and empty receiver set
         # and notify any waiting receivers via event
         with entry["lock"]:
-            entry["queue"].append((src_data, num_receivers))
+            msg_id = entry["next_msg_id"]
+            entry["next_msg_id"] += 1
+            entry["queue"].append((src_data, num_receivers, msg_id, set()))
             # Signal that data is available
             entry["event"].set()
 
@@ -413,11 +420,12 @@ class PipeToBlockHandler:
                     "queue": deque(),
                     "event": threading.Event(),
                     "lock": threading.Lock(),
+                    "next_msg_id": 0,
                 }
                 _pipe_buffer[src] = new_entry
                 entry = new_entry
         event: threading.Event = entry["event"]
-        queue: Deque[Tuple[List[Tensor], Count]] = entry["queue"]
+        queue: Deque[Tuple[List[Tensor], Count, int, set]] = entry["queue"]
         lock: threading.Lock = entry["lock"]
 
         while True:
@@ -448,7 +456,46 @@ class PipeToBlockHandler:
                     event.clear()
                     continue
 
-                src_data, remaining_receivers = queue[0]
+                # Get current core ID for tracking which messages this core has received
+                try:
+                    from .kernel import core
+
+                    core_id = core(dims=1)
+                    core_id_available = True
+                except (ImportError, RuntimeError):
+                    # Non-kernel context or core not available - no tracking needed
+                    core_id_available = False
+                    core_id = None
+
+                # Find the first message in the queue that this core hasn't received yet
+                # This handles buffer_factor>1 where the same core may have multiple
+                # pending receives but should get different messages
+                found_msg = False
+                msg_index = 0
+
+                for idx, (msg_data, remaining_recv, msg_id, recv_set) in enumerate(
+                    queue
+                ):
+                    if not core_id_available or core_id not in recv_set:
+                        # This core hasn't received this message yet
+                        src_data = msg_data
+                        remaining_receivers = remaining_recv
+                        msg_id_to_recv = msg_id
+                        receivers_set = recv_set
+                        msg_index = idx
+                        found_msg = True
+                        break
+
+                if not found_msg:
+                    # All messages in queue have already been received by this core
+                    # Wait for new messages to arrive
+                    event.clear()
+                    continue
+
+                # Mark this core as having received the message
+                if core_id_available:
+                    receivers_set.add(core_id)
+
                 if len(dst) != len(src_data):
                     raise ValueError(
                         f"Destination Block length ({len(dst)}) "
@@ -459,13 +506,21 @@ class PipeToBlockHandler:
 
                 # Decrement receiver count and update queue
                 remaining_receivers -= 1
+
                 if remaining_receivers == 0:
-                    queue.popleft()
+                    # All receivers got this message, remove it from queue
+                    del queue[msg_index]
                     # If nothing left, clear the event so future waits block
                     if len(queue) == 0:
                         event.clear()
                 else:
-                    queue[0] = (src_data, remaining_receivers)
+                    # Update the message in place with new remaining count and receiver set
+                    queue[msg_index] = (
+                        src_data,
+                        remaining_receivers,
+                        msg_id_to_recv,
+                        receivers_set,
+                    )
 
                 return
 
