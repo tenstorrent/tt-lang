@@ -9,7 +9,7 @@ yield transformations. Each thread (compute/DM) runs in its own greenlet,
 and blocking operations (wait/reserve) switch back to the scheduler.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from greenlet import greenlet
 
@@ -162,9 +162,9 @@ class GreenletScheduler:
                 self._current_name = name
 
                 # Run thread until it blocks or completes
-                from .block import _set_current_thread_type, _clear_current_thread_type
+                from .block import set_current_thread_type, clear_current_thread_type
 
-                _set_current_thread_type(thread_type)
+                set_current_thread_type(thread_type)
                 try:
                     if g.dead:
                         # Thread already completed (marked by wrapped_func)
@@ -182,7 +182,7 @@ class GreenletScheduler:
                         self._mark_completed(name)
                 except Exception as e:
                     # Thread raised an error - preserve traceback for debugging
-                    _clear_current_thread_type()
+                    clear_current_thread_type()
                     self._current_name = None
 
                     # Format error with thread name and source location using pretty printing
@@ -243,7 +243,7 @@ class GreenletScheduler:
                     error_msg = f"{name}: {type(e).__name__}: {e}"
                     raise RuntimeError(error_msg) from e
                 finally:
-                    _clear_current_thread_type()
+                    clear_current_thread_type()
 
                 self._current_name = None
 
@@ -270,16 +270,19 @@ class GreenletScheduler:
         from .cb import CircularBuffer
         from .pipe import Pipe
         from .ttnnsim import Tensor
+        from .typedefs import AnyPipe
 
         match obj:
             case Block():
                 return " on Block"
             case CircularBuffer() if hasattr(obj, "_name"):
-                return f" on CircularBuffer({obj._name})"
+                name = getattr(obj, "_name", "unknown")
+                return f" on CircularBuffer({name})"
             case CircularBuffer():
                 return " on CircularBuffer"
             case Pipe():
-                return f" on Pipe({obj.src}->{obj.dst})"
+                pipe = cast(AnyPipe, obj)
+                return f" on Pipe({pipe.src_core}->{pipe.dst_core_range})"
             case Tensor():
                 return " on Tensor"
             case _:

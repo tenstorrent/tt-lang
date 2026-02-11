@@ -9,7 +9,7 @@ specified grid configurations.
 """
 
 import inspect
-from typing import Any, Callable, List, Tuple, Union, cast
+from typing import Any, Callable, List, Union, cast
 import types
 
 from .block import ThreadType
@@ -196,7 +196,7 @@ def core(dims: Size = 2) -> CoreCoord:
     if dims == 1:
         return coords[0]
     else:
-        return cast(tuple, tuple(coords))
+        return tuple(coords)
 
 
 def kernel(
@@ -223,7 +223,7 @@ def kernel(
         # This is achieved by modifying the function's globals to include this variable
 
         # Set grid to (8, 8) if 'auto'
-        actual_grid = (8, 8) if grid == "auto" else grid
+        actual_grid: Shape = cast(Shape, (8, 8) if grid == "auto" else grid)
 
         # Create new globals dict that includes grid
         new_globals = func.__globals__.copy()
@@ -240,18 +240,18 @@ def kernel(
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Import here to avoid circular dependency
-            from .decorators import _clear_thread_registry, _get_registered_threads
+            from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
 
             # Clear thread registry before kernel execution
-            _clear_thread_registry()
+            clear_thread_registry()
 
             # Call the modified function (grid is already in globals)
             # This executes the kernel body which defines and registers threads
             modified_func(*args, **kwargs)
 
             # Get registered threads
-            threads = _get_registered_threads()
+            threads = get_registered_threads()
 
             # All kernels must define exactly 3 threads: compute, dm0, dm1
             if len(threads) != 3:

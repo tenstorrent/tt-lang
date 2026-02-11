@@ -22,14 +22,15 @@ from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import torch
 
-# Try to import actual ttnn, track if available
+# Try to import actual ttnn, track if availability
+TTNN_AVAILABLE: bool
 try:
-    import ttnn
+    import ttnn  # type: ignore[reportMissingImports]
 
-    TTNN_AVAILABLE = True
+    TTNN_AVAILABLE = True  # type: ignore[reportConstantRedefinition]
 except ImportError:
-    ttnn = None  # type: ignore
-    TTNN_AVAILABLE = False
+    ttnn = None  # type: ignore[assignment]
+    TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
 from .constants import TILE_SHAPE
 from .tensoraccessor import TensorAccessor
@@ -87,8 +88,12 @@ def broadcast_tensors(
         List of result tensors after broadcasting
     """
     # Extract underlying torch tensors
-    left_torch = [t._tensor if hasattr(t, "_tensor") else t for t in left_tensors]
-    right_torch = [t._tensor if hasattr(t, "_tensor") else t for t in right_tensors]
+    left_torch: List[torch.Tensor] = [
+        cast(torch.Tensor, getattr(t, "_tensor", t)) for t in left_tensors
+    ]
+    right_torch: List[torch.Tensor] = [
+        cast(torch.Tensor, getattr(t, "_tensor", t)) for t in right_tensors
+    ]
 
     # Stack into batched tensors
     left_batched = torch.stack(left_torch)
@@ -772,7 +777,9 @@ def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
 
 
 # Dynamically generate wrapper functions for all ttnn operations with golden functions
-def _create_golden_wrapper(operation_name: str, golden_fn: Callable) -> Callable:
+def _create_golden_wrapper(
+    operation_name: str, golden_fn: Callable[..., Any]
+) -> Callable[..., Any]:
     """Create a wrapper function that calls the golden function and wraps result in Tensor.
 
     Args:
@@ -783,7 +790,7 @@ def _create_golden_wrapper(operation_name: str, golden_fn: Callable) -> Callable
         Wrapper function that converts inputs/outputs appropriately
     """
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Convert Tensor arguments to torch.Tensor
         torch_args = tuple(
             arg.to_torch() if isinstance(arg, Tensor) else arg for arg in args
@@ -868,9 +875,11 @@ if TTNN_AVAILABLE:
             continue
 
         try:
-            _golden_fn = ttnn.get_golden_function(_op)
+            _golden_fn = ttnn.get_golden_function(_op)  # type: ignore[union-attr]
             # Create wrapper and add to module globals
-            globals()[_op_name] = _create_golden_wrapper(_op_name, _golden_fn)
+            globals()[_op_name] = _create_golden_wrapper(
+                _op_name, _golden_fn  # type: ignore[arg-type]
+            )
         except (RuntimeError, AttributeError):
             # RuntimeError: Operation doesn't have a golden function
             # AttributeError: Object doesn't have golden_function attribute (e.g., enums, classes)
@@ -884,25 +893,24 @@ if TTNN_AVAILABLE:
             del globals()[name]
 else:
     # When ttnn is not available, import pure Python fallback implementations
-    from .golden_ops import (
-        abs,
-        add,
-        cos,
-        eq,
-        exp,
-        gelu,
-        gt,
-        isclose,
-        logical_and,
-        logical_or,
-        lt,
-        multiply,
-        ne,
-        relu,
-        repeat,
-        sigmoid,
-        sin,
-        sqrt,
-        subtract,
-        tan,
-    )
+    # These are re-exported for use by consumers of this module
+    from .golden_ops import abs  # type: ignore[reportUnusedImport]
+    from .golden_ops import add  # type: ignore[reportUnusedImport]
+    from .golden_ops import cos  # type: ignore[reportUnusedImport]
+    from .golden_ops import eq  # type: ignore[reportUnusedImport]
+    from .golden_ops import exp  # type: ignore[reportUnusedImport]
+    from .golden_ops import gelu  # type: ignore[reportUnusedImport]
+    from .golden_ops import gt  # type: ignore[reportUnusedImport]
+    from .golden_ops import isclose  # type: ignore[reportUnusedImport]
+    from .golden_ops import logical_and  # type: ignore[reportUnusedImport]
+    from .golden_ops import logical_or  # type: ignore[reportUnusedImport]
+    from .golden_ops import lt  # type: ignore[reportUnusedImport]
+    from .golden_ops import multiply  # type: ignore[reportUnusedImport]
+    from .golden_ops import ne  # type: ignore[reportUnusedImport]
+    from .golden_ops import relu  # type: ignore[reportUnusedImport]
+    from .golden_ops import repeat  # type: ignore[reportUnusedImport]
+    from .golden_ops import sigmoid  # type: ignore[reportUnusedImport]
+    from .golden_ops import sin  # type: ignore[reportUnusedImport]
+    from .golden_ops import sqrt  # type: ignore[reportUnusedImport]
+    from .golden_ops import subtract  # type: ignore[reportUnusedImport]
+    from .golden_ops import tan  # type: ignore[reportUnusedImport]

@@ -10,10 +10,10 @@ This module provides:
 - PipeIdentity classes: Wrappers exposing pipe source/destination information
 """
 
-from typing import Callable, Generator, Generic, List, Union
+from typing import Any, Callable, Generic, List, Union
 
 from .kernel import core, flatten_core_index, grid_size
-from .typedefs import CoreCoord, CoreRange, Pipe, DstT
+from .typedefs import AnyDst, CoreCoord, CoreRange, Pipe, DstT
 
 
 class SrcPipeIdentity(Generic[DstT]):
@@ -43,6 +43,10 @@ class SrcPipeIdentity(Generic[DstT]):
         return self.pipe.dst_core_range
 
 
+# Union of SrcPipeIdentity instances with different destination types
+AnySrcPipeIdentity = Union[SrcPipeIdentity[CoreCoord], SrcPipeIdentity[CoreRange]]
+
+
 class DstPipeIdentity:
     """
     Pipe identity for destination cores.
@@ -52,7 +56,7 @@ class DstPipeIdentity:
     so this identity only exposes the source.
     """
 
-    def __init__(self, pipe: "Pipe"):  # type: ignore[type-arg]
+    def __init__(self, pipe: "Pipe[Any]"):
         """Initialize with a pipe.
 
         Args:
@@ -70,7 +74,7 @@ class DstPipeIdentity:
         return self.pipe.src_core
 
 
-def expand_core_range(core_range: CoreRange) -> List[tuple]:
+def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
     """Expand a CoreRange with slices into a list of concrete core coordinates.
 
     Args:
@@ -88,28 +92,36 @@ def expand_core_range(core_range: CoreRange) -> List[tuple]:
     grid_shape = grid_size(dims=dims)
 
     # Convert to tuple if grid_size returned a single value
-    if not isinstance(grid_shape, tuple):
-        grid_shape = (grid_shape,)
+    match grid_shape:
+        case tuple():
+            pass
+        case _:
+            grid_shape = (grid_shape,)
 
     # Convert each dimension to a list of indices
-    dim_ranges = []
+    dim_ranges: List[List[int]] = []
     for i, item in enumerate(core_range):
-        if isinstance(item, slice):
-            # Convert slice to range using grid bounds
-            start = item.start if item.start is not None else 0
-            stop = item.stop if item.stop is not None else grid_shape[i]
-            step = item.step if item.step is not None else 1
-            dim_ranges.append(list(range(start, stop, step)))
-        else:
-            # Single index
-            dim_ranges.append([item])
+        match item:
+            case slice():
+                # Convert slice to range using grid bounds
+                start = item.start if item.start is not None else 0
+                stop = item.stop if item.stop is not None else grid_shape[i]
+                step = item.step if item.step is not None else 1
+                dim_ranges.append(list(range(start, stop, step)))
+            case _:
+                # Single index
+                dim_ranges.append([item])
 
     # Generate all combinations (Cartesian product)
-    result = []
+    result: List[CoreCoord] = []
 
-    def _cartesian_product(ranges, current=[]):
+    def _cartesian_product(ranges: List[List[int]], current: List[int] = []) -> None:
         if not ranges:
-            result.append(tuple(current))
+            # For 1D, append single value; for multi-D, append tuple
+            if dims == 1:
+                result.append(current[0])
+            else:
+                result.append(tuple(current))
             return
         for value in ranges[0]:
             _cartesian_product(ranges[1:], current + [value])
@@ -118,8 +130,8 @@ def expand_core_range(core_range: CoreRange) -> List[tuple]:
     return result
 
 
-def _core_in_dst_range(
-    dst_core_range: Union[CoreCoord, CoreRange, tuple[CoreCoord, CoreCoord]],
+def core_in_dst_range(
+    dst_core_range: AnyDst,
 ) -> bool:
     """Check if the current core is within the destination range.
 
@@ -127,7 +139,6 @@ def _core_in_dst_range(
         dst_core_range: Destination specification - can be:
                        - Single CoreCoord (unicast)
                        - CoreRange with slices (multicast)
-                       - Tuple of two CoreCoords (legacy rectangular range)
 
     Returns:
         True if current core is in the range, False otherwise
@@ -138,65 +149,50 @@ def _core_in_dst_range(
             current_core_linear = core(dims=1)
             return current_core_linear == dst_core_range
 
-        case tuple() if any(isinstance(item, slice) for item in dst_core_range):
+        case tuple() if any(type(item) is slice for item in dst_core_range):
             # CoreRange with slices - expand and check membership
             dims = len(dst_core_range)
             current_core_coords = core(dims=dims)
 
             # Convert single value to tuple for comparison
-            if not isinstance(current_core_coords, tuple):
-                current_core_coords = (current_core_coords,)
+            match current_core_coords:
+                case tuple():
+                    pass
+                case _:
+                    current_core_coords = (current_core_coords,)
 
             # Check each dimension
             for i, item in enumerate(dst_core_range):
-                if isinstance(item, slice):
-                    # Get grid dimension to determine bounds
-                    grid_shape = grid_size(dims=dims)
-                    if not isinstance(grid_shape, tuple):
-                        grid_shape = (grid_shape,)
+                match item:
+                    case slice():
+                        # Get grid dimension to determine bounds
+                        grid_shape = grid_size(dims=dims)
+                        match grid_shape:
+                            case tuple():
+                                pass
+                            case _:
+                                grid_shape = (grid_shape,)
 
-                    start = item.start if item.start is not None else 0
-                    stop = item.stop if item.stop is not None else grid_shape[i]
-                    step = item.step if item.step is not None else 1
+                        start = item.start if item.start is not None else 0
+                        stop = item.stop if item.stop is not None else grid_shape[i]
+                        step = item.step if item.step is not None else 1
 
-                    if not (
-                        start <= current_core_coords[i] < stop
-                        and (current_core_coords[i] - start) % step == 0
-                    ):
-                        return False
-                else:
-                    # Fixed index
-                    if current_core_coords[i] != item:
-                        return False
-            return True
-
-        case (tuple() as first, tuple() as second):
-            # Legacy rectangular range - get coordinates matching the dimensionality
-            dims = len(first)
-            current_core_coords = core(dims=dims)
-
-            # Check each dimension: min(first[i], second[i]) <= current_core_coords[i] <= max(first[i], second[i])
-            match current_core_coords:
-                case tuple():
-                    for i in range(dims):
                         if not (
-                            min(first[i], second[i])
-                            <= current_core_coords[i]
-                            <= max(first[i], second[i])
+                            start <= current_core_coords[i] < stop
+                            and (current_core_coords[i] - start) % step == 0
                         ):
                             return False
-                    return True
-                case _:
-                    return False
+                    case _:
+                        # Fixed index
+                        if current_core_coords[i] != item:
+                            return False
+            return True
 
         case tuple():
             # Single multi-dimensional core - get coordinates matching the dimensionality
             dims = len(dst_core_range)
             current_core_coords = core(dims=dims)
             return current_core_coords == dst_core_range
-
-        case _:
-            return False
 
 
 class PipeNet(Generic[DstT]):
@@ -246,6 +242,6 @@ class PipeNet(Generic[DstT]):
                      source via its .dst property.
         """
         for pipe in self._pipes:
-            if _core_in_dst_range(pipe.dst_core_range):
+            if core_in_dst_range(pipe.dst_core_range):
                 identity = DstPipeIdentity(pipe)
                 cond_fun(identity)

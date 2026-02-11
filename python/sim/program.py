@@ -12,7 +12,7 @@ import copy
 import inspect
 import types
 from types import CellType, FunctionType
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Protocol
 
 from .block import ThreadType
 from .cb import CircularBuffer
@@ -102,18 +102,19 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             # are available for per-core copying
             for tmpl in self.functions:
                 if hasattr(tmpl, "__wrapped__"):
-                    func = tmpl.__wrapped__
-                    if func.__code__.co_freevars and func.__closure__:
-                        for var_name, cell in zip(
-                            func.__code__.co_freevars, func.__closure__
-                        ):
-                            try:
-                                # Only add if not already in context
-                                if var_name not in self.context:
-                                    self.context[var_name] = cell.cell_contents
-                            except ValueError:
-                                # Cell is empty (variable not yet bound)
-                                pass
+                    func = getattr(tmpl, "__wrapped__")
+                    if hasattr(func, "__code__") and hasattr(func, "__closure__"):
+                        code = func.__code__
+                        closure = func.__closure__
+                        if code.co_freevars and closure:
+                            for var_name, cell in zip(code.co_freevars, closure):
+                                try:
+                                    # Only add if not already in context
+                                    if var_name not in self.context:
+                                        self.context[var_name] = cell.cell_contents
+                                except ValueError:
+                                    # Cell is empty (variable not yet bound)
+                                    pass
 
             grid = self.context.get("grid", (1, 1))
             # Calculate total cores for any dimension grid
@@ -141,9 +142,12 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             for key, value in self.context.items():
                 # Skip module objects (e.g., local imports like `from python.sim import ttnn`)
-                if isinstance(value, types.ModuleType):
-                    core_context[key] = value
-                    continue
+                match value:
+                    case types.ModuleType():
+                        core_context[key] = value
+                        continue
+                    case _:
+                        pass
 
                 match value:
                     case Tensor():
@@ -158,7 +162,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                             api=api,
                         )
                         # Store the variable name for debugging
-                        new_cb._name = key
+                        setattr(new_cb, "_name", key)
                         core_context[key] = new_cb
                     case _:
                         core_context[key] = copy.deepcopy(value, memo)
@@ -200,11 +204,14 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     ]:
                         # Get ThreadType directly from template's thread_type attribute
                         thread_type = getattr(tmpl, "thread_type", None)
-                        if not isinstance(thread_type, ThreadType):
-                            raise RuntimeError(
-                                f"Template {tmpl} has invalid thread_type '{thread_type}'. "
-                                f"Expected ThreadType enum (COMPUTE or DM)."
-                            )
+                        match thread_type:
+                            case ThreadType.COMPUTE | ThreadType.DM:
+                                pass
+                            case _:
+                                raise RuntimeError(
+                                    f"Template {tmpl} has invalid thread_type '{thread_type}'. "
+                                    f"Expected ThreadType enum (COMPUTE or DM)."
+                                )
 
                         # Bind template to core context
                         bound_func = tmpl.bind(core_context)
@@ -233,14 +240,17 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             Raises:
                 RuntimeError: If any CircularBuffer has pending blocks
             """
-            errors = []
+            errors: List[str] = []
             for core_idx, core_context in enumerate(all_core_contexts):
                 for key, value in core_context.items():
-                    if isinstance(value, CircularBuffer):
-                        try:
-                            value.validate_no_pending_blocks()
-                        except RuntimeError as e:
-                            errors.append(f"core{core_idx}.{key}: {e}")
+                    match value:
+                        case CircularBuffer():
+                            try:
+                                value.validate_no_pending_blocks()
+                            except RuntimeError as e:
+                                errors.append(f"core{core_idx}.{key}: {e}")
+                        case _:
+                            pass
 
             if errors:
                 raise RuntimeError(

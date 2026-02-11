@@ -23,12 +23,12 @@ def _register_thread(thread_template: BindableTemplate) -> None:
     _thread_registry.append(thread_template)
 
 
-def _clear_thread_registry() -> None:
+def clear_thread_registry() -> None:
     """Clear the thread registry before kernel execution."""
     _thread_registry.clear()
 
 
-def _get_registered_threads() -> List[BindableTemplate]:
+def get_registered_threads() -> List[BindableTemplate]:
     """Get all registered threads and clear the registry."""
     threads = list(_thread_registry)
     _thread_registry.clear()

@@ -11,7 +11,7 @@ operations.
 """
 
 from types import TracebackType
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple
 
 import torch
 
@@ -50,7 +50,7 @@ class _BlockContextManager:
     @property
     def _shape(self) -> "Shape":
         """Delegate shape access to the underlying block."""
-        return self._block._shape
+        return self._block.shape
 
     def __enter__(self) -> Block:
         return self._block
@@ -76,7 +76,11 @@ class _BlockContextManager:
 
     def _get_item(self, idx: int) -> Tensor:
         """Internal method to get an item from the block for operations like arithmetic."""
-        return self._block._get_item(idx)
+        return self._block.get_item(idx)
+
+    def get_item(self, idx: int) -> Tensor:
+        """Public method to get an item from the block."""
+        return self._block.get_item(idx)
 
     def to_list(self) -> List[Tensor]:
         """Get all tiles as a list. Useful for test verification."""
@@ -353,7 +357,7 @@ class CircularBuffer:
         # Initialize the reserved block with zero tensors
         zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
         for i in range(len(block)):
-            block._write_slot(i, zero_tensor)
+            block.write_slot(i, zero_tensor)
 
         self._pending_reserved_block = block
         return ReserveContext(self, block)
@@ -464,23 +468,23 @@ class CircularBuffer:
         Raises:
             RuntimeError: If there are any pending blocks
         """
-        errors = []
+        errors: List[str] = []
 
         if self._pending_reserved_block is not None:
             block = self._pending_reserved_block
             errors.append(
-                f"Pending reserved block: Block(acquisition={block._acquisition.name}, "
-                f"thread={block._thread_type.name}, access={block._access_state.name}, "
-                f"expected_ops={[op.name for op in block._expected_ops]}). "
+                f"Pending reserved block: Block(acquisition={block.acquisition.name}, "
+                f"thread={block.thread_type.name}, access={block.access_state.name}, "
+                f"expected_ops={[op.name for op in block.expected_ops]}). "
                 f"Did you forget to call push()?"
             )
 
         if self._pending_waited_block is not None:
             block = self._pending_waited_block
             errors.append(
-                f"Pending waited block: Block(acquisition={block._acquisition.name}, "
-                f"thread={block._thread_type.name}, access={block._access_state.name}, "
-                f"expected_ops={[op.name for op in block._expected_ops]}). "
+                f"Pending waited block: Block(acquisition={block.acquisition.name}, "
+                f"thread={block.thread_type.name}, access={block.access_state.name}, "
+                f"expected_ops={[op.name for op in block.expected_ops]}). "
                 f"Did you forget to call pop()?"
             )
 

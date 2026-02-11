@@ -8,7 +8,7 @@ Block and supporting Span for cbsim.
 
 import operator as _op
 from enum import Enum, auto
-from typing import Any, Callable, List, Optional, Sequence, Union
+from typing import Any, Callable, List, Optional, Sequence, Union, cast
 
 from pydantic import validate_call
 
@@ -21,7 +21,7 @@ from .typedefs import Index, Shape, Size, Span
 _current_thread_type: Optional["ThreadType"] = None
 
 
-def _get_current_thread_type() -> "ThreadType":
+def get_current_thread_type() -> "ThreadType":
     """Get the current thread type.
 
     Returns:
@@ -33,12 +33,12 @@ def _get_current_thread_type() -> "ThreadType":
     if _current_thread_type is None:
         raise RuntimeError(
             "Thread context not set. Must be called within a kernel thread or after "
-            "calling _set_current_thread_type()."
+            "calling set_current_thread_type()."
         )
     return _current_thread_type
 
 
-def _set_current_thread_type(thread_type: Optional["ThreadType"]) -> None:
+def set_current_thread_type(thread_type: Optional["ThreadType"]) -> None:
     """Set the current thread type.
 
     Args:
@@ -48,7 +48,7 @@ def _set_current_thread_type(thread_type: Optional["ThreadType"]) -> None:
     _current_thread_type = thread_type
 
 
-def _clear_current_thread_type() -> None:
+def clear_current_thread_type() -> None:
     """Clear the current thread type."""
     global _current_thread_type
     _current_thread_type = None
@@ -222,7 +222,7 @@ class Block:
         Temporary blocks are not backed by CB storage and don't support wrap-around.
         """
         return cls(
-            buf=tensors,
+            buf=cast(List[CBSlot], tensors),
             capacity=len(tensors),
             span=Span(0, len(tensors)),
             shape=shape,
@@ -682,19 +682,9 @@ class Block:
                 f"Cannot write to Block: Block has no access ({self._access_state.name} state). "
                 f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
             )
-        # Block writes during copy operations (when expecting TX_WAIT)
-        # This applies to copy sources in NAR state
-        if (
-            ExpectedOp.TX_WAIT in self._expected_ops
-            and self._access_state == AccessState.NAR
-        ):
-            raise RuntimeError(
-                f"Cannot write to Block: Block is locked as copy source until tx.wait() completes. "
-                f"Current state: {self._access_state.name}, Expected operations: [TX_WAIT]"
-            )
         # Note: We allow writing in MR/RW/A states as appropriate for the operation
 
-    def _get_item(self, idx: Index) -> Tensor:
+    def get_item(self, idx: Index) -> Tensor:
         """Internal method to get item with lock checking.
 
         This is used internally by copy handlers and other internal operations.
@@ -732,7 +722,7 @@ class Block:
             "Direct assignment to Block is not allowed. Use block.store() or copy() instead."
         )
 
-    def _write_slot(self, idx: Index, value: Tensor) -> None:
+    def write_slot(self, idx: Index, value: Tensor) -> None:
         """Internal method to write to a slot. Only used by store() and copy handlers."""
         self._check_can_write()
         if not (0 <= idx < self._span.length):
@@ -753,13 +743,13 @@ class Block:
             raise ValueError(f"Popping uninitialized or consumed slot at index {idx}")
         self._buf[(self._span.start + idx) % self._capacity] = None
 
-    def to_list(self) -> List[CBSlot]:
+    def to_list(self) -> List[Tensor]:
         """Convert block contents to a list.
 
         This is a convenience method for tests and debugging.
         Returns the actual tensor values from the buffer.
         """
-        return [self._get_item(i) for i in range(len(self))]
+        return [self.get_item(i) for i in range(len(self))]
 
     def copy_as_dest(self, items: Sequence[Tensor]) -> None:
         """Store items into the block as part of a copy operation.
@@ -789,15 +779,23 @@ class Block:
             # For now, require same number of dimensions
             raise ValueError(f"Shape dimension mismatch: {left_shape} vs {right_shape}")
 
-        result_shape = tuple(
-            max(l, r) if l == 1 or r == 1 or l == r else None
-            for l, r in zip(left_shape, right_shape)
-        )
+        # Check compatibility using pattern matching
+        for l, r in zip(left_shape, right_shape):
+            match (l, r):
+                case (1, _) | (_, 1):
+                    # One dimension is 1: broadcasting compatible
+                    pass
+                case (x, y) if x == y:
+                    # Both dimensions equal: compatible
+                    pass
+                case _:
+                    # Incompatible dimensions
+                    raise ValueError(
+                        f"Incompatible shapes for broadcasting: {left_shape} and {right_shape}"
+                    )
 
-        if None in result_shape:
-            raise ValueError(
-                f"Incompatible shapes for broadcasting: {left_shape} and {right_shape}"
-            )
+        # Now construct result_shape knowing all dimensions are compatible
+        result_shape: Shape = tuple(max(l, r) for l, r in zip(left_shape, right_shape))
 
         return result_shape
 
@@ -814,28 +812,39 @@ class Block:
         source_blocks_to_mark: List["Block"] = []
 
         # Unwrap context managers (WaitContext, ReserveContext) if needed
-        actual_items = items
-        if hasattr(items, "_block"):
-            actual_items = items._block  # type: ignore[attr-defined]
-
-        if isinstance(actual_items, Block):
-            items_seq = actual_items.to_list()
-            # Check if this is a wait() Compute block being stored directly
-            if (
-                actual_items._acquisition == BlockAcquisition.WAIT
-                and actual_items._thread_type == ThreadType.COMPUTE
-                and ExpectedOp.STORE_SRC in actual_items._expected_ops
-            ):
-                source_blocks_to_mark.append(actual_items)
-            # Check if this is a temporary block with tracked source wait() blocks
-            elif actual_items._is_temporary and actual_items._source_blocks:
-                source_blocks_to_mark.extend(
-                    blk
-                    for blk in actual_items._source_blocks
-                    if ExpectedOp.STORE_SRC in blk._expected_ops
+        # These context managers have a _block attribute that holds the actual Block
+        match items:
+            case Block():
+                actual_items: Union["Block", Sequence[Tensor]] = items
+            case _ if hasattr(items, "_block"):
+                # This is a context manager wrapper, unwrap it
+                actual_items = cast(
+                    Union["Block", Sequence[Tensor]], getattr(items, "_block")
                 )
-        else:
-            items_seq = actual_items
+            case _:
+                # This is a Sequence[Tensor]
+                actual_items = items
+
+        items_seq: Sequence[Tensor]
+        match actual_items:
+            case Block():
+                items_seq = actual_items.to_list()
+                # Check if this is a wait() Compute block being stored directly
+                if (
+                    actual_items._acquisition == BlockAcquisition.WAIT
+                    and actual_items._thread_type == ThreadType.COMPUTE
+                    and ExpectedOp.STORE_SRC in actual_items._expected_ops
+                ):
+                    source_blocks_to_mark.append(actual_items)
+                # Check if this is a temporary block with tracked source wait() blocks
+                elif actual_items._is_temporary and actual_items._source_blocks:
+                    source_blocks_to_mark.extend(
+                        blk
+                        for blk in actual_items._source_blocks
+                        if ExpectedOp.STORE_SRC in blk._expected_ops
+                    )
+            case _:
+                items_seq = actual_items
 
         if len(items_seq) != self._span.length:
             raise ValueError("Length mismatch in store()")
@@ -857,15 +866,15 @@ class Block:
             if is_first_acc_store:
                 # First store(acc=True): Just assign (y = x), don't accumulate
                 for i, v in enumerate(items_seq):
-                    self._write_slot(i, v)
+                    self.write_slot(i, v)
             else:
                 # Subsequent store(acc=True): Accumulate (y += x)
                 for i, v in enumerate(items_seq):
-                    self._write_slot(i, self._get_item(i) + v)
+                    self.write_slot(i, self.get_item(i) + v)
         else:
             # Regular assignment
             for i, v in enumerate(items_seq):
-                self._write_slot(i, v)
+                self.write_slot(i, v)
 
     def _apply_binary_op(
         self,
@@ -884,7 +893,7 @@ class Block:
 
         # Check if shapes match exactly - fast path
         if left_shape == right_shape and len_left == len_right:
-            return [op(left._get_item(i), right._get_item(i)) for i in range(len_left)]
+            return [op(left.get_item(i), right.get_item(i)) for i in range(len_left)]
 
         # Check if broadcasting is valid using standard broadcasting rules
         # For now, require same number of dimensions
@@ -938,23 +947,24 @@ class Block:
         # Track source wait() blocks that contributed to this result
         for block in [self, other]:
             # Unwrap if this is a context manager wrapper (WaitContext, ReserveContext)
-            actual_block = block
+            actual_block: Any = block
             if hasattr(block, "_block"):
                 actual_block = block._block  # type: ignore[attr-defined]
 
             # Only track if this is actually a Block object
-            if not isinstance(actual_block, Block):
-                continue
-
-            if (
-                not actual_block._is_temporary
-                and actual_block._acquisition == BlockAcquisition.WAIT
-                and actual_block._thread_type == ThreadType.COMPUTE
-            ):
-                result_block._source_blocks.append(actual_block)
-            elif actual_block._is_temporary:
-                # Temporary blocks may have their own source blocks to propagate
-                result_block._source_blocks.extend(actual_block._source_blocks)
+            match actual_block:
+                case Block():
+                    if (
+                        not actual_block._is_temporary
+                        and actual_block._acquisition == BlockAcquisition.WAIT
+                        and actual_block._thread_type == ThreadType.COMPUTE
+                    ):
+                        result_block._source_blocks.append(actual_block)
+                    elif actual_block._is_temporary:
+                        # Temporary blocks may have their own source blocks to propagate
+                        result_block._source_blocks.extend(actual_block._source_blocks)
+                case _:  # pyright: ignore[reportUnknownVariableType]
+                    pass  # Not a Block, skip
 
         return result_block
 
@@ -983,31 +993,27 @@ class Block:
 
         Supports both Block and scalar integer exponents.
         """
-        if isinstance(other, int):
-            # Scalar power - apply to each tensor in the block
-            result_tensors = [t**other for t in self.to_list()]
-            result_block = Block.from_list(result_tensors, shape=self._shape)
+        match other:
+            case int():
+                # Scalar power - apply to each tensor in the block
+                block_list = self.to_list()
+                result_tensors: List[Tensor] = [t**other for t in block_list]
+                result_block = Block.from_list(result_tensors, shape=self._shape)
 
-            # Track source wait() blocks
-            # Unwrap if this is a context manager wrapper
-            actual_self = self
-            if hasattr(self, "_block"):
-                actual_self = self._block  # type: ignore[attr-defined]
-
-            if isinstance(actual_self, Block):
+                # Track source wait() blocks
                 if (
-                    not actual_self._is_temporary
-                    and actual_self._acquisition == BlockAcquisition.WAIT
-                    and actual_self._thread_type == ThreadType.COMPUTE
+                    not self._is_temporary
+                    and self._acquisition == BlockAcquisition.WAIT
+                    and self._thread_type == ThreadType.COMPUTE
                 ):
-                    result_block._source_blocks.append(actual_self)
-                elif actual_self._is_temporary:
-                    result_block._source_blocks.extend(actual_self._source_blocks)
+                    result_block._source_blocks.append(self)
+                elif self._is_temporary:
+                    result_block._source_blocks.extend(self._source_blocks)
 
-            return result_block
-
-        # Block power
-        return self._binary_op(other, _op.pow)
+                return result_block
+            case _:
+                # Block power
+                return self._binary_op(other, _op.pow)
 
     def __matmul__(self, other: "Block") -> "Block":
         # Matrix multiplication is not a broadcasting operation
@@ -1016,6 +1022,26 @@ class Block:
         from . import math as sim_math
 
         return sim_math.matmul(self, other)
+
+    @property
+    def acquisition(self) -> BlockAcquisition:
+        """Get the acquisition method (reserve or wait) of this block."""
+        return self._acquisition
+
+    @property
+    def thread_type(self) -> ThreadType:
+        """Get the thread type (DM or Compute) that acquired this block."""
+        return self._thread_type
+
+    @property
+    def access_state(self) -> AccessState:
+        """Get the current access state of this block."""
+        return self._access_state
+
+    @property
+    def expected_ops(self) -> set[ExpectedOp]:
+        """Get the set of expected operations for this block."""
+        return self._expected_ops
 
     @property
     def shape(self) -> Shape:
@@ -1030,7 +1056,7 @@ __all__ = [
     "ThreadType",
     "BlockAcquisition",
     "ExpectedOp",
-    "_get_current_thread_type",
-    "_set_current_thread_type",
-    "_clear_current_thread_type",
+    "get_current_thread_type",
+    "set_current_thread_type",
+    "clear_current_thread_type",
 ]

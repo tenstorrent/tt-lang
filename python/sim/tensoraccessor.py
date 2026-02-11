@@ -12,6 +12,9 @@ import torch
 from .constants import TILE_SHAPE
 from .typedefs import IndexType
 
+# Type for indexing: tuple of two indices, where each index can be int or slice
+TensorKey = Tuple[Union[int, slice], Union[int, slice]]
+
 
 # TODO: We only support 2D tensors and 32 x 32 tiles for now, just enough to
 # support colman_fused_eltwise_bcast.py and colman_fused_muladd(2).py examples
@@ -122,7 +125,7 @@ class TensorAccessor:
             return slice(index, index + 1)
         return index
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: TensorKey) -> torch.Tensor:
         """Access tensor data using tile-based indexing.
 
         Args:
@@ -158,7 +161,7 @@ class TensorAccessor:
 
         return self.tensor[slice(row_start, row_stop), slice(col_start, col_stop)]
 
-    def __setitem__(self, key, value: torch.Tensor) -> None:
+    def __setitem__(self, key: TensorKey, value: torch.Tensor) -> None:
         """Set tensor data using tile-based indexing.
 
         Args:

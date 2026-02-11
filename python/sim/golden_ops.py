@@ -13,7 +13,7 @@ All functions accept and return Tensor objects (not torch.Tensor directly).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch
 

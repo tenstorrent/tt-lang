@@ -13,6 +13,7 @@ from typing import Any
 
 from .block import Block
 from .copyhandlers import (
+    CopyEndpoint,
     CopyEndpointType,
     CopyTransferHandler,
     handler_registry,
@@ -49,8 +50,8 @@ class CopyTransaction:
 
     def __init__(
         self,
-        src: Any,
-        dst: Any,
+        src: CopyEndpoint,
+        dst: CopyEndpoint,
     ):
         """
         Initialize a copy transaction from src to dst.
@@ -76,10 +77,16 @@ class CopyTransaction:
 
         # Mark blocks in state machine BEFORE validation - this transitions them to appropriate states
         # that prevent user access during the copy operation
-        if isinstance(src_block, Block):
-            src_block.mark_copy_as_source()
-        if isinstance(dst_block, Block):
-            dst_block.mark_copy_as_dest()
+        match src_block:
+            case Block():
+                src_block.mark_copy_as_source()
+            case _:
+                pass
+        match dst_block:
+            case Block():
+                dst_block.mark_copy_as_dest()
+            case _:
+                pass
 
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
@@ -137,10 +144,16 @@ class CopyTransaction:
         self._completed = True
 
         # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states
-        if isinstance(src_block, Block):
-            src_block.mark_tx_wait_complete()
-        if isinstance(dst_block, Block):
-            dst_block.mark_tx_wait_complete()
+        match src_block:
+            case Block():
+                src_block.mark_tx_wait_complete()
+            case _:
+                pass
+        match dst_block:
+            case Block():
+                dst_block.mark_tx_wait_complete()
+            case _:
+                pass
 
     def can_wait(self) -> bool:
         """
@@ -163,8 +176,8 @@ class CopyTransaction:
 
 
 def copy(
-    src: Any,
-    dst: Any,
+    src: CopyEndpoint,
+    dst: CopyEndpoint,
 ) -> CopyTransaction:
     """
     Create a copy transaction from source to destination.

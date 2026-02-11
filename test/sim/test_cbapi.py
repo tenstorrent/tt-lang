@@ -9,7 +9,7 @@ from typing import List, Tuple
 import pytest
 from test_utils import make_full_tensor, tensors_exact_equal
 
-from python.sim.block import ThreadType, _set_current_thread_type
+from python.sim.block import ThreadType, set_current_thread_type
 from python.sim.cb import CircularBuffer
 from python.sim.cbapi import CBAPI
 from python.sim.cbstate import CBSlot
@@ -26,9 +26,9 @@ def setup_thread_context():
     We use COMPUTE here, but the actual thread type doesn't affect CBAPI behavior.
     State machine validation happens at the Block level, which is tested separately.
     """
-    _set_current_thread_type(ThreadType.COMPUTE)
+    set_current_thread_type(ThreadType.COMPUTE)
     yield
-    _set_current_thread_type(None)  # Clean up
+    set_current_thread_type(None)  # Clean up
 
 
 @pytest.fixture
@@ -333,10 +333,10 @@ def test_allocate_cb_id_exceeds_max():
 
 def test_heterogeneous_cbs_in_same_api():
     """Test that a single CBAPI instance can handle multiple circular buffers."""
-    from python.sim.block import ThreadType, _set_current_thread_type
+    from python.sim.block import ThreadType, set_current_thread_type
 
     # Set COMPUTE thread context
-    _set_current_thread_type(ThreadType.COMPUTE)
+    set_current_thread_type(ThreadType.COMPUTE)
 
     try:
         # Create a shared CBAPI instance
@@ -380,15 +380,15 @@ def test_heterogeneous_cbs_in_same_api():
         assert cb2._api is api  # type: ignore
     finally:
         # Clear thread context
-        _set_current_thread_type(None)
+        set_current_thread_type(None)
 
 
 def test_default_api_heterogeneous():
     """Test that an explicit API can handle multiple circular buffers."""
-    from python.sim.block import ThreadType, _set_current_thread_type
+    from python.sim.block import ThreadType, set_current_thread_type
 
     # Set COMPUTE thread context
-    _set_current_thread_type(ThreadType.COMPUTE)
+    set_current_thread_type(ThreadType.COMPUTE)
 
     try:
         # Create an explicit API instance
@@ -428,7 +428,7 @@ def test_default_api_heterogeneous():
         cb2.push()  # Push write2_2
     finally:
         # Clear thread context
-        _set_current_thread_type(None)
+        set_current_thread_type(None)
 
 
 if __name__ == "__main__":

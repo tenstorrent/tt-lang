@@ -36,6 +36,9 @@ CoreRange = Tuple[Union[Index, slice], ...]
 # Type variable for Pipe destination type
 DstT = TypeVar("DstT", CoreCoord, CoreRange)
 
+# Union of valid destination types for Pipe
+AnyDst = Union[CoreCoord, CoreRange]
+
 
 @dataclass(frozen=True)
 class Pipe(Generic[DstT]):
@@ -81,9 +84,9 @@ class Pipe(Generic[DstT]):
             return True
 
         # Check if current core is in destination range
-        from .pipe import _core_in_dst_range
+        from .pipe import core_in_dst_range
 
-        return _core_in_dst_range(self.dst_core_range)
+        return core_in_dst_range(self.dst_core_range)
 
     def __hash__(self) -> int:
         """Custom hash implementation to handle slices and nested tuples."""
@@ -101,6 +104,9 @@ class Pipe(Generic[DstT]):
 
         return hash((make_hashable(self.src_core), make_hashable(self.dst_core_range)))
 
+
+# Union of Pipe instances with different destination types
+AnyPipe = Union[Pipe[CoreCoord], Pipe[CoreRange]]
 
 Shape = Tuple[Size, ...]
 _MAX_CBS: Size = 32  # Fixed pool of circular buffers

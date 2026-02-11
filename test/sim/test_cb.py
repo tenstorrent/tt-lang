@@ -19,7 +19,7 @@ from test_utils import (
 )
 
 from python.sim import TILE_SHAPE, copy, ttnn
-from python.sim.block import ThreadType, _set_current_thread_type
+from python.sim.block import ThreadType, set_current_thread_type
 from python.sim.cb import CircularBuffer
 from python.sim.cbapi import CBAPI
 from python.sim.errors import CBContractError
@@ -34,9 +34,9 @@ def setup_thread_context():
     The state machine enforces different expected operations for DM vs COMPUTE threads,
     so parametrizing these tests would require substantial test logic changes.
     """
-    _set_current_thread_type(ThreadType.COMPUTE)
+    set_current_thread_type(ThreadType.COMPUTE)
     yield
-    _set_current_thread_type(None)  # Clean up
+    set_current_thread_type(None)  # Clean up
 
 
 @pytest.fixture
@@ -141,13 +141,13 @@ def test_copy_operations_with_dm_context(api: CBAPI) -> None:
     This replaces the old test_copy_operations that was disabled due to lack of thread context.
     """
     from python.sim.block import (
-        _set_current_thread_type,
-        _clear_current_thread_type,
+        set_current_thread_type,
+        clear_current_thread_type,
         ThreadType,
     )
 
     # Set DM thread context (required for copy operations)
-    _set_current_thread_type(ThreadType.DM)
+    set_current_thread_type(ThreadType.DM)
 
     try:
         # Create test tensors
@@ -185,7 +185,7 @@ def test_copy_operations_with_dm_context(api: CBAPI) -> None:
 
     finally:
         # Clean up thread context
-        _clear_current_thread_type()
+        clear_current_thread_type()
 
     print("Copy operations with DM context test passed!")
 
@@ -230,8 +230,8 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
     - Switch to COMPUTE thread for consumption (wait + read + pop)
     """
     from python.sim.block import (
-        _set_current_thread_type,
-        _clear_current_thread_type,
+        set_current_thread_type,
+        clear_current_thread_type,
         ThreadType,
     )
 
@@ -259,7 +259,7 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
         assert c_in_cb.capacity_tiles == 2
 
         # DM thread: Producer side - copy data into CBs
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         # Copy c_in data
         c_block = c_in_cb.reserve()
@@ -276,7 +276,7 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
         a_in_cb.push()
 
         # Switch to COMPUTE thread: Consumer side - read data back
-        _set_current_thread_type(ThreadType.COMPUTE)
+        set_current_thread_type(ThreadType.COMPUTE)
 
         c_data = c_in_cb.wait()
         a_data = a_in_cb.wait()
@@ -308,17 +308,17 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
 
     finally:
         # Clean up thread context
-        _clear_current_thread_type()
+        clear_current_thread_type()
 
     print("Copy in DM thread context test passed!")
 
 
 def test_single_pending_reserve_constraint(api: CBAPI) -> None:
     """Test that only one reserve() is allowed before push()."""
-    from python.sim.block import _set_current_thread_type, ThreadType
+    from python.sim.block import set_current_thread_type, ThreadType
     from python.sim.copy import copy
 
-    _set_current_thread_type(ThreadType.DM)
+    set_current_thread_type(ThreadType.DM)
 
     try:
         element = make_ones_tile()
@@ -351,24 +351,24 @@ def test_single_pending_reserve_constraint(api: CBAPI) -> None:
         tx.wait()
         cb.push()
     finally:
-        from python.sim.block import _clear_current_thread_type
+        from python.sim.block import clear_current_thread_type
 
-        _clear_current_thread_type()
+        clear_current_thread_type()
 
 
 def test_single_pending_wait_constraint(api: CBAPI) -> None:
     """Test that only one wait() is allowed before pop()."""
-    from python.sim.block import _set_current_thread_type, ThreadType
+    from python.sim.block import set_current_thread_type, ThreadType
     from python.sim.copy import copy
 
-    _set_current_thread_type(ThreadType.COMPUTE)
+    set_current_thread_type(ThreadType.COMPUTE)
 
     try:
         element = make_ones_tile()
         cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
         # First populate the CB with data (using DM thread)
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
         block = cb.reserve()
         test_data = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
         test_slice = test_data[0:1, 0:1]
@@ -377,7 +377,7 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
         cb.push()
 
         # Switch to COMPUTE thread for consumption
-        _set_current_thread_type(ThreadType.COMPUTE)
+        set_current_thread_type(ThreadType.COMPUTE)
 
         # First wait() should succeed
         data1 = cb.wait()
@@ -398,13 +398,13 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
         cb.pop()
 
         # Add more data (using DM thread)
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
         block = cb.reserve()
         tx = copy(test_slice, block)
         tx.wait()
         cb.push()
 
-        _set_current_thread_type(ThreadType.COMPUTE)
+        set_current_thread_type(ThreadType.COMPUTE)
         data2 = cb.wait()
         assert data2 is not None
         # Use second waited block as STORE_SRC before pop
@@ -413,9 +413,9 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
         out_cb.push()
         cb.pop()
     finally:
-        from python.sim.block import _clear_current_thread_type
+        from python.sim.block import clear_current_thread_type
 
-        _clear_current_thread_type()
+        clear_current_thread_type()
 
 
 def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:
@@ -924,14 +924,14 @@ def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
         Block,
         BlockAcquisition,
         ThreadType,
-        _set_current_thread_type,
+        set_current_thread_type,
     )
     from python.sim.typedefs import Span
     import torch
     from python.sim import ttnn
 
     # Set thread type to DM (required for copy operations)
-    _set_current_thread_type(ThreadType.DM)
+    set_current_thread_type(ThreadType.DM)
 
     try:
         # Create a block manually in DM thread context
@@ -970,9 +970,9 @@ def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
         # Block indexing is not allowed regardless of state
     finally:
         # Clean up thread context
-        from python.sim.block import _clear_current_thread_type
+        from python.sim.block import clear_current_thread_type
 
-        _clear_current_thread_type()
+        clear_current_thread_type()
 
     print("Copy sets block to NA state test passed!")
 
@@ -988,10 +988,10 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
         BlockAcquisition,
         ThreadType,
         ExpectedOp,
-        _set_current_thread_type,
+        set_current_thread_type,
     )
 
-    _set_current_thread_type(ThreadType.COMPUTE)
+    set_current_thread_type(ThreadType.COMPUTE)
 
     try:
         element = make_ones_tile()
@@ -999,7 +999,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
 
         # Create a block in WAIT state (POP expected)
         # First, populate the CB
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
         from python.sim.copy import copy
 
         src = make_ones_tile()
@@ -1009,7 +1009,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
         cb.push()
 
         # Now wait for it in COMPUTE thread
-        _set_current_thread_type(ThreadType.COMPUTE)
+        set_current_thread_type(ThreadType.COMPUTE)
         waited_context = cb.wait()
         waited_block = waited_context.block()
 
@@ -1031,9 +1031,9 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
 
         print("Push validates expected state test passed!")
     finally:
-        from python.sim.block import _clear_current_thread_type
+        from python.sim.block import clear_current_thread_type
 
-        _clear_current_thread_type()
+        clear_current_thread_type()
 
 
 if __name__ == "__main__":
