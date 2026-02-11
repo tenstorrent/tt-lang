@@ -31,14 +31,14 @@ def matmul_1d(
     num_blocks_m = Mt // block_h
     num_blocks_k = Kt // block_inner_dim
 
-    buffering_factor = 2
+    buffering_factor = 1
     a_cb = make_circular_buffer_like(
         a_tensor, shape=(block_h, block_inner_dim), buffer_factor=buffering_factor
     )
     b_cb = make_circular_buffer_like(
         b_tensor, shape=(block_inner_dim, block_w), buffer_factor=buffering_factor
     )
-    # non buffered output, matching metal implementation
+
     out_cb = make_circular_buffer_like(
         out_tensor, shape=(block_h, block_w), buffer_factor=1
     )
@@ -167,25 +167,25 @@ def test_matmul_1d(M, N, K, block_h, block_w, block_inner_dim, blocks_per_core_n
 
     golden_output = A.to_torch() @ B.to_torch()
 
-    diff_tensor = torch.abs(output_t.to_torch() - golden_output)
-    print(f"diff {diff_tensor}")
-    print(f"max diff {torch.max(diff_tensor)}")
+    # diff_tensor = torch.abs(output_t.to_torch() - golden_output)
+    # print(f"diff {diff_tensor}")
+    # print(f"max diff {torch.max(diff_tensor)}")
     
-    # Visualize the diff tensor as a heatmap
-    test_name = f"M={M}, N={N}, K={K}, block_h={block_h}, block_w={block_w}"
-    visualize_diff_heatmap(diff_tensor, test_name=test_name, 
-                          save_path=f"diff_heatmap_M{M}_N{N}_K{K}.png")
+    # # Visualize the diff tensor as a heatmap
+    # test_name = f"M={M}, N={N}, K={K}, block_h={block_h}, block_w={block_w}"
+    # visualize_diff_heatmap(diff_tensor, test_name=test_name, 
+    #                       save_path=f"diff_heatmap_M{M}_N{N}_K{K}.png")
 
     assert_with_ulp(output_t.to_torch(), golden_output)
 
     print("Test passed!")
 
 # M, N, K, block_h, block_w, block_inner_dim, blocks_per_core_n
-# test_matmul_1d(32, 8*32, 32, 1, 1, 1, 1) # base, one row, single tile block, one block per core
-# test_matmul_1d(64, 8*64, 64, 2, 2, 2, 1) # bigger than single tile blocks
-# test_matmul_1d(32, 64*32, 32, 1, 1, 1, 1) # all wh cores
-# test_matmul_1d(32, 8*32*2, 32, 1, 1, 1, 2) # multiple blocks per core (multiple blocks in n dim)
-test_matmul_1d(64, 3*32, 32, 1, 1, 1, 1) # multiple blocks in m dim
-#test_matmul_1d(32, 8*32, 64, 1, 1, 1, 1) # multiple blocks in k dim
-# test_matmul_1d(64, 8*32*2, 64, 1, 1, 1, 2) # multiple blocks in all dims
+test_matmul_1d(32, 8*32, 32, 1, 1, 1, 1) # base, one row, single tile block, one block per core
+test_matmul_1d(64, 8*64, 64, 2, 2, 2, 1) # bigger than single tile blocks
+test_matmul_1d(32, 64*32, 32, 1, 1, 1, 1) # all wh cores
+test_matmul_1d(32, 8*32*2, 32, 1, 1, 1, 2) # multiple blocks per core (multiple blocks in n dim)
+test_matmul_1d(64, 8*32, 32, 1, 1, 1, 1) # multiple blocks in m dim
+test_matmul_1d(32, 8*32, 64, 1, 1, 1, 1) # multiple blocks in k dim
+test_matmul_1d(64, 8*32*2, 64, 1, 1, 1, 2) # multiple blocks in all dims
 
