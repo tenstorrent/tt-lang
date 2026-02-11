@@ -198,15 +198,15 @@ class TTLGenericCompiler(TTCompilerBase):
             return
 
         if self._current_signpost_line is not None:
-            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
         else:
             source_line = f"<line {file_lineno}>"
 
-        before_name = f"line_{file_lineno}_before"
-        after_name = f"line_{file_lineno}_after"
+        before_name = f"{self.name}_L{file_lineno}_before"
+        after_name = f"{self.name}_L{file_lineno}_after"
 
         if self.line_mapper:
             self.line_mapper.register_signpost(before_name, file_lineno, source_line)
@@ -218,7 +218,7 @@ class TTLGenericCompiler(TTCompilerBase):
     def _close_final_signpost(self):
         """Close the final signpost at the end of function body."""
         if self.auto_profile_enabled and self._current_signpost_line is not None:
-            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
             self._current_signpost_line = None
 
     def _try_emit_auto_signposts(self, node, visit_fn):
@@ -234,8 +234,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         file_lineno = node.lineno + self.line_offset
         prefix = "implicit_" if implicit else ""
-        before_name = f"line_{file_lineno}_{prefix}{op_name}_before"
-        after_name = f"line_{file_lineno}_{prefix}{op_name}_after"
+        before_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}_before"
+        after_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}_after"
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()

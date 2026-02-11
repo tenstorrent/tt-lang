@@ -80,23 +80,27 @@ def parse_signpost_name(signpost: str) -> Tuple[Optional[str], bool]:
     Parse op name and implicit flag from signpost name.
 
     Returns (op_name, is_implicit) where op_name is None for line-only signposts.
+    Format: "<kernel>_L<lineno>[_[implicit_]<op>]_before|after"
     Examples:
-      "line_52_before" -> (None, False)
-      "line_52_cb_wait_before" -> ("cb_wait", False)
-      "line_52_implicit_cb_pop_before" -> ("cb_pop", True)
+      "compute_L52_before" -> (None, False)
+      "dm_read_L52_cb_wait_before" -> ("cb_wait", False)
+      "dm_write_L52_implicit_cb_pop_before" -> ("cb_pop", True)
     """
     parts = signpost.rsplit("_", 1)  # Split off before/after
     if len(parts) != 2 or parts[1] not in ("before", "after"):
         return None, False
 
-    middle = parts[
-        0
-    ]  # e.g., "line_52" or "line_52_cb_wait" or "line_52_implicit_cb_pop"
-    line_parts = middle.split("_", 2)  # Split "line", "52", rest
-    if len(line_parts) <= 2:
+    middle = parts[0]
+
+    # Find the _L<num>_ marker to split kernel name from rest
+    import re
+
+    m = re.search(r"_L\d+_", middle)
+    if m is None:
+        # Line-only signpost: "<kernel>_L<num>"
         return None, False
 
-    rest = line_parts[2]  # e.g., "cb_wait" or "implicit_cb_pop"
+    rest = middle[m.end():]  # e.g., "cb_wait" or "implicit_cb_pop"
     if rest.startswith("implicit_"):
         return rest[9:], True
     return rest, False
