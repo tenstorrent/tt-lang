@@ -254,10 +254,10 @@ def to_ttnn(t, device):
 
 
 def main():
-    base = "/home/zcarver.linux"
+    _dir = os.path.dirname(os.path.abspath(__file__))
 
     # Load weights
-    weights = torch.load(f"{base}/mnist_weights.pt", weights_only=True)
+    weights = torch.load(os.path.join(_dir, "mnist_weights.pt"), weights_only=True)
     w1_orig, b1_orig, w2_orig, b2_orig = weights['w1'], weights['b1'], weights['w2'], weights['b2']
 
     # Pad weights to tile-aligned dimensions
@@ -271,8 +271,9 @@ def main():
     b2 = b2_full.unsqueeze(0).expand(BATCH, -1).contiguous()
 
     # Load test data
-    X_test = np.fromfile(f"{base}/data/X_test.bin", dtype=np.float32).reshape(-1, 784)
-    y_test = np.fromfile(f"{base}/data/y_test.bin", dtype=np.int32)
+    data_dir = os.path.join(_dir, "data")
+    X_test = np.fromfile(os.path.join(data_dir, "X_test.bin"), dtype=np.float32).reshape(-1, 784)
+    y_test = np.fromfile(os.path.join(data_dir, "y_test.bin"), dtype=np.int32)
     X_test = (X_test - 0.1307) / 0.3081  # Normalize
 
     print("=== MNIST Inference via ttnn.generic_op ===")
