@@ -1,18 +1,20 @@
 #!/bin/bash
 # Run a tt-lang test on a remote machine
-# Usage: ./run-test.sh [-v|--verbose] [--hw] [--emit-runner] <test_path> [extra_args...]
+# Usage: ./run-test.sh [-v|--verbose] [--hw] [--emit-runner] [--perf] <test_path> [extra_args...]
 #
 # By default, runs through the functional simulator (ttlang-sim).
 # Use --hw to run on real hardware instead (for final validation).
 # Output is saved to /tmp/ttlang_test_output.log on the remote (silent mode).
 # Use -v to stream output to terminal AND enable verbose MLIR passes.
 # Use --emit-runner to generate C++ kernels and Python runner in /tmp/$USER/.
+# Use --perf to enable NOC profiling, CB flow graph, and pipe graph dumps.
 #
 # Examples:
 #   ./run-test.sh test/python/test_add.py              # Run in simulator (default)
 #   ./run-test.sh --hw test/python/test_add.py         # Run on real hardware
 #   ./run-test.sh -v test/python/test_add.py           # Simulator + verbose
 #   ./run-test.sh --emit-runner /absolute/path/test.py # Emit kernels + runner
+#   ./run-test.sh --perf --hw test/python/test_add.py  # HW + perf profiling
 #
 # Output locations on remote:
 #   /tmp/ttlang_test_output.log  - Test stdout/stderr (always saved)
@@ -30,6 +32,7 @@ VERBOSE=""
 STREAM_OUTPUT=""
 EMIT_RUNNER=""
 USE_HW=""
+PERF=""
 while [[ "$1" == -* ]]; do
     case "$1" in
         -v|--verbose)
@@ -43,6 +46,10 @@ while [[ "$1" == -* ]]; do
             ;;
         --emit-runner)
             EMIT_RUNNER=1
+            shift
+            ;;
+        --perf)
+            PERF=1
             shift
             ;;
         -h|--help)
@@ -65,13 +72,14 @@ else
 fi
 
 if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
-    echo "Usage: $0 [-v|--verbose] [--hw] [--emit-runner] <test_path> [extra_args...]"
+    echo "Usage: $0 [-v|--verbose] [--hw] [--emit-runner] [--perf] <test_path> [extra_args...]"
     echo ""
     echo "Options:"
     echo "  --hw             Run on real hardware (default: functional simulator)"
     echo "  -v, --verbose    Stream output to terminal + enable verbose MLIR passes"
     echo "                   (default: silent mode, output saved to log)"
     echo "  --emit-runner    Emit C++ kernels and Python runner to /tmp/\$USER/"
+    echo "  --perf           Enable NOC profiling, CB flow graph, and pipe graph dumps"
     echo ""
     echo "Examples:"
     echo "  $0 test/python/test_add.py              # Simulator (default)"
@@ -132,6 +140,9 @@ if [ -n "$STREAM_OUTPUT" ]; then
 else
     echo "Output: /tmp/ttlang_test_output.log"
 fi
+if [ -n "$PERF" ]; then
+    echo "Perf:   enabled (NOC events + CB flow + pipe graph)"
+fi
 echo "========================================"
 
 # Build env vars for tt-lang test runner flags
@@ -142,6 +153,14 @@ if [ -n "$VERBOSE" ]; then
 fi
 if [ -n "$EMIT_RUNNER" ]; then
     ENV_VARS="$ENV_VARS export TTLANG_EMIT_RUNNER=1;"
+fi
+if [ -n "$PERF" ]; then
+    if [ -z "$USE_HW" ]; then
+        echo "Error: --perf requires --hw (profiling needs real hardware)"
+        exit 1
+    fi
+    ENV_VARS="$ENV_VARS export TTLANG_PERF_DUMP=1;"
+    ENV_VARS="$ENV_VARS export TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1;"
 fi
 
 if [ -n "$STREAM_OUTPUT" ]; then
