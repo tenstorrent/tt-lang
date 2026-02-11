@@ -1298,9 +1298,10 @@ def pykernel_gen(
                         compiled_kernel.kernel_line_offsets,
                     )
 
-                # Run perf dump after execution
+                # Run perf dump once, then disable to avoid noise
                 if os.environ.get("TTLANG_PERF_DUMP") == "1":
                     _run_perf_dump(args, f.__name__)
+                    del os.environ["TTLANG_PERF_DUMP"]
 
                 return result
 
