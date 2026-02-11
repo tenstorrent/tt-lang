@@ -21,10 +21,10 @@ _default_auto_grid: Shape = (8, 8)
 
 def set_default_grid(grid: Shape) -> None:
     """Set the default grid size used when kernel specifies grid='auto'.
-    
+
     Args:
         grid: Tuple of (rows, cols) specifying the grid size
-    
+
     Example:
         set_default_grid((4, 4))  # Use 4x4 grid for 'auto'
     """
@@ -34,7 +34,7 @@ def set_default_grid(grid: Shape) -> None:
 
 def get_default_grid() -> Shape:
     """Get the current default grid size for grid='auto'.
-    
+
     Returns:
         Tuple of (rows, cols) specifying the default grid size
     """

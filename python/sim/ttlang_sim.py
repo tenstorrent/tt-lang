@@ -200,8 +200,9 @@ def main() -> None:
             rows, cols = int(parts[0].strip()), int(parts[1].strip())
             if rows <= 0 or cols <= 0:
                 raise ValueError("Grid dimensions must be positive")
-            
+
             from sim.kernel import set_default_grid
+
             set_default_grid((rows, cols))
         except ValueError as e:
             print(f"Error: Invalid grid specification: {e}", file=sys.stderr)
