@@ -1113,6 +1113,9 @@ def _compile_kernel(
                     os.remove(stale)
                 except FileNotFoundError:
                     pass
+        if perf_dump:
+            pipeline_passes.append(
+                'ttl-dump-cb-flow-graph{output="/tmp/ttlang_cb_flow_graph.json"}')
         if is_auto_profile_enabled():
             if "TTLANG_PROFILE_CSV" in os.environ:
                 cb_flow_json = str(Path(os.environ["TTLANG_PROFILE_CSV"]).parent / "cb_flow_graph.json")
@@ -1121,9 +1124,6 @@ def _compile_kernel(
                 if not tt_metal_home:
                     raise ValueError("TTLANG_AUTO_PROFILE=1 requires TT_METAL_HOME or TTLANG_PROFILE_CSV to be set")
                 cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
-            pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
-        elif perf_dump:
-            cb_flow_json = "/tmp/ttlang_cb_flow_graph.json"
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         pipeline_passes += [
