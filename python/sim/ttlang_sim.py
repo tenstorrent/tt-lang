@@ -64,6 +64,14 @@ def run_file(filepath: str, argv: list[str]) -> None:
         }
         try:
             exec(code, exec_globals)
+        except RuntimeError as e:
+            # RuntimeError with __cause__ is from greenlet scheduler exception handling
+            # and already has formatted error printed - suppress traceback
+            if e.__cause__ is not None:
+                sys.exit(1)
+            # RuntimeError without __cause__ (like deadlock) should show full traceback
+            print(f"\nError executing {file_path.name}:", file=sys.stderr)
+            raise
         except Exception:
             print(f"\nError executing {file_path.name}:", file=sys.stderr)
             raise

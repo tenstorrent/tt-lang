@@ -220,6 +220,7 @@ class GreenletScheduler:
                             print(compile_error.format())
                             print("-" * 50)
                             # Re-raise with thread name included for test compatibility
+                            # Note: The traceback will be suppressed at top level
                             error_msg = f"{name}: {type(e).__name__}: {e}"
                             raise RuntimeError(error_msg) from e
                         except ImportError:
