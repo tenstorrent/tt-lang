@@ -250,12 +250,45 @@ class GreenletScheduler:
 
             # Deadlock detection
             if not any_progress and self._active:
-                blocked_info: List[str] = []
+                # Group threads by (operation, object, location)
+                from collections import defaultdict
+
+                blocked_groups: dict[tuple[str, str, str], list[str]] = defaultdict(
+                    list
+                )
+
                 for name, (g, blocking_obj, op, _, location) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
-                    blocked_info.append(
-                        f"  {name}: blocked on {op}(){obj_desc}{location}"
-                    )
+                    key = (op, obj_desc, location)
+                    # Extract core identifier by removing thread type suffix
+                    # e.g., "core0-compute" -> "core0", "core0-dm0" -> "core0"
+                    core_id = name.rsplit("-", 1)[0] if "-" in name else name
+                    blocked_groups[key].append(core_id)
+
+                # Format grouped messages
+                blocked_info: List[str] = []
+                for (op, obj_desc, location), core_ids in blocked_groups.items():
+                    # Remove duplicates and sort for consistent output
+                    unique_cores = sorted(set(core_ids), key=lambda x: (len(x), x))
+
+                    if len(unique_cores) == 1:
+                        blocked_info.append(
+                            f"  {unique_cores[0]}: blocked on {op}(){obj_desc}{location}"
+                        )
+                    else:
+                        # Compress multiple cores blocked at same location
+                        # Extract numeric part from core IDs (e.g., "core0" -> "0")
+                        core_numbers: list[str] = []
+                        for core_id in unique_cores:
+                            # Handle both "core0" and potential other formats
+                            if core_id.startswith("core"):
+                                core_numbers.append(core_id[4:])
+                            else:
+                                core_numbers.append(core_id)
+                        cores_str = ", ".join(core_numbers)
+                        blocked_info.append(
+                            f"  blocked on {op}(){obj_desc}{location} (cores: {cores_str})"
+                        )
 
                 raise RuntimeError(
                     f"Deadlock detected: all generators blocked\n"

@@ -69,12 +69,57 @@ def run_file(filepath: str, argv: list[str]) -> None:
             # and already has formatted error printed - suppress traceback
             if e.__cause__ is not None:
                 sys.exit(1)
-            # RuntimeError without __cause__ (like deadlock) should show full traceback
+            # RuntimeError without __cause__ (like deadlock) should show filtered traceback
             print(f"\nError executing {file_path.name}:", file=sys.stderr)
-            raise
+            _print_filtered_traceback(e, file_path)
+            sys.exit(1)
         except Exception:
             print(f"\nError executing {file_path.name}:", file=sys.stderr)
             raise
+
+
+def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
+    """Print traceback filtering out internal simulator frames.
+
+    Only shows frames from user code, omitting internal simulator implementation
+    details from python/sim/*.
+    """
+    import traceback
+    from traceback import FrameSummary
+
+    # Extract traceback entries
+    tb_entries = traceback.extract_tb(exc.__traceback__)
+
+    # Filter to only user code frames
+    user_frames: list[FrameSummary] = []
+    for frame in tb_entries:
+        # Skip internal simulator frames
+        if any(
+            pattern in frame.filename
+            for pattern in [
+                "/python/sim/ttlang_sim.py",
+                "/python/sim/kernel.py",
+                "/python/sim/program.py",
+                "/python/sim/greenlet_scheduler.py",
+                "<frozen runpy>",
+            ]
+        ):
+            continue
+        user_frames.append(frame)
+
+    # Print filtered traceback
+    if user_frames:
+        print("Traceback (most recent call last):", file=sys.stderr)
+        for frame in user_frames:
+            print(
+                f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}',
+                file=sys.stderr,
+            )
+            if frame.line:
+                print(f"    {frame.line}", file=sys.stderr)
+
+    # Print the exception message
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def run_module(module_name: str, argv: list[str]) -> None:

@@ -23,11 +23,21 @@ OUTPUT_TILES = 1
 
 @ttl.kernel(grid=(NUM_CHUNKS, 1))
 def layer1_kernel(x, w1, bias1, hidden_out):
-    x_cb = ttl.make_circular_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
-    w1_cb = ttl.make_circular_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1)
-    bias1_cb = ttl.make_circular_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
-    hidden_mm_cb = ttl.make_circular_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
-    hidden_cb = ttl.make_circular_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
+    x_cb = ttl.make_circular_buffer_like(
+        x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1
+    )
+    w1_cb = ttl.make_circular_buffer_like(
+        w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1
+    )
+    bias1_cb = ttl.make_circular_buffer_like(
+        bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1
+    )
+    hidden_mm_cb = ttl.make_circular_buffer_like(
+        hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2
+    )
+    hidden_cb = ttl.make_circular_buffer_like(
+        hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1
+    )
 
     @ttl.compute()
     def compute():
@@ -66,19 +76,39 @@ def layer1_kernel(x, w1, bias1, hidden_out):
 @ttl.kernel(grid=(1, 1))
 def layer2_kernel(hidden, w2, bias2, scaler, out):
     HIDDEN_TILES = 32
-    hidden_cb = ttl.make_circular_buffer_like(hidden, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
-    w2_cb = ttl.make_circular_buffer_like(w2, shape=(CHUNK_TILES, OUTPUT_TILES), buffer_factor=2)
-    acc_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    part_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    bias2_cb = ttl.make_circular_buffer_like(bias2, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
-    logits_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    hidden_cb = ttl.make_circular_buffer_like(
+        hidden, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2
+    )
+    w2_cb = ttl.make_circular_buffer_like(
+        w2, shape=(CHUNK_TILES, OUTPUT_TILES), buffer_factor=2
+    )
+    acc_cb = ttl.make_circular_buffer_like(
+        out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2
+    )
+    part_cb = ttl.make_circular_buffer_like(
+        out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2
+    )
+    bias2_cb = ttl.make_circular_buffer_like(
+        bias2, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1
+    )
+    logits_cb = ttl.make_circular_buffer_like(
+        out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2
+    )
     scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
     max_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    max_bcast_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    exp_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    max_bcast_cb = ttl.make_circular_buffer_like(
+        out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2
+    )
+    exp_cb = ttl.make_circular_buffer_like(
+        out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2
+    )
     sum_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    sum_bcast_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
+    sum_bcast_cb = ttl.make_circular_buffer_like(
+        out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2
+    )
+    out_cb = ttl.make_circular_buffer_like(
+        out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1
+    )
 
     @ttl.compute()
     def compute():
@@ -136,8 +166,13 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
 
 
 def to_ttnn(t, device):
-    return ttnn.from_torch(t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    return ttnn.from_torch(
+        t,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
 
 
 def main():
@@ -146,7 +181,12 @@ def main():
 
     # Load weights
     weights = torch.load(f"{base}/mnist_weights.pt", weights_only=True)
-    w1_orig, b1_orig, w2_orig, b2_orig = weights['w1'], weights['b1'], weights['w2'], weights['b2']
+    w1_orig, b1_orig, w2_orig, b2_orig = (
+        weights["w1"],
+        weights["b1"],
+        weights["w2"],
+        weights["b2"],
+    )
 
     # Pad weights
     w1 = torch.zeros(INPUT_DIM, HIDDEN_DIM, dtype=torch.bfloat16)
@@ -182,7 +222,7 @@ def main():
 
     for i in range(num_batches):
         # Pad input
-        x_np = X_test[i*BATCH:(i+1)*BATCH]
+        x_np = X_test[i * BATCH : (i + 1) * BATCH]
         x = torch.zeros(BATCH, INPUT_DIM, dtype=torch.bfloat16)
         x[:, :784] = torch.from_numpy(x_np).to(torch.bfloat16)
 
@@ -197,7 +237,7 @@ def main():
         # Get predictions
         result = ttnn.to_torch(out_tt).float()[:, :10]
         preds = result.argmax(dim=1).numpy()
-        labels = y_test[i*BATCH:(i+1)*BATCH]
+        labels = y_test[i * BATCH : (i + 1) * BATCH]
 
         correct += (preds == labels).sum()
         total += BATCH
