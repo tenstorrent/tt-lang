@@ -35,41 +35,32 @@ def add_loop_kernel(lhs, rhs, out):
         r = rhs_cb.wait()
 
         # Initial: store l into output CB
-        o = out_cb.reserve()
-        o.store(l)
-        out_cb.push()
+        with out_cb.reserve() as o:
+            o.store(l)
 
         # Loop: read back, add r, store again (accumulate pattern)
         for i in range(4):
-            accum = out_cb.wait()
-            result = accum + r
-            out_cb.pop()
-            o = out_cb.reserve()
-            o.store(result)
-            out_cb.push()
+            with out_cb.wait() as accum, out_cb.reserve() as o:
+                o.store(accum + r)
 
         lhs_cb.pop()
         rhs_cb.pop()
-        # Final value already pushed, DM will handle it
 
     @ttl.datamovement()
     def dm_read():
-        lhs_blk = lhs_cb.reserve()
-        tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
-        tx_lhs.wait()
-        lhs_cb.push()
+        with lhs_cb.reserve() as lhs_blk:
+            tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
+            tx_lhs.wait()
 
-        rhs_blk = rhs_cb.reserve()
-        tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
-        tx_rhs.wait()
-        rhs_cb.push()
+        with rhs_cb.reserve() as rhs_blk:
+            tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
+            tx_rhs.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
-        tx.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
+            tx.wait()
 
 
 # =============================================================================
@@ -91,15 +82,17 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_wait %[[CB0]]
 # CHECK: ttl.cb_wait %[[CB1]]
 # CHECK: ttl.cb_reserve %[[CB2]]
+# CHECK: ttl.store
 # CHECK: ttl.cb_push %[[CB2]]
 
 # For loop in compute (accumulate pattern)
 # CHECK: scf.for
 # CHECK: ttl.cb_wait %[[CB2]]
-# CHECK: ttl.add
-# CHECK: ttl.cb_pop %[[CB2]]
 # CHECK: ttl.cb_reserve %[[CB2]]
+# CHECK: ttl.add
+# CHECK: ttl.store
 # CHECK: ttl.cb_push %[[CB2]]
+# CHECK: ttl.cb_pop %[[CB2]]
 
 # Finalize: pop inputs
 # CHECK: ttl.cb_pop %[[CB0]]
@@ -121,11 +114,11 @@ def add_loop_kernel(lhs, rhs, out):
 # For loop with accumulate pattern
 # CHECK-CPP: for (size_t {{.*}} < {{.*}};
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
+# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP: add_binary_tile_init();
 # CHECK-CPP: add_binary_tile(
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(2),
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(2),
 
 # Finalize: pop inputs
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),

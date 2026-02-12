@@ -51,6 +51,51 @@ static Value findOutputCB(Operation *op) {
   return nullptr;
 }
 
+/// Extract the cb_reserve result from a tensor-level store's view operand.
+/// The view is produced by attach_cb(cb_reserve(...), cb). Returns the
+/// cb_reserve result, following the SSA def-use chain (no scanning).
+static Value getReserveViewFromStore(StoreOp storeOp) {
+  Value view = storeOp.getView();
+  if (auto attachOp = view.getDefiningOp<AttachCBOp>()) {
+    return attachOp.getTensor();
+  }
+  return Value();
+}
+
+/// Find a StoreOp user of the value and return {store, reserveView}.
+static std::pair<StoreOp, Value> findStoreUser(Value result) {
+  for (auto &use : result.getUses()) {
+    if (auto store = dyn_cast<StoreOp>(use.getOwner())) {
+      Value reserveView = getReserveViewFromStore(store);
+      if (reserveView)
+        return {store, reserveView};
+    }
+  }
+  return {nullptr, Value()};
+}
+
+/// Emit tile_store in the compute body if the original op has a store user.
+/// The reserve view must already dominate originalOp. Returns the StoreOp
+/// to erase (caller must erase after replaceOp), or nullptr.
+static FailureOr<StoreOp> fuseTileStore(Operation *originalOp,
+                                         Value tileResult,
+                                         PatternRewriter &rewriter) {
+  auto [storeOp, reserveView] = findStoreUser(originalOp->getResult(0));
+  if (!storeOp)
+    return StoreOp(nullptr);
+
+  if (auto *def = reserveView.getDefiningOp()) {
+    if (!def->isBeforeInBlock(originalOp)) {
+      return originalOp->emitError(
+          "cb_reserve does not dominate the compute; use 'with' statement "
+          "for CB lifecycle management in loops");
+    }
+  }
+
+  rewriter.create<TileStoreOp>(originalOp->getLoc(), tileResult, reserveView);
+  return storeOp;
+}
+
 /// Find unused bind_cb ops in the function that can be used for output CBs.
 /// Returns bind_cb ops that are not used by any attach_cb op.
 // TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
@@ -212,8 +257,15 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
+  auto storeToErase = fuseTileStore(sinkOp, finalResult, rewriter);
+  if (failed(storeToErase))
+    return failure();
+
   rewriter.create<YieldOp>(loc, ValueRange{finalResult});
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+
+  if (*storeToErase)
+    rewriter.eraseOp(*storeToErase);
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -313,9 +365,13 @@ static LogicalResult buildBinaryCompute(Operation *op,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
+  auto storeToErase = fuseTileStore(op, result, rewriter);
+  if (failed(storeToErase))
+    return failure();
   rewriter.create<YieldOp>(loc, ValueRange{result});
-
   rewriter.replaceOp(op, computeOp.getResult(0));
+  if (*storeToErase)
+    rewriter.eraseOp(*storeToErase);
   return success();
 }
 
@@ -395,9 +451,13 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
+  auto storeToErase = fuseTileStore(op, result, rewriter);
+  if (failed(storeToErase))
+    return failure();
   rewriter.create<YieldOp>(loc, ValueRange{result});
-
   rewriter.replaceOp(op, computeOp.getResult(0));
+  if (*storeToErase)
+    rewriter.eraseOp(*storeToErase);
   return success();
 }
 
@@ -557,9 +617,109 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value result =
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
+    auto storeToErase = fuseTileStore(op, result, rewriter);
+    if (failed(storeToErase))
+      return failure();
     rewriter.create<YieldOp>(loc, ValueRange{result});
-
     rewriter.replaceOp(op, computeOp.getResult(0));
+    if (*storeToErase)
+      rewriter.eraseOp(*storeToErase);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Store Lowering
+//===----------------------------------------------------------------------===//
+
+/// Handles remaining ttl.store ops not fused by elementwise patterns.
+/// Elementwise patterns fuse the first store via fuseTileStore. This pattern
+/// handles passthrough stores (input is CB-attached, no elementwise compute)
+/// and additional stores on the same value (e.g., multi-output).
+struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
+  using OpRewritePattern<StoreOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(StoreOp op,
+                                PatternRewriter &rewriter) const override {
+    Value input = op.getTensor();
+    Value view = op.getView();
+
+    Value reserveView = getReserveViewFromStore(op);
+    if (!reserveView) {
+      return rewriter.notifyMatchFailure(
+          op, "store view must come from ttl.attach_cb wrapping cb_reserve");
+    }
+
+    // Input from ComputeOp: inject tile_store into its body.
+    if (auto computeOp = input.getDefiningOp<ComputeOp>()) {
+      if (auto *reserveDef = reserveView.getDefiningOp()) {
+        if (!reserveDef->isBeforeInBlock(computeOp)) {
+          return op.emitError(
+              "cb_reserve does not dominate the compute; use 'with' statement "
+              "for CB lifecycle management in loops");
+        }
+      }
+
+      Block &body = computeOp.getBody().front();
+      auto yieldOp = cast<YieldOp>(body.getTerminator());
+      rewriter.setInsertionPoint(yieldOp);
+      rewriter.create<TileStoreOp>(op.getLoc(), yieldOp.getValues().front(),
+                                   reserveView);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Passthrough: input is CB-attached, create a new compute with tile_store.
+    if (!getAttachedCB(input)) {
+      return rewriter.notifyMatchFailure(
+          op, "store input must come from ComputeOp or be CB-attached");
+    }
+
+    auto inputType = getTensorType(input);
+    if (!inputType)
+      return failure();
+
+    auto viewAttach = view.getDefiningOp<AttachCBOp>();
+    if (!viewAttach)
+      return op.emitError("store view must come from ttl.attach_cb");
+    Value outputCb = viewAttach.getCb();
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(inputType.getRank(), ctx);
+    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap)};
+    SmallVector<Attribute> iterTypes(inputType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    Value init = buildInitTensor(rewriter, loc, inputType, input);
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outputCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{inputType}, ValueRange{input}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = inputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
+
+    rewriter.setInsertionPointToEnd(body);
+    rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
+    rewriter.create<YieldOp>(loc, body->getArgument(0));
+
+    for (OpOperand &use : llvm::make_early_inc_range(input.getUses())) {
+      if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
+        if (attachOp.getCb() == outputCb && attachOp != viewAttach)
+          rewriter.replaceOp(attachOp, computeOp.getResult(0));
+      }
+    }
+
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -621,6 +781,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
+  patterns.add<LowerStoreToCompute>(ctx);
 }
 
 } // namespace mlir::tt::ttl

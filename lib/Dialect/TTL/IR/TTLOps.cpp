@@ -519,13 +519,13 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
-  // Validate any ttl.store ops in the body.
+  // Validate any ttl.tile_store ops in the body.
   auto yieldOp = cast<YieldOp>(bodyBlock.getTerminator());
   SmallVector<Value> yielded(yieldOp->operand_begin(), yieldOp->operand_end());
   SmallVector<bool> storeSeen(numOutputs, false);
 
   for (Operation &op : bodyBlock.without_terminator()) {
-    auto store = dyn_cast<StoreOp>(&op);
+    auto store = dyn_cast<TileStoreOp>(&op);
     if (!store) {
       continue;
     }
@@ -553,7 +553,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
     if (storeSeen[outputIdx]) {
       return store.emitOpError()
-             << "duplicate ttl.store for output " << outputIdx;
+             << "duplicate ttl.tile_store for output " << outputIdx;
     }
     storeSeen[outputIdx] = true;
   }
@@ -589,7 +589,7 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
+mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   auto tileType = mlir::dyn_cast<ttcore::TileType>(getTile().getType());
   if (!tileType) {
     return emitOpError() << "tile operand must be !ttcore.tile, got "

@@ -211,6 +211,43 @@ static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
   return failure();
 }
 
+/// Allocate a DST register and create a CopyTileOp for a block argument.
+/// Looks up assignment first; falls back to allocating a free register.
+static FailureOr<CopyTileOp>
+createCopyTileForArg(BlockArgument arg, ComputeOp computeOp,
+                     OpBuilder &builder,
+                     const DenseMap<Value, std::uint32_t> &dstAssignment,
+                     llvm::SmallBitVector &inUse,
+                     DenseMap<Value, std::uint32_t> &dstIndexForValue) {
+  std::uint32_t assignedDstIndex = 0;
+  auto it = dstAssignment.find(arg);
+  if (it != dstAssignment.end()) {
+    assignedDstIndex = it->second;
+  } else {
+    int freeReg = inUse.find_first_unset();
+    if (freeReg < 0)
+      return computeOp.emitOpError("no free DST register for block argument");
+    assignedDstIndex = static_cast<std::uint32_t>(freeReg);
+  }
+  inUse.set(assignedDstIndex);
+
+  Location loc = builder.getInsertionPoint()->getLoc();
+  auto indexMapAttr = computeIndexMapAttr(arg, computeOp, builder);
+  if (failed(indexMapAttr))
+    return computeOp.emitOpError("block argument not found in compute inputs");
+
+  Value srcIndex = builder.create<LinearizedIndexOp>(loc, *indexMapAttr);
+  Value dstIndex =
+      builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
+  auto copy = builder.create<CopyTileOp>(
+      loc,
+      TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
+      ValueRange{arg, srcIndex, dstIndex});
+  dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
+  dstIndexForValue[arg] = assignedDstIndex;
+  return copy;
+}
+
 //===----------------------------------------------------------------------===//
 // Phase 1: Copy Insertion
 //===----------------------------------------------------------------------===//
@@ -717,129 +754,68 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
       for (CopyTileOp placeholder : placeholderCopies) {
         auto arg = dyn_cast<BlockArgument>(placeholder.getSrc());
-        if (!arg) {
+        if (!arg)
           continue;
-        }
 
-        // Get assigned DST index for this copy's result
-        std::uint32_t assignedDstIndex = 0;
-        auto it = dstAssignment.find(placeholder.getDstTile());
-        if (it != dstAssignment.end()) {
-          assignedDstIndex = it->second;
-        } else {
-          // Fall back: find first free register
-          int freeReg = inUse.find_first_unset();
-          if (freeReg < 0) {
-            computeOp.emitOpError(
-                "no free DST register for placeholder copy_tile");
-            signalPassFailure();
-            return;
-          }
-          assignedDstIndex = static_cast<std::uint32_t>(freeReg);
-        }
-        inUse.set(assignedDstIndex);
+        // Use the placeholder's DST assignment if available.
+        auto placeholderIt = dstAssignment.find(placeholder.getDstTile());
+        DenseMap<Value, std::uint32_t> lookupOverride(dstAssignment);
+        if (placeholderIt != dstAssignment.end())
+          lookupOverride[arg] = placeholderIt->second;
 
         builder.setInsertionPoint(placeholder);
-        Location loc = placeholder.getLoc();
-
-        auto indexMapAttr = computeIndexMapAttr(arg, computeOp, builder);
-        if (failed(indexMapAttr)) {
-          placeholder.emitOpError("block argument not found in compute inputs");
+        auto newCopy = createCopyTileForArg(arg, computeOp, builder,
+                                            lookupOverride, inUse,
+                                            dstIndexForValue);
+        if (failed(newCopy)) {
           signalPassFailure();
           return;
         }
-        Value srcIndex = builder.create<LinearizedIndexOp>(loc, *indexMapAttr);
-        Value dstIndex =
-            builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
-        auto newCopy = builder.create<CopyTileOp>(
-            loc,
-            TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
-            ValueRange{arg, srcIndex, dstIndex});
-        dstIndexForValue[newCopy.getDstTile()] = assignedDstIndex;
 
-        // Replace uses of placeholder with new copy
-        placeholder.getDstTile().replaceAllUsesWith(newCopy.getDstTile());
-        placeholder.getDstToken().replaceAllUsesWith(newCopy.getDstToken());
+        placeholder.getDstTile().replaceAllUsesWith(newCopy->getDstTile());
+        placeholder.getDstToken().replaceAllUsesWith(newCopy->getDstToken());
 
-        // Erase the placeholder and its constant operands
         Operation *srcIndexDef = placeholder.getSrcIndex().getDefiningOp();
         Operation *dstIndexDef = placeholder.getDstIndex().getDefiningOp();
         placeholder.erase();
-        if (srcIndexDef && srcIndexDef->use_empty()) {
+        if (srcIndexDef && srcIndexDef->use_empty())
           srcIndexDef->erase();
-        }
-        if (dstIndexDef && dstIndexDef->use_empty()) {
+        if (dstIndexDef && dstIndexDef->use_empty())
           dstIndexDef->erase();
-        }
       }
 
-      // Second: Process remaining block arguments - insert copy_tile at first
-      // use. Skip CB-reading ops (bcast, etc.) which read from CB directly.
-      for (Operation &op : *body) {
-        if (op.hasTrait<TTLCBInputTileOpTrait>()) {
+      // Insert copy_tile for all tile-typed block args that need DST loading.
+      for (auto arg : body->getArguments()) {
+        if (!isTileValue(arg) || dstIndexForValue.count(arg))
           continue;
+
+        // Skip args only used by CB-reading ops (they read from CB directly).
+        bool hasDSTConsumer = llvm::any_of(arg.getUses(), [](OpOperand &use) {
+          return !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
+        });
+        if (!hasDSTConsumer)
+          continue;
+
+        builder.setInsertionPointToStart(body);
+        auto copy = createCopyTileForArg(arg, computeOp, builder,
+                                         dstAssignment, inUse,
+                                         dstIndexForValue);
+        if (failed(copy)) {
+          signalPassFailure();
+          return;
         }
-        for (OpOperand &operand : op.getOpOperands()) {
-          auto arg = dyn_cast<BlockArgument>(operand.get());
-          if (!arg || !isTileValue(arg)) {
-            continue;
-          }
 
-          // Skip if already copied
-          if (dstIndexForValue.count(arg)) {
-            continue;
-          }
-
-          // Get assigned DST index from allocation
-          std::uint32_t assignedDstIndex = 0;
-          auto it = dstAssignment.find(arg);
-          if (it != dstAssignment.end()) {
-            assignedDstIndex = it->second;
-          } else {
-            // Fall back: find first free register
-            int freeReg = inUse.find_first_unset();
-            if (freeReg < 0) {
-              computeOp.emitOpError("no free DST register for block argument");
-              signalPassFailure();
-              return;
-            }
-            assignedDstIndex = static_cast<std::uint32_t>(freeReg);
-          }
-          inUse.set(assignedDstIndex);
-
-          builder.setInsertionPoint(&op);
-          Location loc = op.getLoc();
-
-          auto indexMapAttr = computeIndexMapAttr(arg, computeOp, builder);
-          if (failed(indexMapAttr)) {
-            op.emitOpError("block argument not found in compute inputs");
-            signalPassFailure();
-            return;
-          }
-          Value srcIndex =
-              builder.create<LinearizedIndexOp>(loc, *indexMapAttr);
-          Value dstIndex =
-              builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
-          auto copy = builder.create<CopyTileOp>(
-              loc,
-              TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
-              ValueRange{arg, srcIndex, dstIndex});
-          dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
-          // Mark this arg as processed so we don't create duplicate copies
-          dstIndexForValue[arg] = assignedDstIndex;
-
-          arg.replaceUsesWithIf(copy.getDstTile(), [&](OpOperand &use) {
-            // Don't replace in copy_tile ops - they need the original block arg
-            // Don't replace in CB-reading ops - they read from CB, not DST
-            return use.getOwner() != copy && !isa<CopyTileOp>(use.getOwner()) &&
-                   !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
-          });
-        }
+        arg.replaceUsesWithIf(copy->getDstTile(), [&](OpOperand &use) {
+          return use.getOwner() != copy->getOperation() &&
+                 !isa<CopyTileOp>(use.getOwner()) &&
+                 !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
+        });
       }
 
-      // Set dst_idx attributes on tile compute ops.
+      // Set dst_idx attributes on tile compute ops, copy_tile, and copy_dst.
       for (Operation &op : *body) {
-        if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op)) {
+        if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op) &&
+            !isa<CopyTileOp>(&op)) {
           continue;
         }
 

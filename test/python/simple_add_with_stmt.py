@@ -91,7 +91,8 @@ def add_with_kernel(lhs, rhs, out):
 # Add operation
 # CHECK: ttl.add
 
-# store() attaches result to output CB
+# store() emits explicit store + CB association
+# CHECK: ttl.store
 # CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # 'with' exit: push output, pop inputs (reverse order)
