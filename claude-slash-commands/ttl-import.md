@@ -763,6 +763,16 @@ When you are re-writing a high level operation or kernel:
 
 Even ops that DO exist may have different semantics (write in place, different numerical behavior). Always test to verify.
 
+IMPORTANT: the test runner will just execute your script as a python file. Don't overthink it. The ttlang-sim and the hw runner will just run the script as python (not pytest!) so just **add a main block**, open device, print/assert tensor values. The sim should have full compatibility with ttnn function for moving tensors, opening device and so on:
+
+Below will work on both hw and sim:
+```
+if __name__ == "__main__":
+   device = ttnn.open_device(device_id=0)
+   # call test functions here
+   ttnn.close_device(device)
+```
+
 ## Translation Guide: GPU → TT-Lang
 
 ### Concept Mapping
@@ -1032,17 +1042,6 @@ Then coordinator gathers and sums all partial matmul results.
 
 Grid: 4x1 (4 cores in a row)
 """
-
-import pytest
-import torch
-
-ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
-
-from ttlang_test_utils import assert_allclose, to_l1
-
-import ttl
-
-
 COORDINATOR = 0
 ROWS_PER_CORE = 2
 COLS_PER_CORE = 2
@@ -1179,31 +1178,6 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
             with out_cb.wait() as o_blk:
                 tx = ttl.copy(o_blk, out[0:4, 0:4])
                 tx.wait()
-
-
-def test_uniform_values(device):
-    A_height = ROWS_PER_CORE * 4 * 32
-    A_width = 4 * COLS_PER_CORE * 32
-
-    A_torch = torch.full((A_height, A_width), 0.01, dtype=torch.bfloat16)
-    B_torch = torch.full((128, 128), 0.01, dtype=torch.bfloat16)
-    scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-    out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
-
-    A = to_l1(A_torch, device)
-    B = to_l1(B_torch, device)
-    scaler = to_l1(scaler_torch, device)
-    out = to_l1(out_torch, device)
-
-    # Expected: matmul(broadcast(sum(A)), B)
-    global_sum = A_torch.float().sum()
-    A_bcast = torch.full((128, 128), global_sum.item(), dtype=torch.float32)
-    expected = torch.matmul(A_bcast, B_torch.float())
-
-    full_reduce_bcast_matmul_kernel(A, B, scaler, out)
-    result = ttnn.to_torch(out).float()
-
-    assert_allclose(result[0, 0], expected[0, 0], rtol=0.15, atol=500)
 ```
 
 ---

@@ -26,8 +26,7 @@ remote_copy_file() {
 
         local TEMP_REMOTE="/tmp/ttl_copy_$$_$(basename "$LOCAL_PATH")"
         scp -q "$LOCAL_PATH" "$REMOTE_HOST:$TEMP_REMOTE" && \
-        ssh "$REMOTE_HOST" "$DOCKER_CMD cp '$TEMP_REMOTE' '$REMOTE_CONTAINER:$REMOTE_DEST'" && \
-        ssh "$REMOTE_HOST" rm -f "$TEMP_REMOTE"
+        ssh "$REMOTE_HOST" "$DOCKER_CMD cp '$TEMP_REMOTE' '$REMOTE_CONTAINER:$REMOTE_DEST'"
     else
         cat "$LOCAL_PATH" | $REMOTE_SHELL bash -l -c "cat > '$REMOTE_DEST'"
     fi
@@ -45,8 +44,7 @@ remote_copy_from() {
 
         local TEMP_REMOTE="/tmp/ttl_copy_$$_$(basename "$REMOTE_PATH")"
         ssh "$REMOTE_HOST" "$DOCKER_CMD cp '$REMOTE_CONTAINER:$REMOTE_PATH' '$TEMP_REMOTE'" && \
-        scp -q "$REMOTE_HOST:$TEMP_REMOTE" "$LOCAL_PATH" && \
-        ssh "$REMOTE_HOST" rm -f "$TEMP_REMOTE"
+        scp -q "$REMOTE_HOST:$TEMP_REMOTE" "$LOCAL_PATH"
     else
         remote_run cat "$REMOTE_PATH" > "$LOCAL_PATH"
     fi
