@@ -75,24 +75,33 @@ static std::pair<StoreOp, Value> findStoreUser(Value result) {
   return {nullptr, Value()};
 }
 
-/// Emit tile_store in the compute body if the original op has a store user.
-/// The reserve view must already dominate originalOp. Returns the StoreOp
-/// to erase (caller must erase after replaceOp), or nullptr.
-static FailureOr<StoreOp> fuseTileStore(Operation *originalOp, Value tileResult,
-                                        PatternRewriter &rewriter) {
-  auto [storeOp, reserveView] = findStoreUser(originalOp->getResult(0));
+/// Pre-check that the store's reserve view dominates the op. Must be called
+/// before creating the compute body to avoid leaving half-built ops on failure.
+static LogicalResult checkStoreDominance(Operation *op) {
+  auto [storeOp, reserveView] = findStoreUser(op->getResult(0));
   if (!storeOp) {
-    return StoreOp(nullptr);
+    return success();
   }
-
   if (auto *def = reserveView.getDefiningOp()) {
-    if (!def->isBeforeInBlock(originalOp)) {
-      return originalOp->emitError(
+    if (!def->isBeforeInBlock(op)) {
+      return op->emitError(
           "cb_reserve does not dominate the compute; use 'with' statement "
           "for CB lifecycle management in loops");
     }
   }
+  return success();
+}
 
+/// Emit tile_store in the compute body if the original op has a store user.
+/// Caller must have already verified dominance via checkStoreDominance.
+/// Returns the StoreOp to erase (caller must erase after replaceOp), or
+/// nullptr if no store user exists.
+static StoreOp fuseTileStore(Operation *originalOp, Value tileResult,
+                             PatternRewriter &rewriter) {
+  auto [storeOp, reserveView] = findStoreUser(originalOp->getResult(0));
+  if (!storeOp) {
+    return nullptr;
+  }
   rewriter.create<TileStoreOp>(originalOp->getLoc(), tileResult, reserveView);
   return storeOp;
 }
@@ -161,6 +170,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
                                        const ElementwiseTraceResult &trace) {
   auto type = getTensorType(sinkOp->getResult(0));
   if (!type) {
+    return failure();
+  }
+
+  // Verify store dominance before creating any ops.
+  if (failed(checkStoreDominance(sinkOp))) {
     return failure();
   }
 
@@ -258,16 +272,13 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  auto storeToErase = fuseTileStore(sinkOp, finalResult, rewriter);
-  if (failed(storeToErase)) {
-    return failure();
-  }
+  StoreOp storeToErase = fuseTileStore(sinkOp, finalResult, rewriter);
 
   rewriter.create<YieldOp>(loc, ValueRange{finalResult});
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
-  if (*storeToErase) {
-    rewriter.eraseOp(*storeToErase);
+  if (storeToErase) {
+    rewriter.eraseOp(storeToErase);
   }
 
   // Erase the fused ops in reverse topological order (sink to roots).
@@ -311,6 +322,11 @@ static LogicalResult buildBinaryCompute(Operation *op,
       return buildFusedCompute(op, rewriter, traceResult);
     }
     emitFusionFailureDiagnostics(op, traceResult);
+    return failure();
+  }
+
+  // Verify store dominance before creating any ops.
+  if (failed(checkStoreDominance(op))) {
     return failure();
   }
 
@@ -368,14 +384,11 @@ static LogicalResult buildBinaryCompute(Operation *op,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
-  auto storeToErase = fuseTileStore(op, result, rewriter);
-  if (failed(storeToErase)) {
-    return failure();
-  }
+  StoreOp storeToErase = fuseTileStore(op, result, rewriter);
   rewriter.create<YieldOp>(loc, ValueRange{result});
   rewriter.replaceOp(op, computeOp.getResult(0));
-  if (*storeToErase) {
-    rewriter.eraseOp(*storeToErase);
+  if (storeToErase) {
+    rewriter.eraseOp(storeToErase);
   }
   return success();
 }
@@ -402,6 +415,11 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
       return buildFusedCompute(op, rewriter, traceResult);
     }
     emitFusionFailureDiagnostics(op, traceResult);
+    return failure();
+  }
+
+  // Verify store dominance before creating any ops.
+  if (failed(checkStoreDominance(op))) {
     return failure();
   }
 
@@ -456,14 +474,11 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
-  auto storeToErase = fuseTileStore(op, result, rewriter);
-  if (failed(storeToErase)) {
-    return failure();
-  }
+  StoreOp storeToErase = fuseTileStore(op, result, rewriter);
   rewriter.create<YieldOp>(loc, ValueRange{result});
   rewriter.replaceOp(op, computeOp.getResult(0));
-  if (*storeToErase) {
-    rewriter.eraseOp(*storeToErase);
+  if (storeToErase) {
+    rewriter.eraseOp(storeToErase);
   }
   return success();
 }
@@ -591,6 +606,11 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
       return failure();
     }
 
+    // Verify store dominance before creating any ops.
+    if (failed(checkStoreDominance(op))) {
+      return failure();
+    }
+
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
 
@@ -624,14 +644,11 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value result =
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
-    auto storeToErase = fuseTileStore(op, result, rewriter);
-    if (failed(storeToErase)) {
-      return failure();
-    }
+    StoreOp storeToErase = fuseTileStore(op, result, rewriter);
     rewriter.create<YieldOp>(loc, ValueRange{result});
     rewriter.replaceOp(op, computeOp.getResult(0));
-    if (*storeToErase) {
-      rewriter.eraseOp(*storeToErase);
+    if (storeToErase) {
+      rewriter.eraseOp(storeToErase);
     }
     return success();
   }

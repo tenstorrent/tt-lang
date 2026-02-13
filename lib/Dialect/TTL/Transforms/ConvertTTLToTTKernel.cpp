@@ -381,7 +381,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     }
 
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
-                                     /*out_of_order=*/false);
+                                     /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
     return success();
@@ -883,17 +883,17 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
-/// Safety net for tensor-level ttl.store ops that survive to this point.
-/// In the elementwise case, convert-ttl-to-compute transforms them to
-/// tile_store inside the compute body. If any survive, erase them.
+/// Tensor-level ttl.store ops must be lowered to tile_store by
+/// convert-ttl-to-compute. Any surviving to this point is a miscompile.
 struct StoreLowering : OpConversionPattern<StoreOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.eraseOp(op);
-    return success();
+    return op.emitError("ttl.store survived to ttkernel lowering; "
+                        "convert-ttl-to-compute should have lowered this to "
+                        "ttl.tile_store");
   }
 };
 
