@@ -73,7 +73,7 @@ The `metal_examples/` directory contains paired implementations comparing tt-lan
 |---------|-------------|:---:|:--:|
 | `singlecore_matmul/ttlang/` | Single-core matmul in tt-lang | ✓ | ✗ |
 | `multicore_matmul/ttlang/` | Multi-core matmul in tt-lang | ✓ | ✗ |
-| `multicore_reuse_matmul/ttlang/` | Reuse-optimized matmul in tt-lang | ✗ | ✗ |
+| `multicore_reuse_matmul/ttlang/` | Reuse-optimized matmul in tt-lang | ✓ | ✗ |
 
 The `metal/` subdirectories contain reference Metal implementations for comparison.
 
