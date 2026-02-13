@@ -29,12 +29,11 @@ computing (a*x) * b instead of b * y, resulting in 30 instead of 26.
 
 import pytest
 import torch
+import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import assert_allclose, to_dram
-
-from ttl import ttl
 
 
 @ttl.kernel(grid=(1, 1))

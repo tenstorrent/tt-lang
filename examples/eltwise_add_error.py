@@ -6,7 +6,6 @@
 import torch
 import ttl
 import ttnn
-from ttl import Program, copy, make_circular_buffer_like
 
 
 @ttl.kernel(grid=(1, 1))
@@ -17,9 +16,9 @@ def add_with_kernel(a, b, y):
     rows = 2
     cols = 2
 
-    a_cb = make_circular_buffer_like(a, shape=(row_tiles, col_tiles), buffer_factor=2)
-    b_cb = make_circular_buffer_like(b, shape=(row_tiles, col_tiles), buffer_factor=2)
-    y_cb = make_circular_buffer_like(y, shape=(row_tiles, col_tiles), buffer_factor=2)
+    a_cb = ttl.make_circular_buffer_like(a, shape=(row_tiles, col_tiles), buffer_factor=2)
+    b_cb = ttl.make_circular_buffer_like(b, shape=(row_tiles, col_tiles), buffer_factor=2)
+    y_cb = ttl.make_circular_buffer_like(y, shape=(row_tiles, col_tiles), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -33,8 +32,8 @@ def add_with_kernel(a, b, y):
         for r in range(rows):
             for c in range(cols):
                 with a_cb.reserve() as a_block, b_cb.reserve() as b_block:
-                    tx_a = copy(a[r, c], a_block)
-                    tx_b = copy(b[r, c], b_block)
+                    tx_a = ttl.copy(a[r, c], a_block)
+                    tx_b = ttl.copy(b[r, c], b_block)
 
                     tx_a.wait()
                     tx_b.wait()
@@ -44,7 +43,7 @@ def add_with_kernel(a, b, y):
         for r in range(rows):
             for c in range(cols):
                 with y_cb.wait() as y_block:
-                    tx = copy(y_cb, y[r, c])
+                    tx = ttl.copy(y_cb, y[r, c])
                     tx.wait()
 
 
