@@ -116,6 +116,41 @@ The following table summarizes DST slot requirements per category:
 | Reduce | CB (input + scaler) | 0 | 1 (fresh) | No | Yes (reduction dim) |
 | Matmul | CB (A + B) | 0 | 1 (fresh) | No | Yes (K dim) |
 
+### Operation Category Traits
+
+Each category is identified by a composition of four orthogonal traits
+defined in TableGen. One already exists: `TTLCBInputTileOpTrait` marks
+operations that read tile inputs from CB rather than DST. Three
+additional traits complete the system:
+
+- **`TTLDSTInputsTrait`**: At least one operand is consumed from DST.
+- **`TTLInPlaceOpTrait`**: Result overwrites the DST input (input and
+  output share the same DST slot).
+- **`TTLAccumulatingOpTrait`**: Result accumulates across multiple
+  invocations to the same DST index (the DST slot must remain live
+  across an accumulation loop).
+
+Each operation category is uniquely identified by its trait combination:
+
+| Category | `DSTInputs` | `CBInput` | `InPlace` | `Accumulating` |
+|----------|:-----------:|:---------:|:---------:|:--------------:|
+| SFPU binary | x | | | |
+| FPU binary | | x | | |
+| `dest_reuse` | x | x | x | |
+| Unary | x | | x | |
+| Broadcast | | x | | |
+| Reduce | | x | | x |
+| Matmul | | x | | x |
+
+The allocator queries these traits compositionally:
+- `hasTrait<TTLCBInputTileOpTrait>()` -> operand stays in CB (no DST
+  slot needed for that operand)
+- `hasTrait<TTLDSTInputsTrait>()` -> operand needs a DST slot
+- `hasTrait<TTLInPlaceOpTrait>()` -> merge input/output intervals
+  (Phase 2)
+- `hasTrait<TTLAccumulatingOpTrait>()` -> DST slot must remain live
+  across the accumulation loop
+
 ## Lifetime Interval Visualization
 
 The following diagram illustrates how lifetime intervals work for an
@@ -195,7 +230,7 @@ while ready:
 
     # Special heuristic: penalize in-place ops on multi-consumer values
     # (schedule in-place ops last to avoid copies)
-    if (is_unary(op) or is_dest_reuse(op)) and op.dst_operand.num_consumers > 1:
+    if has_trait(op, TTLInPlaceOpTrait) and op.dst_operand.num_consumers > 1:
       non_live_aff_penalty -= 100  # Large penalty
 
     cost_tuple = (init_priority, release_pot, fire_pot, primary_aff,
@@ -237,7 +272,7 @@ return scheduled  # New operation order
 5. **Secondary Affinity (Saff)**: Indirect reuse - operations sharing common inputs with already-scheduled operations. Higher is better.
 
 6. **Non-Live Affinity Penalty (-Nnpaff)**: Negative of the number of unscheduled operations this op shares inputs with. More negative is worse (will extend live ranges).
-   - **Special case**: If this is an in-place operation (unary or `dest_reuse`) on a multi-consumer value, add a large penalty to schedule it last.
+   - **Special case**: If this operation has `TTLInPlaceOpTrait` and operates on a multi-consumer value, add a large penalty to schedule it last.
 
 7. **Critical Path Priority (Pl)**: Distance from this operation to the yield or store (end of block). Operations on the critical path receive higher priority.
 
@@ -357,9 +392,8 @@ for each tile value v:
     consumers = sorted(v.users, key=lambda op: op.position_in_block)
 
     # Check if ANY consumer overwrites its DST input in-place.
-    # Both unary ops and binary_dest_reuse_tiles overwrite in-place.
     has_inplace_consumer = any(
-      is_unary(c) or is_dest_reuse(c) for c in consumers
+      has_trait(c, TTLInPlaceOpTrait) for c in consumers
     )
 
     if has_inplace_consumer:
@@ -370,16 +404,14 @@ for each tile value v:
         insert before consumers[i]:
           v_copy_i = ttl.copy_dest_values(v, new_dst_reg)  # src -> dst (TTL convention)
         replace consumers[i]'s use of v with v_copy_i
-    # else: All consumers are non-in-place (SFPU binary, FPU binary) -> no copies needed
+    # else: All consumers lack TTLInPlaceOpTrait -> no copies needed
 ```
 
 **Rationale**:
-- **Unary operations** overwrite their input DST register in-place
-- **`binary_dest_reuse_tiles`** overwrites the DST operand in-place
-- **SFPU binary operations** do not modify their inputs -- they write to a fresh output DST
-- **FPU binary operations** do not use DST inputs at all
-- If a value has multiple consumers and **any** consumer is in-place (unary or dest_reuse), copies are needed for earlier consumers
-- If **all** consumers are non-in-place, no copies needed
+- Operations with `TTLInPlaceOpTrait` (unary, `binary_dest_reuse_tiles`) overwrite their DST input
+- Operations without `TTLInPlaceOpTrait` (SFPU binary, FPU binary) write to a fresh output DST or do not use DST inputs at all
+- If a value has multiple consumers and **any** consumer has `TTLInPlaceOpTrait`, copies are needed for earlier consumers
+- If **all** consumers lack the trait, no copies needed
 
 By copying for all consumers except the last one (when in-place consumers exist), the pass guarantees:
 1. The last consumer can safely use (and potentially overwrite) the original value
@@ -417,8 +449,8 @@ Throughout this document, pseudocode and MLIR examples use **TTL convention** fo
 
 Build live intervals for each tile value. Following Wimmer & Franz
 [CGO'10], we process operations in linear order (forward pass). For
-in-place operations (unary and `binary_dest_reuse_tiles`), merge the
-input and output intervals since they must share the same DST register
+in-place operations (those with `TTLInPlaceOpTrait`), merge the input
+and output intervals since they must share the same DST register
 (hardware constraint).
 
 This phase also identifies **CB-only values**: block arguments whose
@@ -436,26 +468,24 @@ for i, op in enumerate(operations):
 
 # Identify CB-only block arguments.
 # A block argument is CB-only if ALL of its consumers read it from a CB
-# rather than from DST. Several operation types read from CB:
-#   - FPU binary: reads both operands from CBs
-#   - binary_dest_reuse_tiles: reads its CB operand from a CB
-#   - copy_tile: reads from CB, writes result to DST
-#   - broadcast (tile_bcast): reads from CB, writes broadcast result to DST
-#   - reduce (tile_reduce): reads input + scaler from CBs, accumulates to DST
-#   - matmul (tile_matmul): reads A + B from CBs, accumulates to DST
-# For copy_tile, broadcast, reduce, and matmul, the block arg stays in
-# CB; the operation's *result* is what enters DST (and gets its own
-# interval). In the implementation, these ops carry
-# TTLCBInputTileOpTrait, so the check is trait-based.
+# rather than from DST. The check uses two traits:
+#   - TTLCBInputTileOpTrait: all operands read from CB (FPU binary,
+#     copy_tile, broadcast, reduce, matmul)
+#   - TTLDSTInputsTrait + TTLCBInputTileOpTrait: mixed-input op
+#     (dest_reuse) -- only the CB operand stays in CB
+# For CB-input ops, the block arg stays in CB; the operation's *result*
+# is what enters DST (and gets its own interval).
 for each block_arg:
   all_cb = True
   for each consumer of block_arg:
-    if is_fpu_binary(consumer):
-      pass  # FPU binary reads from CB -- block_arg stays in CB
-    elif is_dest_reuse(consumer) and block_arg == consumer.cb_operand:
-      pass  # dest_reuse CB operand stays in CB
-    elif has_trait(consumer, TTLCBInputTileOpTrait):
-      pass  # copy_tile, bcast, reduce, matmul: reads from CB, result enters DST
+    if has_trait(consumer, TTLCBInputTileOpTrait):
+      if has_trait(consumer, TTLDSTInputsTrait):
+        # Mixed-input op (dest_reuse): only the CB operand stays in CB
+        if block_arg != consumer.cb_operand:
+          all_cb = False
+          break
+      # else: all operands read from CB (FPU binary, copy_tile, bcast,
+      #        reduce, matmul) -- block_arg stays in CB
     else:
       all_cb = False
       break
@@ -484,18 +514,17 @@ for each operation op:
 for each yielded_val in yield_operands:
   intervals[yielded_val].end = max(intervals[yielded_val].end, yield_op.index)
 
-# Merge intervals for in-place ops (unary and dest_reuse).
-# Both unary and dest_reuse overwrite the DST input, so input and
-# output MUST share the same DST register. This merge is unconditional
-# because it reflects a hardware constraint: the operation physically
-# overwrites the input slot.
+# Merge intervals for in-place ops (those with TTLInPlaceOpTrait).
+# In-place ops overwrite the DST input, so input and output MUST share
+# the same DST register. This merge is unconditional because it
+# reflects a hardware constraint: the operation physically overwrites
+# the input slot.
 #
-# Note: SFPU binary ops (add_binary_tile, etc.) write to a FRESH output
-# DST slot and do NOT merge with their inputs. FPU binary ops also
-# write to a fresh slot. Only unary and dest_reuse are in-place.
-for each in_place_op:  # unary ops and dest_reuse ops
-  input_val = in_place_op.dst_operand  # the DST input (not CB operand for dest_reuse)
-  output_val = in_place_op.result
+# Note: Operations without TTLInPlaceOpTrait write to a FRESH output
+# DST slot and do NOT merge with their inputs.
+for each op where has_trait(op, TTLInPlaceOpTrait):
+  input_val = op.dst_operand  # the DST input (not CB operand for dest_reuse)
+  output_val = op.result
 
   # Unconditional merge: hardware requires same DST register
   merged_interval = Interval(
@@ -1519,50 +1548,9 @@ The DST allocation pass runs in this order:
 
 * **Adaptive Scheduling Heuristics**: Extend Phase 0 with adaptive cost tuple ordering based on computation characteristics (similar to LARS adaptivity in Section III-F of Rawat et al. SC'18). For computations with high intra-statement reuse, prioritize `Pl` (critical path) over `Paff` (affinity) to avoid excessive interleaving.
 
-* **Operation Category Traits**: The allocation algorithm distinguishes
-  seven operation categories (see Core Principle above). Each category 
-  can be identified by a composition of orthogonal
-  traits on the operation definition in TableGen. One of these traits
-  already exists: `TTLCBInputTileOpTrait` marks operations that read
-  tile inputs from CB rather than DST. Three additional traits complete
-  the system:
-
-  - **`TTLDSTInputsTrait`**: At least one operand is consumed from DST.
-  - **`TTLInPlaceOpTrait`**: Result overwrites the DST input (input and
-    output share the same DST slot).
-  - **`TTLAccumulatingOpTrait`**: Result accumulates across multiple
-    invocations to the same DST index (the DST slot must remain live
-    across an accumulation loop).
-
-  Each operation category is uniquely identified by its trait
-  combination:
-
-  | Category | `DSTInputs` | `CBInput` | `InPlace` | `Accumulating` |
-  |----------|:-----------:|:---------:|:---------:|:--------------:|
-  | SFPU binary | x | | | |
-  | FPU binary | | x | | |
-  | `dest_reuse` | x | x | x | |
-  | Unary | x | | x | |
-  | Broadcast | | x | | |
-  | Reduce | | x | | x |
-  | Matmul | | x | | x |
-
-  The allocator queries these traits compositionally:
-  - `hasTrait<TTLCBInputTileOpTrait>()` -> operand stays in CB (no DST
-    slot needed for that operand)
-  - `hasTrait<TTLDSTInputsTrait>()` -> operand needs a DST slot
-  - `hasTrait<TTLInPlaceOpTrait>()` -> merge input/output intervals
-    (Phase 2)
-  - `hasTrait<TTLAccumulatingOpTrait>()` -> DST slot must remain live
-    across the accumulation loop
-
-  Using composable traits rather than attributes is preferable because:
-  (1) the execution category is a static property of each operation,
-  not a dynamic property that varies by context; (2) traits are checked
-  at C++ compile time via `hasTrait<>()`, avoiding string-based
-  attribute lookups; (3) no pass-ordering dependency — the information
-  is available immediately at op construction; (4) orthogonal traits
-  enable the allocator to query individual properties (e.g., "is this
-  op in-place?") without encoding the full category taxonomy.
-
-  See [`MaximizingDSTUtilization.md`](../MaximizingDSTUtilization.md) for the full FPU-aware unrolling design and operation classification.
+* **Implement Operation Category Traits**: The four orthogonal traits
+  described in Operation Category Traits above (`TTLCBInputTileOpTrait`,
+  `TTLDSTInputsTrait`, `TTLInPlaceOpTrait`, `TTLAccumulatingOpTrait`)
+  need to be defined in TableGen and added to each operation definition.
+  `TTLCBInputTileOpTrait` already exists; the remaining three must be
+  implemented. See [`MaximizingDSTUtilization.md`](../MaximizingDSTUtilization.md) for the full FPU-aware unrolling design and operation classification.
