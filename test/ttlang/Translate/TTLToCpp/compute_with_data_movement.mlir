@@ -120,13 +120,11 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // Acquire DST registers (inside loop)
 // CHECK-NEXT:       tile_regs_acquire();
 
-// Load tile from CB0 into DST[0]
-// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
-
-// Load tile from CB1 into DST[1]
+// Load tiles into DST (reverse order: CB1 first, then CB0)
 // CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
 // CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
+// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
+// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
 
 // Compute: A + B
 // CHECK-NEXT:       add_binary_tile_init();
@@ -136,19 +134,19 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK-NEXT:       exp_tile_init();
 // CHECK-NEXT:       exp_tile([[ZERO]]);
 
+// Reserve output CB2 (before commit)
+// CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+
 // Synchronize DST registers before pack
 // CHECK-NEXT:       tile_regs_commit();
 // CHECK-NEXT:       tile_regs_wait();
-
-// Reserve output CB2
-// CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // Compute CB tile index: i * 2 + j (linearized row-major index)
 // CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
 // CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
 
 // Pack result to output CB2
-// CHECK-NEXT:       pack_tile{{.*}}([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// CHECK-NEXT:       pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // Push to signal data ready
 // CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);

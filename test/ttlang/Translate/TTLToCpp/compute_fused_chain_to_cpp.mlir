@@ -30,13 +30,11 @@
 // --- DST register lifecycle (acquire inside loop) ---
 // CHECK-NEXT:      tile_regs_acquire();
 
-// --- Load tile from CB0 (input A) into DST[0] ---
-// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
-
-// --- Load tile from CB1 (input B) into DST[1] ---
+// --- Load tiles into DST (reverse order: CB1 first, then CB0) ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
 // CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
 
 // --- Add: DST[0] + DST[1] -> DST[0] ---
 // CHECK-NEXT:      add_binary_tile_init();
@@ -50,19 +48,19 @@
 // CHECK-NEXT:      exp_tile_init();
 // CHECK-NEXT:      exp_tile([[ZERO]]);
 
+// --- Reserve output CB2 for packing (before commit) ---
+// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+
 // --- DST register synchronization ---
 // CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
-
-// --- Reserve output CB2 for packing ---
-// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // --- Compute CB tile index: i * 2 + j (linearized row-major index) ---
 // CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
 // CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
 
 // --- Pack DST[0] to output CB2 ---
-// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// CHECK-NEXT:      pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // --- Push to signal data ready ---
 // CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
