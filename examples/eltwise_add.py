@@ -31,7 +31,11 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
                 for local_col in range(cols_per_core):
                     col = core_col * cols_per_core + local_col
                     if col < col_tiles:
-                        with a_cb.wait() as a_blk, b_cb.wait() as b_blk, out_cb.reserve() as out_blk:
+                        with (
+                            a_cb.wait() as a_blk,
+                            b_cb.wait() as b_blk,
+                            out_cb.reserve() as out_blk,
+                        ):
                             out_blk.store(a_blk + b_blk)
 
     @ttl.datamovement()
@@ -72,9 +76,18 @@ def main() -> None:
         a_torch = torch.rand((dim, dim), dtype=torch.bfloat16)
         b_torch = torch.rand((dim, dim), dtype=torch.bfloat16)
 
-        a = ttnn.from_torch(a_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
-        b = ttnn.from_torch(b_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
-        out = ttnn.from_torch(torch.zeros_like(a_torch), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        a = ttnn.from_torch(
+            a_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+        )
+        b = ttnn.from_torch(
+            b_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+        )
+        out = ttnn.from_torch(
+            torch.zeros_like(a_torch),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+        )
 
         eltwise_add(a, b, out)
 

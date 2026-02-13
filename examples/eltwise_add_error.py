@@ -16,9 +16,15 @@ def add_with_kernel(a, b, y):
     rows = 2
     cols = 2
 
-    a_cb = ttl.make_circular_buffer_like(a, shape=(row_tiles, col_tiles), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(row_tiles, col_tiles), buffer_factor=2)
-    y_cb = ttl.make_circular_buffer_like(y, shape=(row_tiles, col_tiles), buffer_factor=2)
+    a_cb = ttl.make_circular_buffer_like(
+        a, shape=(row_tiles, col_tiles), buffer_factor=2
+    )
+    b_cb = ttl.make_circular_buffer_like(
+        b, shape=(row_tiles, col_tiles), buffer_factor=2
+    )
+    y_cb = ttl.make_circular_buffer_like(
+        y, shape=(row_tiles, col_tiles), buffer_factor=2
+    )
 
     @ttl.compute()
     def add_compute():
