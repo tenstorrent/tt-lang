@@ -247,6 +247,70 @@ add_binary_tile: <0, 0, 0, 1, 0, -1, ...>    # No penalty (SFPU binary, not in-p
 - Many independent operations (flexibility to reorder)
 - High register pressure (close to capacity limits)
 
+**Implementation Approach**:
+
+The SSA dependency graph is constructed by walking the def-use chains
+of operations within the `ttl.compute` block body. Each operation
+becomes a node; an edge from A to B exists when B uses a result of A.
+Block arguments (the `^bb0(...)` parameters) have no defining operation
+and impose no dependencies — operations that consume only block
+arguments are immediately ready.
+
+MLIR provides the necessary infrastructure for this:
+
+- **Def-use iteration**: `Value::getUsers()` returns all operations
+  consuming a value; `Value::getDefiningOp()` returns the producing
+  operation (or `nullptr` for block arguments). Together these are
+  sufficient to build the full dependency DAG for a single block. See
+  `mlir/test/lib/IR/TestPrintDefUse.cpp` for a complete walk example.
+
+- **Topological ordering**: `mlir/Analysis/TopologicalSortUtils.h`
+  provides `computeTopologicalSorting`, which maintains a set of
+  unscheduled operations and repeatedly selects ready operations whose
+  operands are all defined by already-scheduled operations or block
+  arguments. The `isOperandReady` callback enables custom readiness
+  logic (e.g., treating CB-only values as always ready).
+
+- **Slice analysis**: `mlir/Analysis/SliceAnalysis.h` provides
+  `getForwardSlice` (walks uses from a definition) and
+  `getBackwardSlice` (walks definitions from a use). These are useful
+  for computing the `critical_path_priority` metric: a backward slice
+  from the yield gives the critical-path length for each operation.
+
+The greedy list scheduler follows the pattern used by LLVM's
+`ScheduleDAGInstrs` (`llvm/lib/CodeGen/ScheduleDAGInstrs.cpp`):
+
+1. **Build the DAG**: Walk operations in the block. For each operation,
+   iterate over its operands via `op->getOperands()`. For each operand,
+   call `getDefiningOp()` to find the producer. If the producer is
+   non-null and lives in the same block, add an edge producer -> op. If
+   null (block argument) or defined outside the block, no edge is
+   needed.
+
+2. **Initialize the ready list**: Operations with no in-block
+   predecessors (all operands are block arguments or constants) are
+   initially ready. This is analogous to LLVM's
+   `SUnit::isTopReady()` (`NumPredsLeft == 0`).
+
+3. **Greedy selection loop**: Pop the best operation from the ready
+   list using the cost tuple. After scheduling an operation, decrement
+   the unscheduled-predecessor count for each successor. When a
+   successor's count reaches zero, add it to the ready list. This is
+   the same `ReleaseSuccessors` pattern used in
+   `llvm/lib/CodeGen/PostRASchedulerList.cpp`.
+
+4. **Update live values**: After scheduling, add the operation's
+   results to the live set and remove any operands at their last use.
+   These live-value counts feed the cost tuple metrics (Rpot, Paff).
+
+Unlike LLVM's machine-level scheduler, this operates at the MLIR
+operation level within a single basic block, so there are no anti- or
+output-dependencies (SSA guarantees single definitions), no memory
+aliasing concerns (tile operations are pure), and no latency modeling
+(all operations are unit-cost for scheduling purposes). The
+dependency graph reduces to a pure data-flow DAG derived from SSA
+def-use chains.
+
 ### Phase 1: Insert Copy Operations
 
 Normalize the IR by inserting explicit copy operations where values have multiple consumers.
@@ -894,7 +958,7 @@ Outputs (DST[0-1]):
 ```cpp
 mul_tiles_init(cb_in0, cb_in1);
 tile_regs_acquire();
-mul_tiles(cb_in0, cb_in1, 0, 0, 0);     // CB -> FPU -> DST[0]
+mul_tiles(cb_in0, cb_in1, 0, 0, 0);      // CB -> FPU -> DST[0]
 copy_dest_values(DST[0], DST[1]);        // Copy for abs (first consumer)
 abs_tile_init();
 abs_tile(DST[1]);                        // In-place on copy
