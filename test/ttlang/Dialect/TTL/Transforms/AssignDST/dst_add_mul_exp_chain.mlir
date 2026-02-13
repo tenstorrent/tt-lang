@@ -23,14 +23,14 @@
 // CHECK-DAG: %[[B_CB:.*]] = ttl.attach_cb %[[BARG:.*]], %[[CB1]]
 // CHECK-DAG: %[[C_CB:.*]] = ttl.attach_cb %[[CARG:.*]], %[[CB2]]
 // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT:.*]], %[[CB3]]
-// Copies inserted in reverse block arg order: C, B, A.
+// Copies inserted at first non-CB-reading use: A and B before add, C before mul.
 // CHECK: %[[RES:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK:      ttl.copy_tile %[[C]]
-// CHECK:      %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
 // CHECK:      %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
+// CHECK:      %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
 // CHECK:      %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %{{.*}} {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// CHECK:      %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[C]]
+// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE2]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // SEPARATE:   ttl.tile_exp {{.*}} {dst_idx = 2 : i32}
 // CHECK:      ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>

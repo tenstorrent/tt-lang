@@ -787,33 +787,34 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
-      // Insert copy_tile for all tile-typed block args that need DST loading.
-      for (auto arg : body->getArguments()) {
-        if (!isTileValue(arg) || dstIndexForValue.count(arg)) {
+      // Insert copy_tile for remaining block args at first non-CB-reading use.
+      // Copies must be inserted at first use (not block start) to match the
+      // liveness intervals that DST allocation was computed against.
+      for (Operation &op : *body) {
+        if (op.hasTrait<TTLCBInputTileOpTrait>()) {
           continue;
         }
+        for (OpOperand &operand : op.getOpOperands()) {
+          auto arg = dyn_cast<BlockArgument>(operand.get());
+          if (!arg || !isTileValue(arg) || dstIndexForValue.count(arg)) {
+            continue;
+          }
 
-        // Skip args only used by CB-reading ops (they read from CB directly).
-        bool hasDSTConsumer = llvm::any_of(arg.getUses(), [](OpOperand &use) {
-          return !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
-        });
-        if (!hasDSTConsumer) {
-          continue;
+          builder.setInsertionPoint(&op);
+          auto copy = createCopyTileForArg(arg, computeOp, builder,
+                                           dstAssignment, inUse,
+                                           dstIndexForValue);
+          if (failed(copy)) {
+            signalPassFailure();
+            return;
+          }
+
+          arg.replaceUsesWithIf(copy->getDstTile(), [&](OpOperand &use) {
+            return use.getOwner() != copy->getOperation() &&
+                   !isa<CopyTileOp>(use.getOwner()) &&
+                   !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
+          });
         }
-
-        builder.setInsertionPointToStart(body);
-        auto copy = createCopyTileForArg(arg, computeOp, builder, dstAssignment,
-                                         inUse, dstIndexForValue);
-        if (failed(copy)) {
-          signalPassFailure();
-          return;
-        }
-
-        arg.replaceUsesWithIf(copy->getDstTile(), [&](OpOperand &use) {
-          return use.getOwner() != copy->getOperation() &&
-                 !isa<CopyTileOp>(use.getOwner()) &&
-                 !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
-        });
       }
 
       // Set dst_idx attributes on tile compute ops, copy_tile, and copy_dst.

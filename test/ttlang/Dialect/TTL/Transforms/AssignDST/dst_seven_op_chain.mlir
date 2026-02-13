@@ -19,9 +19,9 @@
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK:             ttl.tile_regs_acquire
-// Copies in reverse order: B first, then A
-// CHECK:             %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
+// Copies at first use (tile_add): A then B
 // CHECK:             %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
+// CHECK:             %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
 // CHECK:             %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE1]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE1]] {dst_idx = 0 : i32}

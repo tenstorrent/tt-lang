@@ -17,9 +17,9 @@ func.func @binary_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1: tensor
   // CHECK:      %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]], %[[CB2]]
   // CHECK:      %[[RESULT:.*]] = ttl.compute
   // CHECK:      ^bb0(%[[LHS:.*]]: !ttcore.tile<32x32, f32>, %[[RHS:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // Copies in reverse order: RHS first, then LHS
-  // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
+  // Copies at first use (tile_add): LHS then RHS
   // CHECK:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[LHS]]
+  // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
   // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
   // CHECK:        ttl.yield %[[SUM]]
   // CHECK:      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -83,8 +83,8 @@ func.func @chain_binary_unary(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1
   // CHECK-NEXT: %[[INIT0_CB:.*]] = ttl.attach_cb %[[EMPTY]], %[[CB2]]
   // CHECK:      %[[ADD_RESULT:.*]] = ttl.compute
   // CHECK:      ^bb0(%[[LHS:.*]]: !ttcore.tile<32x32, f32>, %[[RHS:.*]]: !ttcore.tile<32x32, f32>, %[[OUT0:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
   // CHECK:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[LHS]]
+  // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
   // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
   // CHECK:        ttl.yield %[[SUM]]
   // CHECK:      } -> tensor<4x4x!ttcore.tile<32x32, f32>>

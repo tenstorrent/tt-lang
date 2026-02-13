@@ -30,11 +30,11 @@
 // --- DST register lifecycle (acquire inside loop) ---
 // CHECK-NEXT:      tile_regs_acquire();
 
-// --- Load tiles into DST (reverse order: CB1 first, then CB0) ---
-// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
+// --- Load tiles into DST (at first use: CB0 first, then CB1) ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
 // CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
+// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
+// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
 
 // --- Add: DST[0] + DST[1] -> DST[0] ---
 // CHECK-NEXT:      add_binary_tile_init();

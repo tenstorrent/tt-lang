@@ -22,11 +22,11 @@
 // CHECK:         scf.for %[[J:.*]] = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:           %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // CHECK:           ttkernel.tile_regs_acquire
-// Copies in reverse order: CB1 first, then CB0
-// CHECK:           ttkernel.copy_tile_init(%[[CB1_TTK]])
-// CHECK:           ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]],
+// Copies at first use (add): CB0 first, then CB1
 // CHECK:           ttkernel.copy_tile_init(%[[CB0_TTK]])
 // CHECK:           ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]],
+// CHECK:           ttkernel.copy_tile_init(%[[CB1_TTK]])
+// CHECK:           ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]],
 // CHECK:           ttkernel.add_binary_tile_init()
 // CHECK:           ttkernel.add_binary_tile(
 // CHECK:           ttkernel.mul_binary_tile_init()

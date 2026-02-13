@@ -26,11 +26,11 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // Copies are inserted in reverse block arg order (B first, then A).
+  // Copies inserted at first use (tile_add): A then B.
 // CHECK: ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK:      %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
 // CHECK:      %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
+// CHECK:      %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
 // CHECK-NOT:  ttl.copy_tile
 // CHECK:      %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // SEPARATE:   ttl.tile_add {{.*}} {dst_idx = 2 : i32}
@@ -62,13 +62,11 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-LABEL: func.func @chain_reuse
 // CHECK: ttl.compute
 // CHECK: ^bb0(%[[ARG0:.*]]: !ttcore.tile<32x32, f32>, %[[ARG1:.*]]: !ttcore.tile<32x32, f32>, %[[ARG2:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// All 3 inputs copied (reverse order), then 5 chained adds reusing DST[0].
-// CHECK:      ttl.copy_tile %[[ARG2]]
-// CHECK:      ttl.copy_tile %[[ARG1]]
+// ARG0 and ARG1 copied at first use (first add), ARG2 at its first use (second add).
 // CHECK:      ttl.copy_tile %[[ARG0]]
-// CHECK-NOT:  ttl.copy_tile
+// CHECK:      ttl.copy_tile %[[ARG1]]
 // CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
-// CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
+// CHECK:      ttl.copy_tile %[[ARG2]]
 // CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
 // CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
 // CHECK:      %[[X4:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32}
@@ -120,8 +118,8 @@ func.func @chain_reuse(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>,
 // CHECK-LABEL: func.func @block_arg_multi_use
 // CHECK: ttl.compute
 // CHECK: ^bb0(%[[ARG0:.*]]: !ttcore.tile<32x32, f32>, %[[ARG1:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK:      %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]]
 // CHECK:      %[[COPY0TOK:.*]], %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]]
+// CHECK:      %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]]
 // CHECK-NOT:  ttl.copy_tile
 // CHECK:      %[[ADD0:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 // CHECK:      %[[ADD1:.*]] = ttl.tile_add %[[COPY0]], %[[ADD0]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>

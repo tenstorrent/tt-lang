@@ -157,11 +157,11 @@ def add_kernel(lhs, rhs, out):
 # DST register lifecycle
 # CHECK-CPP: tile_regs_acquire();
 
-# Load tiles into DST
-# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
+# Load tiles into DST (at first use: CB0 then CB1)
 # CHECK-CPP: copy_tile_init(get_compile_time_arg_val(0));
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(0),
+# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
 
 # Add operation
 # CHECK-CPP: add_binary_tile_init();

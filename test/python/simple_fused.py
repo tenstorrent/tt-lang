@@ -103,15 +103,16 @@ def fused_kernel(inp, bias, out):
 # DST register lifecycle
 # CHECK-CPP: tile_regs_acquire();
 
-# Load tiles into DST
-# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
+# Load tiles into DST at first use, interleaved with compute ops
+# CB0 copy before exp (its first consumer)
 # CHECK-CPP: copy_tile_init(get_compile_time_arg_val(0));
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(0),
-
-# Apply unary ops
 # CHECK-CPP: exp_tile_init();
 # CHECK-CPP: exp_tile(
+
+# CB1 copy before sqrt (its first consumer)
+# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
 # CHECK-CPP: sqrt_tile_init();
 # CHECK-CPP: sqrt_tile(
 

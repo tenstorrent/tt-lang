@@ -23,13 +23,14 @@
 // CHECK-LABEL: func.func @diamond_intermediate_reuse
 // CHECK: %[[RES:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[D:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// Copies in reverse order: D, C, B, A
-// CHECK:      ttl.copy_tile %[[D]]
-// CHECK:      %[[TOKB:.*]], %[[TB:.*]] = ttl.copy_tile %[[B]]
+// Copies at first use: A and B before add, C before sub, D before mul
 // CHECK:      %[[TOKA:.*]], %[[TA:.*]] = ttl.copy_tile %[[A]]
+// CHECK:      %[[TOKB:.*]], %[[TB:.*]] = ttl.copy_tile %[[B]]
 // CHECK:      %[[SUM:.*]] = ttl.tile_add %[[TA]], %[[TB]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK:      %[[DIFF:.*]] = ttl.tile_sub %[[SUM]], %{{.*}} {dst_idx = {{[0-9]+}} : i32}
-// CHECK:      %[[PROD:.*]] = ttl.tile_mul %[[SUM]], %{{.*}} {dst_idx = 0 : i32}
+// CHECK:      %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]]
+// CHECK:      %[[DIFF:.*]] = ttl.tile_sub %[[SUM]], %[[TC]] {dst_idx = {{[0-9]+}} : i32}
+// CHECK:      %{{.*}}, %[[TD:.*]] = ttl.copy_tile %[[D]]
+// CHECK:      %[[PROD:.*]] = ttl.tile_mul %[[SUM]], %[[TD]] {dst_idx = 0 : i32}
 // CHECK:      %[[COMBO:.*]] = ttl.tile_add %{{.*}}, %[[PROD]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // SEPARATE:   ttl.tile_add {{.*}} {dst_idx = 3 : i32}
 // CHECK:      ttl.yield %[[COMBO]] : !ttcore.tile<32x32, f32>
@@ -91,10 +92,9 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-LABEL: func.func @intermediate_result_fan_out
 // CHECK: ttl.compute
 // CHECK: ^bb0(%[[ARG0:.*]]: !ttcore.tile<32x32, f32>, %[[ARG1:.*]]: !ttcore.tile<32x32, f32>, %[[ARG2:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// Copies in reverse order: ARG2, ARG1, ARG0
-// CHECK:      ttl.copy_tile %[[ARG2]]
-// CHECK:      %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]]
+// Copies at first use: ARG0 and ARG1 before add, ARG2 before mul
 // CHECK:      %[[COPY0TOK:.*]], %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]]
+// CHECK:      %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]]
 // CHECK:      %[[INTERMEDIATE:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK:      ttl.tile_mul {{.*}} {dst_idx = {{[0-9]+}} : i32}
 // CHECK:      ttl.tile_exp {{.*}} {dst_idx = {{[0-9]+}} : i32}
