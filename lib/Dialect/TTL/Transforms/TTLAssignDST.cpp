@@ -214,8 +214,7 @@ static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
 /// Allocate a DST register and create a CopyTileOp for a block argument.
 /// Looks up assignment first; falls back to allocating a free register.
 static FailureOr<CopyTileOp>
-createCopyTileForArg(BlockArgument arg, ComputeOp computeOp,
-                     OpBuilder &builder,
+createCopyTileForArg(BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
                      const DenseMap<Value, std::uint32_t> &dstAssignment,
                      llvm::SmallBitVector &inUse,
                      DenseMap<Value, std::uint32_t> &dstIndexForValue) {
@@ -225,23 +224,24 @@ createCopyTileForArg(BlockArgument arg, ComputeOp computeOp,
     assignedDstIndex = it->second;
   } else {
     int freeReg = inUse.find_first_unset();
-    if (freeReg < 0)
+    if (freeReg < 0) {
       return computeOp.emitOpError("no free DST register for block argument");
+    }
     assignedDstIndex = static_cast<std::uint32_t>(freeReg);
   }
   inUse.set(assignedDstIndex);
 
   Location loc = builder.getInsertionPoint()->getLoc();
   auto indexMapAttr = computeIndexMapAttr(arg, computeOp, builder);
-  if (failed(indexMapAttr))
+  if (failed(indexMapAttr)) {
     return computeOp.emitOpError("block argument not found in compute inputs");
+  }
 
   Value srcIndex = builder.create<LinearizedIndexOp>(loc, *indexMapAttr);
   Value dstIndex =
       builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
   auto copy = builder.create<CopyTileOp>(
-      loc,
-      TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
+      loc, TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
       ValueRange{arg, srcIndex, dstIndex});
   dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
   dstIndexForValue[arg] = assignedDstIndex;
@@ -754,19 +754,20 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
       for (CopyTileOp placeholder : placeholderCopies) {
         auto arg = dyn_cast<BlockArgument>(placeholder.getSrc());
-        if (!arg)
+        if (!arg) {
           continue;
+        }
 
         // Use the placeholder's DST assignment if available.
         auto placeholderIt = dstAssignment.find(placeholder.getDstTile());
         DenseMap<Value, std::uint32_t> lookupOverride(dstAssignment);
-        if (placeholderIt != dstAssignment.end())
+        if (placeholderIt != dstAssignment.end()) {
           lookupOverride[arg] = placeholderIt->second;
+        }
 
         builder.setInsertionPoint(placeholder);
-        auto newCopy = createCopyTileForArg(arg, computeOp, builder,
-                                            lookupOverride, inUse,
-                                            dstIndexForValue);
+        auto newCopy = createCopyTileForArg(
+            arg, computeOp, builder, lookupOverride, inUse, dstIndexForValue);
         if (failed(newCopy)) {
           signalPassFailure();
           return;
@@ -778,28 +779,31 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         Operation *srcIndexDef = placeholder.getSrcIndex().getDefiningOp();
         Operation *dstIndexDef = placeholder.getDstIndex().getDefiningOp();
         placeholder.erase();
-        if (srcIndexDef && srcIndexDef->use_empty())
+        if (srcIndexDef && srcIndexDef->use_empty()) {
           srcIndexDef->erase();
-        if (dstIndexDef && dstIndexDef->use_empty())
+        }
+        if (dstIndexDef && dstIndexDef->use_empty()) {
           dstIndexDef->erase();
+        }
       }
 
       // Insert copy_tile for all tile-typed block args that need DST loading.
       for (auto arg : body->getArguments()) {
-        if (!isTileValue(arg) || dstIndexForValue.count(arg))
+        if (!isTileValue(arg) || dstIndexForValue.count(arg)) {
           continue;
+        }
 
         // Skip args only used by CB-reading ops (they read from CB directly).
         bool hasDSTConsumer = llvm::any_of(arg.getUses(), [](OpOperand &use) {
           return !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
         });
-        if (!hasDSTConsumer)
+        if (!hasDSTConsumer) {
           continue;
+        }
 
         builder.setInsertionPointToStart(body);
-        auto copy = createCopyTileForArg(arg, computeOp, builder,
-                                         dstAssignment, inUse,
-                                         dstIndexForValue);
+        auto copy = createCopyTileForArg(arg, computeOp, builder, dstAssignment,
+                                         inUse, dstIndexForValue);
         if (failed(copy)) {
           signalPassFailure();
           return;

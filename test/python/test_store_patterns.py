@@ -185,7 +185,9 @@ def test_same_tile_two_outputs(device):
     assert torch.allclose(r2, expected)
 
 
-@pytest.mark.xfail(reason="Simulator deadlocks on same-CB produce+consume in compute thread")
+@pytest.mark.xfail(
+    reason="Simulator deadlocks on same-CB produce+consume in compute thread"
+)
 def test_store_then_forward(device):
     a = to_dram(torch.full((32, 32), 3.0, dtype=torch.bfloat16), device)
     b = to_dram(torch.full((32, 32), 2.0, dtype=torch.bfloat16), device)

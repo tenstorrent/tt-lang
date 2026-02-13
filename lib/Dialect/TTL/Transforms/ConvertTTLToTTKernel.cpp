@@ -997,11 +997,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   });
 
   RewritePatternSet patterns(&ctx);
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
-           CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-           TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
-          typeConverter, &ctx);
+  patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
+               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
+               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
+      typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

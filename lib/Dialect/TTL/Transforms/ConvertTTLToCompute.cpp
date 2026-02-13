@@ -67,8 +67,9 @@ static std::pair<StoreOp, Value> findStoreUser(Value result) {
   for (auto &use : result.getUses()) {
     if (auto store = dyn_cast<StoreOp>(use.getOwner())) {
       Value reserveView = getReserveViewFromStore(store);
-      if (reserveView)
+      if (reserveView) {
         return {store, reserveView};
+      }
     }
   }
   return {nullptr, Value()};
@@ -77,12 +78,12 @@ static std::pair<StoreOp, Value> findStoreUser(Value result) {
 /// Emit tile_store in the compute body if the original op has a store user.
 /// The reserve view must already dominate originalOp. Returns the StoreOp
 /// to erase (caller must erase after replaceOp), or nullptr.
-static FailureOr<StoreOp> fuseTileStore(Operation *originalOp,
-                                         Value tileResult,
-                                         PatternRewriter &rewriter) {
+static FailureOr<StoreOp> fuseTileStore(Operation *originalOp, Value tileResult,
+                                        PatternRewriter &rewriter) {
   auto [storeOp, reserveView] = findStoreUser(originalOp->getResult(0));
-  if (!storeOp)
+  if (!storeOp) {
     return StoreOp(nullptr);
+  }
 
   if (auto *def = reserveView.getDefiningOp()) {
     if (!def->isBeforeInBlock(originalOp)) {
@@ -258,14 +259,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   auto storeToErase = fuseTileStore(sinkOp, finalResult, rewriter);
-  if (failed(storeToErase))
+  if (failed(storeToErase)) {
     return failure();
+  }
 
   rewriter.create<YieldOp>(loc, ValueRange{finalResult});
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
-  if (*storeToErase)
+  if (*storeToErase) {
     rewriter.eraseOp(*storeToErase);
+  }
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -366,12 +369,14 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
   auto storeToErase = fuseTileStore(op, result, rewriter);
-  if (failed(storeToErase))
+  if (failed(storeToErase)) {
     return failure();
+  }
   rewriter.create<YieldOp>(loc, ValueRange{result});
   rewriter.replaceOp(op, computeOp.getResult(0));
-  if (*storeToErase)
+  if (*storeToErase) {
     rewriter.eraseOp(*storeToErase);
+  }
   return success();
 }
 
@@ -452,12 +457,14 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
   auto storeToErase = fuseTileStore(op, result, rewriter);
-  if (failed(storeToErase))
+  if (failed(storeToErase)) {
     return failure();
+  }
   rewriter.create<YieldOp>(loc, ValueRange{result});
   rewriter.replaceOp(op, computeOp.getResult(0));
-  if (*storeToErase)
+  if (*storeToErase) {
     rewriter.eraseOp(*storeToErase);
+  }
   return success();
 }
 
@@ -618,12 +625,14 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
     auto storeToErase = fuseTileStore(op, result, rewriter);
-    if (failed(storeToErase))
+    if (failed(storeToErase)) {
       return failure();
+    }
     rewriter.create<YieldOp>(loc, ValueRange{result});
     rewriter.replaceOp(op, computeOp.getResult(0));
-    if (*storeToErase)
+    if (*storeToErase) {
       rewriter.eraseOp(*storeToErase);
+    }
     return success();
   }
 };
@@ -676,12 +685,14 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     }
 
     auto inputType = getTensorType(input);
-    if (!inputType)
+    if (!inputType) {
       return failure();
+    }
 
     auto viewAttach = view.getDefiningOp<AttachCBOp>();
-    if (!viewAttach)
+    if (!viewAttach) {
       return op.emitError("store view must come from ttl.attach_cb");
+    }
     Value outputCb = viewAttach.getCb();
 
     Location loc = op.getLoc();
@@ -714,8 +725,9 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     for (OpOperand &use : llvm::make_early_inc_range(input.getUses())) {
       if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
-        if (attachOp.getCb() == outputCb && attachOp != viewAttach)
+        if (attachOp.getCb() == outputCb && attachOp != viewAttach) {
           rewriter.replaceOp(attachOp, computeOp.getResult(0));
+        }
       }
     }
 

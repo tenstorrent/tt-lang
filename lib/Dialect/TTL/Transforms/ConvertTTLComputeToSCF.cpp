@@ -103,9 +103,10 @@ static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
 
 /// Generate side-effect-only loop body. Extracts tiles from inputs, clones
 /// compute body ops, and returns nothing (stores are explicit side effects).
-static LogicalResult
-generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
-                       ArrayRef<AffineMap> indexingMaps, ValueRange ivs) {
+static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
+                                            ComputeOp op,
+                                            ArrayRef<AffineMap> indexingMaps,
+                                            ValueRange ivs) {
   // Extract tiles from inputs at current mapped indices.
   SmallVector<Value> extractedInputs;
   for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
@@ -201,8 +202,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         rewriter, loc, lowerBounds, upperBounds, steps, ValueRange{},
         [&](OpBuilder &b, Location loc, ValueRange ivs,
             ValueRange /*iterArgs*/) -> scf::ValueVector {
-          if (failed(
-                  generateTileProcessing(b, loc, op, indexingMaps, ivs))) {
+          if (failed(generateTileProcessing(b, loc, op, indexingMaps, ivs))) {
             processingFailed = true;
           }
           return {};
