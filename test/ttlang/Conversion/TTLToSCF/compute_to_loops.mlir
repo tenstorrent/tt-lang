@@ -22,8 +22,8 @@ func.func @compute_add_2x2(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
   // CHECK-DAG: %[[A_CB:.*]] = ttl.attach_cb %[[ARG0]]
   // CHECK-DAG: %[[B_CB:.*]] = ttl.attach_cb %[[ARG1]]
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
-  // CHECK: %[[OUTER:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
-  // CHECK-NEXT: %[[INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
   // CHECK-NEXT: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[EXT_B:.*]] = tensor.extract %[[B_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[SUM:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_B]] : !ttcore.tile<32x32, f32>
@@ -56,8 +56,8 @@ func.func @compute_exp_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>) -> tensor<3
   %init_att = ttl.attach_cb %init, %cbout : (tensor<3x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<3x3x!ttcore.tile<32x32, f32>>
   // CHECK-DAG: %[[A_CB:.*]] = ttl.attach_cb %[[ARG0]]
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
-  // CHECK: %[[OUTER:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
-  // CHECK-NEXT: %[[INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
+  // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
+  // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
   // CHECK-NEXT: %[[EXT:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]] : tensor<3x3x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[EXP:.*]] = ttl.tile_exp %[[EXT]] : !ttcore.tile<32x32, f32>
         // CHECK: return
@@ -89,7 +89,7 @@ func.func @compute_relu_1d(%a: tensor<4x!ttcore.tile<32x32, f32>>) -> tensor<4x!
   %init_att = ttl.attach_cb %init, %cbout : (tensor<4x!ttcore.tile<32x32, f32>>, !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x!ttcore.tile<32x32, f32>>
   // CHECK-DAG: %[[A_CB:.*]] = ttl.attach_cb %[[ARG0]]
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
-  // CHECK: %[[LOOP:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C4]] step %[[C1]]
+  // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C4]] step %[[C1]]
   // CHECK-NEXT: %[[EXT:.*]] = tensor.extract %[[A_CB]][%[[I]]] : tensor<4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[RELU:.*]] = ttl.tile_relu %[[EXT]] : !ttcore.tile<32x32, f32>
       // CHECK: return
@@ -120,8 +120,8 @@ func.func @compute_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x
   // CHECK-DAG: %[[A_CB:.*]] = ttl.attach_cb %[[ARG0]]
   // CHECK-DAG: %[[B_CB:.*]] = ttl.attach_cb %[[ARG1]]
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT:.*]]
-  // CHECK: %[[OUTER:.*]] = scf.for %[[I:.*]] = %[[C0:.*]] to %[[C2:.*]] step %[[C1:.*]]
-  // CHECK-NEXT: %[[INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK: scf.for %[[I:.*]] = %[[C0:.*]] to %[[C2:.*]] step %[[C1:.*]]
+  // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
   // CHECK: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
   // CHECK: %[[EXT_B:.*]] = tensor.extract %[[B_CB]][%[[I]], %[[J]]]
   // CHECK: %[[ADD:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_B]] : !ttcore.tile<32x32, f32>
@@ -200,10 +200,10 @@ func.func @compute_broadcast_input(%a: tensor<3x!ttcore.tile<32x32, f32>>) -> te
 // CHECK-DAG: %[[INIT:.*]] = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
 // CHECK-DAG: %[[A_CB:.*]] = ttl.attach_cb %[[ARG0]]
 // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
-// CHECK: %[[OUTER:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
-// CHECK-NEXT: %[[INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
+// CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+// CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
 // CHECK: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
-// CHECK: %[[EXT_ACC:.*]] = tensor.extract %[[ARG_IN]][%[[I]]]
+// CHECK: %[[EXT_ACC:.*]] = tensor.extract %[[INIT_CB]][%[[I]]]
 // CHECK: %[[ADD:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_ACC]] : !ttcore.tile<32x32, f32>
 func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
@@ -279,8 +279,8 @@ func.func @compute_two_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
   // CHECK-DAG: %[[INIT0_CB:.*]] = ttl.attach_cb %[[INIT0]]
   // CHECK-DAG: %[[INIT1_CB:.*]] = ttl.attach_cb %[[INIT1]]
   // First compute: add
-  // CHECK: %[[ADD_OUTER:.*]] = scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
-  // CHECK-NEXT: %[[ADD_INNER:.*]] = scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
   // CHECK-NEXT: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[EXT_B:.*]] = tensor.extract %[[B_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[SUM:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_B]] : !ttcore.tile<32x32, f32>
@@ -291,9 +291,9 @@ func.func @compute_two_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   // Second compute: relu on the result of first compute (using fresh CB, not input CB)
   %add_result_cb = ttl.attach_cb %add_result, %cb_intermediate : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  // CHECK-DAG: %[[ADD_RESULT_CB:.*]] = ttl.attach_cb %[[ADD_OUTER]]
-  // CHECK: %[[RELU_OUTER:.*]] = scf.for %[[I2:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
-  // CHECK-NEXT: %[[RELU_INNER:.*]] = scf.for %[[J2:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-DAG: %[[ADD_RESULT_CB:.*]] = ttl.attach_cb %[[INIT0_CB]]
+  // CHECK: scf.for %[[I2:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-NEXT: scf.for %[[J2:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
   // CHECK-NEXT: %[[EXT_ADD:.*]] = tensor.extract %[[ADD_RESULT_CB]][%[[I2]], %[[J2]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[RELU:.*]] = ttl.tile_relu %[[EXT_ADD]] : !ttcore.tile<32x32, f32>
         // CHECK: return
