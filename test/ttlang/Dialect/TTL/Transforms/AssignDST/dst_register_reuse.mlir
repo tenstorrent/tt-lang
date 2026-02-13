@@ -69,6 +69,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK:      ttl.copy_tile %[[ARG2]]
 // CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
 // CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
+// CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
 // CHECK:      %[[X4:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32}
 // SEPARATE:   ttl.tile_add {{.*}} {dst_idx = 2 : i32}
 // CHECK:      ttl.yield %[[X4]]
