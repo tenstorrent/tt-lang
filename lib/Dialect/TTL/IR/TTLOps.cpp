@@ -527,8 +527,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       continue;
     }
     if (!store.getView().getDefiningOp<CBReserveOp>()) {
-      return store.emitOpError()
-             << "view must be produced by ttl.cb_reserve";
+      return store.emitOpError() << "view must be produced by ttl.cb_reserve";
     }
   }
 
