@@ -6,8 +6,8 @@ DST (destination) registers are hardware registers used for tile computations. T
 
 ## Core Principle: Operation Classification
 
-Each tile operation falls into one of four categories based on its
-execution engine and DST register usage:
+Each tile operation falls into one of the following categories based on
+its execution engine and DST register usage:
 
 **SFPU binary operations** (e.g., `mul_binary_tile`, `add_binary_tile`)
 read both operands from DST and write to a fresh DST slot:
@@ -36,28 +36,66 @@ in-place on a DST register:
 - No additional DST allocation needed
 - `inputs_footprint = 0` for standalone unary ops
 
+**Broadcast** (`tile_bcast`) reads a single operand from a CB and
+writes the broadcast result to a fresh DST slot:
+- Input stays in CB (like `copy_tile`, uses `TTLCBInputTileOpTrait`)
+- Output gets a fresh DST slot (not in-place)
+- `inputs_footprint = 0`
+- **Init constraint**: `unary_bcast_init` performs a full init
+  (configures UNPACK + MATH + PACK) and must appear before any other
+  init operations in the block.
+
+**Reduce** (`tile_reduce`) reads an input tile and a scaler tile from
+CBs, and accumulates the reduction result into a fresh DST slot:
+- Both inputs stay in CBs (`TTLCBInputTileOpTrait`)
+- Output gets a fresh DST slot (not in-place)
+- `inputs_footprint = 0`
+- **Accumulation**: Multiple `reduce_tile` calls to the same DST index
+  accumulate the reduction across tiles (e.g., summing a row of tiles).
+  The DST slot must remain live for the entire reduction loop.
+- **Init constraint**: `reduce_init` performs a full init (UNPACK +
+  MATH + PACK) and sets a packer edge mask. `reduce_uninit` must be
+  called after the last `reduce_tile` to clear this mask before any
+  non-reduce operation.
+
+**Matmul** (`tile_matmul`) reads A and B tiles from CBs and
+accumulates the matrix product into a fresh DST slot:
+- Both inputs stay in CBs (`TTLCBInputTileOpTrait`)
+- Output gets a fresh DST slot (not in-place)
+- `inputs_footprint = 0`
+- **Accumulation**: Multiple `matmul_tiles` calls to the same DST index
+  accumulate C += A * B across K-dimension tiles. The DST slot must
+  remain live across the entire K loop. `tile_regs_acquire` zeros DST
+  before the loop; all K iterations accumulate before
+  `tile_regs_commit`.
+- **Init**: `mm_init_short` configures UNPACK + MATH (not PACK). Can
+  be called multiple times per kernel to re-enter matmul mode after
+  other operations.
+
 The following table summarizes DST slot requirements per category:
 
-| Category | Input Source | DST Input Slots | DST Output Slots | In-Place |
-|----------|-------------|-----------------|------------------|----------|
-| SFPU binary | DST (both) | 2+ | 1 (fresh) | No |
-| FPU binary | CB (both) | 0 | 1 (fresh) | No |
-| `dest_reuse` | 1 DST + 1 CB | 0 (reused) | 1 (overwrites input) | Yes |
-| Unary | DST | 0 | 0 (overwrites input) | Yes |
+| Category | Input Source | DST Input Slots | DST Output Slots | In-Place | Accumulates |
+|----------|-------------|-----------------|------------------|----------|-------------|
+| SFPU binary | DST (both) | 2+ | 1 (fresh) | No | No |
+| FPU binary | CB (both) | 0 | 1 (fresh) | No | No |
+| `dest_reuse` | 1 DST + 1 CB | 0 (reused) | 1 (overwrites input) | Yes | No |
+| Unary | DST | 0 | 0 (overwrites input) | Yes | No |
+| Broadcast | CB | 0 | 1 (fresh) | No | No |
+| Reduce | CB (input + scaler) | 0 | 1 (fresh) | No | Yes (reduction dim) |
+| Matmul | CB (A + B) | 0 | 1 (fresh) | No | Yes (K dim) |
 
 ## Lifetime Interval Visualization
 
-The following diagram illustrates how lifetime intervals work for a
-simple example with an SFPU binary and a unary operation. Both operands
-are loaded to DST via `copy_tile` (the SFPU binary case where both
-operands are already in DST — see Example 5):
+The following diagram illustrates how lifetime intervals work for an
+SFPU binary followed by a unary operation. Both block arguments are
+loaded to DST via `copy_tile` before the SFPU binary consumes them:
 
 ```
 MLIR:
   %in0 = block_arg
   %in1 = block_arg
-  %0 = mul(%in0, %in1)    // Binary op
-  %1 = abs(%0)             // Unary op (in-place)
+  %0 = mul(%in0, %in1)    // SFPU binary (both operands from DST)
+  %1 = abs(%0)             // Unary (in-place)
   yield %1
 
 Operation Timeline:    0      1      2      3
@@ -69,8 +107,8 @@ Lifetime Intervals:
   %1    [2─────────3]              █████████  ← (unary in-place)
 
 DST Assignment:
-  Inputs/Intermediates: %in0→DST[0], %in1→DST[1]
-  Outputs:              %0→DST[2], %1→DST[2] (shared, in-place)
+  Inputs/Intermediates: %in0->DST[0], %in1->DST[1]
+  Outputs:              %0->DST[2], %1->DST[2] (shared, in-place)
 ```
 
 **Key observations**:
@@ -82,7 +120,7 @@ DST Assignment:
 
 ## DST Allocation Algorithm
 
-The algorithm uses a three-phase approach: operation scheduling to minimize register pressure, IR normalization via copy insertion, and linear scan register allocation with output region constraints.
+The algorithm has five phases: optional operation scheduling to minimize register pressure (Phase 0), IR normalization via copy insertion (Phase 1), live interval construction with in-place merging (Phase 2), linear scan allocation for inputs and intermediates (Phase 3), and linear scan allocation for outputs (Phase 4).
 
 **References**:
 - Christian Wimmer and Michael Franz. 2010. Linear scan register allocation on SSA form. In Proceedings of CGO '10. https://doi.org/10.1145/1772954.1772979
@@ -92,7 +130,7 @@ The algorithm uses a three-phase approach: operation scheduling to minimize regi
 
 Reorder independent operations within the `ttl.compute` block to minimize register pressure and reduce the number of copies needed in Phase 1.
 
-**Goal**: For values with multiple consumers, schedule operations so that any unary consumers come LAST. This eliminates the need for `copy_dest_values` operations.
+**Goal**: For values with multiple consumers, schedule operations so that in-place consumers (unary, `dest_reuse`) come last. This eliminates the need for `copy_dest_values` operations.
 
 **Algorithm** (adapted from LARS [Rawat et al. SC'18]):
 
@@ -115,8 +153,8 @@ while ready:
     secondary_aff = indirect_reuse_score(op, live_values)
     non_live_aff_penalty = -count_reuse_with_nonlive(op, remaining_ops)
 
-    # Special heuristic: PENALTY if in-place op on multi-consumer value
-    # (we want in-place ops scheduled LAST to avoid copies)
+    # Special heuristic: penalize in-place ops on multi-consumer values
+    # (schedule in-place ops last to avoid copies)
     if (is_unary(op) or is_dest_reuse(op)) and op.dst_operand.num_consumers > 1:
       non_live_aff_penalty -= 100  # Large penalty
 
@@ -148,18 +186,18 @@ return scheduled  # New operation order
 
 2. **Fire Potential (Fpot)**: Number of dependent operations that become schedulable after executing this operation. Higher is better (enables more scheduling flexibility).
 
-3. **Primary Affinity (Paff)**: Sum of reuse strength with already-live values. If operation uses values already in DST registers, we have high affinity. Higher is better (locality).
+3. **Primary Affinity (Paff)**: Sum of reuse strength with already-live values. Operations that use values already in DST registers have high affinity. Higher is better (locality).
 
 4. **Secondary Affinity (Saff)**: Indirect reuse - operations sharing common inputs with already-scheduled operations. Higher is better.
 
 5. **Non-Live Affinity Penalty (-Nnpaff)**: Negative of the number of unscheduled operations this op shares inputs with. More negative is worse (will extend live ranges).
-   - **Special case**: If this is a unary operation on a multi-consumer value, add large penalty to schedule it LAST.
+   - **Special case**: If this is an in-place operation (unary or `dest_reuse`) on a multi-consumer value, add a large penalty to schedule it last.
 
-6. **Critical Path Priority (Pl)**: Distance from this operation to the yield (end of block). Operations closer to critical path scheduled with urgency.
+6. **Critical Path Priority (Pl)**: Distance from this operation to the yield or store (end of block). Operations on the critical path receive higher priority.
 
 **Example**:
 ```mlir
-%0 = add_tiles(%in0, %in1) {fpu}  // FPU binary → DST
+%0 = add_tiles(%in0, %in1) {fpu}  // FPU binary -> DST
 %1 = tile_exp(%in2)                 // Separate SFPU chain
 %2 = add_binary_tile(%0, %1)        // SFPU binary consumer (NOT in-place)
 %3 = tile_abs(%0)                   // Unary consumer (in-place)
@@ -169,8 +207,8 @@ return scheduled  # New operation order
 abs:             <0, 0, 1, 0, -100, ...>  # Large penalty for in-place on multi-consumer
 add_binary_tile: <0, 0, 1, 0, -1, ...>    # No penalty (SFPU binary, not in-place)
 
-# add_binary_tile has higher cost tuple → scheduled first
-# Result: abs becomes last consumer → no copy needed!
+# add_binary_tile has higher cost tuple -> scheduled first
+# Result: abs becomes last consumer -> no copy needed!
 ```
 
 **When to Apply**: This phase is optional but recommended when the `ttl.compute` block contains:
@@ -222,13 +260,13 @@ By copying for all consumers except the last one (when in-place consumers exist)
 
 **API Difference**:
 - **CB-to-DST copy** (for loading inputs from circular buffers):
-  - `copy_tile(cb_id, tile_index, dst_index)` → unpacks from CB to DST
+  - `copy_tile(cb_id, tile_index, dst_index)` -> unpacks from CB to DST
 - **DST-to-DST copy** (inserted in Phase 1 for multi-consumer values):
-  - **TTL level**: `copy_dest_values(src_index, dst_index)` → copies from src to dst
-  - **Note**: TTL uses natural src→dst order, which is then lowered to tt-metal's `copy_dest_values(dst, src)` (reversed)
+  - **TTL level**: `copy_dest_values(src_index, dst_index)` -> copies from src to dst
+  - **Note**: TTL uses natural src->dst order, which is then lowered to tt-metal's `copy_dest_values(dst, src)` (reversed)
 
 **Lowering Path for DST-to-DST Copies**:
-- **D2M/TTL level**: `d2m.copy_dest_values(src, dst)` or `ttl.copy_dest_values(src, dst)`
+- **TTL level**: `ttl.copy_dest_values(src, dst)`
 - **TTKernel level**: `ttkernel.copy_dest_values(dst, src)` (arguments reversed from TTL)
 - **tt-metal level**: `llk_math_eltwise_binary_sfpu_copy_dest_values(dst, src)` (SFPU binary operation)
 
@@ -239,7 +277,7 @@ Throughout this document, pseudocode and MLIR examples use **TTL convention** fo
 
 **Example transformation** (see Example 4):
 ```mlir
-%0 = mul_tiles(%in0, %in1)  {fpu}   // FPU binary → DST
+%0 = mul_tiles(%in0, %in1)  {fpu}   // FPU binary -> DST
 %0_copy_0 = copy_dest_values(%0)     // Copy for first consumer
 %1 = tile_abs(%0_copy_0)             // Uses copy (safe to overwrite)
 %2 = tile_exp(%0)                    // Last consumer uses original
@@ -268,12 +306,17 @@ for i, op in enumerate(operations):
 
 # Identify CB-only block arguments.
 # A block argument is CB-only if ALL of its consumers read it from a CB
-# rather than from DST. Three operation types read from CB:
+# rather than from DST. Several operation types read from CB:
 #   - FPU binary: reads both operands from CBs
 #   - binary_dest_reuse_tiles: reads its CB operand from a CB
 #   - copy_tile: reads from CB, writes result to DST
-# In the copy_tile case, the block arg stays in CB; the copy_tile
-# *result* is what enters DST (and gets its own interval).
+#   - broadcast (tile_bcast): reads from CB, writes broadcast result to DST
+#   - reduce (tile_reduce): reads input + scaler from CBs, accumulates to DST
+#   - matmul (tile_matmul): reads A + B from CBs, accumulates to DST
+# For copy_tile, broadcast, reduce, and matmul, the block arg stays in
+# CB; the operation's *result* is what enters DST (and gets its own
+# interval). In the implementation, these ops carry
+# TTLCBInputTileOpTrait, so the check is trait-based.
 for each block_arg:
   all_cb = True
   for each consumer of block_arg:
@@ -281,8 +324,8 @@ for each block_arg:
       pass  # FPU binary reads from CB -- block_arg stays in CB
     elif is_dest_reuse(consumer) and block_arg == consumer.cb_operand:
       pass  # dest_reuse CB operand stays in CB
-    elif is_copy_tile(consumer):
-      pass  # copy_tile reads from CB, result is a new DST value
+    elif has_trait(consumer, TTLCBInputTileOpTrait):
+      pass  # copy_tile, bcast, reduce, matmul: reads from CB, result enters DST
     else:
       all_cb = False
       break
@@ -343,14 +386,18 @@ when we assign a register to one value in a merged set, we assign it to
 ALL values in that set.
 
 **CB-Only Values**: Block arguments identified as CB-only are excluded
-from DST allocation entirely. This is the primary mechanism by which FPU
-binary operations reduce `inputs_and_intermediates_footprint`. For
+from DST allocation entirely. This is the primary mechanism by which
+CB-reading operations reduce `inputs_and_intermediates_footprint`. For
 example, in `exp(a + b)`, both `a` and `b` are CB-only because their
 sole consumer is an FPU `add_tiles` -- reducing the footprint from 2 to
 0 compared to the SFPU-only path. Similarly, in `exp(a) * b` (Example
 6), `a` is CB-only because its consumer is `copy_tile` (which reads
 from CB and produces a new DST value), and `b` is CB-only because its
-consumer is `dest_reuse` CB operand.
+consumer is `dest_reuse` CB operand. Broadcast, reduce, and matmul work
+the same way: the block arg stays in CB, and only the operation's result
+enters DST. All CB-reading operations (copy_tile, tile_bcast,
+tile_reduce, tile_matmul) carry `TTLCBInputTileOpTrait` in the
+implementation, so the CB-only check is trait-based.
 
 ### Phase 3: Linear Scan Allocation for Inputs/Intermediates
 
@@ -397,7 +444,7 @@ inputs_and_intermediates_footprint = max(dst_assignment.values()) + 1
 ```
 
 **Handling Merged Intervals**: When we encounter an interval that's part of a merged set (e.g., unary chain), we:
-1. Check if any value in the set was already processed → skip if yes
+1. Check if any value in the set was already processed -> skip if yes
 2. Allocate a single DST register for the ENTIRE merged set
 3. Assign that register to ALL values in the set simultaneously
 4. Mark the merged set as processed to avoid double allocation
@@ -472,7 +519,7 @@ for interval in sorted(intervals, key=lambda i: i.start):
   linalg.yield %0
 ```
 
-**Phase 1**: No multi-consumer values → No copies
+**Phase 1**: No multi-consumer values -> No copies
 
 **Phase 2 (Build Intervals)**:
 ```
@@ -509,8 +556,8 @@ Process %0 [0,2]: allocate DST[0]
 Inputs/Intermediates: (none)
 
 Outputs (DST[0]):
-  %in → DST[0]
-  %0  → DST[0]  (in-place)
+  %in -> DST[0]
+  %0  -> DST[0]  (in-place)
 ```
 
 **Generated Code**:
@@ -549,12 +596,12 @@ After merging (all unary ops share one DST):
 
 DST Assignment:
   Inputs/Intermediates: (none)
-  Outputs:              %in,%0,%1,%2 → DST[0] (all share, in-place chain)
+  Outputs:              %in,%0,%1,%2 -> DST[0] (all share, in-place chain)
 ```
 
 **Key**: Sequential unary chain - all operations share one DST register, each operating in-place.
 
-**Phase 1**: No multi-consumer values → No copies
+**Phase 1**: No multi-consumer values -> No copies
 
 **Phase 2 (Build Intervals)**:
 ```
@@ -580,7 +627,7 @@ All values merged into single interval [0, 4]:
   %in, %0, %1, %2 all marked as merged
 ```
 
-**Phase 3**: All values are merged with yielded output → skip all
+**Phase 3**: All values are merged with yielded output -> skip all
 
 **Phase 4**:
 ```
@@ -599,10 +646,10 @@ Process %2 [0,4]: allocate DST[0]
 Inputs/Intermediates: (none)
 
 Outputs (DST[0]):
-  %in → DST[0]
-  %0  → DST[0]  (in-place)
-  %1  → DST[0]  (in-place)
-  %2  → DST[0]  (in-place)
+  %in -> DST[0]
+  %0  -> DST[0]  (in-place)
+  %1  -> DST[0]  (in-place)
+  %2  -> DST[0]  (in-place)
 ```
 
 **Generated Code**:
@@ -725,9 +772,9 @@ tile_regs_release();
 ```
 
 **Summary**: With `inputs_and_intermediates_footprint = 0`, all DST
-registers are available for outputs. The FPU binary operation acts as a
-zero-cost (in DST terms) input stage, and the SFPU exp consumes the
-result in-place via merging.
+registers are available for outputs. The FPU binary operation requires
+no DST input slots, and the SFPU exp consumes the result in-place via
+merging.
 
 ---
 
@@ -749,7 +796,7 @@ operands from CBs) and both consumers are SFPU unary (in-place on DST).
 **Phase 1 (Copy Insertion)**:
 ```
 %0 has 2 consumers (abs at position 0, exp at position 1)
-Both are in-place → copy for all except last:
+Both are in-place -> copy for all except last:
 
 Result:
   %0 = mul_tiles(%in0, %in1)  {execution_target = "fpu"}
@@ -761,8 +808,8 @@ Result:
 **Phase 2 (Build Intervals)**:
 ```
 CB-only analysis:
-  %in0: only consumer is FPU binary mul_tiles → CB-only
-  %in1: only consumer is FPU binary mul_tiles → CB-only
+  %in0: only consumer is FPU binary mul_tiles -> CB-only
+  %in1: only consumer is FPU binary mul_tiles -> CB-only
   cb_only_values = {%in0, %in1}
 
 Intervals (excluding CB-only values):
@@ -793,10 +840,10 @@ inputs_and_intermediates_footprint = 0
 base_out_dst_index = 0
 
 Process %0 [1,4]: allocate DST[0]
-  Merged with %2 → dst_assignment[%0] = DST[0], dst_assignment[%2] = DST[0]
+  Merged with %2 -> dst_assignment[%0] = DST[0], dst_assignment[%2] = DST[0]
 
 Process %1 [2,3]: allocate DST[1]
-  Merged with %0_copy_0 → dst_assignment[%0_copy_0] = DST[1], dst_assignment[%1] = DST[1]
+  Merged with %0_copy_0 -> dst_assignment[%0_copy_0] = DST[1], dst_assignment[%1] = DST[1]
 ```
 
 **Final Assignment**:
@@ -806,17 +853,17 @@ CB-only (no DST): %in0, %in1
 Inputs/Intermediates: (none)
 
 Outputs (DST[0-1]):
-  %0        → DST[0]
-  %2        → DST[0]  (in-place with %0)
-  %0_copy_0 → DST[1]
-  %1        → DST[1]  (in-place with copy)
+  %0        -> DST[0]
+  %2        -> DST[0]  (in-place with %0)
+  %0_copy_0 -> DST[1]
+  %1        -> DST[1]  (in-place with copy)
 ```
 
 **Generated Code**:
 ```cpp
 mul_tiles_init(cb_in0, cb_in1);
 tile_regs_acquire();
-mul_tiles(cb_in0, cb_in1, 0, 0, 0);     // CB → FPU → DST[0]
+mul_tiles(cb_in0, cb_in1, 0, 0, 0);     // CB -> FPU -> DST[0]
 copy_dest_values(DST[0], DST[1]);        // Copy for abs (first consumer)
 abs_tile_init();
 abs_tile(DST[1]);                        // In-place on copy
@@ -839,10 +886,10 @@ requiring 4 total DST slots instead of 2.
 
 ### Example 5: SFPU Binary — Both Operands from DST
 
-This example demonstrates the legitimate use of SFPU binary:
-`exp(a) + exp(b)`, where `+` is SFPU binary because both operands are
-DST intermediates (results of SFPU exp). When both operands are already
-in DST from prior computations, SFPU binary is the correct choice.
+This example demonstrates the case requiring SFPU binary:
+`exp(a) + exp(b)`, where `+` must be SFPU binary because both operands
+are DST intermediates (results of SFPU exp). When both operands are
+already in DST from prior computations, SFPU binary is the only option.
 Compare with Example 3, where the operands come from CBs and FPU binary
 is used instead.
 
@@ -857,13 +904,13 @@ is used instead.
 
 **Output shape**: 1x4 = 4 tiles, f32 (capacity = 4)
 
-**Phase 1**: No multi-consumer values → No copies
+**Phase 1**: No multi-consumer values -> No copies
 
 **Phase 2 (Build Intervals)**:
 ```
 CB-only analysis:
-  %in_a: consumer is tile_exp (SFPU unary) → NOT CB-only
-  %in_b: consumer is tile_exp (SFPU unary) → NOT CB-only
+  %in_a: consumer is tile_exp (SFPU unary) -> NOT CB-only
+  %in_b: consumer is tile_exp (SFPU unary) -> NOT CB-only
   cb_only_values = {}
 
 Intervals:
@@ -888,10 +935,10 @@ No merge for add_binary_tile (SFPU binary writes to fresh DST slot)
 
 **Phase 3 (Allocate Inputs/Intermediates)**:
 ```
-Process %in_a/%0 [0,2]: NOT yielded → allocate DST[0]
-  Merged set {%in_a, %0} → DST[0]
-Process %in_b/%1 [0,2]: NOT yielded → allocate DST[1]
-  Merged set {%in_b, %1} → DST[1]
+Process %in_a/%0 [0,2]: NOT yielded -> allocate DST[0]
+  Merged set {%in_a, %0} -> DST[0]
+Process %in_b/%1 [0,2]: NOT yielded -> allocate DST[1]
+  Merged set {%in_b, %1} -> DST[1]
 Process %2 [2,3]: (yielded, skip)
 
 inputs_and_intermediates_footprint = 2
@@ -909,13 +956,13 @@ Process %2 [2,3]: allocate DST[2]
 **Final Assignment**:
 ```
 Inputs/Intermediates (DST[0-1]):
-  %in_a → DST[0]
-  %0    → DST[0]  (exp in-place)
-  %in_b → DST[1]
-  %1    → DST[1]  (exp in-place)
+  %in_a -> DST[0]
+  %0    -> DST[0]  (exp in-place)
+  %in_b -> DST[1]
+  %1    -> DST[1]  (exp in-place)
 
 Outputs (DST[2]):
-  %2 → DST[2]
+  %2 -> DST[2]
 ```
 
 **Unroll Factor Calculation**:
@@ -1110,14 +1157,14 @@ product against a CB operand. All three inputs are CB-only.
 
 **Output shape**: 1x4 = 4 tiles, f32 (capacity = 4)
 
-**Phase 1 (Copy Insertion)**: No multi-consumer values → no copies.
+**Phase 1 (Copy Insertion)**: No multi-consumer values -> no copies.
 
 **Phase 2 (Build Intervals)**:
 ```
 CB-only analysis:
-  %in_a: only consumer is FPU binary add_tiles → CB-only
-  %in_b: only consumer is FPU binary add_tiles → CB-only
-  %in_c: only consumer is dest_reuse CB operand → CB-only
+  %in_a: only consumer is FPU binary add_tiles -> CB-only
+  %in_b: only consumer is FPU binary add_tiles -> CB-only
+  %in_c: only consumer is dest_reuse CB operand -> CB-only
   cb_only_values = {%in_a, %in_b, %in_c}
 
 Intervals (excluding CB-only values):
@@ -1163,9 +1210,9 @@ CB-only (no DST): %in_a, %in_b, %in_c
 Inputs/Intermediates: (none)
 
 Outputs (DST[0]):
-  %0 → DST[0]  (FPU binary result)
-  %1 → DST[0]  (abs in-place)
-  %2 → DST[0]  (dest_reuse in-place)
+  %0 -> DST[0]  (FPU binary result)
+  %1 -> DST[0]  (abs in-place)
+  %2 -> DST[0]  (dest_reuse in-place)
 ```
 
 **Unroll Factor Calculation**:
@@ -1181,36 +1228,36 @@ unrollFactor = min(4 / 1, 4) = 4  (fully unrolled!)
 add_tiles_init(cb_a, cb_b);
 tile_regs_acquire();
 
-// Iteration 0: FPU add → abs → dest_reuse mul
-add_tiles(cb_a, cb_b, 0, 0, 0);                                // CB → FPU → DST[0]
+// Iteration 0: FPU add -> abs -> dest_reuse mul
+add_tiles(cb_a, cb_b, 0, 0, 0);                                // CB -> FPU -> DST[0]
 abs_tile_init();
 abs_tile(0);                                                     // DST[0] in-place
-binary_dest_reuse_tiles<ELWMUL, DEST_TO_SRCA>(cb_c, 0, 0);    // DST[0] * CB_c → DST[0]
+binary_dest_reuse_tiles<ELWMUL, DEST_TO_SRCA>(cb_c, 0, 0);    // DST[0] * CB_c -> DST[0]
 
 // Iteration 1
 add_tiles_init(cb_a, cb_b);
-add_tiles(cb_a, cb_b, 1, 1, 1);                                // CB → FPU → DST[1]
+add_tiles(cb_a, cb_b, 1, 1, 1);                                // CB -> FPU -> DST[1]
 abs_tile_init();
 abs_tile(1);
 binary_dest_reuse_tiles<ELWMUL, DEST_TO_SRCA>(cb_c, 1, 1);
 
 // Iteration 2
 add_tiles_init(cb_a, cb_b);
-add_tiles(cb_a, cb_b, 2, 2, 2);                                // CB → FPU → DST[2]
+add_tiles(cb_a, cb_b, 2, 2, 2);                                // CB -> FPU -> DST[2]
 abs_tile_init();
 abs_tile(2);
 binary_dest_reuse_tiles<ELWMUL, DEST_TO_SRCA>(cb_c, 2, 2);
 
 // Iteration 3
 add_tiles_init(cb_a, cb_b);
-add_tiles(cb_a, cb_b, 3, 3, 3);                                // CB → FPU → DST[3]
+add_tiles(cb_a, cb_b, 3, 3, 3);                                // CB -> FPU -> DST[3]
 abs_tile_init();
 abs_tile(3);
 binary_dest_reuse_tiles<ELWMUL, DEST_TO_SRCA>(cb_c, 3, 3);
 
 tile_regs_commit();
 tile_regs_wait();
-pack_tile_block(0, cb_out, 4);                                  // DST[0..3] → CB
+pack_tile_block(0, cb_out, 4);                                  // DST[0..3] -> CB
 tile_regs_release();
 ```
 
@@ -1254,7 +1301,7 @@ The DST allocation pass runs in this order:
 
 ## Future Work
 
-* **Implement Phase 0 (Operation Scheduling)**: The algorithm for register-pressure-aware scheduling is described in Phase 0 above. Implementing this as a pre-pass before DST allocation can reduce `copy_dest_values` operations by 25-50% for blocks with mixed in-place and non-in-place consumers (see the inline example in Phase 0). Key challenge: Determining when to apply Phase 0 (cost/benefit analysis for small compute blocks).
+* **Implement Phase 0 (Operation Scheduling)**: The algorithm for register-pressure-aware scheduling is described in Phase 0 above. Implementing this as a pre-pass before DST allocation can reduce `copy_dest_values` operations for blocks with mixed in-place and non-in-place consumers (see the inline example in Phase 0). Key challenge: determining when to apply Phase 0 (cost/benefit analysis for small compute blocks).
 
 * **Pack Multiple Contiguous Tiles**: Use `pack_tile_block` to pack multiple contiguous tiles in a single call. Requires analysis to determine when output tiles are contiguous in DST (e.g., `DST[2,3,4,5]` for a 2x2 block with row-major layout). Currently each tile is packed individually.
 
@@ -1296,9 +1343,9 @@ The DST allocation pass runs in this order:
 
   **Challenge**: Determining optimal split points to minimize overhead while respecting DST capacity constraints. Could use dynamic programming or greedy heuristics based on interval pressure.
 
-* **Deferred Input Loading + SFPU Binary Input Reuse**: Currently, all block arguments are treated as live from block entry (position 0), even if their first consumer is deep in the block. When block args are consumed by SFPU operations at different points, scheduling each `copy_tile` just before its first consumer shortens the interval and reduces peak liveness.
+* **Deferred Input Loading + SFPU Binary Input Reuse**: Currently, all block arguments are treated as live from block entry (position 0), even if their first consumer appears later in the block. When block args are consumed by SFPU operations at different points, scheduling each `copy_tile` just before its first consumer shortens the interval and reduces peak liveness.
 
-  **When it helps**: Chains of multiple SFPU binary operations consuming different block args at different points. The classic pattern is `(exp(a) + exp(b)) * exp(c)`:
+  **When it helps**: Chains of multiple SFPU binary operations consuming different block args at different points. Representative pattern: `(exp(a) + exp(b)) * exp(c)`:
 
   ```mlir
   %0 = tile_exp(%in_a)            // needs %in_a in DST at op 0
@@ -1311,15 +1358,15 @@ The DST allocation pass runs in this order:
 
   With eager loading (current): all three block args live from op 0. Peak = 4 at op 2 (three inputs + one SFPU binary result). At f32 capacity = 4, `inputs_and_intermediates_footprint = 4`, no room for outputs.
 
-  With deferred loading of `%in_c` to just before op 3, plus SFPU binary writing to an expiring input slot (`add_binary(...) → DST[0]` reusing `%in_a`'s slot):
+  With deferred loading of `%in_c` to just before op 3, plus SFPU binary writing to an expiring input slot (`add_binary(...) -> DST[0]` reusing `%in_a`'s slot):
 
   ```
-  load %in_a → DST[0], load %in_b → DST[1]       // 2 live
+  load %in_a -> DST[0], load %in_b -> DST[1]       // 2 live
   exp(DST[0]), exp(DST[1])                          // 2 live
-  add_binary(DST[0], DST[1]) → DST[0]              // reuse %in_a's slot; 2 live
-  load %in_c → DST[1]                               // deferred; 2 live
+  add_binary(DST[0], DST[1]) -> DST[0]              // reuse %in_a's slot; 2 live
+  load %in_c -> DST[1]                               // deferred; 2 live
   exp(DST[1])                                        // 2 live
-  mul_binary(DST[0], DST[1]) → DST[2]              // output; 3 live
+  mul_binary(DST[0], DST[1]) -> DST[2]              // output; 3 live
   ```
 
   Peak drops to 3. `inputs_and_intermediates_footprint = 2`, `available_for_outputs = 2`, `unrollFactor = 2` (vs. 0 without the optimization).
@@ -1327,16 +1374,17 @@ The DST allocation pass runs in this order:
   **When it does NOT help**:
   - All SFPU inputs needed at the same operation (can't defer)
   - Only one SFPU binary (both inputs needed simultaneously)
-  - Inputs are CB-only (FPU binary, dest_reuse CB operand, copy_tile)
+  - Inputs are CB-only (FPU binary, dest_reuse CB operand, copy_tile, broadcast, reduce, matmul)
   - Pure unary chains (1 input at a time)
 
   **Implementation**: Deferred loading is a Phase 0 scheduling decision — reorder the implicit `copy_tile` operations so they appear just before their first consumer. SFPU binary input reuse is a Phase 3 allocation refinement — allow the allocator to assign an SFPU binary output to an expiring input slot when the input's interval ends at the same operation.
 
 * **Adaptive Scheduling Heuristics**: Extend Phase 0 with adaptive cost tuple ordering based on computation characteristics (similar to LARS adaptivity in Section III-F of Rawat et al. SC'18). For computations with high intra-statement reuse, prioritize `Pl` (critical path) over `Paff` (affinity) to avoid excessive interleaving.
 
-* **FPU Binary Annotation Pass**: The allocation algorithm supports FPU binary and `binary_dest_reuse_tiles` operations (Examples 3-7), but relies on an upstream pass to annotate which binary operations use FPU vs SFPU execution. This annotation pass must determine:
+* **FPU Binary Annotation Pass**: The allocation algorithm supports FPU binary, `binary_dest_reuse_tiles`, broadcast, reduce, and matmul operations (Examples 3-7), but relies on an upstream pass to annotate which binary operations use FPU vs SFPU execution. This annotation pass must determine:
   - Whether both operands of a binary operation come from CBs (FPU binary)
   - Whether one operand is a DST intermediate and the other a CB value (`dest_reuse`)
   - Whether both operands are DST values (SFPU binary, the fallback)
+  - Note: Broadcast, reduce, and matmul are already handled via `TTLCBInputTileOpTrait` and do not require annotation — they always read from CB.
 
   See [`MaximizingDSTUtilization.md`](../MaximizingDSTUtilization.md) for the full FPU-aware unrolling design and operation classification.
