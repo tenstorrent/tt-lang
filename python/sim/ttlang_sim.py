@@ -170,6 +170,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--grid",
+        type=str,
+        metavar="ROWS,COLS",
+        help="Default grid size for kernels with grid='auto' (e.g., --grid 4,4). Defaults to 8,8",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -183,6 +190,22 @@ def main() -> None:
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
+
+    # Configure default grid if specified
+    if args.grid:
+        try:
+            parts = args.grid.split(",")
+            if len(parts) != 2:
+                raise ValueError("Grid must be specified as ROWS,COLS")
+            rows, cols = int(parts[0].strip()), int(parts[1].strip())
+            if rows <= 0 or cols <= 0:
+                raise ValueError("Grid dimensions must be positive")
+            
+            from sim.kernel import set_default_grid
+            set_default_grid((rows, cols))
+        except ValueError as e:
+            print(f"Error: Invalid grid specification: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Run the target
     if args.module:

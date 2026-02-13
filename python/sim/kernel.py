@@ -15,6 +15,31 @@ import types
 from .block import ThreadType
 from .typedefs import CoreCoord, Index, Shape, Size
 
+# Default grid size when grid='auto' is specified
+_default_auto_grid: Shape = (8, 8)
+
+
+def set_default_grid(grid: Shape) -> None:
+    """Set the default grid size used when kernel specifies grid='auto'.
+    
+    Args:
+        grid: Tuple of (rows, cols) specifying the grid size
+    
+    Example:
+        set_default_grid((4, 4))  # Use 4x4 grid for 'auto'
+    """
+    global _default_auto_grid
+    _default_auto_grid = grid
+
+
+def get_default_grid() -> Shape:
+    """Get the current default grid size for grid='auto'.
+    
+    Returns:
+        Tuple of (rows, cols) specifying the default grid size
+    """
+    return _default_auto_grid
+
 
 def _get_from_frame(var_name: str, error_msg: str) -> Any:
     """Helper to walk up the call stack and find a variable.
@@ -206,7 +231,7 @@ def kernel(
     Decorator that generates a kernel with specified grid.
 
     Args:
-        grid: Grid specification. If 'auto', defaults to (8, 8)
+        grid: Grid specification. If 'auto', uses the default grid (configurable via set_default_grid())
 
     Returns:
         Decorated function with grid configuration
@@ -222,8 +247,8 @@ def kernel(
         # Create a new function with grid in its closure
         # This is achieved by modifying the function's globals to include this variable
 
-        # Set grid to (8, 8) if 'auto'
-        actual_grid: Shape = cast(Shape, (8, 8) if grid == "auto" else grid)
+        # Set grid to default if 'auto'
+        actual_grid: Shape = cast(Shape, _default_auto_grid if grid == "auto" else grid)
 
         # Create new globals dict that includes grid
         new_globals = func.__globals__.copy()

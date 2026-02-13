@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+# type: ignore
+"""
+Tests for ttlang_sim.py module (simulator launcher).
+"""
+
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import cast
+
+from test_utils import make_zeros_tensor
+
+from python.sim import ttl, ttnn
+from python.sim.kernel import get_default_grid, set_default_grid
+from python.sim.typedefs import Shape
+
+
+class TestDefaultGrid:
+    """Test default grid configuration for grid='auto'."""
+
+    def test_get_default_grid_initial_value(self):
+        """Test that get_default_grid returns initial default of (8, 8)."""
+        # Save original to restore later
+        original = get_default_grid()
+        try:
+            # Reset to default
+            set_default_grid((8, 8))
+            assert get_default_grid() == (8, 8)
+        finally:
+            set_default_grid(original)
+
+    def test_set_default_grid(self):
+        """Test that set_default_grid changes the default grid."""
+        # Save original to restore later
+        original = get_default_grid()
+        try:
+            set_default_grid((4, 4))
+            assert get_default_grid() == (4, 4)
+
+            set_default_grid((2, 3))
+            assert get_default_grid() == (2, 3)
+        finally:
+            set_default_grid(original)
+
+    def test_kernel_auto_grid_uses_default(self):
+        """Test that kernel with grid='auto' uses the configured default grid."""
+        original = get_default_grid()
+        try:
+            # Set custom default
+            set_default_grid((3, 5))
+
+            @ttl.kernel(grid="auto")
+            def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
+                assert a is not None and b is not None
+
+                @ttl.compute()
+                def compute():
+                    grid_h, grid_w = cast(Shape, ttl.grid_size(dims=2))
+                    assert grid_h == 3, f"Expected grid_h=3, got {grid_h}"
+                    assert grid_w == 5, f"Expected grid_w=5, got {grid_w}"
+
+                @ttl.datamovement()
+                def dm0():
+                    pass
+
+                @ttl.datamovement()
+                def dm1():
+                    pass
+
+            # Create dummy tensors
+            a = make_zeros_tensor(32, 32)
+            b = make_zeros_tensor(32, 32)
+
+            # Should use the custom default grid (3, 5)
+            test_kernel(a, b)
+        finally:
+            set_default_grid(original)
+
+    def test_kernel_explicit_grid_ignores_default(self):
+        """Test that kernel with explicit grid ignores the default."""
+        original = get_default_grid()
+        try:
+            # Set custom default
+            set_default_grid((4, 4))
+
+            @ttl.kernel(grid=(2, 2))
+            def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
+                assert a is not None and b is not None
+
+                @ttl.compute()
+                def compute():
+                    grid_h, grid_w = cast(Shape, ttl.grid_size(dims=2))
+                    # Should use explicit grid (2, 2), not default (4, 4)
+                    assert grid_h == 2, f"Expected grid_h=2, got {grid_h}"
+                    assert grid_w == 2, f"Expected grid_w=2, got {grid_w}"
+
+                @ttl.datamovement()
+                def dm0():
+                    pass
+
+                @ttl.datamovement()
+                def dm1():
+                    pass
+
+            # Create dummy tensors
+            a = make_zeros_tensor(32, 32)
+            b = make_zeros_tensor(32, 32)
+
+            test_kernel(a, b)
+        finally:
+            set_default_grid(original)
+
+
+class TestGridCommandLineOption:
+    """Test --grid command-line option in ttlang-sim."""
+
+    @staticmethod
+    def create_test_script(grid_check: tuple[int, int]) -> Path:
+        """Create a temporary test script that checks grid size."""
+        content = f"""
+import ttl
+import ttnn
+import torch
+
+@ttl.kernel(grid='auto')
+def test_kernel(a: ttnn.Tensor):
+    @ttl.compute()
+    def compute():
+        grid_h, grid_w = ttl.grid_size(dims=2)
+        if grid_h != {grid_check[0]} or grid_w != {grid_check[1]}:
+            raise ValueError(f"Expected grid {{({grid_check[0]}, {grid_check[1]})}}, got {{(grid_h, grid_w)}}")
+
+    @ttl.datamovement()
+    def dm0():
+        pass
+
+    @ttl.datamovement()
+    def dm1():
+        pass
+
+if __name__ == "__main__":
+    device = ttnn.open_device(device_id=0)
+    a = torch.zeros(32, 32)
+    a_tt = ttnn.from_torch(a, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    test_kernel(a_tt)
+    ttnn.close_device(device)
+    print("SUCCESS")
+"""
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        tmp.write(content)
+        tmp.close()
+        return Path(tmp.name)
+
+    def test_grid_option_custom_grid(self):
+        """Test that --grid option sets custom grid."""
+        script = self.create_test_script((4, 6))
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--grid",
+                    "4,6",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"Script failed: {result.stderr}"
+            assert "SUCCESS" in result.stdout
+        finally:
+            script.unlink()
+
+    def test_grid_option_default_grid(self):
+        """Test that default grid is (8, 8) when --grid not specified."""
+        script = self.create_test_script((8, 8))
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", str(script)],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"Script failed: {result.stderr}"
+            assert "SUCCESS" in result.stdout
+        finally:
+            script.unlink()
+
+    def test_grid_option_invalid_format(self):
+        """Test that invalid --grid format produces error."""
+        script = self.create_test_script((8, 8))
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--grid",
+                    "invalid",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0
+            assert "Invalid grid specification" in result.stderr
+            assert "Grid must be specified as ROWS,COLS" in result.stderr
+        finally:
+            script.unlink()
+
+    def test_grid_option_zero_dimension(self):
+        """Test that zero grid dimension produces error."""
+        script = self.create_test_script((8, 8))
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--grid",
+                    "0,4",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0
+            assert "Invalid grid specification" in result.stderr
+            assert "Grid dimensions must be positive" in result.stderr
+        finally:
+            script.unlink()
+
+    def test_grid_option_non_numeric(self):
+        """Test that non-numeric grid values produce error."""
+        script = self.create_test_script((8, 8))
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--grid",
+                    "a,b",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0
+            assert "Invalid grid specification" in result.stderr
+        finally:
+            script.unlink()
+
+    def test_grid_option_single_value(self):
+        """Test that single value for grid produces error."""
+        script = self.create_test_script((8, 8))
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", "--grid", "4", str(script)],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0
+            assert "Invalid grid specification" in result.stderr
+            assert "Grid must be specified as ROWS,COLS" in result.stderr
+        finally:
+            script.unlink()
+
+    def test_grid_option_with_spaces(self):
+        """Test that --grid with spaces around values works."""
+        script = self.create_test_script((5, 7))
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--grid",
+                    " 5 , 7 ",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"Script failed: {result.stderr}"
+            assert "SUCCESS" in result.stdout
+        finally:
+            script.unlink()
