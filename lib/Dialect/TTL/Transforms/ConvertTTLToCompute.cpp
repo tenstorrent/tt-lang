@@ -62,50 +62,6 @@ static Value getReserveViewFromStore(StoreOp storeOp) {
   return Value();
 }
 
-/// Find a StoreOp user of the value and return {store, reserveView}.
-static std::pair<StoreOp, Value> findStoreUser(Value result) {
-  for (auto &use : result.getUses()) {
-    if (auto store = dyn_cast<StoreOp>(use.getOwner())) {
-      Value reserveView = getReserveViewFromStore(store);
-      if (reserveView) {
-        return {store, reserveView};
-      }
-    }
-  }
-  return {nullptr, Value()};
-}
-
-/// Pre-check that the store's reserve view dominates the op. Must be called
-/// before creating the compute body to avoid leaving half-built ops on failure.
-static LogicalResult checkStoreDominance(Operation *op) {
-  auto [storeOp, reserveView] = findStoreUser(op->getResult(0));
-  if (!storeOp) {
-    return success();
-  }
-  if (auto *def = reserveView.getDefiningOp()) {
-    if (!def->isBeforeInBlock(op)) {
-      return op->emitError(
-          "cb_reserve does not dominate the compute; use 'with' statement "
-          "for CB lifecycle management in loops");
-    }
-  }
-  return success();
-}
-
-/// Emit tile_store in the compute body if the original op has a store user.
-/// Caller must have already verified dominance via checkStoreDominance.
-/// Returns the StoreOp to erase (caller must erase after replaceOp), or
-/// nullptr if no store user exists.
-static StoreOp fuseTileStore(Operation *originalOp, Value tileResult,
-                             PatternRewriter &rewriter) {
-  auto [storeOp, reserveView] = findStoreUser(originalOp->getResult(0));
-  if (!storeOp) {
-    return nullptr;
-  }
-  rewriter.create<TileStoreOp>(originalOp->getLoc(), tileResult, reserveView);
-  return storeOp;
-}
-
 /// Find unused bind_cb ops in the function that can be used for output CBs.
 /// Returns bind_cb ops that are not used by any attach_cb op.
 // TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
@@ -170,11 +126,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
                                        const ElementwiseTraceResult &trace) {
   auto type = getTensorType(sinkOp->getResult(0));
   if (!type) {
-    return failure();
-  }
-
-  // Verify store dominance before creating any ops.
-  if (failed(checkStoreDominance(sinkOp))) {
     return failure();
   }
 
@@ -272,14 +223,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  StoreOp storeToErase = fuseTileStore(sinkOp, finalResult, rewriter);
-
   rewriter.create<YieldOp>(loc, ValueRange{finalResult});
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
-
-  if (storeToErase) {
-    rewriter.eraseOp(storeToErase);
-  }
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -322,11 +267,6 @@ static LogicalResult buildBinaryCompute(Operation *op,
       return buildFusedCompute(op, rewriter, traceResult);
     }
     emitFusionFailureDiagnostics(op, traceResult);
-    return failure();
-  }
-
-  // Verify store dominance before creating any ops.
-  if (failed(checkStoreDominance(op))) {
     return failure();
   }
 
@@ -384,12 +324,8 @@ static LogicalResult buildBinaryCompute(Operation *op,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
-  StoreOp storeToErase = fuseTileStore(op, result, rewriter);
   rewriter.create<YieldOp>(loc, ValueRange{result});
   rewriter.replaceOp(op, computeOp.getResult(0));
-  if (storeToErase) {
-    rewriter.eraseOp(storeToErase);
-  }
   return success();
 }
 
@@ -415,11 +351,6 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
       return buildFusedCompute(op, rewriter, traceResult);
     }
     emitFusionFailureDiagnostics(op, traceResult);
-    return failure();
-  }
-
-  // Verify store dominance before creating any ops.
-  if (failed(checkStoreDominance(op))) {
     return failure();
   }
 
@@ -474,12 +405,8 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
-  StoreOp storeToErase = fuseTileStore(op, result, rewriter);
   rewriter.create<YieldOp>(loc, ValueRange{result});
   rewriter.replaceOp(op, computeOp.getResult(0));
-  if (storeToErase) {
-    rewriter.eraseOp(storeToErase);
-  }
   return success();
 }
 
@@ -606,11 +533,6 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
       return failure();
     }
 
-    // Verify store dominance before creating any ops.
-    if (failed(checkStoreDominance(op))) {
-      return failure();
-    }
-
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
 
@@ -644,12 +566,8 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value result =
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
-    StoreOp storeToErase = fuseTileStore(op, result, rewriter);
     rewriter.create<YieldOp>(loc, ValueRange{result});
     rewriter.replaceOp(op, computeOp.getResult(0));
-    if (storeToErase) {
-      rewriter.eraseOp(storeToErase);
-    }
     return success();
   }
 };
@@ -658,10 +576,10 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 // Store Lowering
 //===----------------------------------------------------------------------===//
 
-/// Handles remaining ttl.store ops not fused by elementwise patterns.
-/// Elementwise patterns fuse the first store via fuseTileStore. This pattern
-/// handles passthrough stores (input is CB-attached, no elementwise compute)
-/// and additional stores on the same value (e.g., multi-output).
+/// Lowers ttl.store to ttl.tile_store inside a ttl.compute body.
+/// Elementwise patterns create the compute (tile ops + yield, no stores).
+/// This pattern injects tile_store for each store, moving the compute
+/// after reserves when needed to satisfy dominance.
 struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
   using OpRewritePattern<StoreOp>::OpRewritePattern;
 
@@ -678,11 +596,12 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     // Input from ComputeOp: inject tile_store into its body.
     if (auto computeOp = input.getDefiningOp<ComputeOp>()) {
+      // Move compute before the store if the reserve doesn't dominate it.
+      // The store is always after its reserve (Python `with` guarantees this),
+      // so moving the compute here ensures all reserve views dominate.
       if (auto *reserveDef = reserveView.getDefiningOp()) {
         if (!reserveDef->isBeforeInBlock(computeOp)) {
-          return op.emitError(
-              "cb_reserve does not dominate the compute; use 'with' statement "
-              "for CB lifecycle management in loops");
+          computeOp->moveBefore(op);
         }
       }
 
