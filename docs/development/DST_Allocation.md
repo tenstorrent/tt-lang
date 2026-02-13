@@ -53,6 +53,19 @@ CBs, and accumulates the reduction result into a fresh DST slot:
 - **Accumulation**: Multiple `reduce_tile` calls to the same DST index
   accumulate the reduction across tiles (e.g., summing a row of tiles).
   The DST slot must remain live for the entire reduction loop.
+  `tile_regs_acquire` implicitly zeros DST before accumulation begins;
+  each `reduce_tile` adds to the existing DST value:
+  ```cpp
+  // From tt-metal: tests/tt_metal/tt_metal/test_kernels/compute/reduce_w.cpp
+  acquire_dst();                              // zeros DST
+  for (uint32_t wt = 0; wt < Wt; ++wt) {
+      cb_wait_front(c_0, onetile);
+      reduce_tile(c_0, c_2, 0, 0, 0);        // accumulates into DST[0]
+      cb_pop_front(c_0, onetile);
+  }
+  pack_tile(0, c_16);                         // pack accumulated result
+  release_dst();
+  ```
 - **Init constraint**: `reduce_init` performs a full init (UNPACK +
   MATH + PACK) and sets a packer edge mask. `reduce_uninit` must be
   called after the last `reduce_tile` to clear this mask before any
@@ -65,9 +78,28 @@ accumulates the matrix product into a fresh DST slot:
 - `inputs_footprint = 0`
 - **Accumulation**: Multiple `matmul_tiles` calls to the same DST index
   accumulate C += A * B across K-dimension tiles. The DST slot must
-  remain live across the entire K loop. `tile_regs_acquire` zeros DST
-  before the loop; all K iterations accumulate before
-  `tile_regs_commit`.
+  remain live across the entire K loop. `tile_regs_acquire` implicitly
+  zeros DST before the loop; all K iterations accumulate before
+  `tile_regs_commit`:
+  ```cpp
+  // From tt-metal: programming_examples/matmul/matmul_single_core/kernels/compute/mm.cpp
+  tile_regs_acquire();                        // zeros DST
+  for (uint32_t kt = 0; kt < Kt; kt++) {
+      cb_wait_front(cb_in0, 1);
+      cb_wait_front(cb_in1, 1);
+      matmul_tiles(cb_in0, cb_in1, 0, 0, 0); // accumulates into DST[0]
+      cb_pop_front(cb_in0, 1);
+      cb_pop_front(cb_in1, 1);
+  }
+  tile_regs_commit();
+  tile_regs_wait();
+  pack_tile(0, cb_out);                       // pack accumulated result
+  tile_regs_release();
+  ```
+  When K is split into multiple blocks that exceed DST capacity, partial
+  results are spilled to an intermediate CB and reloaded with
+  `copy_tile` in subsequent blocks (see
+  `bmm_large_block_zm.cpp` in tt-metal for this pattern).
 - **Init**: `mm_init_short` configures UNPACK + MATH (not PACK). Can
   be called multiple times per kernel to re-enter matmul mode after
   other operations.
@@ -306,10 +338,13 @@ The greedy list scheduler follows the pattern used by LLVM's
 Unlike LLVM's machine-level scheduler, this operates at the MLIR
 operation level within a single basic block, so there are no anti- or
 output-dependencies (SSA guarantees single definitions), no memory
-aliasing concerns (tile operations are pure), and no latency modeling
-(all operations are unit-cost for scheduling purposes). The
+aliasing concerns (tile operations are pure), and — initially — no
+latency modeling (all operations are treated as unit-cost). The
 dependency graph reduces to a pure data-flow DAG derived from SSA
-def-use chains.
+def-use chains. A future extension should incorporate per-operation
+latencies derived from microbenchmark data into the cost tuple,
+enabling latency-aware scheduling analogous to LLVM's
+`computeOperandLatency` in `ScheduleDAGInstrs`.
 
 ### Phase 1: Insert Copy Operations
 
@@ -1436,6 +1471,14 @@ The DST allocation pass runs in this order:
 
   **Splitting Strategy**: Use interval splitting at "spill points" where live range pressure is highest. The Wimmer & Franz paper (Section 7) discusses interval splitting for linear scan allocation - the same principles apply here, but we split at compute operation boundaries rather than within a single operation.
 
+  **Prior art in tt-metal**: The large-block matmul kernel
+  (`bmm_large_block_zm.cpp`) implements this pattern manually: when the
+  K dimension is split into multiple blocks, each block's partial sum
+  is packed to an intermediate CB (`c_24`), then reloaded with
+  `copy_tile` in the next block before accumulating further. The final
+  block packs to the output CB. Compute splitting at the TTL level
+  would automate this pack-reload pattern.
+
   **Challenge**: Determining optimal split points to minimize overhead while respecting DST capacity constraints. Could use dynamic programming or greedy heuristics based on interval pressure.
 
 * **Deferred Input Loading + SFPU Binary Input Reuse**: Currently, all block arguments are treated as live from block entry (position 0), even if their first consumer appears later in the block. When block args are consumed by SFPU operations at different points, scheduling each `copy_tile` just before its first consumer shortens the interval and reduces peak liveness.
@@ -1476,10 +1519,50 @@ The DST allocation pass runs in this order:
 
 * **Adaptive Scheduling Heuristics**: Extend Phase 0 with adaptive cost tuple ordering based on computation characteristics (similar to LARS adaptivity in Section III-F of Rawat et al. SC'18). For computations with high intra-statement reuse, prioritize `Pl` (critical path) over `Paff` (affinity) to avoid excessive interleaving.
 
-* **FPU Binary Annotation Pass**: The allocation algorithm supports FPU binary, `binary_dest_reuse_tiles`, broadcast, reduce, and matmul operations (Examples 3-7), but relies on an upstream pass to annotate which binary operations use FPU vs SFPU execution. This annotation pass must determine:
-  - Whether both operands of a binary operation come from CBs (FPU binary)
-  - Whether one operand is a DST intermediate and the other a CB value (`dest_reuse`)
-  - Whether both operands are DST values (SFPU binary, the fallback)
-  - Note: Broadcast, reduce, and matmul are already handled via `TTLCBInputTileOpTrait` and do not require annotation — they always read from CB.
+* **Operation Category Traits**: The allocation algorithm distinguishes
+  seven operation categories (see Core Principle above). Each category 
+  can be identified by a composition of orthogonal
+  traits on the operation definition in TableGen. One of these traits
+  already exists: `TTLCBInputTileOpTrait` marks operations that read
+  tile inputs from CB rather than DST. Three additional traits complete
+  the system:
+
+  - **`TTLDSTInputsTrait`**: At least one operand is consumed from DST.
+  - **`TTLInPlaceOpTrait`**: Result overwrites the DST input (input and
+    output share the same DST slot).
+  - **`TTLAccumulatingOpTrait`**: Result accumulates across multiple
+    invocations to the same DST index (the DST slot must remain live
+    across an accumulation loop).
+
+  Each operation category is uniquely identified by its trait
+  combination:
+
+  | Category | `DSTInputs` | `CBInput` | `InPlace` | `Accumulating` |
+  |----------|:-----------:|:---------:|:---------:|:--------------:|
+  | SFPU binary | x | | | |
+  | FPU binary | | x | | |
+  | `dest_reuse` | x | x | x | |
+  | Unary | x | | x | |
+  | Broadcast | | x | | |
+  | Reduce | | x | | x |
+  | Matmul | | x | | x |
+
+  The allocator queries these traits compositionally:
+  - `hasTrait<TTLCBInputTileOpTrait>()` -> operand stays in CB (no DST
+    slot needed for that operand)
+  - `hasTrait<TTLDSTInputsTrait>()` -> operand needs a DST slot
+  - `hasTrait<TTLInPlaceOpTrait>()` -> merge input/output intervals
+    (Phase 2)
+  - `hasTrait<TTLAccumulatingOpTrait>()` -> DST slot must remain live
+    across the accumulation loop
+
+  Using composable traits rather than attributes is preferable because:
+  (1) the execution category is a static property of each operation,
+  not a dynamic property that varies by context; (2) traits are checked
+  at C++ compile time via `hasTrait<>()`, avoiding string-based
+  attribute lookups; (3) no pass-ordering dependency — the information
+  is available immediately at op construction; (4) orthogonal traits
+  enable the allocator to query individual properties (e.g., "is this
+  op in-place?") without encoding the full category taxonomy.
 
   See [`MaximizingDSTUtilization.md`](../MaximizingDSTUtilization.md) for the full FPU-aware unrolling design and operation classification.
