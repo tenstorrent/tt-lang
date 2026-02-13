@@ -130,7 +130,11 @@ The algorithm has five phases: optional operation scheduling to minimize registe
 
 Reorder independent operations within the `ttl.compute` block to minimize register pressure and reduce the number of copies needed in Phase 1.
 
-**Goal**: For values with multiple consumers, schedule operations so that in-place consumers (unary, `dest_reuse`) come last. This eliminates the need for `copy_dest_values` operations.
+**Goals**:
+- Schedule full-init operations (broadcast, reduce) first to avoid
+  clobbering prior init configurations (see Init Ordering below).
+- Schedule in-place consumers (unary, `dest_reuse`) last among a
+  value's consumers to eliminate `copy_dest_values` operations.
 
 **Algorithm** (adapted from LARS [Rawat et al. SC'18]):
 
@@ -143,9 +147,13 @@ live_values = set()  # Values currently live in DST registers
 
 while ready:
   best_op = None
-  best_cost_tuple = (-inf, -inf, -inf, -inf, inf, -inf)
+  best_cost_tuple = (-inf, -inf, -inf, -inf, -inf, inf, -inf)
 
   for op in ready:
+    # Init priority: full-init ops (bcast, reduce) must be scheduled
+    # before any other init type. See "Init Ordering" below.
+    init_priority = 1 if is_full_init(op) else 0
+
     # Compute cost tuple (lexicographic comparison)
     release_pot = count_last_uses(op, remaining_ops)  # Frees DST registers
     fire_pot = count_newly_ready_ops(op, deps)        # Enables more ops
@@ -158,8 +166,9 @@ while ready:
     if (is_unary(op) or is_dest_reuse(op)) and op.dst_operand.num_consumers > 1:
       non_live_aff_penalty -= 100  # Large penalty
 
-    cost_tuple = (release_pot, fire_pot, primary_aff, secondary_aff,
-                  non_live_aff_penalty, critical_path_priority(op))
+    cost_tuple = (init_priority, release_pot, fire_pot, primary_aff,
+                  secondary_aff, non_live_aff_penalty,
+                  critical_path_priority(op))
 
     if cost_tuple > best_cost_tuple:
       best_cost_tuple = cost_tuple
@@ -182,18 +191,39 @@ return scheduled  # New operation order
 
 **Cost Tuple Metrics** (lexicographically sorted, highest priority first):
 
-1. **Release Potential (Rpot)**: Number of values at their last use in this operation. Higher is better (frees DST registers).
+1. **Init Priority**: 1 for full-init operations (broadcast, reduce), 0
+   otherwise. This is the highest-priority term: full-init ops are
+   always scheduled before non-full-init ops when both are ready. See
+   Init Ordering below.
 
-2. **Fire Potential (Fpot)**: Number of dependent operations that become schedulable after executing this operation. Higher is better (enables more scheduling flexibility).
+2. **Release Potential (Rpot)**: Number of values at their last use in this operation. Higher is better (frees DST registers).
 
-3. **Primary Affinity (Paff)**: Sum of reuse strength with already-live values. Operations that use values already in DST registers have high affinity. Higher is better (locality).
+3. **Fire Potential (Fpot)**: Number of dependent operations that become schedulable after executing this operation. Higher is better (enables more scheduling flexibility).
 
-4. **Secondary Affinity (Saff)**: Indirect reuse - operations sharing common inputs with already-scheduled operations. Higher is better.
+4. **Primary Affinity (Paff)**: Sum of reuse strength with already-live values. Operations that use values already in DST registers have high affinity. Higher is better (locality).
 
-5. **Non-Live Affinity Penalty (-Nnpaff)**: Negative of the number of unscheduled operations this op shares inputs with. More negative is worse (will extend live ranges).
+5. **Secondary Affinity (Saff)**: Indirect reuse - operations sharing common inputs with already-scheduled operations. Higher is better.
+
+6. **Non-Live Affinity Penalty (-Nnpaff)**: Negative of the number of unscheduled operations this op shares inputs with. More negative is worse (will extend live ranges).
    - **Special case**: If this is an in-place operation (unary or `dest_reuse`) on a multi-consumer value, add a large penalty to schedule it last.
 
-6. **Critical Path Priority (Pl)**: Distance from this operation to the yield or store (end of block). Operations on the critical path receive higher priority.
+7. **Critical Path Priority (Pl)**: Distance from this operation to the yield or store (end of block). Operations on the critical path receive higher priority.
+
+**Init Ordering**: Broadcast (`unary_bcast_init`) and reduce
+(`reduce_init`) perform full inits that configure UNPACK + MATH + PACK.
+A subsequent short init (e.g., `exp_tile_init`) reconfigures only MATH,
+leaving the PACK configuration intact. If a full-init operation were
+scheduled after a short-init operation, the full init would clobber the
+prior PACK configuration, requiring a re-init. Scheduling full-init
+operations first avoids this: the full init sets up PACK once, and
+subsequent short inits override only MATH/UNPACK as needed.
+
+If multiple full-init operations appear in the same block (e.g., both
+broadcast and reduce), each will clobber the other's PACK
+configuration. The scheduler orders them by data dependencies; if they
+are independent, their relative order is determined by the remaining
+cost tuple metrics (Rpot, Fpot, etc.). The lowering pass must insert
+the appropriate re-init between them.
 
 **Example**:
 ```mlir
@@ -203,9 +233,10 @@ return scheduled  # New operation order
 %3 = tile_abs(%0)                   // Unary consumer (in-place)
 
 # Both add_binary_tile and abs are ready after their dependencies resolve.
-# Cost tuples:
-abs:             <0, 0, 1, 0, -100, ...>  # Large penalty for in-place on multi-consumer
-add_binary_tile: <0, 0, 1, 0, -1, ...>    # No penalty (SFPU binary, not in-place)
+# Neither is a full-init op, so init_priority = 0 for both.
+# Cost tuples (init_priority, Rpot, Fpot, Paff, Saff, -Nnpaff, Pl):
+abs:             <0, 0, 0, 1, 0, -100, ...>  # Large penalty for in-place on multi-consumer
+add_binary_tile: <0, 0, 0, 1, 0, -1, ...>    # No penalty (SFPU binary, not in-place)
 
 # add_binary_tile has higher cost tuple -> scheduled first
 # Result: abs becomes last consumer -> no copy needed!
