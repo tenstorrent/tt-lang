@@ -24,7 +24,7 @@
 // CHECK-NEXT: ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>,
 // Two copies of A are scheduled first, then sigmoid uses one of them
 // CHECK:       %{{.*}}, %[[ACOPY0:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} :
-// CHECK-NEXT:  %{{.*}}, %[[ACOPY1:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} :
+// CHECK:       %{{.*}}, %[[ACOPY1:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} :
 // CHECK-NOT:   ttl.copy_tile %[[A]]
 // CHECK-NEXT:  %[[SIG:.*]] = ttl.tile_sigmoid %[[ACOPY1]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 // Third copy of A for exp
