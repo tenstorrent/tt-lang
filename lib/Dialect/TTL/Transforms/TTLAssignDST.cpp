@@ -801,9 +801,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           }
 
           builder.setInsertionPoint(&op);
-          auto copy = createCopyTileForArg(arg, computeOp, builder,
-                                           dstAssignment, inUse,
-                                           dstIndexForValue);
+          auto copy = createCopyTileForArg(
+              arg, computeOp, builder, dstAssignment, inUse, dstIndexForValue);
           if (failed(copy)) {
             signalPassFailure();
             return;
