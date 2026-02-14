@@ -125,6 +125,7 @@ class _BlockContextManager:
     def push(self) -> None:
         self._cb.push_block()
 
+
 class ReserveContext(_BlockContextManager):
     """Context manager for reserve operations that automatically pushes on exit.
 
