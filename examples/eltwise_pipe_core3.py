@@ -90,13 +90,13 @@ def eltwise_pipe_core3(
                 out_block.store(result)
 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
-                out_cb.push()
+                out_block.push()
                 # finalize pop, this advances the cb pointers, essentially freeing the memory
                 # After poping, the corresponding Block(a_block) points to stale data. Should probably make it an error to access it at that point
-                a_in_cb.pop()
+                a_block.pop()
                 # ditto
-                b_in_cb.pop()
-        c_in_cb.pop()
+                b_block.pop()
+        c_block.pop()
 
     @ttl.datamovement()
     def dm0():
@@ -136,11 +136,11 @@ def eltwise_pipe_core3(
                 a_block = a_in_cb.reserve()
                 tx = ttl.copy(a_in[row_slice, col_slice], a_block)
                 tx.wait()
-                a_in_cb.push()
+                a_block.push()
                 b_block = b_in_cb.reserve()
                 tx = ttl.copy(b_in[row_slice, col_slice], b_block)
                 tx.wait()
-                b_in_cb.push()
+                b_block.push()
 
     @ttl.datamovement()
     def dm1():
@@ -160,7 +160,7 @@ def eltwise_pipe_core3(
 
                 tx = ttl.copy(out_block, out[row_slice, col_slice])
                 tx.wait()
-                out_cb.pop()
+                out_block.pop()
 
 
 def main() -> None:

@@ -89,9 +89,9 @@ class CircularBuffer:
             TensorBlock: The acquired data with CB association.
 
         Example:
-            shard = cb.wait()
-            result = compute(shard)
-            cb.pop()
+            block = cb.wait()
+            result = compute(block)
+            block.pop()
         """
         tensor_type = _get_cb_tensor_type(ast_self)
         tensor = ttl.cb_wait(tensor_type, ast_self)
@@ -122,9 +122,9 @@ class CircularBuffer:
             TensorBlock: The reserved space with CB association.
 
         Example:
-            cb.reserve()
-            copy(stream[idx], cb).wait()
-            cb.push()
+            block = cb.reserve()
+            copy(stream[idx], block).wait()
+            block.push()
         """
         tensor_type = _get_cb_tensor_type(ast_self)
         tensor = ttl.cb_reserve(tensor_type, ast_self)

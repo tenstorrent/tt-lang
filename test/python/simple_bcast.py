@@ -47,24 +47,24 @@ def fused_bcast_kernel(a, b, c, out):
         a_blk = a_cb.reserve()
         tx_a = ttl.copy(a[0, 0], a_blk)
         tx_a.wait()
-        a_cb.push()
+        a_blk.push()
 
         b_blk = b_cb.reserve()
         tx_b = ttl.copy(b[0, 0], b_blk)
         tx_b.wait()
-        b_cb.push()
+        b_blk.push()
 
         c_blk = c_cb.reserve()
         tx_c = ttl.copy(c[0, 0], c_blk)
         tx_c.wait()
-        c_cb.push()
+        c_blk.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_cb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
-        out_cb.pop()
+        out_blk.pop()
 
 
 def main():
