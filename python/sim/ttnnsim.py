@@ -269,6 +269,7 @@ class Tensor:
 
     def __getitem__(self, key: Any) -> "Tensor":
         # If key looks like tile-style indexing (two slices/ints), use TensorAccessor
+        result: Tensor
         if isinstance(key, tuple):
             key_t = cast(Tuple[Any, ...], key)
             if len(key_t) == 2:
@@ -279,11 +280,16 @@ class Tensor:
                 if isinstance(row_key, int) and isinstance(col_key, int):
                     # Check if tensor is tile-indexable
                     if not self._is_tile_indexable():
-                        return Tensor(self._tensor.__getitem__(cast(Any, key)))
-                    # Use tile indexing for tile-indexable tensors
-                    self._ensure_accessor()
-                    assert self._accessor is not None
-                    return Tensor(self._accessor[row_key, col_key])
+                        result = Tensor(self._tensor.__getitem__(cast(Any, key)))
+                    else:
+                        # Use tile indexing for tile-indexable tensors
+                        self._ensure_accessor()
+                        assert self._accessor is not None
+                        result = Tensor(self._accessor[row_key, col_key])
+                    # Propagate _name attribute from parent to slice
+                    if hasattr(self, "_name"):
+                        result._name = self._name  # type: ignore
+                    return result
 
                 # Check if either or both are slices (mixed or full slice indexing)
                 if isinstance(row_key, (slice, int)) and isinstance(
@@ -291,9 +297,17 @@ class Tensor:
                 ):
                     self._ensure_accessor()
                     assert self._accessor is not None
-                    return Tensor(self._accessor[row_key, col_key])
+                    result = Tensor(self._accessor[row_key, col_key])
+                    # Propagate _name attribute from parent to slice
+                    if hasattr(self, "_name"):
+                        result._name = self._name  # type: ignore
+                    return result
 
-        return Tensor(self._tensor.__getitem__(cast(Any, key)))
+        result = Tensor(self._tensor.__getitem__(cast(Any, key)))
+        # Propagate _name attribute from parent to slice
+        if hasattr(self, "_name"):
+            result._name = self._name  # type: ignore
+        return result
 
     def __setitem__(self, key: Any, value: Union["Tensor", torch.Tensor, Any]) -> None:
         # If setting via tile-style indexing, route through accessor

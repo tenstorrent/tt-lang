@@ -18,6 +18,7 @@ import torch
 from .block import Block
 from .cbapi import CBAPI
 from .constants import TILE_SHAPE
+from .stats import record_cb_reserve, record_cb_wait
 from .ttnnsim import Tensor
 from .typedefs import CBID, Shape, Size
 
@@ -292,6 +293,10 @@ class CircularBuffer:
         api.cb_wait_front(cb_id, self._tiles_per_operation)
         block = api.get_read_ptr(cb_id)
         self._pending_waited_block = block
+
+        # Record wait statistics
+        record_cb_wait(self, self._tiles_per_operation)
+
         return WaitContext(self, block)
 
     def can_wait(self) -> bool:
@@ -360,6 +365,10 @@ class CircularBuffer:
             block.write_slot(i, zero_tensor)
 
         self._pending_reserved_block = block
+
+        # Record reserve statistics
+        record_cb_reserve(self, self._tiles_per_operation)
+
         return ReserveContext(self, block)
 
     def can_reserve(self) -> bool:

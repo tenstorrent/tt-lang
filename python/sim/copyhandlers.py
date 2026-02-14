@@ -30,6 +30,12 @@ from .block import Block
 from .cb import ReserveContext, WaitContext
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
+from .stats import (
+    record_tensor_read,
+    record_tensor_write,
+    record_pipe_read,
+    record_pipe_write,
+)
 from .ttnnsim import Tensor
 from .typedefs import AnyDst, AnyPipe, CoreCoord, Count, Pipe, Shape
 
@@ -238,6 +244,10 @@ class BlockToPipeHandler:
     def transfer(self, src: Block, dst: AnyPipe) -> None:
         """Pipe send: store data in shared buffer accessible by all cores."""
         src_data = [src.get_item(i) for i in range(len(src))]
+
+        # Record pipe write statistics
+        record_pipe_write(dst, src_data)
+
         # Initialize per-pipe state atomically so all threads see the
         # same entry (and therefore the same per-entry lock).
         with _pipe_registry_lock:
@@ -315,6 +325,9 @@ class TensorToBlockHandler:
         Extracts tiles from src using tile coordinates and stores them as
         ttnn.Tensor objects in the Block slots.
         """
+        # Record tensor read
+        record_tensor_read(src)
+
         # Calculate tile count, handling size-1 dimensions properly
         shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
         num_tiles = int(prod(shape_in_tiles))
@@ -360,6 +373,9 @@ class BlockToTensorHandler:
         Retrieves ttnn.Tensor objects from Block slots and places them into
         the destination tensor using tile coordinates.
         """
+        # Record tensor write
+        record_tensor_write(dst)
+
         # Calculate tile count, handling size-1 dimensions properly
         shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
         dst_tiles = int(prod(shape_in_tiles))
@@ -496,6 +512,9 @@ class PipeToBlockHandler:
                     )
 
                 dst.copy_as_dest(src_data)
+
+                # Record pipe read statistics
+                record_pipe_read(src, src_data)
 
                 # Decrement receiver count and update queue
                 remaining_receivers -= 1

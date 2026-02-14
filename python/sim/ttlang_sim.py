@@ -177,6 +177,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--tensor-stats",
+        action="store_true",
+        help="Print tensor read/write statistics after execution",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -190,6 +196,12 @@ def main() -> None:
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
+
+    # Enable tensor statistics collection if requested
+    if args.tensor_stats:
+        from sim.stats import enable_stats
+
+        enable_stats()
 
     # Configure default grid if specified
     if args.grid:
@@ -209,14 +221,23 @@ def main() -> None:
             sys.exit(1)
 
     # Run the target
-    if args.module:
-        run_module(args.target, args.script_args)
-    elif args.target.endswith(".py"):
-        run_file(args.target, args.script_args)
-    else:
-        print(f"Error: Invalid target: {args.target}", file=sys.stderr)
-        print("Target must be a .py file or use -m for module name", file=sys.stderr)
-        sys.exit(1)
+    try:
+        if args.module:
+            run_module(args.target, args.script_args)
+        elif args.target.endswith(".py"):
+            run_file(args.target, args.script_args)
+        else:
+            print(f"Error: Invalid target: {args.target}", file=sys.stderr)
+            print(
+                "Target must be a .py file or use -m for module name", file=sys.stderr
+            )
+            sys.exit(1)
+    finally:
+        # Print tensor statistics if enabled
+        if args.tensor_stats:
+            from sim.stats import print_stats
+
+            print_stats()
 
 
 if __name__ == "__main__":

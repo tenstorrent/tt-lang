@@ -267,6 +267,23 @@ def kernel(
             # Import here to avoid circular dependency
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
+            from .stats import is_stats_enabled, register_tensor_name
+            from .ttnnsim import Tensor
+
+            # If stats are enabled, register tensor names from parameter names
+            if is_stats_enabled():
+                sig = inspect.signature(func)
+                params = list(sig.parameters.keys())
+
+                # Register positional arguments
+                for i, arg in enumerate(args):
+                    if isinstance(arg, Tensor) and i < len(params):
+                        register_tensor_name(arg, params[i])
+
+                # Register keyword arguments
+                for param_name, arg in kwargs.items():
+                    if isinstance(arg, Tensor):
+                        register_tensor_name(arg, param_name)
 
             # Clear thread registry before kernel execution
             clear_thread_registry()

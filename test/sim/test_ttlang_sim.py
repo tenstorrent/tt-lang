@@ -306,3 +306,93 @@ if __name__ == "__main__":
             assert "SUCCESS" in result.stdout
         finally:
             script.unlink()
+
+
+class TestTensorStatsOption:
+    """Test --tensor-stats command-line option."""
+
+    def test_tensor_stats_flag_basic(self):
+        """Test that --tensor-stats prints statistics."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                "--tensor-stats",
+                "examples/singlecore_matmul.py",
+            ],
+            cwd=Path(__file__).parent.parent.parent,
+            env={"PYTHONPATH": "python"},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        assert "Tensor Access Statistics" in result.stdout
+        assert "Tensor" in result.stdout
+        assert "Reads" in result.stdout
+        assert "Writes" in result.stdout
+        assert "TOTAL" in result.stdout
+
+    def test_tensor_stats_shows_tensor_names(self):
+        """Test that tensor statistics show parameter names."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                "--tensor-stats",
+                "examples/singlecore_matmul.py",
+            ],
+            cwd=Path(__file__).parent.parent.parent,
+            env={"PYTHONPATH": "python"},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        # Check that statistics contain tensor names
+        assert "a" in result.stdout
+        assert "b" in result.stdout
+        assert "out" in result.stdout
+
+    def test_tensor_stats_without_flag(self):
+        """Test that statistics are not printed without --tensor-stats flag."""
+        result = subprocess.run(
+            [sys.executable, "-m", "sim.ttlang_sim", "examples/singlecore_matmul.py"],
+            cwd=Path(__file__).parent.parent.parent,
+            env={"PYTHONPATH": "python"},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        assert "Tensor Access Statistics" not in result.stdout
+        assert "TOTAL" not in result.stdout
+
+    def test_tensor_stats_no_data(self):
+        """Test that --tensor-stats handles programs with no tensor operations gracefully."""
+        script = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        script.write(
+            """
+# Simple program with no kernel calls
+print("No kernels here!")
+"""
+        )
+        script.close()
+        script_path = Path(script.name)
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--tensor-stats",
+                    str(script_path),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"Script failed: {result.stderr}"
+            assert "No statistics collected" in result.stdout
+        finally:
+            script_path.unlink()
