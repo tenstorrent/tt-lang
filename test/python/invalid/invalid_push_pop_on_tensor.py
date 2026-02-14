@@ -2,26 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
-# RUN: not %python %s 2>&1 | FileCheck %s
+# RUN: env TTLANG_COMPILE_ONLY=1 not %python %s 2>&1 | FileCheck %s
 
 """
 Validation test: push() and pop() require blocks, not regular tensors.
 
 This test verifies that calling push()/pop() on non-block tensors
 raises the expected ValueError during kernel compilation.
+
+This test uses torch tensors directly to work in COMPILE_ONLY mode
+without requiring device hardware.
 """
 
 import os
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
-import ttnn
+import torch
 import ttl
 
 
 # CHECK: error: push() must be called on a block acquired from reserve(), not a regular tensor
-# CHECK-NEXT:   --> {{.*}}invalid_push_pop_on_tensor.py:[[LINE:[0-9]+]]:{{[0-9]+}}
+# CHECK-NEXT:   --> {{.*}}invalid_push_pop_on_tensor.py:41:{{[0-9]+}}
 @ttl.kernel(grid=(1, 1))
 def invalid_push_kernel(lhs, rhs, out):
     """This kernel should fail because push() is called on a non-block tensor."""
@@ -63,33 +65,12 @@ def invalid_push_kernel(lhs, rhs, out):
 
 
 if __name__ == "__main__":
-    import torch
-
-    # In COMPILE_ONLY mode, we just need to trigger kernel compilation
-    # by calling it with dummy tensor shapes
     lhs_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
     rhs_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
 
-    # Create tensors with minimal setup (compile-only doesn't need real device tensors)
-    lhs = ttnn.from_torch(
-        lhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-    )
-    rhs = ttnn.from_torch(
-        rhs_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-    )
-    out = ttnn.from_torch(
-        out_torch,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-    )
-
     # This should raise ValueError during compilation
-    invalid_push_kernel(lhs, rhs, out)
+    invalid_push_kernel(lhs_torch, rhs_torch, out_torch)
 
     print("ERROR: Expected ValueError was not raised!")
     exit(1)
