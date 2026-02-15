@@ -92,7 +92,8 @@ def add_kernel(lhs, rhs, out):
 # Add operation (from l + r dunder method)
 # CHECK: ttl.add
 
-# Attach result to output CB
+# Store result to output CB (explicit from Python)
+# CHECK: ttl.store
 # CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # Finalize: pop inputs, push output
@@ -156,7 +157,7 @@ def add_kernel(lhs, rhs, out):
 # DST register lifecycle
 # CHECK-CPP: tile_regs_acquire();
 
-# Load tiles into DST
+# Load tiles into DST (at first use: CB0 then CB1)
 # CHECK-CPP: copy_tile_init(get_compile_time_arg_val(0));
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(0),
 # CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
@@ -171,7 +172,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: tile_regs_wait();
 
 # Pack result
-# CHECK-CPP: pack_tile<false>(
+# CHECK-CPP: pack_tile<true>(
 
 # Release regs
 # CHECK-CPP: tile_regs_release();

@@ -91,7 +91,8 @@ def add_with_kernel(lhs, rhs, out):
 # Add operation
 # CHECK: ttl.add
 
-# store() attaches result to output CB
+# store() emits explicit store + CB association
+# CHECK: ttl.store
 # CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # 'with' exit: push output, pop inputs (reverse order)
@@ -150,7 +151,7 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-CPP: add_binary_tile(
 # CHECK-CPP: tile_regs_commit();
 # CHECK-CPP: tile_regs_wait();
-# CHECK-CPP: pack_tile<false>(
+# CHECK-CPP: pack_tile<true>(
 # CHECK-CPP: tile_regs_release();
 
 # Push output, pop inputs (reverse order from 'with' exit)

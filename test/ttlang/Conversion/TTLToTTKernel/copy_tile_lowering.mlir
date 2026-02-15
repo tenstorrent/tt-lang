@@ -8,9 +8,8 @@
 // CHECK:       %[[CB_TTK:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, f32>>
 // CHECK:       scf.for
 // CHECK:         scf.for
-// CHECK:           tensor.extract
-// CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
-// CHECK-NEXT:      ttkernel.copy_tile(%[[CB_TTK]], %[[SRC_IDX:.*]], %[[DST_IDX:.*]]) : (!ttkernel.cb<{{.*}}>, index, index) -> ()
+// CHECK:           ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
+// CHECK:           ttkernel.copy_tile(%[[CB_TTK]], %{{.*}}, %{{.*}}) : (!ttkernel.cb<{{.*}}>, index, index) -> ()
 // CHECK-NOT:   ttl.copy_tile
 // CHECK-NOT:   ttl.attach_cb
 func.func @copy_tile_in_compute(

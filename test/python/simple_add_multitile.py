@@ -119,7 +119,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
 # CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
 
-# Copy tiles using linearized index
+# Copy tiles using linearized index (at first use: CB0 then CB1)
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[LIN_IDX]],
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[LIN_IDX]],
 

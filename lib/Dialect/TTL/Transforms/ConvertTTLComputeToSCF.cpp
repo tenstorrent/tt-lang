@@ -101,13 +101,12 @@ static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
   return mapped;
 }
 
-/// Generate loop body that processes tiles at given indices.
-/// Extracts tiles from inputs, clones compute body, inserts results back.
-/// Returns failure if copy_tile encounters unsupported tensor rank/shape.
-static FailureOr<scf::ValueVector>
-generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
-                       ArrayRef<AffineMap> indexingMaps, ValueRange ivs,
-                       ValueRange iterArgs) {
+/// Generate side-effect-only loop body. Extracts tiles from inputs, clones
+/// compute body ops, and returns nothing (stores are explicit side effects).
+static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
+                                            ComputeOp op,
+                                            ArrayRef<AffineMap> indexingMaps,
+                                            ValueRange ivs) {
   // Extract tiles from inputs at current mapped indices.
   SmallVector<Value> extractedInputs;
   for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
@@ -117,10 +116,11 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
     extractedInputs.push_back(tile);
   }
 
-  // Extract tiles from outputs (iter_args) at current indices.
+  // Output block args get a dummy extract from the output tensor. These are
+  // needed for SSA mapping but unused in the body (stores write via DST).
   SmallVector<Value> extractedOutputs;
   size_t numInputs = op.getInputs().size();
-  for (auto [idx, output] : llvm::enumerate(iterArgs)) {
+  for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
     SmallVector<Value> indices =
         applyIndexingMap(b, loc, indexingMaps[numInputs + idx], ivs);
     Value tile = b.create<tensor::ExtractOp>(loc, output, indices);
@@ -137,24 +137,15 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
     mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
   }
 
-  // Build map from block arguments to input tensor info for O(1) lookup.
-  DenseMap<Value, std::pair<size_t, RankedTensorType>> blockArgToInput;
-  for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-    blockArgToInput[bodyBlock.getArgument(idx)] = {
-        idx, cast<RankedTensorType>(input.getType())};
-  }
-
   // Pre-pass: materialize ttl.linearized_index ops as affine.apply
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
       AffineMap indexMap = linIdx.getIndexMap();
 
-      // Check rank matches
       if (static_cast<int64_t>(ivs.size()) != indexMap.getNumDims()) {
         return failure();
       }
 
-      // Apply the index_map to IVs to get linear index
       // TODO: Add symbol handling for dynamic dimensions using getMixedSizes()
       // to query tensor dimensions and pass as affine map symbols
       SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
@@ -162,32 +153,18 @@ generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
           affine::makeComposedFoldedAffineApply(b, loc, indexMap, operands);
       Value linearIdx = getValueOrCreateConstantIndexOp(b, loc, result);
 
-      // Add to mapping so cloning will use the computed value
       mapping.map(linIdx.getResult(), linearIdx);
     }
   }
 
-  // Clone body operations (skip linearized_index since it's already
-  // materialized)
+  // Clone body operations (skip linearized_index and yield)
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (!isa<LinearizedIndexOp>(&bodyOp)) {
       b.clone(bodyOp, mapping);
     }
   }
 
-  // Get yielded values from terminator.
-  auto yieldOp = cast<YieldOp>(bodyBlock.getTerminator());
-  SmallVector<Value> results;
-  for (auto [idx, yieldVal] : llvm::enumerate(yieldOp.getValues())) {
-    Value result = mapping.lookupOrDefault(yieldVal);
-    // Insert result tile back into output tensor.
-    SmallVector<Value> indices =
-        applyIndexingMap(b, loc, indexingMaps[numInputs + idx], ivs);
-    Value updated =
-        b.create<tensor::InsertOp>(loc, result, iterArgs[idx], indices);
-    results.push_back(updated);
-  }
-  return results;
+  return success();
 }
 
 struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
@@ -218,22 +195,17 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       steps.push_back(step);
     }
 
-    // Initial values for iter_args are the output tensors.
-    SmallVector<Value> initValues(op.getOutputs());
-
-    // Track whether generateTileProcessing fails inside the lambda.
+    // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
+    // with tensor values. Stores are explicit side effects (tile_store).
     bool processingFailed = false;
-    scf::LoopNest loopNest = scf::buildLoopNest(
-        rewriter, loc, lowerBounds, upperBounds, steps, initValues,
+    scf::buildLoopNest(
+        rewriter, loc, lowerBounds, upperBounds, steps, ValueRange{},
         [&](OpBuilder &b, Location loc, ValueRange ivs,
-            ValueRange iterArgs) -> scf::ValueVector {
-          auto result =
-              generateTileProcessing(b, loc, op, indexingMaps, ivs, iterArgs);
-          if (failed(result)) {
+            ValueRange /*iterArgs*/) -> scf::ValueVector {
+          if (failed(generateTileProcessing(b, loc, op, indexingMaps, ivs))) {
             processingFailed = true;
-            return {};
           }
-          return *result;
+          return {};
         });
 
     if (processingFailed) {
@@ -241,7 +213,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
-    rewriter.replaceOp(op, loopNest.results);
+    // Replace compute op with its output operands directly.
+    rewriter.replaceOp(op, op.getOutputs());
     return success();
   }
 };

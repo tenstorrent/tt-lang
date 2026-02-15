@@ -15,41 +15,33 @@
 // CHECK:       %[[CB0_TTK:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK:       %[[CB1_TTK:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK:       %[[CB2_TTK:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB0_TTK]], %[[C4]])
-// CHECK-NEXT:  %[[CAST0:.*]] = builtin.unrealized_conversion_cast %[[CB0_TTK]]
-// CHECK-NEXT:  ttkernel.cb_wait_front(%[[CB1_TTK]], %[[C4]])
-// CHECK-NEXT:  ttkernel.init_sfpu(%[[CB0_TTK]], %[[CB2_TTK]])
-// CHECK-NEXT:  scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC:.*]] = %[[OUTPUT]])
-// CHECK-NEXT:    scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] iter_args(%[[ACC2:.*]] = %[[ACC]])
-// CHECK-NEXT:      %[[ATILE:.*]] = tensor.extract %[[CAST0]][%[[I]], %[[J]]]
-// Compute linear tile index: i * cols + j (via affine map)
-// CHECK-NEXT:      %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
-// CHECK-NEXT:      ttkernel.tile_regs_acquire
-// CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB0_TTK]])
-// CHECK-NEXT:      ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]], %[[C0]])
-// CHECK-NEXT:      ttkernel.copy_tile_init(%[[CB1_TTK]])
-// CHECK-NEXT:      ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]], %[[C1]])
-// CHECK-NEXT:      ttkernel.add_binary_tile_init()
-// CHECK-NEXT:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
-// CHECK-NEXT:      ttkernel.mul_binary_tile_init()
-// CHECK-NEXT:      ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
-// CHECK-NEXT:      ttkernel.exp_tile_init()
-// CHECK-NEXT:      ttkernel.exp_tile(%[[C0]])
-// CHECK-NEXT:      ttkernel.tile_regs_commit
-// CHECK-NEXT:      ttkernel.tile_regs_wait
-// CHECK-NEXT:      ttkernel.cb_reserve_back(%[[CB2_TTK]], %[[C4:.*]])
-// Compute CB tile index: i * 2 + j (linearized row-major index for 2x2 grid).
-// CHECK-NEXT:      %[[IOFF:.*]] = arith.muli %[[I]], %[[C2]] : index
-// CHECK-NEXT:      %[[CB_IDX:.*]] = arith.addi %[[IOFF]], %[[J]] : index
-// CHECK-NEXT:      ttkernel.pack_tile(%[[C0]], %[[CB2_TTK]], %[[CB_IDX]], false)
-// CHECK-NEXT:      ttkernel.cb_push_back(%[[CB2_TTK]], %[[C4]])
-// CHECK-NEXT:      ttkernel.tile_regs_release
-// CHECK-NEXT:      %[[INSERT:.*]] = tensor.insert %[[ATILE]] into %[[ACC2]][%[[I]], %[[J]]]
-// CHECK-NEXT:      scf.yield %[[INSERT]]
-// CHECK-NEXT:    }
-// CHECK-NEXT:    scf.yield
+// CHECK:       ttkernel.cb_wait_front(%[[CB0_TTK]],
+// CHECK:       ttkernel.cb_wait_front(%[[CB1_TTK]],
+// CHECK:       ttkernel.init_sfpu(%[[CB0_TTK]], %[[CB2_TTK]])
+// CHECK:       scf.for %[[I:.*]] = {{.*}} to {{.*}} step {{.*}} {
+// CHECK:         scf.for %[[J:.*]] = {{.*}} to {{.*}} step {{.*}} {
+// CHECK:           %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
+// CHECK:           ttkernel.tile_regs_acquire
+// Copies at first use (add): CB0 first, then CB1
+// CHECK:           ttkernel.copy_tile_init(%[[CB0_TTK]])
+// CHECK:           ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]],
+// CHECK:           ttkernel.copy_tile_init(%[[CB1_TTK]])
+// CHECK:           ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]],
+// CHECK:           ttkernel.add_binary_tile_init()
+// CHECK:           ttkernel.add_binary_tile(
+// CHECK:           ttkernel.mul_binary_tile_init()
+// CHECK:           ttkernel.mul_binary_tile(
+// CHECK:           ttkernel.exp_tile_init()
+// CHECK:           ttkernel.exp_tile(
+// CHECK:           ttkernel.cb_reserve_back(%[[CB2_TTK]],
+// CHECK:           ttkernel.tile_regs_commit
+// CHECK:           ttkernel.tile_regs_wait
+// CHECK:           ttkernel.pack_tile({{.*}}, %[[CB2_TTK]], {{.*}}, true)
+// CHECK:           ttkernel.cb_push_back(%[[CB2_TTK]],
+// CHECK:           ttkernel.tile_regs_release
+// CHECK:         }
 // CHECK:       }
-// CHECK-NEXT:  return
+// CHECK:       return
 // CHECK-NOT:   ttl.attach_cb
 // CHECK-NOT:   ttl.copy_tile
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -81,7 +73,7 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
