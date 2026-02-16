@@ -939,26 +939,3 @@ if TTNN_AVAILABLE:
     for name in ["_operations_to_wrap", "_op_name", "_op", "_golden_fn"]:
         if name in dir():
             del globals()[name]
-else:
-    # When ttnn is not available, import pure Python fallback implementations
-    # These are re-exported for use by consumers of this module
-    from .golden_ops import abs  # type: ignore[reportUnusedImport]
-    from .golden_ops import add  # type: ignore[reportUnusedImport]
-    from .golden_ops import cos  # type: ignore[reportUnusedImport]
-    from .golden_ops import eq  # type: ignore[reportUnusedImport]
-    from .golden_ops import exp  # type: ignore[reportUnusedImport]
-    from .golden_ops import gelu  # type: ignore[reportUnusedImport]
-    from .golden_ops import gt  # type: ignore[reportUnusedImport]
-    from .golden_ops import isclose  # type: ignore[reportUnusedImport]
-    from .golden_ops import logical_and  # type: ignore[reportUnusedImport]
-    from .golden_ops import logical_or  # type: ignore[reportUnusedImport]
-    from .golden_ops import lt  # type: ignore[reportUnusedImport]
-    from .golden_ops import multiply  # type: ignore[reportUnusedImport]
-    from .golden_ops import ne  # type: ignore[reportUnusedImport]
-    from .golden_ops import relu  # type: ignore[reportUnusedImport]
-    from .golden_ops import repeat  # type: ignore[reportUnusedImport]
-    from .golden_ops import sigmoid  # type: ignore[reportUnusedImport]
-    from .golden_ops import sin  # type: ignore[reportUnusedImport]
-    from .golden_ops import sqrt  # type: ignore[reportUnusedImport]
-    from .golden_ops import subtract  # type: ignore[reportUnusedImport]
-    from .golden_ops import tan  # type: ignore[reportUnusedImport]

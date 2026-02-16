@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+# type: ignore
 import torch
 import ttnn
-from utils import assert_with_ulp
+from utils.correctness import assert_with_ulp
 import ttl
 from ttl import Program, copy, core, make_circular_buffer_like, Pipe, PipeNet
 import matplotlib.pyplot as plt

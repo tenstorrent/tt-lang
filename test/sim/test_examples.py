@@ -85,21 +85,55 @@ def assert_success_output(code: int, out: str) -> None:
 @pytest.mark.parametrize(
     "script_name",
     [
-        "broadcast.py",
+        pytest.param(
+            "broadcast.py",
+            marks=requires_ttnn,
+        ),
         "broadcast_demo.py",
-        "general_broadcast.py",
+        pytest.param(
+            "general_broadcast.py",
+            marks=requires_ttnn,
+        ),
         "eltwise_add.py",
-        "eltwise_pipe.py",
-        "eltwise_pipe_core3.py",
+        pytest.param(
+            "eltwise_pipe.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "eltwise_pipe_core3.py",
+            marks=requires_ttnn,
+        ),
         "singlecore_matmul.py",
         "multicore_matmul.py",
-        "tutorial/ttnn_base.py",
-        "tutorial/single_core_single_tile_block.py",
-        "tutorial/single_core_multitile_block.py",
-        "tutorial/multicore.py",
-        "tutorial/multicore_grid_auto.py",
-        "tutorial/single_core_broadcast_single_tile_block.py",
-        "tutorial/single_core_broadcast_multitile_blocks.py",
+        "tt_lang_1d_mm.py",
+        pytest.param(
+            "tutorial/ttnn_base.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_single_tile_block.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_multitile_block.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/multicore.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/multicore_grid_auto.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_broadcast_single_tile_block.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_broadcast_multitile_blocks.py",
+            marks=requires_ttnn,
+        ),
     ],
 )
 def test_example_cli(script_name: str) -> None:
@@ -187,6 +221,7 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
         )
 
 
+@requires_ttnn
 def test_demo_one_deadlock_detection() -> None:
     """Test that tutorial/multicore_grid_auto.py with incorrect wait() instead of reserve() triggers deadlock detection.
 

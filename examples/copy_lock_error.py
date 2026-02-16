@@ -6,7 +6,7 @@ import math
 
 import ttl
 import ttnn
-from sim.testing import assert_pcc
+from utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(
@@ -123,7 +123,7 @@ def main() -> None:
     eltwise_add(a_in, b_in, out)
 
     golden = a_in + b_in
-    assert_pcc(golden, out)
+    assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out))
 
 
 if __name__ == "__main__":
