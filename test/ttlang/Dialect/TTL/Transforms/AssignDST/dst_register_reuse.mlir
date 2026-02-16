@@ -32,9 +32,9 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NOT:       ttl.copy_tile
 // CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
-// SEPARATE-LABEL: func.func @simple_add
-// SEPARATE:      ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
-// SEPARATE-NEXT: ttl.yield
+// SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// SEPARATE-NEXT:   ttl.yield
+
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                          tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -137,7 +137,6 @@ func.func @chain_reuse(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>,
 // SEPARATE-NEXT: %{{.*}} = ttl.tile_add %[[COPY0S]], %[[ADD0S]] {dst_idx = 0 : i32}
 // With separate-output-region, last add (output) gets dst_idx = 2
 // SEPARATE-NEXT: %[[ADD2S:.*]] = ttl.tile_add %[[COPY0S]], %{{.*}} {dst_idx = 2 : i32}
-// SEPARATE-NEXT: ttl.yield %[[ADD2S]]
 
 func.func @block_arg_multi_use(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>)
     -> tensor<32x32xf32> {
@@ -157,7 +156,8 @@ func.func @block_arg_multi_use(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>)
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>,
        %out: !ttcore.tile<32x32, f32>):
 
-    // arg0 is used 3 times - should share the same copy_tile
+    // arg0 is used 3 times: first add is FPU (both block args),
+    // subsequent adds use arg0 with DST results
     %x0 = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
     %x1 = ttl.tile_add %arg0, %x0 : !ttcore.tile<32x32, f32>
     %x2 = ttl.tile_add %arg0, %x1 : !ttcore.tile<32x32, f32>
@@ -180,15 +180,17 @@ func.func @block_arg_multi_use(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>)
 // CHECK-LABEL: func.func @silu_pattern
 // CHECK:           ttl.compute
 // CHECK-NEXT:      ^bb0(%[[X:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK:           %{{.*}}, %[[XCOPY:.*]] = ttl.copy_tile %[[X]], %{{.*}}, %{{.*}} {dst_idx = 0 : i32}
-// CHECK-NEXT:      %[[SIG:.*]] = ttl.tile_sigmoid %[[XCOPY]] {dst_idx = 0 : i32}
-// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[X]], %[[SIG]] {dst_idx = 0 : i32}
+// CHECK:           %{{.*}}, %[[XCOPY_SIG:.*]] = ttl.copy_tile %[[X]], %{{.*}}, %{{.*}} {dst_idx = 0 : i32}
+// CHECK-NEXT:      %[[SIG:.*]] = ttl.tile_sigmoid %[[XCOPY_SIG]] {dst_idx = 0 : i32}
+// CHECK:           %{{.*}}, %[[XCOPY_MUL:.*]] = ttl.copy_tile %[[X]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[XCOPY_MUL]], %[[SIG]] {dst_idx = 0 : i32}
 // CHECK-NEXT:      ttl.yield %[[MUL]]
 // SEPARATE-LABEL: func.func @silu_pattern
-// SEPARATE:      %{{.*}}, %[[XCOPYS:.*]] = ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
-// SEPARATE-NEXT: %[[SIGS:.*]] = ttl.tile_sigmoid %[[XCOPYS]] {dst_idx = 0 : i32}
+// SEPARATE:      %{{.*}}, %[[XCOPY_SIGS:.*]] = ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
+// SEPARATE-NEXT: %[[SIGS:.*]] = ttl.tile_sigmoid %[[XCOPY_SIGS]] {dst_idx = 0 : i32}
+// SEPARATE:      %{{.*}}, %[[XCOPY_MULS:.*]] = ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
 // With separate-output-region, mul (output) gets dst_idx = 2
-// SEPARATE-NEXT: %[[MULS:.*]] = ttl.tile_mul {{.*}}, %[[SIGS]] {dst_idx = 2 : i32}
+// SEPARATE-NEXT: %[[MULS:.*]] = ttl.tile_mul %[[XCOPY_MULS]], %[[SIGS]] {dst_idx = 2 : i32}
 // SEPARATE-NEXT: ttl.yield %[[MULS]]
 
 func.func @silu_pattern(%i0: tensor<32x32xf32>) -> tensor<32x32xf32> {

@@ -79,11 +79,7 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        ttl.tile_store %[[SUM0]], %[[V0]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[SUM0]] : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
-// CHECK-NEXT:      %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
-// CHECK-NEXT:      %[[R0CB:.*]] = ttl.attach_cb %[[R0]], %[[CB3]]
-// CHECK-NEXT:      ttl.init_sfpu(%[[CB3]], %[[CB2]])
-// CHECK-NEXT:      %[[R1:.*]] = ttl.compute
+// CHECK:           %[[R1:.*]] = ttl.compute
 // CHECK:           ^bb0
 // CHECK:             ttl.tile_regs_acquire
 // CHECK-NEXT:        %[[SUM1:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}

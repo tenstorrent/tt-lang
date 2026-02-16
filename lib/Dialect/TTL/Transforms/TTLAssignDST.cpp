@@ -244,7 +244,6 @@ createCopyTileForArg(BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
       loc, TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
       ValueRange{arg, srcIndex, dstIndex});
   dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
-  dstIndexForValue[arg] = assignedDstIndex;
   return copy;
 }
 
@@ -809,7 +808,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Copies must be inserted at first use (not block start) to match the
       // liveness intervals that DST allocation was computed against.
       for (Operation &op : *body) {
-        if (isCBInputOp(&op)) {
+        if (isCBInputOp(&op)|| isa<CopyTileOp>(&op)) {
           continue;
         }
         for (OpOperand &operand : op.getOpOperands()) {
