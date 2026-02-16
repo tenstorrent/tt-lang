@@ -9,8 +9,6 @@ enabling data transfer operations between tensors and Blocks in the
 CircularBuffer system.
 """
 
-from typing import Any
-
 from .block import Block
 from .copyhandlers import (
     CopyEndpoint,
@@ -18,21 +16,6 @@ from .copyhandlers import (
     CopyTransferHandler,
     handler_registry,
 )
-
-
-def _extract_block(obj: Any) -> Any:
-    """Extract the underlying Block from a context manager if applicable.
-
-    Args:
-        obj: Object that may be a Block or a context manager containing a Block
-
-    Returns:
-        The underlying Block if obj is a context manager, otherwise obj unchanged
-    """
-    # Check if object has a block() method (ReserveContext/WaitContext)
-    if hasattr(obj, "block") and callable(obj.block):
-        return obj.block()
-    return obj
 
 
 class CopyTransaction:
@@ -67,24 +50,20 @@ class CopyTransaction:
         self._dst = dst
         self._completed = False
 
-        # Extract underlying Blocks from context managers if needed
-        src_block = _extract_block(src)
-        dst_block = _extract_block(dst)
-
         # Lookup and store the handler for this type combination
         handler = self._lookup_handler(type(src), type(dst))
         self._handler = handler
 
         # Mark blocks in state machine BEFORE validation - this transitions them to appropriate states
         # that prevent user access during the copy operation
-        match src_block:
+        match src:
             case Block():
-                src_block.mark_copy_as_source()
+                src.mark_copy_as_source()
             case _:
                 pass
-        match dst_block:
+        match dst:
             case Block():
-                dst_block.mark_copy_as_dest()
+                dst.mark_copy_as_dest()
             case _:
                 pass
 
@@ -135,23 +114,19 @@ class CopyTransaction:
 
         block_if_needed(self, "wait")
 
-        # Extract underlying Blocks from context managers if needed
-        src_block = _extract_block(self._src)
-        dst_block = _extract_block(self._dst)
-
         # Transfer - let exceptions propagate to scheduler for context
         self._handler.transfer(self._src, self._dst)
         self._completed = True
 
         # Mark tx.wait() complete in state machine - this transitions blocks back to accessible states
-        match src_block:
+        match self._src:
             case Block():
-                src_block.mark_tx_wait_complete()
+                self._src.mark_tx_wait_complete()
             case _:
                 pass
-        match dst_block:
+        match self._dst:
             case Block():
-                dst_block.mark_tx_wait_complete()
+                self._dst.mark_tx_wait_complete()
             case _:
                 pass
 

@@ -10,8 +10,7 @@ tensor data. It handles CB allocation, configuration, and provides tensor-aware
 operations.
 """
 
-from types import TracebackType
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 
@@ -21,142 +20,6 @@ from .constants import TILE_SHAPE
 from .stats import record_cb_reserve, record_cb_wait
 from .ttnnsim import Tensor
 from .typedefs import CBID, Shape, Size
-
-
-class _BlockContextManager:
-    """Base context manager for Block operations with automatic cleanup.
-
-    Handles the common pattern of wrapping a Block and performing an action
-    on exit (push for reserve, pop for wait).
-    """
-
-    def __init__(
-        self, cb: "CircularBuffer", block: Block, on_exit_func: Callable[[], None]
-    ) -> None:
-        """Initialize the context manager.
-
-        Args:
-            cb: The CircularBuffer managing this block
-            block: The Block being wrapped
-            on_exit_func: Callable to invoke on context exit (cb.push or cb.pop)
-        """
-        self._cb = cb
-        self._block = block
-        self._on_exit_func = on_exit_func
-
-    def block(self) -> Block:
-        """Return the underlying Block object."""
-        return self._block
-
-    @property
-    def _shape(self) -> "Shape":
-        """Delegate shape access to the underlying block."""
-        return self._block.shape
-
-    def __enter__(self) -> Block:
-        return self._block
-
-    def __exit__(
-        self,
-        exc_type: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> None:
-        # Always attempt cleanup, but don't let cleanup errors mask original exceptions
-        try:
-            self._on_exit_func()
-        except Exception:
-            # Only re-raise if there wasn't already an exception
-            # Otherwise, suppress cleanup error to preserve original exception
-            if exc_type is None:
-                raise
-
-    # Delegate Block operations for backward compatibility
-    def __len__(self) -> int:
-        return len(self._block)
-
-    def _get_item(self, idx: int) -> Tensor:
-        """Internal method to get an item from the block for operations like arithmetic."""
-        return self._block.get_item(idx)
-
-    def get_item(self, idx: int) -> Tensor:
-        """Public method to get an item from the block."""
-        return self._block.get_item(idx)
-
-    def to_list(self) -> List[Tensor]:
-        """Get all tiles as a list. Useful for test verification."""
-        return self._block.to_list()
-
-    def __getitem__(self, idx: int) -> Tensor:
-        raise RuntimeError(
-            "Block indexing (block[index]) is not allowed. "
-            "Blocks must be used as whole units in operations like store() or arithmetic. "
-            "Use block directly without indexing."
-        )
-
-    def __setitem__(self, idx: int, value: Tensor) -> None:
-        raise RuntimeError(
-            "Direct assignment to Block is not allowed. Use block.store() or copy() instead."
-        )
-
-    def store(self, items, acc: bool = False) -> None:  # type: ignore[no-untyped-def, reportUnknownArgumentType]
-        """Store items into the block.
-
-        Args:
-            items: Sequence of tensors or a single tensor to store
-            acc: If True, accumulate with existing values (+=), otherwise assign (=)
-        """
-        self._block.store(items, acc=acc)  # type: ignore[reportUnknownArgumentType]
-
-    # Delegate arithmetic operations
-    def __add__(self, other: "Block") -> "Block":
-        return self._block.__add__(other)
-
-    def __sub__(self, other: "Block") -> "Block":
-        return self._block.__sub__(other)
-
-    def __mul__(self, other: "Block") -> "Block":
-        return self._block.__mul__(other)
-
-    def __truediv__(self, other: "Block") -> "Block":
-        return self._block.__truediv__(other)
-
-    def __matmul__(self, other: "Block") -> "Block":
-        return self._block.__matmul__(other)
-
-
-class ReserveContext(_BlockContextManager):
-    """Context manager for reserve operations that automatically pushes on exit.
-
-    Can be used as a context manager:
-        with cb.reserve() as blk:
-            blk.store(data)  # auto-push on exit
-
-    Or without (for backward compatibility):
-        blk = cb.reserve()
-        blk.store(data)
-        cb.push()  # manual push required
-    """
-
-    def __init__(self, cb: "CircularBuffer", block: Block):
-        super().__init__(cb, block, cb.push)
-
-
-class WaitContext(_BlockContextManager):
-    """Context manager for wait operations that automatically pops on exit.
-
-    Can be used as a context manager:
-        with cb.wait() as blk:
-            data = blk[0]  # auto-pop on exit
-
-    Or without (for backward compatibility):
-        blk = cb.wait()
-        data = blk[0]
-        cb.pop()  # manual pop required
-    """
-
-    def __init__(self, cb: "CircularBuffer", block: Block):
-        super().__init__(cb, block, cb.pop)
 
 
 # TODO: Should this class now be private?
@@ -251,24 +114,20 @@ class CircularBuffer:
             )
         return self._api, self._cb_id
 
-    def wait(self) -> WaitContext:
+    def wait(self) -> Block:
         """Wait for data to be available and return a read view.
 
         This method blocks until the required number of tiles (as specified by
-        the shape parameter) are available for reading. It returns a context
-        manager that provides access to the available data.
+        the shape parameter) are available for reading. It returns a Block
+        that provides access to the available data.
 
-        Can be used as a context manager (recommended):
-            with cb.wait() as blk:
-                data = blk[0]  # auto-pop on exit
-
-        Or without (for backward compatibility):
+        Usage:
             blk = cb.wait()
             data = blk[0]
             cb.pop()  # manual pop required
 
         Returns:
-            Context manager providing read access to the available tiles
+            Block providing read access to the available tiles
 
         Raises:
             CBTimeoutError: If the wait times out
@@ -292,12 +151,13 @@ class CircularBuffer:
 
         api.cb_wait_front(cb_id, self._tiles_per_operation)
         block = api.get_read_ptr(cb_id)
+        block.cb = self  # Set CB reference for context manager support
         self._pending_waited_block = block
 
         # Record wait statistics
         record_cb_wait(self, self._tiles_per_operation)
 
-        return WaitContext(self, block)
+        return block
 
     def can_wait(self) -> bool:
         """
@@ -313,28 +173,24 @@ class CircularBuffer:
         stats = api.cb_stats(cb_id)
         return stats.visible >= self._tiles_per_operation
 
-    def reserve(self) -> ReserveContext:
+    def reserve(self) -> Block:
         """
         Reserve space for writing and return a write view.
 
         This method blocks until there is sufficient space to write the required
-        number of tiles (as specified by the shape parameter). It returns a context
-        manager that provides access to the reserved space.
+        number of tiles (as specified by the shape parameter). It returns a Block
+        that provides access to the reserved space.
 
         The reserved block is automatically initialized with zero tensors using
         TILE_SHAPE dimensions and the element's dtype before being returned.
 
-        Can be used as a context manager (recommended):
-            with cb.reserve() as blk:
-                blk.store(data)  # auto-push on exit
-
-        Or without (for backward compatibility):
+        Usage:
             blk = cb.reserve()
             blk.store(data)
             cb.push()  # manual push required
 
         Returns:
-            Context manager providing write access to the reserved space
+            Block providing write access to the reserved space
 
         Raises:
             CBTimeoutError: If the reservation times out
@@ -358,6 +214,7 @@ class CircularBuffer:
 
         api.cb_reserve_back(cb_id, self._tiles_per_operation)
         block = api.get_write_ptr(cb_id)
+        block.cb = self  # Set CB reference for context manager support
 
         # Initialize the reserved block with zero tensors
         zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
@@ -369,7 +226,7 @@ class CircularBuffer:
         # Record reserve statistics
         record_cb_reserve(self, self._tiles_per_operation)
 
-        return ReserveContext(self, block)
+        return block
 
     def can_reserve(self) -> bool:
         """

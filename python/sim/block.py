@@ -8,9 +8,12 @@ Block and supporting Span for cbsim.
 
 import operator as _op
 from enum import Enum, auto
-from typing import Any, Callable, List, Optional, Sequence, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Sequence, Union, cast
 
 from pydantic import validate_call
+
+if TYPE_CHECKING:
+    from .cb import CircularBuffer
 
 from .cbstate import CBSlot
 from .ttnnsim import Tensor
@@ -139,6 +142,7 @@ class Block:
         "_expected_ops",
         "_is_temporary",
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
+        "cb",  # Reference to CircularBuffer for context manager cleanup
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -156,6 +160,7 @@ class Block:
         acquisition: BlockAcquisition,
         thread_type: ThreadType,
         is_temporary: bool = False,
+        cb: Optional["CircularBuffer"] = None,
     ):
         self._buf = buf
         self._capacity = capacity
@@ -163,6 +168,7 @@ class Block:
         self._shape = shape
         self._is_temporary = is_temporary
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
+        self.cb = cb  # Reference to CircularBuffer for context manager cleanup
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
@@ -210,6 +216,32 @@ class Block:
                 # Can only be used as source in another block's store operation
                 self._access_state = AccessState.MR
                 self._expected_ops = {ExpectedOp.STORE_SRC}
+
+    def __enter__(self) -> "Block":
+        """Context manager entry - returns self for use in with statement."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[object],
+    ) -> None:
+        """Context manager exit - automatically calls push() or pop() based on acquisition type.
+
+        Only works for Blocks that came from CircularBuffer wait()/reserve().
+        Temporary blocks (from arithmetic operations) don't have cleanup actions.
+
+        If an exception occurred in the with block, cleanup is skipped to preserve
+        the exception and avoid state machine errors.
+        """
+        # Only perform cleanup if no exception occurred
+        if exc_type is None and self.cb is not None:
+            # Block came from CB - perform appropriate cleanup
+            if self._acquisition == BlockAcquisition.RESERVE:
+                self.cb.push()
+            elif self._acquisition == BlockAcquisition.WAIT:
+                self.cb.pop()
 
     @classmethod
     def from_list(
@@ -811,40 +843,27 @@ class Block:
         # Convert Block to sequence if needed, and track source blocks
         source_blocks_to_mark: List["Block"] = []
 
-        # Unwrap context managers (WaitContext, ReserveContext) if needed
-        # These context managers have a _block attribute that holds the actual Block
+        # Convert items to sequence
+        items_seq: Sequence[Tensor]
         match items:
             case Block():
-                actual_items: Union["Block", Sequence[Tensor]] = items
-            case _ if hasattr(items, "_block"):
-                # This is a context manager wrapper, unwrap it
-                actual_items = cast(
-                    Union["Block", Sequence[Tensor]], getattr(items, "_block")
-                )
-            case _:
-                # This is a Sequence[Tensor]
-                actual_items = items
-
-        items_seq: Sequence[Tensor]
-        match actual_items:
-            case Block():
-                items_seq = actual_items.to_list()
+                items_seq = items.to_list()
                 # Check if this is a wait() Compute block being stored directly
                 if (
-                    actual_items._acquisition == BlockAcquisition.WAIT
-                    and actual_items._thread_type == ThreadType.COMPUTE
-                    and ExpectedOp.STORE_SRC in actual_items._expected_ops
+                    items._acquisition == BlockAcquisition.WAIT
+                    and items._thread_type == ThreadType.COMPUTE
+                    and ExpectedOp.STORE_SRC in items._expected_ops
                 ):
-                    source_blocks_to_mark.append(actual_items)
+                    source_blocks_to_mark.append(items)
                 # Check if this is a temporary block with tracked source wait() blocks
-                elif actual_items._is_temporary and actual_items._source_blocks:
+                elif items._is_temporary and items._source_blocks:
                     source_blocks_to_mark.extend(
                         blk
-                        for blk in actual_items._source_blocks
+                        for blk in items._source_blocks
                         if ExpectedOp.STORE_SRC in blk._expected_ops
                     )
             case _:
-                items_seq = actual_items
+                items_seq = items
 
         if len(items_seq) != self._span.length:
             raise ValueError("Length mismatch in store()")
@@ -946,25 +965,15 @@ class Block:
 
         # Track source wait() blocks that contributed to this result
         for block in [self, other]:
-            # Unwrap if this is a context manager wrapper (WaitContext, ReserveContext)
-            actual_block: Any = block
-            if hasattr(block, "_block"):
-                actual_block = block._block  # type: ignore[attr-defined]
-
-            # Only track if this is actually a Block object
-            match actual_block:
-                case Block():
-                    if (
-                        not actual_block._is_temporary
-                        and actual_block._acquisition == BlockAcquisition.WAIT
-                        and actual_block._thread_type == ThreadType.COMPUTE
-                    ):
-                        result_block._source_blocks.append(actual_block)
-                    elif actual_block._is_temporary:
-                        # Temporary blocks may have their own source blocks to propagate
-                        result_block._source_blocks.extend(actual_block._source_blocks)
-                case _:  # pyright: ignore[reportUnknownVariableType]
-                    pass  # Not a Block, skip
+            if (
+                not block._is_temporary
+                and block._acquisition == BlockAcquisition.WAIT
+                and block._thread_type == ThreadType.COMPUTE
+            ):
+                result_block._source_blocks.append(block)
+            elif block._is_temporary:
+                # Temporary blocks may have their own source blocks to propagate
+                result_block._source_blocks.extend(block._source_blocks)
 
         return result_block
 

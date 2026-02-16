@@ -277,13 +277,19 @@ def kernel(
 
                 # Register positional arguments
                 for i, arg in enumerate(args):
-                    if isinstance(arg, Tensor) and i < len(params):
-                        register_tensor_name(arg, params[i])
+                    match arg:
+                        case Tensor() if i < len(params):
+                            register_tensor_name(arg, params[i])
+                        case _:
+                            pass
 
                 # Register keyword arguments
                 for param_name, arg in kwargs.items():
-                    if isinstance(arg, Tensor):
-                        register_tensor_name(arg, param_name)
+                    match arg:
+                        case Tensor():
+                            register_tensor_name(arg, param_name)
+                        case _:
+                            pass
 
             # Clear thread registry before kernel execution
             clear_thread_registry()

@@ -13,15 +13,12 @@ system similar to ttnnsim.py. Special functions like broadcast and reductions
 are implemented manually.
 """
 
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional
 
 import torch
 
 from .block import Block, BlockAcquisition, ThreadType
 from .ttnnsim import Tensor
-
-if TYPE_CHECKING:
-    from .cb import ReserveContext, WaitContext
 
 
 def _track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
@@ -35,24 +32,27 @@ def _track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
         *input_blocks: Input blocks that contributed to the result
     """
     for block in input_blocks:
-        # Unwrap context managers if needed
-        actual_block = block
-        if hasattr(block, "_block"):
-            actual_block = block._block  # type: ignore[attr-defined]
+        is_temporary = getattr(block, "_is_temporary", None)
+        if is_temporary is None:
+            continue
 
-        if isinstance(actual_block, Block):
-            if (
-                not actual_block._is_temporary  # type: ignore[attr-defined]
-                and actual_block.acquisition == BlockAcquisition.WAIT
-                and actual_block.thread_type == ThreadType.COMPUTE
-            ):
-                result_block._source_blocks.append(actual_block)  # type: ignore[attr-defined]
-            elif actual_block._is_temporary:  # type: ignore[attr-defined]
-                result_block._source_blocks.extend(actual_block._source_blocks)  # type: ignore[attr-defined]
+        if (
+            not is_temporary
+            and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
+            and getattr(block, "thread_type", None) == ThreadType.COMPUTE
+        ):
+            source_blocks = getattr(result_block, "_source_blocks", None)
+            if source_blocks is not None:
+                source_blocks.append(block)
+        elif is_temporary:
+            actual_source = getattr(block, "_source_blocks", None)
+            result_source = getattr(result_block, "_source_blocks", None)
+            if actual_source is not None and result_source is not None:
+                result_source.extend(actual_source)
 
 
 def broadcast(
-    block: Union[Block, "ReserveContext", "WaitContext"],
+    block: Block,
     _unused_arg: Optional[Any] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
@@ -71,7 +71,7 @@ def broadcast(
     - Replicates them across all rows in that column
 
     Args:
-        block: Input block to broadcast (can be Block or WaitContext)
+        block: Input block to broadcast
         _unused_arg: Unused argument for compatibility (typically output block shape hint)
         dims: List of dimension indices to broadcast along (0-indexed)
 
@@ -81,11 +81,8 @@ def broadcast(
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    # Unwrap WaitContext/ReserveContext if needed
-    actual_block: Block = block.block() if hasattr(block, "block") else block  # type: ignore[union-attr]
-
     # Validate that the dimensions being broadcast have size 1 at grid level
-    block_shape = actual_block._shape  # type: ignore[attr-defined]
+    block_shape = block._shape  # type: ignore[attr-defined]
     for dim in dims:
         if dim >= len(block_shape):
             raise ValueError(
@@ -99,7 +96,7 @@ def broadcast(
             )
 
     # Perform within-tile broadcasting
-    input_tensors = [t.to_torch() for t in actual_block.to_list()]
+    input_tensors = [t.to_torch() for t in block.to_list()]
     result_tensors: List[Tensor] = []
 
     for tile in input_tensors:
@@ -115,19 +112,16 @@ def broadcast(
     result_block = Block.from_list(result_tensors, block_shape)
 
     # Preserve source block tracking for wait() blocks
-    if hasattr(actual_block, "_source_blocks"):
-        result_block._source_blocks = actual_block._source_blocks.copy()  # type: ignore[attr-defined]
+    if block._source_blocks:  # type: ignore[attr-defined]
+        result_block._source_blocks = block._source_blocks.copy()  # type: ignore[attr-defined]
 
-    # If actual_block itself is a wait() block, add it to source_blocks
+    # If block itself is a wait() block, add it to source_blocks
     if (
-        hasattr(actual_block, "_is_temporary")
-        and not actual_block._is_temporary  # type: ignore[attr-defined]
-        and hasattr(actual_block, "acquisition")
-        and actual_block.acquisition == BlockAcquisition.WAIT
-        and hasattr(actual_block, "thread_type")
-        and actual_block.thread_type == ThreadType.COMPUTE
+        not block._is_temporary  # type: ignore[attr-defined]
+        and block.acquisition == BlockAcquisition.WAIT
+        and block.thread_type == ThreadType.COMPUTE
     ):
-        result_block._source_blocks.append(actual_block)  # type: ignore[attr-defined]
+        result_block._source_blocks.append(block)  # type: ignore[attr-defined]
 
     return result_block
 

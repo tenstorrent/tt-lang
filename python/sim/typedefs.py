@@ -93,14 +93,15 @@ class Pipe(Generic[DstT]):
 
         def make_hashable(obj: Any) -> Any:
             """Convert potentially unhashable objects to hashable equivalents."""
-            if isinstance(obj, slice):
-                return (obj.start, obj.stop, obj.step)  # type: ignore[return-value]
-            elif isinstance(obj, list):
-                return tuple(make_hashable(item) for item in obj)  # type: ignore[misc]
-            elif isinstance(obj, tuple):
-                return tuple(make_hashable(item) for item in obj)  # type: ignore[misc]
-            else:
-                return obj
+            match obj:
+                case slice():
+                    return (obj.start, obj.stop, obj.step)  # type: ignore[return-value]
+                case list():
+                    return tuple(make_hashable(item) for item in obj)  # type: ignore[misc]
+                case tuple():
+                    return tuple(make_hashable(item) for item in obj)  # type: ignore[misc]
+                case _:
+                    return obj
 
         return hash((make_hashable(self.src_core), make_hashable(self.dst_core_range)))
 

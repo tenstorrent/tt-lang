@@ -27,7 +27,6 @@ from typing import (
 )
 
 from .block import Block
-from .cb import ReserveContext, WaitContext
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (
@@ -40,7 +39,6 @@ from .ttnnsim import Tensor
 from .typedefs import AnyDst, AnyPipe, CoreCoord, Count, Pipe, Shape
 
 if TYPE_CHECKING:
-    from .cb import ReserveContext, WaitContext
     from .pipe import SrcPipeIdentity
 
 
@@ -59,8 +57,6 @@ CopyEndpoint = Union[
     Tensor,
     Block,
     AnyPipe,
-    "ReserveContext",
-    "WaitContext",
     AnySrcPipeIdentity,
     DstPipeIdentity,
 ]
@@ -68,8 +64,6 @@ CopyEndpointType = Union[
     Type[Tensor],
     Type[Block],
     Type[AnyPipe],
-    Type["ReserveContext"],
-    Type["WaitContext"],
     Type[AnySrcPipeIdentity],
     Type[DstPipeIdentity],
 ]
@@ -144,7 +138,7 @@ def tensor_shape_in_tiles_with_skip(tensor_shape: Shape, tile_shape: Shape) -> S
 # In a real implementation this would be handled by NoC hardware.
 class _PipeEntry(TypedDict):
     queue: Deque[
-        Tuple[List[Tensor], Count, int, set]
+        Tuple[List[Tensor], Count, int, set[int]]
     ]  # (data, remaining, msg_id, receivers_who_got_it)
     event: threading.Event
     lock: threading.Lock
@@ -293,7 +287,7 @@ class BlockToPipeHandler:
         with entry["lock"]:
             msg_id = entry["next_msg_id"]
             entry["next_msg_id"] += 1
-            entry["queue"].append((src_data, num_receivers, msg_id, set()))
+            entry["queue"].append((src_data, num_receivers, msg_id, set[int]()))
             # Signal that data is available
             entry["event"].set()
 
@@ -434,7 +428,7 @@ class PipeToBlockHandler:
                 _pipe_buffer[src] = new_entry
                 entry = new_entry
         event: threading.Event = entry["event"]
-        queue: Deque[Tuple[List[Tensor], Count, int, set]] = entry["queue"]
+        queue: Deque[Tuple[List[Tensor], Count, int, set[int]]] = entry["queue"]
         lock: threading.Lock = entry["lock"]
 
         while True:
@@ -479,7 +473,10 @@ class PipeToBlockHandler:
                 # Find the first message in the queue that this core hasn't received yet
                 # This handles buffer_factor>1 where the same core may have multiple
                 # pending receives but should get different messages
-                found_msg = False
+                src_data: List[Tensor] | None = None
+                remaining_receivers: Count | None = None
+                msg_id_to_recv: int | None = None
+                receivers_set: set[int] | None = None
                 msg_index = 0
 
                 for idx, (msg_data, remaining_recv, msg_id, recv_set) in enumerate(
@@ -492,18 +489,26 @@ class PipeToBlockHandler:
                         msg_id_to_recv = msg_id
                         receivers_set = recv_set
                         msg_index = idx
-                        found_msg = True
                         break
 
-                if not found_msg:
+                if src_data is None:
                     # All messages in queue have already been received by this core
                     # Wait for new messages to arrive
                     event.clear()
                     continue
 
+                # At this point, all variables are guaranteed to be non-None
+                assert remaining_receivers is not None
+                assert msg_id_to_recv is not None
+                assert receivers_set is not None
+
                 # Mark this core as having received the message
                 if core_id_available:
-                    receivers_set.add(core_id)
+                    match core_id:
+                        case int():
+                            receivers_set.add(core_id)
+                        case _:
+                            raise TypeError("core_id should be int when dims=1")
 
                 if len(dst) != len(src_data):
                     raise ValueError(
@@ -571,97 +576,3 @@ class DstPipeIdentityToBlockHandler:
 
     def can_wait(self, src: DstPipeIdentity, dst: Block) -> bool:
         return PipeToBlockHandler().can_wait(src.pipe, dst)
-
-
-# ===== Context Manager Wrapper Handlers =====
-# These handlers delegate to the underlying Block handlers for _ReserveContext and _WaitContext
-
-
-# Tensor → ReserveContext (delegates to Tensor → Block)
-@register_copy_handler(Tensor, ReserveContext)
-class TensorToReserveContextHandler:
-    """Handler for Tensor → ReserveContext (delegates to Tensor → Block)."""
-
-    def validate(self, src: Tensor, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        TensorToBlockHandler().validate(src, dst.block())
-
-    def transfer(self, src: Tensor, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        TensorToBlockHandler().transfer(src, dst.block())
-
-    def can_wait(self, src: Tensor, dst: "ReserveContext") -> bool:
-        # Delegate to the Block handler
-        return TensorToBlockHandler().can_wait(src, dst.block())
-
-
-# WaitContext → Tensor (delegates to Block → Tensor)
-@register_copy_handler(WaitContext, Tensor)
-class WaitContextToTensorHandler:
-    """Handler for WaitContext → Tensor (delegates to Block → Tensor)."""
-
-    def validate(self, src: "WaitContext", dst: Tensor) -> None:
-        # Delegate to the Block handler
-        BlockToTensorHandler().validate(src.block(), dst)
-
-    def transfer(self, src: "WaitContext", dst: Tensor) -> None:
-        # Delegate to the Block handler
-        BlockToTensorHandler().transfer(src.block(), dst)
-
-    def can_wait(self, src: "WaitContext", dst: Tensor) -> bool:
-        # Delegate to the Block handler
-        return BlockToTensorHandler().can_wait(src.block(), dst)
-
-
-# WaitContext → Pipe (delegates to Block → Pipe)
-@register_copy_handler(WaitContext, Pipe)
-class WaitContextToPipeHandler:
-    """Handler for WaitContext → Pipe (delegates to Block → Pipe)."""
-
-    def validate(self, src: "WaitContext", dst: AnyPipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().validate(src.block(), dst)
-
-    def transfer(self, src: "WaitContext", dst: AnyPipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().transfer(src.block(), dst)
-
-    def can_wait(self, src: "WaitContext", dst: AnyPipe) -> bool:
-        # Delegate to the Block handler
-        return BlockToPipeHandler().can_wait(src.block(), dst)
-
-
-# Pipe → ReserveContext (delegates to Pipe → Block)
-@register_copy_handler(Pipe, ReserveContext)
-class PipeToReserveContextHandler:
-    """Handler for Pipe → ReserveContext (delegates to Pipe → Block)."""
-
-    def validate(self, src: AnyPipe, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        PipeToBlockHandler().validate(src, dst.block())
-
-    def transfer(self, src: AnyPipe, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        PipeToBlockHandler().transfer(src, dst.block())
-
-    def can_wait(self, src: AnyPipe, dst: "ReserveContext") -> bool:
-        # Delegate to the Block handler
-        return PipeToBlockHandler().can_wait(src, dst.block())
-
-
-# ReserveContext → Pipe (delegates to Block → Pipe)
-@register_copy_handler(ReserveContext, Pipe)
-class ReserveContextToPipeHandler:
-    """Handler for ReserveContext → Pipe (delegates to Block → Pipe)."""
-
-    def validate(self, src: "ReserveContext", dst: AnyPipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().validate(src.block(), dst)
-
-    def transfer(self, src: "ReserveContext", dst: AnyPipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().transfer(src.block(), dst)
-
-    def can_wait(self, src: "ReserveContext", dst: AnyPipe) -> bool:
-        # Delegate to the Block handler
-        return BlockToPipeHandler().can_wait(src.block(), dst)

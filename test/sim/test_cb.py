@@ -1010,8 +1010,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
 
         # Now wait for it in COMPUTE thread
         set_current_thread_type(ThreadType.COMPUTE)
-        waited_context = cb.wait()
-        waited_block = waited_context.block()
+        waited_block = cb.wait()
 
         # Try to call push() on a wait() block - should fail
         # because waited_block is WAIT acquisition, not RESERVE
@@ -1025,7 +1024,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
         # Clean up properly - use waited block as STORE_SRC before pop
         out_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
         out_block = out_cb.reserve()
-        out_block.store(waited_context)
+        out_block.store(waited_block)
         out_cb.push()
         cb.pop()
 

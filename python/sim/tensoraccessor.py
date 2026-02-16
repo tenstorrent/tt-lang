@@ -121,9 +121,11 @@ class TensorAccessor:
         Returns:
             A slice object
         """
-        if isinstance(index, int):
-            return slice(index, index + 1)
-        return index
+        match index:
+            case int():
+                return slice(index, index + 1)
+            case _:
+                return index
 
     def __getitem__(self, key: TensorKey) -> torch.Tensor:
         """Access tensor data using tile-based indexing.
