@@ -269,10 +269,10 @@ static SmallVector<Operation *> getSortedConsumers(Value v) {
   return consumers;
 }
 
-/// Check if any consumer is a tile unary operation.
-static bool hasUnaryConsumer(ArrayRef<Operation *> consumers) {
+/// Check if any consumer is an in-place operation (overwrites DST input).
+static bool hasInPlaceConsumer(ArrayRef<Operation *> consumers) {
   return llvm::any_of(consumers,
-                      [](Operation *op) { return isTileUnaryOp(op); });
+                      [](Operation *op) { return isInPlaceOp(op); });
 }
 
 /// Phase 1: Insert copy operations for multi-consumer values where any
@@ -300,9 +300,9 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
       return; // No multi-consumer
     }
 
-    // Check if any consumer is unary - unary ops overwrite their input
-    if (!hasUnaryConsumer(consumers)) {
-      return; // All binary consumers - no copies needed
+    // Check if any consumer is in-place - in-place ops overwrite their input
+    if (!hasInPlaceConsumer(consumers)) {
+      return; // No in-place consumers - no copies needed
     }
 
     valuesToCopy.push_back({v, consumers});
@@ -423,9 +423,9 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     yieldedValues.insert(v);
   }
 
-  // Merge intervals for unary ops
+  // Merge intervals for in-place ops (input and output share DST slot)
   for (Operation &op : *body) {
-    if (!isTileUnaryOp(&op)) {
+    if (!isInPlaceOp(&op)) {
       continue;
     }
 
@@ -439,9 +439,9 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     // Check if output is yielded or all uses are unary
     bool shouldMerge = yieldedValues.contains(output);
     if (!shouldMerge) {
-      // Check if all uses are unary
+      // Check if all uses are in-place
       shouldMerge = llvm::all_of(output.getUsers(), [](Operation *user) {
-        return isTileUnaryOp(user) || isa<YieldOp>(user);
+        return isInPlaceOp(user) || isa<YieldOp>(user);
       });
     }
 

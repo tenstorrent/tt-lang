@@ -452,7 +452,8 @@ def TTL_LinearizedIndexOp : TTL_Op<"linearized_index", [Pure]> {
 }
 
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
-                            [MemoryEffects<[MemRead, MemWrite]>]> {
+                            [MemoryEffects<[MemRead, MemWrite]>,
+                             TTL_CBInputTileOpTrait]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -476,7 +477,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
 
 def TTL_CopyDstOp : TTL_Op<"copy_dst",
                            [SameOperandsAndResultType,
-                            MemoryEffects<[MemRead, MemWrite]>]> {
+                            MemoryEffects<[MemRead, MemWrite]>,
+                            TTL_DSTInputsTrait]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when
@@ -502,7 +504,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
 }
 
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileBinaryOpTrait])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileBinaryOpTrait,
+                                                 TTL_DSTInputsTrait])> {
   let summary = "Binary tile operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs AnyType:$result);
@@ -510,7 +513,8 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
 }
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileUnaryOpTrait])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileUnaryOpTrait,
+                                                 TTL_DSTInputsTrait, TTL_InPlaceOpTrait])> {
   let summary = "Unary tile operation";
   let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);
@@ -592,7 +596,7 @@ def TTL_BcastOp : TTL_Op<"bcast", []> {
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
-def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
+def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_CBOutputTileOpTrait]> {
   let summary = "Tile-level broadcast operation";
   let description = [{
     Broadcasts a row, column, or scalar tile into a full 32x32 tile.

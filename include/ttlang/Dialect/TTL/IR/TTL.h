@@ -66,6 +66,29 @@ template <typename ConcreteType>
 class TTLCBInputTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBInputTileOpTrait> {};
 
+/// Trait for tile operations with at least one operand consumed from DST.
+template <typename ConcreteType>
+class TTLDSTInputsTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLDSTInputsTrait> {};
+
+/// Trait for tile operations whose result overwrites the DST input in-place.
+template <typename ConcreteType>
+class TTLInPlaceOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLInPlaceOpTrait> {};
+
+/// Trait for tile operations that accumulate across multiple invocations.
+template <typename ConcreteType>
+class TTLAccumulatingOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLAccumulatingOpTrait> {};
+
+/// Trait for tile operations that carry an explicit output CB operand.
+/// These operations' init functions configure the PACK thread and require
+/// the output CB identifier. Affects init consolidation ordering: full-init
+/// ops (PACK-configuring) must precede short-init ops.
+template <typename ConcreteType>
+class TTLCBOutputTileOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBOutputTileOpTrait> {};
+
 //===----------------------------------------------------------------------===//
 // CB Index Attribute Helpers
 //===----------------------------------------------------------------------===//

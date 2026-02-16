@@ -37,7 +37,7 @@ file responsible.
 | 4 | Subblock partitioning pass | Done | `TTLSubblockComputeForDST.cpp` |
 | 5 | `extract_slice` tracing in `getAttachedCB()` | Done | `TTLOpsUtils.h` |
 | 6 | `extract_slice` cleanup in final lowering | Done | `ConvertTTLToTTKernel.cpp` |
-| 7 | Operation category traits | Not started | Design: `DST_Allocation.md` |
+| 7 | Operation category traits | Done | `TTLBase.td`, `TTL.h`, `TTLOps.td`, `TTLOpsUtils.h` |
 | 8 | FPU-aware DST pressure in `unroll_factor` | Not started | `TTLAssignDST.cpp` |
 | 9 | Integrated unrolling in lower-to-loops | Not started | `ConvertTTLComputeToSCF.cpp` |
 | 10 | Subblock-level synchronization insertion | Not started | — |
@@ -45,8 +45,8 @@ file responsible.
 | 12 | Init consolidation | Not started | — |
 | 13 | DST spilling (CB-based) | Not started | Design: `CB_Spilling.md` |
 
-Components 1-6 are implemented on the `bnorris/max-dst` branch.
-Components 7-13 are required for the full optimization but have design
+Components 1-7 are implemented on the `bnorris/max-dst` branch.
+Components 8-13 are required for the full optimization but have design
 documents only. The remainder of this document describes each component
 and the pipeline that connects them.
 
@@ -169,12 +169,15 @@ reads from CBs and writes to DST; the SFPU exp operates in-place. The
 per-iteration footprint is 1, not 3 (which the SFPU-only path would
 require for `copy_tile(a)`, `copy_tile(b)`, `add_result`).
 
-Four orthogonal traits classify operations. `TTLCBInputTileOpTrait`
-already exists; three more are needed:
+Five orthogonal traits classify operations. All are defined in
+`TTLBase.td` with C++ implementations in `TTL.h`:
 
+- **`TTLCBInputTileOpTrait`**: Input(s) read from CB, not DST.
 - **`TTLDSTInputsTrait`**: At least one operand is consumed from DST.
 - **`TTLInPlaceOpTrait`**: Result overwrites the DST input (shared slot).
 - **`TTLAccumulatingOpTrait`**: Result accumulates across invocations.
+- **`TTLCBOutputTileOpTrait`**: Op carries an explicit output CB operand;
+  init configures the PACK thread. Affects init consolidation ordering.
 
 No separate annotation pass is required. The allocator in
 `TTLAssignDST` queries these traits compositionally:
@@ -311,7 +314,7 @@ savings from larger subblocks.
 
 ## Current State vs Target
 
-**What works today** (components 1-6, `bnorris/max-dst`):
+**What works today** (components 1-7, `bnorris/max-dst`):
 
 The pipeline computes the correct subblock size, partitions the
 iteration space via TilingInterface, and produces structurally correct
@@ -319,7 +322,9 @@ IR. The inner `ttl.compute` operates on a sub-tensor of
 `unroll_factor` tiles. However, synchronization is still per-tile
 (inserted before lower-to-loops), so DST utilization is not yet
 improved over the baseline. The subblocking pass establishes the
-structural foundation that components 9-10 build on.
+structural foundation that components 9-10 build on. The allocator
+uses trait queries (`isInPlaceOp`, etc.) instead of type-specific
+checks, so new operations only need the correct trait annotations.
 
 **What is needed for actual DST maximization** (components 9-10):
 
@@ -329,9 +334,9 @@ components are the critical path. With just these two additions, the
 compiler produces one sync cycle per subblock, proportionally reducing
 synchronization overhead.
 
-**What improves code quality further** (components 7-8, 11-12):
+**What improves code quality further** (components 8, 11-12):
 
-FPU-aware execution (7-8) increases the subblock size for
+FPU-aware execution (8) increases the subblock size for
 FPU-eligible binary operations (0 DST input slots instead of 2).
 Operation grouping (11) and init consolidation (12) match the patterns
 found in hand-written tt-metal kernels, reducing init overhead and

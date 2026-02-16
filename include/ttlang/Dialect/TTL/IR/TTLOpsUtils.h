@@ -103,6 +103,26 @@ inline bool isTileBinaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileBinaryOpTrait>();
 }
 
+/// Check if an operation consumes at least one operand from DST.
+inline bool isDSTInputOp(mlir::Operation *op) {
+  return op->hasTrait<TTLDSTInputsTrait>();
+}
+
+/// Check if an operation overwrites its DST input in-place.
+inline bool isInPlaceOp(mlir::Operation *op) {
+  return op->hasTrait<TTLInPlaceOpTrait>();
+}
+
+/// Check if an operation accumulates across invocations.
+inline bool isAccumulatingOp(mlir::Operation *op) {
+  return op->hasTrait<TTLAccumulatingOpTrait>();
+}
+
+/// Check if an operation carries an explicit output CB operand.
+inline bool isCBOutputOp(mlir::Operation *op) {
+  return op->hasTrait<TTLCBOutputTileOpTrait>();
+}
+
 /// Check if an operation is any elementwise tensor op (unary or binary).
 inline bool isElementwiseOp(mlir::Operation *op) {
   return isUnaryElementwiseOp(op) || isBinaryElementwiseOp(op);
