@@ -57,10 +57,14 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
 
-  // Trace through tensor.extract_slice (from compute tiling).
-  if (auto slice =
-          tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+  // Trace through tensor.extract_slice (from compute subblocking).
+  if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     return getAttachedCB(slice.getSource());
+  }
+
+  // Trace through tensor.collapse_shape (from iteration space flattening).
+  if (auto collapse = tensor.getDefiningOp<mlir::tensor::CollapseShapeOp>()) {
+    return getAttachedCB(collapse.getSrc());
   }
 
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {

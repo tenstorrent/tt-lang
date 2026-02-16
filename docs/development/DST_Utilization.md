@@ -37,7 +37,7 @@ file responsible.
 | 4 | Subblock partitioning pass | Done | `TTLSubblockComputeForDST.cpp` |
 | 5 | `extract_slice` tracing in `getAttachedCB()` | Done | `TTLOpsUtils.h` |
 | 6 | `extract_slice` cleanup in final lowering | Done | `ConvertTTLToTTKernel.cpp` |
-| 7 | FPU-aware execution strategy annotation | Not started | Design: `MaximizingDSTUtilization.md` |
+| 7 | Operation category traits | Not started | Design: `DST_Allocation.md` |
 | 8 | FPU-aware DST pressure in `unroll_factor` | Not started | `TTLAssignDST.cpp` |
 | 9 | Integrated unrolling in lower-to-loops | Not started | `ConvertTTLComputeToSCF.cpp` |
 | 10 | Subblock-level synchronization insertion | Not started | — |
@@ -70,8 +70,7 @@ Target pipeline (full optimization):
 ```
 convert-ttl-to-compute
 set-compute-kernel-config
-annotate-binary-op-strategy ← FPU/SFPU/dest_reuse classification [7]
-assign-dst                  ← FPU-aware unroll_factor [2, 8]
+assign-dst                  ← trait-aware unroll_factor [2, 7, 8]
 subblock-compute-for-dst    ← outer loop over subblocks [4]
 lower-to-loops              ← unrolled emit for inner subblock [9]
 schedule-operations         ← group by kind within unrolled body [11]
@@ -131,10 +130,12 @@ regardless of which subblock is executing.
 When `unroll_factor >= totalTiles`, no outer loop is generated (the
 compute already fits in one subblock).
 
-Current limitation: only partitions the innermost dimension. General
-multi-dimensional partitioning (e.g., 4x4 tensor with unrollFactor=8
-requires cross-dimension slicing or linearization) is not yet
-implemented.
+Multi-dimensional iteration spaces are flattened to 1D before
+partitioning. When outer dimensions contribute tiles (i.e., totalTiles >
+innerDimSize), the pass inserts `tensor.collapse_shape` on all operands
+to linearize the iteration space, creates a 1D `ttl.compute`, then
+partitions normally. This requires all indexing maps to be identity
+(broadcast maps are not yet supported for flattening).
 
 ### 5-6. Extract Slice Support
 
@@ -146,30 +147,45 @@ and the inner `ttl.compute`. Two downstream utilities needed extension:
 - `removeTensorDataflowOps()` in `ConvertTTLToTTKernel.cpp`: erases
   dead `tensor::ExtractSliceOp` during final cleanup.
 
-### 7-8. FPU-Aware Execution and DST Pressure
+### 7-8. Operation Category Traits and FPU-Aware DST Pressure
 
-Design documented in `MaximizingDSTUtilization.md`. The key insight is
-that the execution engine determines DST register usage per operation:
+Each operation's execution category is determined by orthogonal traits
+defined in TableGen (see `DST_Allocation.md`, Operation Category Traits).
+The key insight is that the execution engine determines DST register
+usage per operation:
 
-| Engine | Input source | DST inputs | DST outputs |
-|--------|-------------|-----------|------------|
-| FPU binary (`add_tiles`, `mul_tiles`) | CB (both) | 0 | 1 |
-| FPU `binary_dest_reuse_tiles` | 1 CB + 1 DST | 0 (reused) | 1 (overwrites) |
-| SFPU unary (`exp_tile`, `abs_tile`) | DST | 0 (in-place) | 0 (overwrites) |
-| SFPU binary (`add_binary_tile`) | DST (both) | 2 | 1 |
+| Category | Traits | Input source | DST inputs | DST outputs |
+|----------|--------|-------------|-----------|------------|
+| FPU binary | `CBInput` | CB (both) | 0 | 1 |
+| `dest_reuse` | `DSTInputs` + `CBInput` + `InPlace` | 1 CB + 1 DST | 0 (reused) | 1 (overwrites) |
+| Unary | `DSTInputs` + `InPlace` | DST | 0 (in-place) | 0 (overwrites) |
+| SFPU binary | `DSTInputs` | DST (both) | 2 | 1 |
+| Broadcast | `CBInput` | CB | 0 | 1 |
+| Reduce | `CBInput` + `Accumulating` | CB (input + scaler) | 0 | 1 |
+| Matmul | `CBInput` + `Accumulating` | CB (A + B) | 0 | 1 |
 
 FPU binary ops consume 0 DST input slots. For `exp(a + b)`, the FPU add
 reads from CBs and writes to DST; the SFPU exp operates in-place. The
 per-iteration footprint is 1, not 3 (which the SFPU-only path would
 require for `copy_tile(a)`, `copy_tile(b)`, `add_result`).
 
-Implementation requires:
-1. A pass to annotate each binary op with its execution strategy
-   (`fpu`, `sfpu`, `dest_reuse`) based on whether operands are CB values
-   or DST intermediates. Design exists on branch `bnorris/annotate-fpu-ops`.
-2. `TTLAssignDST` to recognize CB-only block arguments (those consumed
-   only by operations with `TTLCBInputTileOpTrait`) and exclude them from
-   DST allocation, reducing `dstPerIteration`.
+Four orthogonal traits classify operations. `TTLCBInputTileOpTrait`
+already exists; three more are needed:
+
+- **`TTLDSTInputsTrait`**: At least one operand is consumed from DST.
+- **`TTLInPlaceOpTrait`**: Result overwrites the DST input (shared slot).
+- **`TTLAccumulatingOpTrait`**: Result accumulates across invocations.
+
+No separate annotation pass is required. The allocator in
+`TTLAssignDST` queries these traits compositionally:
+
+1. `hasTrait<TTLCBInputTileOpTrait>()` identifies CB-only block
+   arguments (those consumed only by CB-reading operations), which are
+   excluded from DST allocation entirely.
+2. `hasTrait<TTLInPlaceOpTrait>()` triggers interval merging (Phase 2
+   in `DST_Allocation.md`), so in-place chains share a single DST slot.
+3. The combination of trait queries determines `dstPerIteration`, which
+   feeds the `unroll_factor` computation.
 
 ### 9. Integrated Unrolling in Lower-to-Loops
 

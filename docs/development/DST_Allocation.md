@@ -1454,9 +1454,12 @@ The DST allocation pass should query the actual capacity from device configurati
 The DST allocation pass runs in this order:
 
 1. `ttl-assign-dst`: Assigns DST indices, adds `ttl.unroll_factor` attribute
-2. `ttl-lower-to-loops`: Converts `ttl.compute` to `scf.for` loops
-3. `ttl-unroll-compute-loops`: Unrolls loops (optional, controlled by `--enable-unroll`)
-4. `ttl-insert-tile-regs-sync`: Inserts DST lifecycle ops (acquire/commit/wait/release)
+2. `ttl-subblock-compute-for-dst`: Partitions `ttl.compute` into DST-sized subblocks via TilingInterface
+3. `ttl-insert-tile-regs-sync`: Inserts DST lifecycle ops (acquire/commit/wait/release)
+4. `ttl-lower-to-loops`: Converts `ttl.compute` to `scf.for` loops
+
+See `DST_Utilization.md` for the full pipeline and target pipeline with
+integrated unrolling, operation grouping, and subblock-level sync.
 
 ## Future Work
 
@@ -1553,4 +1556,5 @@ The DST allocation pass runs in this order:
   `TTLDSTInputsTrait`, `TTLInPlaceOpTrait`, `TTLAccumulatingOpTrait`)
   need to be defined in TableGen and added to each operation definition.
   `TTLCBInputTileOpTrait` already exists; the remaining three must be
-  implemented. See [`MaximizingDSTUtilization.md`](../MaximizingDSTUtilization.md) for the full FPU-aware unrolling design and operation classification.
+  implemented. See `DST_Utilization.md` (component 7) for how these
+  traits integrate into the DST utilization pipeline.

@@ -11,6 +11,9 @@
 // iteration space into subblocks. Each subblock becomes an inner ttl.compute
 // that processes unroll_factor tiles per DST sync cycle.
 //
+// Multi-dimensional iteration spaces are flattened to 1D before partitioning.
+// This ensures subblock sizes are correct regardless of tensor shape.
+//
 // The outer loop is side-effect-only (no iter_args) because stores are
 // explicit side effects (ttl.tile_store) referencing external reserve views.
 //
@@ -35,6 +38,140 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+/// Return true if all indexing maps on the ComputeOp are identity maps
+/// of the given rank.
+static bool allMapsAreIdentity(ComputeOp computeOp, int64_t rank) {
+  AffineMap identityMap =
+      AffineMap::getMultiDimIdentityMap(rank, computeOp.getContext());
+  for (Attribute attr : computeOp.getIndexingMaps()) {
+    if (cast<AffineMapAttr>(attr).getValue() != identityMap) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Flatten a multi-dimensional ComputeOp to 1D by inserting
+/// tensor.collapse_shape on all operands and creating a new ComputeOp with
+/// 1D identity indexing maps. Returns the new 1D ComputeOp, or the original
+/// if no flattening is needed. Returns failure for unsupported cases.
+///
+/// Flattening is needed when the iteration space has multiple dimensions
+/// with outer dims > 1 (i.e., totalTiles > innerDimSize). Without flattening,
+/// innermost-dim-only tiling would produce subblocks containing all outer
+/// tiles, exceeding unroll_factor.
+static FailureOr<ComputeOp> flattenComputeOp(ComputeOp computeOp) {
+  OpBuilder b(computeOp);
+  SmallVector<Range> iterDomain = computeOp.getIterationDomain(b);
+  int64_t rank = iterDomain.size();
+
+  // Already 1D or scalar: no flattening needed.
+  if (rank <= 1) {
+    return computeOp;
+  }
+
+  // Compute total tiles and innermost dim size.
+  int64_t totalTiles = 1;
+  for (auto &range : iterDomain) {
+    auto sizeAttr = dyn_cast<IntegerAttr>(range.size.dyn_cast<Attribute>());
+    if (!sizeAttr) {
+      return computeOp.emitOpError(
+          "dynamic dimensions not supported for flattening");
+    }
+    totalTiles *= sizeAttr.getInt();
+  }
+
+  auto innerSizeAttr =
+      dyn_cast<IntegerAttr>(iterDomain.back().size.dyn_cast<Attribute>());
+  int64_t innerDimSize = innerSizeAttr.getInt();
+
+  // If all outer dims are 1, the iteration space is effectively 1D and the
+  // existing innermost-dim tiling produces correct subblock sizes.
+  if (totalTiles == innerDimSize) {
+    return computeOp;
+  }
+
+  // If all tiles fit in one subblock, no tiling will happen, so flattening
+  // is unnecessary.
+  auto unrollAttr = computeOp->getAttrOfType<IntegerAttr>("ttl.unroll_factor");
+  if (unrollAttr && unrollAttr.getInt() >= totalTiles) {
+    return computeOp;
+  }
+
+  // Require all identity maps. Broadcast maps need per-operand reassociation
+  // (not yet implemented).
+  if (!allMapsAreIdentity(computeOp, rank)) {
+    return computeOp.emitOpError(
+        "non-identity indexing maps not supported for flattening");
+  }
+
+  Location loc = computeOp.getLoc();
+
+  // Reassociation: merge all dims into one.
+  SmallVector<ReassociationIndices> reassociation;
+  ReassociationIndices allDims;
+  for (int64_t i = 0; i < rank; ++i) {
+    allDims.push_back(i);
+  }
+  reassociation.push_back(allDims);
+
+  // Flatten each input operand.
+  SmallVector<Value> flatInputs;
+  for (Value input : computeOp.getInputs()) {
+    flatInputs.push_back(
+        b.create<tensor::CollapseShapeOp>(loc, input, reassociation));
+  }
+
+  // Flatten each output operand.
+  SmallVector<Value> flatOutputs;
+  for (Value output : computeOp.getOutputs()) {
+    flatOutputs.push_back(
+        b.create<tensor::CollapseShapeOp>(loc, output, reassociation));
+  }
+
+  // 1D identity maps and parallel iterator type.
+  AffineMap id1D = AffineMap::getMultiDimIdentityMap(1, b.getContext());
+  size_t numOperands = flatInputs.size() + flatOutputs.size();
+  SmallVector<Attribute> flatMaps(numOperands, AffineMapAttr::get(id1D));
+  SmallVector<Attribute> flatIterTypes = {
+      StringAttr::get(b.getContext(), "parallel")};
+
+  SmallVector<Type> resultTypes;
+  for (Value out : flatOutputs) {
+    resultTypes.push_back(out.getType());
+  }
+
+  auto newOp = b.create<ComputeOp>(loc, resultTypes, flatInputs, flatOutputs,
+                                   b.getArrayAttr(flatMaps),
+                                   b.getArrayAttr(flatIterTypes));
+
+  // Clone the body region. Block arguments are tile types (unchanged by
+  // flattening). External references (e.g., reserve views from cb_reserve)
+  // are preserved.
+  IRMapping mapping;
+  computeOp.getBody().cloneInto(&newOp.getBody(), mapping);
+
+  // Copy custom attributes (ttl.unroll_factor, ttl.dst_allocation, etc.).
+  // Skip builder-managed attributes.
+  for (NamedAttribute attr : computeOp->getAttrs()) {
+    StringRef name = attr.getName();
+    if (name == "indexing_maps" || name == "iterator_types" ||
+        name == "operandSegmentSizes") {
+      continue;
+    }
+    newOp->setAttr(name, attr.getValue());
+  }
+
+  // Replace original compute (side-effect-only: results → output operands).
+  computeOp.replaceAllUsesWith(computeOp.getOutputs());
+  computeOp.erase();
+
+  LLVM_DEBUG(llvm::dbgs() << "Flattened " << rank << "D compute to 1D ("
+                          << totalTiles << " tiles)\n");
+
+  return newOp;
+}
+
 struct TTLSubblockComputeForDSTPass
     : public impl::TTLSubblockComputeForDSTBase<TTLSubblockComputeForDSTPass> {
   using Base::Base;
@@ -53,7 +190,14 @@ struct TTLSubblockComputeForDSTPass
     });
 
     for (ComputeOp computeOp : opsToTile) {
-      if (failed(tileComputeOp(computeOp))) {
+      // Flatten multi-dimensional computes to 1D if needed.
+      auto flatResult = flattenComputeOp(computeOp);
+      if (failed(flatResult)) {
+        signalPassFailure();
+        return;
+      }
+
+      if (failed(tileComputeOp(*flatResult))) {
         signalPassFailure();
         return;
       }
@@ -73,7 +217,8 @@ private:
       return computeOp.emitOpError("empty iteration domain");
     }
 
-    // Tile the innermost dimension by unroll_factor.
+    // After flattening, the iteration domain is 1D. Tile the single
+    // (innermost) dimension by unroll_factor.
     int64_t tilingDim = iterDomain.size() - 1;
     auto innerSizeAttr =
         dyn_cast<IntegerAttr>(iterDomain[tilingDim].size.dyn_cast<Attribute>());
@@ -83,7 +228,7 @@ private:
     }
     int64_t innerSize = innerSizeAttr.getInt();
 
-    // When unroll_factor == total tiles, no outer loop is needed -- the compute
+    // When unroll_factor >= total tiles, no outer loop is needed -- the compute
     // op already fits in one DST sync cycle.
     int64_t totalTiles = 1;
     for (auto &range : iterDomain) {
@@ -110,7 +255,7 @@ private:
             ValueRange /*iterArgs*/) {
           // Compute offsets and sizes for this tile block.
           SmallVector<OpFoldResult> offsets(iterDomain.size(),
-                                           loopBuilder.getIndexAttr(0));
+                                            loopBuilder.getIndexAttr(0));
           SmallVector<OpFoldResult> sizes;
           for (auto &range : iterDomain) {
             sizes.push_back(range.size);

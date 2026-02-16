@@ -885,8 +885,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           break; // Use first output for total tile count.
         }
 
-        unrollFactor = std::min(unrollFactor,
-                                static_cast<std::uint32_t>(totalTiles));
+        unrollFactor =
+            std::min(unrollFactor, static_cast<std::uint32_t>(totalTiles));
 
         // Only attach if tiling is beneficial (factor > 1).
         if (unrollFactor > 1) {
