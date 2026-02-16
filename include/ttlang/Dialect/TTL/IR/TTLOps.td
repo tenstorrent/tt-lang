@@ -12,6 +12,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
 
@@ -221,7 +222,10 @@ class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
 def TTL_ComputeOp : TTL_Op<"compute", [
     AttrSizedOperandSegments,
     SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<DestinationStyleOpInterface>
+    DeclareOpInterfaceMethods<DestinationStyleOpInterface>,
+    DeclareOpInterfaceMethods<TilingInterface,
+      ["getLoopIteratorTypes", "getIterationDomain",
+       "getTiledImplementation", "getResultTilePosition"]>
   ]> {
   let summary = "Structured tile-level compute operation";
   let description = [{

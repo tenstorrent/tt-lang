@@ -26,6 +26,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLConvertTTLToCompute());
   pm.addPass(createTTLSetComputeKernelConfig());
   pm.addPass(createTTLAssignDST());
+  pm.addPass(createTTLSubblockComputeForDST());
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLLowerToLoops());
   pm.addPass(createTTLAnnotateCBAssociations());

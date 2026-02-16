@@ -1179,6 +1179,15 @@ static void removeTensorDataflowOps(func::FuncOp func) {
     }
   }
 
+  // Erase dead tensor.extract_slice ops (from compute tiling).
+  SmallVector<tensor::ExtractSliceOp> sliceOps;
+  func.walk([&](tensor::ExtractSliceOp op) { sliceOps.push_back(op); });
+  for (auto op : sliceOps) {
+    if (op.getResult().use_empty()) {
+      op.erase();
+    }
+  }
+
   // Erase dead tensor.empty ops.
   SmallVector<tensor::EmptyOp> emptyOps;
   func.walk([&](tensor::EmptyOp op) { emptyOps.push_back(op); });

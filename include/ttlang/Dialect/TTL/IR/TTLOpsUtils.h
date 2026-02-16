@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "llvm/ADT/SetVector.h"
 #include <optional>
 
@@ -55,6 +56,12 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
+
+  // Trace through tensor.extract_slice (from compute tiling).
+  if (auto slice =
+          tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    return getAttachedCB(slice.getSource());
+  }
 
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();

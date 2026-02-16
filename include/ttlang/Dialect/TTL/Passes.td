@@ -102,6 +102,32 @@ def TTLSetComputeKernelConfig
   ];
 }
 
+def TTLSubblockComputeForDST
+    : Pass<"ttl-subblock-compute-for-dst", "::mlir::func::FuncOp"> {
+  let summary = "Partition ttl.compute into DST-sized subblocks";
+  let description = [{
+    Partitions the iteration space of ttl.compute operations into subblocks
+    that fit in the DST register file. Uses the `ttl.unroll_factor` attribute
+    (computed by `ttl-assign-dst`) to determine the subblock size.
+
+    For each ComputeOp with `ttl.unroll_factor > 1`, generates:
+    - An outer `scf.for` loop iterating over subblocks of `unroll_factor` tiles
+    - `tensor.extract_slice` ops to create sub-tensors for each subblock
+    - An inner `ttl.compute` operating on the smaller sub-tensors
+
+    The outer loop is side-effect-only (no iter_args). Stores inside the compute
+    body reference external reserve views that cover the entire output CB.
+
+    This pass uses TilingInterface methods on ComputeOp for clean abstraction.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
 def TTLInsertTileRegsSync
     : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
   let summary = "Insert tile_regs_* synchronization ops around ttl.compute";

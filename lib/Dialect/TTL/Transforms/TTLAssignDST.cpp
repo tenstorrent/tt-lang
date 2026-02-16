@@ -862,6 +862,46 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           }
         }
       }
+
+      //=== Compute and attach unroll_factor ===
+      // unroll_factor = how many tiles can be processed per DST sync cycle.
+      // dstPerIteration = DST registers used per single tile iteration.
+      // unroll_factor = min(floor(capacity / dstPerIteration), totalTiles).
+      if (!dstAssignment.empty()) {
+        std::uint32_t dstPerIteration = maxDstUsed + 1;
+        std::uint32_t unrollFactor = capacity / dstPerIteration;
+
+        // Compute total tiles from the output tensor shape.
+        int64_t totalTiles = 1;
+        for (Value output : computeOp.getOutputs()) {
+          auto outputTy = cast<RankedTensorType>(output.getType());
+          for (int64_t dim : outputTy.getShape()) {
+            if (dim == ShapedType::kDynamic) {
+              totalTiles = 1;
+              break;
+            }
+            totalTiles *= dim;
+          }
+          break; // Use first output for total tile count.
+        }
+
+        unrollFactor = std::min(unrollFactor,
+                                static_cast<std::uint32_t>(totalTiles));
+
+        // Only attach if tiling is beneficial (factor > 1).
+        if (unrollFactor > 1) {
+          computeOp->setAttr(
+              "ttl.unroll_factor",
+              builder.getI64IntegerAttr(static_cast<int64_t>(unrollFactor)));
+        }
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "DST per iteration: " << dstPerIteration
+                       << ", capacity: " << capacity
+                       << ", total tiles: " << totalTiles
+                       << ", unroll_factor: " << unrollFactor << "\n";
+        });
+      }
     });
   }
 };
