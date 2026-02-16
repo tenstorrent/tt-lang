@@ -123,6 +123,13 @@ inline bool isCBOutputOp(mlir::Operation *op) {
   return op->hasTrait<TTLCBOutputTileOpTrait>();
 }
 
+/// Check if an operation reads inputs from CB at runtime, either by static
+/// trait (bcast, copy_tile) or by runtime FPU binary marking.
+inline bool isCBInputOp(mlir::Operation *op) {
+  return op->hasTrait<TTLCBInputTileOpTrait>() ||
+         op->hasAttr(kFPUBinaryAttrName);
+}
+
 /// Check if an operation is any elementwise tensor op (unary or binary).
 inline bool isElementwiseOp(mlir::Operation *op) {
   return isUnaryElementwiseOp(op) || isBinaryElementwiseOp(op);

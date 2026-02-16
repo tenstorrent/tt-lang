@@ -30,15 +30,17 @@
 // --- DST register lifecycle (acquire inside loop) ---
 // CHECK-NEXT:      tile_regs_acquire();
 
-// --- Load tiles into DST (at first use: CB0 first, then CB1) ---
-// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
+// --- Compute linearized CB index for FPU binary add ---
+// CHECK-NEXT:      size_t [[CBOFF_I:.*]] = [[I]] * [[BOUND]];
+// CHECK-NEXT:      size_t [[CBIDX:.*]] = [[CBOFF_I]] + [[J]];
+
+// --- FPU binary add: reads directly from CB0 and CB1 ---
+// CHECK-NEXT:      add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// CHECK-NEXT:      add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[CBIDX]], [[CBIDX]], [[ZERO]]);
+
+// --- Copy tile for mul's second operand (b_tile from CB1) ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
 // CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
-
-// --- Add: DST[0] + DST[1] -> DST[0] ---
-// CHECK-NEXT:      add_binary_tile_init();
-// CHECK-NEXT:      add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
 
 // --- Mul: DST[0] * DST[1] -> DST[0] ---
 // CHECK-NEXT:      mul_binary_tile_init();
@@ -55,12 +57,8 @@
 // CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
 
-// --- Compute CB tile index: i * 2 + j (linearized row-major index) ---
-// CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
-
-// --- Pack DST[0] to output CB2 ---
-// CHECK-NEXT:      pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// --- Pack DST[0] to output CB2 (reuses CB index from add_tiles) ---
+// CHECK-NEXT:      pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CBIDX]]);
 
 // --- Push to signal data ready ---
 // CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);

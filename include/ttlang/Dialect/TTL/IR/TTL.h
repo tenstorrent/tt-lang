@@ -34,6 +34,10 @@ inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";
 inline constexpr llvm::StringRef kDstFullSyncEnAttrName = "dst_full_sync_en";
 
+/// FPU binary attribute: marks add/sub/mul ops that should use the FPU
+/// execution engine (reads from CB) instead of SFPU (reads from DST).
+constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait

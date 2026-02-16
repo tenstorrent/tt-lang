@@ -22,13 +22,12 @@
 // CHECK:         scf.for %[[J:.*]] = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:           %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // CHECK:           ttkernel.tile_regs_acquire
-// Copies at first use (add): CB0 first, then CB1
-// CHECK:           ttkernel.copy_tile_init(%[[CB0_TTK]])
-// CHECK:           ttkernel.copy_tile(%[[CB0_TTK]], %[[LINIDX]],
+// FPU binary add: reads directly from CB0 and CB1, no copy_tile for add
+// CHECK:           ttkernel.add_tiles_init(%[[CB0_TTK]], %[[CB1_TTK]])
+// CHECK:           ttkernel.add_tiles(%[[CB0_TTK]], %[[CB1_TTK]],
+// Copy for mul's second operand (b_tile is block arg, but mul is not FPU binary)
 // CHECK:           ttkernel.copy_tile_init(%[[CB1_TTK]])
 // CHECK:           ttkernel.copy_tile(%[[CB1_TTK]], %[[LINIDX]],
-// CHECK:           ttkernel.add_binary_tile_init()
-// CHECK:           ttkernel.add_binary_tile(
 // CHECK:           ttkernel.mul_binary_tile_init()
 // CHECK:           ttkernel.mul_binary_tile(
 // CHECK:           ttkernel.exp_tile_init()

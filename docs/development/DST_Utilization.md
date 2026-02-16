@@ -38,17 +38,22 @@ file responsible.
 | 5 | `extract_slice` tracing in `getAttachedCB()` | Done | `TTLOpsUtils.h` |
 | 6 | `extract_slice` cleanup in final lowering | Done | `ConvertTTLToTTKernel.cpp` |
 | 7 | Operation category traits | Done | `TTLBase.td`, `TTL.h`, `TTLOps.td`, `TTLOpsUtils.h` |
-| 8 | FPU-aware DST pressure in `unroll_factor` | Not started | `TTLAssignDST.cpp` |
-| 9 | Integrated unrolling in lower-to-loops | Not started | `ConvertTTLComputeToSCF.cpp` |
-| 10 | Subblock-level synchronization insertion | Not started | — |
-| 11 | Operation grouping (by-kind scheduling) | Not started | Design: `DST_Allocation.md` Phase 0 |
-| 12 | Init consolidation | Not started | — |
-| 13 | DST spilling (CB-based) | Not started | Design: `CB_Spilling.md` |
+| 8 | FPU-aware DST pressure in `unroll_factor` | Done | `TTLAssignDST.cpp` |
+| 9 | Pipeline option to gate DST maximization | Not started | `TTLPipelines.h`, `TTLPipelines.cpp` |
+| 10 | Integrated unrolling in lower-to-loops | Not started | `ConvertTTLComputeToSCF.cpp` |
+| 11 | Subblock-level synchronization insertion | Not started | — |
+| 12 | Operation grouping (by-kind scheduling) | Not started | Design: `DST_Allocation.md` Phase 0 |
+| 13 | Init consolidation | Not started | — |
+| 14 | DST spilling (CB-based) | Not started | Design: `CB_Spilling.md` |
 
-Components 1-7 are implemented on the `bnorris/max-dst` branch.
-Components 8-13 are required for the full optimization but have design
-documents only. The remainder of this document describes each component
-and the pipeline that connects them.
+Components 1-8 are implemented on the `bnorris/max-dst` branch.
+Components 9-14 are required for the full optimization but have design
+documents only. Component 9 (pipeline option) is a prerequisite for
+merging — the optimization must be opt-in so the compiler can produce
+correct code without it. The remainder of this document describes each
+component and the pipeline that connects them.
+
+After implementing each component, all tests must pass.
 
 ## Pipeline
 
@@ -72,9 +77,9 @@ convert-ttl-to-compute
 set-compute-kernel-config
 assign-dst                  ← trait-aware unroll_factor [2, 7, 8]
 subblock-compute-for-dst    ← outer loop over subblocks [4]
-lower-to-loops              ← unrolled emit for inner subblock [9]
-schedule-operations         ← group by kind within unrolled body [11]
-insert-tile-regs-sync       ← one sync cycle per subblock [10]
+lower-to-loops              ← unrolled emit for inner subblock [10]
+schedule-operations         ← group by kind within unrolled body [12]
+insert-tile-regs-sync       ← one sync cycle per subblock [11]
 annotate-cb-associations
 convert-ttl-to-ttkernel
 ```
@@ -99,11 +104,12 @@ unrollFactor = min(floor(capacity / dstPerIteration), totalTiles)
 
 The `unroll_factor` is attached as `ttl.unroll_factor` on the ComputeOp.
 
-Current limitation: `dstPerIteration` does not account for FPU-aware
-execution. An FPU binary uses 0 DST input slots (operands come from
-CBs), reducing per-iteration pressure. Without FPU awareness, binary ops
-are treated as needing DST for both inputs, which underestimates the
-achievable subblock size. See component 8.
+FPU-aware execution (component 8, now implemented) reduces
+`dstPerIteration` for FPU-eligible binary ops. An FPU binary uses 0 DST
+input slots (operands come from CBs), so `tile_add %a, %b` where both
+are block args costs 1 DST slot (output only) instead of 3 (2 copies +
+output). This is detected in Phase 0 of `TTLAssignDST` and marked with
+the `ttl.fpu_binary` attribute.
 
 ### 3-4. TilingInterface and Subblocking
 
@@ -190,7 +196,16 @@ No separate annotation pass is required. The allocator in
 3. The combination of trait queries determines `dstPerIteration`, which
    feeds the `unroll_factor` computation.
 
-### 9. Integrated Unrolling in Lower-to-Loops
+### 9. Pipeline Option
+
+DST maximization is an optimization, not required for correctness. The
+compiler must be able to produce valid code without it (per-tile
+synchronization, no subblocking). A `maximize-dst` option in
+`TTLToTTKernelPipelineOptions` gates whether `assign-dst` and
+`subblock-compute-for-dst` run at all. See the [Pipeline Options](#pipeline-options)
+section below for the full specification.
+
+### 10. Integrated Unrolling in Lower-to-Loops
 
 Each inner subblock `ttl.compute` (after subblocking) has exactly
 `unroll_factor` tiles. Creating an scf.for loop only to immediately
@@ -223,13 +238,13 @@ This approach was chosen over a separate unrolling pass (prototyped on
   counter) rather than requiring a post-hoc callback to patch indices.
 - One fewer pass in the pipeline.
 
-### 10. Subblock-Level Synchronization
+### 11. Subblock-Level Synchronization
 
 Current `TTLInsertTileRegsSync` wraps each `ttl.compute` body with
 acquire/commit/wait/release (per-tile when placed before
 lower-to-loops). The target is one sync cycle per subblock.
 
-After `lower-to-loops` emits the unrolled body (component 9), the outer
+After `lower-to-loops` emits the unrolled body (component 10), the outer
 loop body contains N tiles' worth of operations in sequence. Sync
 insertion after lowering wraps the entire unrolled body:
 
@@ -251,10 +266,10 @@ achieved by:
 - Detecting `tile_store` ops and placing them after the wait. The commit
   point is the boundary between the last compute op and the first store.
 - Or, emitting compute ops and store ops in separate groups during
-  lowering (component 9 emits all N compute copies, then all N stores),
+  lowering (component 10 emits all N compute copies, then all N stores),
   so sync insertion can place commit/wait at the group boundary.
 
-### 11. Operation Grouping
+### 12. Operation Grouping
 
 Hand-written tt-metal kernels group operations by kind within the
 unrolled body:
@@ -281,7 +296,7 @@ Grouping provides:
   double-buffering while MATH proceeds to the next subblock.
 - Unpacker efficiency: avoids repeated CB switching within a group.
 
-### 12. Init Consolidation
+### 13. Init Consolidation
 
 Each tt-metal operation kind requires an init call before first use
 (`exp_tile_init`, `add_tiles_init`, `copy_tile_to_dst_init_short`).
@@ -300,7 +315,7 @@ Init lowering is a conversion concern (`convert-ttl-to-ttkernel`), but
 the grouping pass must provide the ordering guarantees that make init
 consolidation valid.
 
-### 13. DST Spilling
+### 14. DST Spilling
 
 When per-iteration DST pressure exceeds capacity (long operation chains
 with many live intermediates), the compiler must insert spill points
@@ -314,41 +329,108 @@ savings from larger subblocks.
 
 ## Current State vs Target
 
-**What works today** (components 1-7, `bnorris/max-dst`):
+**What works today** (components 1-8, `bnorris/max-dst`):
 
-The pipeline computes the correct subblock size, partitions the
-iteration space via TilingInterface, and produces structurally correct
-IR. The inner `ttl.compute` operates on a sub-tensor of
-`unroll_factor` tiles. However, synchronization is still per-tile
+The pipeline computes the correct subblock size (with FPU-aware DST
+pressure), partitions the iteration space via TilingInterface, and
+produces structurally correct IR. The inner `ttl.compute` operates on
+a sub-tensor of `unroll_factor` tiles. FPU binary detection (component
+8) marks `tile_add`/`tile_sub`/`tile_mul` with both block-arg operands
+as `ttl.fpu_binary`, reducing per-iteration DST pressure (0 input
+slots instead of 2). However, synchronization is still per-tile
 (inserted before lower-to-loops), so DST utilization is not yet
 improved over the baseline. The subblocking pass establishes the
-structural foundation that components 9-10 build on. The allocator
+structural foundation that components 10-11 build on. The allocator
 uses trait queries (`isInPlaceOp`, etc.) instead of type-specific
 checks, so new operations only need the correct trait annotations.
 
-**What is needed for actual DST maximization** (components 9-10):
+**What is needed for actual DST maximization** (components 9-11):
 
-`lower-to-loops` must emit unrolled bodies with incrementing DST indices
-(9), and sync must wrap the entire unrolled body (10). These two
-components are the critical path. With just these two additions, the
-compiler produces one sync cycle per subblock, proportionally reducing
-synchronization overhead.
+Component 9 (pipeline option) gates the optimization so the default
+pipeline still produces correct per-tile code. `lower-to-loops` must
+emit unrolled bodies with incrementing DST indices (10), and sync must
+wrap the entire unrolled body (11). These are the critical path. With
+these additions, the compiler produces one sync cycle per subblock,
+proportionally reducing synchronization overhead.
 
-**What improves code quality further** (components 8, 11-12):
+**What improves code quality further** (components 12-13):
 
-FPU-aware execution (8) increases the subblock size for
-FPU-eligible binary operations (0 DST input slots instead of 2).
-Operation grouping (11) and init consolidation (12) match the patterns
+Operation grouping (12) and init consolidation (13) match the patterns
 found in hand-written tt-metal kernels, reducing init overhead and
 enabling pipeline overlap. These are important for performance but not
 on the critical path for correctness of the subblock sync pattern.
 
-**What handles edge cases** (component 13):
+**What handles edge cases** (component 14):
 
 DST spilling is needed only when per-iteration pressure exceeds
 capacity. Most elementwise operations have low pressure (1-2 DST
 registers per iteration). Spilling becomes relevant for long fused
 chains or reduction trees with many live intermediates.
+
+## Pipeline Options
+
+The DST maximization passes are an optimization, not required for
+correctness. The compiler must be able to produce valid code without
+them (per-tile synchronization, no subblocking). This requires a
+pipeline option to gate the optimization passes.
+
+### Proposed Option
+
+Add a `maximize-dst` option to `TTLToTTKernelPipelineOptions`:
+
+```cpp
+Option<bool> maximizeDST{*this, "maximize-dst",
+                         llvm::cl::desc("Enable DST maximization "
+                                        "(subblocking and unrolling)."),
+                         llvm::cl::init(false)};
+```
+
+### Pipeline Behavior
+
+**Without `--maximize-dst`** (default — baseline compilation):
+
+```
+convert-ttl-to-compute
+set-compute-kernel-config
+insert-tile-regs-sync       ← per-tile sync (current behavior)
+lower-to-loops
+annotate-cb-associations
+convert-ttl-to-ttkernel
+```
+
+No `assign-dst`, no `subblock-compute-for-dst`. Each tile gets its own
+acquire/release cycle. This is correct but suboptimal.
+
+**With `--maximize-dst`** (optimized compilation):
+
+```
+convert-ttl-to-compute
+set-compute-kernel-config
+assign-dst                  ← DST allocation + unroll_factor
+subblock-compute-for-dst    ← partition iteration space
+lower-to-loops              ← (future: unrolled emit) [10]
+schedule-operations         ← (future: by-kind grouping) [12]
+insert-tile-regs-sync       ← (future: subblock-level sync) [11]
+annotate-cb-associations
+convert-ttl-to-ttkernel
+```
+
+### Why This Matters
+
+1. **Incremental development**: Each optimization component can be
+   implemented and tested independently. The baseline path always works.
+2. **Debugging**: When investigating miscompiles, disabling DST
+   maximization isolates whether the bug is in the optimization or
+   elsewhere.
+3. **Correctness first**: The baseline path establishes a correct
+   reference. The optimized path must produce equivalent results.
+4. **Testing**: Lit tests can run both paths (`RUN: ... --maximize-dst`
+   vs `RUN: ...`) to verify the optimization preserves semantics.
+
+Currently, `assign-dst` and `subblock-compute-for-dst` always run in
+the pipeline (`TTLPipelines.cpp`). These need to be gated behind the
+option. The individual pass tests (e.g., `ttl-assign-dst`) are
+unaffected — they invoke passes directly, not through the pipeline.
 
 ## Pipeline Ordering Constraints
 

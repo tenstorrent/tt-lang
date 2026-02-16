@@ -19,21 +19,23 @@
 //
 // 'sum' is used by both 'sub' and 'mul'. It must stay live in a register
 // until both are done.
+// The initial add(a, b) is FPU binary because both operands are block args
+// (directly from CB), so no copy_tile is needed for A or B.
 
 // CHECK-LABEL: func.func @diamond_intermediate_reuse
-// CHECK: %[[RES:.*]] = ttl.compute
-// CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[D:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// Copies at first use: A and B before add, C before sub, D before mul
-// CHECK:      %[[TOKA:.*]], %[[TA:.*]] = ttl.copy_tile %[[A]]
-// CHECK:      %[[TOKB:.*]], %[[TB:.*]] = ttl.copy_tile %[[B]]
-// CHECK:      %[[SUM:.*]] = ttl.tile_add %[[TA]], %[[TB]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK:      %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]]
-// CHECK:      %[[DIFF:.*]] = ttl.tile_sub %[[SUM]], %[[TC]] {dst_idx = {{[0-9]+}} : i32}
-// CHECK:      %{{.*}}, %[[TD:.*]] = ttl.copy_tile %[[D]]
-// CHECK:      %[[PROD:.*]] = ttl.tile_mul %[[SUM]], %[[TD]] {dst_idx = 0 : i32}
-// CHECK:      %[[COMBO:.*]] = ttl.tile_add %{{.*}}, %[[PROD]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// SEPARATE:   ttl.tile_add {{.*}} {dst_idx = 3 : i32}
-// CHECK:      ttl.yield %[[COMBO]] : !ttcore.tile<32x32, f32>
+// CHECK:           %[[RES:.*]] = ttl.compute
+// CHECK-NEXT:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[D:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// FPU binary add: both operands are block args, no copy_tile needed
+// CHECK-NEXT:      %[[SUM:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
+// Copy C before sub (SFPU operand needs copy_tile)
+// CHECK:           %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK-NEXT:      %[[DIFF:.*]] = ttl.tile_sub %[[SUM]], %[[TC]] {dst_idx = 1 : i32}
+// Copy D before mul (SFPU operand needs copy_tile); linearized_index intervenes
+// CHECK:           %{{.*}}, %[[TD:.*]] = ttl.copy_tile %[[D]], %{{.*}}, %{{.*}} {dst_idx = 2 : i32}
+// CHECK-NEXT:      %[[PROD:.*]] = ttl.tile_mul %[[SUM]], %[[TD]] {dst_idx = 0 : i32}
+// CHECK-NEXT:      %[[COMBO:.*]] = ttl.tile_add %[[DIFF]], %[[PROD]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 3 : i32}
+// CHECK-NEXT:      ttl.yield %[[COMBO]] : !ttcore.tile<32x32, f32>
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -90,18 +92,22 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map1 = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @intermediate_result_fan_out
-// CHECK: ttl.compute
-// CHECK: ^bb0(%[[ARG0:.*]]: !ttcore.tile<32x32, f32>, %[[ARG1:.*]]: !ttcore.tile<32x32, f32>, %[[ARG2:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// Copies at first use: ARG0 and ARG1 before add, ARG2 before mul
-// CHECK:      %[[COPY0TOK:.*]], %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]]
-// CHECK:      %[[COPY1TOK:.*]], %[[COPY1:.*]] = ttl.copy_tile %[[ARG1]]
-// CHECK:      %[[INTERMEDIATE:.*]] = ttl.tile_add %[[COPY0]], %[[COPY1]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK:      ttl.tile_mul {{.*}} {dst_idx = {{[0-9]+}} : i32}
-// CHECK:      ttl.tile_exp {{.*}} {dst_idx = {{[0-9]+}} : i32}
-// CHECK:      ttl.tile_add {{.*}} {dst_idx = 0 : i32}
-// CHECK:      %[[FINAL:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32}
-// SEPARATE:   ttl.tile_add {{.*}} {dst_idx = 3 : i32}
-// CHECK:      ttl.yield %[[FINAL]]
+// CHECK:           ttl.compute
+// CHECK-NEXT:      ^bb0(%[[ARG0:.*]]: !ttcore.tile<32x32, f32>, %[[ARG1:.*]]: !ttcore.tile<32x32, f32>, %[[ARG2:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// FPU binary add: both operands are block args, no copy_tile needed
+// CHECK-NEXT:      %[[INTERMEDIATE:.*]] = ttl.tile_add %[[ARG0]], %[[ARG1]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
+// copy_dst preserves intermediate for mul (fan-out use)
+// CHECK-NEXT:      %[[COPY_DST1:.*]] = ttl.copy_dst %[[INTERMEDIATE]] {dst_idx = 1 : i32}
+// Copy ARG2 before mul (SFPU operand needs copy_tile)
+// CHECK:           %{{.*}}, %[[DST_TILE:.*]] = ttl.copy_tile %[[ARG2]], %{{.*}}, %{{.*}} {dst_idx = 2 : i32}
+// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[COPY_DST1]], %[[DST_TILE]] {dst_idx = 1 : i32}
+// copy_dst preserves intermediate for exp (fan-out use)
+// CHECK-NEXT:      %[[COPY_DST2:.*]] = ttl.copy_dst %[[INTERMEDIATE]] {dst_idx = 2 : i32}
+// CHECK-NEXT:      %[[EXP:.*]] = ttl.tile_exp %[[COPY_DST2]] {dst_idx = 2 : i32}
+// CHECK-NEXT:      %[[ADD1:.*]] = ttl.tile_add %[[INTERMEDIATE]], %[[MUL]] {dst_idx = 0 : i32}
+// CHECK-NEXT:      %[[FINAL:.*]] = ttl.tile_add %[[ADD1]], %[[EXP]] {dst_idx = 0 : i32}
+// SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 3 : i32}
+// CHECK-NEXT:      ttl.yield %[[FINAL]]
 
 func.func @intermediate_result_fan_out(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>, %i2: tensor<32x32xf32>)
     -> tensor<32x32xf32> {

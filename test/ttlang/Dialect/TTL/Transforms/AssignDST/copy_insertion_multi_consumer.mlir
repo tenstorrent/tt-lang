@@ -18,6 +18,10 @@
 // Expected: copy_dst inserted for first consumer (abs), last consumer (exp) uses original.
 // This prevents abs from clobbering %0 before exp can use it.
 
+// Verify Phase 0 detects FPU binary
+// DEBUG: === Phase 0: FPU Binary Detection ===
+// DEBUG: Phase 0: Marked FPU binary: ttl.tile_mul
+
 // Verify Phase 1 debug output shows copy insertion
 // DEBUG: === Phase 1: Copy Insertion ===
 // DEBUG: Phase 1: Inserted copy_dst for consumer 0
@@ -30,13 +34,13 @@
 // IR-LABEL: func.func @multi_consumer_two_unary
 // IR: ttl.compute
 // IR: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>,
-// IR-DAG: %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %{{.*}}
+// IR-DAG: %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %{{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
 // copy_dst should be inserted for first unary consumer (abs)
 // IR: %[[COPY:.*]] = ttl.copy_dst %[[MUL]]
 // IR: %[[ABS:.*]] = ttl.tile_abs %[[COPY]]
 // Last consumer (exp) uses original
 // IR: %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
-// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 2 : i32}
+// SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
 // IR: ttl.yield %[[ABS]], %[[EXP]]
 
 func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -86,12 +90,13 @@ func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-LABEL: func.func @multi_consumer_all_binary
 // CHECK: ttl.compute
 // CHECK: ^bb0
-// CHECK-DAG: %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %{{.*}}
-// No copy_dst should be inserted - all consumers are binary
-// CHECK-NOT: ttl.copy_dst
-// CHECK: %[[ADD1:.*]] = ttl.tile_add %[[MUL]], %{{.*}}
+// tile_mul is FPU binary (both operands are block args) - no copy_tile for mul operands
+// CHECK: %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %{{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// Third operand (c_tile) needs copy_tile since it's a block arg used by non-FPU-binary ops
+// CHECK: ttl.copy_tile
+// CHECK: %[[ADD1:.*]] = ttl.tile_add %[[MUL]], %{{.*}} {dst_idx = 2 : i32}
 // SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
-// CHECK: %[[SUB:.*]] = ttl.tile_sub %[[MUL]], %{{.*}}
+// CHECK: %[[SUB:.*]] = ttl.tile_sub %[[MUL]], %{{.*}} {dst_idx = 0 : i32}
 // SEPARATE: ttl.tile_sub {{.*}} {dst_idx = 3 : i32}
 // CHECK: ttl.yield
 

@@ -32,13 +32,13 @@ func.func @copy_tile_with_bcast_and_add(
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
 // CHECK: %[[RESULT:.*]] = ttl.compute
-// CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 // Bcast reads from CB - no copy_tile for %A in bcast position.
-// CHECK:      %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 {dst_idx = 0 : i32}
+// CHECK-NEXT:   %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 {dst_idx = 0 : i32}
 // B needs copy_tile for tile_add (DST-reading op).
-// CHECK:      %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[B]]
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK:      ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK:        %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] {dst_idx = 0 : i32}
+// CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -60,6 +60,7 @@ func.func @copy_tile_with_bcast_and_add(
 // Two inputs both consumed by DST-reading binary ops. Both should get
 // copy_tile inserted. This verifies that the CBInputTileOpTrait on copy_tile
 // itself doesn't interfere with copy_tile insertion for block args.
+// FPU binary: both operands are block args, so no copy_tile needed.
 // CHECK-LABEL: func.func @two_inputs_both_need_copy
 func.func @two_inputs_both_need_copy(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -76,12 +77,11 @@ func.func @two_inputs_both_need_copy(
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
 // CHECK: %[[RESULT:.*]] = ttl.compute
-// CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// Both A and B need copy_tile for tile_add (DST-reading op).
-// CHECK:      %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
-// CHECK:      %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = {{[0-9]+}} : i32}
-// CHECK:      ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// FPU binary: reads from CB, no copy_tile needed.
+// CHECK-NOT:  ttl.copy_tile
+// CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK-NEXT: ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)

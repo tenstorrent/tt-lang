@@ -49,29 +49,17 @@ func.func @no_tiling_when_all_fit(%a: tensor<1x8x!ttcore.tile<32x32, f32>>)
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: 1x8 tensor with binary op (2 DST registers per iteration: 1 for
-// copy_tile of lhs, 1 for add result). DST capacity=8, dstPerIteration=2,
-// totalTiles=8. unroll_factor = min(8/2, 8) = 4.
-// After DST subblock partitioning: scf.for with step 4, inner compute on
-// tensor<1x4x...>. No flattening needed (outer dim is 1).
+// Purpose: 1x8 tensor with FPU binary op (1 DST register per iteration since
+// both operands are block args). DST capacity=8, dstPerIteration=1,
+// totalTiles=8. unroll_factor = min(8/1, 8) = 8 = totalTiles -> attribute
+// set but no DST subblock partitioning (all tiles fit in one subblock).
 // ASSIGN-LABEL: func.func @tile_binary_1x8
 // ASSIGN:         ttl.compute
-// ASSIGN-SAME:    ttl.unroll_factor = 4 : i64
+// ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
 // TILED-LABEL:  func.func @tile_binary_1x8
-// TILED:        %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C8:.*]] = arith.constant 8 : index
-// TILED-NEXT:   %[[C4:.*]] = arith.constant 4 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C8]] step %[[C4]] {
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[0, %[[IV]]] [1, 4] [1, 1] : tensor<1x8x!ttcore.tile<32x32, f32>> to tensor<1x4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[0, %[[IV]]] [1, 4] [1, 1] : tensor<1x8x!ttcore.tile<32x32, f32>> to tensor<1x4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[0, %[[IV]]] [1, 4] [1, 1] : tensor<1x8x!ttcore.tile<32x32, f32>> to tensor<1x4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = ttl.compute
-// TILED-SAME:     tensor<1x4x!ttcore.tile<32x32, f32>>
-// TILED:            ttl.tile_add
-// TILED-NEXT:       ttl.tile_store
-// TILED-NEXT:       ttl.yield
-// TILED-NEXT:     } -> tensor<1x4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   }
+// TILED-NOT:    scf.for
+// TILED:        ttl.compute
+// TILED-SAME:   ttl.unroll_factor = 8 : i64
 func.func @tile_binary_1x8(
     %a: tensor<1x8x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x8x!ttcore.tile<32x32, f32>>)
@@ -262,34 +250,19 @@ func.func @flatten_and_subblock_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: 2x4 multi-dimensional tensor with binary op requiring flattening.
-// DST capacity=8, dstPerIteration=2 (copy_tile + add), totalTiles=8.
-// unroll_factor = min(8/2, 8) = 4.
-// Iteration space flattening: tensor<2x4x...> -> tensor<8x...> because
-// outer dim (2) > 1.
-// After DST subblock partitioning: scf.for with step 4, two subblocks of
-// 4 tiles each.
+// Purpose: 2x4 multi-dimensional tensor with FPU binary op (1 DST register
+// per iteration since both operands are block args). DST capacity=8,
+// dstPerIteration=1, totalTiles=8. unroll_factor = min(8/1, 8) = 8 =
+// totalTiles -> attribute set but no DST subblock partitioning.
+// No flattening either (tiling won't happen).
 // ASSIGN-LABEL: func.func @flatten_and_subblock_binary
 // ASSIGN:         ttl.compute
-// ASSIGN-SAME:    ttl.unroll_factor = 4 : i64
+// ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
 // TILED-LABEL:  func.func @flatten_and_subblock_binary
-// TILED:        {{.*}} = tensor.collapse_shape {{.*}} : tensor<2x4x!ttcore.tile<32x32, f32>> into tensor<8x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   {{.*}} = tensor.collapse_shape {{.*}} : tensor<2x4x!ttcore.tile<32x32, f32>> into tensor<8x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   {{.*}} = tensor.collapse_shape {{.*}} : tensor<2x4x!ttcore.tile<32x32, f32>> into tensor<8x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C8:.*]] = arith.constant 8 : index
-// TILED-NEXT:   %[[C4:.*]] = arith.constant 4 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C8]] step %[[C4]] {
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [4] [1] : tensor<8x!ttcore.tile<32x32, f32>> to tensor<4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [4] [1] : tensor<8x!ttcore.tile<32x32, f32>> to tensor<4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [4] [1] : tensor<8x!ttcore.tile<32x32, f32>> to tensor<4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = ttl.compute
-// TILED-SAME:     tensor<4x!ttcore.tile<32x32, f32>>
-// TILED:            ttl.tile_add
-// TILED-NEXT:       ttl.tile_store
-// TILED-NEXT:       ttl.yield
-// TILED-NEXT:     } -> tensor<4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   }
+// TILED-NOT:    tensor.collapse_shape
+// TILED-NOT:    scf.for
+// TILED:        ttl.compute
+// TILED-SAME:   ttl.unroll_factor = 8 : i64
 func.func @flatten_and_subblock_binary(
     %a: tensor<2x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<2x4x!ttcore.tile<32x32, f32>>)

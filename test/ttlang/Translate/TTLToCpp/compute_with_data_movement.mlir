@@ -112,23 +112,16 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK-NEXT:   for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[ONE]]) {
 // CHECK-NEXT:     for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[ONE]]) {
 
-// Compute linear tile index: i * cols + j
-// CHECK:            size_t [[COL_SIZE:.*]] = 2;
-// CHECK-NEXT:       size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
-// CHECK-NEXT:       size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
-
 // Acquire DST registers (inside loop)
-// CHECK-NEXT:       tile_regs_acquire();
+// CHECK:          tile_regs_acquire();
 
-// Load tiles into DST (at first use: CB0 first, then CB1)
-// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
-// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
+// Compute linearized CB index for FPU binary add
+// CHECK-NEXT:       size_t [[CBOFF_I:.*]] = [[I]] * [[BOUND]];
+// CHECK-NEXT:       size_t [[CBIDX:.*]] = [[CBOFF_I]] + [[J]];
 
-// Compute: A + B
-// CHECK-NEXT:       add_binary_tile_init();
-// CHECK-NEXT:       add_binary_tile([[ZERO]], [[ONE]], [[ZERO]]);
+// FPU binary add: reads directly from CB0 and CB1, no copy_tile needed
+// CHECK-NEXT:       add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// CHECK-NEXT:       add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[CBIDX]], [[CBIDX]], [[ZERO]]);
 
 // Compute: exp(A + B)
 // CHECK-NEXT:       exp_tile_init();
@@ -141,12 +134,8 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK-NEXT:       tile_regs_commit();
 // CHECK-NEXT:       tile_regs_wait();
 
-// Compute CB tile index: i * 2 + j (linearized row-major index)
-// CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
-
-// Pack result to output CB2
-// CHECK-NEXT:       pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// Pack result to output CB2 (reuses CB index from add_tiles)
+// CHECK-NEXT:       pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CBIDX]]);
 
 // Push to signal data ready
 // CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);

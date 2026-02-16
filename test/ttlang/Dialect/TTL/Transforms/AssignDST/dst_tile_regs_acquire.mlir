@@ -1,4 +1,5 @@
-// Summary: ensure ttl.acquire_dst is inserted ahead of DST copies in ttl.compute.
+// Summary: ensure DST assignment and tile_regs sync are correctly inserted in ttl.compute.
+// FPU binary ops (both operands from CB block args) get ttl.fpu_binary and need no copy_tile.
 // RUN: ttlang-opt %s --ttl-assign-dst --ttl-insert-tile-regs-sync --canonicalize --cse --split-input-file | FileCheck %s
 
 // Verify no placeholder copies remain in final IR
@@ -6,9 +7,9 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: verify tile_regs_acquire wraps compute, commit/wait are inside before
-// yield, stores are inserted before yield, and release follows the compute. Tile
-// ops consume copied tiles.
+// Purpose: verify tile_regs_acquire wraps compute body, commit/wait/store/release
+// before yield. tile_add with both operands from block args is FPU binary (no
+// copy_tile needed).
 // CHECK-LABEL:   func.func @acquire_insert
 // CHECK-DAG:       %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK-DAG:       %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
@@ -16,12 +17,10 @@
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:        ttl.tile_regs_acquire
-// Copies at first use (tile_add): A then B
-// CHECK:             %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
-// CHECK:             %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
-// CHECK:             %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
-// CHECK:             %[[V:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK:             ttl.tile_regs_commit
+// FPU binary: no copy_tile needed, tile_add operates directly on block args
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
+// CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[ADD]], %[[V]]
 // CHECK-NEXT:        ttl.tile_regs_release
@@ -65,6 +64,7 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: ensure per-compute acquire, commit/wait before yield, store before yield, and release after.
+// Both computes have FPU binary tile_add (no copy_tile).
 // CHECK-LABEL:   func.func @acquire_two_computes
 // CHECK-DAG:       %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK-DAG:       %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
@@ -72,9 +72,9 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[R0:.*]] = ttl.compute
 // CHECK:           ^bb0
 // CHECK:             ttl.tile_regs_acquire
-// CHECK:             %[[SUM0:.*]] = ttl.tile_add
-// CHECK:             %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK:             ttl.tile_regs_commit
+// CHECK-NEXT:        %[[SUM0:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK-NEXT:        %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
+// CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[SUM0]], %[[V0]]
 // CHECK-NEXT:        ttl.tile_regs_release
@@ -86,9 +86,9 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[R1:.*]] = ttl.compute
 // CHECK:           ^bb0
 // CHECK:             ttl.tile_regs_acquire
-// CHECK:             %[[SUM1:.*]] = ttl.tile_add
-// CHECK:             %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK:             ttl.tile_regs_commit
+// CHECK-NEXT:        %[[SUM1:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK-NEXT:        %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
+// CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[SUM1]], %[[V1]]
 // CHECK-NEXT:        ttl.tile_regs_release
@@ -150,20 +150,27 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: op chain add->mul->exp with reg sync: acquire before compute, commit/wait inside compute, store before yield, release after.
+// Purpose: op chain add->mul->exp with reg sync. tile_add is FPU binary (both
+// operands from block args), tile_mul has one operand from DST so needs copy_tile
+// for the other operand (%c_tile), tile_exp is SFPU.
 // CHECK-LABEL:   func.func @acquire_chain_three_ops
 // CHECK-SAME:      (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[CARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// CHECK-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG:       %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK-DAG:       %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB3]])
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
-// CHECK:           ^bb0
-// CHECK:             ttl.tile_regs_acquire
-// CHECK:             %[[ADD:.*]] = ttl.tile_add
-// CHECK:             %[[MUL:.*]] = ttl.tile_mul %[[ADD]],
-// CHECK:             %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
-// CHECK:             %[[V:.*]] = ttl.cb_reserve %[[CB3]]
-// CHECK:             ttl.tile_regs_commit
+// CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        ttl.tile_regs_acquire
+// FPU binary tile_add: no copy_tile needed
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// tile_mul needs copy_tile for %c (not in DST)
+// CHECK-NEXT:        %[[LIN:.*]] = ttl.linearized_index
+// CHECK-NEXT:        %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[C]], %[[LIN]], %[[C1]] {dst_idx = 1 : i32}
+// CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB3]]
+// CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[EXP]], %[[V]]
 // CHECK-NEXT:        ttl.tile_regs_release
@@ -214,6 +221,7 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Purpose: verify init_sfpu is inserted even when tile_regs_acquire is already present.
 // When pre-existing acquire is in parent, it stays there (not moved inside body).
+// tile_add is FPU binary (no copy_tile).
 // CHECK-LABEL:   func.func @init_sfpu_with_preexisting_acquire
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
@@ -221,9 +229,10 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      ttl.tile_regs_acquire
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0
-// CHECK:             %[[ADD:.*]] = ttl.tile_add
-// CHECK:             %[[V:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK:             ttl.tile_regs_commit
+// No tile_regs_acquire inside body (pre-existing one is in parent)
+// CHECK:             %[[ADD:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
+// CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[ADD]], %[[V]]
 // CHECK-NEXT:        ttl.tile_regs_release
@@ -268,7 +277,8 @@ func.func @init_sfpu_with_preexisting_acquire(%a: tensor<2x2x!ttcore.tile<32x32,
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: verify init_sfpu and tile_regs_acquire are found even with ops in between
+// Purpose: verify init_sfpu and tile_regs_acquire are found even with ops in between.
+// tile_add is FPU binary (no copy_tile).
 // CHECK-LABEL:   func.func @ops_between_acquire_and_compute
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}

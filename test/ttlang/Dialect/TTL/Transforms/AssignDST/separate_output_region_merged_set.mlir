@@ -15,6 +15,10 @@
 // After fix: Phase 3 sees %abs (merged with %mul) is yielded, skips the merged set.
 //            Phase 4 allocates the entire merged set to output region.
 
+// Verify Phase 0 detects FPU binary
+// CHECK: === Phase 0: FPU Binary Detection ===
+// CHECK: Phase 0: Marked FPU binary: ttl.tile_mul
+
 // Verify Phase 2 merges tile_mul and tile_abs
 // CHECK: === Phase 2: Build Live Intervals ===
 // CHECK: Phase 2: Merged
@@ -22,32 +26,26 @@
 // CHECK-SAME: tile_abs
 // CHECK: Merged set interval: [0, 2] for 2 values
 
-// Verify Phase 3 only allocates block arguments (inputs)
+// Verify Phase 3 has no allocations (FPU binary block args don't need DST)
 // CHECK: === Phase 3: Linear Scan Allocation ===
-// CHECK: Phase 3: Allocated DST[0]
-// CHECK-SAME: (merged set size: 1)
-// CHECK: Phase 3: Allocated DST[1]
-// CHECK-SAME: (merged set size: 1)
-// Phase 3 should NOT allocate the merged set (size 2) because one member is yielded
-// CHECK-NOT: Phase 3: Allocated DST{{.*}} (merged set size: 2)
-// CHECK: Phase 3 footprint: 2 registers
+// CHECK: Phase 3 footprint: 0 registers
 
-// Verify Phase 4 allocates the merged set to output region (starting at DST[2])
+// Verify Phase 4 allocates the merged set to output region (starting at DST[0])
 // CHECK: === Phase 4: Linear Scan Allocation ===
-// CHECK: Phase 4: Allocated DST[2]
+// CHECK: Phase 4: Allocated DST[0]
 // CHECK-SAME: (merged set size: 2)
 
 // Verify final DST assignment: both merged values get output region index
 // CHECK: === Final DST Assignment ===
-// CHECK-DAG: tile_mul{{.*}} -> DST[2]
-// CHECK-DAG: tile_abs{{.*}} -> DST[2]
-// CHECK: Max DST usage: 3 / 8 registers
+// CHECK-DAG: tile_mul{{.*}} -> DST[0]
+// CHECK-DAG: tile_abs{{.*}} -> DST[0]
+// CHECK: Max DST usage: 1 / 8 registers
 
 // Verify IR has correct dst_idx attributes
 // IR-LABEL: func.func @binary_unary_merged_output
 // IR: ttl.compute
-// IR: ttl.tile_mul {{.*}} {dst_idx = 2 : i32}
-// IR: ttl.tile_abs {{.*}} {dst_idx = 2 : i32}
+// IR: ttl.tile_mul {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// IR: ttl.tile_abs {{.*}} {dst_idx = 0 : i32}
 
 func.func @binary_unary_merged_output(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                       %b: tensor<2x2x!ttcore.tile<32x32, f32>>)

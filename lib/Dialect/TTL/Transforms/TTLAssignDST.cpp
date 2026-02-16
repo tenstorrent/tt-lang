@@ -258,7 +258,7 @@ static SmallVector<Operation *> getSortedConsumers(Value v) {
   SmallVector<Operation *> consumers;
   for (Operation *user : v.getUsers()) {
     // Skip CB-input ops (bcast, reduce, transpose, etc.)
-    if (user->hasTrait<TTLCBInputTileOpTrait>()) {
+    if (isCBInputOp(user)) {
       continue;
     }
     consumers.push_back(user);
@@ -271,8 +271,7 @@ static SmallVector<Operation *> getSortedConsumers(Value v) {
 
 /// Check if any consumer is an in-place operation (overwrites DST input).
 static bool hasInPlaceConsumer(ArrayRef<Operation *> consumers) {
-  return llvm::any_of(consumers,
-                      [](Operation *op) { return isInPlaceOp(op); });
+  return llvm::any_of(consumers, [](Operation *op) { return isInPlaceOp(op); });
 }
 
 /// Phase 1: Insert copy operations for multi-consumer values where any
@@ -385,7 +384,7 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     int64_t currentIdx = opIndex[&op];
 
     // Extend input intervals to this use (skipping ops with CB inputs)
-    if (!op.hasTrait<TTLCBInputTileOpTrait>()) {
+    if (!isCBInputOp(&op)) {
       for (Value operand : op.getOperands()) {
         if (!isTileValue(operand)) {
           continue;
@@ -628,6 +627,25 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
       OpBuilder builder(body, body->begin());
 
+      //=== Phase 0: FPU Binary Detection ===
+      // Mark add/sub/mul ops as FPU-eligible when both operands are block
+      // arguments (CB-backed). FPU reads from CB, needing 0 DST input slots.
+      LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
+      for (Operation &op : *body) {
+        if (!isa<AddTileOp, SubTileOp, MulTileOp>(&op)) {
+          continue;
+        }
+        Value lhs = op.getOperand(0);
+        Value rhs = op.getOperand(1);
+        if (isa<BlockArgument>(lhs) && isa<BlockArgument>(rhs)) {
+          op.setAttr(kFPUBinaryAttrName, builder.getUnitAttr());
+          LLVM_DEBUG({
+            llvm::dbgs() << "Phase 0: Marked FPU binary: " << op.getName()
+                         << "\n";
+          });
+        }
+      }
+
       //=== Phase 1: Copy Insertion ===
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 1: Copy Insertion ===\n");
       insertCopiesForMultiConsumerValues(computeOp, builder);
@@ -791,7 +809,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Copies must be inserted at first use (not block start) to match the
       // liveness intervals that DST allocation was computed against.
       for (Operation &op : *body) {
-        if (op.hasTrait<TTLCBInputTileOpTrait>()) {
+        if (isCBInputOp(&op)) {
           continue;
         }
         for (OpOperand &operand : op.getOpOperands()) {
@@ -811,7 +829,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           arg.replaceUsesWithIf(copy->getDstTile(), [&](OpOperand &use) {
             return use.getOwner() != copy->getOperation() &&
                    !isa<CopyTileOp>(use.getOwner()) &&
-                   !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
+                   !isCBInputOp(use.getOwner());
           });
         }
       }

@@ -8,7 +8,10 @@
 // Purpose: Regression test for DST register allocation bug where operations were
 // dropped in fused chains due to register conflicts. This test verifies that all
 // seven operations in the chain receive dst_idx attributes and appear in output.
-// The chain: add → sub → mul → div → exp → log → relu should all be present.
+// The chain: add -> sub -> mul -> exp -> log -> neg -> sqrt should all be present.
+// The initial add(a, b) is FPU binary because both operands are block args
+// (directly from CB), so no copy_tile is needed for A or B.
+// Only B needs a copy_tile for sub and mul which consume it as an SFPU operand.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -16,15 +19,16 @@
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
 // CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, buffer_factor = 1}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
+// CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK:             ttl.tile_regs_acquire
-// Copies at first use (tile_add): A then B
-// CHECK:             %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
-// CHECK:             %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
-// CHECK:             %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE1]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE1]] {dst_idx = 0 : i32}
+// FPU binary add: both operands are block args, no copy_tile needed
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// Copy B for sub/mul (SFPU operand needs copy_tile)
+// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK-NEXT:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}

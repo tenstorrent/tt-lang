@@ -3,7 +3,9 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: small override capacity (2) and three block args exceed it immediately.
+// Purpose: small override capacity (2) with unary ops on three block args.
+// Unary ops require copy_tile from CB to DST, so three simultaneously live
+// unary results exceed capacity=2.
 func.func @capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %c: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -32,12 +34,14 @@ func.func @capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
-    // Three live inputs at same position exceed capacity=2.
-    // Use all three in first operation so they can't be allocated sequentially.
-    %sum1 = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %sum2 = ttl.tile_add %sum1, %c_tile : !ttcore.tile<32x32, f32>
-    %sum3 = ttl.tile_mul %a_tile, %c_tile : !ttcore.tile<32x32, f32>
-    %final = ttl.tile_add %sum2, %sum3 : !ttcore.tile<32x32, f32>
+    // Three unary ops on separate block args - each needs copy_tile + DST.
+    // All three results are used later, keeping them live simultaneously.
+    %abs_a = ttl.tile_abs %a_tile : !ttcore.tile<32x32, f32>
+    %abs_b = ttl.tile_abs %b_tile : !ttcore.tile<32x32, f32>
+    %abs_c = ttl.tile_abs %c_tile : !ttcore.tile<32x32, f32>
+    // Use all three results to keep them live simultaneously, exceeding capacity=2.
+    %sum1 = ttl.tile_add %abs_a, %abs_b : !ttcore.tile<32x32, f32>
+    %final = ttl.tile_add %sum1, %abs_c : !ttcore.tile<32x32, f32>
     ttl.yield %final : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

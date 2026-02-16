@@ -3,7 +3,9 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Exceed default dst capacity (4).
+// Purpose: Exceed default dst capacity (4) using unary ops on separate block args.
+// Unary ops require copy_tile from CB to DST, so five simultaneously live
+// unary results exceed f32 DST capacity of 4.
 func.func @f32_capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                  %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                  %c: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -43,17 +45,19 @@ func.func @f32_capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %d_tile: !ttcore.tile<32x32, f32>,
        %e_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
-    // Early uses start live intervals for all five inputs.
-    %sum0 = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %sum1 = ttl.tile_add %c_tile, %d_tile : !ttcore.tile<32x32, f32>
-    %sum2 = ttl.tile_add %e_tile, %a_tile : !ttcore.tile<32x32, f32>
-    // Late uses keep all inputs live simultaneously, requiring 5 DST registers.
-    %sum3 = ttl.tile_add %a_tile, %c_tile : !ttcore.tile<32x32, f32>
-    %sum4 = ttl.tile_add %b_tile, %d_tile : !ttcore.tile<32x32, f32>
-    %sum5 = ttl.tile_add %e_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %sum6 = ttl.tile_add %sum3, %sum4 : !ttcore.tile<32x32, f32>
-    %sum7 = ttl.tile_add %sum6, %sum5 : !ttcore.tile<32x32, f32>
-    ttl.yield %sum7 : !ttcore.tile<32x32, f32>
+    // Five unary ops on separate block args - each needs copy_tile + DST.
+    // All five results are used later, keeping them live simultaneously.
+    %abs_a = ttl.tile_abs %a_tile : !ttcore.tile<32x32, f32>
+    %abs_b = ttl.tile_abs %b_tile : !ttcore.tile<32x32, f32>
+    %abs_c = ttl.tile_abs %c_tile : !ttcore.tile<32x32, f32>
+    %abs_d = ttl.tile_abs %d_tile : !ttcore.tile<32x32, f32>
+    %abs_e = ttl.tile_abs %e_tile : !ttcore.tile<32x32, f32>
+    // Use all five results to keep them simultaneously live, exceeding capacity=4.
+    %sum0 = ttl.tile_add %abs_a, %abs_b : !ttcore.tile<32x32, f32>
+    %sum1 = ttl.tile_add %abs_c, %abs_d : !ttcore.tile<32x32, f32>
+    %sum2 = ttl.tile_add %sum0, %abs_e : !ttcore.tile<32x32, f32>
+    %final = ttl.tile_add %sum1, %sum2 : !ttcore.tile<32x32, f32>
+    ttl.yield %final : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
