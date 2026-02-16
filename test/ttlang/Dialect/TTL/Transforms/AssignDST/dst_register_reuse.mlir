@@ -169,9 +169,12 @@ func.func @block_arg_multi_use(%i0: tensor<32x32xf32>, %i1: tensor<32x32xf32>)
 // CHECK-LABEL: func.func @silu_pattern
 // CHECK: ttl.compute
 // CHECK: ^bb0(%[[X:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK:       ttl.copy_tile %[[X]]
-// CHECK:       %[[SIG:.*]] = ttl.tile_sigmoid %{{.*}} {dst_idx =
-// CHECK:       %[[MUL:.*]] = ttl.tile_mul %[[X]], %[[SIG]] {dst_idx =
+// Copy x for sigmoid (Phase 1 placeholder)
+// CHECK:       %{{.*}}, %[[XCOPY_SIG:.*]] = ttl.copy_tile %[[X]]
+// CHECK:       %[[SIG:.*]] = ttl.tile_sigmoid %[[XCOPY_SIG]] {dst_idx =
+// Copy x for mul (remaining block args)
+// CHECK:       %{{.*}}, %[[XCOPY_MUL:.*]] = ttl.copy_tile %[[X]]
+// CHECK:       %[[MUL:.*]] = ttl.tile_mul %[[XCOPY_MUL]], %[[SIG]] {dst_idx =
 // CHECK:       ttl.yield %[[MUL]]
 
 func.func @silu_pattern(%i0: tensor<32x32xf32>) -> tensor<32x32xf32> {

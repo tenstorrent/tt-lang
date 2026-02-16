@@ -22,13 +22,16 @@
 // CHECK-LABEL: func.func @block_arg_three_consumers
 // CHECK: ttl.compute
 // CHECK: ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>,
-// Copies inserted at first non-CB-reading use of each block arg.
+// Copy A for sigmoid (Phase 1 placeholder)
 // CHECK:       %{{.*}}, %[[ACOPY1:.*]] = ttl.copy_tile %[[A]]
 // CHECK:       %[[SIG:.*]] = ttl.tile_sigmoid %[[ACOPY1]] {dst_idx = {{[0-9]+}} : i32}
+// Copy A for exp (Phase 1 placeholder)
 // CHECK:       %{{.*}}, %[[ACOPY2:.*]] = ttl.copy_tile %[[A]]
 // CHECK:       %[[EXP:.*]] = ttl.tile_exp %[[ACOPY2]] {dst_idx = {{[0-9]+}} : i32}
+// Copy A for add (remaining block args), copy B at first use
+// CHECK:       %{{.*}}, %[[ACOPY3:.*]] = ttl.copy_tile %[[A]]
 // CHECK:       %{{.*}}, %[[BCOPY:.*]] = ttl.copy_tile %[[B]]
-// CHECK:       %[[ADD:.*]] = ttl.tile_add %[[A]], %[[BCOPY]] {dst_idx = 0 : i32}
+// CHECK:       %[[ADD:.*]] = ttl.tile_add %[[ACOPY3]], %[[BCOPY]] {dst_idx = 0 : i32}
 // CHECK:       ttl.yield %[[SIG]], %[[EXP]], %[[ADD]]
 
 func.func @block_arg_three_consumers(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -127,11 +130,12 @@ func.func @block_arg_passthrough(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-LABEL: func.func @single_input_multiple_outputs
 // CHECK: ttl.compute
 // CHECK-NEXT: ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>,
-// Single copy of A for exp; sigmoid uses raw block arg
-// CHECK:       %{{.*}}, %[[TILE:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} :
-// CHECK-NOT:   ttl.copy_tile
-// CHECK:       %[[EXP:.*]] = ttl.tile_exp %[[TILE]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-// CHECK:       %[[SIG:.*]] = ttl.tile_sigmoid %[[A]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// Copy A for exp (Phase 1 placeholder)
+// CHECK:       %{{.*}}, %[[TILE_EXP:.*]] = ttl.copy_tile %[[A]]
+// CHECK:       %[[EXP:.*]] = ttl.tile_exp %[[TILE_EXP]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
+// Copy A for sigmoid (remaining block args loop)
+// CHECK:       %{{.*}}, %[[TILE_SIG:.*]] = ttl.copy_tile %[[A]]
+// CHECK:       %[[SIG:.*]] = ttl.tile_sigmoid %[[TILE_SIG]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK:       ttl.yield %[[EXP]], %[[SIG]]
 
 func.func @single_input_multiple_outputs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -428,15 +432,16 @@ func.func @intermediate_reuse_late(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-LABEL: func.func @unary_and_binary_consumers
 // CHECK: ttl.compute
 // CHECK-NEXT: ^bb0(%[[X:[^:]*]]: !ttcore.tile<32x32, f32>, %[[Y:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
-// Copy X for abs (at first use)
+// Copy X for abs (Phase 1 placeholder)
 // CHECK:       %{{.*}}, %[[XCOPY_ABS:.*]] = ttl.copy_tile %[[X]]
 // CHECK:       %[[ABS:.*]] = ttl.tile_abs %[[XCOPY_ABS]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-// Copy X for add, Y copied at first use (tile_add)
+// Copy X for add (Phase 1 placeholder), Y copied at first use
 // CHECK:       %{{.*}}, %[[XCOPY_ADD:.*]] = ttl.copy_tile %[[X]]
 // CHECK:       %{{.*}}, %[[YCOPY:.*]] = ttl.copy_tile %[[Y]]
 // CHECK:       %[[ADD:.*]] = ttl.tile_add %[[XCOPY_ADD]], %[[YCOPY]] {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
-// mul uses raw X and previously-copied Y
-// CHECK:       %[[MUL:.*]] = ttl.tile_mul %[[X]], %[[YCOPY]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// Copy X for mul (remaining block args loop)
+// CHECK:       %{{.*}}, %[[XCOPY_MUL:.*]] = ttl.copy_tile %[[X]]
+// CHECK:       %[[MUL:.*]] = ttl.tile_mul %[[XCOPY_MUL]], %[[YCOPY]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // Combine results
 // CHECK:       %[[TMP:.*]] = ttl.tile_add %[[ABS]], %[[ADD]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
 // CHECK:       %[[RESULT:.*]] = ttl.tile_add %[[TMP]], %[[MUL]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
