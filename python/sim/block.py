@@ -244,9 +244,17 @@ class Block:
                 self.pop()
 
     def pop(self) -> None:
+        if self.cb is None:
+            raise RuntimeError(
+                "Block.pop() is only valid for blocks acquired from a CircularBuffer."
+            )
         self.cb.pop_block()
 
     def push(self) -> None:
+        if self.cb is None:
+            raise RuntimeError(
+                "Block.push() is only valid for blocks acquired from a CircularBuffer."
+            )
         self.cb.push_block()
 
     @classmethod
