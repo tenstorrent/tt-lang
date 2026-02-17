@@ -309,16 +309,16 @@ if __name__ == "__main__":
 
 
 class TestTensorStatsOption:
-    """Test --tensor-stats command-line option."""
+    """Test --show-stats command-line option."""
 
     def test_tensor_stats_flag_basic(self):
-        """Test that --tensor-stats prints statistics."""
+        """Test that --show-stats prints statistics."""
         result = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "sim.ttlang_sim",
-                "--tensor-stats",
+                "--show-stats",
                 "examples/singlecore_matmul.py",
             ],
             cwd=Path(__file__).parent.parent.parent,
@@ -340,7 +340,7 @@ class TestTensorStatsOption:
                 sys.executable,
                 "-m",
                 "sim.ttlang_sim",
-                "--tensor-stats",
+                "--show-stats",
                 "examples/singlecore_matmul.py",
             ],
             cwd=Path(__file__).parent.parent.parent,
@@ -355,7 +355,7 @@ class TestTensorStatsOption:
         assert "out" in result.stdout
 
     def test_tensor_stats_without_flag(self):
-        """Test that statistics are not printed without --tensor-stats flag."""
+        """Test that statistics are not printed without --show-stats flag."""
         result = subprocess.run(
             [sys.executable, "-m", "sim.ttlang_sim", "examples/singlecore_matmul.py"],
             cwd=Path(__file__).parent.parent.parent,
@@ -368,7 +368,7 @@ class TestTensorStatsOption:
         assert "TOTAL" not in result.stdout
 
     def test_tensor_stats_no_data(self):
-        """Test that --tensor-stats handles programs with no tensor operations gracefully."""
+        """Test that --show-stats handles programs with no tensor operations gracefully."""
         script = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
         script.write(
             """
@@ -384,7 +384,7 @@ print("No kernels here!")
                     sys.executable,
                     "-m",
                     "sim.ttlang_sim",
-                    "--tensor-stats",
+                    "--show-stats",
                     str(script_path),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
@@ -399,10 +399,10 @@ print("No kernels here!")
 
 
 class TestSchedulerAlgorithmOption:
-    """Test --schedalg command-line option."""
+    """Test --scheduler command-line option."""
 
     def test_schedalg_option_greedy(self):
-        """Test that --schedalg greedy is accepted."""
+        """Test that --scheduler greedy is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
         script_path = examples_dir / "broadcast_demo.py"
 
@@ -412,7 +412,7 @@ class TestSchedulerAlgorithmOption:
                 "-m",
                 "sim.ttlang_sim",
                 str(script_path),
-                "--schedalg",
+                "--scheduler",
                 "greedy",
             ],
             cwd=Path(__file__).parent.parent.parent,
@@ -423,7 +423,7 @@ class TestSchedulerAlgorithmOption:
         assert result.returncode == 0, f"Script failed: {result.stderr}"
 
     def test_schedalg_option_fair(self):
-        """Test that --schedalg fair is accepted."""
+        """Test that --scheduler fair is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
         script_path = examples_dir / "broadcast_demo.py"
 
@@ -433,7 +433,7 @@ class TestSchedulerAlgorithmOption:
                 "-m",
                 "sim.ttlang_sim",
                 str(script_path),
-                "--schedalg",
+                "--scheduler",
                 "fair",
             ],
             cwd=Path(__file__).parent.parent.parent,
@@ -444,13 +444,13 @@ class TestSchedulerAlgorithmOption:
         assert result.returncode == 0, f"Script failed: {result.stderr}"
 
     def test_schedalg_option_invalid(self):
-        """Test that invalid --schedalg value is rejected."""
+        """Test that invalid --scheduler value is rejected."""
         result = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "sim.ttlang_sim",
-                "--schedalg",
+                "--scheduler",
                 "invalid",
                 "nonexistent.py",
             ],

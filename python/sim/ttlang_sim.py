@@ -177,16 +177,20 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--show-stats",
         "--tensor-stats",
         action="store_true",
+        dest="show_stats",
         help="Print tensor read/write statistics after execution",
     )
 
     parser.add_argument(
+        "--scheduler",
         "--schedalg",
         type=str,
         choices=["greedy", "fair"],
         default="greedy",
+        dest="scheduler",
         help="Scheduler algorithm: 'greedy' (run until block) or 'fair' (least recently run)",
     )
 
@@ -206,13 +210,13 @@ def main() -> None:
     setup_simulator_imports()
 
     # Configure scheduler algorithm if specified
-    if args.schedalg:
+    if args.scheduler:
         from sim.greenlet_scheduler import set_scheduler_algorithm
 
-        set_scheduler_algorithm(args.schedalg)
+        set_scheduler_algorithm(args.scheduler)
 
     # Enable tensor statistics collection if requested
-    if args.tensor_stats:
+    if args.show_stats:
         from sim.stats import enable_stats
 
         enable_stats()
@@ -248,7 +252,7 @@ def main() -> None:
             sys.exit(1)
     finally:
         # Print tensor statistics if enabled
-        if args.tensor_stats:
+        if args.show_stats:
             from sim.stats import print_stats
 
             print_stats()

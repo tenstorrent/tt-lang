@@ -65,17 +65,17 @@ LAUNCHER_MODULE = [PYTHON, "-m", "sim.ttlang_sim"]
 
 
 def run_ttlang_sim_and_capture(
-    script_path: Path, schedalg: str | None = None
+    script_path: Path, scheduler: str | None = None
 ) -> tuple[int, str]:
     """Run ttlang-sim against the provided example script and return (code, output).
 
     Args:
         script_path: Path to the script to run
-        schedalg: Optional scheduler algorithm ('greedy' or 'fair')
+        scheduler: Optional scheduler algorithm ('greedy' or 'fair')
     """
     cmd = LAUNCHER_MODULE + [str(script_path)]
-    if schedalg:
-        cmd += ["--schedalg", schedalg]
+    if scheduler:
+        cmd += ["--scheduler", scheduler]
     proc = subprocess.run(
         cmd,
         cwd=REPO_ROOT,
@@ -115,7 +115,8 @@ def assert_success_output(code: int, out: str) -> None:
         ),
         "singlecore_matmul.py",
         "multicore_matmul.py",
-        "tt_lang_1d_mm.py",
+        "matmul_1d.py",
+        "matmul_1d_mcast.py",
         pytest.param(
             "tutorial/ttnn_base.py",
             marks=requires_ttnn,
@@ -146,10 +147,10 @@ def assert_success_output(code: int, out: str) -> None:
         ),
     ],
 )
-@pytest.mark.parametrize("schedalg", ["greedy", "fair"])
-def test_example_cli(script_name: str, schedalg: str) -> None:
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_example_cli(script_name: str, scheduler: str) -> None:
     """Test simulator examples run successfully via ttlang-sim CLI with both schedulers."""
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name, schedalg)
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name, scheduler)
     assert_success_output(code, out)
 
 
@@ -160,10 +161,10 @@ def test_example_cli(script_name: str, schedalg: str) -> None:
         "multicore_matmul/ttlang/multicore_matmul.py",
     ],
 )
-@pytest.mark.parametrize("schedalg", ["greedy", "fair"])
-def test_metal_example_cli(example_path: str, schedalg: str) -> None:
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_metal_example_cli(example_path: str, scheduler: str) -> None:
     """Test metal examples run successfully via ttlang-sim CLI with both schedulers."""
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path, schedalg)
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path, scheduler)
     assert_success_output(code, out)
 
 
