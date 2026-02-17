@@ -253,3 +253,64 @@ func.func @block_arg_fpu_and_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   } -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
   func.return %result#0, %result#1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+#map = affine_map<(d0, d1) -> (d0, d1)>
+
+// =============================================================================
+// Test 6: Multiple FPU binary ops consumed mid-body (no DST register reuse)
+// =============================================================================
+// Purpose: Two FPU binary ops (add, mul) whose results are consumed mid-body
+// by SFPU binary ops. Without the interval extension fix, both FPU ops would
+// get the same DST index, causing the second to accumulate on the first's
+// residual. Pattern: abs(a) + (a+b) + (a*b).
+// dstPerIteration=3: DST[0] for abs/SFPU chain, DST[1] for FPU add,
+// DST[2] for FPU mul. unroll_factor=2.
+
+// CHECK-LABEL: func.func @fpu_binary_no_dst_reuse
+// CHECK:           ttl.compute
+// CHECK-SAME:      ttl.unroll_factor = 2
+// CHECK-NEXT:      ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
+// copy_tile A for abs (SFPU unary)
+// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} {dst_idx = 0 : i32}
+// CHECK-NEXT:      %[[ABS:.*]] = ttl.tile_abs %[[ATILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// FPU add: reads from CB, gets DST[1]
+// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 1 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
+// SFPU binary: abs + add -> DST[0]
+// CHECK-NEXT:      %[[SUM1:.*]] = ttl.tile_add %[[ABS]], %[[ADD]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// FPU mul: reads from CB, gets DST[2] (NOT DST[1] - no reuse!)
+// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[A]], %[[B]] {dst_idx = 2 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
+// SFPU binary: sum1 + mul -> DST[0]
+// CHECK-NEXT:      %[[SUM2:.*]] = ttl.tile_add %[[SUM1]], %[[MUL]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:      ttl.yield %[[SUM2]] : !ttcore.tile<32x32, f32>
+
+func.func @fpu_binary_no_dst_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                    %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb2 = ttl.bind_cb {cb_index = 16, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %result = ttl.compute
+      ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    // SFPU unary: abs(a) -> needs copy_tile
+    %abs = ttl.tile_abs %a_tile : !ttcore.tile<32x32, f32>
+    // FPU binary: a + b (both block args, reads from CB)
+    %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    // SFPU binary: abs(a) + (a+b) - consumes add result
+    %sum1 = ttl.tile_add %abs, %add : !ttcore.tile<32x32, f32>
+    // FPU binary: a * b (both block args) - must NOT reuse add's DST register
+    %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    // SFPU binary: result + (a*b)
+    %sum2 = ttl.tile_add %sum1, %mul : !ttcore.tile<32x32, f32>
+    ttl.yield %sum2 : !ttcore.tile<32x32, f32>
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
