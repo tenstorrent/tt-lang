@@ -492,6 +492,56 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     });
   }
 
+  // Prevent DST register reuse between FPU binary ops.
+  // FPU binary ops (add_tiles, mul_tiles, sub_tiles) accumulate into their
+  // output DST register: result = old_DST_value + computed_value. If two FPU
+  // binary ops share the same DST output index, the second reads the first's
+  // residual and produces a corrupted result. tt-mlir's D2M dialect solves
+  // this by never allowing in-place DST reuse for binary tile-tile ops
+  // (getDstRegInPlace() = false). We achieve the same by extending FPU binary
+  // result intervals so the linear scan allocator assigns distinct registers.
+  //
+  // TODO: This wastes DST capacity. The proper fix is to pass
+  // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
+  // tt-mlir's TTKernel dialect (currently has a FIXME in TTKernelOps.td).
+  // With explicit overwrite mode, DST reuse between FPU binary ops would be
+  // safe and this interval extension could be removed.
+  {
+    SmallVector<int64_t> fpuBinaryStarts;
+    for (Operation &op : *body) {
+      if (op.hasAttr(kFPUBinaryAttrName)) {
+        fpuBinaryStarts.push_back(opIndex[&op]);
+      }
+    }
+
+    if (fpuBinaryStarts.size() > 1) {
+      int64_t lastFPUStart = *llvm::max_element(fpuBinaryStarts);
+      for (Operation &op : *body) {
+        if (!op.hasAttr(kFPUBinaryAttrName)) {
+          continue;
+        }
+        for (Value result : op.getResults()) {
+          if (!isTileValue(result) || !intervals.count(result)) {
+            continue;
+          }
+          // Use lastFPUStart + 1 because the linear scan expires intervals
+          // with end <= start, so end must be strictly greater than the last
+          // FPU binary op's start index to remain active during allocation.
+          if (intervals[result].end <= lastFPUStart) {
+            LLVM_DEBUG({
+              llvm::dbgs() << "Phase 2: Extended FPU binary interval from ["
+                           << intervals[result].start << ", "
+                           << intervals[result].end << "] to ["
+                           << intervals[result].start << ", "
+                           << (lastFPUStart + 1) << "] to prevent DST reuse\n";
+            });
+            intervals[result].end = lastFPUStart + 1;
+          }
+        }
+      }
+    }
+  }
+
   LLVM_DEBUG({
     llvm::dbgs() << "=== Live Intervals ===\n";
     for (auto &[value, interval] : intervals) {
@@ -808,7 +858,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Copies must be inserted at first use (not block start) to match the
       // liveness intervals that DST allocation was computed against.
       for (Operation &op : *body) {
-        if (isCBInputOp(&op)|| isa<CopyTileOp>(&op)) {
+        if (isCBInputOp(&op) || isa<CopyTileOp>(&op)) {
           continue;
         }
         for (OpOperand &operand : op.getOpOperands()) {
