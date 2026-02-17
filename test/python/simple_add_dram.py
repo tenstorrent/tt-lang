@@ -143,10 +143,10 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
-# DST register lifecycle and add
+# DST register lifecycle and FPU add (both operands from CBs)
 # CHECK-CPP: tile_regs_acquire();
-# CHECK-CPP: add_binary_tile_init();
-# CHECK-CPP: add_binary_tile(
+# CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-CPP: tile_regs_commit();
 # CHECK-CPP: tile_regs_wait();
 # CHECK-CPP: pack_tile<true>(

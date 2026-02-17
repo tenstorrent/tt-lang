@@ -115,8 +115,9 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP: for (size_t {{.*}} < {{.*}};
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
-# CHECK-CPP: add_binary_tile_init();
-# CHECK-CPP: add_binary_tile(
+# FPU add: accum (from out_cb) + r (from rhs_cb), both from CBs
+# CHECK-CPP: add_tiles_init(
+# CHECK-CPP: add_tiles(
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(2),
 

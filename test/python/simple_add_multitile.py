@@ -103,7 +103,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: void kernel_main()
 
 # Loop bound constant for 2x2 tile grid
-# CHECK-CPP: size_t [[BOUND:v[0-9]+]] = 2;
+# CHECK-CPP: size_t [[C2:v[0-9]+]] = 2;
 
 # CB operations before loops
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
@@ -111,21 +111,16 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
 # Nested loops for 2x2 tile grid
-# CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[BOUND]]; [[I]] += {{.*}}) {
-# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
+# CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[C2]]; [[I]] += {{.*}}) {
+# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[C2]]; [[J]] += {{.*}}) {
 
-# Linearized index calculation: i * 2 + j
-# CHECK-CPP: size_t [[COLS:v[0-9]+]] = 2;
-# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
+# Linearized index calculation: i * 2 + j (reuses C2 as stride)
+# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[C2]];
 # CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
 
-# Copy tiles using linearized index (at first use: CB0 then CB1)
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[LIN_IDX]],
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[LIN_IDX]],
-
-# Add operation
-# CHECK-CPP: add_binary_tile_init();
-# CHECK-CPP: add_binary_tile(
+# FPU add using linearized index (both operands read directly from CBs)
+# CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[LIN_IDX]], [[LIN_IDX]],
 
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),

@@ -145,10 +145,10 @@ def add_with_kernel(lhs, rhs, out):
 # Reserve output
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
-# Add operation
+# FPU add (both operands from CBs)
 # CHECK-CPP: tile_regs_acquire();
-# CHECK-CPP: add_binary_tile_init();
-# CHECK-CPP: add_binary_tile(
+# CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-CPP: tile_regs_commit();
 # CHECK-CPP: tile_regs_wait();
 # CHECK-CPP: pack_tile<true>(
