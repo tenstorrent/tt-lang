@@ -5,15 +5,13 @@ This document traces the lowering of a 2x2 multi-tile add operation from Python 
 ## Python Input
 
 ```python
-from ttl import ttl, make_circular_buffer_like
-from ttl.ttl_api import Program
-from ttl.operators import copy
+import ttl
 
 @ttl.kernel(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
-    lhs_cb = make_circular_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
-    rhs_cb = make_circular_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
-    out_cb = make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
+    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
@@ -27,8 +25,6 @@ def add_multitile_kernel(lhs, rhs, out):
         out_cb.push()
 
     # ...data movement...
-
-    return Program(add_compute, dm_read, dm_write)(lhs, rhs, out)
 ```
 
 ## Pass Pipeline

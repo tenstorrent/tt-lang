@@ -9,7 +9,6 @@ import pytest
 import torch
 
 import ttl
-from ttl import Program, make_circular_buffer_like, copy
 
 from utils.correctness import assert_with_ulp
 
@@ -25,9 +24,13 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
     buffering_factor = 2
-    a_cb = make_circular_buffer_like(a, shape=(1, 1), buffer_factor=buffering_factor)
-    b_cb = make_circular_buffer_like(b, shape=(1, 1), buffer_factor=buffering_factor)
-    out_cb = make_circular_buffer_like(
+    a_cb = ttl.make_circular_buffer_like(
+        a, shape=(1, 1), buffer_factor=buffering_factor
+    )
+    b_cb = ttl.make_circular_buffer_like(
+        b, shape=(1, 1), buffer_factor=buffering_factor
+    )
+    out_cb = ttl.make_circular_buffer_like(
         out, shape=(1, 1), buffer_factor=buffering_factor
     )
 
@@ -46,8 +49,8 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             for n in range(Nt):
                 for k in range(Kt):
                     with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                        a_wr = copy(a[m, k], a_blk)
-                        b_wr = copy(b[k, n], b_blk)
+                        a_wr = ttl.copy(a[m, k], a_blk)
+                        b_wr = ttl.copy(b[k, n], b_blk)
                         a_wr.wait()
                         b_wr.wait()
 
@@ -56,7 +59,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         for m in range(Mt):
             for n in range(Nt):
                 with out_cb.wait() as out_blk:
-                    out_wr = copy(out_blk, out[m, n])
+                    out_wr = ttl.copy(out_blk, out[m, n])
                     out_wr.wait()
 
 

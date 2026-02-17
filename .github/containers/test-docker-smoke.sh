@@ -38,7 +38,7 @@ echo ""
 # Test 2: ttl module
 echo "Test 2: ttl module"
 run_test "ttl.ttl works" "ttl.ttl import failed" \
-    sudo docker run --rm tt-lang-dist-ubuntu-22-04:latest python -c "from ttl import ttl"
+    sudo docker run --rm tt-lang-dist-ubuntu-22-04:latest python -c "import ttl"
 echo ""
 
 # Test 3: Hardware example (if available)

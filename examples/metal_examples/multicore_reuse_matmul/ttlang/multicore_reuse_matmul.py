@@ -4,8 +4,10 @@
 import pytest
 import torch
 import ttnn
-from metal_examples.utils import assert_with_ulp
-from ttl import Program, copy, core, make_circular_buffer_like
+
+import ttl
+from utils.block_allocation import get_large_matmul_params
+from utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(13, 10))
@@ -41,14 +43,14 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
     ), "number of total blocks must be less than or equal to num cores"
 
     buffering_factor = 2
-    a_cb = make_circular_buffer_like(
+    a_cb = ttl.make_circular_buffer_like(
         a, shape=(per_core_M, K_block_size), buffer_factor=buffering_factor
     )
-    b_cb = make_circular_buffer_like(
+    b_cb = ttl.make_circular_buffer_like(
         b, shape=(K_block_size, per_core_N), buffer_factor=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_cb = make_circular_buffer_like(
+    out_cb = ttl.make_circular_buffer_like(
         out, shape=(per_core_M, per_core_N), buffer_factor=1
     )
 
@@ -75,11 +77,11 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
             for block in range(Kt // K_block_size):
                 k = block * K_block_size
                 with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                    a_wr = copy(
+                    a_wr = ttl.copy(
                         a[out_row : (out_row + per_core_M), k : (k + K_block_size)],
                         a_blk,
                     )
-                    b_wr = copy(
+                    b_wr = ttl.copy(
                         b[k : (k + K_block_size), out_col : (out_col + per_core_N)],
                         b_blk,
                     )
@@ -94,7 +96,7 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         out_col = per_core_N * core_x
         if (out_row < Mt) and (out_col < Nt):
             with out_cb.wait() as out_blk:
-                out_wr = copy(
+                out_wr = ttl.copy(
                     out_blk,
                     out[
                         out_row : (out_row + per_core_M),
@@ -138,10 +140,14 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert num_cores_y >= Mt
 
     buffering_factor = 2
-    a_cb = make_circular_buffer_like(a, shape=(1, 1), buffer_factor=buffering_factor)
-    b_cb = make_circular_buffer_like(b, shape=(1, 1), buffer_factor=buffering_factor)
+    a_cb = ttl.make_circular_buffer_like(
+        a, shape=(1, 1), buffer_factor=buffering_factor
+    )
+    b_cb = ttl.make_circular_buffer_like(
+        b, shape=(1, 1), buffer_factor=buffering_factor
+    )
     # non buffered output, matching metal implementation
-    out_cb = make_circular_buffer_like(out, shape=(1, 1), buffer_factor=1)
+    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=1)
 
     @ttl.compute()
     def mm_compute():
@@ -162,8 +168,8 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         if (out_row < Mt) and (out_col < Nt):
             for k in range(Kt):
                 with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
-                    a_wr = copy(a[out_row, k], a_blk)
-                    b_wr = copy(b[k, out_col], b_blk)
+                    a_wr = ttl.copy(a[out_row, k], a_blk)
+                    b_wr = ttl.copy(b[k, out_col], b_blk)
                     a_wr.wait()
                     b_wr.wait()
 
@@ -175,7 +181,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out_col = core_x
         if (out_row < Mt) and (out_col < Nt):
             with out_cb.wait() as out_blk:
-                out_wr = copy(
+                out_wr = ttl.copy(
                     out_blk,
                     out[out_row, out_col],
                 )
