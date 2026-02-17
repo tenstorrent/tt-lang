@@ -16,7 +16,7 @@ The target output for N tiles in one cycle is:
 acquire
 for i in 0..N: unpack + compute → DST[i]   // fill DST
 commit; wait
-for i in 0..N: pack DST[i] → CB            // drain DST
+pack_tile_block(DST[0..N-1] → CB)           // drain DST
 release
 ```
 
@@ -110,6 +110,33 @@ input slots (operands come from CBs), so `tile_add %a, %b` where both
 are block args costs 1 DST slot (output only) instead of 3 (2 copies +
 output). This is detected in Phase 0 of `TTLAssignDST` and marked with
 the `ttl.fpu_binary` attribute.
+
+**FPU binary DST register reuse prevention**: When multiple FPU binary
+ops appear in the same compute body, their output DST registers must be
+distinct. FPU binary ops (`add_tiles`, `sub_tiles`, `mul_tiles`)
+accumulate into their output DST register — the result includes the
+previous DST contents. If two FPU binary ops share a DST index, the
+second reads the first's residual and produces a corrupted result.
+tt-mlir's D2M dialect prevents this via `getDstRegInPlace() = false` for
+binary tile-tile ops (see `D2MOpsInterfaces.td` and
+`InsertDstRegisterAccess.cpp`). `TTLAssignDST` achieves the same effect
+by extending FPU binary result intervals in Phase 2 so the linear scan
+allocator assigns distinct registers. The interval end is set to
+`lastFPUStart + 1` (strictly greater than the last FPU binary op's start
+index) because the expiry condition uses `<=`.
+
+This is tested in `dst_fpu_binary.mlir` Test 6
+(`@fpu_binary_no_dst_reuse`), which verifies that the pattern
+`abs(a) + (a+b) + (a*b)` assigns different DST indices to the FPU
+`tile_add` and `tile_mul`.
+
+> **TODO**: The proper long-term fix is to pass `acc_to_dest=false`
+> explicitly to FPU init functions in tt-mlir's TTKernel dialect
+> (`AddTilesInitOp`, `SubTilesInitOp`, `MulTilesInitOp` — currently
+> have a `FIXME` in `TTKernelOps.td` where the parameter is commented
+> out). With explicit overwrite mode, DST reuse between FPU binary ops
+> would be safe and the interval extension could be removed, improving
+> DST utilization.
 
 ### 3-4. TilingInterface and Subblocking
 
@@ -253,7 +280,7 @@ scf.for %iv = ... {   // outer loop over subblocks
   acquire
   // N unrolled copies: copy/compute → DST[0..N-1]
   commit; wait
-  // N stores: pack DST[0..N-1]
+  // pack_tile_block(DST[0..N-1] → CB)
   release
 }
 ```
@@ -337,10 +364,12 @@ produces structurally correct IR. The inner `ttl.compute` operates on
 a sub-tensor of `unroll_factor` tiles. FPU binary detection (component
 8) marks `tile_add`/`tile_sub`/`tile_mul` with both block-arg operands
 as `ttl.fpu_binary`, reducing per-iteration DST pressure (0 input
-slots instead of 2). However, synchronization is still per-tile
-(inserted before lower-to-loops), so DST utilization is not yet
-improved over the baseline. The subblocking pass establishes the
-structural foundation that components 10-11 build on. The allocator
+slots instead of 2). The allocator also prevents DST register reuse
+between FPU binary ops (see component 1-2 details) to avoid
+accumulation-related numerical corruption. However, synchronization is
+still per-tile (inserted before lower-to-loops), so DST utilization is
+not yet improved over the baseline. The subblocking pass establishes
+the structural foundation that components 10-11 build on. The allocator
 uses trait queries (`isInPlaceOp`, etc.) instead of type-specific
 checks, so new operations only need the correct trait annotations.
 
@@ -450,12 +479,8 @@ unaffected — they invoke passes directly, not through the pipeline.
 
 ## Related Documents
 
-- `DST_Allocation.md`: DST register allocation algorithm (phases 0-4),
+- `docs/development/DST_Allocation.md`: DST register allocation algorithm (phases 0-4),
   worked examples, operation category traits.
 - `MaximizingDSTUtilization.md`: FPU-aware unrolling design, execution
   engine summary, per-case analysis (SFPU unary, SFPU binary, FPU+SFPU
   chains, dest_reuse), target C++ code generation.
-- `LoopOptimizations.md`: Full loop optimization pipeline design,
-  hardware background, synchronization model, spilling, compilation
-  modes.
-- `CB_Spilling.md`: DST spilling via temporary circular buffers.
