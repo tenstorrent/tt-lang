@@ -7,7 +7,6 @@ import ttnn
 from utils.correctness import assert_with_ulp
 import ttl
 from ttl import Program, copy, core, make_circular_buffer_like, Pipe, PipeNet
-import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -159,39 +158,6 @@ def matmul_1d(
                         ],
                     )
                     out_wr.wait()
-
-
-def visualize_diff_heatmap(diff_tensor, test_name="", save_path=None):
-    """
-    Visualize the difference tensor as a heatmap.
-
-    Args:
-        diff_tensor: torch.Tensor containing the absolute differences
-        test_name: string name for the test case
-        save_path: optional path to save the image (e.g., 'diff_heatmap.png')
-    """
-    plt.figure(figsize=(12, 8))
-
-    # Convert to numpy for visualization (convert bfloat16 to float32 first)
-    diff_np = diff_tensor.float().cpu().numpy()
-
-    # Create heatmap
-    im = plt.imshow(diff_np, cmap="hot", interpolation="nearest", aspect="auto")
-    plt.colorbar(im, label="Absolute Difference")
-    plt.title(
-        f"Difference Heatmap: {test_name}\nMax diff: {torch.max(diff_tensor):.6f}"
-    )
-    plt.xlabel("Column Index")
-    plt.ylabel("Row Index")
-
-    # Add grid for better readability
-    plt.grid(False)
-
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Heatmap saved to {save_path}")
-
-    plt.show()
 
 
 def test_matmul_1d(M, N, K, block_h, block_w, block_inner_dim, blocks_per_core_n):
