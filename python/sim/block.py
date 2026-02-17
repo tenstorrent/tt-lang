@@ -97,8 +97,8 @@ class ExpectedOp(Enum):
     COPY_SRC = auto()  # Expect copy(blk, ...) - block as source
     COPY_DST = auto()  # Expect copy(..., blk) - block as destination
     TX_WAIT = auto()  # Expect tx.wait()
-    PUSH = auto()  # Expect cb.push()
-    POP = auto()  # Expect cb.pop()
+    PUSH = auto()  # Expect blk.push()
+    POP = auto()  # Expect blk.pop()
     STORE = (
         auto()
     )  # Expect blk.store(...) - block as destination, regular store (acc=False)
@@ -239,9 +239,15 @@ class Block:
         if exc_type is None and self.cb is not None:
             # Block came from CB - perform appropriate cleanup
             if self._acquisition == BlockAcquisition.RESERVE:
-                self.cb.push()
+                self.push()
             elif self._acquisition == BlockAcquisition.WAIT:
-                self.cb.pop()
+                self.pop()
+
+    def pop(self) -> None:
+        self.cb.pop_block()
+
+    def push(self) -> None:
+        self.cb.push_block()
 
     @classmethod
     def from_list(
@@ -767,7 +773,7 @@ class Block:
             self._buf[(self._span.start + idx) % self._capacity] = value
 
     @validate_call
-    def pop(self, idx: Index) -> None:
+    def pop_idx(self, idx: Index) -> None:
         if not (0 <= idx < self._span.length):
             raise IndexError(idx)
         value = self._buf[(self._span.start + idx) % self._capacity]

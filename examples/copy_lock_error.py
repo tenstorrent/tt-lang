@@ -65,9 +65,9 @@ def eltwise_add(
                 out_block.store(result)
 
                 # finalize push, this advances the cb pointers, the writing happened at the line above
-                out_cb.push()
-                a_in_cb.pop()
-                b_in_cb.pop()
+                out_block.push()
+                a_block.pop()
+                b_block.pop()
 
     @ttl.datamovement()
     def dm0():
@@ -87,11 +87,11 @@ def eltwise_add(
                 # INTENTIONAL ERROR: Attempting to write to a_block before tx.wait()
                 a_block.store([None, None])  # This should trigger a copy lock error
                 tx.wait()
-                a_in_cb.push()
+                a_block.push()
                 b_block = b_in_cb.reserve()
                 tx = ttl.copy(b_in[row_slice, col_slice], b_block)
                 tx.wait()
-                b_in_cb.push()
+                b_block.push()
 
     @ttl.datamovement()
     def dm1():
@@ -111,7 +111,7 @@ def eltwise_add(
                 tx = ttl.copy(out_block, out[row_slice, col_slice])
 
                 tx.wait()
-                out_cb.pop()
+                out_block.pop()
 
 
 def main() -> None:

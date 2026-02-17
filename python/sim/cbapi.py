@@ -204,7 +204,7 @@ class CBAPI:
                 thread_type,
             )
             for i in range(len(view)):
-                view.pop(i)
+                view.pop_idx(i)
             cb_state.head = (cb_state.head + num_tiles) % cb_state.cap
             cb_state.visible -= num_tiles
             cb_state.last_wait_target = 0

@@ -41,7 +41,7 @@ def add_with_kernel(lhs, rhs, out):
         with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
             result = l + r
             o.store(result)
-        # Automatic: out_cb.push(), rhs_cb.pop(), lhs_cb.pop() (reverse order)
+        # Automatic: o.push(), r.pop(), l.pop() (reverse order)
 
     @ttl.datamovement()
     def dm_read():
@@ -49,12 +49,12 @@ def add_with_kernel(lhs, rhs, out):
         with lhs_cb.reserve() as lhs_blk:
             tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
-        # Automatic: lhs_cb.push()
+        # Automatic: lhs_blk.push()
 
         with rhs_cb.reserve() as rhs_blk:
             tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
-        # Automatic: rhs_cb.push()
+        # Automatic: rhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -62,7 +62,7 @@ def add_with_kernel(lhs, rhs, out):
         with out_cb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
-        # Automatic: out_cb.pop()
+        # Automatic: out_blk.pop()
 
 
 # =============================================================================

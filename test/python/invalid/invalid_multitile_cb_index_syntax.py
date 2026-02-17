@@ -32,8 +32,8 @@ def invalid_multitile_index_kernel(inp, out):
         x = inp_cb.wait()
         o = out_cb.reserve()
         o.store(x)
-        inp_cb.pop()
-        out_cb.push()
+        x.pop()
+        o.push()
 
     @ttl.datamovement()
     def dm_read():
@@ -41,14 +41,14 @@ def invalid_multitile_index_kernel(inp, out):
         # INVALID: using index syntax with 2x2 CB
         tx = ttl.copy(inp[0, 0], inp_blk)
         tx.wait()
-        inp_cb.push()
+        inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_cb.wait()
         tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
-        out_cb.pop()
+        out_blk.pop()
 
 
 if __name__ == "__main__":
