@@ -396,3 +396,94 @@ print("No kernels here!")
             assert "No statistics collected" in result.stdout
         finally:
             script_path.unlink()
+
+
+class TestSchedulerAlgorithmOption:
+    """Test --schedalg command-line option."""
+
+    def test_schedalg_option_greedy(self):
+        """Test that --schedalg greedy is accepted."""
+        examples_dir = Path(__file__).parent.parent.parent / "examples"
+        script_path = examples_dir / "broadcast_demo.py"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                str(script_path),
+                "--schedalg",
+                "greedy",
+            ],
+            cwd=Path(__file__).parent.parent.parent,
+            env={"PYTHONPATH": "python"},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+
+    def test_schedalg_option_fair(self):
+        """Test that --schedalg fair is accepted."""
+        examples_dir = Path(__file__).parent.parent.parent / "examples"
+        script_path = examples_dir / "broadcast_demo.py"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                str(script_path),
+                "--schedalg",
+                "fair",
+            ],
+            cwd=Path(__file__).parent.parent.parent,
+            env={"PYTHONPATH": "python"},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+
+    def test_schedalg_option_invalid(self):
+        """Test that invalid --schedalg value is rejected."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                "--schedalg",
+                "invalid",
+                "nonexistent.py",
+            ],
+            cwd=Path(__file__).parent.parent.parent,
+            env={"PYTHONPATH": "python"},
+            capture_output=True,
+            text=True,
+        )
+        # Should fail due to invalid choice
+        assert result.returncode != 0
+        assert "invalid choice" in result.stderr
+
+    def test_schedalg_default_is_greedy(self):
+        """Test that default scheduling algorithm is greedy when not specified."""
+        # Create a temporary script that checks the algorithm
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            script_path = Path(f.name)
+            f.write(
+                """
+from python.sim.greenlet_scheduler import get_scheduler_algorithm
+print(f"Algorithm: {get_scheduler_algorithm()}")
+"""
+            )
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", str(script_path)],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"Script failed: {result.stderr}"
+            assert "Algorithm: greedy" in result.stdout
+        finally:
+            script_path.unlink()

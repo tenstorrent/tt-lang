@@ -16,6 +16,27 @@ from greenlet import greenlet
 from .block import ThreadType
 
 
+# Global scheduler algorithm selection
+_scheduler_algorithm: str = "greedy"
+
+
+def set_scheduler_algorithm(algorithm: str) -> None:
+    """Set the scheduling algorithm.
+
+    Args:
+        algorithm: Either 'greedy' or 'fair'
+    """
+    global _scheduler_algorithm
+    if algorithm not in ("greedy", "fair"):
+        raise ValueError(f"Invalid scheduler algorithm: {algorithm}")
+    _scheduler_algorithm = algorithm
+
+
+def get_scheduler_algorithm() -> str:
+    """Get the current scheduling algorithm."""
+    return _scheduler_algorithm
+
+
 def _get_ttlang_compile_error() -> Any:
     """Lazy import of TTLangCompileError to avoid circular dependency."""
     import importlib.util
@@ -53,6 +74,10 @@ class GreenletScheduler:
         self._main_greenlet: Optional[greenlet] = None
         # Current greenlet being executed
         self._current_name: Optional[str] = None
+        # Last run timestamp for fair scheduling (thread_name -> timestamp)
+        self._last_run: Dict[str, int] = {}
+        # Global timestamp counter
+        self._timestamp: int = 0
 
     def add_thread(
         self,
@@ -77,6 +102,8 @@ class GreenletScheduler:
         g = greenlet(wrapped_func)
         # Initially not blocked (will start when scheduled)
         self._active[name] = (g, None, "", thread_type, "")
+        # Initialize last run time to 0 (never run)
+        self._last_run[name] = 0
 
     def block_current_thread(self, blocking_obj: Any, operation: str) -> None:
         """Block the current thread on an operation.
@@ -134,18 +161,57 @@ class GreenletScheduler:
         if name in self._active:
             del self._active[name]
         self._completed.append(name)
+        # Clean up last run time
+        if name in self._last_run:
+            del self._last_run[name]
+
+    def _get_fair_thread_order(self) -> List[str]:
+        """Get threads sorted by least recently run.
+
+        Threads that can potentially make progress (not blocked or can unblock)
+        are sorted by their last run timestamp in ascending order.
+
+        Returns:
+            List of thread names in least-recently-run order
+        """
+        # Get all active threads with their last run times
+        thread_times: List[Tuple[int, str]] = []
+        for name in self._active.keys():
+            last_run = self._last_run.get(name, 0)
+            thread_times.append((last_run, name))
+
+        # Sort by timestamp (ascending), then by name for stability
+        thread_times.sort(key=lambda x: (x[0], x[1]))
+
+        # Return just the thread names
+        return [name for _, name in thread_times]
 
     def run(self) -> None:
         """Run all threads until completion or deadlock is detected."""
         # Store main greenlet for switching back from threads
         self._main_greenlet = greenlet.getcurrent()
 
+        # Determine scheduling algorithm
+        algorithm = get_scheduler_algorithm()
+
         # Run all threads until completion or deadlock
         while self._active:
             any_progress = False
 
-            # Try to advance each active thread
-            for name in list(self._active.keys()):
+            # Select threads to try based on algorithm
+            if algorithm == "fair":
+                # Fair: Try threads in order of least recently run
+                thread_candidates = self._get_fair_thread_order()
+            else:
+                # Greedy: Try threads in arbitrary order (as they appear in dict)
+                thread_candidates = list(self._active.keys())
+
+            # Try to advance each thread in the selected order
+            for name in thread_candidates:
+                if name not in self._active:
+                    # Thread may have completed during this iteration
+                    continue
+
                 g, blocking_obj, blocked_op, thread_type, location = self._active[name]
 
                 # If thread is blocked, check if it can proceed
@@ -160,6 +226,10 @@ class GreenletScheduler:
 
                 # Set current thread for block_current_thread()
                 self._current_name = name
+
+                # Update timestamp before running thread
+                self._timestamp += 1
+                self._last_run[name] = self._timestamp
 
                 # Run thread until it blocks or completes
                 from .block import set_current_thread_type, clear_current_thread_type

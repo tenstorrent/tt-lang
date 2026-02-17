@@ -64,10 +64,20 @@ PYTHON = sys.executable
 LAUNCHER_MODULE = [PYTHON, "-m", "sim.ttlang_sim"]
 
 
-def run_ttlang_sim_and_capture(script_path: Path) -> tuple[int, str]:
-    """Run ttlang-sim against the provided example script and return (code, output)."""
+def run_ttlang_sim_and_capture(
+    script_path: Path, schedalg: str | None = None
+) -> tuple[int, str]:
+    """Run ttlang-sim against the provided example script and return (code, output).
+
+    Args:
+        script_path: Path to the script to run
+        schedalg: Optional scheduler algorithm ('greedy' or 'fair')
+    """
+    cmd = LAUNCHER_MODULE + [str(script_path)]
+    if schedalg:
+        cmd += ["--schedalg", schedalg]
     proc = subprocess.run(
-        LAUNCHER_MODULE + [str(script_path)],
+        cmd,
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -136,9 +146,10 @@ def assert_success_output(code: int, out: str) -> None:
         ),
     ],
 )
-def test_example_cli(script_name: str) -> None:
-    """Test simulator examples run successfully via ttlang-sim CLI."""
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name)
+@pytest.mark.parametrize("schedalg", ["greedy", "fair"])
+def test_example_cli(script_name: str, schedalg: str) -> None:
+    """Test simulator examples run successfully via ttlang-sim CLI with both schedulers."""
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name, schedalg)
     assert_success_output(code, out)
 
 
@@ -149,9 +160,10 @@ def test_example_cli(script_name: str) -> None:
         "multicore_matmul/ttlang/multicore_matmul.py",
     ],
 )
-def test_metal_example_cli(example_path: str) -> None:
-    """Test metal examples run successfully via ttlang-sim CLI."""
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path)
+@pytest.mark.parametrize("schedalg", ["greedy", "fair"])
+def test_metal_example_cli(example_path: str, schedalg: str) -> None:
+    """Test metal examples run successfully via ttlang-sim CLI with both schedulers."""
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path, schedalg)
     assert_success_output(code, out)
 
 

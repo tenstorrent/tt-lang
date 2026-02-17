@@ -183,6 +183,14 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--schedalg",
+        type=str,
+        choices=["greedy", "fair"],
+        default="greedy",
+        help="Scheduler algorithm: 'greedy' (run until block) or 'fair' (least recently run)",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -196,6 +204,12 @@ def main() -> None:
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
+
+    # Configure scheduler algorithm if specified
+    if args.schedalg:
+        from sim.greenlet_scheduler import set_scheduler_algorithm
+
+        set_scheduler_algorithm(args.schedalg)
 
     # Enable tensor statistics collection if requested
     if args.tensor_stats:
