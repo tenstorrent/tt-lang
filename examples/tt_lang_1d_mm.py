@@ -6,7 +6,6 @@ import torch
 import ttnn
 from utils.correctness import assert_with_ulp
 import ttl
-from ttl import Program, copy, core, make_circular_buffer_like, Pipe, PipeNet
 import numpy as np
 
 
@@ -46,19 +45,19 @@ def matmul_1d(
     num_blocks_k = Kt // block_inner_dim
 
     buffering_factor = 2
-    a_cb = make_circular_buffer_like(
+    a_cb = ttl.make_circular_buffer_like(
         a_tensor, shape=(block_h, block_inner_dim), buffer_factor=buffering_factor
     )
-    b_cb = make_circular_buffer_like(
+    b_cb = ttl.make_circular_buffer_like(
         b_tensor, shape=(block_inner_dim, block_w), buffer_factor=buffering_factor
     )
 
-    out_cb = make_circular_buffer_like(
+    out_cb = ttl.make_circular_buffer_like(
         out_tensor, shape=(block_h, block_w), buffer_factor=1
     )
 
     mcast_pipe = ttl.Pipe((0,), (slice(1, num_working_cores),))
-    net = PipeNet([mcast_pipe])
+    net = ttl.PipeNet([mcast_pipe])
 
     def block_slice(block_offset, block_size):
         return slice(block_offset * block_size, (block_offset + 1) * block_size)
@@ -96,7 +95,7 @@ def matmul_1d(
                     with a_cb.reserve() as a_blk:
 
                         def pipe_src(pipe):
-                            in_rd = copy(
+                            in_rd = ttl.copy(
                                 a_tensor[
                                     block_slice(block_m, block_h),
                                     block_slice(block_k, block_inner_dim),
@@ -104,7 +103,7 @@ def matmul_1d(
                                 a_blk,
                             )
                             in_rd.wait()
-                            mcast_wr = copy(a_blk, pipe)
+                            mcast_wr = ttl.copy(a_blk, pipe)
                             mcast_wr.wait()
                             print(
                                 "sent A block m:",
@@ -116,7 +115,7 @@ def matmul_1d(
                             )
 
                         def pipe_dst(pipe):
-                            mcast_rd = copy(pipe, a_blk)
+                            mcast_rd = ttl.copy(pipe, a_blk)
                             mcast_rd.wait()
                             print(
                                 "received A block m:",
@@ -139,7 +138,7 @@ def matmul_1d(
             for block_n in range(blocks_per_core_n):
                 for block_k in range(num_blocks_k):
                     with b_cb.reserve() as b_blk:
-                        b_rd = copy(
+                        b_rd = ttl.copy(
                             b_tensor[
                                 block_slice(block_k, block_inner_dim),
                                 block_slice(
@@ -150,7 +149,7 @@ def matmul_1d(
                         )
                         b_rd.wait()
                 with out_cb.wait() as out_blk:
-                    out_wr = copy(
+                    out_wr = ttl.copy(
                         out_blk,
                         out_tensor[
                             block_slice(block_m, block_h),
