@@ -342,11 +342,11 @@ struct AttachCBLowering : OpConversionPattern<AttachCBOp> {
   }
 };
 
-struct StoreLowering : OpConversionPattern<StoreOp> {
+struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(StoreOp op, OpAdaptor adaptor,
+  matchAndRewrite(TileStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -359,9 +359,10 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
     auto cbTileIndex =
         utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
 
-    // Determine DST index based on the source operation type:
-    // - DST-to-DST ops (binary ops): have dst_idx attribute
-    // - CB-reading ops (bcast, reduce): no dst_idx attribute, use loop index
+    // Determine DST index from the source op:
+    // - Tile compute ops and copy_dst: have dst_idx attribute
+    // - copy_tile (passthrough): read dst_index operand
+    // - CB-reading ops (bcast, reduce): no dst_idx, use CB tile index
     Value dstIndex;
     auto tileValue = adaptor.getTile();
     if (auto defOp = tileValue.getDefiningOp()) {
@@ -369,15 +370,18 @@ struct StoreLowering : OpConversionPattern<StoreOp> {
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
         dstIndex =
             rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+      } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
+        dstIndex = copyTile.getDstIndex();
+      } else {
+        return op.emitError("tile_store source op lacks dst_idx attribute: ")
+               << defOp->getName();
       }
-    }
-
-    if (!dstIndex) {
+    } else {
       dstIndex = cbTileIndex;
     }
 
     rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
-                                     /*out_of_order=*/false);
+                                     /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
     return success();
@@ -879,6 +883,20 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
+/// Tensor-level ttl.store ops must be lowered to tile_store by
+/// convert-ttl-to-compute. Any surviving to this point is a miscompile.
+struct StoreLowering : OpConversionPattern<StoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return op.emitError("ttl.store survived to ttkernel lowering; "
+                        "convert-ttl-to-compute should have lowered this to "
+                        "ttl.tile_store");
+  }
+};
+
 struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -981,8 +999,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               StoreLowering, CoreXLowering, CoreYLowering>(typeConverter,
-                                                            &ctx);
+               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
+      typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
@@ -1131,17 +1149,6 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
       }
     }
 
-    // Update return statements to return void if function has no results.
-    // First check if there are any result uses.
-    bool hasResultUses = false;
-    func.walk([&](func::ReturnOp returnOp) {
-      if (returnOp.getNumOperands() > 0) {
-        // Check if the return value is actually used (it can't be for
-        // func.return)
-        hasResultUses = true;
-      }
-    });
-
     // For compute kernels, update function to return void.
     if (!func.getResultTypes().empty()) {
       func.walk([](func::ReturnOp returnOp) {
@@ -1160,22 +1167,10 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
 }
 
 /// Helper: Remove dead tensor ops from a compute kernel function.
-/// Tensor ops are removed in stages because each stage makes the next stage's
-/// ops dead. This ensures use counts are updated correctly between stages.
+/// With side-effect-only loops, tensor.insert no longer exists. Clean up
+/// remaining dead tensor.extract and tensor.empty ops.
 static void removeTensorDataflowOps(func::FuncOp func) {
-
-  // Stage 1: Replace tensor.insert results with dest tensor, then erase.
-  // This makes tensor.extract results dead.
-  SmallVector<tensor::InsertOp> insertOps;
-  func.walk([&](tensor::InsertOp op) { insertOps.push_back(op); });
-  for (auto op : insertOps) {
-    op.getResult().replaceAllUsesWith(op.getDest());
-    op.erase();
-  }
-
-  // Stage 2: Erase dead tensor.extract ops.
-  // Must run after Stage 1 because replacing tensor.insert results makes
-  // their corresponding extracts dead.
+  // Erase dead tensor.extract ops.
   SmallVector<tensor::ExtractOp> extractOps;
   func.walk([&](tensor::ExtractOp op) { extractOps.push_back(op); });
   for (auto op : extractOps) {
@@ -1184,9 +1179,7 @@ static void removeTensorDataflowOps(func::FuncOp func) {
     }
   }
 
-  // Stage 3: Erase dead tensor.empty ops.
-  // Must run after Stage 2 because erasing extracts may make their source
-  // tensor.empty ops dead.
+  // Erase dead tensor.empty ops.
   SmallVector<tensor::EmptyOp> emptyOps;
   func.walk([&](tensor::EmptyOp op) { emptyOps.push_back(op); });
   for (auto op : emptyOps) {
@@ -1194,22 +1187,6 @@ static void removeTensorDataflowOps(func::FuncOp func) {
       op.erase();
     }
   }
-
-  // Simplify scf.for loops: remove unused iter_args and simplify yields.
-  // After tensor dataflow removal, loops may have dead iter_args.
-  func.walk([&](scf::ForOp forOp) {
-    // Collect indices of iter_args that are still used outside the loop.
-    SmallVector<unsigned> unusedArgIndices;
-    for (unsigned i = 0; i < forOp.getNumResults(); ++i) {
-      if (forOp.getResult(i).use_empty()) {
-        unusedArgIndices.push_back(i);
-      }
-    }
-
-    // If all iter_args are unused, we can simplify but keep the loop
-    // structure for the side effects (TTKernel ops).
-    // The scf.yield will be updated in canonicalization.
-  });
 }
 
 //===----------------------------------------------------------------------===//

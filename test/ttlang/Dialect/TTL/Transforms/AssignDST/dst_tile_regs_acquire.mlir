@@ -20,10 +20,10 @@
 // CHECK-NEXT:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
 // CHECK-NEXT:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
 // CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[ADD]], %[[V]]
+// CHECK-NEXT:        ttl.tile_store %[[ADD]], %[[V]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -52,7 +52,7 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -70,13 +70,16 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG:       %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
 // CHECK-NEXT:      %[[R0:.*]] = ttl.compute
-// CHECK:           ^bb0
-// CHECK:             ttl.tile_regs_acquire
-// CHECK:             %[[SUM0:.*]] = ttl.tile_add
+// CHECK:           ^bb0(%[[A0:.*]]: !ttcore.tile<32x32, f32>, %[[B0:.*]]: !ttcore.tile<32x32, f32>, %[[O0:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        ttl.tile_regs_acquire
+// CHECK-NEXT:        %[[LIN0:.*]] = ttl.linearized_index
+// CHECK-NEXT:        %[[TOK0A:.*]], %[[TILE0A:.*]] = ttl.copy_tile %[[A0]]
+// CHECK-NEXT:        %[[TOK0B:.*]], %[[TILE0B:.*]] = ttl.copy_tile %[[B0]]
+// CHECK-NEXT:        %[[SUM0:.*]] = ttl.tile_add %[[TILE0A]], %[[TILE0B]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        %[[V0:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[SUM0]], %[[V0]]
+// CHECK-NEXT:        ttl.tile_store %[[SUM0]], %[[V0]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[SUM0]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -84,13 +87,16 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[R0CB:.*]] = ttl.attach_cb %[[R0]], %[[CB3]]
 // CHECK-NEXT:      ttl.init_sfpu(%[[CB3]], %[[CB2]])
 // CHECK-NEXT:      %[[R1:.*]] = ttl.compute
-// CHECK:           ^bb0
-// CHECK:             ttl.tile_regs_acquire
-// CHECK:             %[[SUM1:.*]] = ttl.tile_add
+// CHECK:           ^bb0(%[[A1:.*]]: !ttcore.tile<32x32, f32>, %[[B1:.*]]: !ttcore.tile<32x32, f32>, %[[O1:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        ttl.tile_regs_acquire
+// CHECK-NEXT:        %[[LIN1:.*]] = ttl.linearized_index
+// CHECK-NEXT:        %[[TOK1A:.*]], %[[TILE1A:.*]] = ttl.copy_tile %[[A1]]
+// CHECK-NEXT:        %[[TOK1B:.*]], %[[TILE1B:.*]] = ttl.copy_tile %[[B1]]
+// CHECK-NEXT:        %[[SUM1:.*]] = ttl.tile_add %[[TILE1A]], %[[TILE1B]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        %[[V1:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[SUM1]], %[[V1]]
+// CHECK-NEXT:        ttl.tile_store %[[SUM1]], %[[V1]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[SUM1]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -119,7 +125,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %result_view0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -139,7 +145,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view1 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view1 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %result_view1 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -157,16 +163,19 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG:       %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB3]])
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
-// CHECK:           ^bb0
-// CHECK:             ttl.tile_regs_acquire
-// CHECK:             %[[ADD:.*]] = ttl.tile_add
-// CHECK-NEXT:        ttl.copy_tile
-// CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[ADD]],
+// CHECK:           ^bb0(%[[A2:.*]]: !ttcore.tile<32x32, f32>, %[[B2:.*]]: !ttcore.tile<32x32, f32>, %[[C2:.*]]: !ttcore.tile<32x32, f32>, %[[O2:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        ttl.tile_regs_acquire
+// CHECK-NEXT:        %[[LIN2:.*]] = ttl.linearized_index
+// CHECK-NEXT:        %[[DTOKA:.*]], %[[DTILEA:.*]] = ttl.copy_tile %[[A2]]
+// CHECK-NEXT:        %[[DTOKB:.*]], %[[DTILEB:.*]] = ttl.copy_tile %[[B2]]
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILEA]], %[[DTILEB]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[DTOKC:.*]], %[[DTILEC:.*]] = ttl.copy_tile %[[C2]]
+// CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILEC]]
 // CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]]
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB3]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB3]]
-// CHECK-NEXT:        ttl.store %[[EXP]], %[[V]]
+// CHECK-NEXT:        ttl.tile_store %[[EXP]], %[[V]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -202,7 +211,7 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %mul = ttl.tile_mul %sum, %c_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -221,12 +230,15 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
 // CHECK-NEXT:      ttl.tile_regs_acquire
 // CHECK-NEXT:      %[[RES:.*]] = ttl.compute
-// CHECK:           ^bb0
-// CHECK:             %[[ADD:.*]] = ttl.tile_add
+// CHECK:           ^bb0(%[[A3:.*]]: !ttcore.tile<32x32, f32>, %[[B3:.*]]: !ttcore.tile<32x32, f32>, %[[O3:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        %[[LIN3:.*]] = ttl.linearized_index
+// CHECK-NEXT:        %[[TOK3A:.*]], %[[TILE3A:.*]] = ttl.copy_tile %[[A3]]
+// CHECK-NEXT:        %[[TOK3B:.*]], %[[TILE3B:.*]] = ttl.copy_tile %[[B3]]
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[TILE3A]], %[[TILE3B]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        %[[V:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK-NEXT:        ttl.store %[[ADD]], %[[V]]
+// CHECK-NEXT:        ttl.tile_store %[[ADD]], %[[V]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -258,7 +270,7 @@ func.func @init_sfpu_with_preexisting_acquire(%a: tensor<2x2x!ttcore.tile<32x32,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -310,7 +322,7 @@ func.func @ops_between_acquire_and_compute(%a: tensor<2x2x!ttcore.tile<32x32, f3
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %sum : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

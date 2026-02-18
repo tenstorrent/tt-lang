@@ -51,6 +51,17 @@ static Value findOutputCB(Operation *op) {
   return nullptr;
 }
 
+/// Extract the cb_reserve result from a tensor-level store's view operand.
+/// The view is produced by attach_cb(cb_reserve(...), cb). Returns the
+/// cb_reserve result, following the SSA def-use chain (no scanning).
+static Value getReserveViewFromStore(StoreOp storeOp) {
+  Value view = storeOp.getView();
+  if (auto attachOp = view.getDefiningOp<AttachCBOp>()) {
+    return attachOp.getTensor();
+  }
+  return Value();
+}
+
 /// Find unused bind_cb ops in the function that can be used for output CBs.
 /// Returns bind_cb ops that are not used by any attach_cb op.
 // TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
@@ -314,7 +325,6 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
   rewriter.create<YieldOp>(loc, ValueRange{result});
-
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -396,7 +406,6 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
   rewriter.create<YieldOp>(loc, ValueRange{result});
-
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -558,8 +567,107 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
     rewriter.create<YieldOp>(loc, ValueRange{result});
-
     rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Store Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lowers ttl.store to ttl.tile_store inside a ttl.compute body.
+/// Elementwise patterns create the compute (tile ops + yield, no stores).
+/// This pattern injects tile_store for each store, moving the compute
+/// after reserves when needed to satisfy dominance.
+struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
+  using OpRewritePattern<StoreOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(StoreOp op,
+                                PatternRewriter &rewriter) const override {
+    Value input = op.getTensor();
+    Value view = op.getView();
+
+    Value reserveView = getReserveViewFromStore(op);
+    if (!reserveView) {
+      return rewriter.notifyMatchFailure(
+          op, "store view must come from ttl.attach_cb wrapping cb_reserve");
+    }
+
+    // Input from ComputeOp: inject tile_store into its body.
+    if (auto computeOp = input.getDefiningOp<ComputeOp>()) {
+      // Move compute before the store if the reserve doesn't dominate it.
+      // The store is always after its reserve (Python `with` guarantees this),
+      // so moving the compute here ensures all reserve views dominate.
+      if (auto *reserveDef = reserveView.getDefiningOp()) {
+        if (!reserveDef->isBeforeInBlock(computeOp)) {
+          computeOp->moveBefore(op);
+        }
+      }
+
+      Block &body = computeOp.getBody().front();
+      auto yieldOp = cast<YieldOp>(body.getTerminator());
+      rewriter.setInsertionPoint(yieldOp);
+      rewriter.create<TileStoreOp>(op.getLoc(), yieldOp.getValues().front(),
+                                   reserveView);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Passthrough: input is CB-attached, create a new compute with tile_store.
+    if (!getAttachedCB(input)) {
+      return rewriter.notifyMatchFailure(
+          op, "store input must come from ComputeOp or be CB-attached");
+    }
+
+    auto inputType = getTensorType(input);
+    if (!inputType) {
+      return failure();
+    }
+
+    auto viewAttach = view.getDefiningOp<AttachCBOp>();
+    if (!viewAttach) {
+      return op.emitError("store view must come from ttl.attach_cb");
+    }
+    Value outputCb = viewAttach.getCb();
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(inputType.getRank(), ctx);
+    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap)};
+    SmallVector<Attribute> iterTypes(inputType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    Value init = buildInitTensor(rewriter, loc, inputType, input);
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outputCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{inputType}, ValueRange{input}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = inputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
+
+    rewriter.setInsertionPointToEnd(body);
+    rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
+    rewriter.create<YieldOp>(loc, body->getArgument(0));
+
+    for (OpOperand &use : llvm::make_early_inc_range(input.getUses())) {
+      if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
+        if (attachOp.getCb() == outputCb && attachOp != viewAttach) {
+          rewriter.replaceOp(attachOp, computeOp.getResult(0));
+        }
+      }
+    }
+
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -621,6 +729,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
+  patterns.add<LowerStoreToCompute>(ctx);
 }
 
 } // namespace mlir::tt::ttl

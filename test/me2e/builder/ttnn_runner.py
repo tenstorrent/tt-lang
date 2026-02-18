@@ -42,6 +42,7 @@ def run_binary_op(
     input_a: torch.Tensor,
     input_b: torch.Tensor,
     kernel_dir: Path,
+    enable_fp32_accumulation: bool = False,
 ) -> torch.Tensor:
     """
     Run a binary operation on device.
@@ -53,6 +54,7 @@ def run_binary_op(
         input_a: First input tensor.
         input_b: Second input tensor.
         kernel_dir: Directory containing kernel C++ files.
+        enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
 
     Returns:
         Output tensor as torch tensor.
@@ -63,6 +65,7 @@ def run_binary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a, input_b],
         kernel_dir=kernel_dir,
+        enable_fp32_accumulation=enable_fp32_accumulation,
     )
 
 
@@ -72,6 +75,7 @@ def run_unary_op(
     compute_kernel: KernelSpec,
     input_a: torch.Tensor,
     kernel_dir: Path,
+    enable_fp32_accumulation: bool = False,
 ) -> torch.Tensor:
     """
     Run a unary operation on device.
@@ -82,6 +86,7 @@ def run_unary_op(
         compute_kernel: Compute kernel spec.
         input_a: Input tensor.
         kernel_dir: Directory containing kernel C++ files.
+        enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
 
     Returns:
         Output tensor as torch tensor.
@@ -92,6 +97,7 @@ def run_unary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a],
         kernel_dir=kernel_dir,
+        enable_fp32_accumulation=enable_fp32_accumulation,
     )
 
 
@@ -101,6 +107,7 @@ def _run_op(
     compute_kernel: KernelSpec,
     inputs: List[torch.Tensor],
     kernel_dir: Path,
+    enable_fp32_accumulation: bool = False,
 ) -> torch.Tensor:
     """
     Run an operation on device using shared kernel_runner infrastructure.
@@ -114,20 +121,22 @@ def _run_op(
         compute_kernel: Compute kernel spec.
         inputs: List of input tensors.
         kernel_dir: Directory containing kernel C++ files.
+        enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
 
     Returns:
         Output tensor as torch tensor.
     """
     shape = list(inputs[0].shape)
+    dtype = inputs[0].dtype
 
-    # Create device tensors using to_dram.
+    # Create device tensors using to_dram (respects tensor dtype).
     device_inputs = []
     for inp in inputs:
-        device_inp = to_dram(inp.to(torch.bfloat16), device)
+        device_inp = to_dram(inp, device)
         device_inputs.append(device_inp)
 
     # Create output tensor in DRAM.
-    output_torch = torch.zeros(shape, dtype=torch.bfloat16)
+    output_torch = torch.zeros(shape, dtype=dtype)
     output_tensor = to_dram(output_torch, device)
 
     io_tensors = device_inputs + [output_tensor]
@@ -169,7 +178,9 @@ def _run_op(
             path=str(kernel_dir / f"{compute_kernel.name}.cpp"),
             thread_type="compute",
             tensor_indices=[],  # Compute kernels don't access tensors directly.
-            config=ttnn.ComputeConfigDescriptor(),
+            config=ttnn.ComputeConfigDescriptor(
+                fp32_dest_acc_en=enable_fp32_accumulation,
+            ),
         ),
     ]
 

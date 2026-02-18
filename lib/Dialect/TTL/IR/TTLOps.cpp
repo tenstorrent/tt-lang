@@ -519,43 +519,16 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
-  // Validate any ttl.store ops in the body.
-  auto yieldOp = cast<YieldOp>(bodyBlock.getTerminator());
-  SmallVector<Value> yielded(yieldOp->operand_begin(), yieldOp->operand_end());
-  SmallVector<bool> storeSeen(numOutputs, false);
-
+  // Validate any ttl.tile_store ops in the body. tile_store is the hardware
+  // write (becomes pack_tile) and is independent of the yield terminator.
   for (Operation &op : bodyBlock.without_terminator()) {
-    auto store = dyn_cast<StoreOp>(&op);
+    auto store = dyn_cast<TileStoreOp>(&op);
     if (!store) {
       continue;
     }
-
-    auto it = llvm::find(yielded, store.getTile());
-    if (it == yielded.end()) {
-      return store.emitOpError()
-             << "tile operand must be yielded by the enclosing ttl.compute";
+    if (!store.getView().getDefiningOp<CBReserveOp>()) {
+      return store.emitOpError() << "view must be produced by ttl.cb_reserve";
     }
-    size_t outputIdx = static_cast<size_t>(it - yielded.begin());
-
-    Value attachedCb = getAttachedCB(getOutputs()[outputIdx]);
-    assert(attachedCb && "output CB verified by earlier check");
-
-    auto reserve = store.getView().getDefiningOp<CBReserveOp>();
-    if (!reserve) {
-      return store.emitOpError()
-             << "view must be produced by ttl.cb_reserve for the output CB";
-    }
-    if (reserve.getCb() != attachedCb) {
-      return store.emitOpError()
-             << "view CB does not match the circular buffer attached to output "
-             << outputIdx;
-    }
-
-    if (storeSeen[outputIdx]) {
-      return store.emitOpError()
-             << "duplicate ttl.store for output " << outputIdx;
-    }
-    storeSeen[outputIdx] = true;
   }
 
   return mlir::success();
@@ -590,6 +563,34 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
+  auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
+  auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
+
+  if (tensorTy.getElementType() != viewTy.getElementType()) {
+    return emitOpError() << "tensor element type (" << tensorTy.getElementType()
+                         << ") must match view element type ("
+                         << viewTy.getElementType() << ")";
+  }
+
+  if (tensorTy.getRank() != viewTy.getRank()) {
+    return emitOpError() << "tensor rank (" << tensorTy.getRank()
+                         << ") must match view rank (" << viewTy.getRank()
+                         << ")";
+  }
+
+  for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
+    if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
+      return emitOpError() << "tensor shape dimension " << i << " ("
+                           << tensorTy.getDimSize(i)
+                           << ") must match view shape dimension ("
+                           << viewTy.getDimSize(i) << ")";
+    }
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   auto tileType = mlir::dyn_cast<ttcore::TileType>(getTile().getType());
   if (!tileType) {
     return emitOpError() << "tile operand must be !ttcore.tile, got "

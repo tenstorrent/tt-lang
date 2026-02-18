@@ -123,18 +123,20 @@ def to_dram(torch_tensor, device):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
     Args:
-        torch_tensor: Source torch tensor (typically bfloat16)
+        torch_tensor: Source torch tensor
         device: TTNN device handle
 
     Returns:
         TTNN tensor in DRAM with TILE_LAYOUT
     """
+    from ttl.dtype_utils import torch_dtype_to_ttnn_datatype
+
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
     return ttnn.from_torch(
         torch_tensor,
-        dtype=ttnn.bfloat16,
+        dtype=torch_dtype_to_ttnn_datatype(torch_tensor.dtype),
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -147,7 +149,7 @@ def to_l1(torch_tensor, device):
     Creates in DRAM first then moves to L1 (required by TTNN).
 
     Args:
-        torch_tensor: Source torch tensor (typically bfloat16)
+        torch_tensor: Source torch tensor
         device: TTNN device handle
 
     Returns:
@@ -156,13 +158,7 @@ def to_l1(torch_tensor, device):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
-    dram_tensor = ttnn.from_torch(
-        torch_tensor,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    dram_tensor = to_dram(torch_tensor, device)
     return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 

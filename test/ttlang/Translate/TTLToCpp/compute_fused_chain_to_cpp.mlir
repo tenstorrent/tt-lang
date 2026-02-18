@@ -30,11 +30,9 @@
 // --- DST register lifecycle (acquire inside loop) ---
 // CHECK-NEXT:      tile_regs_acquire();
 
-// --- Load tile from CB0 (input A) into DST[0] ---
+// --- Load tiles into DST (at first use: CB0 first, then CB1) ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
 // CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
-
-// --- Load tile from CB1 (input B) into DST[1] ---
 // CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
 // CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
 
@@ -50,19 +48,19 @@
 // CHECK-NEXT:      exp_tile_init();
 // CHECK-NEXT:      exp_tile([[ZERO]]);
 
+// --- Reserve output CB2 for packing (before commit) ---
+// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+
 // --- DST register synchronization ---
 // CHECK-NEXT:      tile_regs_commit();
 // CHECK-NEXT:      tile_regs_wait();
-
-// --- Reserve output CB2 for packing ---
-// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // --- Compute CB tile index: i * 2 + j (linearized row-major index) ---
 // CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
 // CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
 
 // --- Pack DST[0] to output CB2 ---
-// CHECK-NEXT:      pack_tile<false>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// CHECK-NEXT:      pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
 
 // --- Push to signal data ready ---
 // CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
@@ -107,7 +105,7 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

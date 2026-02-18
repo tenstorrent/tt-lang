@@ -179,6 +179,10 @@ class ThreadBuilder(ABC):
         """Create ttl.attach_cb operation."""
         return ttl.attach_cb(self._tile_tensor_type, tensor, cb, loc=self.loc)
 
+    def _store(self, tensor, view):
+        """Create ttl.store operation."""
+        ttl.store(tensor, view, loc=self.loc)
+
     # =========================================================================
     # Layer 2: Loop and Function Utilities (Protected)
     # =========================================================================
@@ -317,11 +321,14 @@ class ThreadBuilder(ABC):
                     # Execute compute function.
                     results = compute_fn(inputs)
 
-                    # Attach results to output CBs.
+                    # Store results to output reserve views and attach to CBs.
                     if not isinstance(results, list):
                         results = [results]
-                    for result, cb in zip(results, output_cb_vals):
-                        self._attach_cb(result, cb)
+                    for result, output_view, cb in zip(
+                        results, outputs, output_cb_vals
+                    ):
+                        self._store(result, output_view)  # emits ttl.store
+                        self._attach_cb(result, cb)  # CB association metadata
 
                     # Push outputs, pop inputs.
                     for cb in output_cb_vals:

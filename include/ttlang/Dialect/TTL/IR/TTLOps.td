@@ -701,11 +701,40 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Store a tensor to a circular buffer reserve view";
+  let description = [{
+    `ttl.store` represents the user's intent to store a computed tensor into
+    an output circular buffer. The view operand must be the reserve view
+    (from `ttl.attach_cb` wrapping a `ttl.cb_reserve`).
+
+    This is the tensor-level store emitted by Python's `o.store(result)`.
+    During `convert-ttl-to-compute`, this op is transformed into a tile-level
+    `ttl.tile_store` inside the compute body. The store carries its destination
+    as an SSA operand; no pass infers or synthesizes stores.
+
+    Example:
+    ```mlir
+    %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %view = ttl.attach_cb %reserve, %cb : ...
+    %result = ttl.add %a, %b : ...
+    ttl.store %result, %view : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                               tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$tensor,
+    AnyRankedTensor:$view
+  );
+  let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
+  let hasVerifier = 1;
+}
+
+def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
   let summary = "Store a tile into a circular buffer view";
   let description = [{
-    `ttl.store` packs a single tile from the DST register into a circular buffer
-    view obtained from `ttl.cb_reserve`. This operation is used by compute
-    kernels to write computed results into output circular buffers.
+    `ttl.tile_store` packs a single tile from the DST register into a circular
+    buffer view obtained from `ttl.cb_reserve`. This is the tile-level form of
+    `ttl.store`, created by `convert-ttl-to-compute` from the tensor-level store.
 
     The tile value typically comes from compute operations (e.g., tile_add,
     tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
@@ -715,8 +744,8 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     ```mlir
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
                                  -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.store %tile, %view : !ttcore.tile<32x32, bf16>,
-                             tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view : !ttcore.tile<32x32, bf16>,
+                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins

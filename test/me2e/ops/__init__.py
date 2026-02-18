@@ -28,7 +28,9 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "add": torch.add,
     "sub": torch.sub,
     "mul": torch.mul,
+    "div": torch.div,
     "max": torch.maximum,
+    "min": torch.minimum,
     "exp": torch.exp,
     "log": torch.log,
     "sqrt": torch.sqrt,
@@ -38,6 +40,8 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "neg": torch.neg,
     "relu": torch.relu,
     "sigmoid": torch.sigmoid,
+    "floor": torch.floor,
+    "recip": torch.reciprocal,
 }
 
 # Domain constraints for ops that require specific input ranges.
@@ -45,6 +49,17 @@ OP_INPUT_RANGES: Dict[str, Tuple[float, float]] = {
     "log": (0.01, 10.0),  # log requires positive inputs
     "sqrt": (0.01, 10.0),  # sqrt requires positive inputs
     "rsqrt": (0.01, 10.0),  # rsqrt requires positive inputs
+    "recip": (0.01, 10.0),  # recip requires non-zero inputs
+    "div": (0.01, 10.0),  # div requires non-zero divisor
+}
+
+# Per-op ULP threshold overrides keyed by dtype.
+# Used for ops where the SFPU implementation has known precision limitations.
+OP_ULP_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, int]] = {
+    # tt-metal SFPU log f32 uses a polynomial approximation with insufficient
+    # precision for f32. tt-metal's own tests skip log f32 on WH/BH due to
+    # "very high abs and relative diff". Measured ULP ~2^21.
+    "log": {torch.float32: 2**22},
 }
 
 
@@ -66,10 +81,8 @@ def _parse_elementwise_ops_def() -> Dict[str, int]:
     ops: Dict[str, int] = {}
     with open(def_path) as f:
         for line in f:
-            # Match TTL_BINARY_TILE_OP(Add, AddTileOp, ...) or TTL_BINARY_TILE_OP_SPECIAL(Max, ...)
-            if match := re.match(
-                r"TTL_BINARY_TILE_OP(?:_SPECIAL)?\((\w+),\s*\w+", line
-            ):
+            # Match TTL_BINARY_TILE_OP(Add, ...) or TTL_BINARY_TILE_OP_MINMAX(Max, ...)
+            if match := re.match(r"TTL_BINARY_TILE_OP(?:_MINMAX)?\((\w+),\s*\w+", line):
                 ops[match.group(1).lower()] = 2
             # Match TTL_UNARY_TILE_OP(Exp, ExpTileOp, ...)
             elif match := re.match(r"TTL_UNARY_TILE_OP\((\w+),\s*\w+", line):
@@ -217,6 +230,10 @@ def generate_op_test_classes() -> Dict[str, Type[OpTestBase]]:
             }
             if op_name in OP_INPUT_RANGES:
                 attrs["INPUT_RANGE"] = OP_INPUT_RANGES[op_name]
+            if op_name in OP_ULP_THRESHOLD_OVERRIDES:
+                overrides = OP_ULP_THRESHOLD_OVERRIDES[op_name]
+                if dtype in overrides:
+                    attrs["ULP_THRESHOLD"] = overrides[dtype]
 
             # Create class dynamically with dtype suffix.
             class_name = f"Test{op_name.capitalize()}{dtype_suffix}"
