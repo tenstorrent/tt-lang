@@ -20,15 +20,30 @@ from python.sim.typedefs import CBID
 # Pytest fixtures to reduce redundant setup code
 @pytest.fixture(autouse=True)
 def setup_thread_context():
-    """Automatically set thread context for all CBAPI tests.
+    """Automatically set thread context and scheduler for all CBAPI tests.
 
     CBAPI is thread-agnostic - it just needs some thread context set to create blocks.
     We use COMPUTE here, but the actual thread type doesn't affect CBAPI behavior.
     State machine validation happens at the Block level, which is tested separately.
     """
+    from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
+
+    # Create a scheduler instance for the test
+    scheduler = GreenletScheduler()
+    set_scheduler(scheduler)
+
+    # Set thread context
     set_current_thread_type(ThreadType.COMPUTE)
+
+    # Simulate being within a thread by setting current name
+    scheduler._current_name = "test-thread"
+    scheduler._has_made_progress["test-thread"] = False
+
     yield
-    set_current_thread_type(None)  # Clean up
+
+    # Clean up
+    set_current_thread_type(None)
+    set_scheduler(None)
 
 
 @pytest.fixture

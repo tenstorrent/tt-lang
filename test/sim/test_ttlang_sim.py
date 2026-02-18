@@ -463,8 +463,8 @@ class TestSchedulerAlgorithmOption:
         assert result.returncode != 0
         assert "invalid choice" in result.stderr
 
-    def test_schedalg_default_is_greedy(self):
-        """Test that default scheduling algorithm is greedy when not specified."""
+    def test_schedalg_default_is_fair(self):
+        """Test that default scheduling algorithm is fair when not specified."""
         # Create a temporary script that checks the algorithm
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             script_path = Path(f.name)
@@ -484,6 +484,6 @@ print(f"Algorithm: {get_scheduler_algorithm()}")
                 text=True,
             )
             assert result.returncode == 0, f"Script failed: {result.stderr}"
-            assert "Algorithm: greedy" in result.stdout
+            assert "Algorithm: fair" in result.stdout
         finally:
             script_path.unlink()

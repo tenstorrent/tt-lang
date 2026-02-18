@@ -17,7 +17,7 @@ from .block import ThreadType
 
 
 # Global scheduler algorithm selection
-_scheduler_algorithm: str = "greedy"
+_scheduler_algorithm: str = "fair"
 
 
 def set_scheduler_algorithm(algorithm: str) -> None:
@@ -78,6 +78,8 @@ class GreenletScheduler:
         self._last_run: Dict[str, int] = {}
         # Global timestamp counter
         self._timestamp: int = 0
+        # Track if thread has ever made progress (passed at least one block_if_needed check)
+        self._has_made_progress: Dict[str, bool] = {}
 
     def add_thread(
         self,
@@ -104,6 +106,8 @@ class GreenletScheduler:
         self._active[name] = (g, None, "", thread_type, "")
         # Initialize last run time to 0 (never run)
         self._last_run[name] = 0
+        # Thread hasn't made progress yet
+        self._has_made_progress[name] = False
 
     def block_current_thread(self, blocking_obj: Any, operation: str) -> None:
         """Block the current thread on an operation.
@@ -165,6 +169,67 @@ class GreenletScheduler:
         if name in self._last_run:
             del self._last_run[name]
 
+    def _initialization_phase(self) -> None:
+        """Run all threads sequentially until they first block.
+
+        This initialization ensures all threads have blocking_obj set,
+        so can_{operation}() checks work correctly in the fair scheduler.
+
+        Timestamps are only given to threads that made progress (passed at least
+        one block_if_needed check). Threads that blocked on their first check
+        keep ts=0, giving them priority in fair scheduling.
+        """
+        from .block import set_current_thread_type, clear_current_thread_type
+
+        for name in list(self._active.keys()):
+            g, blocking_obj, _, thread_type, _ = self._active[name]
+
+            # All threads should start unblocked in init phase
+            if blocking_obj is not None:
+                raise RuntimeError(
+                    f"Thread {name} is already blocked at init phase start. "
+                    "This indicates a bug in the scheduler."
+                )
+
+            # Set current thread context
+            self._current_name = name
+            set_current_thread_type(thread_type)
+
+            try:
+                # Run thread until it blocks or completes
+                g.switch()
+
+                # Update timestamp only if thread made progress
+                made_progress = self._has_made_progress.get(name, False)
+
+                if g.dead:
+                    self._mark_completed(name)
+                elif made_progress:
+                    # Thread passed one or more block_if_needed checks - give it a timestamp
+                    self._timestamp += 1
+                    self._last_run[name] = self._timestamp
+                # Threads that blocked on their first check keep ts=0
+
+            except Exception as e:
+                # Thread raised an error during initialization
+                clear_current_thread_type()
+                self._current_name = None
+
+                # Re-raise with context
+                import traceback
+
+                tb_str = traceback.format_exc()
+                error_msg = f"{type(e).__name__}: {e}"
+                print(f"\n❌ {error_msg}")
+                print("   traceback:")
+                print(tb_str)
+                print("-" * 50)
+                raise RuntimeError(error_msg)
+
+            clear_current_thread_type()
+
+        self._current_name = None
+
     def _get_fair_thread_order(self) -> List[str]:
         """Get threads sorted by least recently run.
 
@@ -194,6 +259,12 @@ class GreenletScheduler:
         # Determine scheduling algorithm
         algorithm = get_scheduler_algorithm()
 
+        # Phase 1: Initialization - run all threads until they first block
+        # This ensures all threads have blocking_obj set so can_{operation}() checks work
+        if algorithm == "fair":
+            self._initialization_phase()
+
+        # Phase 2: Main scheduling loop with fairness
         # Run all threads until completion or deadlock
         while self._active:
             any_progress = False
@@ -227,10 +298,6 @@ class GreenletScheduler:
                 # Set current thread for block_current_thread()
                 self._current_name = name
 
-                # Update timestamp before running thread
-                self._timestamp += 1
-                self._last_run[name] = self._timestamp
-
                 # Run thread until it blocks or completes
                 from .block import set_current_thread_type, clear_current_thread_type
 
@@ -245,6 +312,11 @@ class GreenletScheduler:
                     # Switch to the greenlet
                     g.switch()
                     any_progress = True
+
+                    # Always update timestamp after thread runs
+                    # The pre-check already prevented threads that can't make progress from running
+                    self._timestamp += 1
+                    self._last_run[name] = self._timestamp
 
                     # If greenlet is dead, it completed
                     if g.dead and name in self._active:
@@ -427,12 +499,28 @@ def block_if_needed(obj: Any, operation: str) -> None:
 
     Checks if the operation can proceed by calling obj.can_{operation}().
     If it returns False, blocks the current thread via the scheduler.
+    If it returns True, marks that the thread has made progress.
 
     Args:
         obj: Object with can_{operation}() method to check
         operation: Operation name (e.g., "wait", "reserve")
     """
     can_method = getattr(obj, f"can_{operation}")
+    scheduler = get_scheduler()
+
     if not can_method():
-        scheduler = get_scheduler()
+        # Can't proceed - block
         scheduler.block_current_thread(obj, operation)
+    else:
+        # Can proceed - mark that thread has made progress
+        if scheduler._current_name is None:
+            raise RuntimeError(
+                "block_if_needed called but no current thread is set. "
+                "This indicates a bug in the scheduler."
+            )
+        if scheduler._current_name not in scheduler._has_made_progress:
+            raise RuntimeError(
+                f"Thread {scheduler._current_name} not found in progress tracking. "
+                "This indicates a bug in the scheduler."
+            )
+        scheduler._has_made_progress[scheduler._current_name] = True

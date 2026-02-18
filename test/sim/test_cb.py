@@ -27,16 +27,31 @@ from python.sim.errors import CBContractError
 
 @pytest.fixture(autouse=True)
 def setup_thread_context():
-    """Automatically set thread context to COMPUTE for all CB tests.
+    """Automatically set thread context and scheduler for all CB tests.
 
     Note: These tests primarily exercise COMPUTE thread patterns (using store()).
     DM thread patterns (using copy operations) are tested separately in copy/pipe tests.
     The state machine enforces different expected operations for DM vs COMPUTE threads,
     so parametrizing these tests would require substantial test logic changes.
     """
+    from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
+
+    # Create a scheduler instance for the test
+    scheduler = GreenletScheduler()
+    set_scheduler(scheduler)
+
+    # Set thread context
     set_current_thread_type(ThreadType.COMPUTE)
+
+    # Simulate being within a thread by setting current name
+    scheduler._current_name = "test-thread"
+    scheduler._has_made_progress["test-thread"] = False
+
     yield
-    set_current_thread_type(None)  # Clean up
+
+    # Clean up
+    set_current_thread_type(None)
+    set_scheduler(None)
 
 
 @pytest.fixture

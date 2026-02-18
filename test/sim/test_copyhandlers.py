@@ -41,6 +41,30 @@ def api():
     return CBAPI()
 
 
+@pytest.fixture(autouse=True)
+def setup_scheduler_context():
+    """Automatically set scheduler context for all copy handler tests."""
+    from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
+    from python.sim.block import set_current_thread_type, ThreadType
+
+    # Create a scheduler instance for the test
+    scheduler = GreenletScheduler()
+    set_scheduler(scheduler)
+
+    # Set DM thread context (copy operations typically happen in DM threads)
+    set_current_thread_type(ThreadType.DM)
+
+    # Simulate being within a thread by setting current name
+    scheduler._current_name = "test-thread"
+    scheduler._has_made_progress["test-thread"] = False
+
+    yield
+
+    # Clean up
+    set_current_thread_type(None)
+    set_scheduler(None)
+
+
 class TestHandlerRegistry:
     """Test the handler registry mechanism."""
 

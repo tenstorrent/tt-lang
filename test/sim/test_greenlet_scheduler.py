@@ -176,7 +176,7 @@ class TestGreenletScheduler:
 
         set_scheduler(scheduler)
         try:
-            with pytest.raises(RuntimeError, match="t1.*ValueError.*Test error"):
+            with pytest.raises(RuntimeError, match="ValueError.*Test error"):
                 scheduler.run()
         finally:
             set_scheduler(None)

@@ -186,7 +186,6 @@ def main() -> None:
 
     parser.add_argument(
         "--scheduler",
-        "--schedalg",
         type=str,
         choices=["greedy", "fair"],
         default="greedy",
