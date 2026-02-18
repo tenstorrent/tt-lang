@@ -358,6 +358,9 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     auto cbTileIndex =
         utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    if (failed(cbTileIndex)) {
+      return failure();
+    }
 
     // Determine DST index from the source op:
     // - Tile compute ops and copy_dst: have dst_idx attribute
@@ -377,10 +380,10 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
                << defOp->getName();
       }
     } else {
-      dstIndex = cbTileIndex;
+      dstIndex = *cbTileIndex;
     }
 
-    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
+    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, *cbTileIndex,
                                      /*out_of_order=*/true);
 
     rewriter.eraseOp(op);

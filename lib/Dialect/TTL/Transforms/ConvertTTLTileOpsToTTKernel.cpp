@@ -400,11 +400,14 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
         rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
 
     // CB tile indices from enclosing loops.
-    Value cbIdx =
+    auto cbIdx =
         utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    if (failed(cbIdx)) {
+      return failure();
+    }
 
     rewriter.create<InitOp>(loc, *lhsCB, *rhsCB);
-    rewriter.create<TTKernelComputeOp>(loc, *lhsCB, *rhsCB, cbIdx, cbIdx,
+    rewriter.create<TTKernelComputeOp>(loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
                                        dstIdx);
 
     rewriter.replaceOp(op, adaptor.getLhs());
@@ -695,8 +698,12 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
                                funcOp)) {
       inCBIdx = computeBcastShapeExpansionIndex(op, rewriter, loc);
     } else {
-      inCBIdx =
+      auto cbIdx =
           utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+      if (failed(cbIdx)) {
+        return failure();
+      }
+      inCBIdx = *cbIdx;
     }
 
     auto ttkAttr = convertBcastType(op.getBcastType());

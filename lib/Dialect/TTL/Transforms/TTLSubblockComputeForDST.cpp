@@ -151,6 +151,14 @@ static FailureOr<ComputeOp> flattenComputeOp(ComputeOp computeOp) {
   IRMapping mapping;
   computeOp.getBody().cloneInto(&newOp.getBody(), mapping);
 
+  // After flattening to 1D, update LinearizedIndexOp maps to 1D identity.
+  // The original multi-dim map (e.g., (d0,d1) -> d0*4+d1) no longer matches
+  // the 1D iteration domain. The 1D identity (d0) -> (d0) is correct because
+  // the flattened iteration space IS the linearized index.
+  AffineMapAttr id1DAttr = AffineMapAttr::get(id1D);
+  newOp.getBody().front().walk(
+      [&](LinearizedIndexOp linIdx) { linIdx.setIndexMapAttr(id1DAttr); });
+
   // Copy custom attributes (ttl.unroll_factor, ttl.dst_allocation, etc.).
   // Skip builder-managed attributes.
   for (NamedAttribute attr : computeOp->getAttrs()) {
@@ -244,6 +252,25 @@ private:
       return success();
     }
 
+    // Adjust unroll_factor to evenly divide innerSize. The downstream pipeline
+    // requires constant loop bounds (no dynamic remainder blocks). Find the
+    // largest divisor of innerSize that is <= unrollFactor.
+    if (innerSize % unrollFactor != 0) {
+      int64_t adjusted = unrollFactor;
+      while (adjusted > 1 && innerSize % adjusted != 0) {
+        --adjusted;
+      }
+      LLVM_DEBUG(llvm::dbgs() << "Adjusted unroll_factor from " << unrollFactor
+                              << " to " << adjusted << " (innerSize="
+                              << innerSize << " must be evenly divisible)\n");
+      unrollFactor = adjusted;
+
+      // If adjusted to 1, no subblocking benefit -- skip.
+      if (unrollFactor <= 1) {
+        return success();
+      }
+    }
+
     // Create outer scf.for loop: side-effect-only (no iter_args).
     Value lb = b.create<arith::ConstantIndexOp>(loc, 0);
     Value ub = b.create<arith::ConstantIndexOp>(loc, innerSize);
@@ -263,21 +290,7 @@ private:
 
           // Override the tiling dimension with the current block.
           offsets[tilingDim] = iv;
-
-          // Handle remainder: min(unrollFactor, innerSize - iv).
-          if (innerSize % unrollFactor != 0) {
-            Value remaining = loopBuilder.create<arith::SubIOp>(
-                loopLoc,
-                loopBuilder.create<arith::ConstantIndexOp>(loopLoc, innerSize),
-                iv);
-            Value ufVal = loopBuilder.create<arith::ConstantIndexOp>(
-                loopLoc, unrollFactor);
-            Value blockSize =
-                loopBuilder.create<arith::MinSIOp>(loopLoc, ufVal, remaining);
-            sizes[tilingDim] = blockSize;
-          } else {
-            sizes[tilingDim] = loopBuilder.getIndexAttr(unrollFactor);
-          }
+          sizes[tilingDim] = loopBuilder.getIndexAttr(unrollFactor);
 
           // Use TilingInterface to create the tiled compute op.
           auto tiledResult =
@@ -286,9 +299,26 @@ private:
             return;
           }
 
-          // Remove the unroll_factor attribute from the tiled inner compute.
+          // Remove the unroll_factor attribute from the tiled inner compute
+          // and offset linearized indices by the outer loop IV (follows LLVM
+          // offsetIndices pattern). Inner IVs are local to the subblock
+          // (0..unroll_factor-1); copy_tile needs absolute CB position.
           for (Operation *tiledOp : tiledResult->tiledOps) {
             tiledOp->removeAttr("ttl.unroll_factor");
+
+            if (auto innerCompute = dyn_cast<ComputeOp>(tiledOp)) {
+              SmallVector<LinearizedIndexOp> linIdxOps;
+              innerCompute.getBody().front().walk(
+                  [&](LinearizedIndexOp op) { linIdxOps.push_back(op); });
+              for (LinearizedIndexOp linIdx : linIdxOps) {
+                OpBuilder::InsertionGuard guard(loopBuilder);
+                loopBuilder.setInsertionPointAfter(linIdx);
+                Value adjusted = loopBuilder.create<arith::AddIOp>(
+                    loopLoc, linIdx.getResult(), iv);
+                linIdx.getResult().replaceAllUsesExcept(
+                    adjusted, adjusted.getDefiningOp());
+              }
+            }
           }
 
           loopBuilder.create<scf::YieldOp>(loopLoc);

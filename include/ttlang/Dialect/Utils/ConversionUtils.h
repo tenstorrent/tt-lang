@@ -56,26 +56,70 @@ inline Value linearizeLoopIndices(OpBuilder &builder, Location loc,
 /// Compute linearized CB tile index from enclosing scf.for loops.
 /// When cbShapeRank > 0, only the innermost cbShapeRank loops are used.
 /// Returns constant 0 if not inside any loops.
-inline Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
-                                         size_t cbShapeRank = 0) {
+///
+/// Validates the loop structure produced by the subblock and lower-to-loops
+/// passes. Tile iteration loops (step == 1, lb == 0, constant bounds) are
+/// linearized row-major. Subblock loops (step > 1, lb == 0, constant bounds)
+/// contribute their IV as an absolute offset. Returns failure with diagnostics
+/// for unexpected loop structures (dynamic bounds, non-zero lower bounds,
+/// etc.).
+inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
+                                                    OpBuilder &builder,
+                                                    size_t cbShapeRank = 0) {
   SmallVector<scf::ForOp> loops = collectEnclosingLoops(op);
 
   if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
     loops.resize(cbShapeRank);
   }
 
+  // Validate and classify each enclosing loop.
+  // Tile iteration loops (step=1) are linearized row-major.
+  // Subblock loops (step>1) contribute their IV as an absolute offset.
+  SmallVector<scf::ForOp> tileLoops;
+  SmallVector<Value> subblockOffsets;
   for (scf::ForOp loop : loops) {
     auto lb = getConstantIntValue(loop.getLowerBound());
-    assert(lb && *lb == 0 &&
-           "computeCBTileIndexFromLoops: expected lower bound of 0");
-    auto ub = getConstantIntValue(loop.getUpperBound());
-    assert(ub && "computeCBTileIndexFromLoops: expected constant upper bound");
+    if (!lb) {
+      return op->emitOpError()
+             << "enclosing loop has dynamic lower bound; "
+             << "expected constant bounds from tile/subblock loops";
+    }
+    if (*lb != 0) {
+      return op->emitOpError()
+             << "enclosing loop has non-zero lower bound (" << *lb << "); "
+             << "expected lb=0 from tile/subblock loops";
+    }
+
     auto step = getConstantIntValue(loop.getStep());
-    assert(step && *step == 1 &&
-           "computeCBTileIndexFromLoops: expected step of 1");
+    if (!step) {
+      return op->emitOpError()
+             << "enclosing loop has dynamic step; "
+             << "expected constant step from tile/subblock loops";
+    }
+
+    auto ub = getConstantIntValue(loop.getUpperBound());
+    if (!ub) {
+      return op->emitOpError()
+             << "enclosing loop has dynamic upper bound; "
+             << "expected constant bounds from tile/subblock loops";
+    }
+
+    if (*step == 1) {
+      tileLoops.push_back(loop);
+    } else {
+      // Subblock loop: step > 1, IV encodes absolute starting tile position.
+      subblockOffsets.push_back(loop.getInductionVar());
+    }
   }
 
-  return linearizeLoopIndices(builder, op->getLoc(), loops);
+  Location loc = op->getLoc();
+  Value result = linearizeLoopIndices(builder, loc, tileLoops);
+
+  for (Value offset : subblockOffsets) {
+    result = builder.create<arith::AddIOp>(loc, result, offset);
+  }
+
+  return result;
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.
