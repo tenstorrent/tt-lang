@@ -18,11 +18,14 @@
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK:             ttl.tile_regs_acquire
-// Copies at first use (tile_add): A then B
-// CHECK:             %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]]
-// CHECK:             %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]]
-// CHECK:             %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
+// CHECK-NEXT:        ttl.tile_regs_acquire
+// CHECK-NEXT:        %[[LIN0:.*]] = ttl.linearized_index
+// CHECK-NEXT:        %[[C0:.*]] = arith.constant 0 : index
+// CHECK-NEXT:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[A]], %[[LIN0]], %[[C0]]
+// CHECK-NEXT:        %[[LIN1:.*]] = ttl.linearized_index
+// CHECK-NEXT:        %[[C1:.*]] = arith.constant 1 : index
+// CHECK-NEXT:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[B]], %[[LIN1]], %[[C1]]
+// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE1]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE1]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
@@ -30,8 +33,8 @@
 // CHECK-NEXT:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] {dst_idx = 0 : i32}
 // SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 2 : i32}
-// CHECK:             %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK:             ttl.tile_regs_commit
+// CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
+// CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[SQRT]], %[[VIEW]]
 // CHECK-NEXT:        ttl.tile_regs_release
