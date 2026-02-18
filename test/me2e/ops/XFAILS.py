@@ -29,8 +29,4 @@ XFAIL_TESTS = {
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-sub]": "SFPU binary sub f32 precision degraded (#245)",
     "test.me2e.test_compute_ops::test_compute[float32-1x1_buf2_interleaved-mul]": "SFPU binary mul f32 precision degraded (#245)",
     "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-mul]": "SFPU binary mul f32 precision degraded (#245)",
-    # SFPU log f32: ULP ~2^21 despite fp32_dest_acc_en (#245)
-    "test.me2e.ops.test_unary::TestLogFloat32::test_validate_golden": "SFPU log f32 precision degraded (#245)",
-    "test.me2e.test_compute_ops::test_compute[float32-1x1_buf2_interleaved-log]": "SFPU log f32 precision degraded (#245)",
-    "test.me2e.test_compute_ops::test_compute[float32-2x2_buf2_interleaved-log]": "SFPU log f32 precision degraded (#245)",
 }

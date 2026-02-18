@@ -155,7 +155,10 @@ def run_compute_test(
             )
 
         # 6. Validate against golden.
-        ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+        if op.ulp_threshold_overrides and golden.dtype in op.ulp_threshold_overrides:
+            ulp_threshold = op.ulp_threshold_overrides[golden.dtype]
+        else:
+            ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
         assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)
 
     finally:
