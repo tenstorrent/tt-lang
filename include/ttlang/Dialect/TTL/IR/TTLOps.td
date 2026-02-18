@@ -726,6 +726,7 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     AnyRankedTensor:$view
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
+  let hasVerifier = 1;
 }
 
 def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
