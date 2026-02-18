@@ -351,14 +351,14 @@ def test_heterogeneous_cbs_in_same_api():
         write1 = cb1.reserve()
         test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
         write1.store(test_tensors_1)
-        cb1.push()
+        write1.push()
 
         # Read and use as source
         read1 = cb1.wait()
         write1_2 = cb1.reserve()
         write1_2.store(read1)  # This marks read1 as used (STORE_SRC)
-        cb1.pop()  # Pop read1 (now that it's been used as source)
-        cb1.push()  # Push write1_2
+        read1.pop()  # Pop read1 (now that it's been used as source)
+        write1_2.push()  # Push write1_2
 
         # Test second circular buffer
         write2 = cb2.reserve()
@@ -366,14 +366,14 @@ def test_heterogeneous_cbs_in_same_api():
             make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))
         ]
         write2.store(test_tensors_2)
-        cb2.push()
+        write2.push()
 
         # Read and use as source
         read2 = cb2.wait()
         write2_2 = cb2.reserve()
         write2_2.store(read2)  # This marks read2 as used (STORE_SRC)
-        cb2.pop()  # Pop read2 (now that it's been used as source)
-        cb2.push()  # Push write2_2
+        read2.pop()  # Pop read2 (now that it's been used as source)
+        write2_2.push()  # Push write2_2
 
         # Verify both CBs used the same API instance
         assert cb1._api is api  # type: ignore
@@ -407,25 +407,25 @@ def test_default_api_heterogeneous():
         write1 = cb1.reserve()
         tensor1 = make_full_tensor(32, 32, 42.0)
         write1.store([tensor1])
-        cb1.push()
+        write1.push()
 
         write2 = cb2.reserve()
         tensor2 = make_full_tensor(32, 32, 0.0)
         write2.store([tensor2])
-        cb2.push()
+        write2.push()
 
         # Read and use as source
         read1 = cb1.wait()
         write1_2 = cb1.reserve()
         write1_2.store(read1)  # Use as source (STORE_SRC)
-        cb1.pop()  # Pop read1 (now that it's been used as source)
-        cb1.push()  # Push write1_2
+        read1.pop()  # Pop read1 (now that it's been used as source)
+        write1_2.push()  # Push write1_2
 
         read2 = cb2.wait()
         write2_2 = cb2.reserve()
         write2_2.store(read2)  # Use as source (STORE_SRC)
-        cb2.pop()  # Pop read2 (now that it's been used as source)
-        cb2.push()  # Push write2_2
+        read2.pop()  # Pop read2 (now that it's been used as source)
+        write2_2.push()  # Push write2_2
     finally:
         # Clear thread context
         _set_current_thread_type(None)

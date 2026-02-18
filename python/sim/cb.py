@@ -119,6 +119,12 @@ class _BlockContextManager:
     def __matmul__(self, other: "Block") -> "Block":
         return self._block.__matmul__(other)
 
+    def pop(self) -> None:
+        self._cb.pop_block()
+
+    def push(self) -> None:
+        self._cb.push_block()
+
 
 class ReserveContext(_BlockContextManager):
     """Context manager for reserve operations that automatically pushes on exit.
@@ -130,11 +136,11 @@ class ReserveContext(_BlockContextManager):
     Or without (for backward compatibility):
         blk = cb.reserve()
         blk.store(data)
-        cb.push()  # manual push required
+        blk.push()  # manual push required
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        super().__init__(cb, block, cb.push)
+        super().__init__(cb, block, cb.push_block)
 
 
 class WaitContext(_BlockContextManager):
@@ -147,11 +153,11 @@ class WaitContext(_BlockContextManager):
     Or without (for backward compatibility):
         blk = cb.wait()
         data = blk[0]
-        cb.pop()  # manual pop required
+        blk.pop()  # manual pop required
     """
 
     def __init__(self, cb: "CircularBuffer", block: Block):
-        super().__init__(cb, block, cb.pop)
+        super().__init__(cb, block, cb.pop_block)
 
 
 # TODO: Should this class now be private?
@@ -172,12 +178,12 @@ class CircularBuffer:
         # Producer workflow
         write_view = cb.reserve()  # Reserve space for 6 tiles
         # ... write data to write_view ...
-        cb.push()  # Make data visible
+        write_view.push()  # Make data visible
 
         # Consumer workflow
         read_view = cb.wait()  # Wait for 6 tiles
         # ... read data from read_view ...
-        cb.pop()  # Free consumed tiles
+        read_view.pop()  # Free consumed tiles
     """
 
     def __init__(
@@ -260,7 +266,7 @@ class CircularBuffer:
         Or without (for backward compatibility):
             blk = cb.wait()
             data = blk[0]
-            cb.pop()  # manual pop required
+            blk.pop()  # manual pop required
 
         Returns:
             Context manager providing read access to the available tiles
@@ -322,7 +328,7 @@ class CircularBuffer:
         Or without (for backward compatibility):
             blk = cb.reserve()
             blk.store(data)
-            cb.push()  # manual push required
+            blk.push()  # manual push required
 
         Returns:
             Context manager providing write access to the reserved space
@@ -372,7 +378,7 @@ class CircularBuffer:
         stats = api.cb_stats(cb_id)
         return stats.free >= self._tiles_per_operation
 
-    def push(self) -> None:
+    def push_block(self) -> None:
         """
         Finalize a write operation, making reserved data visible to consumers.
 
@@ -393,7 +399,7 @@ class CircularBuffer:
         api, cb_id = self._ensure_initialized()
         api.cb_push_back(cb_id, self._tiles_per_operation)
 
-    def pop(self) -> None:
+    def pop_block(self) -> None:
         """
         Finalize a read operation, freeing consumed data.
 

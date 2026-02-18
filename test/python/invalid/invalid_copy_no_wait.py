@@ -40,22 +40,22 @@ def copy_no_wait_kernel(lhs, out):
         l = lhs_cb.wait()
         o = out_cb.reserve()
         o.store(l)
-        lhs_cb.pop()
-        out_cb.push()
+        l.pop()
+        o.push()
 
     @ttl.datamovement()
     def dm_read():
         lhs_blk = lhs_cb.reserve()
         tx = ttl.copy(lhs[0, 0], lhs_blk)
         # BUG: Forgot to call tx.wait() - this should be caught by MLIR verifier
-        lhs_cb.push()
+        lhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_cb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
-        out_cb.pop()
+        out_blk.pop()
 
 
 # PRETTY: error: expects transfer handle to be synchronized with ttl.wait
