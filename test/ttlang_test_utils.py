@@ -119,11 +119,33 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
 # =============================================================================
 
 
+def _torch_to_ttnn_dtype(torch_dtype):
+    """Map torch dtype to the corresponding ttnn dtype for ttnn.from_torch.
+
+    Args:
+        torch_dtype: A torch.dtype value (e.g. torch.float32, torch.bfloat16).
+
+    Returns:
+        Corresponding ttnn dtype attribute (e.g. ttnn.float32, ttnn.bfloat16).
+        Falls back to ttnn.bfloat16 for unsupported dtypes.
+    """
+    import torch
+
+    ttnn = _get_ttnn()
+    if ttnn is None:
+        raise RuntimeError("TTNN not available")
+    _map = {
+        torch.float32: ttnn.float32,
+        torch.bfloat16: ttnn.bfloat16,
+    }
+    return _map.get(torch_dtype, ttnn.bfloat16)
+
+
 def to_dram(torch_tensor, device):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
     Args:
-        torch_tensor: Source torch tensor (typically bfloat16)
+        torch_tensor: Source torch tensor
         device: TTNN device handle
 
     Returns:
@@ -134,7 +156,7 @@ def to_dram(torch_tensor, device):
         raise RuntimeError("TTNN not available")
     return ttnn.from_torch(
         torch_tensor,
-        dtype=ttnn.bfloat16,
+        dtype=_torch_to_ttnn_dtype(torch_tensor.dtype),
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -147,7 +169,7 @@ def to_l1(torch_tensor, device):
     Creates in DRAM first then moves to L1 (required by TTNN).
 
     Args:
-        torch_tensor: Source torch tensor (typically bfloat16)
+        torch_tensor: Source torch tensor
         device: TTNN device handle
 
     Returns:
@@ -156,13 +178,7 @@ def to_l1(torch_tensor, device):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
-    dram_tensor = ttnn.from_torch(
-        torch_tensor,
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    dram_tensor = to_dram(torch_tensor, device)
     return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 
