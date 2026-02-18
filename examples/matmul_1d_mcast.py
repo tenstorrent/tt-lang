@@ -40,9 +40,6 @@ def matmul_1d(
         + granularity_m * granularity_k * Mb * Kb * nb_per_core
     )
     write_tiles = (granularity_n * granularity_m) * Mb * Nb
-    print(
-        "(Reads {0} tiles, writes {1} tiles) ".format(read_tiles, write_tiles), end=""
-    )
 
     bf = 2
     a_cb = ttl.make_circular_buffer_like(
@@ -131,13 +128,6 @@ def test_matmul_1d(Mt, Nt, Kt, granularity_m, granularity_n, granularity_k):
     M = Mt * ttnn.TILE_SIZE
     N = Nt * ttnn.TILE_SIZE
     K = Kt * ttnn.TILE_SIZE
-
-    print(
-        "Testing a[M={0}, K={1}] @ b[K={1}, N={2}] = out[M={0}, N={2}]: ".format(
-            M, K, N
-        ),
-        end="",
-    )
 
     a = ttnn.rand(
         (M, K),
