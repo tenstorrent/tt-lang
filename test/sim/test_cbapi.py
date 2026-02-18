@@ -26,7 +26,15 @@ def setup_thread_context():
     We use COMPUTE here, but the actual thread type doesn't affect CBAPI behavior.
     State machine validation happens at the Block level, which is tested separately.
     """
-    from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
+    from greenlet import greenlet
+    from python.sim.greenlet_scheduler import (
+        GreenletScheduler,
+        set_scheduler,
+        set_scheduler_algorithm,
+    )
+
+    # Use fair scheduler (the default)
+    set_scheduler_algorithm("fair")
 
     # Create a scheduler instance for the test
     scheduler = GreenletScheduler()
@@ -35,8 +43,19 @@ def setup_thread_context():
     # Set thread context
     set_current_thread_type(ThreadType.COMPUTE)
 
-    # Simulate being within a thread by setting current name
+    # Set the main greenlet to the current greenlet (for switching back)
+    scheduler._main_greenlet = greenlet.getcurrent()
+
+    # Simulate being within a thread by adding to _active
+    test_greenlet = greenlet(lambda: None)
     scheduler._current_name = "test-thread"
+    scheduler._active["test-thread"] = (
+        test_greenlet,
+        None,  # blocking_obj
+        "",  # operation
+        ThreadType.COMPUTE,  # thread_type
+        "",  # location
+    )
     scheduler._has_made_progress["test-thread"] = False
 
     yield

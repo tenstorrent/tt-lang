@@ -557,11 +557,15 @@ def set_scheduler(scheduler: Optional[GreenletScheduler]) -> None:
 
 
 def block_if_needed(obj: Any, operation: str) -> None:
-    """Block current thread if operation cannot proceed.
+    """Block current thread if operation cannot proceed, or yield for fair scheduling.
 
-    Checks if the operation can proceed by calling obj.can_{operation}().
-    If it returns False, blocks the current thread via the scheduler.
-    If it returns True, marks that the thread has made progress.
+    For greedy scheduler:
+    - Only blocks if the operation cannot proceed (can_{operation}() returns False)
+
+    For fair scheduler:
+    - Always yields at synchronization points to give other threads a chance
+    - Checks if operation can proceed and blocks if it can't
+    - If it can proceed, yields anyway but will resume immediately when scheduled
 
     Args:
         obj: Object with can_{operation}() method to check
@@ -569,10 +573,20 @@ def block_if_needed(obj: Any, operation: str) -> None:
     """
     can_method = getattr(obj, f"can_{operation}")
     scheduler = get_scheduler()
+    algorithm = get_scheduler_algorithm()
 
-    if not can_method():
-        # Can't proceed - block
-        scheduler.block_current_thread(obj, operation)
-    else:
-        # Can proceed - mark that thread has made progress
+    if algorithm == "fair":
+        # Fair scheduler: always yield at synchronization points
         scheduler.mark_thread_progress()
+        # Always yield to give other threads a chance
+        scheduler.block_current_thread(obj, operation)
+        # When we resume, check again if we can proceed (in case state changed)
+        if not can_method():
+            # Still can't proceed after resuming, block again
+            scheduler.block_current_thread(obj, operation)
+    else:
+        # Greedy scheduler: only block if we can't proceed
+        if not can_method():
+            scheduler.block_current_thread(obj, operation)
+        else:
+            scheduler.mark_thread_progress()
