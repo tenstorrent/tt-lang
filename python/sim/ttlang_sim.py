@@ -178,7 +178,6 @@ def main() -> None:
 
     parser.add_argument(
         "--show-stats",
-        "--tensor-stats",
         action="store_true",
         dest="show_stats",
         help="Print tensor read/write statistics after execution",
@@ -188,7 +187,7 @@ def main() -> None:
         "--scheduler",
         type=str,
         choices=["greedy", "fair"],
-        default="greedy",
+        default="fair",
         dest="scheduler",
         help="Scheduler algorithm: 'greedy' (run until block) or 'fair' (least recently run)",
     )

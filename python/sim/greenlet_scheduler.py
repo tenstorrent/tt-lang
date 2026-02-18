@@ -169,6 +169,27 @@ class GreenletScheduler:
         if name in self._last_run:
             del self._last_run[name]
 
+    def mark_thread_progress(self) -> None:
+        """Mark that the current thread has made progress.
+
+        This is called by block_if_needed when a thread successfully proceeds
+        past a blocking check without actually blocking.
+
+        Raises:
+            RuntimeError: If no current thread is set or thread not found
+        """
+        if self._current_name is None:
+            raise RuntimeError(
+                "mark_thread_progress called but no current thread is set. "
+                "This indicates a bug in the scheduler."
+            )
+        if self._current_name not in self._has_made_progress:
+            raise RuntimeError(
+                f"Thread {self._current_name} not found in progress tracking. "
+                "This indicates a bug in the scheduler."
+            )
+        self._has_made_progress[self._current_name] = True
+
     def _initialization_phase(self) -> None:
         """Run all threads sequentially until they first block.
 
@@ -215,16 +236,57 @@ class GreenletScheduler:
                 clear_current_thread_type()
                 self._current_name = None
 
-                # Re-raise with context
+                # Format error with thread name and source location using pretty printing
                 import traceback
 
-                tb_str = traceback.format_exc()
-                error_msg = f"{type(e).__name__}: {e}"
-                print(f"\n❌ {error_msg}")
-                print("   traceback:")
-                print(tb_str)
+                # Extract source location from traceback
+                # Look for the first frame that's in user code (not in python/sim)
+                tb = traceback.extract_tb(e.__traceback__)
+                source_file = None
+                source_line = None
+                source_col = None
+                for frame in tb:
+                    # Skip internal greenlet/scheduler/simulator frames
+                    if (
+                        "greenlet_scheduler.py" not in frame.filename
+                        and "greenlet" not in frame.filename
+                        and "/python/sim/" not in frame.filename
+                    ):
+                        source_file = frame.filename
+                        source_line = frame.lineno
+                        source_col = getattr(frame, "colno", None) or 1
+                        break
+
+                # Use TTLangCompileError for pretty formatting if we have source location
+                if source_file and source_line:
+                    try:
+                        TTLangCompileError = _get_ttlang_compile_error()
+                        compile_error = TTLangCompileError(
+                            f"{type(e).__name__}: {e}",
+                            source_file=source_file,
+                            line=source_line,
+                            col=source_col,
+                        )
+                        print(f"\n❌ Error in {name}:")
+                        print(compile_error.format())
+                        print("-" * 50)
+                        # Re-raise with thread name included for test compatibility
+                        error_msg = f"{name}: {type(e).__name__}: {e}"
+                        raise RuntimeError(error_msg) from e
+                    except ImportError:
+                        # Fallback if TTLangCompileError is not available
+                        pass
+
+                # Fallback to basic formatting
+                print(f"\n❌ Error in {name}:")
+                if source_file and source_line:
+                    print(f"  File: {source_file}:{source_line}")
+                print(f"  {type(e).__name__}: {e}")
                 print("-" * 50)
-                raise RuntimeError(error_msg)
+
+                # Re-raise with thread name included
+                error_msg = f"{name}: {type(e).__name__}: {e}"
+                raise RuntimeError(error_msg) from e
 
             clear_current_thread_type()
 
@@ -513,14 +575,4 @@ def block_if_needed(obj: Any, operation: str) -> None:
         scheduler.block_current_thread(obj, operation)
     else:
         # Can proceed - mark that thread has made progress
-        if scheduler._current_name is None:
-            raise RuntimeError(
-                "block_if_needed called but no current thread is set. "
-                "This indicates a bug in the scheduler."
-            )
-        if scheduler._current_name not in scheduler._has_made_progress:
-            raise RuntimeError(
-                f"Thread {scheduler._current_name} not found in progress tracking. "
-                "This indicates a bug in the scheduler."
-            )
-        scheduler._has_made_progress[scheduler._current_name] = True
+        scheduler.mark_thread_progress()

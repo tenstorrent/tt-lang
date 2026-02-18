@@ -176,14 +176,17 @@ def test_multicore_reuse_matmul() -> None:
     assert_success_output(code, out)
 
 
-def test_eltwise_add2_fails_with_expected_error() -> None:
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     """Test that eltwise_add_error.py fails with the expected copy validation error.
 
     This example demonstrates a common mistake: copying a single tile into a
     block that expects multiple tiles. The error message should clearly indicate
     the mismatch and point to the exact line where the error occurs.
     """
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / "eltwise_add_error.py")
+    code, out = run_ttlang_sim_and_capture(
+        EXAMPLES_DIR / "eltwise_add_error.py", scheduler=scheduler
+    )
     assert (
         code != 0
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
@@ -213,14 +216,17 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
         )
 
 
-def test_copy_lock_error_fails_with_expected_error() -> None:
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
     """Test that copy_lock_error.py fails with the expected copy locking error.
 
     This example demonstrates incorrect block access during copy operations:
     attempting to write to a block destination before wait() completes. The error
     message should clearly indicate the access violation.
     """
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / "copy_lock_error.py")
+    code, out = run_ttlang_sim_and_capture(
+        EXAMPLES_DIR / "copy_lock_error.py", scheduler=scheduler
+    )
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy access violation)
     assert (
