@@ -20,6 +20,7 @@ def test_ttl_passes_registered():
     func_passes = [
         "convert-ttl-to-compute",
         "ttl-assign-dst",
+        "ttl-subblock-compute-for-dst",
         "ttl-insert-tile-regs-sync",
         "ttl-lower-to-loops",
         "ttl-annotate-cb-associations",
@@ -30,6 +31,7 @@ def test_ttl_passes_registered():
         print(f"{pass_name} pass registered")
         # CHECK: convert-ttl-to-compute pass registered
         # CHECK: ttl-assign-dst pass registered
+        # CHECK: ttl-subblock-compute-for-dst pass registered
         # CHECK: ttl-insert-tile-regs-sync pass registered
         # CHECK: ttl-lower-to-loops pass registered
         # CHECK: ttl-annotate-cb-associations pass registered

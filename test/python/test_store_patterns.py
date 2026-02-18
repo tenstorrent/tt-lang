@@ -151,33 +151,33 @@ def device():
     ttnn.close_device(dev)
 
 
-def test_passthrough(device):
+def test_passthrough(device, compiler_options):
     inp = to_dram(torch.full((32, 32), 42.0, dtype=torch.bfloat16), device)
     out = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
-    passthrough_kernel(inp, out)
+    passthrough_kernel(inp, out, options=compiler_options)
     result = ttnn.to_torch(out).float()
     assert torch.allclose(result, torch.full_like(result, 42.0))
 
 
-def test_double_store(device):
+def test_double_store(device, compiler_options):
     a = to_dram(torch.full((32, 32), 3.0, dtype=torch.bfloat16), device)
     b = to_dram(torch.full((32, 32), 2.0, dtype=torch.bfloat16), device)
     out = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
-    double_store_kernel(a, b, out)
+    double_store_kernel(a, b, out, options=compiler_options)
     result = ttnn.to_torch(out).float()
     expected = torch.full_like(result, 6.0)
     assert torch.allclose(result, expected)
 
 
-def test_same_tile_two_outputs(device):
+def test_same_tile_two_outputs(device, compiler_options):
     a = to_dram(torch.full((32, 32), 3.0, dtype=torch.bfloat16), device)
     b = to_dram(torch.full((32, 32), 2.0, dtype=torch.bfloat16), device)
     out1 = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
     out2 = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
-    same_tile_two_outputs_kernel(a, b, out1, out2)
+    same_tile_two_outputs_kernel(a, b, out1, out2, options=compiler_options)
     r1 = ttnn.to_torch(out1).float()
     r2 = ttnn.to_torch(out2).float()
     expected = torch.full_like(r1, 5.0)
@@ -185,13 +185,13 @@ def test_same_tile_two_outputs(device):
     assert torch.allclose(r2, expected)
 
 
-def test_store_then_forward(device):
+def test_store_then_forward(device, compiler_options):
     a = to_dram(torch.full((32, 32), 3.0, dtype=torch.bfloat16), device)
     b = to_dram(torch.full((32, 32), 2.0, dtype=torch.bfloat16), device)
     out_main = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
     out_copy = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
-    store_then_forward_kernel(a, b, out_main, out_copy)
+    store_then_forward_kernel(a, b, out_main, out_copy, options=compiler_options)
     rm = ttnn.to_torch(out_main).float()
     rc = ttnn.to_torch(out_copy).float()
     assert torch.allclose(rm, torch.full_like(rm, 5.0))

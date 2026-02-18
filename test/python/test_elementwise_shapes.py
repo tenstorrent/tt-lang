@@ -324,7 +324,7 @@ UNARY_OPS = {
 
 @pytest.mark.parametrize("tile_shape", TILE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles")
 @pytest.mark.parametrize("op_name", BINARY_OPS.keys())
-def test_binary_op(device, op_name, tile_shape):
+def test_binary_op(device, op_name, tile_shape, compiler_options):
     """Test binary elementwise operation across different shapes."""
     tile_rows, tile_cols = tile_shape
     tensor_shape = tiles_to_tensor_shape(tile_rows, tile_cols)
@@ -341,7 +341,7 @@ def test_binary_op(device, op_name, tile_shape):
     rhs = to_dram(rhs_torch, device)
     out = to_dram(out_torch, device)
 
-    kernel(lhs, rhs, out)
+    kernel(lhs, rhs, out, options=compiler_options)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
@@ -349,7 +349,7 @@ def test_binary_op(device, op_name, tile_shape):
 
 @pytest.mark.parametrize("tile_shape", TILE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles")
 @pytest.mark.parametrize("op_name", BINARY_FN_OPS.keys())
-def test_binary_fn_op(device, op_name, tile_shape):
+def test_binary_fn_op(device, op_name, tile_shape, compiler_options):
     """Test binary elementwise operation (function call) across different shapes."""
     tile_rows, tile_cols = tile_shape
     tensor_shape = tiles_to_tensor_shape(tile_rows, tile_cols)
@@ -366,7 +366,7 @@ def test_binary_fn_op(device, op_name, tile_shape):
     rhs = to_dram(rhs_torch, device)
     out = to_dram(out_torch, device)
 
-    kernel(lhs, rhs, out)
+    kernel(lhs, rhs, out, options=compiler_options)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
@@ -374,7 +374,7 @@ def test_binary_fn_op(device, op_name, tile_shape):
 
 @pytest.mark.parametrize("tile_shape", TILE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles")
 @pytest.mark.parametrize("op_name", UNARY_OPS.keys())
-def test_unary_op(device, op_name, tile_shape):
+def test_unary_op(device, op_name, tile_shape, compiler_options):
     """Test unary elementwise operation across different shapes."""
     tile_rows, tile_cols = tile_shape
     tensor_shape = tiles_to_tensor_shape(tile_rows, tile_cols)
@@ -390,7 +390,7 @@ def test_unary_op(device, op_name, tile_shape):
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    kernel(inp, out)
+    kernel(inp, out, options=compiler_options)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)

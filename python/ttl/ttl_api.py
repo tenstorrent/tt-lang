@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import functools
 import inspect
 import os
@@ -100,16 +101,42 @@ def _get_tensor_cache_info(tensor) -> tuple:
     return (shape, dtype, memory_space, layout)
 
 
+@dataclasses.dataclass(frozen=True)
+class CompilerOptions:
+    """Compiler pipeline options for kernel compilation.
+
+    Frozen so it's hashable and usable directly as a cache key component.
+    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
+    """
+
+    maximize_dst: bool = True
+
+    @staticmethod
+    def from_string(options: Optional[str]) -> "CompilerOptions":
+        """Parse CuTe-style option string."""
+        kwargs: dict = {}
+        if options:
+            for token in options.split():
+                if token == "--maximize-dst":
+                    kwargs["maximize_dst"] = True
+                elif token == "--no-maximize-dst":
+                    kwargs["maximize_dst"] = False
+                else:
+                    raise ValueError(f"Unknown kernel option: {token!r}")
+        return CompilerOptions(**kwargs)
+
+
 def _make_cache_key(
     args: tuple,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    compiler_options: CompilerOptions,
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     tensor_key = tuple(
         _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
     )
-    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en)
+    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en, compiler_options)
 
 
 def _should_execute() -> bool:
@@ -828,6 +855,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    compiler_options: CompilerOptions = CompilerOptions(),
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -845,6 +873,7 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        compiler_options: Compiler pipeline options
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1013,6 +1042,10 @@ def _compile_kernel(
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
             "func.func(ttl-assign-dst)",
+        ]
+        if compiler_options.maximize_dst:
+            pipeline_passes.append("func.func(ttl-subblock-compute-for-dst)")
+        pipeline_passes += [
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
             "func.func(ttl-annotate-cb-associations)",
@@ -1131,6 +1164,7 @@ def pykernel_gen(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    options: Optional[str] = None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -1191,6 +1225,10 @@ def pykernel_gen(
 
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
+            # Extract runtime options (allow per-call override via kwarg)
+            runtime_options = kwargs.pop("options", options)
+            compiler_options = CompilerOptions.from_string(runtime_options)
+
             resolved_grid = _resolve_grid(grid, args, kwargs)
             fp32_override = fp32_dest_acc_en
             dst_sync_override = dst_full_sync_en
@@ -1198,9 +1236,9 @@ def pykernel_gen(
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
                 args,
-                # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
+                compiler_options=compiler_options,
             )
 
             # Check cache for previously compiled kernel
@@ -1224,6 +1262,7 @@ def pykernel_gen(
                     program_hash,
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
+                    compiler_options=compiler_options,
                 )
 
                 if compiled_kernel is not None:
@@ -1264,4 +1303,5 @@ __all__ = [
     "CopyTransferHandler",
     "copy",
     "CompiledTTNNKernel",
+    "CompilerOptions",
 ]

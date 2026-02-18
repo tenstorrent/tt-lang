@@ -242,7 +242,7 @@ UNARY_OPS = {
 
 
 @pytest.mark.parametrize("op_name", BINARY_OPS.keys())
-def test_binary_op(device, op_name):
+def test_binary_op(device, op_name, compiler_options):
     """Test binary elementwise operation with L1 memory."""
     kernel, torch_fn = BINARY_OPS[op_name]
 
@@ -255,14 +255,14 @@ def test_binary_op(device, op_name):
     rhs = to_l1(rhs_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(lhs, rhs, out)
+    kernel(lhs, rhs, out, options=compiler_options)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("op_name", UNARY_OPS.keys())
-def test_unary_op(device, op_name):
+def test_unary_op(device, op_name, compiler_options):
     """Test unary elementwise operation with L1 memory."""
     kernel, torch_fn = UNARY_OPS[op_name]
 
@@ -274,7 +274,7 @@ def test_unary_op(device, op_name):
     inp = to_l1(inp_torch, device)
     out = to_l1(out_torch, device)
 
-    kernel(inp, out)
+    kernel(inp, out, options=compiler_options)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)

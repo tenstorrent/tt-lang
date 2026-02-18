@@ -83,7 +83,7 @@ def axby_fused_kernel(a, x, b, y, out):
             tx.wait()
 
 
-def test_axby_fused_multiply_add(device):
+def test_axby_fused_multiply_add(device, compiler_options):
     """Test a*x + b*y pattern with 4 separate circular buffers."""
     # Test values: a=2, x=3, b=4, y=5
     # Expected: 2*3 + 4*5 = 6 + 20 = 26
@@ -101,7 +101,7 @@ def test_axby_fused_multiply_add(device):
     y_t = to_dram(y_torch, device)
     out_t = to_dram(out_torch, device)
 
-    axby_fused_kernel(a_t, x_t, b_t, y_t, out_t)
+    axby_fused_kernel(a_t, x_t, b_t, y_t, out_t, options=compiler_options)
     result = ttnn.to_torch(out_t)
 
     assert_allclose(result, expected, rtol=0.01, atol=0.1)

@@ -39,7 +39,7 @@ file responsible.
 | 6 | `extract_slice` cleanup in final lowering | Done | `ConvertTTLToTTKernel.cpp` |
 | 7 | Operation category traits | Done | `TTLBase.td`, `TTL.h`, `TTLOps.td`, `TTLOpsUtils.h` |
 | 8 | FPU-aware DST pressure in `unroll_factor` | Done | `TTLAssignDST.cpp` |
-| 9 | Pipeline option to gate DST maximization | Not started | `TTLPipelines.h`, `TTLPipelines.cpp` |
+| 9 | Pipeline option to gate DST maximization | Done | `TTLPipelines.h`, `TTLPipelines.cpp`, `ttl_api.py` |
 | 10 | Integrated unrolling in lower-to-loops | Not started | `ConvertTTLComputeToSCF.cpp` |
 | 11 | Subblock-level synchronization insertion | Not started | — |
 | 12 | Operation grouping (by-kind scheduling) | Not started | Design: `DST_Allocation.md` Phase 0 |
@@ -410,27 +410,13 @@ Add a `maximize-dst` option to `TTLToTTKernelPipelineOptions`:
 ```cpp
 Option<bool> maximizeDST{*this, "maximize-dst",
                          llvm::cl::desc("Enable DST maximization "
-                                        "(subblocking and unrolling)."),
-                         llvm::cl::init(false)};
+                                        "via subblock compute."),
+                         llvm::cl::init(true)};
 ```
 
 ### Pipeline Behavior
 
-**Without `--maximize-dst`** (default — baseline compilation):
-
-```
-convert-ttl-to-compute
-set-compute-kernel-config
-insert-tile-regs-sync       ← per-tile sync (current behavior)
-lower-to-loops
-annotate-cb-associations
-convert-ttl-to-ttkernel
-```
-
-No `assign-dst`, no `subblock-compute-for-dst`. Each tile gets its own
-acquire/release cycle. This is correct but suboptimal.
-
-**With `--maximize-dst`** (optimized compilation):
+**With `--maximize-dst`** (default — optimized compilation):
 
 ```
 convert-ttl-to-compute
@@ -444,6 +430,23 @@ annotate-cb-associations
 convert-ttl-to-ttkernel
 ```
 
+**Without `--maximize-dst`** (baseline compilation via
+`--maximize-dst=false` in C++ or `options="--no-maximize-dst"` in Python):
+
+```
+convert-ttl-to-compute
+set-compute-kernel-config
+assign-dst                  ← always runs (assigns dst_idx attributes)
+insert-tile-regs-sync       ← per-tile sync (baseline behavior)
+lower-to-loops
+annotate-cb-associations
+convert-ttl-to-ttkernel
+```
+
+No `subblock-compute-for-dst`. Each tile gets its own acquire/release
+cycle. `assign-dst` still runs because `dst_idx` attributes are needed
+by all compute lowering.
+
 ### Why This Matters
 
 1. **Incremental development**: Each optimization component can be
@@ -453,13 +456,12 @@ convert-ttl-to-ttkernel
    elsewhere.
 3. **Correctness first**: The baseline path establishes a correct
    reference. The optimized path must produce equivalent results.
-4. **Testing**: Lit tests can run both paths (`RUN: ... --maximize-dst`
-   vs `RUN: ...`) to verify the optimization preserves semantics.
+4. **Testing**: Lit tests can run both paths
+   (`--ttl-to-ttkernel-pipeline{maximize-dst=false}` vs default) to
+   verify the optimization preserves semantics.
 
-Currently, `assign-dst` and `subblock-compute-for-dst` always run in
-the pipeline (`TTLPipelines.cpp`). These need to be gated behind the
-option. The individual pass tests (e.g., `ttl-assign-dst`) are
-unaffected — they invoke passes directly, not through the pipeline.
+The individual pass tests (e.g., `ttl-assign-dst`) are unaffected —
+they invoke passes directly, not through the pipeline.
 
 ## Pipeline Ordering Constraints
 

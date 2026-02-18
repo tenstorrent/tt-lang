@@ -14,10 +14,16 @@ from typing import Any, Optional
 from ttmlir.ir import Module
 from ttmlir.passmanager import PassManager
 
+from ttl.ttl_api import CompilerOptions
+
 from .device_arch import get_mock_arch_from_device
 
 
-def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Module:
+def compile_ttl_to_ttkernel(
+    module: Module,
+    device: Optional[Any] = None,
+    compiler_options: Optional[CompilerOptions] = None,
+) -> Module:
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
 
@@ -26,23 +32,35 @@ def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Mod
     Args:
         module: TTL MLIR module to compile.
         device: Optional TTNN device for architecture detection.
+        compiler_options: Compiler pipeline options.
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
+    opts = compiler_options or CompilerOptions()
+
     # Always use mock architecture detected from device.
     mock_arch = get_mock_arch_from_device(device)
     device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
 
+    # Build function-level passes.
+    func_passes = [
+        "convert-ttl-to-compute",
+        "ttl-assign-dst",
+    ]
+    if opts.maximize_dst:
+        func_passes.append("ttl-subblock-compute-for-dst")
+    func_passes += [
+        "ttl-insert-tile-regs-sync",
+        "ttl-lower-to-loops",
+        "ttl-annotate-cb-associations",
+    ]
+    func_passes_str = ",".join(func_passes)
+
     pipeline_str = (
         f"builtin.module("
         f"{device_pass},"
-        # TTL to compute conversion (runs on each function).
-        f"func.func(convert-ttl-to-compute,"
-        f"ttl-assign-dst,"
-        f"ttl-insert-tile-regs-sync,"
-        f"ttl-lower-to-loops,"
-        f"ttl-annotate-cb-associations),"
+        f"func.func({func_passes_str}),"
         # TTL to TTKernel conversion (module-level pass).
         f"convert-ttl-to-ttkernel,"
         f"canonicalize,"

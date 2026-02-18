@@ -100,3 +100,13 @@ def ttnn_device():
 def device(ttnn_device):
     """Alias for ttnn_device fixture."""
     return ttnn_device
+
+
+@pytest.fixture(params=[None, "--no-maximize-dst"], ids=["max-dst", "no-max-dst"])
+def compiler_options(request):
+    """Compiler options string - parameterizes tests over DST maximization.
+
+    Tests that accept this fixture will run twice: once with the default
+    pipeline (maximize-dst=True) and once with subblocking disabled.
+    """
+    return request.param
