@@ -93,8 +93,54 @@ class TensorBlock:
         """Store result tensor to CB by propagating CB association from output view."""
         # ast_self is the result of attach_cb(tensor, cb) from reserve()
         # Extract the CB operand and attach it to the result tensor
-        cb = ast_self.owner.operands[1]
+        if not _is_block(ast_self):
+            raise ValueError(
+                "store() must be called on a block acquired from reserve(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
         return ttl.attach_cb(rhs.type, rhs, cb)
+
+    def push(ast_self: TensorBlock) -> None:
+        """
+        Signal that data is ready in the circular buffer (producer release).
+
+        Finalizes a reserve() operation by signaling that the block has been
+        written and is ready for consumers. This operation is non-blocking.
+
+        Must be called on a block acquired via reserve().
+
+        Example:
+            block = cb.reserve()
+            ttl.copy(data, block).wait()
+            block.push()  # Signal data ready
+        """
+        if not _is_block(ast_self):
+            raise ValueError(
+                "push() must be called on a block acquired from reserve(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_push(cb)
+
+    def pop(ast_self: TensorBlock) -> None:
+        """
+        Signal that data has been consumed (consumer release).
+
+        Finalizes a wait() operation by signaling that the block has been
+        consumed and space is available for producers. This operation is non-blocking.
+
+        Must be called on a block acquired via wait().
+
+        Example:
+            block = cb.wait()
+            result = compute(block)
+            block.pop()  # Signal consumption complete
+        """
+        if not _is_block(ast_self):
+            raise ValueError(
+                "pop() must be called on a block acquired from wait(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_pop(cb)
 
 
 @syntax("!ttl.transfer_handle")

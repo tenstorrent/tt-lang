@@ -45,8 +45,8 @@ class TestBasicExecution:
                 # Use full block operation
                 result = block + block
                 out_block.store(result)
-                a_cb.pop()
-                out_cb.push()
+                block.pop()
+                out_block.push()
 
             @ttl.datamovement()
             def dm0():
@@ -54,7 +54,7 @@ class TestBasicExecution:
                 block = a_cb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
-                a_cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -62,7 +62,7 @@ class TestBasicExecution:
                 block = out_cb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
-                out_cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -101,9 +101,9 @@ class TestBasicExecution:
                 # Use full block operation
                 result = a_block + b_block
                 out_block.store(result)
-                a_cb.pop()
-                b_cb.pop()
-                out_cb.push()
+                a_block.pop()
+                b_block.pop()
+                out_block.push()
 
             @ttl.datamovement()
             def dm0():
@@ -114,8 +114,8 @@ class TestBasicExecution:
                 tx2 = copy(b[0:2, 0:1], b_block)
                 tx1.wait()
                 tx2.wait()
-                a_cb.push()
-                b_cb.push()
+                a_block.push()
+                b_block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -123,7 +123,7 @@ class TestBasicExecution:
                 block = out_cb.wait()
                 tx = copy(block, out[0:2, 0:1])
                 tx.wait()
-                out_cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -161,8 +161,8 @@ class TestMultiCore:
                 # All cores just do block + block (multiplies by 2)
                 result = block + block
                 out_block.store(result)
-                a_cb.pop()
-                out_cb.push()
+                block.pop()
+                out_block.push()
 
             @ttl.datamovement()
             def dm0():
@@ -171,7 +171,7 @@ class TestMultiCore:
                 # Each core reads its own tile
                 tx = copy(a[core_id : core_id + 1, 0:1], block)
                 tx.wait()
-                a_cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -180,7 +180,7 @@ class TestMultiCore:
                 # Each core writes its own tile
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
-                out_cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -207,7 +207,7 @@ class TestMultiCore:
                 out_block = out_cb.reserve()
                 # Each core writes its coordinates
                 out_block.store([make_ones_tensor(32, 32) * (core_y * 10 + core_x)])
-                out_cb.push()
+                out_block.push()
 
             @ttl.datamovement()
             def dm0():
@@ -222,7 +222,7 @@ class TestMultiCore:
                     out[core_y : core_y + 1, core_x : core_x + 1],
                 )
                 tx.wait()
-                out_cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -257,7 +257,7 @@ class TestContextIsolation:
                 # Each core reserves/pushes independently
                 block = cb.reserve()
                 block.store([make_ones_tensor(32, 32) * (core_id + 100)])
-                cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm0():
@@ -270,7 +270,7 @@ class TestContextIsolation:
                 block = cb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
-                cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -303,7 +303,7 @@ class TestContextIsolation:
                 # Add core_id to distinguish which core wrote
                 data = shared[0:1, 0:1] + core_id
                 block.store([data])
-                cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm0():
@@ -316,7 +316,7 @@ class TestContextIsolation:
                 block = cb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
-                cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -349,8 +349,8 @@ class TestErrorHandling:
 
             @ttl.datamovement()
             def dm0():
-                _ = cb.reserve()
-                cb.push()
+                block = cb.reserve()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -406,14 +406,14 @@ class TestErrorHandling:
             @ttl.compute()
             def compute():
                 # Try to wait when nothing was pushed - deadlock
-                _ = cb.wait()
-                cb.pop()
+                block = cb.wait()
+                block.pop()
 
             @ttl.datamovement()
             def dm0():
                 # dm0 also tries to wait - deadlock
-                _ = cb.wait()
-                cb.pop()
+                block = cb.wait()
+                block.pop()
 
             @ttl.datamovement()
             def dm1():
@@ -452,7 +452,7 @@ class TestBlockCompletion:
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block)
                 tx.wait()
-                # Missing: in_cb.push()
+                # Missing: block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -489,7 +489,7 @@ class TestBlockCompletion:
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block)
                 tx.wait()
-                in_cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -501,7 +501,7 @@ class TestBlockCompletion:
                 data = in_cb.wait()
                 # Use the data as a source
                 _ = data + data
-                # Missing: in_cb.pop()
+                # Missing: data.pop()
 
         input_tensor = ttnn.rand((32, 32))
 
@@ -533,7 +533,7 @@ class TestBlockCompletion:
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block)
                 tx.wait()
-                in_cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -547,8 +547,8 @@ class TestBlockCompletion:
                 # Use data as source by storing it
                 result = data + data
                 out_block.store(result)
-                out_cb.push()  # Complete the output CB operation
-                in_cb.pop()
+                out_block.push()  # Complete the output CB operation
+                data.pop()
 
         input_tensor = ttnn.rand((32, 32))
         output_tensor = ttnn.empty((32, 32))
@@ -575,12 +575,12 @@ class TestBlockCompletion:
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block1)
                 tx.wait()
-                # Missing: cb1.push()
+                # Missing: block1.push()
 
                 block2 = cb2.reserve()
                 tx = copy(slice_data, block2)
                 tx.wait()
-                # Missing: cb2.push()
+                # Missing: block2.push()
 
             @ttl.datamovement()
             def dm1():
@@ -723,8 +723,8 @@ class TestCooperativeScheduling:
                 out_block = out_cb.reserve()
                 result = block + block
                 out_block.store(result)
-                out_cb.push()
-                cb.pop()
+                out_block.push()
+                block.pop()
 
             @ttl.datamovement()
             def dm0():
@@ -732,14 +732,14 @@ class TestCooperativeScheduling:
                 block = cb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
-                cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
                 block = out_cb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
-                out_cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -769,8 +769,8 @@ class TestCooperativeScheduling:
                     # Since we can't do block + 10, just do block + block
                     result = block + block
                     out_block.store(result)
-                    out_cb.push()
-                    cb.pop()
+                    out_block.push()
+                    block.pop()
 
             @ttl.datamovement()
             def dm0():
@@ -778,7 +778,7 @@ class TestCooperativeScheduling:
                     block = cb.reserve()
                     tx = copy(a[i : i + 1, 0:1], block)
                     tx.wait()
-                    cb.push()
+                    block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -786,7 +786,7 @@ class TestCooperativeScheduling:
                     block = out_cb.wait()
                     tx = copy(block, out[i : i + 1, 0:1])
                     tx.wait()
-                    out_cb.pop()
+                    block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -814,8 +814,8 @@ class TestCooperativeScheduling:
                 out_block = out_cb.reserve()
                 result = block + block + block
                 out_block.store(result)
-                out_cb.push()
-                cb.pop()
+                out_block.push()
+                block.pop()
 
             @ttl.datamovement()
             def dm0():
@@ -823,14 +823,14 @@ class TestCooperativeScheduling:
                 block = cb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
-                cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
                 block = out_cb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
-                out_cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -867,7 +867,7 @@ class TestCooperativeScheduling:
                 block = cb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
-                cb.push()
+                block.push()
 
             @ttl.datamovement()
             def dm1():
@@ -875,7 +875,7 @@ class TestCooperativeScheduling:
                 block = cb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
-                cb.pop()
+                block.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
@@ -912,10 +912,10 @@ class TestCooperativeScheduling:
                     block_out = cb_out.reserve()
                     result = block_a + block_b
                     block_out.store(result)
-                    cb_out.push()
+                    block_out.push()
 
-                    cb_a.pop()
-                    cb_b.pop()
+                    block_a.pop()
+                    block_b.pop()
 
             @ttl.datamovement()
             def dm0():
@@ -924,12 +924,12 @@ class TestCooperativeScheduling:
                     block_a = cb_a.reserve()
                     tx_a = copy(a[i : i + 1, 0:1], block_a)
                     tx_a.wait()
-                    cb_a.push()
+                    block_a.push()
 
                     block_b = cb_b.reserve()
                     tx_b = copy(b[i : i + 1, 0:1], block_b)
                     tx_b.wait()
-                    cb_b.push()
+                    block_b.push()
 
             @ttl.datamovement()
             def dm1():
@@ -938,7 +938,7 @@ class TestCooperativeScheduling:
                     block_out = cb_out.wait()
                     tx = copy(block_out, out[i : i + 1, 0:1])
                     tx.wait()
-                    cb_out.pop()
+                    block_out.pop()
 
             return Program(compute, dm0, dm1, grid=grid)()
 
