@@ -33,46 +33,13 @@ def api():
 
 
 @pytest.fixture(autouse=True)
-def setup_scheduler_context():
-    """Automatically set scheduler context for all copy tests."""
-    from greenlet import greenlet
-    from python.sim.greenlet_scheduler import (
-        GreenletScheduler,
-        set_scheduler,
-        set_scheduler_algorithm,
-    )
-    from python.sim.block import set_current_thread_type, ThreadType
+def setup_scheduler_context(dm_thread_context):
+    """Automatically set scheduler context for all copy tests.
 
-    # Use fair scheduler (the default)
-    set_scheduler_algorithm("fair")
-
-    # Create a scheduler instance for the test
-    scheduler = GreenletScheduler()
-    set_scheduler(scheduler)
-
-    # Set DM thread context (copy operations typically happen in DM threads)
-    set_current_thread_type(ThreadType.DM)
-
-    # Set the main greenlet to the current greenlet (for switching back)
-    scheduler._main_greenlet = greenlet.getcurrent()
-
-    # Simulate being within a thread by adding to _active
-    test_greenlet = greenlet(lambda: None)
-    scheduler._current_name = "test-thread"
-    scheduler._active["test-thread"] = (
-        test_greenlet,
-        None,  # blocking_obj
-        "",  # operation
-        ThreadType.DM,  # thread_type
-        "",  # location
-    )
-    scheduler._has_made_progress["test-thread"] = False
-
-    yield
-
-    # Clean up
-    set_current_thread_type(None)
-    set_scheduler(None)
+    Copy operations typically happen in DM threads.
+    """
+    # Use the shared dm_thread_context fixture
+    pass
 
 
 class TestCopyTransaction:
