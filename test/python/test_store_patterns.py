@@ -26,11 +26,8 @@ def passthrough_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        x = inp_cb.wait()
-        o = out_cb.reserve()
-        o.store(x)
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as x, out_cb.reserve() as o:
+            o.store(x)
 
     @ttl.datamovement()
     def dm_read():
