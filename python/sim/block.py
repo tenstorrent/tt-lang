@@ -94,8 +94,8 @@ class ExpectedOp(Enum):
     COPY_SRC = auto()  # Expect copy(blk, ...) - block as source
     COPY_DST = auto()  # Expect copy(..., blk) - block as destination
     TX_WAIT = auto()  # Expect tx.wait()
-    PUSH = auto()  # Expect cb.push()
-    POP = auto()  # Expect cb.pop()
+    PUSH = auto()  # Expect blk.push()
+    POP = auto()  # Expect blk.pop()
     STORE = (
         auto()
     )  # Expect blk.store(...) - block as destination, regular store (acc=False)

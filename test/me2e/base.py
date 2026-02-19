@@ -180,6 +180,7 @@ class ME2ETestBase:
             pytest.skip("No compute kernel found in kernel files.")
 
         # Run based on arity.
+        fp32_accum = inputs[0].dtype == torch.float32
         if len(inputs) == 2:
             result = run_binary_op(
                 device=device,
@@ -188,6 +189,7 @@ class ME2ETestBase:
                 input_a=inputs[0],
                 input_b=inputs[1],
                 kernel_dir=kernel_dir,
+                enable_fp32_accumulation=fp32_accum,
             )
         else:
             result = run_unary_op(
@@ -196,6 +198,7 @@ class ME2ETestBase:
                 compute_kernel=compute_kernel,
                 input_a=inputs[0],
                 kernel_dir=kernel_dir,
+                enable_fp32_accumulation=fp32_accum,
             )
 
         # Save result for validation.

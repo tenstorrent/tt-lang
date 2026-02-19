@@ -767,6 +767,34 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
+  auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
+  auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
+
+  if (tensorTy.getElementType() != viewTy.getElementType()) {
+    return emitOpError() << "tensor element type (" << tensorTy.getElementType()
+                         << ") must match view element type ("
+                         << viewTy.getElementType() << ")";
+  }
+
+  if (tensorTy.getRank() != viewTy.getRank()) {
+    return emitOpError() << "tensor rank (" << tensorTy.getRank()
+                         << ") must match view rank (" << viewTy.getRank()
+                         << ")";
+  }
+
+  for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
+    if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
+      return emitOpError() << "tensor shape dimension " << i << " ("
+                           << tensorTy.getDimSize(i)
+                           << ") must match view shape dimension ("
+                           << viewTy.getDimSize(i) << ")";
+    }
+  }
+
+  return success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   auto tileType = mlir::dyn_cast<ttcore::TileType>(getTile().getType());
   if (!tileType) {

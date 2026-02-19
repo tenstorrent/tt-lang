@@ -40,9 +40,9 @@ def invalid_copy_no_cb_kernel(lhs, rhs, out):
         o = out_cb.reserve()
         result = l + r
         o.store(result)
-        lhs_cb.pop()
-        rhs_cb.pop()
-        out_cb.push()
+        l.pop()
+        r.pop()
+        o.push()
 
     @ttl.datamovement()
     def dm_read():
@@ -55,7 +55,7 @@ def invalid_copy_no_cb_kernel(lhs, rhs, out):
         out_blk = out_cb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
-        out_cb.pop()
+        out_blk.pop()
 
 
 if __name__ == "__main__":

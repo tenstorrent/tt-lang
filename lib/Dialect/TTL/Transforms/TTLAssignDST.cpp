@@ -256,7 +256,7 @@ createCopyTileForArg(BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
 static SmallVector<Operation *> getSortedConsumers(Value v) {
   SmallVector<Operation *> consumers;
   for (Operation *user : v.getUsers()) {
-    // Skip CB-input ops (bcast, reduce, transpose, etc.)
+    // Skip CB-input ops (bcast, reduce, transpose, FPU binary, etc.)
     if (isCBInputOp(user)) {
       continue;
     }
