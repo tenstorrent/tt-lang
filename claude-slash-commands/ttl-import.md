@@ -3,27 +3,43 @@ description: Import and translate a CUDA, Triton, PyTorch kernel, or TTNN progra
 argument-hint: <kernel-file-or-code>
 ---
 
-## Tools Available
+## Prerequisites
 
-NOTE: these tools are already in PATH. You do not need to find them in a relative directory, you can invoke them directly from any directory.
+All tools are installed at `~/.claude/commands/tools/`. Use this full path when invoking them.
+
+Before doing anything else, run the smoke test to verify your remote setup:
+```bash
+~/.claude/commands/tools/smoke-test.sh
+```
+If the smoke test fails, STOP. Do NOT continue. Ask the user to fix their remote setup first.
+
+If the smoke test fails due to remote.conf not existing, STOP, offer to help them create it from remote.conf.example. Then work on getting the smoke test passing before exploring or continuing.
+
+## Tools Available
 
 NOTE: flags on run-test.sh must come before file argument. You can use --help if unsure on how to use.
 
 NOTE: run-test.sh will copy the file. You do not need to copy the test file each time.
 
 ```bash
-run-test.sh /path/to/kernel.py    # Run kernel on VM simulator (ONLY way to test)
-copy-file.sh /path/to/file.py     # Copy a file to the VM
+~/.claude/commands/tools/run-test.sh /path/to/kernel.py       # Run in functional simulator (default)
+~/.claude/commands/tools/run-test.sh --hw /path/to/kernel.py  # Run on real hardware (final validation)
+~/.claude/commands/tools/copy-file.sh /path/to/file.py        # Copy a file to the remote
+~/.claude/commands/tools/remote-run.sh <command>               # Run an arbitrary command on the remote
 ```
 
-**Reading VM logs (output is saved, not streamed):**
+By default, run-test.sh uses the functional simulator (`ttlang-sim`). Use `--hw` for real hardware. **Iterate with the simulator first.** Only move to `--hw` for final validation or if the simulator has a bug that blocks your work.
+
+**Reading remote logs (output is saved, not streamed):**
 ```bash
-limactl shell ttsim -- cat /tmp/ttlang_test_output.log        # Full log
-limactl shell ttsim -- tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
-limactl shell ttsim -- grep -i "error" /tmp/ttlang_test_output.log
-limactl shell ttsim -- cat /tmp/ttlang_initial.mlir           # Initial MLIR
-limactl shell ttsim -- cat /tmp/ttlang_final.mlir             # Final MLIR
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log        # Full log
+~/.claude/commands/tools/remote-run.sh tail -100 /tmp/ttlang_test_output.log  # Last 100 lines
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log | grep -i "error"  # Search log
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_initial.mlir           # Initial MLIR
+~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_final.mlir             # Final MLIR
 ```
+
+**NOTE:** Grep with quoted patterns containing spaces does not work via `remote-run.sh` due to quoting through the SSH+docker chain. Always pipe through grep locally: `remote-run.sh cat /path/to/file | grep "pattern"`
 
 ## Task
 
@@ -461,6 +477,8 @@ def large_tensor_kernel(inp, out):
 
 **WARNING: Use pipes sparingly.** Pipes enable communication between cores but are error-prone and a common cause of hangs. Get your kernel working without pipes first, then add them only if needed for performance.
 
+**WARNING: pipes do not work in the simulator.** The pipes APIs below are not implemented in the simulator, you may find partial support, but the APIs in the simulator and the compiler are different, and when you go to run on HW, you will hit issues. If you need to use pipes, do it after you have the base program working in sim. 
+
 ### Pipe API
 
 ```python
@@ -554,7 +572,7 @@ def gather_kernel(inp, out):
 - **IMPORTANT: Set a low timeout** when testing pipes for faster iteration
 - **Start without pipes** - get single-core or independent multi-core working first
 - **Add pipes incrementally** - test after adding each pipe
-- **Kill zombie processes** if hung: `limactl shell ttsim -- pkill -9 python`
+- **Kill zombie processes** if hung: `~/.claude/commands/tools/remote-run.sh pkill -9 python`
 
 ### Hardware Limits
 
@@ -745,6 +763,16 @@ When you are re-writing a high level operation or kernel:
 
 Even ops that DO exist may have different semantics (write in place, different numerical behavior). Always test to verify.
 
+IMPORTANT: the test runner will just execute your script as a python file. Don't overthink it. The ttlang-sim and the hw runner will just run the script as python (not pytest!) so just **add a main block**, open device, print/assert tensor values. The sim should have full compatibility with ttnn function for moving tensors, opening device and so on:
+
+Below will work on both hw and sim:
+```
+if __name__ == "__main__":
+   device = ttnn.open_device(device_id=0)
+   # call test functions here
+   ttnn.close_device(device)
+```
+
 ## Translation Guide: GPU → TT-Lang
 
 ### Concept Mapping
@@ -870,19 +898,34 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 
 ## Iteration Workflow (REQUIRED)
 
-**The VM is the ONLY place to test kernels. You MUST test every kernel you write.**
+**You MUST test every kernel you write.** The workflow has two phases:
+
+### Phase 1: Iterate with the Functional Simulator (default)
+
+The functional simulator (`ttlang-sim`) is the primary development tool. It catches CB mismatches, shape errors, type errors, and functional bugs via dynamic analysis. Use it for all iteration.
 
 ```
 1. Write kernel to file
-2. Run: run-test.sh /path/to/kernel.py
-3. Read log: limactl shell ttsim -- tail -100 /tmp/ttlang_test_output.log
+2. Run: ~/.claude/commands/tools/run-test.sh /path/to/kernel.py
+3. Read log: ~/.claude/commands/tools/remote-run.sh tail -100 /tmp/ttlang_test_output.log
 4. If errors: fix and go to step 2
 5. If success: verify numerical output is correct
 ```
 
+### Phase 2: Validate on Real Hardware
+
+Once the kernel passes in the simulator, do a final hardware run:
+```
+~/.claude/commands/tools/run-test.sh --hw /path/to/kernel.py
+```
+
+NOTE: it is possible that the sim and hw diverge which may require you to either use --hw early or iterate on a program that passes in the sim but not on HW. If your program works with the sim but not on HW you can use the same iteration flow from phase 1 to debug (you may need to isolate patterns and iterate). You can also ask the user for guidance, they may care more about HW or sim working. 
+
+**When to use `--hw` early:** If the simulator has a bug or is overly conservative for your use case, you can bypass it with `--hw` at any point. But prefer the simulator for iteration since it gives better error diagnostics.
+
 **IMPORTANT:**
 - Exit code 0 does NOT mean success - always read the log
-- The log can be thousands of lines - use `tail`, `head`, `grep` to navigate
+- The log can be thousands of lines - use `tail`, `head` remotely, or pipe through `grep` locally (e.g., `remote-run.sh cat /tmp/ttlang_test_output.log | grep "pattern"`)
 - Look for: `AssertionError`, `Exception`, `error:`, `FAIL`, `mismatch`
 - Never guess at fixes - always read the actual error message
 - **IMPORTANT:** Set a low timeout for faster iteration - tests should execute in under 1 second. Hangs are common (especially with pipes or CB mismatches) and a low timeout helps detect them quickly.
@@ -890,7 +933,7 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 **Handling Hangs:**
 - If a kernel hangs, the most common cause is **CB mismatch** - every `wait()` needs a corresponding `push()` from producer, every `reserve()` needs a corresponding `pop()` from consumer
 - Verify loop counts match between compute and datamovement threads
-- Kill zombie processes on VM: `limactl shell ttsim -- pkill -9 python`
+- Kill zombie processes on remote: `~/.claude/commands/tools/remote-run.sh pkill -9 python`
 
 ## Compiler Errors: Workaround or Exit Early
 
@@ -969,10 +1012,11 @@ print("Expected:", torch.exp(inp_torch))
 ## Output
 
 1. Save the translated TT-Lang kernel to a file
-2. Run `run-test.sh` on the kernel and verify it works
-3. Read the log and confirm numerical correctness
-4. Report any TTNN ops used to fill gaps
-5. Only mark complete after the kernel runs successfully on the VM
+2. Run `~/.claude/commands/tools/run-test.sh` on the kernel and verify it passes in the simulator
+3. Run `~/.claude/commands/tools/run-test.sh --hw` for final hardware validation
+4. Read the log and confirm numerical correctness
+5. Report any TTNN ops used to fill gaps
+6. Only mark complete after the kernel runs successfully
 
 ---
 
@@ -998,17 +1042,6 @@ Then coordinator gathers and sums all partial matmul results.
 
 Grid: 4x1 (4 cores in a row)
 """
-
-import pytest
-import torch
-
-ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
-
-from ttlang_test_utils import assert_allclose, to_l1
-
-import ttl
-
-
 COORDINATOR = 0
 ROWS_PER_CORE = 2
 COLS_PER_CORE = 2
@@ -1145,31 +1178,6 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
             with out_cb.wait() as o_blk:
                 tx = ttl.copy(o_blk, out[0:4, 0:4])
                 tx.wait()
-
-
-def test_uniform_values(device):
-    A_height = ROWS_PER_CORE * 4 * 32
-    A_width = 4 * COLS_PER_CORE * 32
-
-    A_torch = torch.full((A_height, A_width), 0.01, dtype=torch.bfloat16)
-    B_torch = torch.full((128, 128), 0.01, dtype=torch.bfloat16)
-    scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
-    out_torch = torch.zeros((128, 128), dtype=torch.bfloat16)
-
-    A = to_l1(A_torch, device)
-    B = to_l1(B_torch, device)
-    scaler = to_l1(scaler_torch, device)
-    out = to_l1(out_torch, device)
-
-    # Expected: matmul(broadcast(sum(A)), B)
-    global_sum = A_torch.float().sum()
-    A_bcast = torch.full((128, 128), global_sum.item(), dtype=torch.float32)
-    expected = torch.matmul(A_bcast, B_torch.float())
-
-    full_reduce_bcast_matmul_kernel(A, B, scaler, out)
-    result = ttnn.to_torch(out).float()
-
-    assert_allclose(result[0, 0], expected[0, 0], rtol=0.15, atol=500)
 ```
 
 ---

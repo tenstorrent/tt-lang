@@ -37,11 +37,8 @@ cd /path/to/tt-lang/claude-slash-commands
 cd /path/to/nanoGPT
 claude
 
-# Now use slash commands to translate kernels to TT-Lang:
+# Now type slash to use skills to translate kernels to TT-Lang:
 #   /ttl-import model.py    "translate the attention kernel to TT-Lang DSL"
-#   /ttl-test my_kernel.py  "generate tests for edge cases"
-#   /ttl-simulate my_kernel.py
-#   /ttl-optimize my_kernel.py
 ```
 
 ### Available Commands
@@ -69,15 +66,8 @@ Run `/ttl-help` in Claude Code to see all available commands. Here is a summary:
     is spent in the kernel with annotated source, hotspot highlighting, and
     memory vs compute breakdown.
 
-/ttl-simulate <kernel>
-    Execute a kernel in the functional simulator and analyze runtime behavior.
-    Verifies correctness, tracks data flow, identifies inefficient patterns,
-    and suggests concrete improvements based on dynamic analysis.
-
-/ttl-test <kernel>
-    Generate comprehensive test cases and a test runner for a kernel. Creates
-    edge case coverage, reference implementations, and TTNN integration code
-    with proper assertions and reproducible test inputs.
+/ttl-bug <reproducer>
+    File a bug report for TT-Lang with a reproducer.
 
 /ttl-help
     List all available TT-Lang slash commands with descriptions and examples.
