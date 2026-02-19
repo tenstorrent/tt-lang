@@ -100,7 +100,7 @@ def parse_signpost_name(signpost: str) -> Tuple[Optional[str], bool]:
         # Line-only signpost: "<kernel>_L<num>"
         return None, False
 
-    rest = middle[m.end():]  # e.g., "cb_wait" or "implicit_cb_pop"
+    rest = middle[m.end() :]  # e.g., "cb_wait" or "implicit_cb_pop"
     if rest.startswith("implicit_"):
         return rest[9:], True
     return rest, False

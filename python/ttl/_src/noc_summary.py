@@ -237,8 +237,9 @@ def parse_noc_trace(filepath: Path) -> ProgramSummary:
     return summary
 
 
-def format_summary(summary: ProgramSummary, freq_mhz: int,
-                    name: Optional[str] = None) -> str:
+def format_summary(
+    summary: ProgramSummary, freq_mhz: int, name: Optional[str] = None
+) -> str:
     """Format a ProgramSummary as human-readable text."""
     lines = []
     grid = _infer_grid_shape(summary.source_cores)
@@ -255,27 +256,39 @@ def format_summary(summary: ProgramSummary, freq_mhz: int,
 
     # DRAM traffic
     total_dram = summary.dram_bytes_read + summary.dram_bytes_written
-    lines.append(f"  DRAM read:      {_format_bytes(summary.dram_bytes_read):>10}  "
-                 f"({summary.dram_read_count} transfers)")
-    lines.append(f"  DRAM write:     {_format_bytes(summary.dram_bytes_written):>10}  "
-                 f"({summary.dram_write_count} transfers)")
+    lines.append(
+        f"  DRAM read:      {_format_bytes(summary.dram_bytes_read):>10}  "
+        f"({summary.dram_read_count} transfers)"
+    )
+    lines.append(
+        f"  DRAM write:     {_format_bytes(summary.dram_bytes_written):>10}  "
+        f"({summary.dram_write_count} transfers)"
+    )
 
     # L1 traffic
     total_l1 = summary.l1_bytes_read + summary.l1_bytes_written
     if total_l1 > 0:
-        lines.append(f"  L1 read:        {_format_bytes(summary.l1_bytes_read):>10}  "
-                     f"({summary.l1_read_count} transfers)")
-        lines.append(f"  L1 write:       {_format_bytes(summary.l1_bytes_written):>10}  "
-                     f"({summary.l1_write_count} transfers)")
+        lines.append(
+            f"  L1 read:        {_format_bytes(summary.l1_bytes_read):>10}  "
+            f"({summary.l1_read_count} transfers)"
+        )
+        lines.append(
+            f"  L1 write:       {_format_bytes(summary.l1_bytes_written):>10}  "
+            f"({summary.l1_write_count} transfers)"
+        )
         if summary.l1_destinations:
             l1_grid = _infer_grid_shape(summary.l1_destinations)
-            lines.append(f"  L1 targets:     {len(summary.l1_destinations)} cores "
-                         f"({l1_grid[0]}x{l1_grid[1]})")
+            lines.append(
+                f"  L1 targets:     {len(summary.l1_destinations)} cores "
+                f"({l1_grid[0]}x{l1_grid[1]})"
+            )
 
     # Multicast (L1 pipe traffic between compute cores)
     if summary.multicast_count > 0:
-        lines.append(f"  L1 multicast:   {_format_bytes(summary.multicast_bytes):>10}  "
-                     f"({summary.multicast_count} transfers, pipe)")
+        lines.append(
+            f"  L1 multicast:   {_format_bytes(summary.multicast_bytes):>10}  "
+            f"({summary.multicast_count} transfers, pipe)"
+        )
 
     # Bandwidth
     if duration_cycles > 0:
@@ -291,13 +304,16 @@ def format_summary(summary: ProgramSummary, freq_mhz: int,
             size, count = next(iter(nonzero_sizes.items()))
             lines.append(f"  transfer size:  {_format_bytes(size)} (uniform)")
         else:
-            parts = [f"{_format_bytes(s)}x{c}" for s, c in sorted(nonzero_sizes.items())]
+            parts = [
+                f"{_format_bytes(s)}x{c}" for s, c in sorted(nonzero_sizes.items())
+            ]
             lines.append(f"  transfer sizes: {', '.join(parts)}")
 
     # Barriers
     total_reads = summary.dram_read_count + summary.l1_read_count
-    total_writes = (summary.dram_write_count + summary.l1_write_count +
-                    summary.multicast_count)
+    total_writes = (
+        summary.dram_write_count + summary.l1_write_count + summary.multicast_count
+    )
     if summary.read_barrier_count > 0 or summary.write_barrier_count > 0:
         read_ratio = ""
         if summary.read_barrier_count > 0 and total_reads > 0:
@@ -307,16 +323,22 @@ def format_summary(summary: ProgramSummary, freq_mhz: int,
         if summary.write_barrier_count > 0 and total_writes > 0:
             ratio = total_writes / summary.write_barrier_count
             write_ratio = f" (1 per {ratio:.0f} writes)"
-        lines.append(f"  barriers:       {summary.read_barrier_count} read{read_ratio}, "
-                     f"{summary.write_barrier_count} write{write_ratio}")
+        lines.append(
+            f"  barriers:       {summary.read_barrier_count} read{read_ratio}, "
+            f"{summary.write_barrier_count} write{write_ratio}"
+        )
 
     # Semaphores (pipe synchronization)
     if summary.semaphore_count > 0:
         lines.append(f"  semaphores:     {summary.semaphore_count} events")
 
     # NOC split
-    read_nocs = ", ".join(f"{noc}={c}" for noc, c in sorted(summary.noc_read_counts.items()))
-    write_nocs = ", ".join(f"{noc}={c}" for noc, c in sorted(summary.noc_write_counts.items()))
+    read_nocs = ", ".join(
+        f"{noc}={c}" for noc, c in sorted(summary.noc_read_counts.items())
+    )
+    write_nocs = ", ".join(
+        f"{noc}={c}" for noc, c in sorted(summary.noc_write_counts.items())
+    )
     if read_nocs or write_nocs:
         lines.append(f"  noc reads:      {read_nocs}")
         lines.append(f"  noc writes:     {write_nocs}")
@@ -330,12 +352,16 @@ def format_summary(summary: ProgramSummary, freq_mhz: int,
         lines.append(f"  kernel time:")
         if summary.brisc_durations:
             mn, mx = min(summary.brisc_durations), max(summary.brisc_durations)
-            lines.append(f"    BRISC:  {_format_cycles(mn, freq_mhz)} - "
-                         f"{_format_cycles(mx, freq_mhz)}")
+            lines.append(
+                f"    BRISC:  {_format_cycles(mn, freq_mhz)} - "
+                f"{_format_cycles(mx, freq_mhz)}"
+            )
         if summary.ncrisc_durations:
             mn, mx = min(summary.ncrisc_durations), max(summary.ncrisc_durations)
-            lines.append(f"    NCRISC: {_format_cycles(mn, freq_mhz)} - "
-                         f"{_format_cycles(mx, freq_mhz)}")
+            lines.append(
+                f"    NCRISC: {_format_cycles(mn, freq_mhz)} - "
+                f"{_format_cycles(mx, freq_mhz)}"
+            )
 
     return "\n".join(lines)
 
@@ -365,12 +391,15 @@ def format_json_summary(summary: ProgramSummary, freq_mhz: int) -> dict:
         "read_barriers": summary.read_barrier_count,
         "write_barriers": summary.write_barrier_count,
         "dram_channels": len(summary.dram_destinations),
-        "transfer_sizes": {str(k): v for k, v in sorted(summary.transfer_sizes.items()) if k > 0},
+        "transfer_sizes": {
+            str(k): v for k, v in sorted(summary.transfer_sizes.items()) if k > 0
+        },
     }
 
 
-def run(logs_path: Path, output_json: bool = False,
-        names: Optional[List[str]] = None) -> Optional[str]:
+def run(
+    logs_path: Path, output_json: bool = False, names: Optional[List[str]] = None
+) -> Optional[str]:
     """Main entry point. Returns formatted string or None if no data."""
     arch, freq_mhz, max_cores = parse_chip_info(logs_path)
 
@@ -400,7 +429,9 @@ def run(logs_path: Path, output_json: bool = False,
     lines = []
     lines.append("=== NOC PROFILER SUMMARY ===")
     lines.append(f"arch: {arch}, freq: {freq_mhz} MHz, max_compute_cores: {max_cores}")
-    lines.append(f"programs: {len(summaries)} (listed in dispatch order, includes ttnn ops)")
+    lines.append(
+        f"programs: {len(summaries)} (listed in dispatch order, includes ttnn ops)"
+    )
     lines.append("")
 
     for i, summary in enumerate(summaries):
@@ -417,7 +448,7 @@ def main():
         "--path",
         default=None,
         help="Path to profiler logs directory "
-             "(default: $TT_METAL_HOME/generated/profiler/.logs/)",
+        "(default: $TT_METAL_HOME/generated/profiler/.logs/)",
     )
     parser.add_argument(
         "--json",
@@ -428,7 +459,7 @@ def main():
         "--names",
         default=None,
         help="Comma-separated kernel names in dispatch order "
-             "(e.g. 'my_kernel,ttnn.multiply')",
+        "(e.g. 'my_kernel,ttnn.multiply')",
     )
     args = parser.parse_args()
 
@@ -437,7 +468,9 @@ def main():
     else:
         tt_metal_home = os.environ.get("TT_METAL_HOME", "")
         if not tt_metal_home:
-            print("Error: TT_METAL_HOME not set and --path not provided", file=sys.stderr)
+            print(
+                "Error: TT_METAL_HOME not set and --path not provided", file=sys.stderr
+            )
             sys.exit(1)
         logs_path = Path(tt_metal_home) / "generated" / "profiler" / ".logs"
 
