@@ -20,6 +20,8 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 ## Getting Started with TT-Lang
 
+> ⚠️ Skills are an experimental feature under active development; skills currently reference in-flight functionality that may not be available such as the matmul operator.
+
 The easiest way to get started is with [Claude Code](https://claude.com/claude-code) and an existing codebase. TT-Lang provides slash commands that guide Claude through kernel translation, testing, profiling, and optimization workflows.
 
 ### Example Workflow

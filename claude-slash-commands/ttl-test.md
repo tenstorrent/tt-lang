@@ -17,4 +17,4 @@ THIS COMMAND HAS NOT BEEN IMPLEMENTED YET
 
 ## Output
 
-Tell the user that this command is not yet implemented. Coming toon!
+Tell the user that this command is not yet implemented. Coming soon!

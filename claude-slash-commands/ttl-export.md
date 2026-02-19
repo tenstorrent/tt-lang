@@ -86,7 +86,7 @@ Find the exact file paths in the log:
 ~/.claude/commands/tools/remote-run.sh cat /tmp/ttlang_test_output.log | grep -i "written"
 ```
 
-NOTE: if there are multiple kernels, you will have a copy of all of these files per kernel (that's OK! many tt-lang programs utalize multiple kernels)
+NOTE: if there are multiple kernels, you will have a copy of all of these files per kernel (that's OK! many tt-lang programs utilize multiple kernels)
 
 Copy the generated files off the remote to inspect them:
 ```bash
