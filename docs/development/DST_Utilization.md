@@ -46,12 +46,10 @@ file responsible.
 | 13 | Init consolidation | Not started | — |
 | 14 | DST spilling (CB-based) | Not started | Design: `CB_Spilling.md` |
 
-Components 1-8 are implemented on the `bnorris/max-dst` branch.
-Components 9-14 are required for the full optimization but have design
-documents only. Component 9 (pipeline option) is a prerequisite for
-merging — the optimization must be opt-in so the compiler can produce
-correct code without it. The remainder of this document describes each
-component and the pipeline that connects them.
+Components 1-9 are implemented on the `bnorris/max-dst` branch.
+Components 10-14 are required for the full optimization but are not yet
+implemented. The remainder of this document describes each component and
+the pipeline that connects them.
 
 After implementing each component, all tests must pass.
 
@@ -62,7 +60,7 @@ Current pipeline (`bnorris/max-dst`):
 ```
 convert-ttl-to-compute
 set-compute-kernel-config
-assign-dst                  ← computes unroll_factor [2]
+assign-dst                  ← DST allocation + unroll_factor [1, 2, 7, 8]
 subblock-compute-for-dst    ← partitions iteration space [4]
 insert-tile-regs-sync       ← per-tile sync (unchanged)
 lower-to-loops
@@ -77,18 +75,22 @@ convert-ttl-to-compute
 set-compute-kernel-config
 assign-dst                  ← trait-aware unroll_factor [2, 7, 8]
 subblock-compute-for-dst    ← outer loop over subblocks [4]
-lower-to-loops              ← unrolled emit for inner subblock [10]
-schedule-operations         ← group by kind within unrolled body [12]
 insert-tile-regs-sync       ← one sync cycle per subblock [11]
+lower-to-loops              ← unrolled emit for inner subblock [10]
+schedule-operations         ← group by kind, place commit/wait [12]
 annotate-cb-associations
-convert-ttl-to-ttkernel
+convert-ttl-to-ttkernel     ← init consolidation during conversion [13]
 ```
 
-The key differences from the current pipeline: (1) `lower-to-loops`
-directly emits N unrolled copies for subblocked computes rather than
-creating an scf.for loop, and (2) sync insertion runs after lowering so
-that one acquire/release wraps the entire unrolled subblock body rather
-than each individual tile.
+The key difference from the current pipeline: `lower-to-loops` directly
+emits N unrolled copies for subblocked computes rather than creating an
+scf.for loop. Sync insertion stays before lowering (same as current) —
+after subblocking, each inner `ttl.compute` fits in DST by construction,
+so one acquire/release per compute is correct. Operation grouping (12)
+then reorders the lowered tile ops within the sync region (loop fission
+into compute-phase + pack-phase) and places commit/wait at the boundary.
+Init consolidation (13) is handled during conversion to TTKernel. These
+concerns are orthogonal to sync placement.
 
 ## Component Details
 
@@ -165,33 +167,77 @@ practice: dimension sizes are small (typically <= 32) and rank is low
 
 #### DST utilization examples
 
-The following table shows subblock decomposition for common block
-shapes (per-core tile grids). DST capacity depends on data type and
-double-buffering: **8 tiles for bf16** (16 physical / 2), **4 tiles for
-f32** (16 / 2 / 2). `dstPerIter` is the number of DST registers
-consumed per tile iteration (1 for unary/FPU-binary chains, 2+ for SFPU
-binary).
+Block shape is the per-core tile grid, not the full tensor. A tensor
+of `T_r x T_c` tiles distributed over a `G_r x G_c` core grid gives
+each core a block of `(T_r/G_r) x (T_c/G_c)` tiles. In most realistic
+cases tensors contain many blocks; larger tensors on more cores produce
+smaller per-core blocks. Example mappings for a 32x32 tile tensor:
 
-| Block Shape | Type | Capacity | dstPerIter | unrollFactor | Subblock | Tiles/subblock | Subblocks | DST util |
-|-------|------|----------|------------|--------------|----------|----------------|-----------|----------|
-| 1x8   | bf16 | 8  | 1 | 8 | [1,8] — no loop | 8  | 1 | 100% |
-| 2x4   | bf16 | 8  | 1 | 8 | [2,4] — no loop | 8  | 1 | 100% |
-| 2x8   | bf16 | 8  | 1 | 8 | [1,8] — loop d0 | 8  | 2 | 100% |
-| 4x4   | bf16 | 8  | 1 | 8 | [2,4] — loop d0 step 2 | 8  | 2 | 100% |
-| 4x4   | f32  | 4  | 1 | 4 | [1,4] — loop d0 | 4  | 4 | 100% |
-| 3x3   | bf16 | 8  | 1 | 8 | [1,3] — loop d0 | 3  | 3 | 37.5% |
-| 2x8   | f32  | 4  | 1 | 4 | [1,4] — loop d0, d1 step 4 | 4  | 4 | 100% |
-| 4x4   | bf16 | 8  | 2 | 4 | [1,4] — loop d0 | 4  | 4 | 50% |
-| 1x4   | bf16 | 8  | 1 | 4 | [1,4] — no loop | 4  | 1 | 50% |
-| 8x8   | bf16 | 8  | 1 | 8 | [1,8] — loop d0 | 8  | 8 | 100% |
+```
+Tensor (tiles)   Core Grid   Block Shape   Blocks
+--------------   ---------   -----------   ------
+32x32            32x32       1x1            1024
+32x32            16x16       2x2             256
+32x32            8x8         4x4              64
+32x32            4x4         8x8              16
+```
+
+The following table shows subblock decomposition for these block shapes.
+DST capacity depends on data type and double-buffering: **8 tiles for
+bf16** (16 physical / 2), **4 tiles for f32** (16 / 2 / 2).
+`dstPerIter` is the number of DST registers consumed per tile iteration
+(1 for unary/FPU-binary chains, 2+ for SFPU binary). `unrollFactor` is
+the maximum number of tiles that fit in DST per sync cycle:
+`min(floor(capacity / dstPerIter), totalTiles)`. The subblocking pass
+finds the largest subblock with tile count ≤ `unrollFactor`, subject to
+each dimension dividing evenly, so `tiles/subblock` may be less than
+`unrollFactor` when divisor constraints prevent an exact fit.
+
+```
+Block   Type  Cap  dst/   unroll  Subblock                Tiles/    Sub-    DST
+Shape         acity iter  Factor                          subblk   blocks   util
+------  ----  ---  ----  ------  ----------------------  ------  ------  ------
+1x1     bf16    8     1       1  [1,1] — no loop              1       1   12.5%
+1x1     bf16    8     4       1  [1,1] — no loop              1       1     50%
+1x1     bf16    8     8       1  [1,1] — no loop              1       1    100%
+2x1     bf16    8     1       2  [2,1] — no loop              2       1     25%
+2x1     bf16    8     2       2  [2,1] — no loop              2       1     50%
+2x1     bf16    8     4       2  [2,1] — no loop              2       1    100%
+4x1     bf16    8     1       4  [4,1] — no loop              4       1     50%
+4x1     bf16    8     2       4  [4,1] — no loop              4       1    100%
+1x4     bf16    8     1       4  [1,4] — no loop              4       1     50%
+1x4     bf16    8     2       4  [1,4] — no loop              4       1    100%
+1x8     bf16    8     1       8  [1,8] — no loop              8       1    100%
+2x4     bf16    8     1       8  [2,4] — no loop              8       1    100%
+2x8     bf16    8     1       8  [1,8] — loop d0              8       2    100%
+4x4     bf16    8     1       8  [2,4] — loop d0 step 2       8       2    100%
+3x4     bf16    8     1       8  [3,2] — loop d1 step 2       6       2     75%
+3x4     bf16    8     2       4  [1,4] — loop d0,d1 step 2    4       3    100%
+4x3     bf16    8     1       8  [2,3] — loop d0 step 2       6       2     75%
+4x3     bf16    8     2       4  [4,1] — loop d1              4       3    100%
+3x3     bf16    8     1       8  [1,3] — loop d0              3       3   37.5%
+3x3     bf16    8     2       4  [1,3] — loop d0              3       3     75%
+8x8     bf16    8     1       8  [1,8] — loop d0              8       8    100%
+4x4     f32     4     1       4  [1,4] — loop d0              4       4    100%
+2x8     f32     4     1       4  [1,4] — loop d0,d1 step 4    4       4    100%
+```
 
 Notes:
+- DST utilization = `tiles/subblock * dstPerIter / capacity` — measures
+  what fraction of DST registers are occupied per subblock cycle.
+- For small blocks (1x1 through 1x4), higher `dstPerIter` from complex
+  operation chains fills the remaining DST registers, reaching 100%
+  utilization even with few tiles. E.g., 1x1 with dstPerIter=8 (a chain
+  of 8 live intermediates) uses all 8 DST registers.
 - "no loop" means `unrollFactor >= totalTiles`, so the entire compute
   fits in one DST cycle.
 - 3x3 bf16: 9 tiles, no divisor combo of 9 reaches 8, best is [1,3]=3.
-- 4x4 bf16 with `dstPerIter=2` (e.g., SFPU binary): `unrollFactor =
-  floor(8/2) = 4`, subblock=[1,4].
-- DST utilization = tiles/subblock / capacity.
+  Max achievable util is 75% (at dstPerIter=2).
+- 3x4 and 4x3: both dimensions tiled (multi-dim subblocking). These
+  shapes exercise the stride annotation logic where the tile loop stride
+  differs from the loop upper bound.
+- Hardware tests (`test_elementwise_shapes.py`) cover all shapes from
+  1x1 through 4x4 (bf16).
 
 #### Generated IR
 
@@ -315,10 +361,11 @@ No separate annotation pass is required. The allocator in
 
 DST maximization is an optimization, not required for correctness. The
 compiler must be able to produce valid code without it (per-tile
-synchronization, no subblocking). A `maximize-dst` option in
-`TTLToTTKernelPipelineOptions` gates whether `assign-dst` and
-`subblock-compute-for-dst` run at all. See the [Pipeline Options](#pipeline-options)
-section below for the full specification.
+synchronization, no subblocking). The `maximize-dst` option in
+`TTLToTTKernelPipelineOptions` controls whether `subblock-compute-for-dst`
+runs (default is true). `assign-dst` always runs (DST index attributes are needed
+regardless). See the [Pipeline Options](#pipeline-options) section for
+details.
 
 ### 10. Integrated Unrolling in Lower-to-Loops
 
@@ -359,30 +406,38 @@ Current `TTLInsertTileRegsSync` wraps each `ttl.compute` body with
 acquire/commit/wait/release (per-tile when placed before
 lower-to-loops). The target is one sync cycle per subblock.
 
-After `lower-to-loops` emits the unrolled body (component 10), the outer
-loop body contains N tiles' worth of operations in sequence. Sync
-insertion after lowering wraps the entire unrolled body:
+After subblocking, each inner `ttl.compute` fits in DST by construction.
+Sync insertion wraps the entire inner compute with one acquire/release
+cycle — the same placement as today, but now one cycle covers all tiles
+in the subblock rather than just one tile:
 
 ```mlir
 scf.for %iv = ... {   // outer loop over subblocks
   acquire
-  // N unrolled copies: copy/compute → DST[0..N-1]
+  ttl.compute ins(%sub) outs(%sub_out) { ... }
   commit; wait
-  // pack_tile_block(DST[0..N-1] → CB)
   release
 }
 ```
 
-This requires sync insertion to run after `lower-to-loops` in the
-pipeline. The sync pass must distinguish between the compute phase
-(before commit) and the pack phase (after wait). This separation can be
-achieved by:
+After `lower-to-loops` expands the compute (component 10), the tile
+ops appear inside the sync region. Operation grouping (component 12)
+then reorders into compute-phase + pack-phase and places commit/wait at
+the boundary:
 
-- Detecting `tile_store` ops and placing them after the wait. The commit
-  point is the boundary between the last compute op and the first store.
-- Or, emitting compute ops and store ops in separate groups during
-  lowering (component 10 emits all N compute copies, then all N stores),
-  so sync insertion can place commit/wait at the group boundary.
+```mlir
+scf.for %iv = ... {   // outer loop over subblocks
+  acquire
+  // N copies: copy/compute → DST[0..N-1]
+  commit; wait
+  // N packs: DST[0..N-1] → CB
+  release
+}
+```
+
+Sync insertion does not need to run after lowering. It operates on
+`ttl.compute` ops (before lowering), and the commit/wait placement
+within the sync region is handled by the grouping pass (component 12).
 
 ### 12. Operation Grouping
 
@@ -444,7 +499,7 @@ savings from larger subblocks.
 
 ## Current State vs Target
 
-**What works today** (components 1-8, `bnorris/max-dst`):
+**What works today** (components 1-9, `bnorris/max-dst`):
 
 The pipeline computes the correct subblock size (with FPU-aware DST
 pressure), partitions the iteration space via TilingInterface, and
@@ -461,14 +516,15 @@ the structural foundation that components 10-11 build on. The allocator
 uses trait queries (`isInPlaceOp`, etc.) instead of type-specific
 checks, so new operations only need the correct trait annotations.
 
-**What is needed for actual DST maximization** (components 9-11):
+**What is needed for actual DST maximization** (components 10-11):
 
-Component 9 (pipeline option) gates the optimization so the default
-pipeline still produces correct per-tile code. `lower-to-loops` must
-emit unrolled bodies with incrementing DST indices (10), and sync must
-wrap the entire unrolled body (11). These are the critical path. With
-these additions, the compiler produces one sync cycle per subblock,
-proportionally reducing synchronization overhead.
+`lower-to-loops` must emit unrolled bodies with incrementing DST indices
+(10), and sync must wrap the entire unrolled body (11). These are the
+critical path. Component 9 (pipeline option) is already implemented,
+gating the optimization so the default pipeline still produces correct
+per-tile code. With components 10-11, the compiler would produce one
+sync cycle per subblock, proportionally reducing synchronization
+overhead.
 
 **What improves code quality further** (components 12-13):
 
@@ -491,9 +547,9 @@ correctness. The compiler must be able to produce valid code without
 them (per-tile synchronization, no subblocking). This requires a
 pipeline option to gate the optimization passes.
 
-### Proposed Option
+### Option
 
-Add a `maximize-dst` option to `TTLToTTKernelPipelineOptions`:
+The `maximize-dst` option in `TTLToTTKernelPipelineOptions`:
 
 ```cpp
 Option<bool> maximizeDST{*this, "maximize-dst",
@@ -506,16 +562,20 @@ Option<bool> maximizeDST{*this, "maximize-dst",
 
 **With `--maximize-dst`** (default — optimized compilation):
 
+The current pipeline order is shown in the [Pipeline](#pipeline)
+section above. The target pipeline (once components 10-12 are
+implemented) keeps sync before lowering and adds grouping after:
+
 ```
 convert-ttl-to-compute
 set-compute-kernel-config
 assign-dst                  ← DST allocation + unroll_factor
 subblock-compute-for-dst    ← partition iteration space
+insert-tile-regs-sync       ← subblock-level sync [11]
 lower-to-loops              ← (future: unrolled emit) [10]
-schedule-operations         ← (future: by-kind grouping) [12]
-insert-tile-regs-sync       ← (future: subblock-level sync) [11]
+schedule-operations         ← (future: group + commit/wait) [12]
 annotate-cb-associations
-convert-ttl-to-ttkernel
+convert-ttl-to-ttkernel     ← init consolidation [13]
 ```
 
 **Without `--maximize-dst`** (baseline compilation via
@@ -553,24 +613,24 @@ they invoke passes directly, not through the pipeline.
 
 ## Pipeline Ordering Constraints
 
+Current constraints (components 1-9):
+
 1. `assign-dst` must run before `subblock-compute-for-dst` because
    the subblocking pass reads `ttl.unroll_factor`.
 2. `subblock-compute-for-dst` must run before `lower-to-loops` because
    it operates on `ttl.compute` ops (not scf.for loops).
-3. `lower-to-loops` performs both lowering and unrolling (component 9):
-   it reads `ttl.fully_unroll` and emits unrolled bodies directly.
-4. `lower-to-loops` must run before sync insertion so that sync wraps
-   the full unrolled body.
-5. Sync insertion must run before `convert-ttl-to-ttkernel` because
+3. Sync insertion must run before `convert-ttl-to-ttkernel` because
    the conversion pass expects sync ops to be present.
-6. Operation grouping (if implemented) runs after `lower-to-loops` and
-   before sync insertion, so that groups are established before sync
-   boundaries are placed.
+
+Additional constraints for the target pipeline (components 10-12):
+
+4. `lower-to-loops` performs both lowering and unrolling (component 10):
+   it reads `ttl.fully_unroll` and emits unrolled bodies directly.
+5. Operation grouping (component 12) runs after `lower-to-loops`
+   because it reorders individual tile ops (not `ttl.compute` ops).
+   Grouping places commit/wait within the existing sync region.
 
 ## Related Documents
 
 - `docs/development/DST_Allocation.md`: DST register allocation algorithm (phases 0-4),
   worked examples, operation category traits.
-- `MaximizingDSTUtilization.md`: FPU-aware unrolling design, execution
-  engine summary, per-case analysis (SFPU unary, SFPU binary, FPU+SFPU
-  chains, dest_reuse), target C++ code generation.
