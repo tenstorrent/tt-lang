@@ -477,7 +477,7 @@ def large_tensor_kernel(inp, out):
 
 **WARNING: Use pipes sparingly.** Pipes enable communication between cores but are error-prone and a common cause of hangs. Get your kernel working without pipes first, then add them only if needed for performance.
 
-**WARNING: pipes do not work in the simulator.** The pipes APIs below are not implemented in the simulator, you may find partial support, but the APIs in the simulator and the compiler are different, and when you go to run on HW, you will hit issues. If you need to use pipes, do it after you have the base program working in sim. 
+**WARNING: pipes do not work in the simulator.** The pipes APIs below are not implemented in the simulator, you may find partial support, but the APIs in the simulator and the compiler are different, and when you go to run on HW, you will hit issues. If you need to use pipes, do it after you have the base program working in sim.
 
 ### Pipe API
 
@@ -758,7 +758,7 @@ with x_cb.wait() as x, scaler_cb.wait() as s:
 When you are re-writing a high level operation or kernel:
 1. **What does this kernel or op do at a HW level?** Think about what's actually happening in the HW when this op runs
 2. **What primitives do we have?** matmul, elementwise, DMA with indexing
-3. **Build it from primitives.** A naive O(n²) loop that works is better than giving up. The goal is NOT performance! Just correctness. 
+3. **Build it from primitives.** A naive O(n²) loop that works is better than giving up. The goal is NOT performance! Just correctness.
 4. This is not a high level DSL like pytorch or ttnn, it's low level and you have explicit control over all of the HW, memory management, and synchronization. Do not think about direct mappings for high level ops and kernels, think about the best way to represent the kernel in tt-lang at the level it is designed to operate.
 
 Even ops that DO exist may have different semantics (write in place, different numerical behavior). Always test to verify.
@@ -919,7 +919,7 @@ Once the kernel passes in the simulator, do a final hardware run:
 ~/.claude/commands/tools/run-test.sh --hw /path/to/kernel.py
 ```
 
-NOTE: it is possible that the sim and hw diverge which may require you to either use --hw early or iterate on a program that passes in the sim but not on HW. If your program works with the sim but not on HW you can use the same iteration flow from phase 1 to debug (you may need to isolate patterns and iterate). You can also ask the user for guidance, they may care more about HW or sim working. 
+NOTE: it is possible that the sim and hw diverge which may require you to either use --hw early or iterate on a program that passes in the sim but not on HW. If your program works with the sim but not on HW you can use the same iteration flow from phase 1 to debug (you may need to isolate patterns and iterate). You can also ask the user for guidance, they may care more about HW or sim working.
 
 **When to use `--hw` early:** If the simulator has a bug or is overly conservative for your use case, you can bypass it with `--hw` at any point. But prefer the simulator for iteration since it gives better error diagnostics.
 
