@@ -11,6 +11,7 @@ __all__ = [
     # block_allocation
     "split_work_to_cores",
     "get_large_matmul_params",
+    "num_cores_to_grid_ranges",
     # correctness
     "assert_pcc",
     "assert_allclose",

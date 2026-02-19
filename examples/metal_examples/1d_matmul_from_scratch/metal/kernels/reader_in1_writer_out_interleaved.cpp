@@ -84,8 +84,8 @@ void kernel_main() {
     for (uint32_t bw = 0; bw < num_blocks_w_dim; ++bw) {
       uint32_t in1_tensor_current_inner_dim_block_start_tile_id =
           in1_tensor_current_w_dim_block_tile_id;
-
       for (uint32_t block = 0; block < num_blocks_inner_dim; ++block) {
+        DPRINT << "in1 writer start block " << bw << ", " << block << ", " << bh << ENDL();
         // Operand 1
         cb_reserve_back(cb_id_in1, in1_block_num_tiles);
 
@@ -109,6 +109,7 @@ void kernel_main() {
         cb_push_back(cb_id_in1, in1_block_num_tiles);
       }
       // WRITER
+      DPRINT << "in1 reader done, start writer" << ENDL();
       uint32_t out_tensor_sbh_start_tile_id =
           out_tensor_current_w_dim_block_tile_id;
       for (uint32_t sbh = 0; sbh < out_num_subblocks_h; ++sbh) {
@@ -144,5 +145,5 @@ void kernel_main() {
         out_tensor_next_h_dim_block_stride;
   }
   noc_async_write_barrier();
-  DPRINT << "in1 reader done" << ENDL();
+  DPRINT << "in1 reader and out writer done" << ENDL();
 }

@@ -38,15 +38,13 @@ void MAIN {
   constexpr uint32_t num_blocks_w_dim =
       get_compile_time_arg_val(8); // outer inner dim (in inner dim blocks)
   constexpr uint32_t num_blocks_h_dim =
-      get_compile_time_arg_val(9); // outer inner dim (in inner dim blocks)
+      get_compile_time_arg_val(9); 
   constexpr uint32_t out_subblock_h =
       get_compile_time_arg_val(10); // inner row block size in tiles
   constexpr uint32_t out_subblock_w =
       get_compile_time_arg_val(11); // inner column block size in tiles
   constexpr uint32_t out_subblock_num_tiles =
       get_compile_time_arg_val(12); // out_subblock_h * out_subblock_w;
-  constexpr uint32_t out_block_num_tiles =
-      get_compile_time_arg_val(13); // number of tiles in out_block
 
   constexpr uint32_t out_block_w = out_subblock_w * in1_num_subblocks;
 
@@ -55,15 +53,15 @@ void MAIN {
   constexpr uint32_t out_cb_id = tt::CBIndex::c_16;
   constexpr uint32_t mm_partials_cb_id = tt::CBIndex::c_24;
 
-  mm_init(tt::CBIndex::c_0, tt::CBIndex::c_1, tt::CBIndex::c_16);
+  mm_init(in0_cb_id, in1_cb_id, out_cb_id);
 
   bool spill = num_blocks_inner_dim > 1;
   bool enable_reload = false;
   uint32_t out_num_tiles_to_wait = out_subblock_num_tiles;
 
+  DPRINT << "start compute" << ENDL();
   for (uint32_t bh = 0; bh < num_blocks_h_dim; ++bh) {
     for (uint32_t bw = 0; bw < num_blocks_w_dim; ++bw) {
-      cb_reserve_back(out_cb_id, out_block_num_tiles);
       for (uint32_t block = 0; block < num_blocks_inner_dim; ++block) {
         bool last_out = block == (num_blocks_inner_dim - 1);
         cb_wait_front(in0_cb_id, in0_block_num_tiles);
@@ -78,13 +76,14 @@ void MAIN {
             acquire_dst();
 
             if (enable_reload) {
-              copy_tile_to_dst_init_short(tt::CBIndex::c_24);
-              cb_wait_front(tt::CBIndex::c_24, out_subblock_num_tiles);
+              DPRINT << "reload" << ENDL();
+              copy_tile_to_dst_init_short(mm_partials_cb_id);
+              cb_wait_front(mm_partials_cb_id, out_subblock_num_tiles);
               for (uint32_t i = 0; i < out_subblock_num_tiles; i++) {
-                copy_tile(tt::CBIndex::c_24, i, i);
+                copy_tile(mm_partials_cb_id, i, i);
               }
-              cb_pop_front(tt::CBIndex::c_24, out_subblock_num_tiles);
-              mm_init_short(tt::CBIndex::c_0, tt::CBIndex::c_1);
+              cb_pop_front(mm_partials_cb_id, out_subblock_num_tiles);
+              mm_init_short(in0_cb_id, in1_cb_id);
             }
 
             // Compute output sub-block from a_subblock x b_subblock
@@ -99,7 +98,7 @@ void MAIN {
                       a_index_subblock_offset + a_index_h_offset + inner_dim;
                   int b_index =
                       b_index_subblock_offset + b_index_inner_dim_offset + w;
-                  matmul_tiles(tt::CBIndex::c_0, tt::CBIndex::c_1, a_index,
+                  matmul_tiles(in0_cb_id, in1_cb_id, a_index,
                                b_index, dst_index);
                   b_index_inner_dim_offset += in1_block_w;
                 }
@@ -107,27 +106,29 @@ void MAIN {
               }
               a_index_h_offset += in0_block_w;
             }
-
+            DPRINT << "mm done" << ENDL();
             if (last_out) {
+              DPRINT << "last out" << ENDL();
               // Pack out to output buffer
-              cb_reserve_back(tt::CBIndex::c_16, out_subblock_num_tiles);
+              cb_reserve_back(out_cb_id, out_subblock_num_tiles);
               for (uint32_t i = 0; i < out_subblock_num_tiles; i++) {
-                pack_tile(i, tt::CBIndex::c_16);
+                pack_tile(i, out_cb_id);
               }
-              cb_push_back(tt::CBIndex::c_16, out_subblock_num_tiles);
+              cb_push_back(out_cb_id, out_subblock_num_tiles);
             } else {
+              DPRINT << "intermidiate out" << ENDL();
               // Wait for tiles in output buffer to be written out since interm
               // and output share memory
               if (block == 0) {
-                cb_reserve_back(tt::CBIndex::c_16, out_num_tiles_to_wait);
+                cb_reserve_back(out_cb_id, out_num_tiles_to_wait);
                 out_num_tiles_to_wait += out_subblock_num_tiles;
               }
               // Move partial result to interm buffer
-              cb_reserve_back(tt::CBIndex::c_24, out_subblock_num_tiles);
+              cb_reserve_back(mm_partials_cb_id, out_subblock_num_tiles);
               for (uint32_t i = 0; i < out_subblock_num_tiles; i++) {
-                pack_tile(i, tt::CBIndex::c_24);
+                pack_tile(i, mm_partials_cb_id);
               }
-              cb_push_back(tt::CBIndex::c_24, out_subblock_num_tiles);
+              cb_push_back(mm_partials_cb_id, out_subblock_num_tiles);
             }
 
             release_dst();
@@ -143,8 +144,8 @@ void MAIN {
         // end of compiler subblock generation
         cb_pop_front(in0_cb_id, in0_block_num_tiles);
         cb_pop_front(in1_cb_id, in1_block_num_tiles);
+        DPRINT << "end of block " << block << " (" << bh << ", " << bw << ")" << ENDL();
       }
-      cb_push_back(out_cb_id, out_block_num_tiles);
     }
   }
   DPRINT << "compute done" << ENDL();
