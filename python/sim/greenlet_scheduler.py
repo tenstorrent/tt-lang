@@ -190,6 +190,143 @@ class GreenletScheduler:
             )
         self._has_made_progress[self._current_name] = True
 
+    def _extract_source_location(
+        self, exception: Exception
+    ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+        """Extract source location from exception traceback.
+
+        Returns:
+            Tuple of (source_file, source_line, source_col)
+        """
+        import traceback
+
+        tb = traceback.extract_tb(exception.__traceback__)
+        source_file = None
+        source_line = None
+        source_col = None
+
+        for frame in tb:
+            # Skip internal greenlet/scheduler/simulator frames
+            if (
+                "greenlet_scheduler.py" not in frame.filename
+                and "greenlet" not in frame.filename
+                and "/python/sim/" not in frame.filename
+            ):
+                source_file = frame.filename
+                source_line = frame.lineno
+                source_col = getattr(frame, "colno", None) or 1
+                break
+
+        return source_file, source_line, source_col
+
+    def _print_pretty_error(
+        self,
+        name: str,
+        exception: Exception,
+        source_file: str,
+        source_line: int,
+        source_col: Optional[int],
+    ) -> bool:
+        """Print error with pretty formatting using TTLangCompileError.
+
+        Args:
+            name: Thread name
+            exception: The exception that was raised
+            source_file: Path to source file
+            source_line: Line number in source file
+            source_col: Column number in source file (defaults to 1 if None)
+
+        Returns:
+            True if pretty printing succeeded, False if TTLangCompileError not available
+        """
+        try:
+            TTLangCompileError = _get_ttlang_compile_error()
+            compile_error = TTLangCompileError(
+                f"{type(exception).__name__}: {exception}",
+                source_file=source_file,
+                line=source_line,
+                col=source_col or 1,
+            )
+            print(f"\n❌ Error in {name}:")
+            print(compile_error.format())
+            print("-" * 50)
+            return True
+        except ImportError:
+            return False
+
+    def _print_basic_error(
+        self,
+        name: str,
+        exception: Exception,
+        source_file: Optional[str],
+        source_line: Optional[int],
+        include_traceback: bool = False,
+    ) -> None:
+        """Print error with basic formatting.
+
+        Args:
+            name: Thread name
+            exception: The exception that was raised
+            source_file: Path to source file (if available)
+            source_line: Line number in source file (if available)
+            include_traceback: Whether to include full traceback
+        """
+        print(f"\n❌ Error in {name}:")
+        if source_file and source_line:
+            print(f"  File: {source_file}:{source_line}")
+        print(f"  {type(exception).__name__}: {exception}")
+
+        if include_traceback:
+            import traceback
+
+            tb_str = "".join(
+                traceback.format_exception(
+                    type(exception), exception, exception.__traceback__
+                )
+            )
+            print(f"\nFull traceback:")
+            print(tb_str)
+
+        if not include_traceback:
+            print("-" * 50)
+
+    def _format_and_raise_thread_error(
+        self,
+        name: str,
+        exception: Exception,
+        include_traceback: bool = False,
+    ) -> None:
+        """Format thread error with source location and re-raise.
+
+        Args:
+            name: Thread name
+            exception: The exception that was raised
+            include_traceback: Whether to include full traceback in fallback
+
+        Raises:
+            RuntimeError: Always raises with formatted error message
+        """
+        # Extract source location
+        source_file, source_line, source_col = self._extract_source_location(exception)
+
+        # Try pretty formatting if we have source location
+        if source_file and source_line:
+            pretty_printed = self._print_pretty_error(
+                name, exception, source_file, source_line, source_col
+            )
+            if not pretty_printed:
+                # Fallback if TTLangCompileError is not available
+                self._print_basic_error(
+                    name, exception, source_file, source_line, include_traceback
+                )
+        else:
+            # No source location available
+            self._print_basic_error(name, exception, None, None, include_traceback)
+
+        # Re-raise with thread name included
+        error_msg = f"{name}: {type(exception).__name__}: {exception}"
+        raise RuntimeError(error_msg) from exception
+
     def _initialization_phase(self) -> None:
         """Run all threads sequentially until they first block.
 
@@ -236,57 +373,8 @@ class GreenletScheduler:
                 clear_current_thread_type()
                 self._current_name = None
 
-                # Format error with thread name and source location using pretty printing
-                import traceback
-
-                # Extract source location from traceback
-                # Look for the first frame that's in user code (not in python/sim)
-                tb = traceback.extract_tb(e.__traceback__)
-                source_file = None
-                source_line = None
-                source_col = None
-                for frame in tb:
-                    # Skip internal greenlet/scheduler/simulator frames
-                    if (
-                        "greenlet_scheduler.py" not in frame.filename
-                        and "greenlet" not in frame.filename
-                        and "/python/sim/" not in frame.filename
-                    ):
-                        source_file = frame.filename
-                        source_line = frame.lineno
-                        source_col = getattr(frame, "colno", None) or 1
-                        break
-
-                # Use TTLangCompileError for pretty formatting if we have source location
-                if source_file and source_line:
-                    try:
-                        TTLangCompileError = _get_ttlang_compile_error()
-                        compile_error = TTLangCompileError(
-                            f"{type(e).__name__}: {e}",
-                            source_file=source_file,
-                            line=source_line,
-                            col=source_col,
-                        )
-                        print(f"\n❌ Error in {name}:")
-                        print(compile_error.format())
-                        print("-" * 50)
-                        # Re-raise with thread name included for test compatibility
-                        error_msg = f"{name}: {type(e).__name__}: {e}"
-                        raise RuntimeError(error_msg) from e
-                    except ImportError:
-                        # Fallback if TTLangCompileError is not available
-                        pass
-
-                # Fallback to basic formatting
-                print(f"\n❌ Error in {name}:")
-                if source_file and source_line:
-                    print(f"  File: {source_file}:{source_line}")
-                print(f"  {type(e).__name__}: {e}")
-                print("-" * 50)
-
-                # Re-raise with thread name included
-                error_msg = f"{name}: {type(e).__name__}: {e}"
-                raise RuntimeError(error_msg) from e
+                # Format and raise error with source location
+                self._format_and_raise_thread_error(name, e)
 
             clear_current_thread_type()
 
@@ -389,64 +477,9 @@ class GreenletScheduler:
                     clear_current_thread_type()
                     self._current_name = None
 
-                    # Format error with thread name and source location using pretty printing
-                    import traceback
-
-                    # Extract source location from traceback
-                    # Look for the first frame that's in user code (not in python/sim)
-                    tb = traceback.extract_tb(e.__traceback__)
-                    source_file = None
-                    source_line = None
-                    source_col = None
-                    for frame in tb:
-                        # Skip internal greenlet/scheduler/simulator frames
-                        if (
-                            "greenlet_scheduler.py" not in frame.filename
-                            and "greenlet" not in frame.filename
-                            and "/python/sim/" not in frame.filename
-                        ):
-                            source_file = frame.filename
-                            source_line = frame.lineno
-                            source_col = getattr(frame, "colno", None) or 1
-                            break
-
-                    # Use TTLangCompileError for pretty formatting if we have source location
-                    if source_file and source_line:
-                        try:
-                            TTLangCompileError = _get_ttlang_compile_error()
-                            compile_error = TTLangCompileError(
-                                f"{type(e).__name__}: {e}",
-                                source_file=source_file,
-                                line=source_line,
-                                col=source_col,
-                            )
-                            print(f"\n❌ Error in {name}:")
-                            print(compile_error.format())
-                            print("-" * 50)
-                            # Re-raise with thread name included for test compatibility
-                            # Note: The traceback will be suppressed at top level
-                            error_msg = f"{name}: {type(e).__name__}: {e}"
-                            raise RuntimeError(error_msg) from e
-                        except ImportError:
-                            # Fallback if TTLangCompileError is not available
-                            pass
-
-                    # Fallback to basic formatting
-                    print(f"\nError in {name}:")
-                    if source_file and source_line:
-                        print(f"  File: {source_file}:{source_line}")
-                    print(f"  {type(e).__name__}: {e}")
-
-                    # Also print full traceback for debugging
-                    tb_str = "".join(
-                        traceback.format_exception(type(e), e, e.__traceback__)
-                    )
-                    print(f"\nFull traceback:")
-                    print(tb_str)
-
-                    # Re-raise with original exception chained
-                    error_msg = f"{name}: {type(e).__name__}: {e}"
-                    raise RuntimeError(error_msg) from e
+                    # Format and raise error with source location
+                    # Include full traceback for main loop errors (more debugging info)
+                    self._format_and_raise_thread_error(name, e, include_traceback=True)
                 finally:
                     clear_current_thread_type()
 
