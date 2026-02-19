@@ -1,7 +1,7 @@
 // Tests for ttl-subblock-compute-for-dst pass: partitioning ttl.compute into
 // DST-sized subblocks. Verifies that ttl-assign-dst computes unroll_factor and
 // ttl-subblock-compute-for-dst partitions the compute into subblocks.
-// Multi-dimensional tensors are flattened to 1D before partitioning.
+// Multi-dimensional tensors are tiled across multiple dimensions.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}))' --split-input-file | FileCheck %s --check-prefix=ASSIGN
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=TILED
@@ -112,40 +112,41 @@ func.func @tile_binary_1x8(
 // Purpose: 2x8 multi-dimensional tensor with unary (1 DST register per
 // iteration). DST capacity=8, dstPerIteration=1, totalTiles=16.
 // unroll_factor = min(8/1, 16) = 8.
-// Iteration space flattening: tensor<2x8x...> -> tensor<16x...> because
-// outer dim (2) > 1 -- without flattening, innermost-dim-only partitioning
-// would produce subblocks of 2*8=16 tiles instead of 8.
-// After DST subblock partitioning: scf.for with step 8, inner compute on
-// tensor<8x...>.
-// ASSIGN-LABEL: func.func @flatten_and_tile_2x8
+// Multi-dim tiling: tileSizes=[1,8], product=8. Loop on dim 0 (0 to 2 step 1).
+// Inner compute on tensor<1x8x...>.
+// ASSIGN-LABEL: func.func @tile_multidim_2x8
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
-// TILED-LABEL:  func.func @flatten_and_tile_2x8
-// TILED:        {{.*}} = tensor.collapse_shape {{.*}} : tensor<2x8x!ttcore.tile<32x32, f32>> into tensor<16x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   {{.*}} = tensor.collapse_shape {{.*}} : tensor<2x8x!ttcore.tile<32x32, f32>> into tensor<16x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C16:.*]] = arith.constant 16 : index
-// TILED-NEXT:   %[[C8:.*]] = arith.constant 8 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C16]] step %[[C8]] {
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [8] [1] : tensor<16x!ttcore.tile<32x32, f32>> to tensor<8x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [8] [1] : tensor<16x!ttcore.tile<32x32, f32>> to tensor<8x!ttcore.tile<32x32, f32>>
+// TILED-LABEL:  func.func @tile_multidim_2x8
+// TILED:        %[[C0:.*]] = arith.constant 0 : index
+// TILED-NEXT:   %[[C2:.*]] = arith.constant 2 : index
+// TILED-NEXT:   %[[C1:.*]] = arith.constant 1 : index
+// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 8] [1, 1] : tensor<2x8x!ttcore.tile<32x32, f32>> to tensor<1x8x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 8] [1, 1] : tensor<2x8x!ttcore.tile<32x32, f32>> to tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
-// TILED-SAME:     tensor<8x!ttcore.tile<32x32, f32>>
+// TILED-SAME:     tensor<1x8x!ttcore.tile<32x32, f32>>
+// TILED:            ttl.linearized_index
+// Stride 8 for dim 0: arith.muli(iv, 8) then arith.addi.
+// TILED:            arith.muli %[[IV]],
+// TILED-NEXT:       arith.addi
 // TILED:            ttl.tile_exp
 // TILED-NEXT:       ttl.tile_store
 // TILED-NEXT:       ttl.yield
-// TILED-NEXT:     } -> tensor<8x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   }
-// LOWER-LABEL:  func.func @flatten_and_tile_2x8
-// Flattened + subblocked: outer scf.for (step 8) with inner scf.for (step 1).
-// Inner loop uses arith.addi to compute absolute CB position.
-// LOWER:        tensor.collapse_shape {{.*}} into tensor<16x
+// LOWER-LABEL:  func.func @tile_multidim_2x8
+// Multi-dim subblocked: outer scf.for (step 1 on dim 0), inner loops from
+// lower-to-loops on 1x8 compute. arith.muli computes stride offset.
+// LOWER-NOT:    tensor.collapse_shape
 // LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
-// LOWER:          scf.for %[[INNER:.*]] =
-// LOWER:            %[[ABS:.*]] = arith.addi %[[INNER]], %[[OUTER]]
-// LOWER:            ttl.copy_tile {{.*}}, %[[ABS]],
-// LOWER:            ttl.tile_exp
-func.func @flatten_and_tile_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
+// LOWER:          scf.for
+// LOWER:            scf.for
+// LOWER:              arith.muli %[[OUTER]],
+// LOWER:              arith.addi
+// LOWER:              ttl.copy_tile
+// LOWER:              ttl.tile_exp
+func.func @tile_multidim_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
     -> tensor<2x8x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x8x!ttcore.tile<32x32, f32>>
 
@@ -178,18 +179,16 @@ func.func @flatten_and_tile_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
 // Purpose: 2x4 multi-dimensional tensor where all tiles fit in DST.
 // DST capacity=8, dstPerIteration=1, totalTiles=8.
 // unroll_factor = min(8/1, 8) = 8 = totalTiles -> no DST subblock
-// partitioning needed. No flattening either (tiling won't happen).
+// partitioning needed.
 // ASSIGN-LABEL: func.func @no_subblocking_multidim
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
 // TILED-LABEL:  func.func @no_subblocking_multidim
-// TILED-NOT:    tensor.collapse_shape
 // TILED-NOT:    scf.for
 // TILED:        ttl.compute
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
 // LOWER-LABEL:  func.func @no_subblocking_multidim
 // No subblocking: all 8 tiles fit in DST. 2D nested loop with affine.apply.
-// LOWER-NOT:    tensor.collapse_shape
 // LOWER:        scf.for
 // LOWER:          scf.for
 // LOWER:            affine.apply
@@ -227,38 +226,41 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // Purpose: 4x4 square tensor with unary (1 DST register per iteration).
 // DST capacity=8, dstPerIteration=1, totalTiles=16.
 // unroll_factor = min(8/1, 16) = 8.
-// Iteration space flattening: tensor<4x4x...> -> tensor<16x...> because
-// outer dim (4) > 1.
-// After DST subblock partitioning: scf.for with step 8, two subblocks of
-// 8 tiles each.
-// ASSIGN-LABEL: func.func @flatten_and_subblock_4x4
+// Multi-dim tiling: tileSizes=[2,4], product=8. Loop on dim 0 (0 to 4 step 2).
+// Inner compute on tensor<2x4x...>, two subblocks of 8 tiles each.
+// ASSIGN-LABEL: func.func @subblock_multidim_4x4
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
-// TILED-LABEL:  func.func @flatten_and_subblock_4x4
-// TILED:        {{.*}} = tensor.collapse_shape {{.*}} : tensor<4x4x!ttcore.tile<32x32, f32>> into tensor<16x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   {{.*}} = tensor.collapse_shape {{.*}} : tensor<4x4x!ttcore.tile<32x32, f32>> into tensor<16x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C16:.*]] = arith.constant 16 : index
-// TILED-NEXT:   %[[C8:.*]] = arith.constant 8 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C16]] step %[[C8]] {
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [8] [1] : tensor<16x!ttcore.tile<32x32, f32>> to tensor<8x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [8] [1] : tensor<16x!ttcore.tile<32x32, f32>> to tensor<8x!ttcore.tile<32x32, f32>>
+// TILED-LABEL:  func.func @subblock_multidim_4x4
+// TILED:        %[[C0:.*]] = arith.constant 0 : index
+// TILED-NEXT:   %[[C4:.*]] = arith.constant 4 : index
+// TILED-NEXT:   %[[C2:.*]] = arith.constant 2 : index
+// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C4]] step %[[C2]] {
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
-// TILED-SAME:     tensor<8x!ttcore.tile<32x32, f32>>
+// TILED-SAME:     tensor<2x4x!ttcore.tile<32x32, f32>>
+// TILED:            ttl.linearized_index
+// Stride 4 for dim 0: arith.muli(iv, 4) then arith.addi.
+// TILED:            arith.muli %[[IV]],
+// TILED-NEXT:       arith.addi
 // TILED:            ttl.tile_exp
 // TILED-NEXT:       ttl.tile_store
 // TILED-NEXT:       ttl.yield
-// TILED-NEXT:     } -> tensor<8x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   }
-// LOWER-LABEL:  func.func @flatten_and_subblock_4x4
-// Flattened + subblocked: outer scf.for (step 8) with inner scf.for (step 1).
-// LOWER:        tensor.collapse_shape {{.*}} into tensor<16x
+// LOWER-LABEL:  func.func @subblock_multidim_4x4
+// Multi-dim subblocked: outer scf.for (step 2 on dim 0), inner 2D loops from
+// lower-to-loops on 2x4 compute. arith.muli computes stride offset.
+// LOWER-NOT:    tensor.collapse_shape
 // LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
-// LOWER:          scf.for %[[INNER:.*]] =
-// LOWER:            %[[ABS:.*]] = arith.addi %[[INNER]], %[[OUTER]]
-// LOWER:            ttl.copy_tile {{.*}}, %[[ABS]],
-// LOWER:            ttl.tile_exp
-func.func @flatten_and_subblock_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
+// LOWER:          scf.for
+// LOWER:            scf.for
+// LOWER:              arith.muli %[[OUTER]],
+// LOWER:              arith.addi
+// LOWER:              ttl.copy_tile
+// LOWER:              ttl.tile_exp
+func.func @subblock_multidim_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
     -> tensor<4x4x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
 
@@ -292,22 +294,20 @@ func.func @flatten_and_subblock_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
 // per iteration since both operands are block args). DST capacity=8,
 // dstPerIteration=1, totalTiles=8. unroll_factor = min(8/1, 8) = 8 =
 // totalTiles -> attribute set but no DST subblock partitioning.
-// No flattening either (tiling won't happen).
-// ASSIGN-LABEL: func.func @flatten_and_subblock_binary
+// ASSIGN-LABEL: func.func @no_subblocking_binary
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
-// TILED-LABEL:  func.func @flatten_and_subblock_binary
-// TILED-NOT:    tensor.collapse_shape
+// TILED-LABEL:  func.func @no_subblocking_binary
 // TILED-NOT:    scf.for
 // TILED:        ttl.compute
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
-// LOWER-LABEL:  func.func @flatten_and_subblock_binary
+// LOWER-LABEL:  func.func @no_subblocking_binary
 // No subblocking: all 8 tiles fit in DST. 2D nested loop, FPU binary.
 // LOWER:        scf.for
 // LOWER:          scf.for
 // LOWER:            ttl.tile_add
 // LOWER:            ttl.tile_store
-func.func @flatten_and_subblock_binary(
+func.func @no_subblocking_binary(
     %a: tensor<2x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<2x4x!ttcore.tile<32x32, f32>>)
     -> tensor<2x4x!ttcore.tile<32x32, f32>> {
@@ -344,43 +344,44 @@ func.func @flatten_and_subblock_binary(
 
 // Purpose: 3x3 tensor with unary -- totalTiles not evenly divisible by
 // initial unroll_factor. DST capacity=8, dstPerIteration=1, totalTiles=9.
-// unroll_factor = min(8/1, 9) = 8, but 9 % 8 != 0.
-// The subblock pass adjusts unroll_factor down to 3 (largest divisor of
-// 9 that is <= 8), producing 3 subblocks of 3 tiles with constant bounds.
-// Iteration space flattening: tensor<3x3x...> -> tensor<9x...>.
-// After DST subblock partitioning: scf.for with step 3 over 9 tiles.
-// ASSIGN-LABEL: func.func @flatten_with_remainder
+// unroll_factor = min(8/1, 9) = 8.
+// Multi-dim tiling: best tileSizes=[1,3] (product=3, largest evenly-dividing
+// subblock <= 8). Loop on dim 0 (0 to 3 step 1), 3 subblocks of 3 tiles.
+// ASSIGN-LABEL: func.func @tile_multidim_remainder_3x3
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
-// TILED-LABEL:  func.func @flatten_with_remainder
-// TILED:        {{.*}} = tensor.collapse_shape {{.*}} : tensor<3x3x!ttcore.tile<32x32, f32>> into tensor<9x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   {{.*}} = tensor.collapse_shape {{.*}} : tensor<3x3x!ttcore.tile<32x32, f32>> into tensor<9x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C9:.*]] = arith.constant 9 : index
+// TILED-LABEL:  func.func @tile_multidim_remainder_3x3
+// TILED:        %[[C0:.*]] = arith.constant 0 : index
 // TILED-NEXT:   %[[C3:.*]] = arith.constant 3 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C9]] step %[[C3]] {
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [3] [1] : tensor<9x!ttcore.tile<32x32, f32>> to tensor<3x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]]] [3] [1] : tensor<9x!ttcore.tile<32x32, f32>> to tensor<3x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:   %[[C1:.*]] = arith.constant 1 : index
+// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C3]] step %[[C1]] {
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1] : tensor<3x3x!ttcore.tile<32x32, f32>> to tensor<1x3x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1] : tensor<3x3x!ttcore.tile<32x32, f32>> to tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
-// TILED-SAME:     tensor<3x!ttcore.tile<32x32, f32>>
+// TILED-SAME:     tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED:            ttl.linearized_index
-// TILED-NEXT:       arith.addi {{.*}}, %[[IV]]
+// Stride 3 for dim 0: arith.muli(iv, 3) then arith.addi.
+// TILED:            arith.muli %[[IV]],
+// TILED-NEXT:       arith.addi
 // TILED:            ttl.tile_exp
 // TILED-NEXT:       ttl.tile_store
 // TILED-NEXT:       ttl.yield
-// TILED-NEXT:     } -> tensor<3x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     } -> tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   }
-// LOWER-LABEL:  func.func @flatten_with_remainder
-// Flattened + subblocked with adjusted unroll_factor: outer loop step 3.
-// All bounds are constant; arith.addi computes absolute CB position.
-// LOWER:        tensor.collapse_shape {{.*}} into tensor<9x
+// LOWER-LABEL:  func.func @tile_multidim_remainder_3x3
+// Multi-dim subblocked with adjusted subblock size: outer loop step 1.
+// All bounds are constant; arith.muli and arith.addi compute absolute CB
+// position.
+// LOWER-NOT:    tensor.collapse_shape
 // LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
 // LOWER-NOT:      arith.minsi
-// LOWER:          scf.for %[[INNER:.*]] =
-// LOWER:            %[[ABS:.*]] = arith.addi %[[INNER]], %[[OUTER]]
-// LOWER:            ttl.copy_tile {{.*}}, %[[ABS]],
-// LOWER:            ttl.tile_exp
-func.func @flatten_with_remainder(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
+// LOWER:          scf.for
+// LOWER:            scf.for
+// LOWER:              arith.muli %[[OUTER]],
+// LOWER:              arith.addi
+// LOWER:              ttl.copy_tile
+// LOWER:              ttl.tile_exp
+func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
     -> tensor<3x3x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<3x3x!ttcore.tile<32x32, f32>>
 

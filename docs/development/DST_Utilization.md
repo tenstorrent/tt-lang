@@ -163,12 +163,13 @@ regardless of which subblock is executing.
 When `unroll_factor >= totalTiles`, no outer loop is generated (the
 compute already fits in one subblock).
 
-Multi-dimensional iteration spaces are flattened to 1D before
-partitioning. When outer dimensions contribute tiles (i.e., totalTiles >
-innerDimSize), the pass inserts `tensor.collapse_shape` on all operands
-to linearize the iteration space, creates a 1D `ttl.compute`, then
-partitions normally. This requires all indexing maps to be identity
-(broadcast maps are not yet supported for flattening).
+Multi-dimensional iteration spaces are tiled across multiple dimensions.
+The pass finds tile sizes `[t0, t1, ...]` where each `ti` divides
+`dimSizes[i]` and the product is maximized while staying within
+`unroll_factor`. This creates nested `scf.for` loops for dimensions
+where `tileSizes[d] < dimSizes[d]`, with `getTiledImplementation`
+handling per-operand slicing via indexing maps. This approach supports
+non-identity maps (broadcast, reduction) without flattening.
 
 ### 5-6. Extract Slice Support
 

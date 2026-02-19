@@ -1,18 +1,20 @@
-// Test: DST subblocking with non-divisible tile counts adjusts unroll_factor.
+// Test: DST subblocking with non-divisible tile counts adjusts subblock size.
 // A 3x3 tensor has 9 tiles. With DST capacity=8 and 1 FPU op (dstPerIteration=1),
-// the initial unroll_factor=8, but 9 % 8 != 0. The subblock pass adjusts
-// unroll_factor down to 3 (largest divisor of 9 that is <= 8), producing
-// 3 subblocks of 3 tiles each with constant loop bounds.
+// the initial unroll_factor=8, but no subblock of size 8 evenly divides 9.
+// Multi-dim tiling finds tileSizes=[1,3] (product=3), producing 3 subblocks
+// of 3 tiles each with constant loop bounds. Loop on dim 0 (0 to 3 step 1).
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttcore-register-device,func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttcore-register-device,func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,canonicalize,cse,lower-affine,convert-ttkernel-to-emitc,symbol-dce)' | FileCheck %s --check-prefix=EMITC
 
 // SUBBLOCK-LABEL: func.func @remainder_3x3
-// Verify outer loop: 0 to 9 step 3 (adjusted from 8 to 3).
+// Verify outer loop with inner ttl.compute containing linearized_index offset.
+// Stride 3 for dim 0: arith.muli(iv, 3) then arith.addi.
 // SUBBLOCK:        scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}}
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK-NEXT:       arith.addi {{.*}}, %[[IV]]
+// SUBBLOCK:            arith.muli %[[IV]],
+// SUBBLOCK-NEXT:       arith.addi
 
 // EMITC-LABEL: func.func @remainder_3x3
 

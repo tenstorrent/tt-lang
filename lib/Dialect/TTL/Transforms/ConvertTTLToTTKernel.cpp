@@ -1191,15 +1191,6 @@ static void removeTensorDataflowOps(func::FuncOp func) {
     }
   }
 
-  // Erase dead tensor.collapse_shape ops (from iteration space flattening).
-  SmallVector<tensor::CollapseShapeOp> collapseOps;
-  func.walk([&](tensor::CollapseShapeOp op) { collapseOps.push_back(op); });
-  for (auto op : collapseOps) {
-    if (op.getResult().use_empty()) {
-      op.erase();
-    }
-  }
-
   // Erase dead tensor.empty ops.
   SmallVector<tensor::EmptyOp> emptyOps;
   func.walk([&](tensor::EmptyOp op) { emptyOps.push_back(op); });

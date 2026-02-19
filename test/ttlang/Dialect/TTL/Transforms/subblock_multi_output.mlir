@@ -2,6 +2,8 @@
 // Verifies that 3 independent compute chains writing to 3 separate output
 // CBs are each correctly subblocked for DST.
 // Derived from test_comprehensive_multicore (20 fused ops, 3 outputs).
+// Shape: 4x4 bf16 (capacity=8). Multi-dim tiling: tileSizes=[2,4], product=8.
+// Loop on dim 0 (0 to 4 step 2). Stride 4 for dim 0 offset.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttcore-register-device,func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttcore-register-device,func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops))' | FileCheck %s --check-prefix=LOWER
@@ -9,39 +11,47 @@
 
 // SUBBLOCK-LABEL: func.func @fused_compute
 // Verify three separate scf.for loops with inner ttl.compute ops (one per
-// output chain), each with 1D linearized_index maps and arith.addi offset
-// by the outer loop IV.
+// output chain), each with linearized_index offset by arith.muli + arith.addi.
 // SUBBLOCK:        scf.for %[[IV1:.*]] =
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK-NEXT:       arith.addi {{.*}}, %[[IV1]]
+// SUBBLOCK:            arith.muli %[[IV1]],
+// SUBBLOCK-NEXT:       arith.addi
 // SUBBLOCK:        scf.for %[[IV2:.*]] =
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK-NEXT:       arith.addi {{.*}}, %[[IV2]]
+// SUBBLOCK:            arith.muli %[[IV2]],
+// SUBBLOCK-NEXT:       arith.addi
 // SUBBLOCK:        scf.for %[[IV3:.*]] =
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK-NEXT:       arith.addi {{.*}}, %[[IV3]]
+// SUBBLOCK:            arith.muli %[[IV3]],
+// SUBBLOCK-NEXT:       arith.addi
 
 // Verify that lower-to-loops produces nested scf.for loops with the correct
-// arith.addi offset pattern (inner_iv + outer_iv) for copy_tile src index.
+// arith.muli + arith.addi offset pattern for copy_tile src index.
 // LOWER-LABEL: func.func @fused_compute
-// Chain 1: outer loop over 4x4=16 tiles, step 4
+// Chain 1: outer loop over 4x4=16 tiles, step 2 on dim 0
 // LOWER:        scf.for %[[OUTER1:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          scf.for %[[INNER1:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:            %[[ABS_IDX1:.*]] = arith.addi %[[INNER1]], %[[OUTER1]]
-// LOWER:            ttl.copy_tile {{.*}}, %[[ABS_IDX1]],
+// LOWER:          scf.for
+// LOWER:            scf.for
+// LOWER:              arith.muli %[[OUTER1]],
+// LOWER:              arith.addi
+// LOWER:              ttl.copy_tile
 // Chain 2
 // LOWER:        scf.for %[[OUTER2:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          scf.for %[[INNER2:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:            %[[ABS_IDX2:.*]] = arith.addi %[[INNER2]], %[[OUTER2]]
-// LOWER:            ttl.copy_tile {{.*}}, %[[ABS_IDX2]],
+// LOWER:          scf.for
+// LOWER:            scf.for
+// LOWER:              arith.muli %[[OUTER2]],
+// LOWER:              arith.addi
+// LOWER:              ttl.copy_tile
 // Chain 3
 // LOWER:        scf.for %[[OUTER3:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          scf.for %[[INNER3:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:            %[[ABS_IDX3:.*]] = arith.addi %[[INNER3]], %[[OUTER3]]
-// LOWER:            ttl.copy_tile {{.*}}, %[[ABS_IDX3]],
+// LOWER:          scf.for
+// LOWER:            scf.for
+// LOWER:              arith.muli %[[OUTER3]],
+// LOWER:              arith.addi
+// LOWER:              ttl.copy_tile
 
 // EMITC-LABEL: func.func @fused_compute
 

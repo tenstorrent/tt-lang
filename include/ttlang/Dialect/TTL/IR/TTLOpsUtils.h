@@ -62,11 +62,6 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
     return getAttachedCB(slice.getSource());
   }
 
-  // Trace through tensor.collapse_shape (from iteration space flattening).
-  if (auto collapse = tensor.getDefiningOp<mlir::tensor::CollapseShapeOp>()) {
-    return getAttachedCB(collapse.getSrc());
-  }
-
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();
   }
