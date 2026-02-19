@@ -207,7 +207,7 @@ class TestCopySourceLocking:
         # After wait(), the block still doesn't support store() because it's a wait() block
         tx.wait()
         # wait() blocks cannot use store() per state machine - they expect STORE_SRC
-        with pytest.raises(RuntimeError, match="Impossible.*Invalid state for store"):
+        with pytest.raises(RuntimeError, match="Cannot perform store.*Expected one of"):
             source_block.store(
                 [make_zeros_tile(), make_zeros_tile()]
             )  # Should still fail
@@ -278,7 +278,7 @@ class TestCopyDestinationLocking:
         # Cannot store on DM block - only Compute blocks support store
         with pytest.raises(
             RuntimeError,
-            match="Impossible.*Invalid state for store",
+            match="Cannot perform store.*Expected one of",
         ):
             dest_block.store([make_ones_tile(), make_ones_tile()])
 

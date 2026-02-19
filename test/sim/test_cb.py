@@ -904,7 +904,7 @@ def test_block_state_machine_restrictions(api: CBAPI) -> None:
     read_block = cb.wait()
 
     # Cannot write - wait() blocks expect STORE_SRC, not STORE
-    with pytest.raises(RuntimeError, match="Impossible.*Invalid state for store"):
+    with pytest.raises(RuntimeError, match="Cannot perform store.*Expected one of"):
         read_block.store([ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))])
 
     # Use waited block as STORE_SRC before pop
