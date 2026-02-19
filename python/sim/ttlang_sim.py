@@ -64,9 +64,62 @@ def run_file(filepath: str, argv: list[str]) -> None:
         }
         try:
             exec(code, exec_globals)
+        except RuntimeError as e:
+            # RuntimeError with __cause__ is from greenlet scheduler exception handling
+            # and already has formatted error printed - suppress traceback
+            if e.__cause__ is not None:
+                sys.exit(1)
+            # RuntimeError without __cause__ (like deadlock) should show filtered traceback
+            print(f"\nError executing {file_path.name}:", file=sys.stderr)
+            _print_filtered_traceback(e, file_path)
+            sys.exit(1)
         except Exception:
             print(f"\nError executing {file_path.name}:", file=sys.stderr)
             raise
+
+
+def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
+    """Print traceback filtering out internal simulator frames.
+
+    Only shows frames from user code, omitting internal simulator implementation
+    details from python/sim/*.
+    """
+    import traceback
+    from traceback import FrameSummary
+
+    # Extract traceback entries
+    tb_entries = traceback.extract_tb(exc.__traceback__)
+
+    # Filter to only user code frames
+    user_frames: list[FrameSummary] = []
+    for frame in tb_entries:
+        # Skip internal simulator frames
+        if any(
+            pattern in frame.filename
+            for pattern in [
+                "/python/sim/ttlang_sim.py",
+                "/python/sim/kernel.py",
+                "/python/sim/program.py",
+                "/python/sim/greenlet_scheduler.py",
+                "<frozen runpy>",
+            ]
+        ):
+            continue
+        user_frames.append(frame)
+
+    # Print filtered traceback
+    if user_frames:
+        print("Traceback (most recent call last):", file=sys.stderr)
+        for frame in user_frames:
+            print(
+                f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}',
+                file=sys.stderr,
+            )
+            if frame.line:
+                print(f"    {frame.line}", file=sys.stderr)
+
+    # Print the exception message
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def run_module(module_name: str, argv: list[str]) -> None:
@@ -117,6 +170,29 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--grid",
+        type=str,
+        metavar="ROWS,COLS",
+        help="Default grid size for kernels with grid='auto' (e.g., --grid 4,4). Defaults to 8,8",
+    )
+
+    parser.add_argument(
+        "--show-stats",
+        action="store_true",
+        dest="show_stats",
+        help="Print tensor read/write statistics after execution",
+    )
+
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        choices=["greedy", "fair"],
+        default="fair",
+        dest="scheduler",
+        help="Scheduler algorithm: 'greedy' (run until block) or 'fair' (least recently run)",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -131,15 +207,53 @@ def main() -> None:
     # Set up simulator imports before running any code
     setup_simulator_imports()
 
+    # Configure scheduler algorithm if specified
+    if args.scheduler:
+        from sim.greenlet_scheduler import set_scheduler_algorithm
+
+        set_scheduler_algorithm(args.scheduler)
+
+    # Enable tensor statistics collection if requested
+    if args.show_stats:
+        from sim.stats import enable_stats
+
+        enable_stats()
+
+    # Configure default grid if specified
+    if args.grid:
+        try:
+            parts = args.grid.split(",")
+            if len(parts) != 2:
+                raise ValueError("Grid must be specified as ROWS,COLS")
+            rows, cols = int(parts[0].strip()), int(parts[1].strip())
+            if rows <= 0 or cols <= 0:
+                raise ValueError("Grid dimensions must be positive")
+
+            from sim.kernel import set_default_grid
+
+            set_default_grid((rows, cols))
+        except ValueError as e:
+            print(f"Error: Invalid grid specification: {e}", file=sys.stderr)
+            sys.exit(1)
+
     # Run the target
-    if args.module:
-        run_module(args.target, args.script_args)
-    elif args.target.endswith(".py"):
-        run_file(args.target, args.script_args)
-    else:
-        print(f"Error: Invalid target: {args.target}", file=sys.stderr)
-        print("Target must be a .py file or use -m for module name", file=sys.stderr)
-        sys.exit(1)
+    try:
+        if args.module:
+            run_module(args.target, args.script_args)
+        elif args.target.endswith(".py"):
+            run_file(args.target, args.script_args)
+        else:
+            print(f"Error: Invalid target: {args.target}", file=sys.stderr)
+            print(
+                "Target must be a .py file or use -m for module name", file=sys.stderr
+            )
+            sys.exit(1)
+    finally:
+        # Print tensor statistics if enabled
+        if args.show_stats:
+            from sim.stats import print_stats
+
+            print_stats()
 
 
 if __name__ == "__main__":

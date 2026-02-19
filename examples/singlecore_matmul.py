@@ -5,7 +5,7 @@
 
 import ttl
 import ttnn
-from sim.testing import assert_pcc
+from utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))
@@ -85,7 +85,7 @@ def main() -> None:
     golden = a @ b
 
     # Verify correctness with relaxed tolerance for matmul
-    assert_pcc(golden, out, rtol=1e-4, atol=1e-4)
+    assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out), ulp_threshold=1000)
 
 
 if __name__ == "__main__":

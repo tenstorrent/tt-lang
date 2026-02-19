@@ -9,11 +9,36 @@ specified grid configurations.
 """
 
 import inspect
-from typing import Any, Callable, List, Tuple, Union, cast
+from typing import Any, Callable, List, Union, cast
 import types
 
 from .block import ThreadType
 from .typedefs import CoreCoord, Index, Shape, Size
+
+# Default grid size when grid='auto' is specified
+_default_auto_grid: Shape = (8, 8)
+
+
+def set_default_grid(grid: Shape) -> None:
+    """Set the default grid size used when kernel specifies grid='auto'.
+
+    Args:
+        grid: Tuple of (rows, cols) specifying the grid size
+
+    Example:
+        set_default_grid((4, 4))  # Use 4x4 grid for 'auto'
+    """
+    global _default_auto_grid
+    _default_auto_grid = grid
+
+
+def get_default_grid() -> Shape:
+    """Get the current default grid size for grid='auto'.
+
+    Returns:
+        Tuple of (rows, cols) specifying the default grid size
+    """
+    return _default_auto_grid
 
 
 def _get_from_frame(var_name: str, error_msg: str) -> Any:
@@ -196,7 +221,7 @@ def core(dims: Size = 2) -> CoreCoord:
     if dims == 1:
         return coords[0]
     else:
-        return cast(tuple, tuple(coords))
+        return tuple(coords)
 
 
 def kernel(
@@ -206,7 +231,7 @@ def kernel(
     Decorator that generates a kernel with specified grid.
 
     Args:
-        grid: Grid specification. If 'auto', defaults to (8, 8)
+        grid: Grid specification. If 'auto', uses the default grid (configurable via set_default_grid())
 
     Returns:
         Decorated function with grid configuration
@@ -222,8 +247,8 @@ def kernel(
         # Create a new function with grid in its closure
         # This is achieved by modifying the function's globals to include this variable
 
-        # Set grid to (8, 8) if 'auto'
-        actual_grid = (8, 8) if grid == "auto" else grid
+        # Set grid to default if 'auto'
+        actual_grid: Shape = cast(Shape, _default_auto_grid if grid == "auto" else grid)
 
         # Create new globals dict that includes grid
         new_globals = func.__globals__.copy()
@@ -240,18 +265,41 @@ def kernel(
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Import here to avoid circular dependency
-            from .decorators import _clear_thread_registry, _get_registered_threads
+            from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
+            from .stats import is_stats_enabled, register_tensor_name
+            from .ttnnsim import Tensor
+
+            # If stats are enabled, register tensor names from parameter names
+            if is_stats_enabled():
+                sig = inspect.signature(func)
+                params = list(sig.parameters.keys())
+
+                # Register positional arguments
+                for i, arg in enumerate(args):
+                    match arg:
+                        case Tensor() if i < len(params):
+                            register_tensor_name(arg, params[i])
+                        case _:
+                            pass
+
+                # Register keyword arguments
+                for param_name, arg in kwargs.items():
+                    match arg:
+                        case Tensor():
+                            register_tensor_name(arg, param_name)
+                        case _:
+                            pass
 
             # Clear thread registry before kernel execution
-            _clear_thread_registry()
+            clear_thread_registry()
 
             # Call the modified function (grid is already in globals)
             # This executes the kernel body which defines and registers threads
             modified_func(*args, **kwargs)
 
             # Get registered threads
-            threads = _get_registered_threads()
+            threads = get_registered_threads()
 
             # All kernels must define exactly 3 threads: compute, dm0, dm1
             if len(threads) != 3:

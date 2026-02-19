@@ -27,14 +27,18 @@ from typing import (
 )
 
 from .block import Block
-from .cb import ReserveContext, WaitContext
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
-from .pipe import DstPipeIdentity, SrcPipeIdentity
-from .ttnnsim import Tensor, tensor_shape_in_tiles
-from .typedefs import Count, Pipe, Shape
+from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
+from .stats import (
+    record_tensor_read,
+    record_tensor_write,
+    record_pipe_read,
+    record_pipe_write,
+)
+from .ttnnsim import Tensor
+from .typedefs import AnyDst, AnyPipe, CoreCoord, Count, Pipe, Shape
 
 if TYPE_CHECKING:
-    from .cb import ReserveContext, WaitContext
     from .pipe import SrcPipeIdentity
 
 
@@ -52,19 +56,15 @@ if TYPE_CHECKING:
 CopyEndpoint = Union[
     Tensor,
     Block,
-    Pipe,
-    "ReserveContext",
-    "WaitContext",
-    "SrcPipeIdentity",
+    AnyPipe,
+    AnySrcPipeIdentity,
     DstPipeIdentity,
 ]
 CopyEndpointType = Union[
     Type[Tensor],
     Type[Block],
-    Type[Pipe],
-    Type["ReserveContext"],
-    Type["WaitContext"],
-    Type["SrcPipeIdentity"],
+    Type[AnyPipe],
+    Type[AnySrcPipeIdentity],
     Type[DstPipeIdentity],
 ]
 
@@ -100,9 +100,7 @@ def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
     )
 
 
-def tensor_shape_in_tiles_with_skip(
-    tensor_shape: Shape, tile_shape: Shape
-) -> Tuple[int, ...]:
+def tensor_shape_in_tiles_with_skip(tensor_shape: Shape, tile_shape: Shape) -> Shape:
     """Convert tensor shape to tile dimensions, preserving size-1 dimensions.
 
     Unlike tensor_shape_in_tiles, this returns 1 for dimensions that are already
@@ -133,17 +131,21 @@ def tensor_shape_in_tiles_with_skip(
 
 # Global pipe state for simulating NoC pipe communication
 # For each pipe we keep a small structure with:
-# - queue: deque of (data, remaining_receiver_count)
+# - queue: deque of (data, remaining_receiver_count, message_id, receivers_set)
 # - event: threading.Event set when queue is non-empty
 # - lock: threading.Lock to guard queue and receiver count updates
+# - next_msg_id: counter for assigning unique IDs to messages
 # In a real implementation this would be handled by NoC hardware.
 class _PipeEntry(TypedDict):
-    queue: Deque[Tuple[List[Tensor], Count]]
+    queue: Deque[
+        Tuple[List[Tensor], Count, int, set[int]]
+    ]  # (data, remaining, msg_id, receivers_who_got_it)
     event: threading.Event
     lock: threading.Lock
+    next_msg_id: int
 
 
-_pipe_buffer: Dict[Pipe, _PipeEntry] = {}
+_pipe_buffer: Dict[AnyPipe, _PipeEntry] = {}
 # Lock protecting creation of per-pipe entries in _pipe_buffer.
 # This ensures all threads agree on the same entry object (and its lock)
 # and avoids races where two threads create different entry dicts for
@@ -229,13 +231,17 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
 class BlockToPipeHandler:
     """Handler for Block → Pipe (pipe send)."""
 
-    def validate(self, src: Block, dst: Pipe) -> None:
+    def validate(self, src: Block, dst: AnyPipe) -> None:
         """Validate pipe send - no specific validation needed."""
         pass
 
-    def transfer(self, src: Block, dst: Pipe) -> None:
+    def transfer(self, src: Block, dst: AnyPipe) -> None:
         """Pipe send: store data in shared buffer accessible by all cores."""
-        src_data = [src._get_item(i) for i in range(len(src))]
+        src_data = [src.get_item(i) for i in range(len(src))]
+
+        # Record pipe write statistics
+        record_pipe_write(dst, src_data)
+
         # Initialize per-pipe state atomically so all threads see the
         # same entry (and therefore the same per-entry lock).
         with _pipe_registry_lock:
@@ -245,49 +251,47 @@ class BlockToPipeHandler:
                     "queue": deque(),
                     "event": threading.Event(),
                     "lock": threading.Lock(),
+                    "next_msg_id": 0,
                 }
                 _pipe_buffer[dst] = new_entry
                 entry = new_entry
 
         # Calculate number of receivers based on dst_core_range type
-        num_receivers = 1
+        num_receivers: int = 1
 
-        # Check if it's a CoreRange with slices (by examining elements)
-        if isinstance(dst.dst_core_range, tuple) and len(dst.dst_core_range) > 0:
-            has_slice = any(isinstance(item, slice) for item in dst.dst_core_range)
+        # dst_core_range can be either CoreCoord or CoreRange
+        dst_core_range: AnyDst = dst.dst_core_range
 
-            if has_slice:
+        # Helper predicate for pattern matching
+        def has_slices(t: Any) -> bool:
+            """Check if tuple contains any slice objects."""
+            return len(t) > 0 and any(type(item) is slice for item in t)
+
+        # Match on the structure of dst_core_range
+        match dst_core_range:
+            case int():
+                # Single 1D core
+                num_receivers = 1
+            case tuple() if has_slices(dst_core_range):
                 # CoreRange with slices: expand and count
                 from .pipe import expand_core_range
-                from .typedefs import CoreRange
 
-                expanded_cores = expand_core_range(dst.dst_core_range)  # type: ignore[arg-type]
+                expanded_cores: List[CoreCoord] = expand_core_range(dst_core_range)
                 num_receivers = len(expanded_cores)
-            elif (
-                all(isinstance(item, tuple) for item in dst.dst_core_range)
-                and len(dst.dst_core_range) == 2
-            ):
-                # Legacy rectangular range: ((x1,y1), (x2,y2))
-                first, second = dst.dst_core_range
-                dims = len(first)  # type: ignore[arg-type]
-                for i in range(dims):
-                    range_size = abs(second[i] - first[i]) + 1  # type: ignore[index]
-                    num_receivers *= range_size
-            else:
+            case tuple():
                 # Single multi-dimensional core
                 num_receivers = 1
-        elif isinstance(dst.dst_core_range, int):
-            # Single 1D core
-            num_receivers = 1
 
-        # Add to the queue for this pipe with receiver count
+        # Add to the queue for this pipe with receiver count, message ID, and empty receiver set
         # and notify any waiting receivers via event
         with entry["lock"]:
-            entry["queue"].append((src_data, num_receivers))
+            msg_id = entry["next_msg_id"]
+            entry["next_msg_id"] += 1
+            entry["queue"].append((src_data, num_receivers, msg_id, set[int]()))
             # Signal that data is available
             entry["event"].set()
 
-    def can_wait(self, src: Block, dst: Pipe) -> bool:
+    def can_wait(self, src: Block, dst: AnyPipe) -> bool:
         """Block to Pipe copy completes immediately on wait()."""
         return True
 
@@ -315,12 +319,15 @@ class TensorToBlockHandler:
         Extracts tiles from src using tile coordinates and stores them as
         ttnn.Tensor objects in the Block slots.
         """
+        # Record tensor read
+        record_tensor_read(src)
+
         # Calculate tile count, handling size-1 dimensions properly
         shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
         num_tiles = int(prod(shape_in_tiles))
         width_tiles = shape_in_tiles[1]
 
-        tiles = []
+        tiles: List[Tensor] = []
         for tile_idx in range(num_tiles):
             # Convert linear index to 2D tile coordinates
             h_tile = tile_idx // width_tiles
@@ -360,6 +367,9 @@ class BlockToTensorHandler:
         Retrieves ttnn.Tensor objects from Block slots and places them into
         the destination tensor using tile coordinates.
         """
+        # Record tensor write
+        record_tensor_write(dst)
+
         # Calculate tile count, handling size-1 dimensions properly
         shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
         dst_tiles = int(prod(shape_in_tiles))
@@ -371,7 +381,7 @@ class BlockToTensorHandler:
             w_tile = tile_idx % width_tiles
 
             # Get tile from Block (this is a ttnn.Tensor)
-            tile = src._get_item(tile_idx)
+            tile = src.get_item(tile_idx)
 
             # Place tile into destination using tile coordinates [h:h+1, w:w+1]
             dst[h_tile : h_tile + 1, w_tile : w_tile + 1] = tile
@@ -384,11 +394,11 @@ class BlockToTensorHandler:
 class PipeToBlockHandler:
     """Handler for Pipe → Block (pipe receive)."""
 
-    def validate(self, src: Pipe, dst: Block) -> None:
+    def validate(self, src: AnyPipe, dst: Block) -> None:
         """Validate pipe receive - validation happens during transfer when data is available."""
         pass
 
-    def can_wait(self, src: Pipe, dst: Block) -> bool:
+    def can_wait(self, src: AnyPipe, dst: Block) -> bool:
         """Pipe to Block copy can only proceed when pipe has data."""
         # Check if pipe has data available without blocking
         with _pipe_registry_lock:
@@ -399,7 +409,7 @@ class PipeToBlockHandler:
         with entry["lock"]:
             return len(entry["queue"]) > 0
 
-    def transfer(self, src: Pipe, dst: Block) -> None:
+    def transfer(self, src: AnyPipe, dst: Block) -> None:
         """Pipe receive: retrieve data from shared pipe buffer."""
         # Use an event to wait for data instead of polling. This reduces CPU
         # usage and provides a cleaner synchronization primitive for tests.
@@ -413,11 +423,12 @@ class PipeToBlockHandler:
                     "queue": deque(),
                     "event": threading.Event(),
                     "lock": threading.Lock(),
+                    "next_msg_id": 0,
                 }
                 _pipe_buffer[src] = new_entry
                 entry = new_entry
         event: threading.Event = entry["event"]
-        queue: Deque[Tuple[List[Tensor], Count]] = entry["queue"]
+        queue: Deque[Tuple[List[Tensor], Count, int, set[int]]] = entry["queue"]
         lock: threading.Lock = entry["lock"]
 
         while True:
@@ -448,7 +459,57 @@ class PipeToBlockHandler:
                     event.clear()
                     continue
 
-                src_data, remaining_receivers = queue[0]
+                # Get current core ID for tracking which messages this core has received
+                try:
+                    from .kernel import core
+
+                    core_id = core(dims=1)
+                    core_id_available = True
+                except (ImportError, RuntimeError):
+                    # Non-kernel context or core not available - no tracking needed
+                    core_id_available = False
+                    core_id = None
+
+                # Find the first message in the queue that this core hasn't received yet
+                # This handles buffer_factor>1 where the same core may have multiple
+                # pending receives but should get different messages
+                src_data: List[Tensor] | None = None
+                remaining_receivers: Count | None = None
+                msg_id_to_recv: int | None = None
+                receivers_set: set[int] | None = None
+                msg_index = 0
+
+                for idx, (msg_data, remaining_recv, msg_id, recv_set) in enumerate(
+                    queue
+                ):
+                    if not core_id_available or core_id not in recv_set:
+                        # This core hasn't received this message yet
+                        src_data = msg_data
+                        remaining_receivers = remaining_recv
+                        msg_id_to_recv = msg_id
+                        receivers_set = recv_set
+                        msg_index = idx
+                        break
+
+                if src_data is None:
+                    # All messages in queue have already been received by this core
+                    # Wait for new messages to arrive
+                    event.clear()
+                    continue
+
+                # At this point, all variables are guaranteed to be non-None
+                assert remaining_receivers is not None
+                assert msg_id_to_recv is not None
+                assert receivers_set is not None
+
+                # Mark this core as having received the message
+                if core_id_available:
+                    match core_id:
+                        case int():
+                            receivers_set.add(core_id)
+                        case _:
+                            raise TypeError("core_id should be int when dims=1")
+
                 if len(dst) != len(src_data):
                     raise ValueError(
                         f"Destination Block length ({len(dst)}) "
@@ -457,15 +518,26 @@ class PipeToBlockHandler:
 
                 dst.copy_as_dest(src_data)
 
+                # Record pipe read statistics
+                record_pipe_read(src, src_data)
+
                 # Decrement receiver count and update queue
                 remaining_receivers -= 1
+
                 if remaining_receivers == 0:
-                    queue.popleft()
+                    # All receivers got this message, remove it from queue
+                    del queue[msg_index]
                     # If nothing left, clear the event so future waits block
                     if len(queue) == 0:
                         event.clear()
                 else:
-                    queue[0] = (src_data, remaining_receivers)
+                    # Update the message in place with new remaining count and receiver set
+                    queue[msg_index] = (
+                        src_data,
+                        remaining_receivers,
+                        msg_id_to_recv,
+                        receivers_set,
+                    )
 
                 return
 
@@ -478,15 +550,15 @@ class PipeToBlockHandler:
 class BlockToSrcPipeIdentityHandler:
     """Handler for Block → SrcPipeIdentity (delegates to Block → Pipe)."""
 
-    def validate(self, src: Block, dst: SrcPipeIdentity) -> None:
+    def validate(self, src: Block, dst: AnySrcPipeIdentity) -> None:
         # Delegate to the Pipe handler
         BlockToPipeHandler().validate(src, dst.pipe)
 
-    def transfer(self, src: Block, dst: SrcPipeIdentity) -> None:
+    def transfer(self, src: Block, dst: AnySrcPipeIdentity) -> None:
         # Delegate to the Pipe handler
         BlockToPipeHandler().transfer(src, dst.pipe)
 
-    def can_wait(self, src: Block, dst: SrcPipeIdentity) -> bool:
+    def can_wait(self, src: Block, dst: AnySrcPipeIdentity) -> bool:
         return BlockToPipeHandler().can_wait(src, dst.pipe)
 
 
@@ -504,97 +576,3 @@ class DstPipeIdentityToBlockHandler:
 
     def can_wait(self, src: DstPipeIdentity, dst: Block) -> bool:
         return PipeToBlockHandler().can_wait(src.pipe, dst)
-
-
-# ===== Context Manager Wrapper Handlers =====
-# These handlers delegate to the underlying Block handlers for _ReserveContext and _WaitContext
-
-
-# Tensor → ReserveContext (delegates to Tensor → Block)
-@register_copy_handler(Tensor, ReserveContext)
-class TensorToReserveContextHandler:
-    """Handler for Tensor → ReserveContext (delegates to Tensor → Block)."""
-
-    def validate(self, src: Tensor, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        TensorToBlockHandler().validate(src, dst.block())
-
-    def transfer(self, src: Tensor, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        TensorToBlockHandler().transfer(src, dst.block())
-
-    def can_wait(self, src: Tensor, dst: "ReserveContext") -> bool:
-        # Delegate to the Block handler
-        return TensorToBlockHandler().can_wait(src, dst.block())
-
-
-# WaitContext → Tensor (delegates to Block → Tensor)
-@register_copy_handler(WaitContext, Tensor)
-class WaitContextToTensorHandler:
-    """Handler for WaitContext → Tensor (delegates to Block → Tensor)."""
-
-    def validate(self, src: "WaitContext", dst: Tensor) -> None:
-        # Delegate to the Block handler
-        BlockToTensorHandler().validate(src.block(), dst)
-
-    def transfer(self, src: "WaitContext", dst: Tensor) -> None:
-        # Delegate to the Block handler
-        BlockToTensorHandler().transfer(src.block(), dst)
-
-    def can_wait(self, src: "WaitContext", dst: Tensor) -> bool:
-        # Delegate to the Block handler
-        return BlockToTensorHandler().can_wait(src.block(), dst)
-
-
-# WaitContext → Pipe (delegates to Block → Pipe)
-@register_copy_handler(WaitContext, Pipe)
-class WaitContextToPipeHandler:
-    """Handler for WaitContext → Pipe (delegates to Block → Pipe)."""
-
-    def validate(self, src: "WaitContext", dst: Pipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().validate(src.block(), dst)
-
-    def transfer(self, src: "WaitContext", dst: Pipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().transfer(src.block(), dst)
-
-    def can_wait(self, src: "WaitContext", dst: Pipe) -> bool:
-        # Delegate to the Block handler
-        return BlockToPipeHandler().can_wait(src.block(), dst)
-
-
-# Pipe → ReserveContext (delegates to Pipe → Block)
-@register_copy_handler(Pipe, ReserveContext)
-class PipeToReserveContextHandler:
-    """Handler for Pipe → ReserveContext (delegates to Pipe → Block)."""
-
-    def validate(self, src: Pipe, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        PipeToBlockHandler().validate(src, dst.block())
-
-    def transfer(self, src: Pipe, dst: "ReserveContext") -> None:
-        # Delegate to the Block handler
-        PipeToBlockHandler().transfer(src, dst.block())
-
-    def can_wait(self, src: Pipe, dst: "ReserveContext") -> bool:
-        # Delegate to the Block handler
-        return PipeToBlockHandler().can_wait(src, dst.block())
-
-
-# ReserveContext → Pipe (delegates to Block → Pipe)
-@register_copy_handler(ReserveContext, Pipe)
-class ReserveContextToPipeHandler:
-    """Handler for ReserveContext → Pipe (delegates to Block → Pipe)."""
-
-    def validate(self, src: "ReserveContext", dst: Pipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().validate(src.block(), dst)
-
-    def transfer(self, src: "ReserveContext", dst: Pipe) -> None:
-        # Delegate to the Block handler
-        BlockToPipeHandler().transfer(src.block(), dst)
-
-    def can_wait(self, src: "ReserveContext", dst: Pipe) -> bool:
-        # Delegate to the Block handler
-        return BlockToPipeHandler().can_wait(src.block(), dst)

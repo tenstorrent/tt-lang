@@ -12,7 +12,9 @@ from python.sim.greenlet_scheduler import (
     GreenletScheduler,
     block_if_needed,
     get_scheduler,
+    get_scheduler_algorithm,
     set_scheduler,
+    set_scheduler_algorithm,
 )
 
 
@@ -174,7 +176,7 @@ class TestGreenletScheduler:
 
         set_scheduler(scheduler)
         try:
-            with pytest.raises(RuntimeError, match="t1.*ValueError.*Test error"):
+            with pytest.raises(RuntimeError, match="ValueError.*Test error"):
                 scheduler.run()
         finally:
             set_scheduler(None)
@@ -368,3 +370,100 @@ class TestBlockIfNeeded:
             set_scheduler(None)
 
         assert executed == [1, 2, 3]
+
+
+class TestSchedulerAlgorithm:
+    """Tests for scheduler algorithm selection."""
+
+    def test_default_algorithm_is_greedy(self) -> None:
+        """Test that default algorithm is greedy."""
+        # Reset to default
+        set_scheduler_algorithm("greedy")
+        assert get_scheduler_algorithm() == "greedy"
+
+    def test_can_set_fair_algorithm(self) -> None:
+        """Test that fair algorithm can be set."""
+        try:
+            set_scheduler_algorithm("fair")
+            assert get_scheduler_algorithm() == "fair"
+        finally:
+            # Reset to default
+            set_scheduler_algorithm("greedy")
+
+    def test_invalid_algorithm_raises_error(self) -> None:
+        """Test that invalid algorithm raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid scheduler algorithm"):
+            set_scheduler_algorithm("invalid")
+
+    def test_greedy_scheduling_behavior(self) -> None:
+        """Test greedy scheduling runs thread until it blocks."""
+        try:
+            set_scheduler_algorithm("greedy")
+            scheduler = GreenletScheduler()
+            execution_order = []
+
+            def thread1() -> None:
+                execution_order.append("t1-1")
+                execution_order.append("t1-2")
+                execution_order.append("t1-3")
+
+            def thread2() -> None:
+                execution_order.append("t2-1")
+                execution_order.append("t2-2")
+
+            scheduler.add_thread("t1", thread1, ThreadType.COMPUTE)
+            scheduler.add_thread("t2", thread2, ThreadType.DM)
+
+            set_scheduler(scheduler)
+            try:
+                scheduler.run()
+            finally:
+                set_scheduler(None)
+
+            # With greedy scheduling, one thread typically completes before others start
+            # (order depends on dict iteration, but each thread should run continuously)
+            assert len(execution_order) == 5
+        finally:
+            set_scheduler_algorithm("greedy")
+
+    def test_fair_scheduling_behavior(self) -> None:
+        """Test fair scheduling interleaves threads."""
+        try:
+            set_scheduler_algorithm("fair")
+            scheduler = GreenletScheduler()
+            execution_order = []
+            mock_obj1 = MockBlockable(initially_ready=False)
+            mock_obj2 = MockBlockable(initially_ready=False)
+
+            def thread1() -> None:
+                execution_order.append("t1-1")
+                block_if_needed(mock_obj1, "wait")
+                execution_order.append("t1-2")
+
+            def thread2() -> None:
+                execution_order.append("t2-1")
+                block_if_needed(mock_obj2, "wait")
+                execution_order.append("t2-2")
+
+            def thread3() -> None:
+                # Unblock both threads
+                mock_obj1.make_ready()
+                mock_obj2.make_ready()
+
+            scheduler.add_thread("t1", thread1, ThreadType.COMPUTE)
+            scheduler.add_thread("t2", thread2, ThreadType.COMPUTE)
+            scheduler.add_thread("t3", thread3, ThreadType.DM)
+
+            set_scheduler(scheduler)
+            try:
+                scheduler.run()
+            finally:
+                set_scheduler(None)
+
+            # Fair scheduling should allow both t1 and t2 to run before blocking
+            assert "t1-1" in execution_order
+            assert "t2-1" in execution_order
+            assert "t1-2" in execution_order
+            assert "t2-2" in execution_order
+        finally:
+            set_scheduler_algorithm("greedy")

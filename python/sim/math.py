@@ -13,14 +13,12 @@ system similar to ttnnsim.py. Special functions like broadcast and reductions
 are implemented manually.
 """
 
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional
 
 import torch
 
 from .block import Block, BlockAcquisition, ThreadType
-
-if TYPE_CHECKING:
-    from .cb import ReserveContext, WaitContext
+from .ttnnsim import Tensor
 
 
 def _track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
@@ -34,24 +32,27 @@ def _track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
         *input_blocks: Input blocks that contributed to the result
     """
     for block in input_blocks:
-        # Unwrap context managers if needed
-        actual_block = block
-        if hasattr(block, "_block"):
-            actual_block = block._block  # type: ignore[attr-defined]
+        is_temporary = getattr(block, "_is_temporary", None)
+        if is_temporary is None:
+            continue
 
-        if isinstance(actual_block, Block):
-            if (
-                not actual_block._is_temporary  # type: ignore[attr-defined]
-                and actual_block._acquisition == BlockAcquisition.WAIT  # type: ignore[attr-defined]
-                and actual_block._thread_type == ThreadType.COMPUTE  # type: ignore[attr-defined]
-            ):
-                result_block._source_blocks.append(actual_block)  # type: ignore[attr-defined]
-            elif actual_block._is_temporary:  # type: ignore[attr-defined]
-                result_block._source_blocks.extend(actual_block._source_blocks)  # type: ignore[attr-defined]
+        if (
+            not is_temporary
+            and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
+            and getattr(block, "thread_type", None) == ThreadType.COMPUTE
+        ):
+            source_blocks = getattr(result_block, "_source_blocks", None)
+            if source_blocks is not None:
+                source_blocks.append(block)
+        elif is_temporary:
+            actual_source = getattr(block, "_source_blocks", None)
+            result_source = getattr(result_block, "_source_blocks", None)
+            if actual_source is not None and result_source is not None:
+                result_source.extend(actual_source)
 
 
 def broadcast(
-    block: Union[Block, "ReserveContext", "WaitContext"],
+    block: Block,
     _unused_arg: Optional[Any] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
@@ -70,7 +71,7 @@ def broadcast(
     - Replicates them across all rows in that column
 
     Args:
-        block: Input block to broadcast (can be Block or WaitContext)
+        block: Input block to broadcast
         _unused_arg: Unused argument for compatibility (typically output block shape hint)
         dims: List of dimension indices to broadcast along (0-indexed)
 
@@ -80,13 +81,8 @@ def broadcast(
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    from .ttnnsim import Tensor
-
-    # Unwrap WaitContext/ReserveContext if needed
-    actual_block: Block = block.block() if hasattr(block, "block") else block  # type: ignore[union-attr]
-
     # Validate that the dimensions being broadcast have size 1 at grid level
-    block_shape = actual_block._shape  # type: ignore[attr-defined]
+    block_shape = block._shape  # type: ignore[attr-defined]
     for dim in dims:
         if dim >= len(block_shape):
             raise ValueError(
@@ -100,8 +96,8 @@ def broadcast(
             )
 
     # Perform within-tile broadcasting
-    input_tensors = [t.to_torch() for t in actual_block.to_list()]
-    result_tensors = []
+    input_tensors = [t.to_torch() for t in block.to_list()]
+    result_tensors: List[Tensor] = []
 
     for tile in input_tensors:
         # Create a slice that selects index 0 for each dimension in dims
@@ -116,27 +112,24 @@ def broadcast(
     result_block = Block.from_list(result_tensors, block_shape)
 
     # Preserve source block tracking for wait() blocks
-    if hasattr(actual_block, "_source_blocks"):
-        result_block._source_blocks = actual_block._source_blocks.copy()  # type: ignore[attr-defined]
+    if block._source_blocks:  # type: ignore[attr-defined]
+        result_block._source_blocks = block._source_blocks.copy()  # type: ignore[attr-defined]
 
-    # If actual_block itself is a wait() block, add it to source_blocks
+    # If block itself is a wait() block, add it to source_blocks
     if (
-        hasattr(actual_block, "_is_temporary")
-        and not actual_block._is_temporary  # type: ignore[attr-defined]
-        and hasattr(actual_block, "_acquisition")
-        and actual_block._acquisition
-        == BlockAcquisition.WAIT  # type: ignore[attr-defined]
-        and hasattr(actual_block, "_thread_type")
-        and actual_block._thread_type
-        == ThreadType.COMPUTE  # type: ignore[attr-defined]
+        not block._is_temporary  # type: ignore[attr-defined]
+        and block.acquisition == BlockAcquisition.WAIT
+        and block.thread_type == ThreadType.COMPUTE
     ):
-        result_block._source_blocks.append(actual_block)  # type: ignore[attr-defined]
+        result_block._source_blocks.append(block)  # type: ignore[attr-defined]
 
     return result_block
 
 
 # Helper function to create unary operation wrappers
-def _create_unary_op_wrapper(name: str, torch_fn: Callable) -> Callable:
+def _create_unary_op_wrapper(
+    name: str, torch_fn: Callable[[torch.Tensor], torch.Tensor]
+) -> Callable[[Block], Block]:
     """Create a wrapper function for a unary PyTorch operation.
 
     Args:
@@ -149,12 +142,11 @@ def _create_unary_op_wrapper(name: str, torch_fn: Callable) -> Callable:
 
     def wrapper(block: Block) -> Block:
         # Apply the operation to each tensor in the block
-        result_tensors = [torch_fn(t.to_torch()) for t in block.to_list()]
+        result_torch: List[torch.Tensor] = [
+            torch_fn(t.to_torch()) for t in block.to_list()
+        ]
 
-        # Import Tensor here to avoid circular dependency
-        from .ttnnsim import Tensor
-
-        result_list = [Tensor(t) for t in result_tensors]
+        result_list: List[Tensor] = [Tensor(t) for t in result_torch]
         result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
         _track_source_blocks(result_block, block)
         return result_block
@@ -176,7 +168,7 @@ def _create_unary_op_wrapper(name: str, torch_fn: Callable) -> Callable:
 # Mapping of ttl.math unary operations to PyTorch functions
 # Only includes simple unary functions from TTLangSpecification.md
 # Note: abs and neg are operators (__abs__, __neg__), not ttl.math functions
-_TORCH_UNARY_OPS = {
+_TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     # Basic unary math functions (from spec)
     "exp": torch.exp,
     "exp2": torch.exp2,
@@ -203,18 +195,22 @@ _TORCH_UNARY_OPS = {
     "sigmoid": torch.sigmoid,
     "gelu": torch.nn.functional.gelu,
     "silu": torch.nn.functional.silu,
-    "softsign": torch.nn.functional.softsign,
+    "softsign": torch.nn.functional.softsign,  # type: ignore[dict-item]
     "hardsigmoid": torch.nn.functional.hardsigmoid,
     "selu": torch.nn.functional.selu,
 }
 
 # Auto-generate all simple unary operation functions
 for _op_name, _torch_fn in _TORCH_UNARY_OPS.items():
-    globals()[_op_name] = _create_unary_op_wrapper(_op_name, _torch_fn)
+    globals()[_op_name] = _create_unary_op_wrapper(
+        _op_name, _torch_fn  # type: ignore[arg-type]
+    )
 
 
 # Helper function for binary operations
-def _apply_binary_op(a: Block, b: Block, op: Callable) -> Block:
+def _apply_binary_op(
+    a: Block, b: Block, op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+) -> Block:
     """Apply a binary operation element-wise to two blocks.
 
     Args:
@@ -225,12 +221,12 @@ def _apply_binary_op(a: Block, b: Block, op: Callable) -> Block:
     Returns:
         Block with operation applied element-wise
     """
-    from .ttnnsim import Tensor
-
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
-    result_tensors = [op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)]
-    result_list = [Tensor(t) for t in result_tensors]
+    result_torch: List[torch.Tensor] = [
+        op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)
+    ]
+    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
     _track_source_blocks(result_block, a, b)
@@ -238,7 +234,9 @@ def _apply_binary_op(a: Block, b: Block, op: Callable) -> Block:
 
 
 # Helper function for unary operations with parameters
-def _apply_unary_with_params(block: Block, op: Callable) -> Block:
+def _apply_unary_with_params(
+    block: Block, op: Callable[[torch.Tensor], torch.Tensor]
+) -> Block:
     """Apply a unary operation with parameters to each tensor in a block.
 
     Args:
@@ -248,10 +246,8 @@ def _apply_unary_with_params(block: Block, op: Callable) -> Block:
     Returns:
         Block with operation applied element-wise
     """
-    from .ttnnsim import Tensor
-
-    result_tensors = [op(t.to_torch()) for t in block.to_list()]
-    result_list = [Tensor(t) for t in result_tensors]
+    result_torch: List[torch.Tensor] = [op(t.to_torch()) for t in block.to_list()]
+    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
     _track_source_blocks(result_block, block)
@@ -306,8 +302,6 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         This is equivalent to the @ operator. In the spec, matmul is BlockExpr.__matmul__,
         but this function is provided for convenience in the simulator.
     """
-    from .ttnnsim import Tensor
-
     # Get block shapes
     a_shape = a._shape  # type: ignore[attr-defined]
     b_shape = b._shape  # type: ignore[attr-defined]
@@ -331,11 +325,11 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
 
     # Compute result tile-by-tile
     # Output tile [i, j] = sum over k of (a[i, k] @ b[k, j])
-    result_tensors = []
+    result_tensors: List[Tensor] = []
     for i in range(M):
         for j in range(N):
             # Accumulate contributions from all k
-            acc = None
+            acc: Optional[torch.Tensor] = None
             for k in range(K):
                 a_tile = a_tensors[i * K + k].to_torch()
                 b_tile = b_tensors[k * N + j].to_torch()
@@ -346,6 +340,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
                 else:
                     acc = acc + partial
 
+            assert acc is not None, "K must be > 0 for matmul"
             result_tensors.append(Tensor(acc))
 
     result_block = Block.from_list(result_tensors, shape=(M, N))
@@ -364,7 +359,7 @@ def rsub(a: Block, b: int) -> Block:
     Returns:
         Block with b - a computed element-wise
     """
-    return _apply_unary_with_params(a, lambda t: b - t)
+    return _apply_unary_with_params(a, lambda t: torch.tensor(b) - t)
 
 
 # Activation functions with parameters
@@ -380,9 +375,11 @@ def relu_max(expr: Block, upper_limit: int) -> Block:
     Returns:
         Block with ReLU applied with upper clipping
     """
-    return _apply_unary_with_params(
-        expr, lambda t: torch.clamp(torch.relu(t), max=upper_limit)
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(torch.relu(t), max=upper_limit)
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def relu_min(expr: Block, lower_limit: int) -> Block:
@@ -397,9 +394,11 @@ def relu_min(expr: Block, lower_limit: int) -> Block:
     Returns:
         Block with ReLU applied with lower clipping
     """
-    return _apply_unary_with_params(
-        expr, lambda t: torch.relu(torch.clamp(t, min=lower_limit))
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.relu(torch.clamp(t, min=lower_limit))
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def leaky_relu(expr: Block, slope: float) -> Block:
@@ -412,9 +411,11 @@ def leaky_relu(expr: Block, slope: float) -> Block:
     Returns:
         Block with Leaky ReLU applied
     """
-    return _apply_unary_with_params(
-        expr, lambda t: torch.nn.functional.leaky_relu(t, negative_slope=slope)
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.leaky_relu(t, negative_slope=slope)
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def elu(expr: Block, alpha: float) -> Block:
@@ -427,9 +428,11 @@ def elu(expr: Block, alpha: float) -> Block:
     Returns:
         Block with ELU applied
     """
-    return _apply_unary_with_params(
-        expr, lambda t: torch.nn.functional.elu(t, alpha=alpha)
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.elu(t, alpha=alpha)
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
@@ -443,9 +446,11 @@ def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
     Returns:
         Block with CELU applied
     """
-    return _apply_unary_with_params(
-        expr, lambda t: torch.nn.functional.celu(t, alpha=alpha)
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.celu(t, alpha=alpha)
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def prelu(expr: Block, alpha: float) -> Block:
@@ -459,9 +464,11 @@ def prelu(expr: Block, alpha: float) -> Block:
         Block with PReLU applied
     """
     # PyTorch's prelu expects weight parameter, use leaky_relu for scalar alpha
-    return _apply_unary_with_params(
-        expr, lambda t: torch.nn.functional.leaky_relu(t, negative_slope=alpha)
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.leaky_relu(t, negative_slope=alpha)
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def softplus(
@@ -478,9 +485,11 @@ def softplus(
     Returns:
         Block with Softplus applied
     """
-    return _apply_unary_with_params(
-        expr, lambda t: torch.nn.functional.softplus(t, beta=beta, threshold=threshold)
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.softplus(t, beta=beta, threshold=threshold)
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
@@ -494,10 +503,11 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
     Returns:
         Block with Hardtanh applied
     """
-    return _apply_unary_with_params(
-        expr,
-        lambda t: torch.nn.functional.hardtanh(t, min_val=min_val, max_val=max_val),
-    )
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.hardtanh(t, min_val=min_val, max_val=max_val)
+
+    return _apply_unary_with_params(expr, _op)
 
 
 def reduce_max(
@@ -537,8 +547,6 @@ def reduce_max(
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
 
-    from .ttnnsim import Tensor
-
     block_shape = block._shape  # type: ignore[attr-defined]
     M, N = block_shape
     input_tensors = [t.to_torch() for t in block.to_list()]
@@ -553,7 +561,7 @@ def reduce_max(
     # Step 1: Within-tile reduction
     # dims=[0] means reduce across columns within each row -> one value per row at col 0
     # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles = []
+    reduced_tiles: List[torch.Tensor] = []
     for tile in input_tensors:
         result_tile = torch.zeros_like(tile)
         if 0 in dims and 1 in dims:
@@ -574,10 +582,10 @@ def reduce_max(
     result_M = 1 if 0 in dims else M
     result_N = 1 if 1 in dims else N
 
-    result_tensors = []
+    result_tensors: List[Tensor] = []
     for res_i in range(result_M):
         for res_j in range(result_N):
-            tiles_to_max = []
+            tiles_to_max: List[torch.Tensor] = []
             for i in range(M):
                 for j in range(N):
                     if (0 in dims or i == res_i) and (1 in dims or j == res_j):
@@ -633,8 +641,6 @@ def reduce_sum(
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
 
-    from .ttnnsim import Tensor
-
     block_shape = block._shape  # type: ignore[attr-defined]
     M, N = block_shape
     input_tensors = [t.to_torch() for t in block.to_list()]
@@ -649,7 +655,7 @@ def reduce_sum(
     # Step 1: Within-tile reduction
     # dims=[0] means reduce across columns within each row -> one value per row at col 0
     # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles = []
+    reduced_tiles: List[torch.Tensor] = []
     for tile in input_tensors:
         result_tile = torch.zeros_like(tile)
         if 0 in dims and 1 in dims:
@@ -670,10 +676,10 @@ def reduce_sum(
     result_M = 1 if 0 in dims else M
     result_N = 1 if 1 in dims else N
 
-    result_tensors = []
+    result_tensors: List[Tensor] = []
     for res_i in range(result_M):
         for res_j in range(result_N):
-            tiles_to_sum = []
+            tiles_to_sum: List[torch.Tensor] = []
             for i in range(M):
                 for j in range(N):
                     if (0 in dims or i == res_i) and (1 in dims or j == res_j):
@@ -693,7 +699,8 @@ def reduce_sum(
 
 
 # Clean up temporary variables
-del _op_name, _torch_fn
+for _name in ["_op_name", "_torch_fn"]:
+    globals().pop(_name, None)
 
 
 def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
@@ -711,8 +718,6 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block with shape (N, M), where each tile is transposed
     """
-    from .ttnnsim import Tensor
-
     # Transpose each tile (swap rows/columns within tiles)
     transposed_tiles = [Tensor(t.to_torch().T) for t in block.to_list()]
 
@@ -720,7 +725,7 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
     M, N = block._shape  # type: ignore[attr-defined]
 
     # Reorder tiles to match transposed grid: tile[i,j] -> tile[j,i]
-    reordered_tiles = []
+    reordered_tiles: List[Tensor] = []
     for j in range(N):
         for i in range(M):
             reordered_tiles.append(transposed_tiles[i * N + j])

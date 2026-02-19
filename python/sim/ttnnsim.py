@@ -22,14 +22,15 @@ from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import torch
 
-# Try to import actual ttnn, track if available
+# Try to import actual ttnn, track if availability
+TTNN_AVAILABLE: bool
 try:
-    import ttnn
+    import ttnn  # type: ignore[reportMissingImports]
 
-    TTNN_AVAILABLE = True
+    TTNN_AVAILABLE = True  # type: ignore[reportConstantRedefinition]
 except ImportError:
-    ttnn = None  # type: ignore
-    TTNN_AVAILABLE = False
+    ttnn = None  # type: ignore[assignment]
+    TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
 from .constants import TILE_SHAPE
 from .tensoraccessor import TensorAccessor
@@ -87,8 +88,12 @@ def broadcast_tensors(
         List of result tensors after broadcasting
     """
     # Extract underlying torch tensors
-    left_torch = [t._tensor if hasattr(t, "_tensor") else t for t in left_tensors]
-    right_torch = [t._tensor if hasattr(t, "_tensor") else t for t in right_tensors]
+    left_torch: List[torch.Tensor] = [
+        cast(torch.Tensor, getattr(t, "_tensor", t)) for t in left_tensors
+    ]
+    right_torch: List[torch.Tensor] = [
+        cast(torch.Tensor, getattr(t, "_tensor", t)) for t in right_tensors
+    ]
 
     # Stack into batched tensors
     left_batched = torch.stack(left_torch)
@@ -134,9 +139,11 @@ class CoreCoord:
         return f"CoreCoord(x={self.x}, y={self.y})"
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, CoreCoord):
-            return False
-        return self.x == other.x and self.y == other.y
+        match other:
+            case CoreCoord():
+                return self.x == other.x and self.y == other.y
+            case _:
+                return False
 
 
 class CoreRange:
@@ -264,78 +271,104 @@ class Tensor:
 
     def __getitem__(self, key: Any) -> "Tensor":
         # If key looks like tile-style indexing (two slices/ints), use TensorAccessor
-        if isinstance(key, tuple):
-            key_t = cast(Tuple[Any, ...], key)
-            if len(key_t) == 2:
-                row_key = key_t[0]
-                col_key = key_t[1]
+        result: Tensor
+        match key:
+            case tuple() as key_t if len(key_t) == 2:  # type: ignore[misc]
+                row_key = cast(Any, key_t[0])
+                col_key = cast(Any, key_t[1])
 
                 # Check if both are integers (tile indexing like a[m, k])
-                if isinstance(row_key, int) and isinstance(col_key, int):
-                    # Check if tensor is tile-indexable
-                    if not self._is_tile_indexable():
-                        return Tensor(self._tensor.__getitem__(cast(Any, key)))
-                    # Use tile indexing for tile-indexable tensors
-                    self._ensure_accessor()
-                    assert self._accessor is not None
-                    return Tensor(self._accessor[row_key, col_key])
+                match (row_key, col_key):
+                    case (int(), int()):
+                        # Check if tensor is tile-indexable
+                        if not self._is_tile_indexable():
+                            result = Tensor(self._tensor.__getitem__(cast(Any, key)))
+                        else:
+                            # Use tile indexing for tile-indexable tensors
+                            self._ensure_accessor()
+                            assert self._accessor is not None
+                            result = Tensor(self._accessor[row_key, col_key])
+                        # Propagate _name attribute from parent to slice
+                        if hasattr(self, "_name"):
+                            result._name = self._name  # type: ignore
+                        return result
+                    case _:  # type: ignore[misc]
+                        pass
 
                 # Check if either or both are slices (mixed or full slice indexing)
-                if isinstance(row_key, (slice, int)) and isinstance(
-                    col_key, (slice, int)
-                ):
-                    self._ensure_accessor()
-                    assert self._accessor is not None
-                    return Tensor(self._accessor[row_key, col_key])
+                match (row_key, col_key):
+                    case (slice() | int(), slice() | int()):
+                        self._ensure_accessor()
+                        assert self._accessor is not None
+                        result = Tensor(self._accessor[row_key, col_key])
+                        # Propagate _name attribute from parent to slice
+                        if hasattr(self, "_name"):
+                            result._name = self._name  # type: ignore
+                        return result
+                    case _:  # type: ignore[misc]
+                        pass
+            case _:  # type: ignore[misc]
+                pass
 
-        return Tensor(self._tensor.__getitem__(cast(Any, key)))
+        result = Tensor(self._tensor.__getitem__(cast(Any, key)))
+        # Propagate _name attribute from parent to slice
+        if hasattr(self, "_name"):
+            result._name = self._name  # type: ignore
+        return result
 
     def __setitem__(self, key: Any, value: Union["Tensor", torch.Tensor, Any]) -> None:
         # If setting via tile-style indexing, route through accessor
-        if isinstance(key, tuple):
-            key_t = cast(Tuple[Any, ...], key)
-            if len(key_t) == 2:
-                row_key = key_t[0]
-                col_key = key_t[1]
+        match key:
+            case tuple() as key_t if len(key_t) == 2:  # type: ignore[misc]
+                row_key = cast(Any, key_t[0])
+                col_key = cast(Any, key_t[1])
 
                 # Check if both are integers (tile indexing like a[m, k])
-                if isinstance(row_key, int) and isinstance(col_key, int):
-                    # Check if tensor is tile-indexable
-                    if not self._is_tile_indexable():
+                match (row_key, col_key):
+                    case (int(), int()):
+                        # Check if tensor is tile-indexable
+                        if not self._is_tile_indexable():
+                            match value:
+                                case Tensor() as tval:
+                                    self._tensor.__setitem__(
+                                        cast(Any, key), tval._tensor
+                                    )
+                                case torch.Tensor() as tt:
+                                    self._tensor.__setitem__(cast(Any, key), tt)
+                                case _:  # type: ignore[misc]
+                                    self._tensor.__setitem__(cast(Any, key), value)
+                            return
+                        # Use tile indexing for tile-indexable tensors
+                        self._ensure_accessor()
+                        assert self._accessor is not None
                         match value:
                             case Tensor() as tval:
-                                self._tensor.__setitem__(cast(Any, key), tval._tensor)
+                                self._accessor[row_key, col_key] = tval._tensor
                             case torch.Tensor() as tt:
-                                self._tensor.__setitem__(cast(Any, key), tt)
-                            case _:
-                                self._tensor.__setitem__(cast(Any, key), value)
+                                self._accessor[row_key, col_key] = tt
+                            case _:  # type: ignore[misc]
+                                self._accessor[row_key, col_key] = value
                         return
-                    # Use tile indexing for tile-indexable tensors
-                    self._ensure_accessor()
-                    assert self._accessor is not None
-                    match value:
-                        case Tensor() as tval:
-                            self._accessor[row_key, col_key] = tval._tensor
-                        case torch.Tensor() as tt:
-                            self._accessor[row_key, col_key] = tt
-                        case _:
-                            self._accessor[row_key, col_key] = value
-                    return
+                    case _:  # type: ignore[misc]
+                        pass
 
                 # Check if either or both are slices (mixed or full slice indexing)
-                if isinstance(row_key, (slice, int)) and isinstance(
-                    col_key, (slice, int)
-                ):
-                    self._ensure_accessor()
-                    assert self._accessor is not None
-                    match value:
-                        case Tensor() as tval:
-                            self._accessor[row_key, col_key] = tval._tensor
-                        case torch.Tensor() as tt:
-                            self._accessor[row_key, col_key] = tt
-                        case _:
-                            self._accessor[row_key, col_key] = value
-                    return
+                match (row_key, col_key):
+                    case (slice() | int(), slice() | int()):
+                        self._ensure_accessor()
+                        assert self._accessor is not None
+                        match value:
+                            case Tensor() as tval:
+                                self._accessor[row_key, col_key] = tval._tensor
+                            case torch.Tensor() as tt:
+                                self._accessor[row_key, col_key] = tt
+                            case _:  # type: ignore[misc]
+                                self._accessor[row_key, col_key] = value
+                        return
+                    case _:  # type: ignore[misc]
+                        pass
+            case _:  # type: ignore[misc]
+                pass
 
         match value:
             case Tensor() as tval:
@@ -612,20 +645,25 @@ def split_work_to_cores(
         >>> print(f"Using {num_cores} cores, {units_1} units per core in group 1, {units_2} in group 2")
     """
     # Determine the total number of cores and create the all_cores CoreRangeSet
-    if isinstance(core_grid, CoreCoord):
-        # Create a CoreRangeSet from the grid dimensions
-        num_cores = core_grid.x * core_grid.y
-        all_cores = CoreRangeSet(
-            [CoreRange(CoreCoord(0, 0), CoreCoord(core_grid.x - 1, core_grid.y - 1))]
-        )
-        grid_size = (core_grid.x, core_grid.y)
-    else:
-        # CoreRangeSet case
-        num_cores = core_grid.num_cores()
-        all_cores = core_grid
-        # For CoreRangeSet, we'll need to determine the bounding grid size
-        # This is a simplification - in practice we'd need to track the actual ranges
-        grid_size = None
+    match core_grid:
+        case CoreCoord():
+            # Create a CoreRangeSet from the grid dimensions
+            num_cores = core_grid.x * core_grid.y
+            all_cores = CoreRangeSet(
+                [
+                    CoreRange(
+                        CoreCoord(0, 0), CoreCoord(core_grid.x - 1, core_grid.y - 1)
+                    )
+                ]
+            )
+            grid_size = (core_grid.x, core_grid.y)
+        case _:
+            # CoreRangeSet case
+            num_cores = core_grid.num_cores()
+            all_cores = core_grid
+            # For CoreRangeSet, we'll need to determine the bounding grid size
+            # This is a simplification - in practice we'd need to track the actual ranges
+            grid_size = None
 
     # Calculate work distribution
     # Limit number of cores to units_to_divide if there are more cores than work
@@ -656,91 +694,101 @@ def split_work_to_cores(
     # Create core groups based on work distribution
     if num_cores_group_2 == 0:
         # All cores get the same amount of work (evenly divisible)
-        if isinstance(core_grid, CoreCoord) and grid_size:
-            # Generate core list for the used cores
-            cores_list: List[CoreCoord] = []
-            if row_wise:
-                for y in range(grid_size[1]):
-                    for x in range(grid_size[0]):
-                        if len(cores_list) < num_cores_used:
-                            cores_list.append(CoreCoord(x, y))
-            else:
-                for x in range(grid_size[0]):
+        match core_grid:
+            case CoreCoord() if grid_size:
+                # Generate core list for the used cores
+                cores_list: List[CoreCoord] = []
+                if row_wise:
                     for y in range(grid_size[1]):
-                        if len(cores_list) < num_cores_used:
-                            cores_list.append(CoreCoord(x, y))
+                        for x in range(grid_size[0]):
+                            if len(cores_list) < num_cores_used:
+                                cores_list.append(CoreCoord(x, y))
+                else:
+                    for x in range(grid_size[0]):
+                        for y in range(grid_size[1]):
+                            if len(cores_list) < num_cores_used:
+                                cores_list.append(CoreCoord(x, y))
 
-            core_group_1 = CoreRangeSet([CoreRange(c, c) for c in cores_list])
-        else:
-            # For CoreRangeSet, extract the first num_cores_used cores
-            ranges = all_cores.ranges()
-            cores_list: List[CoreCoord] = []
-            for r in ranges:
-                for y in range(r.start.y, r.end.y + 1):
-                    for x in range(r.start.x, r.end.x + 1):
-                        if len(cores_list) < num_cores_used:
-                            cores_list.append(CoreCoord(x, y))
+                core_group_1 = CoreRangeSet([CoreRange(c, c) for c in cores_list])
+            case _:
+                # For CoreRangeSet, extract the first num_cores_used cores
+                ranges = all_cores.ranges()
+                cores_list: List[CoreCoord] = []
+                for r in ranges:
+                    for y in range(r.start.y, r.end.y + 1):
+                        for x in range(r.start.x, r.end.x + 1):
+                            if len(cores_list) < num_cores_used:
+                                cores_list.append(CoreCoord(x, y))
 
-            core_group_1 = CoreRangeSet([CoreRange(c, c) for c in cores_list])
+                core_group_1 = CoreRangeSet([CoreRange(c, c) for c in cores_list])
 
         core_group_2 = CoreRangeSet([])  # Empty
     else:
         # Split cores into two groups
-        if isinstance(core_grid, CoreCoord) and grid_size:
-            # Generate core ranges for the two groups
-            cores_list: List[CoreCoord] = []
-            if row_wise:
-                # Row-wise iteration: iterate rows first
-                for y in range(grid_size[1]):
-                    for x in range(grid_size[0]):
-                        cores_list.append(CoreCoord(x, y))
-            else:
-                # Column-wise iteration: iterate columns first
-                for x in range(grid_size[0]):
+        match core_grid:
+            case CoreCoord() if grid_size:
+                # Generate core ranges for the two groups
+                cores_list: List[CoreCoord] = []
+                if row_wise:
+                    # Row-wise iteration: iterate rows first
                     for y in range(grid_size[1]):
-                        cores_list.append(CoreCoord(x, y))
+                        for x in range(grid_size[0]):
+                            cores_list.append(CoreCoord(x, y))
+                else:
+                    # Column-wise iteration: iterate columns first
+                    for x in range(grid_size[0]):
+                        for y in range(grid_size[1]):
+                            cores_list.append(CoreCoord(x, y))
 
-            # Split into groups
-            group_1_cores: List[CoreCoord] = cores_list[:num_cores_group_1]
-            group_2_cores: List[CoreCoord] = cores_list[
-                num_cores_group_1:num_cores_used
-            ]
+                # Split into groups
+                group_1_cores: List[CoreCoord] = cores_list[:num_cores_group_1]
+                group_2_cores: List[CoreCoord] = cores_list[
+                    num_cores_group_1:num_cores_used
+                ]
 
-            # Convert to CoreRangeSets (simplified: one range per core)
-            if group_1_cores:
-                core_group_1 = CoreRangeSet([CoreRange(c, c) for c in group_1_cores])
-            else:
-                core_group_1 = CoreRangeSet([])
+                # Convert to CoreRangeSets (simplified: one range per core)
+                if group_1_cores:
+                    core_group_1 = CoreRangeSet(
+                        [CoreRange(c, c) for c in group_1_cores]
+                    )
+                else:
+                    core_group_1 = CoreRangeSet([])
 
-            if group_2_cores:
-                core_group_2 = CoreRangeSet([CoreRange(c, c) for c in group_2_cores])
-            else:
-                core_group_2 = CoreRangeSet([])
-        else:
-            # For CoreRangeSet input, create a simplified distribution
-            # This is a basic implementation - a more sophisticated version would
-            # iterate through the actual ranges in the CoreRangeSet
-            ranges = all_cores.ranges()
-            all_cores_list: List[CoreCoord] = []
-            for r in ranges:
-                for y in range(r.start.y, r.end.y + 1):
-                    for x in range(r.start.x, r.end.x + 1):
-                        all_cores_list.append(CoreCoord(x, y))
+                if group_2_cores:
+                    core_group_2 = CoreRangeSet(
+                        [CoreRange(c, c) for c in group_2_cores]
+                    )
+                else:
+                    core_group_2 = CoreRangeSet([])
+            case _:
+                # For CoreRangeSet input, create a simplified distribution
+                # This is a basic implementation - a more sophisticated version would
+                # iterate through the actual ranges in the CoreRangeSet
+                ranges = all_cores.ranges()
+                all_cores_list: List[CoreCoord] = []
+                for r in ranges:
+                    for y in range(r.start.y, r.end.y + 1):
+                        for x in range(r.start.x, r.end.x + 1):
+                            all_cores_list.append(CoreCoord(x, y))
 
-            group_1_cores: List[CoreCoord] = all_cores_list[:num_cores_group_1]
-            group_2_cores: List[CoreCoord] = all_cores_list[
-                num_cores_group_1:num_cores_used
-            ]
+                group_1_cores: List[CoreCoord] = all_cores_list[:num_cores_group_1]
+                group_2_cores: List[CoreCoord] = all_cores_list[
+                    num_cores_group_1:num_cores_used
+                ]
 
-            if group_1_cores:
-                core_group_1 = CoreRangeSet([CoreRange(c, c) for c in group_1_cores])
-            else:
-                core_group_1 = CoreRangeSet([])
+                if group_1_cores:
+                    core_group_1 = CoreRangeSet(
+                        [CoreRange(c, c) for c in group_1_cores]
+                    )
+                else:
+                    core_group_1 = CoreRangeSet([])
 
-            if group_2_cores:
-                core_group_2 = CoreRangeSet([CoreRange(c, c) for c in group_2_cores])
-            else:
-                core_group_2 = CoreRangeSet([])
+                if group_2_cores:
+                    core_group_2 = CoreRangeSet(
+                        [CoreRange(c, c) for c in group_2_cores]
+                    )
+                else:
+                    core_group_2 = CoreRangeSet([])
 
     return (
         num_cores_used,
@@ -772,7 +820,9 @@ def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
 
 
 # Dynamically generate wrapper functions for all ttnn operations with golden functions
-def _create_golden_wrapper(operation_name: str, golden_fn: Callable) -> Callable:
+def _create_golden_wrapper(
+    operation_name: str, golden_fn: Callable[..., Any]
+) -> Callable[..., Any]:
     """Create a wrapper function that calls the golden function and wraps result in Tensor.
 
     Args:
@@ -783,22 +833,27 @@ def _create_golden_wrapper(operation_name: str, golden_fn: Callable) -> Callable
         Wrapper function that converts inputs/outputs appropriately
     """
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Convert Tensor arguments to torch.Tensor
-        torch_args = tuple(
-            arg.to_torch() if isinstance(arg, Tensor) else arg for arg in args
-        )
-        torch_kwargs = {
-            k: v.to_torch() if isinstance(v, Tensor) else v for k, v in kwargs.items()
-        }
+        def convert_arg(arg: Any) -> Any:
+            match arg:
+                case Tensor():
+                    return arg.to_torch()
+                case _:
+                    return arg
+
+        torch_args = tuple(convert_arg(arg) for arg in args)
+        torch_kwargs = {k: convert_arg(v) for k, v in kwargs.items()}
 
         # Call golden function
         result = golden_fn(*torch_args, **torch_kwargs)
 
         # Wrap result in Tensor if it's a torch.Tensor
-        if isinstance(result, torch.Tensor):
-            return Tensor(result)
-        return result
+        match result:
+            case torch.Tensor():
+                return Tensor(result)
+            case _:
+                return result
 
     # Set proper function name and docstring
     wrapper.__name__ = operation_name
@@ -868,9 +923,11 @@ if TTNN_AVAILABLE:
             continue
 
         try:
-            _golden_fn = ttnn.get_golden_function(_op)
+            _golden_fn = ttnn.get_golden_function(_op)  # type: ignore[union-attr]
             # Create wrapper and add to module globals
-            globals()[_op_name] = _create_golden_wrapper(_op_name, _golden_fn)
+            globals()[_op_name] = _create_golden_wrapper(
+                _op_name, _golden_fn  # type: ignore[arg-type]
+            )
         except (RuntimeError, AttributeError):
             # RuntimeError: Operation doesn't have a golden function
             # AttributeError: Object doesn't have golden_function attribute (e.g., enums, classes)
@@ -882,27 +939,3 @@ if TTNN_AVAILABLE:
     for name in ["_operations_to_wrap", "_op_name", "_op", "_golden_fn"]:
         if name in dir():
             del globals()[name]
-else:
-    # When ttnn is not available, import pure Python fallback implementations
-    from .golden_ops import (
-        abs,
-        add,
-        cos,
-        eq,
-        exp,
-        gelu,
-        gt,
-        isclose,
-        logical_and,
-        logical_or,
-        lt,
-        multiply,
-        ne,
-        relu,
-        repeat,
-        sigmoid,
-        sin,
-        sqrt,
-        subtract,
-        tan,
-    )

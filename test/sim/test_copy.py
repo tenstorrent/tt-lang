@@ -32,6 +32,16 @@ def api():
     return CBAPI()
 
 
+@pytest.fixture(autouse=True)
+def setup_scheduler_context(dm_thread_context):
+    """Automatically set scheduler context for all copy tests.
+
+    Copy operations typically happen in DM threads.
+    """
+    # Use the shared dm_thread_context fixture
+    pass
+
+
 class TestCopyTransaction:
     """Test CopyTransaction class functionality."""
 
@@ -327,11 +337,11 @@ class TestCopyWithStateMachine:
 
     def test_copy_tensor_to_block_with_reserve(self, api: "CBAPI") -> None:
         """Test Tensor -> Block copy using reserve() in DM thread."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
         # Set DM thread context for copy operations
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
         cb = CircularBuffer(
@@ -348,10 +358,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_block_to_tensor_with_wait(self, api: "CBAPI") -> None:
         """Test Block -> Tensor copy using wait() in DM thread."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         # Setup: Fill CB with data using reserve->store->push pattern
         cb = CircularBuffer(
@@ -379,10 +389,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_single_tile_tensor_to_block(self, api: "CBAPI") -> None:
         """Test single tile Tensor -> Block copy."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
         cb = CircularBuffer(
@@ -399,10 +409,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_multi_tile_tensor_to_block(self, api: "CBAPI") -> None:
         """Test multi-tile Tensor -> Block copy."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(128, 32)  # 4x1 tiles
         cb = CircularBuffer(
@@ -420,10 +430,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_with_pipe_single_tile(self, api: "CBAPI") -> None:
         """Test Block -> Pipe -> Block copy with single tile."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         tile = make_full_tile(123.0)
         src_cb = CircularBuffer(
@@ -457,10 +467,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_with_pipe_multiple_tiles(self, api: "CBAPI") -> None:
         """Test Block -> Pipe -> Block copy with multiple tiles."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
         grid = (100, 100)  # Set grid context for pipe operations
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
@@ -501,10 +511,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_sequential_transfers(self, api: "CBAPI") -> None:
         """Test multiple sequential copy operations."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)  # 2 tiles
         cb = CircularBuffer(
@@ -532,10 +542,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_wait_idempotency(self, api: "CBAPI") -> None:
         """Test that calling wait() multiple times is safe."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
         cb = CircularBuffer(
@@ -555,10 +565,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_can_wait_before_and_after(self, api: "CBAPI") -> None:
         """Test can_wait() functionality."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
         cb = CircularBuffer(
@@ -578,10 +588,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_multi_tile_can_wait(self, api: "CBAPI") -> None:
         """Test can_wait() with multi-tile transfer."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 64)  # 2x2 tiles
         cb = CircularBuffer(
@@ -599,10 +609,10 @@ class TestCopyWithStateMachine:
 
     def test_copy_with_pipe_can_wait(self, api: "CBAPI") -> None:
         """Test can_wait() with pipe transfers."""
-        from python.sim.block import _set_current_thread_type
+        from python.sim.block import set_current_thread_type
         from python.sim.cb import CircularBuffer
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         pipe = Pipe(10, 20)
         src_cb = CircularBuffer(
@@ -639,11 +649,11 @@ class TestCopyTransactionProperties:
 
     def test_is_completed_property(self, api: "CBAPI") -> None:
         """Test that is_completed property correctly reflects transaction state."""
-        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.block import set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
         cb = CircularBuffer(
@@ -667,11 +677,11 @@ class TestCopyTransactionProperties:
 
     def test_multiple_wait_on_completed_transaction(self, api: "CBAPI") -> None:
         """Test that calling wait() multiple times on completed transaction is safe."""
-        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.block import set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)
         cb = CircularBuffer(
@@ -693,11 +703,11 @@ class TestCopyTransactionProperties:
 
     def test_can_wait_reflects_handler_behavior(self, api: "CBAPI") -> None:
         """Test that can_wait() correctly delegates to handler."""
-        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.block import set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         # Tensor -> Block is always synchronous
         source = make_ones_tile()
@@ -720,11 +730,11 @@ class TestCopyContextManagerExtraction:
 
     def test_copy_with_context_managers(self, api: "CBAPI") -> None:
         """Test copy operations using context managers with Pipe."""
-        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.block import set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(42.0)
         src_cb = CircularBuffer(
@@ -762,11 +772,11 @@ class TestCopyContextManagerExtraction:
 
     def test_mixed_context_managers_and_tensors(self, api: "CBAPI") -> None:
         """Test mixing context managers with raw tensors."""
-        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.block import set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(3.14)
         cb = CircularBuffer(
@@ -792,11 +802,11 @@ class TestCopyErrorConditions:
 
     def test_copy_creates_transaction_immediately(self, api: "CBAPI") -> None:
         """Test that copy() creates transaction immediately, not on wait()."""
-        from python.sim.block import _set_current_thread_type, ThreadType
+        from python.sim.block import set_current_thread_type, ThreadType
         from python.sim.cb import CircularBuffer
         from python.sim.copy import copy, CopyTransaction
 
-        _set_current_thread_type(ThreadType.DM)
+        set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
         cb = CircularBuffer(

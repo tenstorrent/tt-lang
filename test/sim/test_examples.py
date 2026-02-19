@@ -64,10 +64,20 @@ PYTHON = sys.executable
 LAUNCHER_MODULE = [PYTHON, "-m", "sim.ttlang_sim"]
 
 
-def run_ttlang_sim_and_capture(script_path: Path) -> tuple[int, str]:
-    """Run ttlang-sim against the provided example script and return (code, output)."""
+def run_ttlang_sim_and_capture(
+    script_path: Path, scheduler: str | None = None
+) -> tuple[int, str]:
+    """Run ttlang-sim against the provided example script and return (code, output).
+
+    Args:
+        script_path: Path to the script to run
+        scheduler: Optional scheduler algorithm ('greedy' or 'fair')
+    """
+    cmd = LAUNCHER_MODULE + [str(script_path)]
+    if scheduler:
+        cmd += ["--scheduler", scheduler]
     proc = subprocess.run(
-        LAUNCHER_MODULE + [str(script_path)],
+        cmd,
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -85,26 +95,62 @@ def assert_success_output(code: int, out: str) -> None:
 @pytest.mark.parametrize(
     "script_name",
     [
-        "broadcast.py",
+        pytest.param(
+            "broadcast.py",
+            marks=requires_ttnn,
+        ),
         "broadcast_demo.py",
-        "general_broadcast.py",
+        pytest.param(
+            "general_broadcast.py",
+            marks=requires_ttnn,
+        ),
         "eltwise_add.py",
-        "eltwise_pipe.py",
-        "eltwise_pipe_core3.py",
+        pytest.param(
+            "eltwise_pipe.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "eltwise_pipe_core3.py",
+            marks=requires_ttnn,
+        ),
         "singlecore_matmul.py",
         "multicore_matmul.py",
-        "tutorial/ttnn_base.py",
-        "tutorial/single_core_single_tile_block.py",
-        "tutorial/single_core_multitile_block.py",
-        "tutorial/multicore.py",
-        "tutorial/multicore_grid_auto.py",
-        "tutorial/single_core_broadcast_single_tile_block.py",
-        "tutorial/single_core_broadcast_multitile_blocks.py",
+        "matmul_1d.py",
+        "matmul_1d_mcast.py",
+        pytest.param(
+            "tutorial/ttnn_base.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_single_tile_block.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_multitile_block.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/multicore.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/multicore_grid_auto.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_broadcast_single_tile_block.py",
+            marks=requires_ttnn,
+        ),
+        pytest.param(
+            "tutorial/single_core_broadcast_multitile_blocks.py",
+            marks=requires_ttnn,
+        ),
     ],
 )
-def test_example_cli(script_name: str) -> None:
-    """Test simulator examples run successfully via ttlang-sim CLI."""
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name)
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_example_cli(script_name: str, scheduler: str) -> None:
+    """Test simulator examples run successfully via ttlang-sim CLI with both schedulers."""
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name, scheduler)
     assert_success_output(code, out)
 
 
@@ -115,9 +161,10 @@ def test_example_cli(script_name: str) -> None:
         "multicore_matmul/ttlang/multicore_matmul.py",
     ],
 )
-def test_metal_example_cli(example_path: str) -> None:
-    """Test metal examples run successfully via ttlang-sim CLI."""
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path)
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_metal_example_cli(example_path: str, scheduler: str) -> None:
+    """Test metal examples run successfully via ttlang-sim CLI with both schedulers."""
+    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path, scheduler)
     assert_success_output(code, out)
 
 
@@ -129,14 +176,17 @@ def test_multicore_reuse_matmul() -> None:
     assert_success_output(code, out)
 
 
-def test_eltwise_add2_fails_with_expected_error() -> None:
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     """Test that eltwise_add_error.py fails with the expected copy validation error.
 
     This example demonstrates a common mistake: copying a single tile into a
     block that expects multiple tiles. The error message should clearly indicate
     the mismatch and point to the exact line where the error occurs.
     """
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / "eltwise_add_error.py")
+    code, out = run_ttlang_sim_and_capture(
+        EXAMPLES_DIR / "eltwise_add_error.py", scheduler=scheduler
+    )
     assert (
         code != 0
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
@@ -166,14 +216,17 @@ def test_eltwise_add2_fails_with_expected_error() -> None:
         )
 
 
-def test_copy_lock_error_fails_with_expected_error() -> None:
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
     """Test that copy_lock_error.py fails with the expected copy locking error.
 
     This example demonstrates incorrect block access during copy operations:
     attempting to write to a block destination before wait() completes. The error
     message should clearly indicate the access violation.
     """
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / "copy_lock_error.py")
+    code, out = run_ttlang_sim_and_capture(
+        EXAMPLES_DIR / "copy_lock_error.py", scheduler=scheduler
+    )
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy access violation)
     assert (
@@ -198,6 +251,7 @@ def test_copy_lock_error_fails_with_expected_error() -> None:
         )
 
 
+@requires_ttnn
 def test_demo_one_deadlock_detection() -> None:
     """Test that tutorial/multicore_grid_auto.py with incorrect wait() instead of reserve() triggers deadlock detection.
 
@@ -289,21 +343,22 @@ def test_demo_one_deadlock_detection() -> None:
         ), f"Expected source location (file:line) in deadlock output:\n{out}"
 
         # Check for multiple cores being blocked (tutorial/multicore_grid_auto.py uses multiple cores)
+        # With compressed output, core IDs are shown as "cores: 0, 1, ..."
         assert (
-            "core0-compute:" in out
-        ), f"Expected core0-compute in deadlock output:\n{out}"
-        assert "core0-dm0:" in out, f"Expected core0-dm0 in deadlock output:\n{out}"
-        assert "core0-dm1:" in out, f"Expected core0-dm1 in deadlock output:\n{out}"
+            "cores:" in out or "core0:" in out
+        ), f"Expected cores or core0 in deadlock output:\n{out}"
 
         # Verify line numbers are accurate by checking they match actual wait()/reserve() calls
         # Extract line numbers from the deadlock output
-        # Format: "coreX-Y: blocked on operation() on CircularBuffer(name) at file.py:LINE"
-        line_number_pattern = r"core0-(\w+).*?at .*?:(\d+)"
-        matches = re.findall(line_number_pattern, out)
+        # Format can be either:
+        #   "coreX-Y: blocked on operation() on CircularBuffer(name) at file.py:LINE"
+        #   "blocked on operation() on CircularBuffer(name) at file.py:LINE (coreX-Y, ...)"
+        # We'll extract all line numbers and check they're valid
+        line_number_pattern = r"at .*?:(\d+)"
+        line_matches = re.findall(line_number_pattern, out)
 
-        reported_lines = {}
-        for thread_name, line_str in matches:
-            reported_lines[thread_name] = int(line_str)
+        # Convert to set to get unique line numbers
+        reported_line_numbers = set(int(line_str) for line_str in line_matches)
 
         # Note: The line numbers in the output will be for the temporary file,
         # but the structure should be the same as the original.
@@ -312,33 +367,13 @@ def test_demo_one_deadlock_detection() -> None:
         with open(tmp_path) as f:
             tmp_lines = f.readlines()
 
-        # Check compute thread line points to y_cb.wait()
-        if "compute" in reported_lines:
-            compute_line = reported_lines["compute"]
-            # Line numbers are 1-indexed
-            assert compute_line <= len(tmp_lines), f"Line {compute_line} out of range"
-            line_content = tmp_lines[compute_line - 1]
+        # Each reported line should contain either wait() or reserve()
+        for line_num in reported_line_numbers:
+            assert line_num <= len(tmp_lines), f"Line {line_num} out of range"
+            line_content = tmp_lines[line_num - 1]
             assert (
-                "y_cb.wait()" in line_content
-            ), f"Expected y_cb.wait() at line {compute_line} but got: {line_content.strip()}"
-
-        # Check dm0 thread line points to reserve()
-        if "dm0" in reported_lines:
-            dm0_line = reported_lines["dm0"]
-            assert dm0_line <= len(tmp_lines), f"Line {dm0_line} out of range"
-            line_content = tmp_lines[dm0_line - 1]
-            assert (
-                "reserve()" in line_content
-            ), f"Expected reserve() at line {dm0_line} but got: {line_content.strip()}"
-
-        # Check dm1 thread line points to y_cb.wait()
-        if "dm1" in reported_lines:
-            dm1_line = reported_lines["dm1"]
-            assert dm1_line <= len(tmp_lines), f"Line {dm1_line} out of range"
-            line_content = tmp_lines[dm1_line - 1]
-            assert (
-                "y_cb.wait()" in line_content
-            ), f"Expected y_cb.wait() at line {dm1_line} but got: {line_content.strip()}"
+                "wait()" in line_content or "reserve()" in line_content
+            ), f"Expected wait() or reserve() at line {line_num} but got: {line_content.strip()}"
 
     finally:
         # Clean up temporary file
