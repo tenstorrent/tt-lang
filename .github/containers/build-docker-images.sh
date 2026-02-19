@@ -195,80 +195,41 @@ echo "Final disk space:"
 df -h | head -2
 echo ""
 
+# Compute image names once — NO_PUSH only affects the registry prefix
+if [ "$NO_PUSH" = false ]; then
+    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    PUSH_LABEL="built and pushed"
+else
+    BASE_IMAGE="tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    IRD_IMAGE="tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    PUSH_LABEL="built locally"
+fi
+
+# Primary output image for this run
+case "$IMAGE_TYPE" in
+    base) OUTPUT_IMAGE="$BASE_IMAGE" ;;
+    ird)  OUTPUT_IMAGE="$IRD_IMAGE"  ;;
+    *)    OUTPUT_IMAGE="$DIST_IMAGE" ;;  # dist or all
+esac
+
 echo "=== Build Complete ==="
 echo ""
-
-if [ "$NO_PUSH" = false ]; then
-    if [ -n "$IMAGE_TYPE" ]; then
-        # Single image type — print just that image name as the last line
-        case "$IMAGE_TYPE" in
-            base)
-                IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-                echo "Image built and pushed: $IMAGE"
-                echo ""
-                echo "$IMAGE"
-                ;;
-            dist)
-                DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-                echo "Image built and pushed: $DIST_IMAGE"
-                echo "$DIST_IMAGE" > .docker-image-name
-                echo ""
-                echo "$DIST_IMAGE"
-                ;;
-            ird)
-                IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
-                echo "Image built and pushed: $IMAGE"
-                echo ""
-                echo "$IMAGE"
-                ;;
-        esac
-    else
-        echo "Images built and pushed:"
-        echo "  - ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-        echo "  - ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
-        echo "  - ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
-
-        # Write dist image name to file for workflow consumption
-        DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-        echo "$DIST_IMAGE" > .docker-image-name
-        echo ""
-        echo "DIST_IMAGE_NAME:"
-        echo "$DIST_IMAGE"
-    fi
+if [ -n "$IMAGE_TYPE" ]; then
+    echo "Image $PUSH_LABEL: $OUTPUT_IMAGE"
 else
-    if [ -n "$IMAGE_TYPE" ]; then
-        case "$IMAGE_TYPE" in
-            base)
-                IMAGE="tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-                echo "Local image built: $IMAGE"
-                echo ""
-                echo "$IMAGE"
-                ;;
-            dist)
-                DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-                echo "Local image built: $DIST_IMAGE"
-                echo "$DIST_IMAGE" > .docker-image-name
-                echo ""
-                echo "$DIST_IMAGE"
-                ;;
-            ird)
-                IMAGE="tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
-                echo "Local image built: $IMAGE"
-                echo ""
-                echo "$IMAGE"
-                ;;
-        esac
-    else
-        echo "Local images built:"
-        echo "  - tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-        echo "  - tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
-        echo "  - tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
-
-        # Write local dist image name to file for workflow consumption
-        DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-        echo "$DIST_IMAGE" > .docker-image-name
-        echo ""
-        echo "DIST_IMAGE_NAME:"
-        echo "$DIST_IMAGE"
-    fi
+    echo "Images $PUSH_LABEL:"
+    echo "  - $BASE_IMAGE"
+    echo "  - $DIST_IMAGE (pre-built tt-lang)"
+    echo "  - $IRD_IMAGE (dev tools)"
 fi
+
+# Write dist image name to file for workflow consumption
+if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "dist" ]]; then
+    echo "$DIST_IMAGE" > .docker-image-name
+fi
+
+echo ""
+echo "$OUTPUT_IMAGE"
