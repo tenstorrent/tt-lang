@@ -44,7 +44,7 @@ file responsible.
 | 11 | Subblock-level synchronization insertion | Not started | — |
 | 12 | Operation grouping (by-kind scheduling) | Not started | Design: `DST_Allocation.md` Phase 0 |
 | 13 | Init consolidation | Not started | — |
-| 14 | DST spilling (CB-based) | Not started | Design: `CB_Spilling.md` |
+| 14 | DST spilling (CB-based) | Not started | — |
 
 Components 1-9 are implemented on the `bnorris/max-dst` branch.
 Components 10-14 are required for the full optimization but are not yet
@@ -263,10 +263,12 @@ scf.for %i = 0 to 2 step 1 {
 } {ttl.subblock_stride = 8 : index}
 ```
 
-The outer loops are side-effect-only (no `iter_args`). Stores inside the
-compute body (`ttl.tile_store`) reference an external reserve view that
-covers the full output CB, so the tile_store writes remain valid
-regardless of which subblock is executing.
+The subblock loops do not carry loop-carried values (`iter_args`).
+Each subblock writes its output tiles directly to the output CB at the
+correct absolute position (computed from the subblock offset + the local
+tile index within the subblock). Because the output CB is reserved once
+for the entire block before the loop begins, each subblock iteration can
+write to its portion independently.
 
 When `unroll_factor >= totalTiles`, no outer loop is generated (the
 compute already fits in one subblock).
@@ -490,7 +492,7 @@ consolidation valid.
 When per-iteration DST pressure exceeds capacity (long operation chains
 with many live intermediates), the compiler must insert spill points
 that pack intermediate values to L1 via temporary circular buffers and
-reload them later. Design documented in `CB_Spilling.md`.
+reload them later.
 
 Spilling interacts with subblock size: spilling reduces per-iteration
 pressure, potentially increasing the achievable `unroll_factor`. The
