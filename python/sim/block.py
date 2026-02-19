@@ -574,24 +574,15 @@ class Block:
         - Must be a reserve() block (not wait())
         - Must have PUSH in expected operations
         """
-        # Validate acquisition
+        # Validate that operation is expected
+        self._validate_state("push()", ExpectedOp.PUSH)
+
+        # Additional validation: push() requires RESERVE acquisition
         if self._acquisition != BlockAcquisition.RESERVE:
             raise RuntimeError(
-                f"Cannot perform push(): Expected RESERVE acquisition, got {self._acquisition.name}. "
-                f"Current state: Thread={self._thread_type.name}, Access={self._access_state.name}, "
-                f"Expected Ops={{{', '.join(op.name for op in self._expected_ops)}}}"
-            )
-
-        # Validate that PUSH is in expected operations
-        if ExpectedOp.PUSH not in self._expected_ops:
-            expected_names = ", ".join(
-                op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
-            )
-            raise RuntimeError(
-                f"Cannot perform push(): Expected PUSH in expected operations, "
-                f"but got {{{expected_names}}}. "
-                f"Current state: Acquisition={self._acquisition.name}, "
-                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
+                f"Cannot perform push(): push() is only valid for reserve() blocks, "
+                f"got {self._acquisition.name} block. "
+                f"Current state: Thread={self._thread_type.name}, Access={self._access_state.name}"
             )
 
         # Transition to DONE (Out of Scope)
@@ -602,24 +593,29 @@ class Block:
         """Mark that pop() has completed.
 
         Valid states (per state machine diagram):
-        - wait() Compute RW POP -> Pop after being used as source in at least one store
-        - wait() DM MR POP -> Pop after copy and tx.wait()
+        - Must be a wait() block (not reserve())
+        - Must have POP in expected operations
+        - Can pop from MR (never used as source), RW (used as source), or A (accumulated)
         """
+        # Validate that operation is expected
         self._validate_state("pop()", ExpectedOp.POP)
 
-        # Validate complete state
+        # Additional validation: pop() requires WAIT acquisition
         if self._acquisition != BlockAcquisition.WAIT:
             raise RuntimeError(
-                f"Invalid acquisition for pop(): Expected WAIT, got {self._acquisition.name}"
+                f"Cannot perform pop(): pop() is only valid for wait() blocks, "
+                f"got {self._acquisition.name} block. "
+                f"Current state: Thread={self._thread_type.name}, Access={self._access_state.name}"
             )
-        # Can pop from MR (never used as source), RW (used as source), or A (accumulated)
+
+        # Additional validation: Can only pop from MR, RW, or A states
         if self._access_state not in (AccessState.MR, AccessState.RW, AccessState.A):
             raise RuntimeError(
-                f"Invalid access state for pop(): Expected MR, RW, or A, got {self._access_state.name}"
+                f"Cannot perform pop(): Invalid access state {self._access_state.name}. "
+                f"Expected MR (never used), RW (used as source), or A (accumulated)."
             )
-        # Thread type can be either DM or COMPUTE for wait() blocks
 
-        # After pop, block is done (Out of Scope)
+        # Transition to DONE (Out of Scope)
         self._access_state = AccessState.OS
         self._expected_ops = set()  # Empty = DONE
 

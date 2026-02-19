@@ -1013,9 +1013,10 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
 
         # Try to call push() on a wait() block - should fail
         # because waited_block is WAIT acquisition, not RESERVE
+        # The error will first check expected operations (STORE_SRC vs PUSH)
         with pytest.raises(
             RuntimeError,
-            match="Cannot perform push\\(\\): Expected RESERVE acquisition, got WAIT",
+            match="Cannot perform push\\(\\): Expected one of \\[STORE_SRC\\], but got push\\(\\)",
         ):
             # Manually try to mark push (bypassing CB's push method which checks pending_reserved_block)
             waited_block.mark_push_complete()
