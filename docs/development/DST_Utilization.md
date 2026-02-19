@@ -145,17 +145,79 @@ This is tested in `dst_fpu_binary.mlir` Test 6
 `getResultTilePosition`.
 
 `TTLSubblockComputeForDST` uses these methods to partition the iteration
-space. For a ComputeOp with `unroll_factor < totalTiles`, it generates:
+space into DST-sized subblocks via **multi-dimensional rectangular
+tiling**. For each dimension, the subblock size is chosen as a divisor of
+that dimension's size, maximizing the total subblock size (product of
+per-dim subblock sizes) while staying within `unroll_factor`.
+
+#### Subblock size algorithm
+
+Given dimension sizes `[d0, d1, ...]` and `unrollFactor`, find subblock
+sizes `[s0, s1, ...]` where each `si` divides `di`, `product(si) <=
+unrollFactor`, and the product is maximized. Ties are broken by
+preferring larger inner (higher-index) dimensions, which minimizes the
+number of outer loop iterations.
+
+The search enumerates divisor combinations per dimension with pruning
+(`currentProduct > unrollFactor` cuts the branch). This is fast in
+practice: dimension sizes are small (typically <= 32) and rank is low
+(2-3), giving at most ~100 divisor combinations.
+
+#### DST utilization examples
+
+The following table shows subblock decomposition for common block
+shapes (per-core tile grids). DST capacity depends on data type and
+double-buffering: **8 tiles for bf16** (16 physical / 2), **4 tiles for
+f32** (16 / 2 / 2). `dstPerIter` is the number of DST registers
+consumed per tile iteration (1 for unary/FPU-binary chains, 2+ for SFPU
+binary).
+
+| Block Shape | Type | Capacity | dstPerIter | unrollFactor | Subblock | Tiles/subblock | Subblocks | DST util |
+|-------|------|----------|------------|--------------|----------|----------------|-----------|----------|
+| 1x8   | bf16 | 8  | 1 | 8 | [1,8] — no loop | 8  | 1 | 100% |
+| 2x4   | bf16 | 8  | 1 | 8 | [2,4] — no loop | 8  | 1 | 100% |
+| 2x8   | bf16 | 8  | 1 | 8 | [1,8] — loop d0 | 8  | 2 | 100% |
+| 4x4   | bf16 | 8  | 1 | 8 | [2,4] — loop d0 step 2 | 8  | 2 | 100% |
+| 4x4   | f32  | 4  | 1 | 4 | [1,4] — loop d0 | 4  | 4 | 100% |
+| 3x3   | bf16 | 8  | 1 | 8 | [1,3] — loop d0 | 3  | 3 | 37.5% |
+| 2x8   | f32  | 4  | 1 | 4 | [1,4] — loop d0, d1 step 4 | 4  | 4 | 100% |
+| 4x4   | bf16 | 8  | 2 | 4 | [1,4] — loop d0 | 4  | 4 | 50% |
+| 1x4   | bf16 | 8  | 1 | 4 | [1,4] — no loop | 4  | 1 | 50% |
+| 8x8   | bf16 | 8  | 1 | 8 | [1,8] — loop d0 | 8  | 8 | 100% |
+
+Notes:
+- "no loop" means `unrollFactor >= totalTiles`, so the entire compute
+  fits in one DST cycle.
+- 3x3 bf16: 9 tiles, no divisor combo of 9 reaches 8, best is [1,3]=3.
+- 4x4 bf16 with `dstPerIter=2` (e.g., SFPU binary): `unrollFactor =
+  floor(8/2) = 4`, subblock=[1,4].
+- DST utilization = tiles/subblock / capacity.
+
+#### Generated IR
+
+For a 4x4 bf16 unary op (subblock=[2,4], loop on dim 0 step 2):
 
 ```mlir
-scf.for %iv = 0 to %innerDim step %unrollFactor {
-  %a_sub = tensor.extract_slice %a[0, %iv] [1, %unrollFactor] [1, 1]
-  %init_sub = tensor.extract_slice %init[0, %iv] [1, %unrollFactor] [1, 1]
-  ttl.compute ins(%a_sub) outs(%init_sub) { ... }
-}
+scf.for %iv = 0 to 4 step 2 {
+  %a_sub = tensor.extract_slice %a[%iv, 0] [2, 4] [1, 1]
+  %out_sub = tensor.extract_slice %out[%iv, 0] [2, 4] [1, 1]
+  ttl.compute ins(%a_sub) outs(%out_sub) { ... }
+} {ttl.subblock_stride = 4 : index}
 ```
 
-The outer loop is side-effect-only (no `iter_args`). Stores inside the
+For a 2x8 f32 op (subblock=[1,4], loops on d0 step 1 and d1 step 4):
+
+```mlir
+scf.for %i = 0 to 2 step 1 {
+  scf.for %j = 0 to 8 step 4 {
+    %a_sub = tensor.extract_slice %a[%i, %j] [1, 4] [1, 1]
+    %out_sub = tensor.extract_slice %out[%i, %j] [1, 4] [1, 1]
+    ttl.compute ins(%a_sub) outs(%out_sub) { ... }
+  } {ttl.subblock_stride = 1 : index}
+} {ttl.subblock_stride = 8 : index}
+```
+
+The outer loops are side-effect-only (no `iter_args`). Stores inside the
 compute body (`ttl.tile_store`) reference an external reserve view that
 covers the full output CB, so the tile_store writes remain valid
 regardless of which subblock is executing.
@@ -163,13 +225,38 @@ regardless of which subblock is executing.
 When `unroll_factor >= totalTiles`, no outer loop is generated (the
 compute already fits in one subblock).
 
-Multi-dimensional iteration spaces are tiled across multiple dimensions.
-The pass finds tile sizes `[t0, t1, ...]` where each `ti` divides
-`dimSizes[i]` and the product is maximized while staying within
-`unroll_factor`. This creates nested `scf.for` loops for dimensions
-where `tileSizes[d] < dimSizes[d]`, with `getTiledImplementation`
-handling per-operand slicing via indexing maps. This approach supports
-non-identity maps (broadcast, reduction) without flattening.
+#### Loop annotations
+
+Three discardable attributes annotate compiler-generated loops and ops:
+
+- **`ttl.subblock_stride`** (IndexAttr on `scf.for`): marks subblock
+  loops. Value is the linearized stride for that dimension (product of
+  all dimension sizes after it).
+- **`ttl.tile_loop`** (IndexAttr on `scf.for`): marks tile iteration
+  loops created by `lower-to-loops`. Value is the linearization stride
+  from the full tensor shape (which may differ from the loop's upper
+  bound when the compute has been subblocked).
+- **`ttl.full_linearization_strides`** (DenseI64ArrayAttr on inner
+  `ComputeOp`): set by the subblock pass on inner compute ops. Contains
+  the row-major strides of the original (full) tensor shape.
+  `lower-to-loops` reads this to annotate tile loops with the correct
+  stride values.
+
+`computeCBTileIndexFromLoops` (in `ConversionUtils.h`) uses these
+attributes to compute correct absolute CB tile indices during
+TTL-to-TTKernel conversion:
+- Tile loops contribute `IV * stride` from the `ttl.tile_loop` attribute.
+- Subblock loops contribute `IV * stride` from `ttl.subblock_stride`.
+- Unmarked loops (user loops, external loops) are ignored.
+
+#### Non-identity indexing maps
+
+Multi-dim tiling supports non-identity indexing maps (broadcast,
+reduction) because `getTiledImplementation` maps iteration domain
+offsets/sizes to per-operand slices via the indexing maps. For a
+broadcast map `(d0,d1)->(d0,0)`, an operand `tensor<Mx1>` with offsets
+`[o0, o1]` and sizes `[s0, s1]` gets sliced at `[o0, 0]` with size
+`[s0, 1]`. No flattening or map transformation is needed.
 
 ### 5-6. Extract Slice Support
 

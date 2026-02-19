@@ -38,6 +38,26 @@ inline constexpr llvm::StringRef kDstFullSyncEnAttrName = "dst_full_sync_en";
 /// execution engine (reads from CB) instead of SFPU (reads from DST).
 constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
 
+/// Subblock stride attribute: marks scf.for loops created by the subblock pass
+/// with the linearized stride for that loop's dimension. Used by
+/// computeCBTileIndexFromLoops to distinguish subblock loops from tile
+/// iteration loops and compute correct absolute CB offsets.
+constexpr llvm::StringLiteral kSubblockStrideAttrName("ttl.subblock_stride");
+
+/// Tile loop attribute: marks scf.for loops created by lower-to-loops as tile
+/// iteration loops. Carries the linearization stride (from the full tensor
+/// shape) as an index value. Used by computeCBTileIndexFromLoops to compute
+/// correct absolute CB indices — the stride may differ from the loop's upper
+/// bound when the compute has been subblocked.
+constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
+
+/// Full linearization strides attribute: set on inner ComputeOps created by
+/// the subblock pass. Contains the row-major strides from the original (full)
+/// tensor shape. Lower-to-loops reads this to annotate tile loops with correct
+/// strides for CB indexing.
+constexpr llvm::StringLiteral
+    kFullLinStridesAttrName("ttl.full_linearization_strides");
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait

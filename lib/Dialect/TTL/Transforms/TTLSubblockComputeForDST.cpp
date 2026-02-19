@@ -11,18 +11,20 @@
 // iteration space into subblocks. Each subblock becomes an inner ttl.compute
 // that processes unroll_factor tiles per DST sync cycle.
 //
-// Multi-dimensional iteration spaces are tiled across multiple dimensions to
-// fill DST. For each dimension, the tile size is chosen as a divisor of the
-// dimension size, maximizing the total subblock size (product of tile sizes)
-// while staying within unroll_factor. This approach handles non-identity
-// indexing maps (broadcast, reduction) because getTiledImplementation maps
-// iteration domain offsets/sizes to per-operand slices via the indexing maps.
+// Multi-dimensional iteration spaces are partitioned across multiple dimensions
+// to fill DST. For each dimension, the subblock size is chosen as a divisor of
+// the dimension size, maximizing the total subblock size (product of per-dim
+// subblock sizes) while staying within unroll_factor. This approach handles
+// non-identity indexing maps (broadcast, reduction) because
+// getTiledImplementation maps iteration domain offsets/sizes to per-operand
+// slices via the indexing maps.
 //
 // The outer loop(s) are side-effect-only (no iter_args) because stores are
 // explicit side effects (ttl.tile_store) referencing external reserve views.
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -41,11 +43,11 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Find tile sizes [t0, t1, ...] such that each ti divides dimSizes[i],
+/// Find subblock sizes [t0, t1, ...] such that each ti divides dimSizes[i],
 /// product(ti) <= unrollFactor, and the product is maximized.
 /// Ties are broken by preferring larger inner (higher-index) dimensions.
-static SmallVector<int64_t> computeMultiDimTileSizes(ArrayRef<int64_t> dimSizes,
-                                                     int64_t unrollFactor) {
+static SmallVector<int64_t>
+computeMultiDimSubblockSizes(ArrayRef<int64_t> dimSizes, int64_t unrollFactor) {
   int64_t rank = dimSizes.size();
 
   // Collect divisors per dimension (sorted descending for early pruning).
@@ -161,19 +163,19 @@ private:
       return success();
     }
 
-    // Compute multi-dimensional tile sizes that maximize DST utilization.
-    SmallVector<int64_t> tileSizes =
-        computeMultiDimTileSizes(dimSizes, unrollFactor);
+    // Compute multi-dimensional subblock sizes that maximize DST utilization.
+    SmallVector<int64_t> subblockSizes =
+        computeMultiDimSubblockSizes(dimSizes, unrollFactor);
 
-    int64_t tileProduct = 1;
-    for (int64_t ts : tileSizes) {
-      tileProduct *= ts;
+    int64_t subblockProduct = 1;
+    for (int64_t ss : subblockSizes) {
+      subblockProduct *= ss;
     }
 
-    // If tile product is 1, no subblocking benefit -- skip.
-    if (tileProduct <= 1) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Skipping tiling: tile product is " << tileProduct << "\n");
+    // If subblock product is 1, no subblocking benefit -- skip.
+    if (subblockProduct <= 1) {
+      LLVM_DEBUG(llvm::dbgs() << "Skipping tiling: subblock product is "
+                              << subblockProduct << "\n");
       return success();
     }
 
@@ -183,18 +185,30 @@ private:
     SmallVector<Value> steps;
     SmallVector<int64_t> tiledDims;
     for (int64_t d = 0; d < rank; ++d) {
-      if (tileSizes[d] < dimSizes[d]) {
+      if (subblockSizes[d] < dimSizes[d]) {
         upperBounds.push_back(
             b.create<arith::ConstantIndexOp>(loc, dimSizes[d]));
-        steps.push_back(b.create<arith::ConstantIndexOp>(loc, tileSizes[d]));
+        steps.push_back(
+            b.create<arith::ConstantIndexOp>(loc, subblockSizes[d]));
         tiledDims.push_back(d);
       }
     }
 
     // Create nested scf.for loops for tiled dimensions.
+    // Annotate each with ttl.subblock_stride so downstream passes
+    // (computeCBTileIndexFromLoops) can distinguish subblock loops from tile
+    // iteration loops and compute correct linearized CB offsets.
     SmallVector<Value> loopIVs;
     for (size_t i = 0; i < tiledDims.size(); ++i) {
       auto forOp = b.create<scf::ForOp>(loc, c0, upperBounds[i], steps[i]);
+
+      int64_t d = tiledDims[i];
+      int64_t stride = 1;
+      for (int64_t j = d + 1; j < rank; ++j) {
+        stride *= dimSizes[j];
+      }
+      forOp->setAttr(kSubblockStrideAttrName, b.getIndexAttr(stride));
+
       loopIVs.push_back(forOp.getInductionVar());
       b.setInsertionPointToStart(forOp.getBody());
     }
@@ -203,7 +217,7 @@ private:
     SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
     SmallVector<OpFoldResult> sizes;
     for (int64_t d = 0; d < rank; ++d) {
-      sizes.push_back(b.getIndexAttr(tileSizes[d]));
+      sizes.push_back(b.getIndexAttr(subblockSizes[d]));
     }
 
     // Set offsets for tiled dimensions to their loop IVs.
@@ -217,10 +231,24 @@ private:
       return failure();
     }
 
-    // Remove the unroll_factor attribute from the tiled inner compute
-    // and offset linearized indices by the subblock position.
+    // Compute full-tensor row-major strides for tile loop annotation.
+    // These are needed by lower-to-loops to annotate tile loops with correct
+    // CB linearization strides (which differ from the subblock shape bounds).
+    SmallVector<int64_t> fullStrides(rank);
+    for (int64_t d = 0; d < rank; ++d) {
+      int64_t stride = 1;
+      for (int64_t j = d + 1; j < rank; ++j) {
+        stride *= dimSizes[j];
+      }
+      fullStrides[d] = stride;
+    }
+
+    // Remove the unroll_factor attribute from the tiled inner compute,
+    // set full linearization strides, and offset linearized indices.
     for (Operation *tiledOp : tiledResult->tiledOps) {
       tiledOp->removeAttr("ttl.unroll_factor");
+      tiledOp->setAttr(kFullLinStridesAttrName,
+                       b.getDenseI64ArrayAttr(fullStrides));
 
       if (auto innerCompute = dyn_cast<ComputeOp>(tiledOp)) {
         SmallVector<LinearizedIndexOp> linIdxOps;
@@ -281,12 +309,12 @@ private:
       }
       llvm::dbgs() << "] -> subblocks of [";
       for (int64_t d = 0; d < rank; ++d) {
-        llvm::dbgs() << tileSizes[d];
+        llvm::dbgs() << subblockSizes[d];
         if (d < rank - 1) {
           llvm::dbgs() << "x";
         }
       }
-      llvm::dbgs() << "] (" << tileProduct << " tiles)\n";
+      llvm::dbgs() << "] (" << subblockProduct << " tiles)\n";
     });
 
     return success();

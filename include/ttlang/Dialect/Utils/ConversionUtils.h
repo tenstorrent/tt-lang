@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/Twine.h"
@@ -28,94 +29,116 @@ inline SmallVector<scf::ForOp> collectEnclosingLoops(Operation *op) {
   return loops;
 }
 
-/// Compute linearized index from loop induction variables.
-/// For loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
-/// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
-inline Value linearizeLoopIndices(OpBuilder &builder, Location loc,
-                                  SmallVectorImpl<scf::ForOp> &loops) {
-  if (loops.empty()) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
-  }
-
-  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
-  for (size_t i = 0; i < loops.size(); ++i) {
-    scf::ForOp loop = loops[loops.size() - 1 - i];
-    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
-    for (size_t j = i + 1; j < loops.size(); ++j) {
-      scf::ForOp innerLoop = loops[loops.size() - 1 - j];
-      stride =
-          builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
-    }
-    Value term =
-        builder.create<arith::MulIOp>(loc, loop.getInductionVar(), stride);
-    result = builder.create<arith::AddIOp>(loc, result, term);
-  }
-  return result;
-}
-
 /// Compute linearized CB tile index from enclosing scf.for loops.
-/// When cbShapeRank > 0, only the innermost cbShapeRank loops are used.
-/// Returns constant 0 if not inside any loops.
 ///
-/// Validates the loop structure produced by the subblock and lower-to-loops
-/// passes. Tile iteration loops (step == 1, lb == 0, constant bounds) are
-/// linearized row-major. Subblock loops (step > 1, lb == 0, constant bounds)
-/// contribute their IV as an absolute offset. Returns failure with diagnostics
-/// for unexpected loop structures (dynamic bounds, non-zero lower bounds,
-/// etc.).
+/// Only considers loops annotated by the compiler:
+/// - Tile iteration loops (ttl.tile_loop): linearized row-major.
+/// - Subblock loops (ttl.subblock_stride): IV scaled by stride attribute.
+/// Unmarked loops (user loops, external loops) are ignored.
+///
+/// When cbShapeRank > 0, only the innermost cbShapeRank tile loops are used.
+/// Returns constant 0 if not inside any recognized loops.
+///
+/// Returns failure with diagnostics for unexpected loop structures (dynamic
+/// bounds, non-zero lower bounds, etc.).
 inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
                                                     OpBuilder &builder,
                                                     size_t cbShapeRank = 0) {
-  SmallVector<scf::ForOp> loops = collectEnclosingLoops(op);
+  SmallVector<scf::ForOp> allLoops = collectEnclosingLoops(op);
 
-  if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
-    loops.resize(cbShapeRank);
+  // Classify loops by attribute. Unmarked loops are ignored.
+  SmallVector<scf::ForOp> tileLoops;
+  SmallVector<scf::ForOp> subblockLoops;
+  for (scf::ForOp loop : allLoops) {
+    if (loop->hasAttr(kTileLoopAttrName)) {
+      tileLoops.push_back(loop);
+    } else if (loop->hasAttr(kSubblockStrideAttrName)) {
+      subblockLoops.push_back(loop);
+    }
+    // Unmarked loops are ignored (user loops, external loops).
   }
 
-  // Validate and classify each enclosing loop.
-  // Tile iteration loops (step=1) are linearized row-major.
-  // Subblock loops (step>1) contribute their IV as an absolute offset.
-  SmallVector<scf::ForOp> tileLoops;
-  SmallVector<Value> subblockOffsets;
-  for (scf::ForOp loop : loops) {
+  // Apply cbShapeRank clipping to tile loops only.
+  if (cbShapeRank > 0 && tileLoops.size() > cbShapeRank) {
+    tileLoops.resize(cbShapeRank);
+  }
+
+  // Validate tile loops.
+  for (scf::ForOp loop : tileLoops) {
     auto lb = getConstantIntValue(loop.getLowerBound());
     if (!lb) {
       return op->emitOpError()
-             << "enclosing loop has dynamic lower bound; "
-             << "expected constant bounds from tile/subblock loops";
+             << "enclosing tile loop has dynamic lower bound; "
+             << "expected constant bounds from tile loops";
     }
     if (*lb != 0) {
       return op->emitOpError()
-             << "enclosing loop has non-zero lower bound (" << *lb << "); "
-             << "expected lb=0 from tile/subblock loops";
+             << "enclosing tile loop has non-zero lower bound (" << *lb
+             << "); expected lb=0 from tile loops";
     }
-
-    auto step = getConstantIntValue(loop.getStep());
-    if (!step) {
-      return op->emitOpError()
-             << "enclosing loop has dynamic step; "
-             << "expected constant step from tile/subblock loops";
-    }
-
     auto ub = getConstantIntValue(loop.getUpperBound());
     if (!ub) {
       return op->emitOpError()
-             << "enclosing loop has dynamic upper bound; "
-             << "expected constant bounds from tile/subblock loops";
+             << "enclosing tile loop has dynamic upper bound; "
+             << "expected constant bounds from tile loops";
     }
+  }
 
-    if (*step == 1) {
-      tileLoops.push_back(loop);
-    } else {
-      // Subblock loop: step > 1, IV encodes absolute starting tile position.
-      subblockOffsets.push_back(loop.getInductionVar());
+  // Validate subblock loops.
+  for (scf::ForOp loop : subblockLoops) {
+    auto lb = getConstantIntValue(loop.getLowerBound());
+    if (!lb) {
+      return op->emitOpError()
+             << "enclosing subblock loop has dynamic lower bound; "
+             << "expected constant bounds from subblock loops";
+    }
+    if (*lb != 0) {
+      return op->emitOpError()
+             << "enclosing subblock loop has non-zero lower bound (" << *lb
+             << "); expected lb=0 from subblock loops";
+    }
+    auto step = getConstantIntValue(loop.getStep());
+    if (!step) {
+      return op->emitOpError() << "enclosing subblock loop has dynamic step; "
+                               << "expected constant step from subblock loops";
     }
   }
 
   Location loc = op->getLoc();
-  Value result = linearizeLoopIndices(builder, loc, tileLoops);
 
-  for (Value offset : subblockOffsets) {
+  // Linearize tile loops using stride from attribute (outermost first
+  // to match the conventional i*cols+j ordering in generated code).
+  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
+  for (scf::ForOp loop : llvm::reverse(tileLoops)) {
+    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
+    if (!strideAttr) {
+      return op->emitOpError() << "enclosing tile loop missing stride value on "
+                               << kTileLoopAttrName << " attribute";
+    }
+    int64_t stride = strideAttr.getInt();
+    Value term;
+    if (stride == 1) {
+      term = loop.getInductionVar();
+    } else {
+      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
+      term =
+          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
+    }
+    result = builder.create<arith::AddIOp>(loc, result, term);
+  }
+
+  // Add subblock offsets: IV * stride for each subblock loop.
+  for (scf::ForOp loop : subblockLoops) {
+    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kSubblockStrideAttrName);
+    int64_t stride = strideAttr.getInt();
+    Value offset;
+    if (stride == 1) {
+      offset = loop.getInductionVar();
+    } else {
+      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
+      offset =
+          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
+    }
     result = builder.create<arith::AddIOp>(loc, result, offset);
   }
 

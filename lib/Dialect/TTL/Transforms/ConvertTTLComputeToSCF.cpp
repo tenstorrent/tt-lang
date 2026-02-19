@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -198,7 +199,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
     bool processingFailed = false;
-    scf::buildLoopNest(
+    scf::LoopNest loopNest = scf::buildLoopNest(
         rewriter, loc, lowerBounds, upperBounds, steps, ValueRange{},
         [&](OpBuilder &b, Location loc, ValueRange ivs,
             ValueRange /*iterArgs*/) -> scf::ValueVector {
@@ -207,6 +208,30 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           }
           return {};
         });
+
+    // Annotate tile loops with linearization strides for CB indexing.
+    // If the compute was subblocked, use the full tensor strides (which
+    // differ from the subblock shape bounds). Otherwise, compute strides
+    // from the iteration domain (which IS the full shape).
+    auto fullStridesAttr =
+        op->getAttrOfType<DenseI64ArrayAttr>(kFullLinStridesAttrName);
+    for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
+      int64_t stride;
+      if (fullStridesAttr) {
+        stride = fullStridesAttr[idx];
+      } else {
+        // Compute stride from iteration domain: product of dims after idx.
+        stride = 1;
+        for (size_t j = idx + 1; j < iterDomain.size(); ++j) {
+          auto sizeAttr =
+              dyn_cast<IntegerAttr>(iterDomain[j].size.dyn_cast<Attribute>());
+          if (sizeAttr) {
+            stride *= sizeAttr.getInt();
+          }
+        }
+      }
+      loop->setAttr(kTileLoopAttrName, rewriter.getIndexAttr(stride));
+    }
 
     if (processingFailed) {
       return rewriter.notifyMatchFailure(
