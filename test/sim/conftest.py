@@ -45,6 +45,7 @@ def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletSched
         "",  # operation
         thread_type,
         "",  # location
+        None,  # raw_loc
     )
     scheduler._has_made_progress["test-thread"] = False
 
