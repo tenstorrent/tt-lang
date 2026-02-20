@@ -263,34 +263,20 @@ class GreenletScheduler:
                         source_col = getattr(frame, "colno", None) or 1
                         break
 
-                # Use TTLangCompileError for pretty formatting if we have source location
-                if source_file and source_line:
-                    try:
-                        TTLangCompileError = _get_ttlang_compile_error()
-                        compile_error = TTLangCompileError(
-                            f"{type(e).__name__}: {e}",
-                            source_file=source_file,
-                            line=source_line,
-                            col=source_col,
-                        )
-                        print(f"\n❌ Error in {name}:")
-                        print(compile_error.format())
-                        print("-" * 50)
-                        # Re-raise with thread name included for test compatibility
-                        error_msg = f"{name}: {type(e).__name__}: {e}"
-                        raise RuntimeError(error_msg) from e
-                    except ImportError:
-                        # Fallback if TTLangCompileError is not available
-                        pass
-
-                # Fallback to basic formatting
                 print(f"\n❌ Error in {name}:")
                 if source_file and source_line:
-                    print(f"  File: {source_file}:{source_line}")
-                print(f"  {type(e).__name__}: {e}")
+                    TTLangCompileError = _get_ttlang_compile_error()
+                    compile_error = TTLangCompileError(
+                        f"{type(e).__name__}: {e}",
+                        source_file=source_file,
+                        line=source_line,
+                        col=source_col,
+                    )
+                    print(compile_error.format())
+                else:
+                    print(f"  {type(e).__name__}: {e}")
                 print("-" * 50)
 
-                # Re-raise with thread name included
                 error_msg = f"{name}: {type(e).__name__}: {e}"
                 raise RuntimeError(error_msg) from e
 
@@ -418,41 +404,20 @@ class GreenletScheduler:
                             source_col = getattr(frame, "colno", None) or 1
                             break
 
-                    # Use TTLangCompileError for pretty formatting if we have source location
+                    print(f"\n❌ Error in {name}:")
                     if source_file and source_line:
-                        try:
-                            TTLangCompileError = _get_ttlang_compile_error()
-                            compile_error = TTLangCompileError(
-                                f"{type(e).__name__}: {e}",
-                                source_file=source_file,
-                                line=source_line,
-                                col=source_col,
-                            )
-                            print(f"\n❌ Error in {name}:")
-                            print(compile_error.format())
-                            print("-" * 50)
-                            # Re-raise with thread name included for test compatibility
-                            # Note: The traceback will be suppressed at top level
-                            error_msg = f"{name}: {type(e).__name__}: {e}"
-                            raise RuntimeError(error_msg) from e
-                        except ImportError:
-                            # Fallback if TTLangCompileError is not available
-                            pass
+                        TTLangCompileError = _get_ttlang_compile_error()
+                        compile_error = TTLangCompileError(
+                            f"{type(e).__name__}: {e}",
+                            source_file=source_file,
+                            line=source_line,
+                            col=source_col,
+                        )
+                        print(compile_error.format())
+                    else:
+                        print(f"  {type(e).__name__}: {e}")
+                    print("-" * 50)
 
-                    # Fallback to basic formatting
-                    print(f"\nError in {name}:")
-                    if source_file and source_line:
-                        print(f"  File: {source_file}:{source_line}")
-                    print(f"  {type(e).__name__}: {e}")
-
-                    # Also print full traceback for debugging
-                    tb_str = "".join(
-                        traceback.format_exception(type(e), e, e.__traceback__)
-                    )
-                    print(f"\nFull traceback:")
-                    print(tb_str)
-
-                    # Re-raise with original exception chained
                     error_msg = f"{name}: {type(e).__name__}: {e}"
                     raise RuntimeError(error_msg) from e
                 finally:
@@ -499,31 +464,22 @@ class GreenletScheduler:
                     if len(unique_cores) == 1:
                         cores_label = unique_cores[0]
                     else:
-                        core_numbers: list[int] = []
-                        for core_id in unique_cores:
-                            if core_id.startswith("core"):
-                                try:
-                                    core_numbers.append(int(core_id[4:]))
-                                except ValueError:
-                                    pass
+                        core_numbers: list[int] = [
+                            int(core_id[4:]) for core_id in unique_cores
+                        ]
                         cores_label = f"cores: {self._format_core_ranges(core_numbers)}"
 
                     raw_loc = blocked_raw_locs.get((op, obj_desc, location))
                     if raw_loc:
                         filename, lineno = raw_loc
-                        try:
-                            TTLangCompileError = _get_ttlang_compile_error()
-                            compile_error = TTLangCompileError(
-                                f"deadlock: blocked on {op}(){obj_desc} ({cores_label})",
-                                source_file=filename,
-                                line=lineno,
-                                col=1,
-                            )
-                            print(compile_error.format())
-                        except ImportError:
-                            print(
-                                f"  blocked on {op}(){obj_desc}{location} ({cores_label})"
-                            )
+                        TTLangCompileError = _get_ttlang_compile_error()
+                        compile_error = TTLangCompileError(
+                            f"deadlock: blocked on {op}(){obj_desc} ({cores_label})",
+                            source_file=filename,
+                            line=lineno,
+                            col=1,
+                        )
+                        print(compile_error.format())
                     else:
                         print(
                             f"  blocked on {op}(){obj_desc}{location} ({cores_label})"
