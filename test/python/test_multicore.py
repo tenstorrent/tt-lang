@@ -44,16 +44,16 @@ import ttl
 @ttl.kernel(grid=({grid_cols}, {grid_rows}))  # (cols, rows)
 def multicore_loop(lhs, rhs, out):
     """Multicore kernel: each core loops over 2x2 tiles computing exp(lhs) + sqrt(rhs)."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
         for _ in range({tiles_per_core_row}):
             for _ in range({tiles_per_core_col}):
-                with lhs_cb.wait() as lhs_tile, rhs_cb.wait() as rhs_tile:
-                    with out_cb.reserve() as out_tile:
+                with lhs_dfb.wait() as lhs_tile, rhs_dfb.wait() as rhs_tile:
+                    with out_dfb.reserve() as out_tile:
                         result = ttl.math.exp(lhs_tile) + ttl.math.sqrt(rhs_tile)
                         out_tile.store(result)
 
@@ -61,7 +61,7 @@ def multicore_loop(lhs, rhs, out):
     def dm_read():
         for local_r in range({tiles_per_core_row}):
             for local_c in range({tiles_per_core_col}):
-                with lhs_cb.reserve() as lhs_blk, rhs_cb.reserve() as rhs_blk:
+                with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
                     # core(dims=2) returns (x, y) where x=col, y=row
                     x, y = ttl.core(dims=2)
                     row = y * {tiles_per_core_row} + local_r
@@ -75,7 +75,7 @@ def multicore_loop(lhs, rhs, out):
     def dm_write():
         for local_r in range({tiles_per_core_row}):
             for local_c in range({tiles_per_core_col}):
-                with out_cb.wait() as out_blk:
+                with out_dfb.wait() as out_blk:
                     x, y = ttl.core(dims=2)
                     row = y * {tiles_per_core_row} + local_r
                     col = x * {tiles_per_core_col} + local_c

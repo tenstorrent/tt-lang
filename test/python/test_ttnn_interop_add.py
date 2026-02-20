@@ -18,15 +18,15 @@ from ttlang_test_utils import to_l1
 @ttl.kernel(grid=(1, 1))
 def test_ttnn_interop_add(lhs, rhs, out):
     """Simple add kernel compiled for TTNN interop (C++ output)."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         result = l + r
         o.store(result)
         l.pop()
@@ -35,21 +35,21 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # Read both inputs - reserve CB and copy directly from tensor to CB
-        lhs_blk = lhs_cb.reserve()
+        # Read both inputs - reserve DFB and copy directly from tensor to DFB
+        lhs_blk = lhs_dfb.reserve()
         tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_blk.push()
 
-        rhs_blk = rhs_cb.reserve()
+        rhs_blk = rhs_dfb.reserve()
         tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_blk.push()
 
     @ttl.datamovement()
     def dm_out():
-        # Write output - wait for data in CB and copy directly from CB to device
-        out_blk = out_cb.wait()
+        # Write output - wait for data in DFB and copy directly from DFB to device
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()

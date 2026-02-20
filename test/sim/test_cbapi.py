@@ -38,7 +38,7 @@ def api() -> CBAPI:
 
 @pytest.fixture
 def configured_cb(api: CBAPI) -> Tuple[CBAPI, CBID]:
-    """Create a configured CB with capacity 4."""
+    """Create a configured DFB with capacity 4."""
     cb_id = 0
     api.host_configure_cb(cb_id, 4, shape=(1, 1))
     return api, cb_id
@@ -46,7 +46,7 @@ def configured_cb(api: CBAPI) -> Tuple[CBAPI, CBID]:
 
 @pytest.fixture
 def configured_cb8(api: CBAPI) -> Tuple[CBAPI, CBID]:
-    """Create a configured CB with capacity 8."""
+    """Create a configured DFB with capacity 8."""
     cb_id = 0
     api.host_configure_cb(cb_id, 8, shape=(1, 1))
     return api, cb_id
@@ -252,7 +252,7 @@ def test_multiple_consumers_error(timeout_api: CBAPI):
     t1.join()
     t2.join()
     assert any(
-        "Only one consumer thread may wait on a CB at a time" in msg for msg in errors
+        "Only one consumer thread may wait on a DFB at a time" in msg for msg in errors
     )
 
 
@@ -275,7 +275,7 @@ def test_multiple_producers_error(timeout_api: CBAPI):
     t1.join()
     t2.join()
     assert any(
-        "Only one producer thread may reserve on a CB at a time" in msg
+        "Only one producer thread may reserve on a DFB at a time" in msg
         for msg in errors
     )
 
@@ -346,7 +346,7 @@ def test_heterogeneous_cbs_in_same_api():
         cb1 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
         cb2 = CircularBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
 
-        # Test first circular buffer: write, read back using as source
+        # Test first dataflow buffer: write, read back using as source
         write1 = cb1.reserve()
         test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
         write1.store(test_tensors_1)
@@ -359,7 +359,7 @@ def test_heterogeneous_cbs_in_same_api():
         read1.pop()  # Pop read1 (now that it's been used as source)
         write1_2.push()  # Push write1_2
 
-        # Test second circular buffer
+        # Test second dataflow buffer
         write2 = cb2.reserve()
         test_tensors_2 = [
             make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))

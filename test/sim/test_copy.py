@@ -363,7 +363,7 @@ class TestCopyWithStateMachine:
 
         set_current_thread_type(ThreadType.DM)
 
-        # Setup: Fill CB with data using reserve->store->push pattern
+        # Setup: Fill DFB with data using reserve->store->push pattern
         cb = CircularBuffer(
             element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
         )
@@ -373,7 +373,7 @@ class TestCopyWithStateMachine:
             tx = copy(source, block)
             tx.wait()
 
-        # Now copy from CB to tensor
+        # Now copy from DFB to tensor
         destination = make_rand_tensor(64, 32)
         with cb.wait() as block:
             tx = copy(block, destination)
@@ -482,7 +482,7 @@ class TestCopyWithStateMachine:
         )
         pipe = Pipe((26, 3), (26, slice(4, 6)))
 
-        # Fill source CB
+        # Fill source DFB
         with src_cb.reserve() as block:
             tx = copy(source, block)
             tx.wait()
@@ -522,12 +522,12 @@ class TestCopyWithStateMachine:
         )
         result = make_rand_tensor(64, 32)
 
-        # Stage 1: Load tensor to CB
+        # Stage 1: Load tensor to DFB
         with cb.reserve() as block:
             tx1 = copy(source, block)
             tx1.wait()
 
-        # Stage 2: Extract from CB to result tensor
+        # Stage 2: Extract from DFB to result tensor
         with cb.wait() as block:
             tx2 = copy(block, result)
             tx2.wait()

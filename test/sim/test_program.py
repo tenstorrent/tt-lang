@@ -35,13 +35,13 @@ class TestBasicExecution:
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
 
-            a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                block = a_cb.wait()
-                out_block = out_cb.reserve()
+                block = a_dfb.wait()
+                out_block = out_dfb.reserve()
                 # Use full block operation
                 result = block + block
                 out_block.store(result)
@@ -51,7 +51,7 @@ class TestBasicExecution:
             @ttl.datamovement()
             def dm0():
                 # Input
-                block = a_cb.reserve()
+                block = a_dfb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
                 block.push()
@@ -59,7 +59,7 @@ class TestBasicExecution:
             @ttl.datamovement()
             def dm1():
                 # Output
-                block = out_cb.wait()
+                block = out_dfb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
@@ -89,15 +89,15 @@ class TestBasicExecution:
             # b already is ttnn.Tensor
             # out already is ttnn.Tensor
 
-            a_cb = ttl.make_circular_buffer_like(a, shape=(2, 1), buffer_factor=2)
-            b_cb = ttl.make_circular_buffer_like(b, shape=(2, 1), buffer_factor=2)
-            out_cb = ttl.make_circular_buffer_like(out, shape=(2, 1), buffer_factor=2)
+            a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
+            b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                a_block = a_cb.wait()
-                b_block = b_cb.wait()
-                out_block = out_cb.reserve()
+                a_block = a_dfb.wait()
+                b_block = b_dfb.wait()
+                out_block = out_dfb.reserve()
                 # Use full block operation
                 result = a_block + b_block
                 out_block.store(result)
@@ -108,8 +108,8 @@ class TestBasicExecution:
             @ttl.datamovement()
             def dm0():
                 # Input
-                a_block = a_cb.reserve()
-                b_block = b_cb.reserve()
+                a_block = a_dfb.reserve()
+                b_block = b_dfb.reserve()
                 tx1 = copy(a[0:2, 0:1], a_block)
                 tx2 = copy(b[0:2, 0:1], b_block)
                 tx1.wait()
@@ -120,7 +120,7 @@ class TestBasicExecution:
             @ttl.datamovement()
             def dm1():
                 # Output
-                block = out_cb.wait()
+                block = out_dfb.wait()
                 tx = copy(block, out[0:2, 0:1])
                 tx.wait()
                 block.pop()
@@ -150,14 +150,14 @@ class TestMultiCore:
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
 
-            a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 core_id = cast(int, ttl.core(dims=1))
-                block = a_cb.wait()
-                out_block = out_cb.reserve()
+                block = a_dfb.wait()
+                out_block = out_dfb.reserve()
                 # All cores just do block + block (multiplies by 2)
                 result = block + block
                 out_block.store(result)
@@ -167,7 +167,7 @@ class TestMultiCore:
             @ttl.datamovement()
             def dm0():
                 core_id = cast(int, ttl.core(dims=1))
-                block = a_cb.reserve()
+                block = a_dfb.reserve()
                 # Each core reads its own tile
                 tx = copy(a[core_id : core_id + 1, 0:1], block)
                 tx.wait()
@@ -176,7 +176,7 @@ class TestMultiCore:
             @ttl.datamovement()
             def dm1():
                 core_id = cast(int, ttl.core(dims=1))
-                block = out_cb.wait()
+                block = out_dfb.wait()
                 # Each core writes its own tile
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
@@ -199,12 +199,12 @@ class TestMultiCore:
         @ttl.kernel(grid=(2, 2))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
-            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=1)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=1)
 
             @ttl.compute()
             def compute():
                 core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
-                out_block = out_cb.reserve()
+                out_block = out_dfb.reserve()
                 # Each core writes its coordinates
                 out_block.store([make_ones_tensor(32, 32) * (core_y * 10 + core_x)])
                 out_block.push()
@@ -216,7 +216,7 @@ class TestMultiCore:
             @ttl.datamovement()
             def dm1():
                 core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
-                block = out_cb.wait()
+                block = out_dfb.wait()
                 tx = copy(
                     block,
                     out[core_y : core_y + 1, core_x : core_x + 1],
@@ -248,14 +248,14 @@ class TestContextIsolation:
         @ttl.kernel(grid=(2, 1))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
-            # Each core gets its own CB instance
-            cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            # Each core gets its own DFB instance
+            dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 core_id = cast(int, ttl.core(dims=1))
                 # Each core reserves/pushes independently
-                block = cb.reserve()
+                block = dfb.reserve()
                 block.store([make_ones_tensor(32, 32) * (core_id + 100)])
                 block.push()
 
@@ -266,8 +266,8 @@ class TestContextIsolation:
             @ttl.datamovement()
             def dm1():
                 core_id = cast(int, ttl.core(dims=1))
-                # Each core waits/pops its own CB
-                block = cb.wait()
+                # Each core waits/pops its own DFB
+                block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
                 block.pop()
@@ -287,18 +287,18 @@ class TestContextIsolation:
         """Test shared tensors where compute thread uses store instead of copy.
 
         This tests the pattern where compute thread reads from a shared tensor
-        and uses store() to write to CB (not copy).
+        and uses store() to write to DFB (not copy).
         """
 
         @ttl.kernel(grid=(2, 1))
         def test_kernel(shared: ttnn.Tensor, out: ttnn.Tensor):
-            cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                # Compute thread reads shared tensor and stores to CB
+                # Compute thread reads shared tensor and stores to DFB
                 core_id = cast(int, ttl.core(dims=1))
-                block = cb.reserve()
+                block = dfb.reserve()
                 # Read from shared tensor and store (not copy)
                 # Add core_id to distinguish which core wrote
                 data = shared[0:1, 0:1] + core_id
@@ -311,9 +311,9 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                # DM thread copies from CB to output
+                # DM thread copies from DFB to output
                 core_id = cast(int, ttl.core(dims=1))
-                block = cb.wait()
+                block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
                 block.pop()
@@ -340,7 +340,7 @@ class TestErrorHandling:
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -349,7 +349,7 @@ class TestErrorHandling:
 
             @ttl.datamovement()
             def dm0():
-                block = cb.reserve()
+                block = dfb.reserve()
                 block.push()
 
             @ttl.datamovement()
@@ -371,7 +371,7 @@ class TestErrorHandling:
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
-            _ = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            _ = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -401,18 +401,18 @@ class TestErrorHandling:
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=1)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=1)
 
             @ttl.compute()
             def compute():
                 # Try to wait when nothing was pushed - deadlock
-                block = cb.wait()
+                block = dfb.wait()
                 block.pop()
 
             @ttl.datamovement()
             def dm0():
                 # dm0 also tries to wait - deadlock
-                block = cb.wait()
+                block = dfb.wait()
                 block.pop()
 
             @ttl.datamovement()
@@ -439,16 +439,16 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            from python.sim.cb import CircularBuffer
-
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            in_dfb = ttl.make_dataflow_buffer_like(
+                element, shape=(1, 1), buffer_factor=2
+            )
 
             @ttl.datamovement()
             def dm0():
                 # Reserve a block but forget to push it
-                block = in_cb.reserve()
+                block = in_dfb.reserve()
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block)
                 tx.wait()
@@ -476,16 +476,16 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            from python.sim.cb import CircularBuffer
-
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            in_dfb = ttl.make_dataflow_buffer_like(
+                element, shape=(1, 1), buffer_factor=2
+            )
 
             @ttl.datamovement()
             def dm0():
                 # Produce data
-                block = in_cb.reserve()
+                block = in_dfb.reserve()
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block)
                 tx.wait()
@@ -498,7 +498,7 @@ class TestBlockCompletion:
             @ttl.compute()
             def compute():
                 # Wait for data but forget to pop it
-                data = in_cb.wait()
+                data = in_dfb.wait()
                 # Use the data as a source
                 _ = data + data
                 # Missing: data.pop()
@@ -517,19 +517,19 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
-            from python.sim.cb import CircularBuffer
-
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
-            out_cb = ttl.make_circular_buffer_like(
+            in_dfb = ttl.make_dataflow_buffer_like(
+                element, shape=(1, 1), buffer_factor=2
+            )
+            out_dfb = ttl.make_dataflow_buffer_like(
                 output_data, shape=(1, 1), buffer_factor=2
             )
 
             @ttl.datamovement()
             def dm0():
                 # Produce data - with push()
-                block = in_cb.reserve()
+                block = in_dfb.reserve()
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block)
                 tx.wait()
@@ -542,12 +542,12 @@ class TestBlockCompletion:
             @ttl.compute()
             def compute():
                 # Consume data - with pop()
-                data = in_cb.wait()
-                out_block = out_cb.reserve()
+                data = in_dfb.wait()
+                out_block = out_dfb.reserve()
                 # Use data as source by storing it
                 result = data + data
                 out_block.store(result)
-                out_block.push()  # Complete the output CB operation
+                out_block.push()  # Complete the output DFB operation
                 data.pop()
 
         input_tensor = ttnn.rand((32, 32))
@@ -556,7 +556,7 @@ class TestBlockCompletion:
         # Should NOT raise - all operations are complete
         test_kernel(input_tensor, output_tensor)
 
-    def test_multiple_cbs_with_errors(self) -> None:
+    def test_multiple_dfbs_with_errors(self) -> None:
         """Test that errors from multiple CBs are all reported."""
 
         @ttl.kernel(grid=(1,))
@@ -565,19 +565,19 @@ class TestBlockCompletion:
 
             # Create multiple circular buffers
             element = make_ones_tensor(32, 32)
-            cb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
-            cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            dfb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            dfb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
             @ttl.datamovement()
             def dm0():
                 # Both CBs have incomplete operations
-                block1 = cb1.reserve()
+                block1 = dfb1.reserve()
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block1)
                 tx.wait()
                 # Missing: block1.push()
 
-                block2 = cb2.reserve()
+                block2 = dfb2.reserve()
                 tx = copy(slice_data, block2)
                 tx.wait()
                 # Missing: block2.push()
@@ -713,14 +713,14 @@ class TestCooperativeScheduling:
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 # This wait should yield until dm0 pushes
-                block = cb.wait()
-                out_block = out_cb.reserve()
+                block = dfb.wait()
+                out_block = out_dfb.reserve()
                 result = block + block
                 out_block.store(result)
                 out_block.push()
@@ -729,14 +729,14 @@ class TestCooperativeScheduling:
             @ttl.datamovement()
             def dm0():
                 # This should run first in cooperative mode
-                block = cb.reserve()
+                block = dfb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
                 block.push()
 
             @ttl.datamovement()
             def dm1():
-                block = out_cb.wait()
+                block = out_dfb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
@@ -758,14 +758,14 @@ class TestCooperativeScheduling:
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
                 for i in range(3):
-                    block = cb.wait()
-                    out_block = out_cb.reserve()
+                    block = dfb.wait()
+                    out_block = out_dfb.reserve()
                     # Since we can't do block + 10, just do block + block
                     result = block + block
                     out_block.store(result)
@@ -775,7 +775,7 @@ class TestCooperativeScheduling:
             @ttl.datamovement()
             def dm0():
                 for i in range(3):
-                    block = cb.reserve()
+                    block = dfb.reserve()
                     tx = copy(a[i : i + 1, 0:1], block)
                     tx.wait()
                     block.push()
@@ -783,7 +783,7 @@ class TestCooperativeScheduling:
             @ttl.datamovement()
             def dm1():
                 for i in range(3):
-                    block = out_cb.wait()
+                    block = out_dfb.wait()
                     tx = copy(block, out[i : i + 1, 0:1])
                     tx.wait()
                     block.pop()
@@ -805,13 +805,13 @@ class TestCooperativeScheduling:
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                block = cb.wait()
-                out_block = out_cb.reserve()
+                block = dfb.wait()
+                out_block = out_dfb.reserve()
                 result = block + block + block
                 out_block.store(result)
                 out_block.push()
@@ -820,14 +820,14 @@ class TestCooperativeScheduling:
             @ttl.datamovement()
             def dm0():
                 # Tensor → Block copy
-                block = cb.reserve()
+                block = dfb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
                 block.push()
 
             @ttl.datamovement()
             def dm1():
-                block = out_cb.wait()
+                block = out_dfb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
@@ -853,7 +853,7 @@ class TestCooperativeScheduling:
 
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -863,16 +863,16 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm0():
-                # DM0: Copy input tensor to CB
-                block = cb.reserve()
+                # DM0: Copy input tensor to DFB
+                block = dfb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
                 block.push()
 
             @ttl.datamovement()
             def dm1():
-                # DM1: Copy CB to output tensor
-                block = cb.wait()
+                # DM1: Copy DFB to output tensor
+                block = dfb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
@@ -897,19 +897,19 @@ class TestCooperativeScheduling:
 
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
-            cb_a = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            cb_b = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-            cb_out = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb_a = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            dfb_b = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+            dfb_out = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
-                # Compute reads from CBs, processes, and writes to output CB
+                # Compute reads from CBs, processes, and writes to output DFB
                 for i in range(2):
-                    block_a = cb_a.wait()
-                    block_b = cb_b.wait()
+                    block_a = dfb_a.wait()
+                    block_b = dfb_b.wait()
 
-                    # Process data: add blocks together and store to output CB
-                    block_out = cb_out.reserve()
+                    # Process data: add blocks together and store to output DFB
+                    block_out = dfb_out.reserve()
                     result = block_a + block_b
                     block_out.store(result)
                     block_out.push()
@@ -921,21 +921,21 @@ class TestCooperativeScheduling:
             def dm0():
                 # DM0: Copy input tensors to CBs
                 for i in range(2):
-                    block_a = cb_a.reserve()
+                    block_a = dfb_a.reserve()
                     tx_a = copy(a[i : i + 1, 0:1], block_a)
                     tx_a.wait()
                     block_a.push()
 
-                    block_b = cb_b.reserve()
+                    block_b = dfb_b.reserve()
                     tx_b = copy(b[i : i + 1, 0:1], block_b)
                     tx_b.wait()
                     block_b.push()
 
             @ttl.datamovement()
             def dm1():
-                # DM1: Copy output CB to output tensor
+                # DM1: Copy output DFB to output tensor
                 for i in range(2):
-                    block_out = cb_out.wait()
+                    block_out = dfb_out.wait()
                     tx = copy(block_out, out[i : i + 1, 0:1])
                     tx.wait()
                     block_out.pop()
@@ -969,12 +969,12 @@ class TestCooperativeScheduling:
         the sender and receiver are in the same scheduling round.
 
         This is a known limitation that would require redesigning pipe copy to
-        yield blocking information to the scheduler, similar to CB operations.
+        yield blocking information to the scheduler, similar to DFB operations.
         """
         # This test documents the limitation rather than demonstrating working functionality
         # In a real scenario, this would deadlock:
         # - compute yields on pipe.wait() (can_wait returns False until data arrives)
-        # - dm0 yields on cb.wait() (can_wait returns False until data arrives)
+        # - dm0 yields on dfb.wait() (can_wait returns False until data arrives)
         # - Both are blocked, deadlock detected
 
         # For now, we skip this test to document the limitation

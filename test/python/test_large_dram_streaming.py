@@ -8,9 +8,9 @@
 # RUN: FileCheck %s < %t.output.txt
 
 # Verify: Large DRAM tensors can be streamed through small CBs.
-# This tests that CB size is computed from block shape, not tensor volume.
+# This tests that DFB size is computed from block shape, not tensor volume.
 # Total data: ~800MB (4 tensors * 200MB each)
-# CB size: 8 tiles * 2KB = 16KB per CB
+# DFB size: 8 tiles * 2KB = 16KB per DFB
 
 import torch
 import ttnn
@@ -29,16 +29,16 @@ def fused_mul_add_streaming(a, b, c, y):
     rows = a.shape[0] // 32 // row_tiles
     cols = a.shape[1] // 32 // col_tiles
 
-    a_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles, col_tiles), buffer_factor=2
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(row_tiles, col_tiles), buffer_factor=2
     )
-    c_cb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_dataflow_buffer_like(
         c, shape=(row_tiles, col_tiles), buffer_factor=2
     )
-    y_cb = ttl.make_circular_buffer_like(
+    y_dfb = ttl.make_dataflow_buffer_like(
         y, shape=(row_tiles, col_tiles), buffer_factor=2
     )
 
@@ -47,10 +47,10 @@ def fused_mul_add_streaming(a, b, c, y):
         for _ in range(rows):
             for _ in range(cols):
                 with (
-                    a_cb.wait() as a_block,
-                    b_cb.wait() as b_block,
-                    c_cb.wait() as c_block,
-                    y_cb.reserve() as y_block,
+                    a_dfb.wait() as a_block,
+                    b_dfb.wait() as b_block,
+                    c_dfb.wait() as c_block,
+                    y_dfb.reserve() as y_block,
                 ):
                     y_block.store(a_block * b_block + c_block)
 
@@ -59,9 +59,9 @@ def fused_mul_add_streaming(a, b, c, y):
         for row in range(rows):
             for col in range(cols):
                 with (
-                    a_cb.reserve() as a_blk,
-                    b_cb.reserve() as b_blk,
-                    c_cb.reserve() as c_blk,
+                    a_dfb.reserve() as a_blk,
+                    b_dfb.reserve() as b_blk,
+                    c_dfb.reserve() as c_blk,
                 ):
                     tx_a = ttl.copy(
                         a[
@@ -92,7 +92,7 @@ def fused_mul_add_streaming(a, b, c, y):
     def write_kernel():
         for row in range(rows):
             for col in range(cols):
-                with y_cb.wait() as y_blk:
+                with y_dfb.wait() as y_blk:
                     tx = ttl.copy(
                         y_blk,
                         y[

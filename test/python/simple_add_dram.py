@@ -25,15 +25,15 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def add_dram_kernel(lhs, rhs, out):
     """Add kernel that reads/writes directly from/to DRAM."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         result = l + r
         o.store(result)
         l.pop()
@@ -42,21 +42,21 @@ def add_dram_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # Reserve CB space, read directly from DRAM into CBs, push
-        lhs_blk = lhs_cb.reserve()
+        # Reserve DFB space, read directly from DRAM into CBs, push
+        lhs_blk = lhs_dfb.reserve()
         tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_blk.push()
 
-        rhs_blk = rhs_cb.reserve()
+        rhs_blk = rhs_dfb.reserve()
         tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        # Wait for data, write directly from CB to DRAM, pop
-        out_blk = out_cb.wait()
+        # Wait for data, write directly from DFB to DRAM, pop
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -76,7 +76,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB operations (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
+# DFB operations (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
@@ -123,7 +123,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Wait for output CB, slice, copy to device, pop
+# Wait for output DFB, slice, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: ttl.cb_wait %[[CB2]]
 # CHECK: %[[SLICE2:.+]] = ttl.tensor_slice %arg0
@@ -138,7 +138,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
 
-# CB operations
+# DFB operations
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
@@ -152,7 +152,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: pack_tile<true>(
 # CHECK-CPP: tile_regs_release();
 
-# CB finalization
+# DFB finalization
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),
@@ -164,7 +164,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
-# First input: reserve CB, read tile, push CB
+# First input: reserve DFB, read tile, push DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
@@ -173,7 +173,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: noc_async_read_barrier();
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(0),
 
-# Second input: reserve CB, read tile, push CB
+# Second input: reserve DFB, read tile, push DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<4, 1>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
@@ -189,7 +189,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 
-# Wait for output CB, write tile, pop CB
+# Wait for output DFB, write tile, pop DFB
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(

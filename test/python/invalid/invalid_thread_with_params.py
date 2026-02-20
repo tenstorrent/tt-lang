@@ -8,9 +8,9 @@
 """
 Validation test: thread functions must have no parameters.
 
-This test verifies that using CB parameters on thread functions raises
+This test verifies that using DFB parameters on thread functions raises
 the expected ValueError. CBs should be created in the kernel body using
-ttl.make_circular_buffer_like() and captured by closures.
+ttl.make_dataflow_buffer_like() and captured by closures.
 """
 
 import os
@@ -30,16 +30,16 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def invalid_thread_params_kernel(lhs, rhs, out):
     """This kernel should fail because thread functions have parameters."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     # INVALID: Thread function has parameters - should use closure capture instead
     @ttl.compute()
     def add_compute(some_param):
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         result = l + r
         o.store(result)
         l.pop()
@@ -48,19 +48,19 @@ def invalid_thread_params_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_blk = lhs_cb.reserve()
+        lhs_blk = lhs_dfb.reserve()
         tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_blk.push()
 
-        rhs_blk = rhs_cb.reserve()
+        rhs_blk = rhs_dfb.reserve()
         tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()

@@ -9,20 +9,20 @@ import ttl
 
 @ttl.kernel(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         result = l + r
         o.store(result)
-        lhs_cb.pop()
-        rhs_cb.pop()
-        out_cb.push()
+        l.pop()
+        r.pop()
+        o.push()
 
     # ...data movement...
 ```
@@ -33,7 +33,7 @@ The TTL pipeline is defined in [lib/Dialect/TTL/Pipelines/TTLPipelines.cpp](http
 
 ### Stage 1: Initial IR
 
-High-level TTL operations on 2x2 tile tensors. The `ttl.add` operates on entire tensor, CB operations manage data flow.
+High-level TTL operations on 2x2 tile tensors. The `ttl.add` operates on entire tensor, DFB operations manage data flow.
 
 ```mlir
 func.func @add_compute() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
@@ -171,7 +171,7 @@ ttl.tile_regs_release
 
 Pass: [lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp)
 
-Converts TTL operations to hardware-specific `ttkernel.*` operations. CB handles become typed `!ttkernel.cb`. Tile operations map to hardware intrinsics: `copy_tile_init/copy_tile`, `add_binary_tile_init/add_binary_tile`, `pack_tile`.
+Converts TTL operations to hardware-specific `ttkernel.*` operations. DFB handles become typed `!ttkernel.cb`. Tile operations map to hardware intrinsics: `copy_tile_init/copy_tile`, `add_binary_tile_init/add_binary_tile`, `pack_tile`.
 
 ```mlir
 scf.for %arg0 = %c0 to %c2 step %c1 {

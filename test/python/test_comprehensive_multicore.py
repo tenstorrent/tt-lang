@@ -7,7 +7,7 @@ Comprehensive multicore test combining multiple features:
 - 2MB DRAM inputs (a, b) + L1 input (c)
 - 2MB DRAM outputs (out1, out2) + L1 output (out3)
 - 8x8 multicore grid with dynamic indexing via core(dims=2)
-- 4x4 CB shape with buffer_factor=2
+- 4x4 DFB shape with buffer_factor=2
 - 20 fused ops using bounded operations
 - Random inputs
 """
@@ -27,7 +27,7 @@ GRID_COLS = 8
 CB_ROWS = 4
 CB_COLS = 4
 
-# 8x8 grid * 4x4 CB = 32x32 tiles = 1024x1024 elements = 2MB per tensor
+# 8x8 grid * 4x4 DFB = 32x32 tiles = 1024x1024 elements = 2MB per tensor
 TENSOR_SHAPE = (GRID_ROWS * CB_ROWS * TILE_SIZE, GRID_COLS * CB_COLS * TILE_SIZE)
 
 
@@ -40,28 +40,28 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
     - out3 = h(a, c): 6 ops
     """
     # Circular buffers: 4x4 shape, buffer_factor=2
-    a_cb = ttl.make_circular_buffer_like(a, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    out1_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(
         out1, shape=(CB_ROWS, CB_COLS), buffer_factor=2
     )
-    out2_cb = ttl.make_circular_buffer_like(
+    out2_dfb = ttl.make_dataflow_buffer_like(
         out2, shape=(CB_ROWS, CB_COLS), buffer_factor=2
     )
-    out3_cb = ttl.make_circular_buffer_like(
+    out3_dfb = ttl.make_dataflow_buffer_like(
         out3, shape=(CB_ROWS, CB_COLS), buffer_factor=2
     )
 
     @ttl.compute()
     def fused_compute():
         with (
-            a_cb.wait() as av,
-            b_cb.wait() as bv,
-            c_cb.wait() as cv,
-            out1_cb.reserve() as o1,
-            out2_cb.reserve() as o2,
-            out3_cb.reserve() as o3,
+            a_dfb.wait() as av,
+            b_dfb.wait() as bv,
+            c_dfb.wait() as cv,
+            out1_dfb.reserve() as o1,
+            out2_dfb.reserve() as o2,
+            out3_dfb.reserve() as o3,
         ):
             # out1 = f(a, b): 7 ops
             v1 = ttl.math.sigmoid(av)  # 1
@@ -95,9 +95,9 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
     @ttl.datamovement()
     def dm_read():
         with (
-            a_cb.reserve() as a_blk,
-            b_cb.reserve() as b_blk,
-            c_cb.reserve() as c_blk,
+            a_dfb.reserve() as a_blk,
+            b_dfb.reserve() as b_blk,
+            c_dfb.reserve() as c_blk,
         ):
             x, y = ttl.core(dims=2)
             row = y * CB_ROWS
@@ -112,9 +112,9 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
     @ttl.datamovement()
     def dm_write():
         with (
-            out1_cb.wait() as o1_blk,
-            out2_cb.wait() as o2_blk,
-            out3_cb.wait() as o3_blk,
+            out1_dfb.wait() as o1_blk,
+            out2_dfb.wait() as o2_blk,
+            out3_dfb.wait() as o3_blk,
         ):
             x, y = ttl.core(dims=2)
             row = y * CB_ROWS

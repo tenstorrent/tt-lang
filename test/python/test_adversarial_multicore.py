@@ -7,7 +7,7 @@ Adversarial multicore test designed to stress compiler optimizations.
 
 Evil features:
 - Non-square grid (8x6) and tensors (512x384)
-- 2x2 CB shape with multi-tile blocks
+- 2x2 DFB shape with multi-tile blocks
 - Variable reuse/shadowing
 - Interleaved operations in non-obvious order
 - buffer_factor=1 (no double buffering) for some CBs
@@ -45,32 +45,32 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     Adversarial kernel with 4 inputs and 4 outputs.
     Designed to stress compiler with weird patterns.
-    All tensors same size, 2x2 CB blocks.
+    All tensors same size, 2x2 DFB blocks.
     """
     # Mix of buffer_factor=1 and buffer_factor=2
-    a_cb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(2, 2), buffer_factor=1
     )  # No double buffer!
-    c_cb = ttl.make_circular_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    d_cb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
+    d_dfb = ttl.make_dataflow_buffer_like(
         d, shape=(2, 2), buffer_factor=1
     )  # No double buffer!
 
-    out1_cb = ttl.make_circular_buffer_like(out1, shape=(2, 2), buffer_factor=2)
-    out2_cb = ttl.make_circular_buffer_like(out2, shape=(2, 2), buffer_factor=1)
-    out3_cb = ttl.make_circular_buffer_like(out3, shape=(2, 2), buffer_factor=2)
-    out4_cb = ttl.make_circular_buffer_like(out4, shape=(2, 2), buffer_factor=1)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(2, 2), buffer_factor=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(2, 2), buffer_factor=1)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(2, 2), buffer_factor=2)
+    out4_dfb = ttl.make_dataflow_buffer_like(out4, shape=(2, 2), buffer_factor=1)
 
     @ttl.compute()
     def evil_compute():
         # Deep nesting with all inputs
-        with a_cb.wait() as av:
-            with b_cb.wait() as bv:
-                with c_cb.wait() as cv:
-                    with d_cb.wait() as dv:
-                        with out1_cb.reserve() as o1:
-                            with out2_cb.reserve() as o2:
+        with a_dfb.wait() as av:
+            with b_dfb.wait() as bv:
+                with c_dfb.wait() as cv:
+                    with d_dfb.wait() as dv:
+                        with out1_dfb.reserve() as o1:
+                            with out2_dfb.reserve() as o2:
                                 # out1: uses sigmoid(c) + a + b
                                 # Variable shadowing: reuse 'v' name
                                 v = ttl.math.tanh(av)
@@ -88,8 +88,8 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
                                 v = ttl.math.abs(v)
                                 o2.store(v)
 
-                        with out3_cb.reserve() as o3:
-                            with out4_cb.reserve() as o4:
+                        with out3_dfb.reserve() as o3:
+                            with out4_dfb.reserve() as o4:
                                 # out3: chain using sigmoid(c) + d
                                 v = ttl.math.sigmoid(cv) + dv
                                 v = ttl.math.tanh(v)
@@ -110,19 +110,19 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
         row = y * 2
         col = x * 2
 
-        with a_cb.reserve() as a_blk:
+        with a_dfb.reserve() as a_blk:
             tx = ttl.copy(a[row : row + 2, col : col + 2], a_blk)
             tx.wait()
 
-        with b_cb.reserve() as b_blk:
+        with b_dfb.reserve() as b_blk:
             tx = ttl.copy(b[row : row + 2, col : col + 2], b_blk)
             tx.wait()
 
-        with c_cb.reserve() as c_blk:
+        with c_dfb.reserve() as c_blk:
             tx = ttl.copy(c[row : row + 2, col : col + 2], c_blk)
             tx.wait()
 
-        with d_cb.reserve() as d_blk:
+        with d_dfb.reserve() as d_blk:
             tx = ttl.copy(d[row : row + 2, col : col + 2], d_blk)
             tx.wait()
 
@@ -132,19 +132,19 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
         row = y * 2
         col = x * 2
 
-        with out1_cb.wait() as o1_blk:
+        with out1_dfb.wait() as o1_blk:
             tx = ttl.copy(o1_blk, out1[row : row + 2, col : col + 2])
             tx.wait()
 
-        with out2_cb.wait() as o2_blk:
+        with out2_dfb.wait() as o2_blk:
             tx = ttl.copy(o2_blk, out2[row : row + 2, col : col + 2])
             tx.wait()
 
-        with out3_cb.wait() as o3_blk:
+        with out3_dfb.wait() as o3_blk:
             tx = ttl.copy(o3_blk, out3[row : row + 2, col : col + 2])
             tx.wait()
 
-        with out4_cb.wait() as o4_blk:
+        with out4_dfb.wait() as o4_blk:
             tx = ttl.copy(o4_blk, out4[row : row + 2, col : col + 2])
             tx.wait()
 

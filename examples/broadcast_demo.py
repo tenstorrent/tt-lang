@@ -40,15 +40,15 @@ def elementwise_with_broadcast(
     NT = N // TILE_SIZE
 
     # Create circular buffers
-    a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-    b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-    y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
     @ttl.datamovement()
     def elwise_read():
         for nt in range(NT):
-            # Acquire a_blk and b_blk from a_cb and b_cb
-            with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+            # Acquire a_blk and b_blk from a_dfb and b_dfb
+            with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                 # Copy data using slice notation
                 a_xf = ttl.copy(A[0, nt], a_blk)
                 b_xf = ttl.copy(B[0, 0], b_blk)
@@ -61,11 +61,11 @@ def elementwise_with_broadcast(
     @ttl.compute()
     def elwise_compute():
         for _ in range(NT):
-            # Acquire a_blk, b_blk and y_blk from a_cb, b_cb and y_cb
+            # Acquire a_blk, b_blk and y_blk from a_dfb, b_dfb and y_dfb
             with (
-                a_cb.wait() as a_blk,
-                b_cb.wait() as b_blk,
-                y_cb.reserve() as y_blk,
+                a_dfb.wait() as a_blk,
+                b_dfb.wait() as b_blk,
+                y_dfb.reserve() as y_blk,
             ):
                 # Compute y = sqrt(a^2 + b^2)
                 # Note: Using broadcast to expand B from (1,1) to match A's (1,NT)
@@ -81,8 +81,8 @@ def elementwise_with_broadcast(
     @ttl.datamovement()
     def elwise_write():
         for nt in range(NT):
-            # Acquire y_blk from y_cb
-            with y_cb.wait() as y_blk:
+            # Acquire y_blk from y_dfb
+            with y_dfb.wait() as y_blk:
                 # Copy result using slice notation
                 y_xf = ttl.copy(y_blk, Y[0, nt])
                 y_xf.wait()

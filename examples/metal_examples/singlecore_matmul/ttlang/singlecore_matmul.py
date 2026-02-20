@@ -24,13 +24,13 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
     buffering_factor = 2
-    a_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(1, 1), buffer_factor=buffering_factor
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(1, 1), buffer_factor=buffering_factor
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(1, 1), buffer_factor=buffering_factor
     )
 
@@ -38,9 +38,9 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     def mm_compute():
         for _ in range(Mt):
             for _ in range(Nt):
-                with out_cb.reserve() as out_blk:
+                with out_dfb.reserve() as out_blk:
                     for _ in range(Kt):
-                        with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+                        with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                             out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
@@ -48,7 +48,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         for m in range(Mt):
             for n in range(Nt):
                 for k in range(Kt):
-                    with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                    with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                         a_wr = ttl.copy(a[m, k], a_blk)
                         b_wr = ttl.copy(b[k, n], b_blk)
                         a_wr.wait()
@@ -58,7 +58,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     def mm_writer():
         for m in range(Mt):
             for n in range(Nt):
-                with out_cb.wait() as out_blk:
+                with out_dfb.wait() as out_blk:
                     out_wr = ttl.copy(out_blk, out[m, n])
                     out_wr.wait()
 

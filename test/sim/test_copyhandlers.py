@@ -101,7 +101,7 @@ class TestCopyValidationErrors:
 
         set_current_thread_type(ThreadType.DM)
 
-        # 3 tiles in tensor but CB expects 2 tiles
+        # 3 tiles in tensor but DFB expects 2 tiles
         source = make_rand_tensor(96, 32)  # 3x1 tiles
         cb = CircularBuffer(
             element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
@@ -317,7 +317,7 @@ class TestContextManagerHandlers:
             element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
         )
 
-        # Write to CB
+        # Write to DFB
         with cb.reserve() as block:
             tx = copy(source, block)
             tx.wait()

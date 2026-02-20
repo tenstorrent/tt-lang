@@ -13,8 +13,8 @@ This tests the 2D tensor shape approach which stores actual tile counts [tiles_y
 instead of 4D [grid_y, grid_x, shard_y, shard_x] which had ceiling division issues.
 
 Tests include:
-- Single-tile CB (1x1): Basic uneven grid distribution with single tile access
-- Multi-tile CB (2x2, 4x4): Block-based access with slice notation on uneven grids
+- Single-tile DFB (1x1): Basic uneven grid distribution with single tile access
+- Multi-tile DFB (2x2, 4x4): Block-based access with slice notation on uneven grids
 """
 
 import importlib.util
@@ -62,9 +62,9 @@ import ttl
 @ttl.kernel(grid=({grid_cols}, {grid_rows}))
 def uneven_grid_kernel(lhs, rhs, out):
     """Kernel that handles uneven grid distribution."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     # Total tiles in tensor
     total_tiles_y = {tiles_y}
@@ -89,7 +89,7 @@ def uneven_grid_kernel(lhs, rhs, out):
                 for local_x in range(tiles_per_core_x):
                     tile_x = start_x + local_x
                     if tile_x < total_tiles_x:
-                        with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
+                        with lhs_dfb.wait() as l, rhs_dfb.wait() as r, out_dfb.reserve() as o:
                             o.store(l + r)
 
     @ttl.datamovement()
@@ -104,7 +104,7 @@ def uneven_grid_kernel(lhs, rhs, out):
                 for local_x in range(tiles_per_core_x):
                     tile_x = start_x + local_x
                     if tile_x < total_tiles_x:
-                        with lhs_cb.reserve() as lhs_blk, rhs_cb.reserve() as rhs_blk:
+                        with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
                             tx_lhs = ttl.copy(lhs[tile_y, tile_x], lhs_blk)
                             tx_rhs = ttl.copy(rhs[tile_y, tile_x], rhs_blk)
                             tx_lhs.wait()
@@ -122,7 +122,7 @@ def uneven_grid_kernel(lhs, rhs, out):
                 for local_x in range(tiles_per_core_x):
                     tile_x = start_x + local_x
                     if tile_x < total_tiles_x:
-                        with out_cb.wait() as out_blk:
+                        with out_dfb.wait() as out_blk:
                             tx = ttl.copy(out_blk, out[tile_y, tile_x])
                             tx.wait()
 
@@ -193,17 +193,17 @@ def test_uneven_grid(device, config):
 
 
 # =============================================================================
-# Multitile uneven grid tests - CB shape > (1, 1) with uneven grid division
+# Multitile uneven grid tests - DFB shape > (1, 1) with uneven grid division
 # =============================================================================
 
-# Format: (tensor_tiles_y, tensor_tiles_x, grid_cols, grid_rows, cb_rows, cb_cols)
+# Format: (tensor_tiles_y, tensor_tiles_x, grid_cols, grid_rows, dfb_rows, dfb_cols)
 MULTITILE_UNEVEN_CONFIGS = [
-    # 16x16 tiles with 2x2 CB on uneven grids
-    (16, 16, 3, 3, 2, 2),  # 16 % 3 != 0, 2x2 CB
-    (16, 16, 5, 5, 2, 2),  # 16 % 5 != 0, 2x2 CB
-    # Rectangular with 2x2 CB
+    # 16x16 tiles with 2x2 DFB on uneven grids
+    (16, 16, 3, 3, 2, 2),  # 16 % 3 != 0, 2x2 DFB
+    (16, 16, 5, 5, 2, 2),  # 16 % 5 != 0, 2x2 DFB
+    # Rectangular with 2x2 DFB
     (12, 18, 5, 4, 2, 2),  # 12 % 4 != 0, 18 % 5 != 0
-    # 4x4 CB with uneven grids
+    # 4x4 DFB with uneven grids
     (32, 32, 3, 5, 4, 4),  # 32 % 3 != 0, 32 % 5 != 0
     (32, 32, 7, 3, 4, 4),  # 32 % 7 != 0, 32 % 3 != 0
 ]
@@ -215,13 +215,13 @@ import ttl
 
 @ttl.kernel(grid=({grid_cols}, {grid_rows}))
 def multitile_uneven_kernel(lhs, rhs, out):
-    """Kernel with multitile CB handling uneven grid distribution."""
-    CB_ROWS = {cb_rows}
-    CB_COLS = {cb_cols}
+    """Kernel with multitile DFB handling uneven grid distribution."""
+    CB_ROWS = {dfb_rows}
+    CB_COLS = {dfb_cols}
 
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
 
     # Total tiles in tensor
     total_tiles_y = {tiles_y}
@@ -251,7 +251,7 @@ def multitile_uneven_kernel(lhs, rhs, out):
                     block_x = start_block_x + local_bx
                     tile_start_x = block_x * CB_COLS
                     if tile_start_x < total_tiles_x:
-                        with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
+                        with lhs_dfb.wait() as l, rhs_dfb.wait() as r, out_dfb.reserve() as o:
                             o.store(l + r)
 
     @ttl.datamovement()
@@ -268,7 +268,7 @@ def multitile_uneven_kernel(lhs, rhs, out):
                     block_x = start_block_x + local_bx
                     tile_start_x = block_x * CB_COLS
                     if tile_start_x < total_tiles_x:
-                        with lhs_cb.reserve() as lhs_blk, rhs_cb.reserve() as rhs_blk:
+                        with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
                             tx_lhs = ttl.copy(
                                 lhs[tile_start_y:tile_start_y + CB_ROWS,
                                     tile_start_x:tile_start_x + CB_COLS],
@@ -294,7 +294,7 @@ def multitile_uneven_kernel(lhs, rhs, out):
                     block_x = start_block_x + local_bx
                     tile_start_x = block_x * CB_COLS
                     if tile_start_x < total_tiles_x:
-                        with out_cb.wait() as out_blk:
+                        with out_dfb.wait() as out_blk:
                             tx = ttl.copy(
                                 out_blk,
                                 out[tile_start_y:tile_start_y + CB_ROWS,
@@ -311,11 +311,11 @@ def make_multitile_kernel(
     tiles_x: int,
     grid_cols: int,
     grid_rows: int,
-    cb_rows: int,
-    cb_cols: int,
+    dfb_rows: int,
+    dfb_cols: int,
 ):
     """Generate a multitile kernel for the given configuration."""
-    cache_key = (tiles_y, tiles_x, grid_cols, grid_rows, cb_rows, cb_cols)
+    cache_key = (tiles_y, tiles_x, grid_cols, grid_rows, dfb_rows, dfb_cols)
     if cache_key in _multitile_kernel_cache:
         return _multitile_kernel_cache[cache_key]
 
@@ -324,15 +324,15 @@ def make_multitile_kernel(
         tiles_x=tiles_x,
         grid_cols=grid_cols,
         grid_rows=grid_rows,
-        cb_rows=cb_rows,
-        cb_cols=cb_cols,
+        dfb_rows=dfb_rows,
+        dfb_cols=dfb_cols,
     )
 
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".py",
         delete=False,
-        prefix=f"multitile_{tiles_y}x{tiles_x}_{grid_cols}x{grid_rows}_cb{cb_rows}x{cb_cols}_",
+        prefix=f"multitile_{tiles_y}x{tiles_x}_{grid_cols}x{grid_rows}_dfb{dfb_rows}x{dfb_cols}_",
     ) as f:
         f.write(code)
         temp_path = f.name
@@ -351,16 +351,16 @@ def make_multitile_kernel(
     "config",
     MULTITILE_UNEVEN_CONFIGS,
     ids=[
-        f"{ty}x{tx}_grid{gc}x{gr}_cb{cbr}x{cbc}"
-        for ty, tx, gc, gr, cbr, cbc in MULTITILE_UNEVEN_CONFIGS
+        f"{ty}x{tx}_grid{gc}x{gr}_dfb{dfbr}x{dfbc}"
+        for ty, tx, gc, gr, dfbr, dfbc in MULTITILE_UNEVEN_CONFIGS
     ],
 )
 def test_multitile_uneven_grid(device, config):
     """Test multitile kernel execution with uneven grid distribution."""
-    tiles_y, tiles_x, grid_cols, grid_rows, cb_rows, cb_cols = config
+    tiles_y, tiles_x, grid_cols, grid_rows, dfb_rows, dfb_cols = config
     height, width = tiles_to_shape(tiles_y, tiles_x)
     kernel = make_multitile_kernel(
-        tiles_y, tiles_x, grid_cols, grid_rows, cb_rows, cb_cols
+        tiles_y, tiles_x, grid_cols, grid_rows, dfb_rows, dfb_cols
     )
 
     # Simple add: lhs + rhs with random values
@@ -378,7 +378,7 @@ def test_multitile_uneven_grid(device, config):
 
     assert torch.allclose(
         result, expected, rtol=1e-2, atol=1e-2
-    ), f"Multitile uneven grid test failed for {tiles_y}x{tiles_x} tiles, {cb_rows}x{cb_cols} CB on {grid_cols}x{grid_rows} grid"
+    ), f"Multitile uneven grid test failed for {tiles_y}x{tiles_x} tiles, {dfb_rows}x{dfb_cols} DFB on {grid_cols}x{grid_rows} grid"
 
 
 if __name__ == "__main__":
