@@ -10,10 +10,8 @@ greedy and fair schedulers. This is much faster than spawning processes.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
@@ -40,41 +38,42 @@ EXAMPLES_DIR = REPO_ROOT / "examples"
 EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
 
 
-def import_example(script_path: Path) -> ModuleType:
-    """Import an example script as a module.
+def run_example(script_path: Path) -> None:
+    """Execute an example script as __main__, mirroring ttlang-sim behavior.
+
+    Compiles and execs the script with __name__ == "__main__", so scripts using
+    the standard ``if __name__ == "__main__":`` guard run their entry point, and
+    scripts with unconditional top-level calls also execute normally.
 
     Args:
-        script_path: Path to the Python script to import
-
-    Returns:
-        The imported module
+        script_path: Path to the Python script to run
     """
-    # Set up simulator imports before running example (shadow compiler imports)
+    # Shadow compiler imports with simulator implementations
     from sim import ttl, ttnn as sim_ttnn
 
     sys.modules["ttl"] = ttl  # type: ignore[assignment]
     sys.modules["ttnn"] = sim_ttnn  # type: ignore[assignment]
 
-    # Create a unique module name based on the file path
-    module_name = f"example_{script_path.stem}_{id(script_path)}"
-
-    # Load the module from the file
-    spec = importlib.util.spec_from_file_location(module_name, script_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load {script_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-
-    # Add the script's directory to sys.path temporarily
     script_dir = str(script_path.parent)
     sys.path.insert(0, script_dir)
     try:
-        spec.loader.exec_module(module)
+        with open(script_path) as f:
+            code = compile(f.read(), str(script_path), "exec")
+        exec(
+            code,
+            {
+                "__name__": "__main__",
+                "__file__": str(script_path),
+                "__builtins__": __builtins__,
+            },
+        )
+    except SystemExit as e:
+        # sys.exit(0) in a script is a clean exit; treat it as success.
+        # Non-zero exits are real failures and should propagate.
+        if e.code != 0:
+            raise
     finally:
         sys.path.remove(script_dir)
-
-    return module
 
 
 @pytest.fixture(autouse=True)
@@ -149,8 +148,7 @@ def test_example(script_name: str, scheduler: str) -> None:
         )
 
     set_scheduler_algorithm(scheduler)
-    import_example(EXAMPLES_DIR / script_name)
-    # If we get here without exception, the example succeeded
+    run_example(EXAMPLES_DIR / script_name)
 
 
 @pytest.mark.parametrize(
@@ -164,16 +162,7 @@ def test_example(script_name: str, scheduler: str) -> None:
 def test_metal_example(example_path: str, scheduler: str) -> None:
     """Test metal examples run successfully with both schedulers."""
     set_scheduler_algorithm(scheduler)
-    import_example(EXAMPLES_METAL_DIR / example_path)
-    # If we get here without exception, the example succeeded
-
-
-def test_multicore_reuse_matmul() -> None:
-    """Test multicore reuse matmul example."""
-    import_example(
-        EXAMPLES_METAL_DIR / "multicore_reuse_matmul/ttlang/multicore_reuse_matmul.py"
-    )
-    # If we get here without exception, the example succeeded
+    run_example(EXAMPLES_METAL_DIR / example_path)
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
@@ -241,7 +230,7 @@ def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
 
 
 @requires_ttnn
-def test_demo_one_deadlock_detection() -> None:
+def test_demo_one_deadlock_detection(capsys: pytest.CaptureFixture[str]) -> None:
     """Test deadlock detection with multicore_grid_auto.py modified to cause a deadlock."""
     import tempfile
 
@@ -255,41 +244,30 @@ def test_demo_one_deadlock_detection() -> None:
         "y_cb.reserve() as y_blk,", "y_cb.wait() as y_blk,"
     )
 
-    # Verify we actually modified something
     assert (
         modified_content != content
     ), "Failed to modify tutorial/multicore_grid_auto.py content"
 
-    # Create a temporary file with the modified content
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
         tmp.write(modified_content)
         tmp_path = Path(tmp.name)
 
     try:
-        # Run the modified script - should raise deadlock error
         with pytest.raises(RuntimeError) as exc_info:
-            import_example(tmp_path)
+            run_example(tmp_path)
 
-        error_msg = str(exc_info.value)
+        # The exception carries the brief header
+        assert "Deadlock detected: all generators blocked" in str(exc_info.value)
 
-        # Check for deadlock detection message
+        # Detailed per-location info is printed to stdout before the raise
+        out = capsys.readouterr().out
         assert (
-            "Deadlock detected: all generators blocked" in error_msg
-        ), f"Expected deadlock detection message not found in: {error_msg}"
-
-        # Check that it shows which CB is blocked (y_cb)
+            "CircularBuffer(y_cb)" in out
+        ), f"Expected y_cb in deadlock output:\n{out}"
+        assert "blocked on wait()" in out, f"Expected 'blocked on wait()' in:\n{out}"
         assert (
-            "CircularBuffer(y_cb)" in error_msg
-        ), f"Expected to see y_cb in deadlock output: {error_msg}"
-
-        # Check that it shows the blocked operations
-        assert (
-            "blocked on wait()" in error_msg
-        ), f"Expected to see 'blocked on wait()' in deadlock output: {error_msg}"
-        assert (
-            "blocked on reserve()" in error_msg
-        ), f"Expected to see 'blocked on reserve()' in deadlock output: {error_msg}"
+            "blocked on reserve()" in out
+        ), f"Expected 'blocked on reserve()' in:\n{out}"
 
     finally:
-        # Clean up temporary file
         tmp_path.unlink()
