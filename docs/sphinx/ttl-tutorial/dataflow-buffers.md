@@ -1,4 +1,4 @@
-# Circular Buffers
+# Dataflow Buffers
 
 ## Overview
 
