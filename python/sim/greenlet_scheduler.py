@@ -481,15 +481,18 @@ class GreenletScheduler:
                         )
                     else:
                         # Compress multiple cores blocked at same location
-                        # Extract numeric part from core IDs (e.g., "core0" -> "0")
-                        core_numbers: list[str] = []
+                        # Extract numeric part from core IDs and format as ranges
+                        core_numbers: list[int] = []
                         for core_id in unique_cores:
                             # Handle both "core0" and potential other formats
                             if core_id.startswith("core"):
-                                core_numbers.append(core_id[4:])
-                            else:
-                                core_numbers.append(core_id)
-                        cores_str = ", ".join(core_numbers)
+                                try:
+                                    core_numbers.append(int(core_id[4:]))
+                                except ValueError:
+                                    pass  # Skip non-numeric core IDs
+
+                        # Format as ranges (e.g., "0-3, 8-11, 16-19")
+                        cores_str = self._format_core_ranges(core_numbers)
                         blocked_info.append(
                             f"  blocked on {op}(){obj_desc}{location} (cores: {cores_str})"
                         )
@@ -498,6 +501,45 @@ class GreenletScheduler:
                     f"Deadlock detected: all generators blocked\n"
                     + "\n".join(blocked_info)
                 )
+
+    def _format_core_ranges(self, core_numbers: list[int]) -> str:
+        """Format a list of core numbers as ranges.
+
+        Args:
+            core_numbers: Sorted list of core numbers (e.g., [0, 1, 2, 3, 8, 9, 10, 11])
+
+        Returns:
+            Formatted string with ranges (e.g., "0-3, 8-11")
+        """
+        if not core_numbers:
+            return ""
+
+        # Sort to ensure consecutive numbers are adjacent
+        sorted_cores = sorted(core_numbers)
+        ranges: list[str] = []
+        start = sorted_cores[0]
+        end = sorted_cores[0]
+
+        for i in range(1, len(sorted_cores)):
+            if sorted_cores[i] == end + 1:
+                # Consecutive, extend the range
+                end = sorted_cores[i]
+            else:
+                # Gap found, save the current range and start a new one
+                if start == end:
+                    ranges.append(str(start))
+                else:
+                    ranges.append(f"{start}-{end}")
+                start = sorted_cores[i]
+                end = sorted_cores[i]
+
+        # Add the final range
+        if start == end:
+            ranges.append(str(start))
+        else:
+            ranges.append(f"{start}-{end}")
+
+        return ", ".join(ranges)
 
     def _get_obj_description(self, obj: Any) -> str:
         """Get a brief description of an object for debugging output."""
