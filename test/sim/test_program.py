@@ -441,7 +441,9 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor):
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), buffer_factor=2)
+            in_dfb = ttl.make_dataflow_buffer_like(
+                element, shape=(1, 1), buffer_factor=2
+            )
 
             @ttl.datamovement()
             def dm0():
@@ -476,7 +478,9 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor):
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), buffer_factor=2)
+            in_dfb = ttl.make_dataflow_buffer_like(
+                element, shape=(1, 1), buffer_factor=2
+            )
 
             @ttl.datamovement()
             def dm0():
@@ -515,7 +519,9 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), buffer_factor=2)
+            in_dfb = ttl.make_dataflow_buffer_like(
+                element, shape=(1, 1), buffer_factor=2
+            )
             out_dfb = ttl.make_dataflow_buffer_like(
                 output_data, shape=(1, 1), buffer_factor=2
             )

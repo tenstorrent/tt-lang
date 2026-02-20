@@ -20,7 +20,9 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     a_dfb = ttl.make_dataflow_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(GRANULARITY, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(GRANULARITY, 1), buffer_factor=2
+    )
 
     @ttl.compute()
     def compute():
