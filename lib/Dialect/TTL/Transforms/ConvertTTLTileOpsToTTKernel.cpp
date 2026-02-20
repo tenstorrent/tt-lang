@@ -609,10 +609,10 @@ static bool hasBcastShapeExpansion(Value input, Value output,
 }
 
 /// Compute input CB tile index for broadcast with shape expansion.
-/// Uses the unified computeCBTileIndexFromLoops() to get the linearized
-/// output-space tile index, then decomposes into row/col based on bcast type.
-///   - Col broadcast: input_idx = linearized / numCols  (row index)
-///   - Row broadcast: input_idx = linearized % numCols  (col index)
+/// Uses computeCBTileIndexFromLoops with a stride transform that extracts
+/// the row or col component at compile time (no runtime divui/remui):
+///   - Col broadcast (Nx1): need row index = stride / numCols per loop
+///   - Row broadcast (1xM): need col index = stride % numCols per loop
 ///   - Scalar broadcast: input_idx = 0
 static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
                                                         func::FuncOp funcOp,
@@ -623,31 +623,24 @@ static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
     return builder.create<arith::ConstantIndexOp>(loc, 0).getResult();
   }
 
-  // Get linearized output-space tile index (handles tile loops, subblock
-  // loops, and tile_offset attributes from unrolling).
-  auto linearized =
-      utils::computeCBTileIndexFromLoops(op, builder, /*cbShapeRank=*/2);
-  if (failed(linearized)) {
-    return failure();
-  }
-
-  // Get output CB shape to decompose linearized index.
+  // Get output CB shape to determine numCols for index decomposition.
   auto outShape = getCBTileGridShape(op.getOutput(), funcOp);
   if (!outShape) {
     return op->emitOpError()
            << "cannot determine output CB tile grid shape for bcast indexing";
   }
   int64_t numCols = outShape->second;
-  Value numColsVal = builder.create<arith::ConstantIndexOp>(loc, numCols);
 
-  if (bcastType == ttl::BcastType::Col) {
-    // Col bcast: input has shape (N,1), index by row = linearized / numCols
-    return builder.create<arith::DivUIOp>(loc, *linearized, numColsVal)
-        .getResult();
-  }
-  // Row bcast: input has shape (1,M), index by col = linearized % numCols
-  return builder.create<arith::RemUIOp>(loc, *linearized, numColsVal)
-      .getResult();
+  // Extract row or col component from each stride at compile time.
+  auto extractComponent = [&](int64_t stride) -> int64_t {
+    if (bcastType == ttl::BcastType::Col) {
+      return stride / numCols; // row contribution
+    }
+    return stride % numCols; // col contribution
+  };
+
+  return utils::computeCBTileIndexFromLoops(op, builder, /*cbShapeRank=*/2,
+                                            extractComponent);
 }
 
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.

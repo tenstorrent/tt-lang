@@ -17,21 +17,27 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Compute linearized CB tile index from enclosing scf.for loops.
+/// Compute CB tile index from enclosing scf.for loops with an optional
+/// stride transform applied to each constant stride before IR emission.
 ///
 /// Only considers loops annotated by the compiler:
-/// - Tile iteration loops (ttl.tile_loop): linearized row-major.
-/// - Subblock loops (ttl.subblock_stride): IV scaled by stride attribute.
+/// - Tile iteration loops (ttl.tile_loop): stride from attribute.
+/// - Subblock loops (ttl.subblock_stride): stride from attribute.
 /// Unmarked loops (user loops, external loops) are ignored.
+///
+/// The strideTransform is applied to each stride and tile_offset at C++
+/// compile time (integer arithmetic on constants). This enables callers
+/// to extract per-dimension components (e.g., stride/numCols for row index)
+/// without generating runtime divui/remui operations.
 ///
 /// When cbShapeRank > 0, only the innermost cbShapeRank tile loops are used.
 /// Returns constant 0 if not inside any recognized loops.
 ///
 /// Returns failure with diagnostics for unexpected loop structures (dynamic
 /// bounds, non-zero lower bounds, etc.).
-inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
-                                                    OpBuilder &builder,
-                                                    size_t cbShapeRank = 0) {
+inline FailureOr<Value> computeCBTileIndexFromLoops(
+    Operation *op, OpBuilder &builder, size_t cbShapeRank,
+    llvm::function_ref<int64_t(int64_t)> strideTransform) {
   // Collect enclosing scf.for loops from innermost to outermost.
   SmallVector<scf::ForOp> allLoops;
   for (Operation *parent = op->getParentOp(); parent;
@@ -101,8 +107,8 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
 
   Location loc = op->getLoc();
 
-  // Linearize tile loops using stride from attribute (outermost first
-  // to match the conventional i*cols+j ordering in generated code).
+  // Compute index: sum(IV * transform(stride)) + transform(tile_offset).
+  // Tile loops processed outermost first for row-major ordering.
   Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
   for (scf::ForOp loop : llvm::reverse(tileLoops)) {
     auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
@@ -110,7 +116,10 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
       return op->emitOpError() << "enclosing tile loop missing stride value on "
                                << kTileLoopAttrName << " attribute";
     }
-    int64_t stride = strideAttr.getInt();
+    int64_t stride = strideTransform(strideAttr.getInt());
+    if (stride == 0) {
+      continue;
+    }
     Value term;
     if (stride == 1) {
       term = loop.getInductionVar();
@@ -122,10 +131,13 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
     result = builder.create<arith::AddIOp>(loc, result, term);
   }
 
-  // Add subblock offsets: IV * stride for each subblock loop.
+  // Add subblock offsets: IV * transform(stride) for each subblock loop.
   for (scf::ForOp loop : subblockLoops) {
     auto strideAttr = loop->getAttrOfType<IntegerAttr>(kSubblockStrideAttrName);
-    int64_t stride = strideAttr.getInt();
+    int64_t stride = strideTransform(strideAttr.getInt());
+    if (stride == 0) {
+      continue;
+    }
     Value offset;
     if (stride == 1) {
       offset = loop.getInductionVar();
@@ -139,7 +151,7 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
 
   // Add per-tile offset from unrolled emission.
   if (auto tileOffset = op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName)) {
-    int64_t offset = tileOffset.getInt();
+    int64_t offset = strideTransform(tileOffset.getInt());
     if (offset != 0) {
       Value offsetVal = builder.create<arith::ConstantIndexOp>(loc, offset);
       result = builder.create<arith::AddIOp>(loc, result, offsetVal);
@@ -147,6 +159,14 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
   }
 
   return result;
+}
+
+/// Convenience overload: identity transform (linearized index).
+inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
+                                                    OpBuilder &builder,
+                                                    size_t cbShapeRank = 0) {
+  return computeCBTileIndexFromLoops(op, builder, cbShapeRank,
+                                     [](int64_t s) { return s; });
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.

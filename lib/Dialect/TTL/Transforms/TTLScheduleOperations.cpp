@@ -24,9 +24,10 @@
 // DST slot (e.g., copy b -> dst1, consume dst1, then copy c -> dst1), we must
 // also track anti-dependencies (WAR) and output dependencies (WAW) to prevent
 // the scheduler from moving a write before a prior read of the same slot.
-// In principle, DST index renaming (re-running assign-dst) could eliminate these
-// false dependencies, but DST capacity is small (8 bf16 / 4 f32 slots) and
-// already fully utilized by subblocking, so we conservatively respect them here.
+// In principle, DST index renaming (re-running assign-dst) could eliminate
+// these false dependencies, but DST capacity is small (8 bf16 / 4 f32 slots)
+// and already fully utilized by subblocking, so we conservatively respect them
+// here.
 //
 // For each op, we compute its dependency depth considering:
 //   - RAW (Read-After-Write): captured by SSA def-use chains
@@ -45,13 +46,13 @@
 // References:
 //   - Hennessy & Patterson, "Computer Architecture: A Quantitative Approach",
 //     Chapter 3 (ILP): defines RAW, WAR, WAW data hazards through shared
-//     registers. The DST register file is analogous to a hardware register file.
+//     registers. The DST register file is analogous to a hardware register
+//     file.
 //   - Cooper & Torczon, "Engineering a Compiler", Chapter 12 (Instruction
 //     Scheduling): list scheduling using a data-precedence graph with
 //     topological depth levels -- the same algorithm used here.
-//   - Muchnick, "Advanced Compiler Design & Implementation", Chapter 17:
-//     instruction scheduling with anti-dependencies (WAR) and output
-//     dependencies (WAW) alongside true dependencies (RAW).
+//   - Benoit de Dinechin & Sid Touati, "Advanced Backend Optimization", Part 2:
+//   Instruction scheduling
 //
 //===----------------------------------------------------------------------===//
 
@@ -117,8 +118,7 @@ struct TileOpSortKey {
 /// DST), so it has no DST read indices. All other tile ops read from DST slots
 /// determined by their SSA operands' defining ops.
 static llvm::SmallVector<int64_t, 2>
-getReadDstIndices(Operation *op,
-                  const llvm::DenseSet<Operation *> &tileOpSet) {
+getReadDstIndices(Operation *op, const llvm::DenseSet<Operation *> &tileOpSet) {
   llvm::SmallVector<int64_t, 2> indices;
 
   // CopyTile reads from CB, not DST.

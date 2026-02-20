@@ -1,5 +1,9 @@
 // Tests that broadcast with shape expansion computes correct input CB tile
 // indices after tile loop unrolling.
+//
+// Regression: computeBcastShapeExpansionIndex must NOT generate arith.divui
+// or arith.remui (ConvertTTKernelToEmitC cannot lower them). Instead, it
+// computes row/col components directly from constant strides.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttcore-register-device,func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel)' --split-input-file | FileCheck %s
 
@@ -10,6 +14,9 @@
 //   tile 2 (row=1,col=0): linearized=2, 2/2=1
 //   tile 3 (row=1,col=1): linearized=3, 3/2=1
 // CHECK-LABEL: func.func @col_bcast_shape_expansion
+// No runtime division/remainder (must use compile-time stride decomposition):
+// CHECK-NOT: arith.divui
+// CHECK-NOT: arith.remui
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
@@ -46,6 +53,9 @@ module {
 //   tile 2 (row=1,col=0): linearized=2, 2%2=0
 //   tile 3 (row=1,col=1): linearized=3, 3%2=1
 // CHECK-LABEL: func.func @row_bcast_shape_expansion
+// No runtime division/remainder:
+// CHECK-NOT: arith.divui
+// CHECK-NOT: arith.remui
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
@@ -78,6 +88,9 @@ module {
 // Scalar broadcast with shape expansion: input CB (1,1), output CB (2,2).
 // All 4 output tiles should use input index 0.
 // CHECK-LABEL: func.func @scalar_bcast_shape_expansion
+// No runtime division/remainder:
+// CHECK-NOT: arith.divui
+// CHECK-NOT: arith.remui
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index

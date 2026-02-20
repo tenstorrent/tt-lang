@@ -142,12 +142,36 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Build indexing maps: identity for each input and output
+  // Build indexing maps: broadcast-aware for inputs, identity for output.
+  // When an input has size 1 in a dimension but the output doesn't, that
+  // dimension is broadcast and the map should project to constant 0.
+  // This is critical for TilingInterface: without correct maps, subblocking
+  // would create out-of-bounds slices on broadcast dimensions.
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    maps.push_back(AffineMapAttr::get(identityMap));
+    auto inputType = getTensorType(trace.rootInputs[i]);
+    if (inputType && inputType.getRank() == type.getRank()) {
+      SmallVector<AffineExpr> exprs;
+      bool hasBroadcast = false;
+      for (int64_t d = 0; d < type.getRank(); ++d) {
+        if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
+          exprs.push_back(getAffineConstantExpr(0, ctx));
+          hasBroadcast = true;
+        } else {
+          exprs.push_back(getAffineDimExpr(d, ctx));
+        }
+      }
+      if (hasBroadcast) {
+        maps.push_back(
+            AffineMapAttr::get(AffineMap::get(type.getRank(), 0, exprs, ctx)));
+      } else {
+        maps.push_back(AffineMapAttr::get(identityMap));
+      }
+    } else {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
   }
   maps.push_back(AffineMapAttr::get(identityMap)); // output
 
