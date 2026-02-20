@@ -17,18 +17,6 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Collect enclosing scf.for loops from innermost to outermost.
-inline SmallVector<scf::ForOp> collectEnclosingLoops(Operation *op) {
-  SmallVector<scf::ForOp> loops;
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      loops.push_back(forOp);
-    }
-  }
-  return loops;
-}
-
 /// Compute linearized CB tile index from enclosing scf.for loops.
 ///
 /// Only considers loops annotated by the compiler:
@@ -44,7 +32,14 @@ inline SmallVector<scf::ForOp> collectEnclosingLoops(Operation *op) {
 inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
                                                     OpBuilder &builder,
                                                     size_t cbShapeRank = 0) {
-  SmallVector<scf::ForOp> allLoops = collectEnclosingLoops(op);
+  // Collect enclosing scf.for loops from innermost to outermost.
+  SmallVector<scf::ForOp> allLoops;
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      allLoops.push_back(forOp);
+    }
+  }
 
   // Classify loops by attribute. Unmarked loops are ignored.
   SmallVector<scf::ForOp> tileLoops;
@@ -140,6 +135,15 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
           builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
     }
     result = builder.create<arith::AddIOp>(loc, result, offset);
+  }
+
+  // Add per-tile offset from unrolled emission.
+  if (auto tileOffset = op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName)) {
+    int64_t offset = tileOffset.getInt();
+    if (offset != 0) {
+      Value offsetVal = builder.create<arith::ConstantIndexOp>(loc, offset);
+      result = builder.create<arith::AddIOp>(loc, result, offsetVal);
+    }
   }
 
   return result;

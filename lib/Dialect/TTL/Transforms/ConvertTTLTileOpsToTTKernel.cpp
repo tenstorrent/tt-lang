@@ -612,37 +612,45 @@ static bool hasBcastShapeExpansion(Value input, Value output,
 }
 
 /// Compute input CB tile index for broadcast with shape expansion.
-/// For broadcast ops where input CB is smaller than output CB:
-///   - Col broadcast (dims=[1]): input has 1 col, index = row_idx
-///   - Row broadcast (dims=[0]): input has 1 row, index = col_idx
-///   - Scalar broadcast (dims=[0,1]): input is (1,1), index = 0
-static Value computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
-                                             OpBuilder &builder, Location loc) {
-  SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-
-  // Expect at least 2 loops for 2D tile iteration.
-  // Loops are collected innermost-first: loops[0]=col, loops[1]=row.
-  if (loops.size() < 2) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
-  }
-
-  Value colIdx = loops[0].getInductionVar();
-  Value rowIdx = loops[1].getInductionVar();
-
-  // Determine index based on broadcast type.
+/// Uses the unified computeCBTileIndexFromLoops() to get the linearized
+/// output-space tile index, then decomposes into row/col based on bcast type.
+///   - Col broadcast: input_idx = linearized / numCols  (row index)
+///   - Row broadcast: input_idx = linearized % numCols  (col index)
+///   - Scalar broadcast: input_idx = 0
+static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
+                                                        func::FuncOp funcOp,
+                                                        OpBuilder &builder,
+                                                        Location loc) {
   auto bcastType = op.getBcastType();
-  switch (bcastType) {
-  case ttl::BcastType::Col:
-    // Input has shape (N, 1): index = row_idx.
-    return rowIdx;
-  case ttl::BcastType::Row:
-    // Input has shape (1, M): index = col_idx.
-    return colIdx;
-  case ttl::BcastType::Scalar:
-    // Input has shape (1, 1): index = 0.
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  if (bcastType == ttl::BcastType::Scalar) {
+    return builder.create<arith::ConstantIndexOp>(loc, 0).getResult();
   }
-  llvm_unreachable("unknown BcastType");
+
+  // Get linearized output-space tile index (handles tile loops, subblock
+  // loops, and tile_offset attributes from unrolling).
+  auto linearized =
+      utils::computeCBTileIndexFromLoops(op, builder, /*cbShapeRank=*/2);
+  if (failed(linearized)) {
+    return failure();
+  }
+
+  // Get output CB shape to decompose linearized index.
+  auto outShape = getCBTileGridShape(op.getOutput(), funcOp);
+  if (!outShape) {
+    return op->emitOpError()
+           << "cannot determine output CB tile grid shape for bcast indexing";
+  }
+  int64_t numCols = outShape->second;
+  Value numColsVal = builder.create<arith::ConstantIndexOp>(loc, numCols);
+
+  if (bcastType == ttl::BcastType::Col) {
+    // Col bcast: input has shape (N,1), index by row = linearized / numCols
+    return builder.create<arith::DivUIOp>(loc, *linearized, numColsVal)
+        .getResult();
+  }
+  // Row bcast: input has shape (1,M), index by col = linearized % numCols
+  return builder.create<arith::RemUIOp>(loc, *linearized, numColsVal)
+      .getResult();
 }
 
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
@@ -696,7 +704,12 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     Value inCBIdx;
     if (hasBcastShapeExpansion(op.getInput(), op.getOutput(), op.getBcastType(),
                                funcOp)) {
-      inCBIdx = computeBcastShapeExpansionIndex(op, rewriter, loc);
+      auto bcastIdx =
+          computeBcastShapeExpansionIndex(op, funcOp, rewriter, loc);
+      if (failed(bcastIdx)) {
+        return failure();
+      }
+      inCBIdx = *bcastIdx;
     } else {
       auto cbIdx =
           utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);

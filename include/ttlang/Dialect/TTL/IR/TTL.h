@@ -58,6 +58,12 @@ constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
 constexpr llvm::StringLiteral
     kFullLinStridesAttrName("ttl.full_linearization_strides");
 
+/// Per-tile offset attribute: set on ops in unrolled bodies. Carries the
+/// linearized tile offset within the subblock. Used by
+/// computeCBTileIndexFromLoops to compute correct CB indices without tile
+/// loops.
+constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait

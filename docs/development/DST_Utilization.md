@@ -40,14 +40,14 @@ file responsible.
 | 7 | Operation category traits | Done | `TTLBase.td`, `TTL.h`, `TTLOps.td`, `TTLOpsUtils.h` |
 | 8 | FPU-aware DST pressure in `unroll_factor` | Done | `TTLAssignDST.cpp` |
 | 9 | Pipeline option to gate DST maximization | Done | `TTLPipelines.h`, `TTLPipelines.cpp`, `ttl_api.py` |
-| 10 | Integrated unrolling in lower-to-loops | Not started | `ConvertTTLComputeToSCF.cpp` |
-| 11 | Subblock-level synchronization insertion | Not started | — |
-| 12 | Operation grouping (by-kind scheduling) | Not started | Design: `DST_Allocation.md` Phase 0 |
-| 13 | Init consolidation | Not started | — |
+| 10 | Integrated unrolling in lower-to-loops | Done | `ConvertTTLComputeToSCF.cpp` |
+| 11 | Subblock-level synchronization insertion | Done | — |
+| 12 | Operation grouping (by-kind scheduling) | In progress | Design: `DST_Allocation.md` Phase 0 |
+| 13 | Init consolidation | In progress | — |
 | 14 | DST spilling (CB-based) | Not started | — |
 
-Components 1-9 are implemented on the `bnorris/max-dst` branch.
-Components 10-14 are required for the full optimization but are not yet
+Components 1-11 are implemented on the `bnorris/max-dst` branch.
+Components 12-14 are required for the full optimization but are not yet
 implemented. The remainder of this document describes each component and
 the pipeline that connects them.
 
@@ -320,8 +320,8 @@ and the inner `ttl.compute`. Two downstream utilities needed extension:
 
 Each operation's execution category is determined by orthogonal traits
 defined in TableGen (see `DST_Allocation.md`, Operation Category Traits).
-The key insight is that the execution engine determines DST register
-usage per operation:
+The following table summarizes DST register usage of different operation
+types.
 
 | Category | Traits | Input source | DST inputs | DST outputs |
 |----------|--------|-------------|-----------|------------|
@@ -332,6 +332,7 @@ usage per operation:
 | Broadcast | `CBInput` | CB | 0 | 1 |
 | Reduce | `CBInput` + `Accumulating` | CB (input + scaler) | 0 | 1 |
 | Matmul | `CBInput` + `Accumulating` | CB (A + B) | 0 | 1 |
+| Transpose | `CBInput` | CB | 0 | 1 |
 
 FPU binary ops consume 0 DST input slots. For `exp(a + b)`, the FPU add
 reads from CBs and writes to DST; the SFPU exp operates in-place. The

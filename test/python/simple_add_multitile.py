@@ -10,8 +10,9 @@
 """
 Multi-tile add kernel - verifies correct tile indexing across 2x2 tile grid.
 
-Uses 64x64 tensors (2x2 tiles of 32x32) to test that linearized_index
-correctly computes tile offsets in loops.
+Uses 64x64 tensors (2x2 tiles of 32x32). All 4 tiles fit in DST (capacity=8
+for bf16), so the tile loops are fully unrolled into 4 add_tiles + pack_tile
+pairs with incrementing indices, wrapped by a single sync cycle.
 """
 
 import os
@@ -96,32 +97,43 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 
 # =============================================================================
-# C++ Kernel Checks - Verify loops are generated for multi-tile
+# C++ Kernel Checks - Verify unrolled add_tiles for 2x2 multi-tile
 # =============================================================================
+# All 4 tiles (2x2) fit in DST, so tile loops are fully unrolled into
+# 4 add_tiles + pack_tile pairs with incrementing indices, wrapped by
+# a single acquire/commit/wait/release sync cycle.
 
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
 
-# Loop bound constant for 2x2 tile grid
-# CHECK-CPP: size_t [[C2:v[0-9]+]] = 2;
-
-# CB operations before loops
+# CB operations before compute
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
-# Nested loops for 2x2 tile grid
-# CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[C2]]; [[I]] += {{.*}}) {
-# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[C2]]; [[J]] += {{.*}}) {
+# Single sync cycle wrapping all 4 unrolled tiles
+# CHECK-CPP: tile_regs_acquire();
 
-# Linearized index calculation: i * 2 + j (reuses C2 as stride)
-# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[C2]];
-# CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
-
-# FPU add using linearized index (both operands read directly from CBs)
+# Tile 0 (index 0)
 # CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[LIN_IDX]], [[LIN_IDX]],
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 
+# Tile 1 (index 1)
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+
+# Tile 2 (index 2)
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+
+# Tile 3 (index 3)
+# CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+
+# Sync completion
+# CHECK-CPP: tile_regs_commit();
+# CHECK-CPP: tile_regs_wait();
+# CHECK-CPP: tile_regs_release();
+
+# CB cleanup
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),

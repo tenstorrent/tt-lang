@@ -30,6 +30,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Interfaces/TilingInterface.h"
 
 #include "llvm/Support/Debug.h"
@@ -155,11 +156,17 @@ private:
     }
 
     // When unroll_factor >= total tiles, no outer loop is needed -- the compute
-    // op already fits in one DST sync cycle.
+    // op already fits in one DST sync cycle. Set strides so lower-to-loops
+    // can annotate tile loops with correct CB linearization strides.
     if (unrollFactor >= totalTiles) {
       LLVM_DEBUG(llvm::dbgs()
                  << "Skipping tiling: unroll_factor (" << unrollFactor
                  << ") >= total tiles (" << totalTiles << ")\n");
+
+      // Compute full-tensor row-major strides for tile offset computation.
+      SmallVector<int64_t> fullStrides = computeStrides(dimSizes);
+      computeOp->setAttr(kFullLinStridesAttrName,
+                         b.getDenseI64ArrayAttr(fullStrides));
       return success();
     }
 

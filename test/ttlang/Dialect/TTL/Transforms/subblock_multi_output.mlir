@@ -28,30 +28,40 @@
 // SUBBLOCK:            arith.muli %[[IV3]],
 // SUBBLOCK-NEXT:       arith.addi
 
-// Verify that lower-to-loops produces nested scf.for loops with the correct
-// arith.muli + arith.addi offset pattern for copy_tile src index.
+// Verify that lower-to-loops produces an outer subblock scf.for with unrolled
+// inner tile copies (inner tile loops are fully unrolled). Each chain has one
+// scf.for with arith.muli + arith.addi offset pattern and 8 unrolled copies.
 // LOWER-LABEL: func.func @fused_compute
-// Chain 1: outer loop over 4x4=16 tiles, step 2 on dim 0
+// Chain 1: outer subblock loop, inner 2x4 tiles unrolled. Stores hoisted after wait.
 // LOWER:        scf.for %[[OUTER1:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          scf.for
-// LOWER:            scf.for
-// LOWER:              arith.muli %[[OUTER1]],
-// LOWER:              arith.addi
-// LOWER:              ttl.copy_tile
+// LOWER:          ttl.tile_regs_acquire
+// LOWER:          arith.muli %[[OUTER1]],
+// LOWER:          arith.addi
+// LOWER:          ttl.copy_tile
+// LOWER:          ttl.tile_regs_commit
+// LOWER:          ttl.tile_regs_wait
+// LOWER:          ttl.tile_store
+// LOWER:          ttl.tile_regs_release
 // Chain 2
 // LOWER:        scf.for %[[OUTER2:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          scf.for
-// LOWER:            scf.for
-// LOWER:              arith.muli %[[OUTER2]],
-// LOWER:              arith.addi
-// LOWER:              ttl.copy_tile
+// LOWER:          ttl.tile_regs_acquire
+// LOWER:          arith.muli %[[OUTER2]],
+// LOWER:          arith.addi
+// LOWER:          ttl.copy_tile
+// LOWER:          ttl.tile_regs_commit
+// LOWER:          ttl.tile_regs_wait
+// LOWER:          ttl.tile_store
+// LOWER:          ttl.tile_regs_release
 // Chain 3
 // LOWER:        scf.for %[[OUTER3:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          scf.for
-// LOWER:            scf.for
-// LOWER:              arith.muli %[[OUTER3]],
-// LOWER:              arith.addi
-// LOWER:              ttl.copy_tile
+// LOWER:          ttl.tile_regs_acquire
+// LOWER:          arith.muli %[[OUTER3]],
+// LOWER:          arith.addi
+// LOWER:          ttl.copy_tile
+// LOWER:          ttl.tile_regs_commit
+// LOWER:          ttl.tile_regs_wait
+// LOWER:          ttl.tile_store
+// LOWER:          ttl.tile_regs_release
 
 // EMITC-LABEL: func.func @fused_compute
 

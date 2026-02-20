@@ -1,80 +1,68 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // Purpose: end-to-end TTL -> TTKernel -> emitc -> C++ for fused chain.
-// Verifies: add + exp fused compute with CB-based data flow.
+// Verifies: add + mul + exp fused compute with unrolled tile processing.
+// 2x2 tile grid (4 tiles), dstPerIteration=2 (add→dst[0], copy→dst[1]),
+// all 4 tiles fit in DST capacity 8, so fully unrolled with no loops.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: void kernel_main()
-
-// --- Constants ---
-// CHECK-DAG:   int32_t [[TILES:v[0-9]+]] = 4
-// CHECK-DAG:   size_t [[BOUND:v[0-9]+]] = 2
-// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1
-// CHECK-DAG:   size_t [[ZERO:v[0-9]+]] = 0
-
-// --- Nested loops over 2x2 tile grid ---
-// CHECK:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
-// CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
-
-// --- Compute linear tile index: i * cols + j ---
-// CHECK:           size_t [[COL_SIZE:.*]] = 2;
-// CHECK-NEXT:      size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
-// CHECK-NEXT:      size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
-
-// --- DST register lifecycle (acquire inside loop) ---
-// CHECK-NEXT:      tile_regs_acquire();
-
-// --- Compute linearized CB index for FPU binary add ---
-// CHECK-NEXT:      size_t [[CBOFF_I:.*]] = [[I]] * [[BOUND]];
-// CHECK-NEXT:      size_t [[CBIDX:.*]] = [[CBOFF_I]] + [[J]];
-
-// --- FPU binary add: reads directly from CB0 and CB1 ---
-// CHECK-NEXT:      add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-// CHECK-NEXT:      add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[CBIDX]], [[CBIDX]], [[ZERO]]);
-
-// --- Copy tile for mul's second operand (b_tile from CB1) ---
-// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
-
-// --- Mul: DST[0] * DST[1] -> DST[0] ---
-// CHECK-NEXT:      mul_binary_tile_init();
-// CHECK-NEXT:      mul_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
-
-// --- Exp: exp(DST[0]) -> DST[0] ---
-// CHECK-NEXT:      exp_tile_init();
-// CHECK-NEXT:      exp_tile([[ZERO]]);
-
-// --- Reserve output CB2 for packing (before commit) ---
-// CHECK-NEXT:      cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// --- DST register synchronization ---
-// CHECK-NEXT:      tile_regs_commit();
-// CHECK-NEXT:      tile_regs_wait();
-
-// --- Pack DST[0] to output CB2 (reuses CB index from add_tiles) ---
-// CHECK-NEXT:      pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CBIDX]]);
-
-// --- Push to signal data ready ---
-// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// --- DST register lifecycle (release inside loop) ---
-// CHECK-NEXT:      tile_regs_release();
-
-// --- End of inner and outer loops ---
-// CHECK-NEXT:    }
-// CHECK-NEXT:  }
-// CHECK-NEXT:  return;
-
-// --- Verify no tensor operations remain ---
+// CHECK-DAG:   int32_t [[TILES:.*]] = 4
+// CHECK-DAG:   size_t [[C0:.*]] = 0
+// CHECK-DAG:   size_t [[C1:.*]] = 1
+// CHECK-DAG:   size_t [[C2:.*]] = 2
+// CHECK-DAG:   size_t [[C3:.*]] = 3
+// CHECK:   cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
+// CHECK-NEXT:   cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
+// CHECK-NEXT:   cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// CHECK-NEXT:   tile_regs_acquire();
+//
+// Tile 0: cb_idx=0, dst_base=0
+// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C0]], [[C0]], [[C0]]);
+// CHECK-NEXT:   copy_tile_init(get_compile_time_arg_val(1));
+// CHECK-NEXT:   copy_tile(get_compile_time_arg_val(1), [[C0]], [[C1]]);
+// CHECK-NEXT:   mul_binary_tile_init();
+// CHECK-NEXT:   mul_binary_tile([[C0]], [[C1]], [[C0]]);
+// CHECK-NEXT:   exp_tile_init();
+// CHECK-NEXT:   exp_tile([[C0]]);
+//
+// Tile 1: cb_idx=1, dst_base=2
+// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C1]], [[C1]], [[C2]]);
+// CHECK-NEXT:   copy_tile_init(get_compile_time_arg_val(1));
+// CHECK-NEXT:   copy_tile(get_compile_time_arg_val(1), [[C1]], [[C3]]);
+// CHECK-NEXT:   mul_binary_tile_init();
+// CHECK-NEXT:   mul_binary_tile([[C2]], [[C3]], [[C2]]);
+// CHECK-NEXT:   exp_tile_init();
+// CHECK-NEXT:   exp_tile([[C2]]);
+//
+// Tile 2: cb_idx=2, dst_base=4
+// CHECK:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C2]], [[C2]],
+// CHECK:   exp_tile(
+//
+// Tile 3: cb_idx=3, dst_base=6
+// CHECK:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C3]], [[C3]],
+// CHECK:   exp_tile(
+//
+// CHECK:   tile_regs_commit();
+// CHECK-NEXT:   tile_regs_wait();
+// CHECK-NEXT:   pack_tile<true>([[C0]], get_compile_time_arg_val(2), [[C0]]);
+// CHECK:   pack_tile<true>({{.*}}, get_compile_time_arg_val(2), [[C1]]);
+// CHECK-NEXT:   pack_tile<true>({{.*}}, get_compile_time_arg_val(2), [[C2]]);
+// CHECK-NEXT:   pack_tile<true>({{.*}}, get_compile_time_arg_val(2), [[C3]]);
+// CHECK-NEXT:   tile_regs_release();
+// CHECK-NEXT:   cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// CHECK-NEXT:   return;
 // CHECK-NOT:   tensor.extract
 // CHECK-NOT:   tensor.insert
-// CHECK-NOT:   tensor.empty
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -90,6 +78,8 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_ready = ttl.cb_wait %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %output_cb = ttl.attach_cb %output, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
   %result = ttl.compute
       ins(%a_ready, %b_ready : tensor<2x2x!ttcore.tile<32x32, f32>>,
                                tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -102,11 +92,11 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
