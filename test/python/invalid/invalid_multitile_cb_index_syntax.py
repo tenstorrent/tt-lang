@@ -20,7 +20,7 @@ import ttnn
 import ttl
 
 
-# CHECK: error: DFB shape [2, 2] requires range syntax (e.g., tensor[0:2, 0:2]), but got index syntax (e.g., tensor[0, 0])
+# CHECK: error: CB shape [2, 2] requires range syntax (e.g., tensor[0:2, 0:2]), but got index syntax (e.g., tensor[0, 0])
 @ttl.kernel(grid=(1, 1))
 def invalid_multitile_index_kernel(inp, out):
     """This kernel should fail: 2x2 DFB but using index syntax."""
