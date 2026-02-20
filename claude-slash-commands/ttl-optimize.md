@@ -20,14 +20,14 @@ If it fails, STOP and ask the user to fix their remote setup.
 ```bash
 ~/.claude/commands/tools/run-test.sh /path/to/kernel.py                # Functional simulator
 ~/.claude/commands/tools/run-test.sh --hw /path/to/kernel.py           # Real hardware
-~/.claude/commands/tools/run-test.sh --perf --hw /path/to/kernel.py    # HW + NOC/CB profiling
+~/.claude/commands/tools/run-test.sh --perf --hw /path/to/kernel.py    # HW + NOC/DFB profiling
 ~/.claude/commands/tools/run-test.sh --auto-profile --hw /path/to/k.py # Per-line cycle counts
 ~/.claude/commands/tools/remote-run.sh <command>                       # Run command on remote
 ```
 
 Use `--perf` as your primary profiling tool. Use `--auto-profile` only when you need per-line cycle breakdown to diagnose a specific bottleneck.
 
-Log is at `/tmp/ttlang_test_output.log` on the remote. Grep for `THREAD SUMMARY`, `NOC PROFILER SUMMARY`, `CB FLOW GRAPH`, `PIPE GRAPH`.
+Log is at `/tmp/ttlang_test_output.log` on the remote. Grep for `THREAD SUMMARY`, `NOC PROFILER SUMMARY`, `DFB FLOW GRAPH`, `PIPE GRAPH`.
 
 ## Task
 
@@ -64,9 +64,9 @@ Note: if tensors are small enough, moving them to L1 memory space (`ttnn.L1_MEMO
 
 Check `NOC PROFILER SUMMARY` for DRAM read/write volumes and effective bandwidth.
 
-### 3. Increase CB Block Size
+### 3. Increase DFB Block Size
 
-Larger CB shapes (block sizes) mean fewer DMA transfers and better throughput. Keep increasing `shape=(R, C)` on circular buffers until you run out of L1 (~1.5MB per core). This is often a big win.
+Larger DFB shapes (block sizes) mean fewer DMA transfers and better throughput. Keep increasing `shape=(R, C)` on circular buffers until you run out of L1 (~1.5MB per core). This is often a big win.
 
 ## Iteration Flow
 
@@ -88,7 +88,7 @@ Run with `--perf --hw` to get baseline metrics. Record:
 From the baseline, determine the primary bottleneck:
 - **Underutilized cores**: grid is smaller than the data allows
 - **Excess DRAM traffic**: multiple kernel calls, redundant reads, no streaming
-- **Large transfer count with small transfer size**: CB block size too small
+- **Large transfer count with small transfer size**: DFB block size too small
 - **Compute bound**: heavy math ops, possible to restructure
 - **Memory bound**: data movement dominates, possible to overlap or reduce
 

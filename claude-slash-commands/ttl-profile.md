@@ -48,7 +48,7 @@ The log contains several sections. Grep for these markers:
 
 - `THREAD SUMMARY` -- Per-thread cycle counts, op counts, and a compute-vs-memory bound analysis with a visual bar
 - `NOC PROFILER SUMMARY` -- Grid size, duration, DRAM read/write volumes, effective bandwidth, transfer sizes, barrier counts
-- `CB FLOW GRAPH` -- JSON describing circular buffer producer/consumer relationships and DMA ops
+- `DFB FLOW GRAPH` -- JSON describing circular buffer producer/consumer relationships and DMA ops
 - `PIPE GRAPH` -- Inter-core pipe communication graph (may be empty if no pipes)
 
 ### Step 3: Report to User

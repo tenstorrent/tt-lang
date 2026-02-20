@@ -150,7 +150,7 @@ class CBAPI:
                 cb_state.producer_reserving != thread
             ):
                 raise CBContractError(
-                    "Only one producer thread may reserve on a CB at a time"
+                    "Only one producer thread may reserve on a DFB at a time"
                 )
             cb_state.producer_reserving = thread
             if num_tiles < cb_state.reserved:

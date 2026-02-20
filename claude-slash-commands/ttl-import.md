@@ -76,7 +76,7 @@ def fused_kernel(input, bias, out):
 
 **When fusing TTNN ops:**
 1. Identify the sequence of ops to fuse
-2. Create one CB per input tensor
+2. Create one DFB per input tensor
 3. Chain operations in a single compute function
 4. TT-Lang will generate optimized fused code
 
@@ -98,9 +98,9 @@ import ttl
 
 @ttl.kernel(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -151,10 +151,10 @@ def dm_read():
 
 ```python
 # Create a circular buffer
-dfb = ttl.make_circular_buffer_like(
+dfb = ttl.make_dataflow_buffer_like(
     tensor,           # TTNN tensor to inherit dtype/layout from
     shape=(R, C),     # Block size in tiles (e.g., (2, 2) = 4 tiles per block)
-    buffer_factor=2   # Number of blocks in CB (2 = double buffering)
+    buffer_factor=2   # Number of blocks in DFB (2 = double buffering)
 )
 
 # Consumer operations (compute thread consumes data)
@@ -175,11 +175,11 @@ with dfb.reserve() as blk:   # For producers
 blk.store(expr)             # Store result of expression into block
 ```
 
-**CB Shape = Block Size:** The `shape=(R, C)` parameter defines the **block size** in tiles. A block is the unit of data transferred between threads. For tensors larger than one block, use **loops** to iterate over multiple blocks:
+**DFB Shape = Block Size:** The `shape=(R, C)` parameter defines the **block size** in tiles. A block is the unit of data transferred between threads. For tensors larger than one block, use **loops** to iterate over multiple blocks:
 
 ```python
 # 128x128 tensor = 4x4 tiles, process in 2x2 blocks (4 iterations)
-dfb = ttl.make_circular_buffer_like(tensor, shape=(2, 2), buffer_factor=2)
+dfb = ttl.make_dataflow_buffer_like(tensor, shape=(2, 2), buffer_factor=2)
 
 @ttl.datamovement()
 def dm_read():
@@ -266,21 +266,21 @@ with inp_dfb.wait() as x, out_dfb.reserve() as o:
 
 **Non-square example:** For 4x2 tiles → 2x4 tiles:
 ```python
-inp_dfb = ttl.make_circular_buffer_like(inp, shape=(4, 2), buffer_factor=2)
-out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 4), buffer_factor=2)  # Swapped!
+inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(4, 2), buffer_factor=2)
+out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 4), buffer_factor=2)  # Swapped!
 ```
 
 ### Reductions (require scaler tensor)
 
 ```python
-# Reductions are in ttl.math and need a "scaler" tensor (1x1 CB of all 1.0s)
+# Reductions are in ttl.math and need a "scaler" tensor (1x1 DFB of all 1.0s)
 # dims=[0] = row reduction, dims=[1] = col reduction, dims=[0, 1] = scalar
 
-# Scaler: 32x32 tile of 1.0s in a 1x1 CB
-scaler_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+# Scaler: 32x32 tile of 1.0s in a 1x1 DFB
+scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
 
 with inp_dfb.wait() as i, scaler_dfb.wait() as s, out_dfb.reserve() as o:
-    # Scalar reduction (sum/max entire CB -> single value in output [0,0])
+    # Scalar reduction (sum/max entire DFB -> single value in output [0,0])
     result = ttl.math.reduce_sum(i, s, o, dims=[0, 1])
     result = ttl.math.reduce_max(i, s, o, dims=[0, 1])
 
@@ -299,7 +299,7 @@ with inp_dfb.wait() as i, scaler_dfb.wait() as s, out_dfb.reserve() as o:
 
 In PyTorch, `dim=0` means "reduce along dimension 0" (collapse rows). In TT-Lang, `dims=[0]` means "keep dimension 0" (keep rows, collapse columns). The semantics are inverted.
 
-**Multi-tile reduce:** Reduces across ALL tiles in the input CB. For example, a 4x1 tile input CB reduced with `dims=[0, 1]` produces a single scalar value (in a 1x1 output CB). The reduction sums all elements across all 4 tiles into position [0,0].
+**Multi-tile reduce:** Reduces across ALL tiles in the input DFB. For example, a 4x1 tile input DFB reduced with `dims=[0, 1]` produces a single scalar value (in a 1x1 output DFB). The reduction sums all elements across all 4 tiles into position [0,0].
 
 ### Broadcast
 
@@ -360,14 +360,14 @@ with scalar_dfb.wait() as s, other_dfb.wait() as x, out_dfb.reserve() as o:
     o.store(result)
 ```
 
-**Limitation:** Ops that take CB arguments (matmul, reduce, transpose, broadcast) can only be fused if they are the **first** operation. After any of these, you must store and start a new fusion chain.
+**Limitation:** Ops that take DFB arguments (matmul, reduce, transpose, broadcast) can only be fused if they are the **first** operation. After any of these, you must store and start a new fusion chain.
 
 **When fusion fails:** Use sequential `with` blocks to break the chain - you do NOT need separate kernels:
 
 ```python
 @ttl.compute()
 def compute():
-    # WRONG: Trying to fuse matmul result into another CB op
+    # WRONG: Trying to fuse matmul result into another DFB op
     # with a_dfb.wait() as a, b_dfb.wait() as b, out_dfb.reserve() as o:
     #     m = ttl.math.matmul(a, b, o)
     #     result = ttl.math.reduce_sum(m, ...)  # FAILS - reduce after matmul
@@ -432,10 +432,10 @@ For tensors larger than 32x32, process multiple tiles. **Use multicore and loops
 @ttl.kernel(grid=(8, 8))  # Use multicore
 def large_tensor_kernel(inp, out):
     # Each core handles 8x8 tiles worth of data
-    # But CB only holds 2x2 tiles at a time - stream through with loops
+    # But DFB only holds 2x2 tiles at a time - stream through with loops
 
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     BLOCKS_PER_CORE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per core
 
@@ -468,7 +468,7 @@ def large_tensor_kernel(inp, out):
 ```
 
 **Key streaming principles:**
-1. **CB size is limited by L1** (~1.5MB per core) - you can't fit huge tensors
+1. **DFB size is limited by L1** (~1.5MB per core) - you can't fit huge tensors
 2. **Stream blocks through CBs** - read a block, process it, write it, repeat
 3. **Loop counts must match** - compute iterations = dm_read iterations = dm_write iterations
 4. **DRAM is large but slow** - keep data in L1 as long as possible, stream to avoid DRAM round-trips
@@ -506,9 +506,9 @@ def gather_kernel(inp, out):
     pipe2 = ttl.Pipe(src=(2, 0), dst=(0, 0))
     pipe3 = ttl.Pipe(src=(3, 0), dst=(0, 0))
 
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    gather_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=4)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    gather_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=4)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -581,18 +581,18 @@ def gather_kernel(inp, out):
 - **~100MB total SRAM** across chip - utilize as much as possible for throughput
 - **Tile size**: 32x32 elements = 2KB (bfloat16)
 
-### Option 1: Large CB Shape (Single Core)
+### Option 1: Large DFB Shape (Single Core)
 
-Larger CB shapes give better throughput. Aim for 4x4 or 8x8 if L1 allows:
+Larger DFB shapes give better throughput. Aim for 4x4 or 8x8 if L1 allows:
 
 ```python
 # 64x64 tensor = 2x2 tiles
 @ttl.kernel(grid=(1, 1))
 def multitile_kernel(lhs, rhs, out):
-    # CB holds all 4 tiles - larger shapes better for throughput
-    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
-    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    # DFB holds all 4 tiles - larger shapes better for throughput
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -613,9 +613,9 @@ def multitile_kernel(lhs, rhs, out):
 # 256x256 tensor across 8x8 grid = 1 tile per core
 @ttl.kernel(grid=(8, 8))
 def multicore_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -783,7 +783,7 @@ if __name__ == "__main__":
 | Shared memory | L1 via circular buffers |
 | Global memory | DRAM with DMA transfers |
 | Warp/wave operations | Tile-level operations (32x32) |
-| `__syncthreads()` | CB `wait()`/`push()` synchronization |
+| `__syncthreads()` | DFB `wait()`/`push()` synchronization |
 | Kernel launch | Direct function call: `my_kernel(a, b, c)` |
 
 ### CUDA/Triton → TT-Lang
@@ -802,9 +802,9 @@ __global__ void add_kernel(float* a, float* b, float* c, int n) {
 ```python
 @ttl.kernel(grid=(1, 1))  # Or multicore for large tensors
 def add_kernel(a, b, c):
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_dfb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -843,8 +843,8 @@ def gelu(x):
 ```python
 @ttl.kernel(grid=(1, 1))
 def gelu_kernel(x, out):
-    x_dfb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -902,7 +902,7 @@ result = ttnn.slice(output_tensor, [0, 0], [100, 50])
 
 ### Phase 1: Iterate with the Functional Simulator (default)
 
-The functional simulator (`ttlang-sim`) is the primary development tool. It catches CB mismatches, shape errors, type errors, and functional bugs via dynamic analysis. Use it for all iteration.
+The functional simulator (`ttlang-sim`) is the primary development tool. It catches DFB mismatches, shape errors, type errors, and functional bugs via dynamic analysis. Use it for all iteration.
 
 ```
 1. Write kernel to file
@@ -928,10 +928,10 @@ NOTE: it is possible that the sim and hw diverge which may require you to either
 - The log can be thousands of lines - use `tail`, `head` remotely, or pipe through `grep` locally (e.g., `remote-run.sh cat /tmp/ttlang_test_output.log | grep "pattern"`)
 - Look for: `AssertionError`, `Exception`, `error:`, `FAIL`, `mismatch`
 - Never guess at fixes - always read the actual error message
-- **IMPORTANT:** Set a low timeout for faster iteration - tests should execute in under 1 second. Hangs are common (especially with pipes or CB mismatches) and a low timeout helps detect them quickly.
+- **IMPORTANT:** Set a low timeout for faster iteration - tests should execute in under 1 second. Hangs are common (especially with pipes or DFB mismatches) and a low timeout helps detect them quickly.
 
 **Handling Hangs:**
-- If a kernel hangs, the most common cause is **CB mismatch** - every `wait()` needs a corresponding `push()` from producer, every `reserve()` needs a corresponding `pop()` from consumer
+- If a kernel hangs, the most common cause is **DFB mismatch** - every `wait()` needs a corresponding `push()` from producer, every `reserve()` needs a corresponding `pop()` from consumer
 - Verify loop counts match between compute and datamovement threads
 - Kill zombie processes on remote: `~/.claude/commands/tools/remote-run.sh pkill -9 python`
 
@@ -981,8 +981,8 @@ You cannot print or assert inside kernels. Instead:
 # Example: Testing an op in isolation
 @ttl.kernel(grid=(1, 1))
 def test_single_op(inp, out):
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -1005,7 +1005,7 @@ print("Expected:", torch.exp(inp_torch))
 1. **Start in isolation**: Test one op at a time before combining
 2. **Print tensors**: Always print input/output to verify behavior
 3. **Check shapes**: All dimensions must be multiples of 32
-4. **Verify CB balance**: Every `wait()` needs `pop()`, every `reserve()` needs `push()`
+4. **Verify DFB balance**: Every `wait()` needs `pop()`, every `reserve()` needs `push()`
 5. **Read the log**: Always check `/tmp/ttlang_test_output.log` after each run
 6. **Check MLIR**: Use `/tmp/ttlang_initial.mlir` and `/tmp/ttlang_final.mlir` for compiler issues
 
@@ -1056,26 +1056,26 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
     matmul_pipe3 = ttl.Pipe(src=(3, 0), dst=(0, 0))
 
     # Input CBs for reduce (A slice: 4 rows x 1 col of tiles)
-    a_dfb = ttl.make_circular_buffer_like(A, shape=(4, 1), buffer_factor=2)
-    scaler_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(4, 1), buffer_factor=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
 
-    # Input CB for matmul (B: 4x4 tiles)
-    b_dfb = ttl.make_circular_buffer_like(B, shape=(4, 4), buffer_factor=2)
+    # Input DFB for matmul (B: 4x4 tiles)
+    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(4, 4), buffer_factor=2)
 
     # Reduce intermediate CBs
-    reduce_out_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    reduce_acc_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    reduce_out_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    reduce_acc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
 
-    # Broadcast CB (4x4 output)
-    bcast_out_dfb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    # Broadcast DFB (4x4 output)
+    bcast_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
 
     # Matmul CBs (4x4 tiles)
-    matmul_out_dfb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=2)
-    matmul_gather_dfb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=6)
-    matmul_acc_dfb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    matmul_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    matmul_gather_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=6)
+    matmul_acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
 
-    # Output CB
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    # Output DFB
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -1196,12 +1196,12 @@ def fused_mlp_kernel(x, w_fc, w_proj, out):
     """
     SEQ_TILES, EMBD_TILES, MLP_TILES = 4, 4, 16
 
-    x_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    w_fc_dfb = ttl.make_circular_buffer_like(w_fc, shape=(EMBD_TILES, MLP_TILES), buffer_factor=2)
-    w_proj_dfb = ttl.make_circular_buffer_like(w_proj, shape=(MLP_TILES, EMBD_TILES), buffer_factor=2)
-    mlp_hidden_dfb = ttl.make_circular_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2)
-    mlp_act_dfb = ttl.make_circular_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    w_fc_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_TILES), buffer_factor=2)
+    w_proj_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_TILES, EMBD_TILES), buffer_factor=2)
+    mlp_hidden_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2)
+    mlp_act_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -1274,26 +1274,26 @@ def fused_block_kernel(attn_concat, x, wo, ln2_w, w_fc, w_proj, scaler, out):
     MLP_CHUNK_TILES, NUM_MLP_CHUNKS = 4, 4
 
     # Input CBs - buffer_factor=1 for single-use weights
-    attn_dfb = ttl.make_circular_buffer_like(attn_concat, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    x_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    wo_dfb = ttl.make_circular_buffer_like(wo, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1)
-    ln2_w_dfb = ttl.make_circular_buffer_like(ln2_w, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    scaler_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    attn_dfb = ttl.make_dataflow_buffer_like(attn_concat, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
+    wo_dfb = ttl.make_dataflow_buffer_like(wo, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1)
+    ln2_w_dfb = ttl.make_dataflow_buffer_like(ln2_w, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
 
     # Streaming MLP weight chunks
-    w_fc_chunk_dfb = ttl.make_circular_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), buffer_factor=2)
-    w_proj_chunk_dfb = ttl.make_circular_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), buffer_factor=2)
+    w_fc_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), buffer_factor=2)
+    w_proj_chunk_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), buffer_factor=2)
 
     # Intermediate CBs
-    act_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    hidden1_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    ln2_out_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    mlp_chunk_dfb = ttl.make_circular_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), buffer_factor=2)
-    mlp_acc_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    partial_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    reduce_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
-    bcast_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
+    act_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    hidden1_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    ln2_out_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    mlp_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), buffer_factor=2)
+    mlp_acc_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    partial_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    reduce_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
 
     @ttl.compute()
     def compute():
@@ -1416,19 +1416,19 @@ def streaming_mlp_kernel(x, w_fc, w_proj, out):
     SEQ_TILES, EMBD_TILES = 4, 4
 
     # Input stays in L1 (loaded once)
-    x_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
 
     # Streaming weight CBs - SMALL, reused per chunk
-    w_fc_chunk_dfb = ttl.make_circular_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), buffer_factor=2)
-    w_proj_chunk_dfb = ttl.make_circular_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), buffer_factor=2)
+    w_fc_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), buffer_factor=2)
+    w_proj_chunk_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), buffer_factor=2)
 
     # MLP hidden chunk
-    mlp_chunk_dfb = ttl.make_circular_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), buffer_factor=2)
+    mlp_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), buffer_factor=2)
 
     # Output accumulator
-    out_acc_dfb = ttl.make_circular_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    partial_dfb = ttl.make_circular_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    out_acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -1503,15 +1503,15 @@ def softmax_kernel(x, scaler, out):
     """softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))"""
     SEQ_TILES = 4
 
-    x_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
-    scaler_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
 
-    max_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    max_bcast_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
-    exp_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
-    sum_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    sum_bcast_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
+    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    max_bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    sum_bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -1577,14 +1577,14 @@ def rmsnorm_kernel(x, weight, scaler, out):
     """RMSNorm: out = x * rsqrt(sum(x²)) * weight"""
     SEQ_TILES, EMBD_TILES = 4, 4
 
-    x_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    weight_dfb = ttl.make_circular_buffer_like(weight, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    scaler_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    weight_dfb = ttl.make_dataflow_buffer_like(weight, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
 
-    sq_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    reduce_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    bcast_dfb = ttl.make_circular_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    sq_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    reduce_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -1655,16 +1655,16 @@ NUM_CHUNKS = 8     # 1024 hidden / 128 per core = 8 cores
 
 @ttl.kernel(grid=(NUM_CHUNKS, 1))
 def layer1_kernel(x, w1, bias1, hidden_out):
-    # Input CB - same data read by all cores
-    x_dfb = ttl.make_circular_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
+    # Input DFB - same data read by all cores
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
 
     # Weight/bias CBs - each core reads different columns
-    w1_dfb = ttl.make_circular_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1)
-    bias1_dfb = ttl.make_circular_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
+    w1_dfb = ttl.make_dataflow_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1)
+    bias1_dfb = ttl.make_dataflow_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
 
     # Intermediate and output CBs
-    hidden_mm_dfb = ttl.make_circular_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
-    hidden_dfb = ttl.make_circular_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
+    hidden_mm_dfb = ttl.make_dataflow_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
+    hidden_dfb = ttl.make_dataflow_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
 
     @ttl.compute()
     def compute():
@@ -1737,25 +1737,25 @@ NUM_CHUNKS = 8     # 1024 hidden / 128 per chunk = 8 chunks
 @ttl.kernel(grid=(1, 1))
 def layer2_kernel(hidden, w2, bias2, scaler, out):
     # Streaming input CBs - buffer_factor=2 for double buffering
-    hidden_dfb = ttl.make_circular_buffer_like(hidden, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
-    w2_dfb = ttl.make_circular_buffer_like(w2, shape=(CHUNK_TILES, OUTPUT_TILES), buffer_factor=2)
+    hidden_dfb = ttl.make_dataflow_buffer_like(hidden, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
+    w2_dfb = ttl.make_dataflow_buffer_like(w2, shape=(CHUNK_TILES, OUTPUT_TILES), buffer_factor=2)
 
     # Accumulator and partial result CBs
-    acc_dfb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    part_dfb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    part_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
 
     # Single-use inputs - buffer_factor=1
-    bias2_dfb = ttl.make_circular_buffer_like(bias2, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
-    scaler_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    bias2_dfb = ttl.make_dataflow_buffer_like(bias2, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
 
     # Softmax intermediate CBs
-    logits_dfb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    max_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    max_bcast_dfb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    exp_dfb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    sum_dfb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    sum_bcast_dfb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
+    logits_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    max_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    sum_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
 
     @ttl.compute()
     def compute():
@@ -1784,7 +1784,7 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
         # Keep logits (lgv) and scaler (sc) in scope - lgv is used twice
         with logits_dfb.wait() as lgv, scaler_dfb.wait() as sc:
             # Row-wise max: dims=[0] reduces across columns, keeps rows
-            # Output shape: (BATCH_TILES, 1) stored in (1, 1) CB
+            # Output shape: (BATCH_TILES, 1) stored in (1, 1) DFB
             with max_dfb.reserve() as mx:
                 mx.store(ttl.math.reduce_max(lgv, sc, mx, dims=[0]))
 
