@@ -20,9 +20,9 @@ def add_multitile_kernel(lhs, rhs, out):
         o = out_dfb.reserve()
         result = l + r
         o.store(result)
-        lhs_dfb.pop()
-        rhs_dfb.pop()
-        out_dfb.push()
+        l.pop()
+        r.pop()
+        o.push()
 
     # ...data movement...
 ```
