@@ -6,9 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: binary ops on incompatible CB shapes.
+Validation test: binary ops on incompatible DFB shapes.
 
-Trying to add tensors with mismatched CB shapes (e.g., (2,1) + (2,2))
+Trying to add tensors with mismatched DFB shapes (e.g., (2,1) + (2,2))
 should produce an error suggesting broadcast.
 """
 
@@ -23,32 +23,32 @@ import ttl
 # CHECK: shape mismatch between (2, 2) bf16 tensor and (2, 1) bf16 tensor; note: you can use ttl.math.broadcast() to expand the smaller tensor
 @ttl.kernel(grid=(1, 1))
 def mismatched_shape_kernel(a, b, out):
-    """INVALID: add tensors with mismatched CB shapes."""
-    # a_cb is (2, 1) - column vector
-    a_cb = ttl.make_circular_buffer_like(a, shape=(2, 1), buffer_factor=2)
-    # b_cb is (2, 2) - full grid
-    b_cb = ttl.make_circular_buffer_like(b, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    """INVALID: add tensors with mismatched DFB shapes."""
+    # a_dfb is (2, 1) - column vector
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
+    # b_dfb is (2, 2) - full grid
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with a_cb.wait() as a_tile, b_cb.wait() as b_tile, out_cb.reserve() as o:
+        with a_dfb.wait() as a_tile, b_dfb.wait() as b_tile, out_dfb.reserve() as o:
             # This should fail - adding (2,1) to (2,2) without broadcast
             result = a_tile + b_tile
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with a_cb.reserve() as a_blk:
+        with a_dfb.reserve() as a_blk:
             tx_a = ttl.copy(a[0:2, 0:1], a_blk)
             tx_a.wait()
-        with b_cb.reserve() as b_blk:
+        with b_dfb.reserve() as b_blk:
             tx_b = ttl.copy(b[0:2, 0:2], b_blk)
             tx_b.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0:2, 0:2])
             tx.wait()
 

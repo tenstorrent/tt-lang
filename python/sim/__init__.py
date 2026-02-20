@@ -60,7 +60,7 @@ class _TTLNamespace:
 
         self.kernel = kernel
         self.grid_size = grid_size
-        self.make_circular_buffer_like = make_circular_buffer_like
+        self.make_dataflow_buffer_like = make_circular_buffer_like
         self.compute = compute
         self.datamovement = datamovement
         self.core = core

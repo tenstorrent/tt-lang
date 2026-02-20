@@ -29,15 +29,15 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def fused_kernel(inp, bias, out):
     """Kernel that computes ttl.math.exp(inp) + ttl.math.sqrt(bias) - fuses 3 ops."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    bias_cb = ttl.make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    bias_dfb = ttl.make_dataflow_buffer_like(bias, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
-        i = inp_cb.wait()
-        b = bias_cb.wait()
-        o = out_cb.reserve()
+        i = inp_dfb.wait()
+        b = bias_dfb.wait()
+        o = out_dfb.reserve()
         result = ttl.math.exp(i) + ttl.math.sqrt(b)
         o.store(result)
         i.pop()
@@ -46,19 +46,19 @@ def fused_kernel(inp, bias, out):
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
+        inp_blk = inp_dfb.reserve()
         tx_inp = ttl.copy(inp[0, 0], inp_blk)
         tx_inp.wait()
         inp_blk.push()
 
-        bias_blk = bias_cb.reserve()
+        bias_blk = bias_dfb.reserve()
         tx_bias = ttl.copy(bias[0, 0], bias_blk)
         tx_bias.wait()
         bias_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -97,7 +97,7 @@ def fused_kernel(inp, bias, out):
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 
-# Reserve output CB
+# Reserve output DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
 # DST register lifecycle

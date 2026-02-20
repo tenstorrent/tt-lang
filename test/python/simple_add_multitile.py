@@ -25,15 +25,15 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
     """Add kernel processing 2x2 tile grid (4 tiles total)."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         result = l + r
         o.store(result)
         l.pop()
@@ -42,19 +42,19 @@ def add_multitile_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_blk = lhs_cb.reserve()
+        lhs_blk = lhs_dfb.reserve()
         tx_lhs = ttl.copy(lhs[0:2, 0:2], lhs_blk)
         tx_lhs.wait()
         lhs_blk.push()
 
-        rhs_blk = rhs_cb.reserve()
+        rhs_blk = rhs_dfb.reserve()
         tx_rhs = ttl.copy(rhs[0:2, 0:2], rhs_blk)
         tx_rhs.wait()
         rhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
         out_blk.pop()
@@ -73,7 +73,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
+# DFB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
@@ -105,7 +105,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # Loop bound constant for 2x2 tile grid
 # CHECK-CPP: size_t [[BOUND:v[0-9]+]] = 2;
 
-# CB operations before loops
+# DFB operations before loops
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),

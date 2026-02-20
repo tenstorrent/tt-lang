@@ -11,8 +11,8 @@ Test that auto-profiling generates correct signposts in the C++ kernel output.
 
 Verifies:
 - Line-based signposts: DeviceZoneScopedN("line_XX_before/after")
-- CB operation signposts: DeviceZoneScopedN("line_XX_cb_wait_before/after")
-- Implicit CB signposts: DeviceZoneScopedN("line_XX_implicit_cb_pop_before/after")
+- DFB operation signposts: DeviceZoneScopedN("line_XX_dfb_wait_before/after")
+- Implicit DFB signposts: DeviceZoneScopedN("line_XX_implicit_cb_pop_before/after")
 """
 
 import os
@@ -32,24 +32,24 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def signpost_test_kernel(inp, out):
     """Simple kernel to test signpost generation."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
         # 'with' generates cb_wait signpost and implicit cb_pop signpost
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             o.store(i)
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as blk:
+        with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
@@ -64,12 +64,12 @@ def signpost_test_kernel(inp, out):
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
 
-# Check for cb_wait signpost (explicit CB operation)
+# Check for cb_wait signpost (explicit DFB operation)
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_wait_before")
 # CHECK: cb_wait_front(
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_wait_after")
 
-# Check for cb_reserve signpost (explicit CB operation)
+# Check for cb_reserve signpost (explicit DFB operation)
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_reserve_before")
 # CHECK: cb_reserve_back(
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_reserve_after")

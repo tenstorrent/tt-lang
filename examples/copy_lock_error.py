@@ -34,13 +34,13 @@ def eltwise_add(
     buffer_factor = 2
 
     # Create circular buffers
-    a_in_cb = ttl.make_circular_buffer_like(
+    a_in_dfb = ttl.make_dataflow_buffer_like(
         a_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    b_in_cb = ttl.make_circular_buffer_like(
+    b_in_dfb = ttl.make_dataflow_buffer_like(
         b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 
@@ -56,15 +56,15 @@ def eltwise_add(
                 print(
                     "Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}"
                 )
-                a_block = a_in_cb.wait()
-                b_block = b_in_cb.wait()
-                out_block = out_cb.reserve()
+                a_block = a_in_dfb.wait()
+                b_block = b_in_dfb.wait()
+                out_block = out_dfb.reserve()
 
                 # Use store() to properly populate the Block with computed results
                 result = a_block + b_block
                 out_block.store(result)
 
-                # finalize push, this advances the cb pointers, the writing happened at the line above
+                # finalize push, this advances the dfb pointers, the writing happened at the line above
                 out_block.push()
                 a_block.pop()
                 b_block.pop()
@@ -80,15 +80,15 @@ def eltwise_add(
                 print("dm0: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
-                # Write the cbs just as above
-                a_block = a_in_cb.reserve()
+                # Write the dfbs just as above
+                a_block = a_in_dfb.reserve()
                 tx = ttl.copy(a_in[row_slice, col_slice], a_block)
 
                 # INTENTIONAL ERROR: Attempting to write to a_block before tx.wait()
                 a_block.store([None, None])  # This should trigger a copy lock error
                 tx.wait()
                 a_block.push()
-                b_block = b_in_cb.reserve()
+                b_block = b_in_dfb.reserve()
                 tx = ttl.copy(b_in[row_slice, col_slice], b_block)
                 tx.wait()
                 b_block.push()
@@ -105,7 +105,7 @@ def eltwise_add(
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
 
-                out_block = out_cb.wait()
+                out_block = out_dfb.wait()
                 # out_block[100] # accessing out of bounds should fail
 
                 tx = ttl.copy(out_block, out[row_slice, col_slice])

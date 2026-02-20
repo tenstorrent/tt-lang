@@ -862,13 +862,13 @@ class TestThreadOrderIndependence:
         def kernel_dm_compute_dm(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
-            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+            a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+            b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+            y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
             @ttl.datamovement()
             def dm_read():
-                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                     a_xf = ttl.copy(A[0, 0], a_blk)
                     b_xf = ttl.copy(B[0, 0], b_blk)
                     a_xf.wait()
@@ -877,16 +877,16 @@ class TestThreadOrderIndependence:
             @ttl.compute()
             def compute():
                 with (
-                    a_cb.wait() as a_blk,
-                    b_cb.wait() as b_blk,
-                    y_cb.reserve() as y_blk,
+                    a_dfb.wait() as a_blk,
+                    b_dfb.wait() as b_blk,
+                    y_dfb.reserve() as y_blk,
                 ):
                     result = a_blk + b_blk
                     y_blk.store(result)
 
             @ttl.datamovement()
             def dm_write():
-                with y_cb.wait() as y_blk:
+                with y_dfb.wait() as y_blk:
                     y_xf = ttl.copy(y_blk, Y[0, 0])
                     y_xf.wait()
 
@@ -910,23 +910,23 @@ class TestThreadOrderIndependence:
         def kernel_compute_dm_dm(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
-            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+            a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+            b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+            y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
             @ttl.compute()
             def compute():
                 with (
-                    a_cb.wait() as a_blk,
-                    b_cb.wait() as b_blk,
-                    y_cb.reserve() as y_blk,
+                    a_dfb.wait() as a_blk,
+                    b_dfb.wait() as b_blk,
+                    y_dfb.reserve() as y_blk,
                 ):
                     result = a_blk + b_blk
                     y_blk.store(result)
 
             @ttl.datamovement()
             def dm_read():
-                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                     a_xf = ttl.copy(A[0, 0], a_blk)
                     b_xf = ttl.copy(B[0, 0], b_blk)
                     a_xf.wait()
@@ -934,7 +934,7 @@ class TestThreadOrderIndependence:
 
             @ttl.datamovement()
             def dm_write():
-                with y_cb.wait() as y_blk:
+                with y_dfb.wait() as y_blk:
                     y_xf = ttl.copy(y_blk, Y[0, 0])
                     y_xf.wait()
 
@@ -958,13 +958,13 @@ class TestThreadOrderIndependence:
         def kernel_dm_dm_compute(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
-            a_cb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-            b_cb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-            y_cb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+            a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+            b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+            y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
             @ttl.datamovement()
             def dm_read():
-                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                     a_xf = ttl.copy(A[0, 0], a_blk)
                     b_xf = ttl.copy(B[0, 0], b_blk)
                     a_xf.wait()
@@ -972,16 +972,16 @@ class TestThreadOrderIndependence:
 
             @ttl.datamovement()
             def dm_write():
-                with y_cb.wait() as y_blk:
+                with y_dfb.wait() as y_blk:
                     y_xf = ttl.copy(y_blk, Y[0, 0])
                     y_xf.wait()
 
             @ttl.compute()
             def compute():
                 with (
-                    a_cb.wait() as a_blk,
-                    b_cb.wait() as b_blk,
-                    y_cb.reserve() as y_blk,
+                    a_dfb.wait() as a_blk,
+                    b_dfb.wait() as b_blk,
+                    y_dfb.reserve() as y_blk,
                 ):
                     result = a_blk + b_blk
                     y_blk.store(result)

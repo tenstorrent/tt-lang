@@ -30,27 +30,27 @@ except ImportError:
 
 @ttl.kernel(grid=(1, 1))
 def debug_loc_kernel(lhs, out):
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_thread():
-        l = lhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        o = out_dfb.reserve()
         o.store(l)
         l.pop()
         o.push()
 
     @ttl.datamovement()
     def dm_read():
-        lhs_blk = lhs_cb.reserve()
+        lhs_blk = lhs_dfb.reserve()
         tx = ttl.copy(lhs[0, 0], lhs_blk)
         tx.wait()
         lhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()

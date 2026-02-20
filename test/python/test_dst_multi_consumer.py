@@ -33,26 +33,26 @@ from ttlang_test_utils import assert_allclose, to_dram
 @ttl.kernel(grid=(1, 1))
 def silu_kernel(x, out):
     """SiLU: x * sigmoid(x) - tests multi-consumer DST allocation."""
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        with x_cb.wait() as xv:
-            with out_cb.reserve() as o:
+        with x_dfb.wait() as xv:
+            with out_dfb.reserve() as o:
                 sig = ttl.math.sigmoid(xv)
                 result = xv * sig
                 o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with x_cb.reserve() as blk:
+        with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
@@ -60,14 +60,14 @@ def silu_kernel(x, out):
 @ttl.kernel(grid=(1, 1))
 def unary_binary_kernel(x, y, out):
     """Tests block arg with one unary and two binary consumers."""
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    y_cb = ttl.make_circular_buffer_like(y, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        with x_cb.wait() as xv, y_cb.wait() as yv:
-            with out_cb.reserve() as o:
+        with x_dfb.wait() as xv, y_dfb.wait() as yv:
+            with out_dfb.reserve() as o:
                 # x is used by: abs (unary), add (binary), mul (binary)
                 abs_x = ttl.math.abs(xv)
                 add_result = xv + yv
@@ -78,7 +78,7 @@ def unary_binary_kernel(x, y, out):
 
     @ttl.datamovement()
     def dm_read():
-        with x_cb.reserve() as x_blk, y_cb.reserve() as y_blk:
+        with x_dfb.reserve() as x_blk, y_dfb.reserve() as y_blk:
             tx = ttl.copy(x[0, 0], x_blk)
             ty = ttl.copy(y[0, 0], y_blk)
             tx.wait()
@@ -86,7 +86,7 @@ def unary_binary_kernel(x, y, out):
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
@@ -139,19 +139,19 @@ def test_unary_binary_consumers(device):
 @ttl.kernel(grid=(1, 1))
 def three_consumers_kernel(a, b, out_sig, out_exp, out_add):
     """Block arg with 2 unary + 1 binary consumers: sigmoid(a), exp(a), a+b."""
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    sig_cb = ttl.make_circular_buffer_like(out_sig, shape=(1, 1), buffer_factor=2)
-    exp_cb = ttl.make_circular_buffer_like(out_exp, shape=(1, 1), buffer_factor=2)
-    add_cb = ttl.make_circular_buffer_like(out_add, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    sig_dfb = ttl.make_dataflow_buffer_like(out_sig, shape=(1, 1), buffer_factor=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(out_exp, shape=(1, 1), buffer_factor=2)
+    add_dfb = ttl.make_dataflow_buffer_like(out_add, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        with a_cb.wait() as av, b_cb.wait() as bv:
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
             with (
-                sig_cb.reserve() as o_sig,
-                exp_cb.reserve() as o_exp,
-                add_cb.reserve() as o_add,
+                sig_dfb.reserve() as o_sig,
+                exp_dfb.reserve() as o_exp,
+                add_dfb.reserve() as o_add,
             ):
                 # a used by: sigmoid (unary), exp (unary), add (binary)
                 sig = ttl.math.sigmoid(av)
@@ -163,7 +163,7 @@ def three_consumers_kernel(a, b, out_sig, out_exp, out_add):
 
     @ttl.datamovement()
     def dm_read():
-        with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+        with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
             ta = ttl.copy(a[0, 0], a_blk)
             tb = ttl.copy(b[0, 0], b_blk)
             ta.wait()
@@ -172,9 +172,9 @@ def three_consumers_kernel(a, b, out_sig, out_exp, out_add):
     @ttl.datamovement()
     def dm_write():
         with (
-            sig_cb.wait() as sig_blk,
-            exp_cb.wait() as exp_blk,
-            add_cb.wait() as add_blk,
+            sig_dfb.wait() as sig_blk,
+            exp_dfb.wait() as exp_blk,
+            add_dfb.wait() as add_blk,
         ):
             ts = ttl.copy(sig_blk, out_sig[0, 0])
             te = ttl.copy(exp_blk, out_exp[0, 0])
@@ -217,25 +217,25 @@ def test_three_consumers(device):
 @ttl.kernel(grid=(1, 1))
 def square_kernel(x, out):
     """Square pattern: x * x - same value used as both operands."""
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        with x_cb.wait() as xv:
-            with out_cb.reserve() as o:
+        with x_dfb.wait() as xv:
+            with out_dfb.reserve() as o:
                 result = xv * xv  # Same value as both operands
                 o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with x_cb.reserve() as blk:
+        with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
@@ -260,15 +260,15 @@ def test_square_pattern(device):
 @ttl.kernel(grid=(1, 1))
 def unary_chain_branch_kernel(a, b, out_exp, out_add):
     """Unary chain that branches: abs(a) feeds both exp and add operations."""
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    exp_cb = ttl.make_circular_buffer_like(out_exp, shape=(1, 1), buffer_factor=2)
-    add_cb = ttl.make_circular_buffer_like(out_add, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(out_exp, shape=(1, 1), buffer_factor=2)
+    add_dfb = ttl.make_dataflow_buffer_like(out_add, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        with a_cb.wait() as av, b_cb.wait() as bv:
-            with exp_cb.reserve() as o_exp, add_cb.reserve() as o_add:
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
+            with exp_dfb.reserve() as o_exp, add_dfb.reserve() as o_add:
                 # Unary chain that branches: abs result used by both exp and add
                 abs_val = ttl.math.abs(av)
                 exp_val = ttl.math.exp(abs_val)  # unary consumer of abs
@@ -278,7 +278,7 @@ def unary_chain_branch_kernel(a, b, out_exp, out_add):
 
     @ttl.datamovement()
     def dm_read():
-        with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+        with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
             ta = ttl.copy(a[0, 0], a_blk)
             tb = ttl.copy(b[0, 0], b_blk)
             ta.wait()
@@ -286,7 +286,7 @@ def unary_chain_branch_kernel(a, b, out_exp, out_add):
 
     @ttl.datamovement()
     def dm_write():
-        with exp_cb.wait() as exp_blk, add_cb.wait() as add_blk:
+        with exp_dfb.wait() as exp_blk, add_dfb.wait() as add_blk:
             te = ttl.copy(exp_blk, out_exp[0, 0])
             ta = ttl.copy(add_blk, out_add[0, 0])
             te.wait()

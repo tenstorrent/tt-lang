@@ -39,13 +39,13 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
     num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
 
     buffering_factor = 2
-    a_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(1, 1), buffer_factor=buffering_factor
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(1, 1), buffer_factor=buffering_factor
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(1, 1), buffer_factor=buffering_factor
     )
 
@@ -97,10 +97,10 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
         for _ in range(num_tiles):
             # Reserve output block once for the entire K accumulation
             # The reserved block is automatically initialized with zeros
-            with out_cb.reserve() as out_blk:
+            with out_dfb.reserve() as out_blk:
                 # Accumulate over K dimension
                 for _ in range(Kt):
-                    with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+                    with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                         # Accumulate using acc=True
                         out_blk.store(a_blk @ b_blk, acc=True)
 
@@ -116,7 +116,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
             out_col = current_tile_id % Nt
 
             for k in range(Kt):
-                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                     # Note: Using integer notation for tile indexing
                     a_wr = ttl.copy(a[out_row, k], a_blk)
                     b_wr = ttl.copy(b[k, out_col], b_blk)
@@ -134,7 +134,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
             out_row = current_tile_id // Nt
             out_col = current_tile_id % Nt
 
-            with out_cb.wait() as out_blk:
+            with out_dfb.wait() as out_blk:
                 out_wr = ttl.copy(out_blk, out[out_row, out_col])
                 out_wr.wait()
 

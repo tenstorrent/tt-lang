@@ -8,7 +8,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Add kernel using 'with' pattern for CB lifecycle management.
+Add kernel using 'with' pattern for DFB lifecycle management.
 
 The 'with' statement automatically handles:
 - Acquire: wait/reserve at context entry
@@ -30,15 +30,15 @@ except ImportError:
 
 @ttl.kernel(grid=(1, 1))
 def add_with_kernel(lhs, rhs, out):
-    """Add kernel using 'with' pattern for automatic CB lifecycle."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    """Add kernel using 'with' pattern for automatic DFB lifecycle."""
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
         # 'with' handles wait/reserve at entry, pop/push at exit
-        with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
+        with lhs_dfb.wait() as l, rhs_dfb.wait() as r, out_dfb.reserve() as o:
             result = l + r
             o.store(result)
         # Automatic: o.push(), r.pop(), l.pop() (reverse order)
@@ -46,12 +46,12 @@ def add_with_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         # 'with' for reserve/push pattern
-        with lhs_cb.reserve() as lhs_blk:
+        with lhs_dfb.reserve() as lhs_blk:
             tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
         # Automatic: lhs_blk.push()
 
-        with rhs_cb.reserve() as rhs_blk:
+        with rhs_dfb.reserve() as rhs_blk:
             tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
         # Automatic: rhs_blk.push()
@@ -59,14 +59,14 @@ def add_with_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_write():
         # 'with' for wait/pop pattern
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
         # Automatic: out_blk.pop()
 
 
 # =============================================================================
-# Initial IR Checks - Verify 'with' generates correct CB ops
+# Initial IR Checks - Verify 'with' generates correct DFB ops
 # =============================================================================
 
 # CHECK: #ttnn.buffer_type<l1>
@@ -75,12 +75,12 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB binding (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
+# DFB binding (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
 
-# 'with' entry: wait for inputs, reserve output (with CB association)
+# 'with' entry: wait for inputs, reserve output (with DFB association)
 # CHECK: %[[L:.+]] = ttl.cb_wait %[[CB0]]
 # CHECK: ttl.attach_cb %[[L]], %[[CB0]]
 # CHECK: %[[R:.+]] = ttl.cb_wait %[[CB1]]
@@ -91,7 +91,7 @@ def add_with_kernel(lhs, rhs, out):
 # Add operation
 # CHECK: ttl.add
 
-# store() emits explicit store + CB association
+# store() emits explicit store + DFB association
 # CHECK: ttl.store
 # CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
@@ -107,14 +107,14 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# First CB: reserve (with CB association), copy, push
+# First DFB: reserve (with DFB association), copy, push
 # CHECK: ttl.cb_reserve
 # CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
 
-# Second CB: reserve (with CB association), copy, push
+# Second DFB: reserve (with DFB association), copy, push
 # CHECK: ttl.cb_reserve
 # CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
@@ -124,7 +124,7 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Output CB: wait (with CB association), copy, pop
+# Output DFB: wait (with DFB association), copy, pop
 # CHECK: ttl.cb_wait
 # CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<write>
