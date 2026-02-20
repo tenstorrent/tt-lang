@@ -41,16 +41,16 @@ def eltwise_pipe(
     )
 
     # Create circular buffers
-    a_in_dfb = ttl.make_circular_buffer_like(
+    a_in_dfb = ttl.make_dataflow_buffer_like(
         a_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    b_in_dfb = ttl.make_circular_buffer_like(
+    b_in_dfb = ttl.make_dataflow_buffer_like(
         b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    c_in_dfb = ttl.make_circular_buffer_like(
+    c_in_dfb = ttl.make_dataflow_buffer_like(
         c_expanded, shape=(1, 1), buffer_factor=buffer_factor
     )
-    out_dfb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 

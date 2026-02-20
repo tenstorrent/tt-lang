@@ -50,7 +50,7 @@ class CircularBuffer:
     Circular buffers provide producer-consumer synchronization between
     compute and data movement threads.
 
-    Can be instantiated via make_circular_buffer_like() in kernel body,
+    Can be instantiated via make_dataflow_buffer_like() in kernel body,
     then captured by thread closures. Methods generate TTL ops during compilation.
     """
 
@@ -117,7 +117,7 @@ class CircularBuffer:
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
 
-def make_circular_buffer_like(
+def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, int],
     buffer_factor: int = 2,

@@ -35,8 +35,8 @@ class TestBasicExecution:
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
 
-            a_dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -89,9 +89,9 @@ class TestBasicExecution:
             # b already is ttnn.Tensor
             # out already is ttnn.Tensor
 
-            a_dfb = ttl.make_circular_buffer_like(a, shape=(2, 1), buffer_factor=2)
-            b_dfb = ttl.make_circular_buffer_like(b, shape=(2, 1), buffer_factor=2)
-            out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 1), buffer_factor=2)
+            a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
+            b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -150,8 +150,8 @@ class TestMultiCore:
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
 
-            a_dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -199,7 +199,7 @@ class TestMultiCore:
         @ttl.kernel(grid=(2, 2))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
-            out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=1)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=1)
 
             @ttl.compute()
             def compute():
@@ -249,7 +249,7 @@ class TestContextIsolation:
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
             # Each core gets its own CB instance
-            dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -292,7 +292,7 @@ class TestContextIsolation:
 
         @ttl.kernel(grid=(2, 1))
         def test_kernel(shared: ttnn.Tensor, out: ttnn.Tensor):
-            dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -340,7 +340,7 @@ class TestErrorHandling:
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
-            dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -371,7 +371,7 @@ class TestErrorHandling:
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
-            _ = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            _ = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -401,7 +401,7 @@ class TestErrorHandling:
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
-            dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=1)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=1)
 
             @ttl.compute()
             def compute():
@@ -439,11 +439,9 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            from python.sim.cb import CircularBuffer
-
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), buffer_factor=2)
 
             @ttl.datamovement()
             def dm0():
@@ -476,11 +474,9 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            from python.sim.cb import CircularBuffer
-
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), buffer_factor=2)
 
             @ttl.datamovement()
             def dm0():
@@ -517,12 +513,10 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
-            from python.sim.cb import CircularBuffer
-
             # Create circular buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
-            out_dfb = ttl.make_circular_buffer_like(
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(
                 output_data, shape=(1, 1), buffer_factor=2
             )
 
@@ -713,8 +707,8 @@ class TestCooperativeScheduling:
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
-            dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -758,8 +752,8 @@ class TestCooperativeScheduling:
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
-            dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -805,8 +799,8 @@ class TestCooperativeScheduling:
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
-            dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -853,7 +847,7 @@ class TestCooperativeScheduling:
 
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():
@@ -897,9 +891,9 @@ class TestCooperativeScheduling:
 
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
-            dfb_a = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-            dfb_b = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-            dfb_out = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+            dfb_a = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+            dfb_b = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+            dfb_out = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
             def compute():

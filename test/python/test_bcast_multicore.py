@@ -62,14 +62,14 @@ def bcast_kernel(a, b, c, out1, out2, out3):
     iterations. This tests scoping-based broadcast with different tensor sizes.
     """
     # All CBs use 1x1 shape - broadcast achieved via scoping
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out1_dfb = ttl.make_circular_buffer_like(out1, shape=(1, 1), buffer_factor=2)
-    out2_dfb = ttl.make_circular_buffer_like(out2, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(1, 1), buffer_factor=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(1, 1), buffer_factor=2)
 
     # L1 CBs: 1x1 tile
-    c_dfb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out3_dfb = ttl.make_circular_buffer_like(out3, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
@@ -265,10 +265,10 @@ def make_bcast_granularity_kernel(granularity: int):
         rows_per_core = inp.shape[0] // TILE_SIZE // grid_x // block_rows
         cols_per_core = inp.shape[1] // TILE_SIZE // grid_y // block_cols
 
-        inp_dfb = ttl.make_circular_buffer_like(
+        inp_dfb = ttl.make_dataflow_buffer_like(
             inp, shape=(block_rows, block_cols), buffer_factor=2
         )
-        out_dfb = ttl.make_circular_buffer_like(
+        out_dfb = ttl.make_dataflow_buffer_like(
             out, shape=(block_rows, block_cols), buffer_factor=2
         )
 

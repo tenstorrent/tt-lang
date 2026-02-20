@@ -10,7 +10,7 @@ Validation test: thread functions must have no parameters.
 
 This test verifies that using CB parameters on thread functions raises
 the expected ValueError. CBs should be created in the kernel body using
-ttl.make_circular_buffer_like() and captured by closures.
+ttl.make_dataflow_buffer_like() and captured by closures.
 """
 
 import os
@@ -30,9 +30,9 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def invalid_thread_params_kernel(lhs, rhs, out):
     """This kernel should fail because thread functions have parameters."""
-    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     # INVALID: Thread function has parameters - should use closure capture instead
     @ttl.compute()

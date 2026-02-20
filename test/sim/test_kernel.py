@@ -862,9 +862,9 @@ class TestThreadOrderIndependence:
         def kernel_dm_compute_dm(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
-            a_dfb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-            b_dfb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-            y_dfb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+            a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+            b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+            y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
             @ttl.datamovement()
             def dm_read():
@@ -910,9 +910,9 @@ class TestThreadOrderIndependence:
         def kernel_compute_dm_dm(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
-            a_dfb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-            b_dfb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-            y_dfb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+            a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+            b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+            y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
             @ttl.compute()
             def compute():
@@ -958,9 +958,9 @@ class TestThreadOrderIndependence:
         def kernel_dm_dm_compute(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
-            a_dfb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-            b_dfb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-            y_dfb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+            a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+            b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+            y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
             @ttl.datamovement()
             def dm_read():

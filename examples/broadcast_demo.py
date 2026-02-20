@@ -40,9 +40,9 @@ def elementwise_with_broadcast(
     NT = N // TILE_SIZE
 
     # Create circular buffers
-    a_dfb = ttl.make_circular_buffer_like(A, shape=(1, 1))
-    b_dfb = ttl.make_circular_buffer_like(B, shape=(1, 1))
-    y_dfb = ttl.make_circular_buffer_like(Y, shape=(1, 1))
+    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
+    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
     @ttl.datamovement()
     def elwise_read():

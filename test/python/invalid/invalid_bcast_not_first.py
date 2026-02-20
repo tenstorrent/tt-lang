@@ -28,9 +28,9 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def invalid_bcast_kernel(a, b, out):
     """INVALID: bcast on elementwise result (not CB-attached)."""
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():

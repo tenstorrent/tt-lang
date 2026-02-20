@@ -29,10 +29,10 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def fused_chain_kernel(a, b, c, out):
     """Kernel with 20 chained ops - deep fusion test."""
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_dfb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():

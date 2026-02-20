@@ -18,9 +18,9 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     rows_per_core = -(-row_tiles // grid_rows)
     cols_per_core = -(-col_tiles // grid_cols)
 
-    a_dfb = ttl.make_circular_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(GRANULARITY, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(GRANULARITY, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():

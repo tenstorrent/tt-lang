@@ -29,16 +29,16 @@ def fused_mul_add_streaming(a, b, c, y):
     rows = a.shape[0] // 32 // row_tiles
     cols = a.shape[1] // 32 // col_tiles
 
-    a_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles, col_tiles), buffer_factor=2
     )
-    b_dfb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(row_tiles, col_tiles), buffer_factor=2
     )
-    c_dfb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_dataflow_buffer_like(
         c, shape=(row_tiles, col_tiles), buffer_factor=2
     )
-    y_dfb = ttl.make_circular_buffer_like(
+    y_dfb = ttl.make_dataflow_buffer_like(
         y, shape=(row_tiles, col_tiles), buffer_factor=2
     )
 

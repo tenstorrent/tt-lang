@@ -43,14 +43,14 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
     ), "number of total blocks must be less than or equal to num cores"
 
     buffering_factor = 2
-    a_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(per_core_M, K_block_size), buffer_factor=buffering_factor
     )
-    b_dfb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(K_block_size, per_core_N), buffer_factor=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_dfb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(per_core_M, per_core_N), buffer_factor=1
     )
 
@@ -140,14 +140,14 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert num_cores_y >= Mt
 
     buffering_factor = 2
-    a_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(1, 1), buffer_factor=buffering_factor
     )
-    b_dfb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(1, 1), buffer_factor=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=1)
 
     @ttl.compute()
     def mm_compute():

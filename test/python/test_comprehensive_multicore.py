@@ -40,16 +40,16 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
     - out3 = h(a, c): 6 ops
     """
     # Circular buffers: 4x4 shape, buffer_factor=2
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    c_dfb = ttl.make_circular_buffer_like(c, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    out1_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(
         out1, shape=(CB_ROWS, CB_COLS), buffer_factor=2
     )
-    out2_dfb = ttl.make_circular_buffer_like(
+    out2_dfb = ttl.make_dataflow_buffer_like(
         out2, shape=(CB_ROWS, CB_COLS), buffer_factor=2
     )
-    out3_dfb = ttl.make_circular_buffer_like(
+    out3_dfb = ttl.make_dataflow_buffer_like(
         out3, shape=(CB_ROWS, CB_COLS), buffer_factor=2
     )
 

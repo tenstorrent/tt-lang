@@ -54,9 +54,9 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_dfb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
@@ -96,9 +96,9 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call) for {tile_rows}x{tile_cols} tiles."""
-    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_dfb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():
@@ -138,8 +138,8 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_dfb = ttl.make_circular_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
 
     @ttl.compute()
     def compute_fn():

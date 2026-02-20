@@ -42,13 +42,13 @@ def matmul_1d(
     write_tiles = (granularity_n * granularity_m) * Mb * Nb
 
     bf = 2
-    a_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(granularity_m, granularity_k), buffer_factor=bf
     )
-    b_dfb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(granularity_k, granularity_n), buffer_factor=bf
     )
-    out_dfb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity_m, granularity_n), buffer_factor=bf
     )
 

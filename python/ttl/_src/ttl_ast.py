@@ -428,7 +428,7 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(
                 node,
                 "Thread functions must have no parameters. "
-                "Use make_circular_buffer_like() in kernel body and capture CBs in closures.",
+                "Use make_dataflow_buffer_like() in kernel body and capture CBs in closures.",
             )
 
         # Collect tensor captures for function arguments

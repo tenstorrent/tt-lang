@@ -62,8 +62,8 @@ def expected_bcast_result(value: float, dtype=torch.bfloat16):
 @ttl.kernel(grid=(1, 1))
 def bcast_row_kernel(inp, out):
     """Broadcast row tile to full tile (bcast as first op in compute)."""
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -89,8 +89,8 @@ def bcast_row_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_col_kernel(inp, out):
     """Broadcast column tile to full tile."""
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -116,8 +116,8 @@ def bcast_col_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_scalar_kernel(inp, out):
     """Broadcast scalar tile to full tile."""
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -157,11 +157,11 @@ def mul_add_bcast_kernel(a, b, c, out):
     add/mul read from DST. It would be trivial to allow CB-reading ops
     (bcast, reduce, transpose) as the FIRST op only in a fused compute block.
     """
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_dfb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    c_bcast_dfb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -262,8 +262,8 @@ def expected_multitile_bcast_result(values, dtype=torch.bfloat16):
 @ttl.kernel(grid=(1, 1))
 def bcast_row_multitile_kernel(inp, out):
     """Broadcast row tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -289,8 +289,8 @@ def bcast_row_multitile_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_col_multitile_kernel(inp, out):
     """Broadcast col tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -316,8 +316,8 @@ def bcast_col_multitile_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_scalar_multitile_kernel(inp, out):
     """Broadcast scalar tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -620,11 +620,11 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
     - Stage 1: bcast c to intermediate CB
     - Stage 2: compute (a * b) + c_bcast
     """
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(b, shape=(2, 2), buffer_factor=2)
-    c_dfb = ttl.make_circular_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    c_bcast_dfb = ttl.make_circular_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():

@@ -48,19 +48,19 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     All tensors same size, 2x2 CB blocks.
     """
     # Mix of buffer_factor=1 and buffer_factor=2
-    a_dfb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(2, 2), buffer_factor=1
     )  # No double buffer!
-    c_dfb = ttl.make_circular_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    d_dfb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
+    d_dfb = ttl.make_dataflow_buffer_like(
         d, shape=(2, 2), buffer_factor=1
     )  # No double buffer!
 
-    out1_dfb = ttl.make_circular_buffer_like(out1, shape=(2, 2), buffer_factor=2)
-    out2_dfb = ttl.make_circular_buffer_like(out2, shape=(2, 2), buffer_factor=1)
-    out3_dfb = ttl.make_circular_buffer_like(out3, shape=(2, 2), buffer_factor=2)
-    out4_dfb = ttl.make_circular_buffer_like(out4, shape=(2, 2), buffer_factor=1)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(2, 2), buffer_factor=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(2, 2), buffer_factor=1)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(2, 2), buffer_factor=2)
+    out4_dfb = ttl.make_dataflow_buffer_like(out4, shape=(2, 2), buffer_factor=1)
 
     @ttl.compute()
     def evil_compute():

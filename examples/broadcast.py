@@ -28,16 +28,16 @@ def __demo_kernel(a, b, c, y):
     grid_x, grid_y = ttl.grid_size(dims=2)
     rows_per_core = a.shape[0] // TILE_SIZE // grid_x // row_tiles_per_block
     cols_per_core = a.shape[1] // TILE_SIZE // grid_y // col_tiles_per_block
-    a_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    b_dfb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    c_dfb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_dataflow_buffer_like(
         c, shape=(row_tiles_per_block, 1), buffer_factor=2
     )
-    y_dfb = ttl.make_circular_buffer_like(
+    y_dfb = ttl.make_dataflow_buffer_like(
         y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 

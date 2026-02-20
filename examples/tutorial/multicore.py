@@ -31,16 +31,16 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
     rows_per_core = a.shape[0] // TILE_SIZE // row_tiles_per_block // grid_rows
     cols_per_core = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_rows
 
-    a_dfb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    b_dfb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    c_dfb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_dataflow_buffer_like(
         c, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    y_dfb = ttl.make_circular_buffer_like(
+    y_dfb = ttl.make_dataflow_buffer_like(
         y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 

@@ -471,14 +471,14 @@ def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:
 
 
 def test_make_circular_buffer_like_basic(api: CBAPI) -> None:
-    """Test make_circular_buffer_like with basic usage."""
+    """Test make_dataflow_buffer_like with basic usage."""
     from python.sim import ttl
 
     # Create a tensor
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
     # Create a circular buffer like x
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
 
     # Verify it's a CircularBuffer with correct properties
     assert isinstance(x_cb, CircularBuffer)
@@ -494,18 +494,18 @@ def test_make_circular_buffer_like_basic(api: CBAPI) -> None:
     with pytest.raises(RuntimeError, match="not properly initialized"):
         x_cb.reserve()
 
-    print("make_circular_buffer_like basic test passed!")
+    print("make_dataflow_buffer_like basic test passed!")
 
 
 def test_make_circular_buffer_like_infers_type(api: CBAPI) -> None:
-    """Test that make_circular_buffer_like correctly infers the element type."""
+    """Test that make_dataflow_buffer_like correctly infers the element type."""
     from python.sim import ttl
 
     # Create a tensor
     tensor = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
     # Create a circular buffer like the tensor
-    cb = ttl.make_circular_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
+    cb = ttl.make_dataflow_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
 
     # Verify properties
     assert cb.shape == (2, 2)
@@ -519,11 +519,11 @@ def test_make_circular_buffer_like_infers_type(api: CBAPI) -> None:
     with pytest.raises(RuntimeError, match="not properly initialized"):
         cb.reserve()
 
-    print("make_circular_buffer_like type inference test passed!")
+    print("make_dataflow_buffer_like type inference test passed!")
 
 
 def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
-    """Test make_circular_buffer_like with multiple different tensors."""
+    """Test make_dataflow_buffer_like with multiple different tensors."""
     from python.sim import ttl
 
     # Create different tensors
@@ -532,9 +532,9 @@ def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
     c = make_ones_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
     # Create circular buffers for each
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(2, 1), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 2), buffer_factor=3)
+    a_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_cb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
+    c_cb = ttl.make_dataflow_buffer_like(c, shape=(1, 2), buffer_factor=3)
 
     # Verify all have correct properties
     assert a_cb.shape == (1, 1)
@@ -552,11 +552,11 @@ def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
         with pytest.raises(RuntimeError, match="not properly initialized"):
             cb.reserve()
 
-    print("make_circular_buffer_like multiple tensors test passed!")
+    print("make_dataflow_buffer_like multiple tensors test passed!")
 
 
 def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
-    """Test make_circular_buffer_like with realistic example pattern."""
+    """Test make_dataflow_buffer_like with realistic example pattern."""
     from python.sim import ttl
 
     # Simulate example usage
@@ -567,14 +567,14 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
     granularity = 4
     buffer_factor = 2
 
-    # Create circular buffers using make_circular_buffer_like
-    a_cb = ttl.make_circular_buffer_like(
+    # Create circular buffers using make_dataflow_buffer_like
+    a_cb = ttl.make_dataflow_buffer_like(
         a_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_cb = ttl.make_dataflow_buffer_like(
         b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_cb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 
@@ -589,7 +589,7 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
     with pytest.raises(RuntimeError, match="not properly initialized"):
         a_cb.reserve()
 
-    print("make_circular_buffer_like example pattern test passed!")
+    print("make_dataflow_buffer_like example pattern test passed!")
 
 
 def test_can_wait_and_can_reserve(api: CBAPI) -> None:
@@ -716,7 +716,7 @@ def test_can_methods_uninitialized(api: CBAPI) -> None:
     from python.sim import ttl
 
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
-    cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
 
     # Both methods should raise RuntimeError on uninitialized CB
     with pytest.raises(RuntimeError, match="not properly initialized"):
