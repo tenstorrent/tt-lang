@@ -122,9 +122,19 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 }
 
 /// Compute a key that identifies when an init op needs to change.
-/// The key is (TypeID of init op, operand values that affect init).
-/// Two consecutive compute ops with the same key share one init.
-using InitKey = std::pair<mlir::TypeID, llvm::SmallVector<Value, 2>>;
+/// Init key: identifies which compute ops can share a single init call.
+/// Two consecutive ops with the same key need only one init before the group.
+struct InitKey {
+  mlir::TypeID typeId;
+  llvm::SmallVector<Value, 2> operands;
+  int64_t discriminator = 0; // for attribute differences (e.g., bcast type)
+
+  bool operator==(const InitKey &other) const {
+    return typeId == other.typeId && operands == other.operands &&
+           discriminator == other.discriminator;
+  }
+  bool operator!=(const InitKey &other) const { return !(*this == other); }
+};
 
 static InitKey computeInitKey(Operation *op) {
   mlir::TypeID typeId = op->getName().getTypeID();
@@ -139,10 +149,12 @@ static InitKey computeInitKey(Operation *op) {
     return {typeId, {op->getOperand(0)}};
   }
 
-  // For UnaryBcast: key includes in_cb and bcast_type.
-  // We use in_cb as the value part; the TypeID already distinguishes the op.
+  // For UnaryBcast: key includes in_cb AND bcast_type.
+  // Different bcast types (COL/ROW/SCALAR) require different inits.
   if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(op)) {
-    return {typeId, {bcast.getInCb()}};
+    return {typeId,
+            {bcast.getInCb()},
+            static_cast<int64_t>(bcast.getBcastType())};
   }
 
   // For all other ops (SFPU unary/binary, CopyDst): key is just the TypeID.

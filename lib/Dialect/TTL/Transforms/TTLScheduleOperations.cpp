@@ -82,11 +82,33 @@ static int64_t getDstIdx(Operation *op) {
   return std::numeric_limits<int64_t>::max();
 }
 
+/// Compute an init-affinity key for sub-sorting within the same op type.
+/// Ops with the same affinity share one init call; different affinities
+/// require re-init. This groups, e.g., all COL bcasts before ROW bcasts.
+static int64_t getInitAffinity(Operation *op) {
+  // TileBcastOp: bcast type (Col=1, Row=2, Scalar=3) determines init.
+  if (auto bcast = dyn_cast<TileBcastOp>(op)) {
+    return static_cast<int64_t>(bcast.getBcastType());
+  }
+  // CopyTileOp: input CB determines init. Use cb_index attribute from the
+  // source CB for grouping (copies from the same CB share one init).
+  if (auto copy = dyn_cast<CopyTileOp>(op)) {
+    Value src = copy.getSrc();
+    if (auto cb = getAttachedCB(src)) {
+      if (auto bindCb = cb.getDefiningOp<BindCBOp>()) {
+        return bindCb.getCbIndex().getSExtValue();
+      }
+    }
+  }
+  return 0;
+}
+
 /// Sort key for a tile operation within a sync region.
 struct TileOpSortKey {
   unsigned depthLevel;
   TileOpCategory category;
   mlir::TypeID typeId;
+  int64_t initAffinity;
   int64_t dstIdx;
   unsigned originalPosition;
   Operation *op;
@@ -105,7 +127,12 @@ struct TileOpSortKey {
     if (typeId != other.typeId) {
       return typeId.getAsOpaquePointer() < other.typeId.getAsOpaquePointer();
     }
-    // Quaternary: dst_idx for deterministic ordering.
+    // Quaternary: init affinity (groups ops sharing one init call,
+    // e.g., COL bcasts vs ROW bcasts, or copies from different CBs).
+    if (initAffinity != other.initAffinity) {
+      return initAffinity < other.initAffinity;
+    }
+    // Quinary: dst_idx for deterministic ordering.
     if (dstIdx != other.dstIdx) {
       return dstIdx < other.dstIdx;
     }
@@ -224,10 +251,11 @@ static void scheduleOpsInRegion(llvm::SmallVectorImpl<Operation *> &tileOps) {
   keys.reserve(tileOps.size());
   for (auto [i, op] : llvm::enumerate(tileOps)) {
     keys.push_back({levels[op], classifyTileOp(op), op->getName().getTypeID(),
-                    getDstIdx(op), static_cast<unsigned>(i), op});
+                    getInitAffinity(op), getDstIdx(op),
+                    static_cast<unsigned>(i), op});
   }
 
-  // Sort by (depth, category, typeID, dst_idx, originalPosition).
+  // Sort by (depth, category, typeID, initAffinity, dst_idx, originalPos).
   llvm::sort(keys);
 
   // Check if already in order (avoid unnecessary moves).
