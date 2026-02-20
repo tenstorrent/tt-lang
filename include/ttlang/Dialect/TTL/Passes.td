@@ -208,6 +208,40 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLScheduleOperations
+    : Pass<"ttl-schedule-operations", "::mlir::func::FuncOp"> {
+  let summary = "Group tile operations by kind within sync regions";
+  let description = [{
+    Reorders TTL tile operations within sync regions (acquire -> commit)
+    to group by operation kind. This enables init consolidation in the
+    subsequent ttkernel-consolidate-inits pass.
+
+    Within each sync region, tile ops are sorted by category:
+    CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst.
+    Within the same category, ops are sub-sorted by TypeID then dst_idx.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTKernelConsolidateInits
+    : Pass<"ttkernel-consolidate-inits", "::mlir::ModuleOp"> {
+  let summary = "Insert minimal init ops before TTKernel compute ops";
+  let description = [{
+    Walks TTKernel IR and inserts one init op per consecutive group of
+    same-type compute ops. Assumes conversion templates did NOT emit
+    inits. Uses a compute-op-to-init map built from x-macros.
+
+    Init tracking resets at sync boundaries (tile_regs_acquire/commit/
+    wait/release). Within a sync region, an init op is inserted only
+    when the compute op type or its CB operands change.
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTLLowerSignpostToEmitC
     : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";

@@ -114,18 +114,13 @@ def add_multitile_kernel(lhs, rhs, out):
 # Single sync cycle wrapping all 4 unrolled tiles
 # CHECK-CPP: tile_regs_acquire();
 
-# Tile 0 (index 0)
+# One consolidated init for the entire group of add_tiles
 # CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 
-# Tile 1 (index 1)
+# All 4 tiles (indices 0-3) in sequence
 # CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
-
-# Tile 2 (index 2)
 # CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
-
-# Tile 3 (index 3)
-# CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 
 # Sync completion

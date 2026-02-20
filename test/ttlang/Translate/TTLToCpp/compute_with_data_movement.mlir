@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,canonicalize,cse,lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-schedule-operations,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-consolidate-inits,canonicalize,cse,lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
@@ -106,23 +106,23 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK-NEXT:   cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 // CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 // CHECK-NEXT:   tile_regs_acquire();
-// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C0]], [[C0]], [[C0]]);
-// CHECK-NEXT:   exp_tile_init();
-// CHECK-NEXT:   exp_tile([[C0]]);
-// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C1]], [[C1]], [[C1]]);
-// CHECK-NEXT:   exp_tile_init();
-// CHECK-NEXT:   exp_tile([[C1]]);
-// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C2]], [[C2]], [[C2]]);
-// CHECK-NEXT:   exp_tile_init();
-// CHECK-NEXT:   exp_tile([[C2]]);
-// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C3]], [[C3]], [[C3]]);
-// CHECK-NEXT:   exp_tile_init();
-// CHECK-NEXT:   exp_tile([[C3]]);
-// CHECK-NEXT:   tile_regs_commit();
+//
+// With scheduling + consolidation: ops are grouped by kind.
+// All add_tiles grouped (one init):
+// CHECK:        add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// CHECK:        add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+// CHECK:        add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+// CHECK:        add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+// CHECK:        add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+//
+// All exp_tiles grouped (one init):
+// CHECK:        exp_tile_init();
+// CHECK:        exp_tile(
+// CHECK:        exp_tile(
+// CHECK:        exp_tile(
+// CHECK:        exp_tile(
+//
+// CHECK:   tile_regs_commit();
 // CHECK-NEXT:   tile_regs_wait();
 // CHECK-NEXT:   pack_tile<true>([[C0]], get_compile_time_arg_val(2), [[C0]]);
 // CHECK-NEXT:   pack_tile<true>([[C1]], get_compile_time_arg_val(2), [[C1]]);

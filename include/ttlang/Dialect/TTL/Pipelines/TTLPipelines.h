@@ -22,6 +22,10 @@ struct TTLToTTKernelPipelineOptions
       *this, "maximize-dst",
       llvm::cl::desc("Enable DST maximization via subblock compute."),
       llvm::cl::init(true)};
+  Option<bool> consolidateInits{
+      *this, "consolidate-inits",
+      llvm::cl::desc("Consolidate init ops (one per compute op group)."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

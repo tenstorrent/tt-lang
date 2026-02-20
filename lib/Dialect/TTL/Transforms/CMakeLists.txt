@@ -9,6 +9,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertTileRegsSync.cpp
   TTLAssignDST.cpp
   TTLSetComputeKernelConfig.cpp
+  TTLScheduleOperations.cpp
   TTLSubblockComputeForDST.cpp
 
   DEPENDS

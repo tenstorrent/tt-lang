@@ -110,6 +110,7 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
+    consolidate_inits: bool = True
 
     @staticmethod
     def from_string(options: Optional[str]) -> "CompilerOptions":
@@ -121,6 +122,10 @@ class CompilerOptions:
                     kwargs["maximize_dst"] = True
                 elif token == "--no-maximize-dst":
                     kwargs["maximize_dst"] = False
+                elif token == "--consolidate-inits":
+                    kwargs["consolidate_inits"] = True
+                elif token == "--no-consolidate-inits":
+                    kwargs["consolidate_inits"] = False
                 else:
                     raise ValueError(f"Unknown kernel option: {token!r}")
         return CompilerOptions(**kwargs)
@@ -1048,8 +1053,10 @@ def _compile_kernel(
         pipeline_passes += [
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
-            "func.func(ttl-annotate-cb-associations)",
         ]
+        if compiler_options.maximize_dst:
+            pipeline_passes.append("func.func(ttl-schedule-operations)")
+        pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
 
         # Add auto-profiling passes if enabled
         if is_auto_profile_enabled():
@@ -1062,9 +1069,9 @@ def _compile_kernel(
                 cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
-        pipeline_passes += [
-            "convert-ttl-to-ttkernel",
-        ]
+        pipeline_passes.append("convert-ttl-to-ttkernel")
+        if compiler_options.consolidate_inits:
+            pipeline_passes.append("ttkernel-consolidate-inits")
 
         if is_auto_profile_enabled():
             pipeline_passes.append("ttl-lower-signpost-to-emitc")

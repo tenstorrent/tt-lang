@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse, lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-consolidate-inits, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
@@ -7,8 +7,13 @@
 
 // Purpose: end-to-end TTL -> TTKernel -> emitc -> C++ for fused chain.
 // Verifies: add + mul + exp fused compute with unrolled tile processing.
-// 2x2 tile grid (4 tiles), dstPerIteration=2 (add→dst[0], copy→dst[1]),
+// 2x2 tile grid (4 tiles), dstPerIteration=2 (add->dst[0], copy->dst[1]),
 // all 4 tiles fit in DST capacity 8, so fully unrolled with no loops.
+//
+// With operation scheduling and init consolidation:
+// - Ops are grouped by kind: all add_tiles, then all copy_tiles, then all
+//   mul_binary_tiles, then all exp_tiles
+// - One init op per group instead of per-tile
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -24,37 +29,31 @@
 // CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 // CHECK-NEXT:   tile_regs_acquire();
 //
-// Tile 0: cb_idx=0, dst_base=0
-// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C0]], [[C0]], [[C0]]);
-// CHECK-NEXT:   copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:   copy_tile(get_compile_time_arg_val(1), [[C0]], [[C1]]);
-// CHECK-NEXT:   mul_binary_tile_init();
-// CHECK-NEXT:   mul_binary_tile([[C0]], [[C1]], [[C0]]);
-// CHECK-NEXT:   exp_tile_init();
-// CHECK-NEXT:   exp_tile([[C0]]);
+// With scheduling + consolidation: ops are grouped by dependency level,
+// then by category within each level. Dependency levels:
+//   Level 0: copy_tiles (CB->DST) + add_tiles (FPU CB->DST) - no tile op deps
+//   Level 1: mul_binary_tiles (SFPU binary) - depends on add+copy results
+//   Level 2: exp_tiles (SFPU unary) - depends on mul results
 //
-// Tile 1: cb_idx=1, dst_base=2
-// CHECK-NEXT:   add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
-// CHECK-NEXT:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C1]], [[C1]], [[C2]]);
-// CHECK-NEXT:   copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:   copy_tile(get_compile_time_arg_val(1), [[C1]], [[C3]]);
-// CHECK-NEXT:   mul_binary_tile_init();
-// CHECK-NEXT:   mul_binary_tile([[C2]], [[C3]], [[C2]]);
-// CHECK-NEXT:   exp_tile_init();
-// CHECK-NEXT:   exp_tile([[C2]]);
+// All copy_tiles grouped (one init, depth 0, category 0):
+// CHECK:        copy_tile_init(get_compile_time_arg_val(1));
+// CHECK:        copy_tile(get_compile_time_arg_val(1),
 //
-// Tile 2: cb_idx=2, dst_base=4
-// CHECK:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C2]], [[C2]],
-// CHECK:   exp_tile(
+// All add_tiles grouped (one init, depth 0, category 2):
+// CHECK:        add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// CHECK:        add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 //
-// Tile 3: cb_idx=3, dst_base=6
-// CHECK:   add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[C3]], [[C3]],
-// CHECK:   exp_tile(
+// All mul_binary_tiles grouped (one init, depth 1):
+// CHECK:        mul_binary_tile_init();
+// CHECK:        mul_binary_tile(
+//
+// All exp_tiles grouped (one init, depth 2):
+// CHECK:        exp_tile_init();
+// CHECK:        exp_tile(
 //
 // CHECK:   tile_regs_commit();
 // CHECK-NEXT:   tile_regs_wait();
-// CHECK-NEXT:   pack_tile<true>([[C0]], get_compile_time_arg_val(2), [[C0]]);
+// CHECK:   pack_tile<true>([[C0]], get_compile_time_arg_val(2), [[C0]]);
 // CHECK:   pack_tile<true>({{.*}}, get_compile_time_arg_val(2), [[C1]]);
 // CHECK-NEXT:   pack_tile<true>({{.*}}, get_compile_time_arg_val(2), [[C2]]);
 // CHECK-NEXT:   pack_tile<true>({{.*}}, get_compile_time_arg_val(2), [[C3]]);

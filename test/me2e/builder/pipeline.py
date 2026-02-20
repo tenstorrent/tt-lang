@@ -53,8 +53,10 @@ def compile_ttl_to_ttkernel(
     func_passes += [
         "ttl-insert-tile-regs-sync",
         "ttl-lower-to-loops",
-        "ttl-annotate-cb-associations",
     ]
+    if opts.maximize_dst:
+        func_passes.append("ttl-schedule-operations")
+    func_passes.append("ttl-annotate-cb-associations")
     func_passes_str = ",".join(func_passes)
 
     pipeline_str = (
@@ -63,6 +65,8 @@ def compile_ttl_to_ttkernel(
         f"func.func({func_passes_str}),"
         # TTL to TTKernel conversion (module-level pass).
         f"convert-ttl-to-ttkernel,"
+        # Insert minimal init ops before compute ops.
+        f"ttkernel-consolidate-inits,"
         f"canonicalize,"
         f"cse,"
         # Lower to EmitC.

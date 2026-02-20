@@ -173,6 +173,30 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value);
 void emitFusionFailureDiagnostics(mlir::Operation *op,
                                   const ElementwiseTraceResult &trace);
 
+//===----------------------------------------------------------------------===//
+// Tile operation categories for scheduling and init consolidation
+//===----------------------------------------------------------------------===//
+
+/// Operation categories for scheduling and init consolidation.
+/// Sort order matters: lower values are scheduled first within sync regions.
+enum class TileOpCategory : uint8_t {
+  CopyTile = 0,   // CB -> DST copy (must precede all DST compute)
+  Bcast = 1,      // CB -> DST with PACK config (full init)
+  FPUBinary = 2,  // CB -> DST FPU (UNPACK+MATH init)
+  SFPUUnary = 3,  // DST -> DST in-place (MATH-only init)
+  SFPUBinary = 4, // DST -> DST binary (MATH-only init)
+  CopyDst = 5,    // DST -> DST copy
+  Unknown = 255
+};
+
+/// Classify a TTL tile op into its category.
+/// Uses TTL traits and attributes for O(1) per-call classification.
+TileOpCategory classifyTileOp(mlir::Operation *op);
+
+/// Classify a TTKernel compute op into its category.
+/// Uses TTKernel traits for O(1) per-call classification.
+TileOpCategory classifyTTKernelComputeOp(mlir::Operation *op);
+
 /// Find the first operation of type OpTy in the block preceding the given
 /// operation. Scans backwards from the operation, stopping at block start or
 /// when stopAtOp returns true.
