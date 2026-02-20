@@ -27,6 +27,12 @@ df -BM
 
 echo "=== Building tt-lang ==="
 source build/env/activate
+
+echo "=== Installing Python runtime dependencies into toolchain venv ==="
+# requirements.txt is also installed into system Python in tt-lang-base, but
+# the toolchain venv is isolated and does not inherit system site-packages.
+pip install -r requirements.txt --no-cache-dir
+
 cmake --build build
 
 echo "=== Disk space after build ==="
