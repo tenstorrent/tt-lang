@@ -25,35 +25,35 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def add_loop_kernel(lhs, rhs, out):
     """Add kernel with loop in compute to accumulate results."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        with lhs_cb.wait() as l, rhs_cb.wait() as r:
+        with lhs_dfb.wait() as l, rhs_dfb.wait() as r:
             # Initial: store l into output CB
-            with out_cb.reserve() as o:
+            with out_dfb.reserve() as o:
                 o.store(l)
 
             # Loop: read back, add r, store again (accumulate pattern)
             for i in range(4):
-                with out_cb.wait() as accum, out_cb.reserve() as o:
+                with out_dfb.wait() as accum, out_dfb.reserve() as o:
                     o.store(accum + r)
 
     @ttl.datamovement()
     def dm_read():
-        with lhs_cb.reserve() as lhs_blk:
+        with lhs_dfb.reserve() as lhs_blk:
             tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
 
-        with rhs_cb.reserve() as rhs_blk:
+        with rhs_dfb.reserve() as rhs_blk:
             tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 

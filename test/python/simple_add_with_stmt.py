@@ -31,14 +31,14 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def add_with_kernel(lhs, rhs, out):
     """Add kernel using 'with' pattern for automatic CB lifecycle."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
         # 'with' handles wait/reserve at entry, pop/push at exit
-        with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
+        with lhs_dfb.wait() as l, rhs_dfb.wait() as r, out_dfb.reserve() as o:
             result = l + r
             o.store(result)
         # Automatic: o.push(), r.pop(), l.pop() (reverse order)
@@ -46,12 +46,12 @@ def add_with_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         # 'with' for reserve/push pattern
-        with lhs_cb.reserve() as lhs_blk:
+        with lhs_dfb.reserve() as lhs_blk:
             tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
         # Automatic: lhs_blk.push()
 
-        with rhs_cb.reserve() as rhs_blk:
+        with rhs_dfb.reserve() as rhs_blk:
             tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
         # Automatic: rhs_blk.push()
@@ -59,7 +59,7 @@ def add_with_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_write():
         # 'with' for wait/pop pattern
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
         # Automatic: out_blk.pop()

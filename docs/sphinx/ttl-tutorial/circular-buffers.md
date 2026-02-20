@@ -39,21 +39,21 @@ sequenceDiagram
 ## Example
 
 ```python
-x_cb = ttl.make_circular_buffer_like(x,
+x_dfb = ttl.make_circular_buffer_like(x,
     shape = (2, 2),
     buffer_factor = 2)
 
 @ttl.datamovement()
 def some_read():
-    with x_cb.reserve() as x_blk:
+    with x_dfb.reserve() as x_blk:
         # produce data into x_blk ...
-        # implicit x_cb.push() at the end of the scope
+        # implicit x_dfb.push() at the end of the scope
 
 @ttl.compute()
 def some_compute():
-    x_blk = x_cb.wait()
+    x_blk = x_dfb.wait()
     # consume data in x_blk ...
-    x_cb.pop() # explicit
+    x_blk.pop() # explicit
 ```
 
 ## API Reference

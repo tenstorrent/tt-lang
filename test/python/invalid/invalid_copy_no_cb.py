@@ -27,17 +27,17 @@ import ttl
 # CHECK-NEXT:    |          ^
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
-def invalid_copy_no_cb_kernel(lhs, rhs, out):
+def invalid_copy_no_dfb_kernel(lhs, rhs, out):
     """This kernel should fail because ttl.copy() needs exactly one CB."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         result = l + r
         o.store(result)
         l.pop()
@@ -52,7 +52,7 @@ def invalid_copy_no_cb_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -97,7 +97,7 @@ if __name__ == "__main__":
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         # This should raise ValueError
-        invalid_copy_no_cb_kernel(lhs, rhs, out)
+        invalid_copy_no_dfb_kernel(lhs, rhs, out)
 
         print("ERROR: Expected ValueError was not raised!")
         exit(1)

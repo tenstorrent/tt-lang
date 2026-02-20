@@ -35,27 +35,27 @@ TILE_SIZE = 32
 def bcast_col_expand_kernel(inp, out):
     """Col bcast with shape expansion: (2, 1) -> (2, 2)."""
     # Input CB is (2, 1) - one column of tiles
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 1), buffer_factor=2)
+    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(2, 1), buffer_factor=2)
     # Output CB is (2, 2) - full tile grid
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             # bcast handles the (2,1) -> (2,2) expansion internally
             result = ttl.math.broadcast(i, o, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as inp_blk:
+        with inp_dfb.reserve() as inp_blk:
             # Read only column 0 (2 tiles)
             tx = ttl.copy(inp[0:2, 0:1], inp_blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             # Write full 2x2 grid
             tx = ttl.copy(out_blk, out[0:2, 0:2])
             tx.wait()
@@ -65,26 +65,26 @@ def bcast_col_expand_kernel(inp, out):
 def bcast_row_expand_kernel(inp, out):
     """Row bcast with shape expansion: (1, 2) -> (2, 2)."""
     # Input CB is (1, 2) - one row of tiles
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 2), buffer_factor=2)
+    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(1, 2), buffer_factor=2)
     # Output CB is (2, 2) - full tile grid
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as inp_blk:
+        with inp_dfb.reserve() as inp_blk:
             # Read only row 0 (2 tiles)
             tx = ttl.copy(inp[0:1, 0:2], inp_blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0:2, 0:2])
             tx.wait()
 
@@ -93,26 +93,26 @@ def bcast_row_expand_kernel(inp, out):
 def bcast_scalar_expand_kernel(inp, out):
     """Scalar bcast with shape expansion: (1, 1) -> (2, 2)."""
     # Input CB is (1, 1) - single tile
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     # Output CB is (2, 2) - full tile grid
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[0, 1])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as inp_blk:
+        with inp_dfb.reserve() as inp_blk:
             # Read only tile (0,0)
             tx = ttl.copy(inp[0:1, 0:1], inp_blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0:2, 0:2])
             tx.wait()
 
@@ -124,27 +124,27 @@ def mul_add_bcast_expand_kernel(a, b, c, out):
     a, b: full (2, 2) tile grid
     c: column vector (2, 1) that gets col-broadcast to (2, 2)
     """
-    a_cb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(2, 2), buffer_factor=2)
+    a_dfb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
+    b_dfb = ttl.make_circular_buffer_like(b, shape=(2, 2), buffer_factor=2)
     # c input is (2, 1) - will be expanded by bcast
-    c_cb = ttl.make_circular_buffer_like(c, shape=(2, 1), buffer_factor=2)
+    c_dfb = ttl.make_circular_buffer_like(c, shape=(2, 1), buffer_factor=2)
     # c_bcast output is (2, 2)
-    c_bcast_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    c_bcast_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
         # Stage 1: Bcast c from (2,1) to (2,2)
-        with c_cb.wait() as c_tile, c_bcast_cb.reserve() as c_out:
+        with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
             c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[1])
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
         with (
-            a_cb.wait() as a_tile,
-            b_cb.wait() as b_tile,
-            c_bcast_cb.wait() as c_bcast_tile,
-            out_cb.reserve() as o,
+            a_dfb.wait() as a_tile,
+            b_dfb.wait() as b_tile,
+            c_bcast_dfb.wait() as c_bcast_tile,
+            out_dfb.reserve() as o,
         ):
             ab = a_tile * b_tile
             result = ab + c_bcast_tile
@@ -152,22 +152,22 @@ def mul_add_bcast_expand_kernel(a, b, c, out):
 
     @ttl.datamovement()
     def dm_read():
-        with a_cb.reserve() as a_blk:
+        with a_dfb.reserve() as a_blk:
             tx_a = ttl.copy(a[0:2, 0:2], a_blk)
             tx_a.wait()
 
-        with b_cb.reserve() as b_blk:
+        with b_dfb.reserve() as b_blk:
             tx_b = ttl.copy(b[0:2, 0:2], b_blk)
             tx_b.wait()
 
         # Only read column 0 for c
-        with c_cb.reserve() as c_blk:
+        with c_dfb.reserve() as c_blk:
             tx_c = ttl.copy(c[0:2, 0:1], c_blk)
             tx_c.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0:2, 0:2])
             tx.wait()
 
@@ -335,14 +335,14 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
     rows = y.shape[0] // TILE_SIZE // block_rows
     cols = y.shape[1] // TILE_SIZE // block_cols
 
-    a_cb = ttl.make_circular_buffer_like(a, shape=(block_rows, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_circular_buffer_like(a, shape=(block_rows, 1), buffer_factor=2)
+    b_dfb = ttl.make_circular_buffer_like(
         b, shape=(block_rows, block_cols), buffer_factor=2
     )
-    c_cb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_circular_buffer_like(
         c, shape=(block_rows, block_cols), buffer_factor=2
     )
-    y_cb = ttl.make_circular_buffer_like(
+    y_dfb = ttl.make_circular_buffer_like(
         y, shape=(block_rows, block_cols), buffer_factor=2
     )
 
@@ -351,10 +351,10 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
         for _ in range(rows):
             for _ in range(cols):
                 with (
-                    a_cb.wait() as a_blk,
-                    b_cb.wait() as b_blk,
-                    c_cb.wait() as c_blk,
-                    y_cb.reserve() as y_blk,
+                    a_dfb.wait() as a_blk,
+                    b_dfb.wait() as b_blk,
+                    c_dfb.wait() as c_blk,
+                    y_dfb.reserve() as y_blk,
                 ):
                     y_blk.store(
                         ttl.math.broadcast(a_blk, y_blk, dims=[1]) * b_blk + c_blk
@@ -371,9 +371,9 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
                 end_col = (col + 1) * block_cols
 
                 with (
-                    a_cb.reserve() as a_blk,
-                    b_cb.reserve() as b_blk,
-                    c_cb.reserve() as c_blk,
+                    a_dfb.reserve() as a_blk,
+                    b_dfb.reserve() as b_blk,
+                    c_dfb.reserve() as c_blk,
                 ):
                     tx_a = ttl.copy(a[start_row:end_row, 0], a_blk)
                     tx_b = ttl.copy(b[start_row:end_row, start_col:end_col], b_blk)
@@ -392,7 +392,7 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
                 start_col = col * block_cols
                 end_col = (col + 1) * block_cols
 
-                with y_cb.wait() as y_blk:
+                with y_dfb.wait() as y_blk:
                     tx = ttl.copy(y_blk, y[start_row:end_row, start_col:end_col])
                     tx.wait()
 
