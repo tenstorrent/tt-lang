@@ -10,16 +10,7 @@ on:
         description: "tt-lang SHA/branch override (optional, defaults to current commit)"
         type: string
         required: false
-      mlir_override:
-        description: "tt-mlir SHA override (optional, defaults to third-party/tt-mlir.commit)"
-        type: string
-        required: false
   workflow_call:
-    inputs:
-      mlir_override:
-        description: "tt-mlir SHA override (optional, defaults to third-party/tt-mlir.commit)"
-        type: string
-        required: false
     outputs:
       docker-image:
         description: "Built Docker image name with tag"
@@ -55,76 +46,7 @@ jobs:
         id: check
         run: .github/scripts/check-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}"
 
-  build-toolchain-if-needed:
-    needs: check-if-images-already-exist
-    if: needs.check-if-images-already-exist.outputs.docker-image == ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    env:
-      TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
-
-    outputs:
-      ttmlir-commit: ${{ steps.ttmlir-commit.outputs.commit }}
-      cache-hit: ${{ steps.cache-ttmlir-toolchain.outputs.cache-hit }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ttlang_sha_override || github.sha }}
-
-      - name: Read tt-mlir commit
-        id: ttmlir-commit
-        run: |
-          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-
-      - name: Cache TT-MLIR Toolchain (LLVM)
-        id: cache-ttmlir-toolchain
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-toolchain-${{ steps.ttmlir-commit.outputs.commit }}-v2
-
-      - name: Checkout tt-mlir
-        if: steps.cache-ttmlir-toolchain.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: tenstorrent/tt-mlir
-          ref: ${{ steps.ttmlir-commit.outputs.commit }}
-          path: tt-mlir
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Install dependencies
-        if: steps.cache-ttmlir-toolchain.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt install software-properties-common
-          sudo add-apt-repository ppa:deadsnakes/ppa
-          sudo apt-get install -y python3.11 python3.11-venv python3.11-dev build-essential ninja-build lld libzstd-dev
-
-      - name: Build tt-mlir toolchain (LLVM, StableHLO, Python)
-        if: steps.cache-ttmlir-toolchain.outputs.cache-hit != 'true'
-        working-directory: tt-mlir
-        run: |
-          mkdir -p ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-          cmake -B env/build env
-          cmake --build env/build
-          echo "tt-mlir toolchain built successfully and installed in ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
-          rm -rf env/build
-
-      - name: Verify toolchain directory exists
-        run: |
-          if [ ! -d "${{ env.TTMLIR_TOOLCHAIN_DIR }}/venv" ]; then
-            echo "ERROR: Toolchain not found at ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
-            echo "Cache hit: ${{ steps.cache-ttmlir-toolchain.outputs.cache-hit }}"
-            exit 1
-          fi
-          echo "✓ Toolchain verified at ${{ env.TTMLIR_TOOLCHAIN_DIR }}"
-          ls -lh ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-
-  # Runs in parallel with build-toolchain-if-needed on a lightweight runner
+  # Runs in parallel with build-image-dist and build-image-ird on a lightweight runner
   build-image-base:
     needs: [check-if-images-already-exist]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
@@ -167,15 +89,12 @@ jobs:
           echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
           echo "✓ Base image built successfully"
 
-  # Runs on a separate large runner after base image and toolchain are ready
+  # Runs on a separate large runner after base image is ready
   build-image-dist:
-    needs: [check-if-images-already-exist, build-toolchain-if-needed, build-image-base]
+    needs: [check-if-images-already-exist, build-image-base]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
     runs-on: mlir-large-runner-lang
     timeout-minutes: 360
-
-    env:
-      TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
 
     outputs:
       docker-image: ${{ steps.build.outputs.docker-image }}
@@ -193,19 +112,6 @@ jobs:
       - name: Free up some more space
         run: |
           .github/scripts/cleanup-ci-space.sh
-
-      - name: Read tt-mlir commit
-        id: ttmlir-commit
-        run: |
-          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-
-      - name: Restore TT-MLIR Toolchain from cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-toolchain-${{ steps.ttmlir-commit.outputs.commit }}-v2
-          fail-on-cache-miss: true
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -231,7 +137,7 @@ jobs:
           set -o pipefail
           set -x
           echo "Space usage: " && df -h
-          .github/containers/build-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}" --image-type dist | tee docker.log
+          .github/containers/build-docker-images.sh --image-type dist | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
@@ -266,13 +172,10 @@ jobs:
 
   # Runs on a separate large runner in parallel with build-image-dist
   build-image-ird:
-    needs: [check-if-images-already-exist, build-toolchain-if-needed, build-image-base]
+    needs: [check-if-images-already-exist, build-image-base]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
     runs-on: mlir-large-runner-lang
     timeout-minutes: 360
-
-    env:
-      TTMLIR_TOOLCHAIN_DIR: ${{ github.workspace }}/ttmlir-toolchain
 
     steps:
       - name: Maximize space
@@ -287,19 +190,6 @@ jobs:
       - name: Free up some more space
         run: |
           .github/scripts/cleanup-ci-space.sh
-
-      - name: Read tt-mlir commit
-        id: ttmlir-commit
-        run: |
-          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-
-      - name: Restore TT-MLIR Toolchain from cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ env.TTMLIR_TOOLCHAIN_DIR }}
-          key: ${{ runner.os }}-ttlang-ttmlir-toolchain-${{ steps.ttmlir-commit.outputs.commit }}-v2
-          fail-on-cache-miss: true
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -325,7 +215,7 @@ jobs:
           set -o pipefail
           set -x
           echo "Space usage: " && df -h
-          .github/containers/build-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}" --image-type ird | tee docker.log
+          .github/containers/build-docker-images.sh --image-type ird | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"

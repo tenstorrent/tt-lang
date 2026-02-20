@@ -34,17 +34,6 @@ sudo docker tag tt-lang-base:local ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubun
 echo "✓ Base image built"
 echo ""
 
-# Build CI image (tt-mlir toolchain for CI workflows)
-echo "--- Building tt-lang CI image ---"
-sudo docker build \
-    --build-arg FROM_TAG=local \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
-    --target ci \
-    -t tt-lang-ci-ubuntu-22-04:latest \
-    -f .github/containers/Dockerfile .
-echo "✓ CI image built"
-echo ""
-
 # Build Dist image (pre-built tt-lang for users)
 echo "--- Building tt-lang Dist image ---"
 sudo docker build \
@@ -71,9 +60,8 @@ echo "=== Build Complete ==="
 echo ""
 echo "Images created:"
 echo "  - tt-lang-base:local"
-echo "  - tt-lang-ci-ubuntu-22-04:latest (also tagged as tt-lang-dist-ubuntu-22-04:latest)"
+echo "  - tt-lang-dist-ubuntu-22-04:latest"
 echo "  - tt-lang-ird-ubuntu-22-04:latest"
 echo ""
-echo "Test the CI/dist image:"
-echo "  sudo docker run -it tt-lang-ci-ubuntu-22-04:latest python -c \"import ttl\""
+echo "Test the dist image:"
 echo "  sudo docker run -it tt-lang-dist-ubuntu-22-04:latest python -c \"import ttl\""

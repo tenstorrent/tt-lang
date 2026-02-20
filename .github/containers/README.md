@@ -76,14 +76,11 @@ check-if-images-already-exist (ubuntu-latest)
   └─ if all images exist: all build jobs skipped, outputs existing image names
   └─ if any missing: sets docker-image='' to trigger builds
 
-         ┌─────────────────────────────────────┐
-         ↓                                     ↓
-build-toolchain-if-needed              build-image-base
-(ubuntu-latest)                        (ubuntu-latest)
-  build/restore LLVM toolchain           docker build Dockerfile.base
-  populate actions cache                 push tt-lang-base-ubuntu-22-04:$TAG
-         └──────────────┬────────────────────┘
-                        ↓ (both complete)
+                        ↓
+                build-image-base (ubuntu-latest)
+                  docker build Dockerfile.base
+                  push tt-lang-base-ubuntu-22-04:$TAG
+                        ↓
          ┌──────────────┴──────────────────────┐
          ↓                                     ↓
 build-image-dist                       build-image-ird
