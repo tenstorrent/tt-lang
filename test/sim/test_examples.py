@@ -337,10 +337,10 @@ def test_demo_one_deadlock_detection() -> None:
             "blocked on reserve()" in out
         ), f"Expected to see 'blocked on reserve()' in deadlock output:\n{out}"
 
-        # Check that source locations are included with line numbers
+        # Check that source locations are included using the pretty --> format
         assert (
-            " at " in out and ".py:" in out
-        ), f"Expected source location (file:line) in deadlock output:\n{out}"
+            "-->" in out and ".py:" in out
+        ), f"Expected source location (-->) in deadlock output:\n{out}"
 
         # Check for multiple cores being blocked (tutorial/multicore_grid_auto.py uses multiple cores)
         # With compressed output, core IDs are shown as "cores: 0, 1, ..."
@@ -349,12 +349,9 @@ def test_demo_one_deadlock_detection() -> None:
         ), f"Expected cores or core0 in deadlock output:\n{out}"
 
         # Verify line numbers are accurate by checking they match actual wait()/reserve() calls
-        # Extract line numbers from the deadlock output
-        # Format can be either:
-        #   "coreX-Y: blocked on operation() on CircularBuffer(name) at file.py:LINE"
-        #   "blocked on operation() on CircularBuffer(name) at file.py:LINE (coreX-Y, ...)"
-        # We'll extract all line numbers and check they're valid
-        line_number_pattern = r"at .*?:(\d+)"
+        # Extract line numbers from the deadlock output.
+        # Pretty format uses: "--> file.py:LINE:COL"
+        line_number_pattern = r"-->\s+.*?:(\d+):\d+"
         line_matches = re.findall(line_number_pattern, out)
 
         # Convert to set to get unique line numbers

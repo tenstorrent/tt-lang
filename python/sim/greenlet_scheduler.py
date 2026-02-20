@@ -66,8 +66,11 @@ class GreenletScheduler:
 
     def __init__(self) -> None:
         """Initialize the scheduler."""
-        # Active greenlets: name -> (greenlet, blocking_obj, operation, thread_type, block_location)
-        self._active: Dict[str, Tuple[greenlet, Any, str, ThreadType, str]] = {}
+        # Active greenlets: name -> (greenlet, blocking_obj, operation, thread_type, block_location, raw_loc)
+        # raw_loc is Optional[Tuple[str, int]] = (filename, lineno) for pretty-printing
+        self._active: Dict[
+            str, Tuple[greenlet, Any, str, ThreadType, str, Optional[Tuple[str, int]]]
+        ] = {}
         # Completed greenlets
         self._completed: List[str] = []
         # Main greenlet for the scheduler
@@ -103,7 +106,7 @@ class GreenletScheduler:
 
         g = greenlet(wrapped_func)
         # Initially not blocked (will start when scheduled)
-        self._active[name] = (g, None, "", thread_type, "")
+        self._active[name] = (g, None, "", thread_type, "", None)
         # Initialize last run time to 0 (never run)
         self._last_run[name] = 0
         # Thread hasn't made progress yet
@@ -129,6 +132,7 @@ class GreenletScheduler:
 
         frame = inspect.currentframe()
         location_str = ""
+        raw_loc: Optional[Tuple[str, int]] = None
         if frame and frame.f_back:
             # Walk up the call stack to find user code
             caller_frame = frame.f_back
@@ -138,17 +142,19 @@ class GreenletScheduler:
                 if "/python/sim/" not in filename and "greenlet" not in filename:
                     lineno = caller_frame.f_lineno
                     location_str = f" at {filename}:{lineno}"
+                    raw_loc = (filename, lineno)
                     break
                 caller_frame = caller_frame.f_back
 
         # Update active entry with blocking info and location
-        g, _, _, thread_type, _ = self._active[self._current_name]
+        g, _, _, thread_type, _, _ = self._active[self._current_name]
         self._active[self._current_name] = (
             g,
             blocking_obj,
             operation,
             thread_type,
             location_str,
+            raw_loc,
         )
 
         # Switch back to scheduler
@@ -203,7 +209,7 @@ class GreenletScheduler:
         from .block import set_current_thread_type, clear_current_thread_type
 
         for name in list(self._active.keys()):
-            g, blocking_obj, _, thread_type, _ = self._active[name]
+            g, blocking_obj, _, thread_type, _, _ = self._active[name]
 
             # All threads should start unblocked in init phase
             if blocking_obj is not None:
@@ -345,7 +351,9 @@ class GreenletScheduler:
                     # Thread may have completed during this iteration
                     continue
 
-                g, blocking_obj, blocked_op, thread_type, location = self._active[name]
+                g, blocking_obj, blocked_op, thread_type, location, _ = self._active[
+                    name
+                ]
 
                 # If thread is blocked, check if it can proceed
                 if blocking_obj is not None:
@@ -355,7 +363,7 @@ class GreenletScheduler:
                         continue
 
                     # Unblocked! Clear blocking state
-                    self._active[name] = (g, None, "", thread_type, "")
+                    self._active[name] = (g, None, "", thread_type, "", None)
 
                 # Set current thread for block_current_thread()
                 self._current_name = name
@@ -460,47 +468,70 @@ class GreenletScheduler:
                 blocked_groups: dict[tuple[str, str, str], list[str]] = defaultdict(
                     list
                 )
+                # Track raw (filename, lineno) per group for pretty printing
+                blocked_raw_locs: dict[
+                    tuple[str, str, str], Optional[Tuple[str, int]]
+                ] = {}
 
-                for name, (g, blocking_obj, op, _, location) in self._active.items():
+                for name, (
+                    g,
+                    blocking_obj,
+                    op,
+                    _,
+                    location,
+                    raw_loc,
+                ) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
                     key = (op, obj_desc, location)
                     # Extract core identifier by removing thread type suffix
                     # e.g., "core0-compute" -> "core0", "core0-dm0" -> "core0"
                     core_id = name.rsplit("-", 1)[0] if "-" in name else name
                     blocked_groups[key].append(core_id)
+                    if key not in blocked_raw_locs:
+                        blocked_raw_locs[key] = raw_loc
 
-                # Format grouped messages
-                blocked_info: List[str] = []
+                # Format and print grouped messages with pretty source context
+                print("\nDeadlock detected: all generators blocked")
                 for (op, obj_desc, location), core_ids in blocked_groups.items():
                     # Remove duplicates and sort for consistent output
                     unique_cores = sorted(set(core_ids), key=lambda x: (len(x), x))
 
                     if len(unique_cores) == 1:
-                        blocked_info.append(
-                            f"  {unique_cores[0]}: blocked on {op}(){obj_desc}{location}"
-                        )
+                        cores_label = unique_cores[0]
                     else:
-                        # Compress multiple cores blocked at same location
-                        # Extract numeric part from core IDs and format as ranges
                         core_numbers: list[int] = []
                         for core_id in unique_cores:
-                            # Handle both "core0" and potential other formats
                             if core_id.startswith("core"):
                                 try:
                                     core_numbers.append(int(core_id[4:]))
                                 except ValueError:
-                                    pass  # Skip non-numeric core IDs
+                                    pass
+                        cores_label = f"cores: {self._format_core_ranges(core_numbers)}"
 
-                        # Format as ranges (e.g., "0-3, 8-11, 16-19")
-                        cores_str = self._format_core_ranges(core_numbers)
-                        blocked_info.append(
-                            f"  blocked on {op}(){obj_desc}{location} (cores: {cores_str})"
+                    raw_loc = blocked_raw_locs.get((op, obj_desc, location))
+                    if raw_loc:
+                        filename, lineno = raw_loc
+                        try:
+                            TTLangCompileError = _get_ttlang_compile_error()
+                            compile_error = TTLangCompileError(
+                                f"deadlock: blocked on {op}(){obj_desc} ({cores_label})",
+                                source_file=filename,
+                                line=lineno,
+                                col=1,
+                            )
+                            print(compile_error.format())
+                        except ImportError:
+                            print(
+                                f"  blocked on {op}(){obj_desc}{location} ({cores_label})"
+                            )
+                    else:
+                        print(
+                            f"  blocked on {op}(){obj_desc}{location} ({cores_label})"
                         )
 
                 raise RuntimeError(
-                    f"Deadlock detected: all generators blocked\n"
-                    + "\n".join(blocked_info)
-                )
+                    "Deadlock detected: all generators blocked"
+                ) from RuntimeError("deadlock")
 
     def _format_core_ranges(self, core_numbers: list[int]) -> str:
         """Format a list of core numbers as ranges.
