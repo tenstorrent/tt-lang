@@ -6,9 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: multi-tile CB requires range syntax for tensor slices.
+Validation test: multi-tile DFB requires range syntax for tensor slices.
 
-When a CB has shape > 1x1, tensor indexing must use range syntax
+When a DFB has shape > 1x1, tensor indexing must use range syntax
 (e.g., tensor[0:2, 0:2]) rather than index syntax (e.g., tensor[0, 0]).
 """
 
@@ -20,10 +20,10 @@ import ttnn
 import ttl
 
 
-# CHECK: error: CB shape [2, 2] requires range syntax (e.g., tensor[0:2, 0:2]), but got index syntax (e.g., tensor[0, 0])
+# CHECK: error: DFB shape [2, 2] requires range syntax (e.g., tensor[0:2, 0:2]), but got index syntax (e.g., tensor[0, 0])
 @ttl.kernel(grid=(1, 1))
 def invalid_multitile_index_kernel(inp, out):
-    """This kernel should fail: 2x2 CB but using index syntax."""
+    """This kernel should fail: 2x2 DFB but using index syntax."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
@@ -38,7 +38,7 @@ def invalid_multitile_index_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        # INVALID: using index syntax with 2x2 CB
+        # INVALID: using index syntax with 2x2 DFB
         tx = ttl.copy(inp[0, 0], inp_blk)
         tx.wait()
         inp_blk.push()
@@ -54,7 +54,7 @@ def invalid_multitile_index_kernel(inp, out):
 if __name__ == "__main__":
     import torch
 
-    print("=== Multi-tile CB Index Syntax Validation Test ===")
+    print("=== Multi-tile DFB Index Syntax Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 

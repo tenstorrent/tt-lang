@@ -6,9 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: ttl.copy() requires exactly one CB argument.
+Validation test: ttl.copy() requires exactly one DFB argument.
 
-This test verifies that calling ttl.copy() with two tensor accessors (no CB)
+This test verifies that calling ttl.copy() with two tensor accessors (no DFB)
 raises the expected ValueError.
 """
 
@@ -28,7 +28,7 @@ import ttl
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
 def invalid_copy_no_dfb_kernel(lhs, rhs, out):
-    """This kernel should fail because ttl.copy() needs exactly one CB."""
+    """This kernel should fail because ttl.copy() needs exactly one DFB."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -46,7 +46,7 @@ def invalid_copy_no_dfb_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # INVALID: ttl.copy() between two tensor accessors (no CB)
+        # INVALID: ttl.copy() between two tensor accessors (no DFB)
         tx = ttl.copy(lhs[0, 0], rhs[0, 0])
         tx.wait()
 
@@ -61,7 +61,7 @@ def invalid_copy_no_dfb_kernel(lhs, rhs, out):
 if __name__ == "__main__":
     import torch
 
-    print("=== Copy No CB Validation Test ===")
+    print("=== Copy No DFB Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 

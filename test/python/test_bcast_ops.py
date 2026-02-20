@@ -150,11 +150,11 @@ def bcast_scalar_kernel(inp, out):
 def mul_add_bcast_kernel(a, b, c, out):
     """Compute (a * b) + bcast(c) where c is a row-broadcast tile.
 
-    This tests the composition pattern where bcast reads from CB first,
+    This tests the composition pattern where bcast reads from DFB first,
     then we do DST-to-DST ops (mul, add).
 
-    NOTE: Currently we need two stages because bcast reads from CB while
-    add/mul read from DST. It would be trivial to allow CB-reading ops
+    NOTE: Currently we need two stages because bcast reads from DFB while
+    add/mul read from DST. It would be trivial to allow DFB-reading ops
     (bcast, reduce, transpose) as the FIRST op only in a fused compute block.
     """
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -165,7 +165,7 @@ def mul_add_bcast_kernel(a, b, c, out):
 
     @ttl.compute()
     def compute_fn():
-        # Stage 1: Bcast c and store to intermediate CB
+        # Stage 1: Bcast c and store to intermediate DFB
         with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
             c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
             c_out.store(c_bcast)
@@ -617,7 +617,7 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
     """Compute (a * b) + bcast(c) on 2x2 tile grid.
 
     Uses two-stage pattern:
-    - Stage 1: bcast c to intermediate CB
+    - Stage 1: bcast c to intermediate DFB
     - Stage 2: compute (a * b) + c_bcast
     """
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
@@ -628,7 +628,7 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
 
     @ttl.compute()
     def compute_fn():
-        # Stage 1: Bcast c and store to intermediate CB
+        # Stage 1: Bcast c and store to intermediate DFB
         with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
             c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
             c_out.store(c_bcast)

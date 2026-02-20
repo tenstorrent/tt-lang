@@ -35,7 +35,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # Read both inputs - reserve CB and copy directly from tensor to CB
+        # Read both inputs - reserve DFB and copy directly from tensor to DFB
         lhs_blk = lhs_dfb.reserve()
         tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
@@ -48,7 +48,7 @@ def test_ttnn_interop_add(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_out():
-        # Write output - wait for data in CB and copy directly from CB to device
+        # Write output - wait for data in DFB and copy directly from DFB to device
         out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()

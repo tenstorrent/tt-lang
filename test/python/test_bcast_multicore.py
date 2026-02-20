@@ -14,11 +14,11 @@ Features:
 - 2MB DRAM tensors (1024x1024): a, b, out1, out2 - 4x4 tiles per core
 - 128KB L1 tensors (256x256): c, out3 - 1x1 tile per core
 - 8x8 multicore grid with dynamic indexing via core(dims=2)
-- 1x1 CB shapes for all CBs (shapes match in binary ops)
+- 1x1 DFB shapes for all CBs (shapes match in binary ops)
 - L1 tile 'c' held in outer scope, reused across 16 DRAM iterations
 - 20 fused ops across 3 outputs
 
-Also tests varying CB granularity (1x1, 2x2) with ttl.math.broadcast op.
+Also tests varying DFB granularity (1x1, 2x2) with ttl.math.broadcast op.
 """
 
 import pytest
@@ -249,9 +249,9 @@ def test_bcast_multicore(device):
 
 
 def make_bcast_granularity_kernel(granularity: int):
-    """Factory to create broadcast kernels with different CB granularities.
+    """Factory to create broadcast kernels with different DFB granularities.
 
-    Tests ttl.math.broadcast with varying CB block sizes on multicore grid.
+    Tests ttl.math.broadcast with varying DFB block sizes on multicore grid.
     Uses row broadcast (dims=[0]) pattern.
     """
 
@@ -341,9 +341,9 @@ _bcast_kernel_g2 = make_bcast_granularity_kernel(2)
     ids=["granularity_1x1", "granularity_2x2"],
 )
 def test_bcast_multicore_granularity(device, granularity, kernel):
-    """Test ttl.math.broadcast with different CB granularities on 8x8 grid.
+    """Test ttl.math.broadcast with different DFB granularities on 8x8 grid.
 
-    Validates that broadcast works correctly with varying CB block sizes:
+    Validates that broadcast works correctly with varying DFB block sizes:
     - granularity=1: 1x1 tile blocks (baseline)
     - granularity=2: 2x2 tile blocks (4 tiles per block)
 

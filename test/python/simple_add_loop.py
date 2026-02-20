@@ -32,7 +32,7 @@ def add_loop_kernel(lhs, rhs, out):
     @ttl.compute()
     def add_compute():
         with lhs_dfb.wait() as l, rhs_dfb.wait() as r:
-            # Initial: store l into output CB
+            # Initial: store l into output DFB
             with out_dfb.reserve() as o:
                 o.store(l)
 
@@ -68,7 +68,7 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB binding (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
+# DFB binding (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1

@@ -5,7 +5,7 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: CB buffer_factor must be in range [1, 32].
+Validation test: DFB buffer_factor must be in range [1, 32].
 """
 
 

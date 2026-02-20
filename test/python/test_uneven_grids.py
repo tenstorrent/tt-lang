@@ -13,8 +13,8 @@ This tests the 2D tensor shape approach which stores actual tile counts [tiles_y
 instead of 4D [grid_y, grid_x, shard_y, shard_x] which had ceiling division issues.
 
 Tests include:
-- Single-tile CB (1x1): Basic uneven grid distribution with single tile access
-- Multi-tile CB (2x2, 4x4): Block-based access with slice notation on uneven grids
+- Single-tile DFB (1x1): Basic uneven grid distribution with single tile access
+- Multi-tile DFB (2x2, 4x4): Block-based access with slice notation on uneven grids
 """
 
 import importlib.util
@@ -193,17 +193,17 @@ def test_uneven_grid(device, config):
 
 
 # =============================================================================
-# Multitile uneven grid tests - CB shape > (1, 1) with uneven grid division
+# Multitile uneven grid tests - DFB shape > (1, 1) with uneven grid division
 # =============================================================================
 
 # Format: (tensor_tiles_y, tensor_tiles_x, grid_cols, grid_rows, dfb_rows, dfb_cols)
 MULTITILE_UNEVEN_CONFIGS = [
-    # 16x16 tiles with 2x2 CB on uneven grids
-    (16, 16, 3, 3, 2, 2),  # 16 % 3 != 0, 2x2 CB
-    (16, 16, 5, 5, 2, 2),  # 16 % 5 != 0, 2x2 CB
-    # Rectangular with 2x2 CB
+    # 16x16 tiles with 2x2 DFB on uneven grids
+    (16, 16, 3, 3, 2, 2),  # 16 % 3 != 0, 2x2 DFB
+    (16, 16, 5, 5, 2, 2),  # 16 % 5 != 0, 2x2 DFB
+    # Rectangular with 2x2 DFB
     (12, 18, 5, 4, 2, 2),  # 12 % 4 != 0, 18 % 5 != 0
-    # 4x4 CB with uneven grids
+    # 4x4 DFB with uneven grids
     (32, 32, 3, 5, 4, 4),  # 32 % 3 != 0, 32 % 5 != 0
     (32, 32, 7, 3, 4, 4),  # 32 % 7 != 0, 32 % 3 != 0
 ]
@@ -215,7 +215,7 @@ import ttl
 
 @ttl.kernel(grid=({grid_cols}, {grid_rows}))
 def multitile_uneven_kernel(lhs, rhs, out):
-    """Kernel with multitile CB handling uneven grid distribution."""
+    """Kernel with multitile DFB handling uneven grid distribution."""
     CB_ROWS = {dfb_rows}
     CB_COLS = {dfb_cols}
 
@@ -378,7 +378,7 @@ def test_multitile_uneven_grid(device, config):
 
     assert torch.allclose(
         result, expected, rtol=1e-2, atol=1e-2
-    ), f"Multitile uneven grid test failed for {tiles_y}x{tiles_x} tiles, {dfb_rows}x{dfb_cols} CB on {grid_cols}x{grid_rows} grid"
+    ), f"Multitile uneven grid test failed for {tiles_y}x{tiles_x} tiles, {dfb_rows}x{dfb_cols} DFB on {grid_cols}x{grid_rows} grid"
 
 
 if __name__ == "__main__":

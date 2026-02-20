@@ -73,7 +73,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
+# DFB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
@@ -105,7 +105,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # Loop bound constant for 2x2 tile grid
 # CHECK-CPP: size_t [[BOUND:v[0-9]+]] = 2;
 
-# CB operations before loops
+# DFB operations before loops
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),

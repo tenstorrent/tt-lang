@@ -8,9 +8,9 @@
 # RUN: FileCheck %s < %t.output.txt
 
 # Verify: Large DRAM tensors can be streamed through small CBs.
-# This tests that CB size is computed from block shape, not tensor volume.
+# This tests that DFB size is computed from block shape, not tensor volume.
 # Total data: ~800MB (4 tensors * 200MB each)
-# CB size: 8 tiles * 2KB = 16KB per CB
+# DFB size: 8 tiles * 2KB = 16KB per DFB
 
 import torch
 import ttnn

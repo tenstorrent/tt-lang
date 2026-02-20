@@ -5,7 +5,7 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: CB shape must be a 2-tuple.
+Validation test: DFB shape must be a 2-tuple.
 """
 
 

@@ -6,9 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: binary ops on incompatible CB shapes.
+Validation test: binary ops on incompatible DFB shapes.
 
-Trying to add tensors with mismatched CB shapes (e.g., (2,1) + (2,2))
+Trying to add tensors with mismatched DFB shapes (e.g., (2,1) + (2,2))
 should produce an error suggesting broadcast.
 """
 
@@ -23,7 +23,7 @@ import ttl
 # CHECK: shape mismatch between (2, 2) bf16 tensor and (2, 1) bf16 tensor; note: you can use ttl.math.broadcast() to expand the smaller tensor
 @ttl.kernel(grid=(1, 1))
 def mismatched_shape_kernel(a, b, out):
-    """INVALID: add tensors with mismatched CB shapes."""
+    """INVALID: add tensors with mismatched DFB shapes."""
     # a_dfb is (2, 1) - column vector
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
     # b_dfb is (2, 2) - full grid

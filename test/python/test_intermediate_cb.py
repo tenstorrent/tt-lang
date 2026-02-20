@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test for intermediate circular buffer pattern.
+Test for intermediate dataflow buffer pattern.
 
 Regression test for a bug where kernels with intermediate circular buffers
 (CBs not backed by input/output tensors) failed to compile with:
@@ -12,9 +12,9 @@ Regression test for a bug where kernels with intermediate circular buffers
     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
     note: the comparison reduces to '(2 < 2)'
 
-The root cause was that compile-time args and CB descriptors were only created
+The root cause was that compile-time args and DFB descriptors were only created
 for tensor-backed CBs, not intermediate CBs. The fix ensures all CBs are
-included in compile-time args and CB descriptors by using the actual CB count
+included in compile-time args and DFB descriptors by using the actual DFB count
 from dfb_configs rather than the tensor argument count.
 """
 
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.requires_device
 @ttl.kernel(grid=(1, 1))
 def intermediate_dfb_kernel(x, out):
     """
-    Compute exp(relu(x)) using intermediate CB to break fusion.
+    Compute exp(relu(x)) using intermediate DFB to break fusion.
 
     Uses 3 CBs:
     - x_dfb (index 0): input
@@ -66,7 +66,7 @@ def intermediate_dfb_kernel(x, out):
 
 
 def test_intermediate_dfb(device):
-    """Test intermediate CB pattern computes exp(relu(x)) correctly."""
+    """Test intermediate DFB pattern computes exp(relu(x)) correctly."""
     try:
         import ttnn
     except ImportError:

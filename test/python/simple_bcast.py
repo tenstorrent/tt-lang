@@ -20,7 +20,7 @@ from ttlang_test_utils import to_l1
 def fused_bcast_kernel(a, b, c, out):
     """Compute bcast(c) + (a * b) in a single fused compute block.
 
-    Bcast must be first operation - it reads from CB and writes to DST.
+    Bcast must be first operation - it reads from DFB and writes to DST.
     Subsequent elementwise ops read from DST.
     """
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)

@@ -7,7 +7,7 @@ Comprehensive multicore test combining multiple features:
 - 2MB DRAM inputs (a, b) + L1 input (c)
 - 2MB DRAM outputs (out1, out2) + L1 output (out3)
 - 8x8 multicore grid with dynamic indexing via core(dims=2)
-- 4x4 CB shape with buffer_factor=2
+- 4x4 DFB shape with buffer_factor=2
 - 20 fused ops using bounded operations
 - Random inputs
 """
@@ -27,7 +27,7 @@ GRID_COLS = 8
 CB_ROWS = 4
 CB_COLS = 4
 
-# 8x8 grid * 4x4 CB = 32x32 tiles = 1024x1024 elements = 2MB per tensor
+# 8x8 grid * 4x4 DFB = 32x32 tiles = 1024x1024 elements = 2MB per tensor
 TENSOR_SHAPE = (GRID_ROWS * CB_ROWS * TILE_SIZE, GRID_COLS * CB_COLS * TILE_SIZE)
 
 

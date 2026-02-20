@@ -7,7 +7,7 @@ Adversarial multicore test designed to stress compiler optimizations.
 
 Evil features:
 - Non-square grid (8x6) and tensors (512x384)
-- 2x2 CB shape with multi-tile blocks
+- 2x2 DFB shape with multi-tile blocks
 - Variable reuse/shadowing
 - Interleaved operations in non-obvious order
 - buffer_factor=1 (no double buffering) for some CBs
@@ -45,7 +45,7 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     Adversarial kernel with 4 inputs and 4 outputs.
     Designed to stress compiler with weird patterns.
-    All tensors same size, 2x2 CB blocks.
+    All tensors same size, 2x2 DFB blocks.
     """
     # Mix of buffer_factor=1 and buffer_factor=2
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)

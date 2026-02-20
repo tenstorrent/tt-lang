@@ -135,7 +135,7 @@ def fused_chain_kernel(a, b, c, out):
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
 
-# Reserve output CB
+# Reserve output DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(3),
 
 # DST register lifecycle

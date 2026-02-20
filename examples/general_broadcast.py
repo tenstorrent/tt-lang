@@ -29,7 +29,7 @@ def __demo_kernel(a, b, c, y):
     rows_per_core = a.shape[0] // TILE_SIZE // grid_x // row_tiles_per_block
     cols_per_core = a.shape[1] // TILE_SIZE // grid_y // col_tiles_per_block
 
-    # Determine CB shapes based on tensor dimensions
+    # Determine DFB shapes based on tensor dimensions
     b_row_tiles = row_tiles_per_block if b.shape[0] > TILE_SIZE else 1
     b_col_tiles = col_tiles_per_block if b.shape[1] > TILE_SIZE else 1
     c_row_tiles = row_tiles_per_block if c.shape[0] > TILE_SIZE else 1

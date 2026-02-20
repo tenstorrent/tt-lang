@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for store patterns: passthrough, double store, multi-output, and
-store-then-forward (scratch CB reuse within compute thread)."""
+store-then-forward (scratch DFB reuse within compute thread)."""
 
 # REQUIRES: ttnn
 # UNSUPPORTED: system-darwin

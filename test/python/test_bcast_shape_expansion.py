@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Test bcast shape expansion: input CB smaller than output CB.
+"""Test bcast shape expansion: input DFB smaller than output DFB.
 
 This tests the feature where bcast can accept mismatched input/output shapes
 and automatically generates loops to broadcast tiles from the smaller input
@@ -34,9 +34,9 @@ TILE_SIZE = 32
 @ttl.kernel(grid=(1, 1))
 def bcast_col_expand_kernel(inp, out):
     """Col bcast with shape expansion: (2, 1) -> (2, 2)."""
-    # Input CB is (2, 1) - one column of tiles
+    # Input DFB is (2, 1) - one column of tiles
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), buffer_factor=2)
-    # Output CB is (2, 2) - full tile grid
+    # Output DFB is (2, 2) - full tile grid
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
@@ -64,9 +64,9 @@ def bcast_col_expand_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_row_expand_kernel(inp, out):
     """Row bcast with shape expansion: (1, 2) -> (2, 2)."""
-    # Input CB is (1, 2) - one row of tiles
+    # Input DFB is (1, 2) - one row of tiles
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), buffer_factor=2)
-    # Output CB is (2, 2) - full tile grid
+    # Output DFB is (2, 2) - full tile grid
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
@@ -92,9 +92,9 @@ def bcast_row_expand_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_scalar_expand_kernel(inp, out):
     """Scalar bcast with shape expansion: (1, 1) -> (2, 2)."""
-    # Input CB is (1, 1) - single tile
+    # Input DFB is (1, 1) - single tile
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    # Output CB is (2, 2) - full tile grid
+    # Output DFB is (2, 2) - full tile grid
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
@@ -325,8 +325,8 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
     """Col bcast with shape expansion and outer tensor loops.
 
     Pattern: y = bcast(a) * b + c
-    - a: column vector with CB shape (2, 1)
-    - b, c, y: full tensors with CB shape (2, 2)
+    - a: column vector with DFB shape (2, 1)
+    - b, c, y: full tensors with DFB shape (2, 2)
     - Outer loops iterate over tensor blocks
     """
     block_rows = 2
@@ -402,7 +402,7 @@ class TestBcastShapeExpansionWithOuterLoops:
 
     These tests verify that broadcast index calculation is correct when there
     are outer loops iterating over tensor blocks combined with shape expansion
-    (input CB smaller than output CB) within each block.
+    (input DFB smaller than output DFB) within each block.
 
     The bug this tests for: index was computed as row*cols+col (linearized)
     instead of just row (for col bcast) or col (for row bcast).

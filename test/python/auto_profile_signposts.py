@@ -11,8 +11,8 @@ Test that auto-profiling generates correct signposts in the C++ kernel output.
 
 Verifies:
 - Line-based signposts: DeviceZoneScopedN("line_XX_before/after")
-- CB operation signposts: DeviceZoneScopedN("line_XX_dfb_wait_before/after")
-- Implicit CB signposts: DeviceZoneScopedN("line_XX_implicit_cb_pop_before/after")
+- DFB operation signposts: DeviceZoneScopedN("line_XX_dfb_wait_before/after")
+- Implicit DFB signposts: DeviceZoneScopedN("line_XX_implicit_cb_pop_before/after")
 """
 
 import os
@@ -64,12 +64,12 @@ def signpost_test_kernel(inp, out):
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
 
-# Check for cb_wait signpost (explicit CB operation)
+# Check for cb_wait signpost (explicit DFB operation)
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_wait_before")
 # CHECK: cb_wait_front(
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_wait_after")
 
-# Check for cb_reserve signpost (explicit CB operation)
+# Check for cb_reserve signpost (explicit DFB operation)
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_reserve_before")
 # CHECK: cb_reserve_back(
 # CHECK: DeviceZoneScopedN("line_{{[0-9]+}}_cb_reserve_after")

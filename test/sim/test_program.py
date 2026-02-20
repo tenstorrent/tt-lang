@@ -248,7 +248,7 @@ class TestContextIsolation:
         @ttl.kernel(grid=(2, 1))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
-            # Each core gets its own CB instance
+            # Each core gets its own DFB instance
             dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
             @ttl.compute()
@@ -266,7 +266,7 @@ class TestContextIsolation:
             @ttl.datamovement()
             def dm1():
                 core_id = cast(int, ttl.core(dims=1))
-                # Each core waits/pops its own CB
+                # Each core waits/pops its own DFB
                 block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
@@ -287,7 +287,7 @@ class TestContextIsolation:
         """Test shared tensors where compute thread uses store instead of copy.
 
         This tests the pattern where compute thread reads from a shared tensor
-        and uses store() to write to CB (not copy).
+        and uses store() to write to DFB (not copy).
         """
 
         @ttl.kernel(grid=(2, 1))
@@ -296,7 +296,7 @@ class TestContextIsolation:
 
             @ttl.compute()
             def compute():
-                # Compute thread reads shared tensor and stores to CB
+                # Compute thread reads shared tensor and stores to DFB
                 core_id = cast(int, ttl.core(dims=1))
                 block = dfb.reserve()
                 # Read from shared tensor and store (not copy)
@@ -311,7 +311,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                # DM thread copies from CB to output
+                # DM thread copies from DFB to output
                 core_id = cast(int, ttl.core(dims=1))
                 block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -541,7 +541,7 @@ class TestBlockCompletion:
                 # Use data as source by storing it
                 result = data + data
                 out_block.store(result)
-                out_block.push()  # Complete the output CB operation
+                out_block.push()  # Complete the output DFB operation
                 data.pop()
 
         input_tensor = ttnn.rand((32, 32))
@@ -857,7 +857,7 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm0():
-                # DM0: Copy input tensor to CB
+                # DM0: Copy input tensor to DFB
                 block = dfb.reserve()
                 tx = copy(a[0:1, 0:1], block)
                 tx.wait()
@@ -865,7 +865,7 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm1():
-                # DM1: Copy CB to output tensor
+                # DM1: Copy DFB to output tensor
                 block = dfb.wait()
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
@@ -897,12 +897,12 @@ class TestCooperativeScheduling:
 
             @ttl.compute()
             def compute():
-                # Compute reads from CBs, processes, and writes to output CB
+                # Compute reads from CBs, processes, and writes to output DFB
                 for i in range(2):
                     block_a = dfb_a.wait()
                     block_b = dfb_b.wait()
 
-                    # Process data: add blocks together and store to output CB
+                    # Process data: add blocks together and store to output DFB
                     block_out = dfb_out.reserve()
                     result = block_a + block_b
                     block_out.store(result)
@@ -927,7 +927,7 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm1():
-                # DM1: Copy output CB to output tensor
+                # DM1: Copy output DFB to output tensor
                 for i in range(2):
                     block_out = dfb_out.wait()
                     tx = copy(block_out, out[i : i + 1, 0:1])
@@ -963,7 +963,7 @@ class TestCooperativeScheduling:
         the sender and receiver are in the same scheduling round.
 
         This is a known limitation that would require redesigning pipe copy to
-        yield blocking information to the scheduler, similar to CB operations.
+        yield blocking information to the scheduler, similar to DFB operations.
         """
         # This test documents the limitation rather than demonstrating working functionality
         # In a real scenario, this would deadlock:

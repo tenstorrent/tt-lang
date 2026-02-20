@@ -54,7 +54,7 @@ def axby_fused_kernel(a, x, b, y, out):
     def compute():
         with a_dfb.wait() as av, x_dfb.wait() as xv, b_dfb.wait() as bv, y_dfb.wait() as yv:
             with out_dfb.reserve() as o:
-                # Each operand from a different CB
+                # Each operand from a different DFB
                 term1 = av * xv
                 term2 = bv * yv
                 result = term1 + term2

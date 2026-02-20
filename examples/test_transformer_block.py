@@ -105,7 +105,7 @@ def norm_qkv_kernel(x, w_q, w_k, w_v, scaler, q_out, k_out, v_out):
             # Broadcast
             with sum_dfb.wait() as rsqv, bcast_dfb.reserve() as bc:
                 bc.store(ttl.math.broadcast(rsqv, bc, dims=[1]))
-            # Normalize and store to CB
+            # Normalize and store to DFB
             with bcast_dfb.wait() as bcv, normed_dfb.reserve() as nm:
                 nm.store(xv * bcv)
 

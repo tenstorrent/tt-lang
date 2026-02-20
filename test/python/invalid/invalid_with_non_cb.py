@@ -8,7 +8,7 @@
 """
 Validation test: with statement requires CircularBufferType.
 
-This test verifies that using 'with' on a non-CB value (like a TensorBlock)
+This test verifies that using 'with' on a non-DFB value (like a TensorBlock)
 raises the expected ValueError.
 """
 
@@ -28,7 +28,7 @@ import ttl
 # CHECK-NEXT:    |
 @ttl.kernel(grid=(1, 1))
 def invalid_with_non_dfb_kernel(lhs, rhs, out):
-    """This kernel should fail because 'with' is used on a TensorBlock, not a CB."""
+    """This kernel should fail because 'with' is used on a TensorBlock, not a DFB."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -38,7 +38,7 @@ def invalid_with_non_dfb_kernel(lhs, rhs, out):
         # Get a TensorBlock from wait()
         l = lhs_dfb.wait()
 
-        # INVALID: Try to use 'with' pattern on 'l' which is a TensorBlock, not a CB
+        # INVALID: Try to use 'with' pattern on 'l' which is a TensorBlock, not a DFB
         # This should fail because 'l.wait()' tries to call wait() on a tensor
         with l.wait() as data:
             r = rhs_dfb.wait()
@@ -70,7 +70,7 @@ def invalid_with_non_dfb_kernel(lhs, rhs, out):
 if __name__ == "__main__":
     import torch
 
-    print("=== With Non-CB Validation Test ===")
+    print("=== With Non-DFB Validation Test ===")
 
     device = ttnn.open_device(device_id=0)
 

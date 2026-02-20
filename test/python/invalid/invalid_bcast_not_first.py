@@ -6,9 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: bcast input must be CB-attached, not an elementwise result.
+Validation test: bcast input must be DFB-attached, not an elementwise result.
 
-Bcast reads directly from CB, so its input cannot be a DST value (like an
+Bcast reads directly from DFB, so its input cannot be a DST value (like an
 elementwise result). The DSL catches this early with a clear error.
 """
 
@@ -20,14 +20,14 @@ import ttnn
 import ttl
 
 
-# CHECK: broadcast input must come directly from a circular buffer
+# CHECK: broadcast input must come directly from a dataflow buffer
 # CHECK:   --> {{.*}}invalid_bcast_not_first.py:[[LINE:[0-9]+]]:{{[0-9]+}}
 # CHECK:    |
 # CHECK: [[LINE]] |             result = ttl.math.broadcast(ab, o, dims=[0])
 # CHECK:    |                      ^
 @ttl.kernel(grid=(1, 1))
 def invalid_bcast_kernel(a, b, out):
-    """INVALID: bcast on elementwise result (not CB-attached)."""
+    """INVALID: bcast on elementwise result (not DFB-attached)."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)

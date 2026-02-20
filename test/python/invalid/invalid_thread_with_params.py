@@ -8,7 +8,7 @@
 """
 Validation test: thread functions must have no parameters.
 
-This test verifies that using CB parameters on thread functions raises
+This test verifies that using DFB parameters on thread functions raises
 the expected ValueError. CBs should be created in the kernel body using
 ttl.make_dataflow_buffer_like() and captured by closures.
 """

@@ -324,7 +324,7 @@ def test_demo_one_deadlock_detection() -> None:
             "Deadlock detected: all generators blocked" in out
         ), f"Expected deadlock detection message not found in output:\n{out}"
 
-        # Check that it shows which CB is blocked (y_dfb)
+        # Check that it shows which DFB is blocked (y_dfb)
         assert (
             "CircularBuffer(y_dfb)" in out
         ), f"Expected to see y_dfb in deadlock output:\n{out}"
