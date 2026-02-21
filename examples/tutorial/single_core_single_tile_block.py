@@ -25,20 +25,20 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
     rows = a.shape[0] // TILE_SIZE
     cols = a.shape[1] // TILE_SIZE
 
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    y_cb = ttl.make_circular_buffer_like(y, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def demo_compute():
         for _ in range(rows):
             for _ in range(cols):
                 with (
-                    a_cb.wait() as a_blk,
-                    b_cb.wait() as b_blk,
-                    c_cb.wait() as c_blk,
-                    y_cb.reserve() as y_blk,
+                    a_dfb.wait() as a_blk,
+                    b_dfb.wait() as b_blk,
+                    c_dfb.wait() as c_blk,
+                    y_dfb.reserve() as y_blk,
                 ):
                     y_blk.store(a_blk * b_blk + c_blk)
 
@@ -47,9 +47,9 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
         for row in range(rows):
             for col in range(cols):
                 with (
-                    a_cb.reserve() as a_blk,
-                    b_cb.reserve() as b_blk,
-                    c_cb.reserve() as c_blk,
+                    a_dfb.reserve() as a_blk,
+                    b_dfb.reserve() as b_blk,
+                    c_dfb.reserve() as c_blk,
                 ):
                     tx_a = ttl.copy(
                         a[row, col],
@@ -72,7 +72,7 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
     def demo_write():
         for row in range(rows):
             for col in range(cols):
-                with y_cb.wait() as y_blk:
+                with y_dfb.wait() as y_blk:
                     tx = ttl.copy(
                         y_blk,
                         y[row, col],

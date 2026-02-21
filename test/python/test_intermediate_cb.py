@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test for intermediate circular buffer pattern.
+Test for intermediate dataflow buffer pattern.
 
 Regression test for a bug where kernels with intermediate circular buffers
 (CBs not backed by input/output tensors) failed to compile with:
@@ -12,10 +12,10 @@ Regression test for a bug where kernels with intermediate circular buffers
     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
     note: the comparison reduces to '(2 < 2)'
 
-The root cause was that compile-time args and CB descriptors were only created
+The root cause was that compile-time args and DFB descriptors were only created
 for tensor-backed CBs, not intermediate CBs. The fix ensures all CBs are
-included in compile-time args and CB descriptors by using the actual CB count
-from cb_configs rather than the tensor argument count.
+included in compile-time args and DFB descriptors by using the actual DFB count
+from dfb_configs rather than the tensor argument count.
 """
 
 import pytest
@@ -27,46 +27,46 @@ pytestmark = pytest.mark.requires_device
 
 
 @ttl.kernel(grid=(1, 1))
-def intermediate_cb_kernel(x, out):
+def intermediate_dfb_kernel(x, out):
     """
-    Compute exp(relu(x)) using intermediate CB to break fusion.
+    Compute exp(relu(x)) using intermediate DFB to break fusion.
 
     Uses 3 CBs:
-    - x_cb (index 0): input
-    - intermediate_cb (index 1): stores relu result
-    - out_cb (index 2): output
+    - x_dfb (index 0): input
+    - intermediate_dfb (index 1): stores relu result
+    - out_dfb (index 2): output
     """
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    intermediate_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    intermediate_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        with x_cb.wait() as xv:
-            with intermediate_cb.reserve() as inter:
+        with x_dfb.wait() as xv:
+            with intermediate_dfb.reserve() as inter:
                 relu_result = ttl.math.relu(xv)
                 inter.store(relu_result)
 
-        with intermediate_cb.wait() as rv:
-            with out_cb.reserve() as o:
+        with intermediate_dfb.wait() as rv:
+            with out_dfb.reserve() as o:
                 result = ttl.math.exp(rv)
                 o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with x_cb.reserve() as blk:
+        with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 
 
-def test_intermediate_cb(device):
-    """Test intermediate CB pattern computes exp(relu(x)) correctly."""
+def test_intermediate_dfb(device):
+    """Test intermediate DFB pattern computes exp(relu(x)) correctly."""
     try:
         import ttnn
     except ImportError:
@@ -82,7 +82,7 @@ def test_intermediate_cb(device):
 
     expected = torch.exp(torch.relu(x_torch))
 
-    intermediate_cb_kernel(x, out)
+    intermediate_dfb_kernel(x, out)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)

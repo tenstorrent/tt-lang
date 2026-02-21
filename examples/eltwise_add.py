@@ -18,9 +18,11 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     rows_per_core = -(-row_tiles // grid_rows)
     cols_per_core = -(-col_tiles // grid_cols)
 
-    a_cb = ttl.make_circular_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(GRANULARITY, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(GRANULARITY, 1), buffer_factor=2
+    )
 
     @ttl.compute()
     def compute():
@@ -32,9 +34,9 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
                     col = core_col * cols_per_core + local_col
                     if col < col_tiles:
                         with (
-                            a_cb.wait() as a_blk,
-                            b_cb.wait() as b_blk,
-                            out_cb.reserve() as out_blk,
+                            a_dfb.wait() as a_blk,
+                            b_dfb.wait() as b_blk,
+                            out_dfb.reserve() as out_blk,
                         ):
                             out_blk.store(a_blk + b_blk)
 
@@ -48,7 +50,7 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
                 for local_col in range(cols_per_core):
                     col = core_col * cols_per_core + local_col
                     if col < col_tiles:
-                        with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                        with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                             tx_a = ttl.copy(a_in[r0:r1, col : col + 1], a_blk)
                             tx_b = ttl.copy(b_in[r0:r1, col : col + 1], b_blk)
                             tx_a.wait()
@@ -64,7 +66,7 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
                 for local_col in range(cols_per_core):
                     col = core_col * cols_per_core + local_col
                     if col < col_tiles:
-                        with out_cb.wait() as out_blk:
+                        with out_dfb.wait() as out_blk:
                             tx = ttl.copy(out_blk, out[r0:r1, col : col + 1])
                             tx.wait()
 

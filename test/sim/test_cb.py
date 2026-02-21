@@ -27,7 +27,7 @@ from python.sim.errors import CBContractError
 
 @pytest.fixture(autouse=True)
 def setup_thread_context(compute_thread_context):
-    """Automatically set thread context and scheduler for all CB tests.
+    """Automatically set thread context and scheduler for all DFB tests.
 
     Note: These tests primarily exercise COMPUTE thread patterns (using store()).
     DM thread patterns (using copy operations) are tested separately in copy/pipe tests.
@@ -46,7 +46,7 @@ def api():
 
 def test_circular_buffer_basic(api: CBAPI) -> None:
     """Test basic CircularBuffer operations."""
-    # Create a circular buffer for single tiles with buffer factor 2
+    # Create a dataflow buffer for single tiles with buffer factor 2
     element = make_ones_tile()
     cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
@@ -87,7 +87,7 @@ def test_circular_buffer_basic(api: CBAPI) -> None:
 
 def test_circular_buffer_multi_tile(api: CBAPI) -> None:
     """Test CircularBuffer with multiple tiles per operation."""
-    # Create a circular buffer for 2x1 tiles (2 tiles per operation)
+    # Create a dataflow buffer for 2x1 tiles (2 tiles per operation)
     element = make_ones_tile()
     cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=3, api=api)
 
@@ -152,11 +152,11 @@ def test_copy_operations_with_dm_context(api: CBAPI) -> None:
         # Create test tensors
         tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
 
-        # Create circular buffer
+        # Create dataflow buffer
         element = make_ones_tile()
         cb_a = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
-        # Test copy from tensor to circular buffer (DM thread can do this)
+        # Test copy from tensor to dataflow buffer (DM thread can do this)
         cb_view = cb_a.reserve()
         tensor_slice = tensor_a[0:1, 0:1]  # Single tile
 
@@ -165,7 +165,7 @@ def test_copy_operations_with_dm_context(api: CBAPI) -> None:
         tx.wait()
         cb_view.push()
 
-        # Test copy from circular buffer back to tensor
+        # Test copy from dataflow buffer back to tensor
         cb_read_view = cb_a.wait()
         output_tensor = make_zeros_tile()  # Single tile output
 
@@ -176,7 +176,7 @@ def test_copy_operations_with_dm_context(api: CBAPI) -> None:
 
         # Verify the data was transferred
         assert output_tensor.shape == TILE_SHAPE
-        # The output tensor should now contain the data from the circular buffer
+        # The output tensor should now contain the data from the dataflow buffer
         # Verify at least some data was copied (non-zero)
         import torch
 
@@ -366,7 +366,7 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
         element = make_ones_tile()
         cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
-        # First populate the CB with data (using DM thread)
+        # First populate the DFB with data (using DM thread)
         set_current_thread_type(ThreadType.DM)
         block = cb.reserve()
         test_data = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
@@ -426,7 +426,7 @@ def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:
     import torch
     from python.sim import ttnn, TILE_SHAPE
 
-    # Create circular buffer
+    # Create dataflow buffer
     element = make_zeros_tile()
     cb = CircularBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
 
@@ -471,14 +471,14 @@ def test_reserve_store_push_pop_workflow(api: CBAPI) -> None:
 
 
 def test_make_circular_buffer_like_basic(api: CBAPI) -> None:
-    """Test make_circular_buffer_like with basic usage."""
+    """Test make_dataflow_buffer_like with basic usage."""
     from python.sim import ttl
 
     # Create a tensor
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
-    # Create a circular buffer like x
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    # Create a dataflow buffer like x
+    x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
 
     # Verify it's a CircularBuffer with correct properties
     assert isinstance(x_cb, CircularBuffer)
@@ -494,18 +494,18 @@ def test_make_circular_buffer_like_basic(api: CBAPI) -> None:
     with pytest.raises(RuntimeError, match="not properly initialized"):
         x_cb.reserve()
 
-    print("make_circular_buffer_like basic test passed!")
+    print("make_dataflow_buffer_like basic test passed!")
 
 
 def test_make_circular_buffer_like_infers_type(api: CBAPI) -> None:
-    """Test that make_circular_buffer_like correctly infers the element type."""
+    """Test that make_dataflow_buffer_like correctly infers the element type."""
     from python.sim import ttl
 
     # Create a tensor
     tensor = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
-    # Create a circular buffer like the tensor
-    cb = ttl.make_circular_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
+    # Create a dataflow buffer like the tensor
+    cb = ttl.make_dataflow_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
 
     # Verify properties
     assert cb.shape == (2, 2)
@@ -519,11 +519,11 @@ def test_make_circular_buffer_like_infers_type(api: CBAPI) -> None:
     with pytest.raises(RuntimeError, match="not properly initialized"):
         cb.reserve()
 
-    print("make_circular_buffer_like type inference test passed!")
+    print("make_dataflow_buffer_like type inference test passed!")
 
 
 def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
-    """Test make_circular_buffer_like with multiple different tensors."""
+    """Test make_dataflow_buffer_like with multiple different tensors."""
     from python.sim import ttl
 
     # Create different tensors
@@ -532,9 +532,9 @@ def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
     c = make_ones_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
     # Create circular buffers for each
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(2, 1), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 2), buffer_factor=3)
+    a_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_cb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
+    c_cb = ttl.make_dataflow_buffer_like(c, shape=(1, 2), buffer_factor=3)
 
     # Verify all have correct properties
     assert a_cb.shape == (1, 1)
@@ -552,11 +552,11 @@ def test_make_circular_buffer_like_multiple_tensors(api: CBAPI) -> None:
         with pytest.raises(RuntimeError, match="not properly initialized"):
             cb.reserve()
 
-    print("make_circular_buffer_like multiple tensors test passed!")
+    print("make_dataflow_buffer_like multiple tensors test passed!")
 
 
 def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
-    """Test make_circular_buffer_like with realistic example pattern."""
+    """Test make_dataflow_buffer_like with realistic example pattern."""
     from python.sim import ttl
 
     # Simulate example usage
@@ -567,14 +567,14 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
     granularity = 4
     buffer_factor = 2
 
-    # Create circular buffers using make_circular_buffer_like
-    a_cb = ttl.make_circular_buffer_like(
+    # Create circular buffers using make_dataflow_buffer_like
+    a_cb = ttl.make_dataflow_buffer_like(
         a_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_cb = ttl.make_dataflow_buffer_like(
         b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_cb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 
@@ -589,12 +589,12 @@ def test_make_circular_buffer_like_with_example_pattern(api: CBAPI) -> None:
     with pytest.raises(RuntimeError, match="not properly initialized"):
         a_cb.reserve()
 
-    print("make_circular_buffer_like example pattern test passed!")
+    print("make_dataflow_buffer_like example pattern test passed!")
 
 
 def test_can_wait_and_can_reserve(api: CBAPI) -> None:
     """Test can_wait() and can_reserve() methods."""
-    # Create a circular buffer with buffer factor 2 (capacity = 2 tiles)
+    # Create a dataflow buffer with buffer factor 2 (capacity = 2 tiles)
     element = make_ones_tile()
     cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
@@ -716,9 +716,9 @@ def test_can_methods_uninitialized(api: CBAPI) -> None:
     from python.sim import ttl
 
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
-    cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
 
-    # Both methods should raise RuntimeError on uninitialized CB
+    # Both methods should raise RuntimeError on uninitialized DFB
     with pytest.raises(RuntimeError, match="not properly initialized"):
         cb.can_wait()
 
@@ -730,7 +730,7 @@ def test_can_methods_uninitialized(api: CBAPI) -> None:
 
 def test_context_manager_syntax(api: CBAPI) -> None:
     """Test the context manager (with statement) syntax for reserve and wait."""
-    # Create a circular buffer
+    # Create a dataflow buffer
     element = make_ones_tile()
     cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
@@ -768,7 +768,7 @@ def test_context_manager_syntax(api: CBAPI) -> None:
     with cb.reserve() as w1:
         w1.store([make_ones_tile()])
 
-    # Create another CB for multi-context test
+    # Create another DFB for multi-context test
     cb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
     with cb2.reserve() as w2:
         w2.store([make_zeros_tile()])
@@ -997,7 +997,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
         cb = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
 
         # Create a block in WAIT state (POP expected)
-        # First, populate the CB
+        # First, populate the DFB
         set_current_thread_type(ThreadType.DM)
         from python.sim.copy import copy
 
@@ -1017,7 +1017,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
             RuntimeError,
             match="Cannot perform push\\(\\): Expected RESERVE acquisition, got WAIT",
         ):
-            # Manually try to mark push (bypassing CB's push method which checks pending_reserved_block)
+            # Manually try to mark push (bypassing DFB's push method which checks pending_reserved_block)
             waited_block.mark_push_complete()
 
         # Clean up properly - use waited block as STORE_SRC before pop

@@ -27,29 +27,29 @@ except ImportError:
     dst_full_sync_en=False,
 )
 def add_kernel_f32(lhs, rhs, out):
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
+        with lhs_dfb.wait() as l, rhs_dfb.wait() as r, out_dfb.reserve() as o:
             result = l + r
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with lhs_cb.reserve() as lhs_blk:
+        with lhs_dfb.reserve() as lhs_blk:
             tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
             tx_lhs.wait()
 
-        with rhs_cb.reserve() as rhs_blk:
+        with rhs_dfb.reserve() as rhs_blk:
             tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
             tx_rhs.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0, 0])
             tx.wait()
 
