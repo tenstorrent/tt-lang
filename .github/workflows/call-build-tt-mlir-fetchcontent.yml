@@ -215,6 +215,18 @@ jobs:
                   echo "=== builder/ttnn (should be gone) ==="
                   ls -la tt-mlir-install/python_packages/builder/ttnn/ 2>/dev/null || echo "not found (good)"
 
+            # TEMPORARY: Remove duplicate top-level dirs created by normalize script.
+            # These are copies of python_packages/ subdirs that cause nanobind conflicts.
+            # Remove once the cache is rebuilt with the fixed normalize script.
+            - name: Fix stale tt-mlir-install layout
+              run: |
+                  for dir in builder golden op_by_op_infra ttmlir ttnn_jit ttrt; do
+                      if [ -d "tt-mlir-install/$dir" ] && [ -d "tt-mlir-install/python_packages/$dir" ]; then
+                          echo "Removing duplicate: tt-mlir-install/$dir"
+                          rm -rf "tt-mlir-install/$dir"
+                      fi
+                  done
+
             - name: Configure tt-lang with pre-installed tt-mlir
               run: |
                   cmake -G Ninja -B build \
