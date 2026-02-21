@@ -10,8 +10,8 @@ set -e
 echo "=== tt-lang Docker Build Test ==="
 echo ""
 
-# Use the CI image tag
-MLIR_TAG="latest"
+# Use the CI image tag (pinned in third-party/tt-mlir-docker-tag)
+MLIR_TAG=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')
 echo "Using tt-mlir CI image tag: $MLIR_TAG"
 echo ""
 

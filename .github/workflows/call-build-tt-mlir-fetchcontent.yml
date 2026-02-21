@@ -42,15 +42,25 @@ permissions:
     contents: read
 
 jobs:
+    get-mlir-tag:
+        runs-on: ubuntu-latest
+        outputs:
+            mlir-tag: ${{ steps.read.outputs.tag }}
+        steps:
+            - uses: actions/checkout@v4
+            - id: read
+              run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
+
     # Job 1: Build and cache tt-mlir independently.
     # This ensures the expensive tt-mlir build (~60-90 min) is always cached,
     # even if downstream tt-lang build/test steps fail.
     build-tt-mlir:
-        name: build-tt-mlir (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
-        runs-on: 'mlir-large-runner-lang'
+        needs: [get-mlir-tag]
+        name: build-tt-mlir (mlir-large-runner-lang)
+        runs-on: mlir-large-runner-lang
         timeout-minutes: 120
 
-        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
+        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${{ needs.get-mlir-tag.outputs.mlir-tag }}
 
         defaults:
             run:
@@ -144,11 +154,11 @@ jobs:
     # Job 2: Build and test tt-lang using cached tt-mlir.
     build-tt-lang:
         name: build-tt-lang (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
-        needs: build-tt-mlir
+        needs: [get-mlir-tag, build-tt-mlir]
         runs-on: ${{ inputs.linux_runner || 'mlir-large-runner-lang' }}
         timeout-minutes: 60
 
-        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
+        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${{ needs.get-mlir-tag.outputs.mlir-tag }}
 
         defaults:
             run:

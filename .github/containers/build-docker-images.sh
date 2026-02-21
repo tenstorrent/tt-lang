@@ -58,6 +58,9 @@ if [ -z "$MLIR_SHA" ]; then
     MLIR_SHA=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
 fi
 
+# Pinned tt-mlir CI Docker image tag (used as base image in Dockerfile)
+MLIR_TAG=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')
+
 REPO=tenstorrent/tt-lang
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

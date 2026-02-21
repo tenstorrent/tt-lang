@@ -25,7 +25,17 @@ on:
         default: false
 
 jobs:
+  get-mlir-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      mlir-tag: ${{ steps.read.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
+
   build:
+    needs: [get-mlir-tag]
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +44,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
 
-    container: ${{ matrix.use_container && 'ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest' || '' }}
+    container: ${{ matrix.use_container && format('ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:{0}', needs.get-mlir-tag.outputs.mlir-tag) || '' }}
 
     defaults:
       run:
