@@ -137,6 +137,16 @@ jobs:
                   cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* \
                       tt-mlir-install/python_packages/ttrt/runtime/
 
+                  # Copy tracy Python module (required by ttnn runtime)
+                  TT_METAL_SRC="build/_deps/tt-mlir-src/third_party/tt-metal/src/tt-metal"
+                  if [ -d "$TT_METAL_SRC/tools/tracy" ]; then
+                      mkdir -p tt-mlir-install/python_packages/tracy
+                      cp -pr "$TT_METAL_SRC/tools/tracy/"*.py tt-mlir-install/python_packages/tracy/
+                      echo "Copied tracy Python module"
+                  else
+                      echo "Warning: tracy Python module not found at $TT_METAL_SRC/tools/tracy"
+                  fi
+
             - name: Normalize tt-mlir installation
               run: |
                   .github/scripts/normalize-ttmlir-install.sh tt-mlir-install
