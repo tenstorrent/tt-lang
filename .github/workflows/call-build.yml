@@ -72,7 +72,7 @@ jobs:
               uses: actions/cache@v4
               with:
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-v2
                   lookup-only: true
 
     # Build tt-mlir via FetchContent (only on cache miss).
@@ -154,7 +154,7 @@ jobs:
               uses: actions/cache/save@v4
               with:
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}-v2
 
     # Build and test tt-lang using cached tt-mlir.
     build-tt-lang:
@@ -187,7 +187,7 @@ jobs:
               uses: actions/cache/restore@v4
               with:
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}-v2
                   fail-on-cache-miss: true
 
             - name: Setup ccache for tt-lang
