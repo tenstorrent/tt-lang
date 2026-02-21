@@ -40,7 +40,7 @@ export PYTHONPATH="\
 ${TT_LANG_HOME}/python:\
 ${TT_LANG_HOME}/test:\
 @TTMLIR_PATH@/python_packages:\
-@TTMLIR_PATH@/ttrt/runtime/ttnn:\
+@TTMLIR_PATH@/python_packages/ttrt/runtime/ttnn:\
 $PYTHONPATH"
 
 # Set LD_LIBRARY_PATH to find tt-mlir shared libraries (e.g., _ttnncpp.so)
