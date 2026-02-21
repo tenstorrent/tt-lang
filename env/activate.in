@@ -40,7 +40,6 @@ export PYTHONPATH="\
 ${TT_LANG_HOME}/python:\
 ${TT_LANG_HOME}/test:\
 @TTMLIR_PATH@/python_packages:\
-@TTMLIR_PATH@/python_packages/builder:\
 @TTMLIR_PATH@/ttrt/runtime/ttnn:\
 $PYTHONPATH"
 
