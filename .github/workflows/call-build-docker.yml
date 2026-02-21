@@ -46,7 +46,7 @@ jobs:
         id: check
         run: .github/scripts/check-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}"
 
-  # Runs in parallel with build-image-dist and build-image-ird on a lightweight runner
+  # Builds the base image on a lightweight runner; dist and ird depend on this
   build-image-base:
     needs: [check-if-images-already-exist]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''

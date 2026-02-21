@@ -118,6 +118,9 @@ docker run -it \
 - `Dockerfile.base` — base image with Python dependencies
 - `Dockerfile` — multi-stage build (`dist` and `ird` targets)
 - `entrypoint.sh` — activates tt-lang environment on container start
+- `activate-install.sh` — environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` — build/push script with `--image-type` filter
-- `cleanup-toolchain.sh` — removes unused LLVM tools to reduce image size
+- `build-docker-local.sh` — build all images locally for testing
+- `cleanup-toolchain.sh` — normalizes toolchain venv (e.g. lib64 symlink fix)
+- `test-docker-smoke.sh` — quick smoke test for container functionality
 - `CONTAINER_README.md` — welcome message shown inside the container

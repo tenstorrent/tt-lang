@@ -46,7 +46,7 @@ COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 # Set write permissions
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
-# Install text editors and SSH (required for ird tool)
+# Install text editors and SSH
 RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
     mkdir -p /run/sshd

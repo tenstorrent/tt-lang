@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Clean up unnecessary files from tt-mlir toolchain to reduce Docker image size
-# Keep only what's needed for running tt-lang
+# Post-install fixups for the tt-mlir toolchain directory
+# (e.g. deduplicating venv lib64)
 
 set -e
 

@@ -51,10 +51,9 @@ jobs:
             - id: read
               run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
 
-    # Job 1: Determine tt-mlir commit and check if it's already cached.
+    # Determine tt-mlir commit and check if it's already cached.
     # Runs on a cheap runner to avoid occupying a large runner just for a cache lookup.
     check-ttmlir-cache:
-        needs: [get-mlir-tag]
         runs-on: ubuntu-latest
         outputs:
             ttmlir-commit: ${{ steps.ttmlir-commit.outputs.commit }}
@@ -76,7 +75,7 @@ jobs:
                   key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
                   lookup-only: true
 
-    # Job 2: Build tt-mlir via FetchContent (only on cache miss).
+    # Build tt-mlir via FetchContent (only on cache miss).
     # This ensures the expensive tt-mlir build (~60-90 min) is always cached,
     # even if downstream tt-lang build/test steps fail.
     build-tt-mlir:
@@ -157,7 +156,7 @@ jobs:
                   path: tt-mlir-install
                   key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
 
-    # Job 3: Build and test tt-lang using cached tt-mlir.
+    # Build and test tt-lang using cached tt-mlir.
     build-tt-lang:
         name: build-tt-lang (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
         needs: [get-mlir-tag, check-ttmlir-cache, build-tt-mlir]
@@ -219,30 +218,30 @@ jobs:
 
             - name: Run ttlang Lit MLIR tests
               run: |
-                source build/env/activate
-                cmake --build build --target check-ttlang-mlir
+                  source build/env/activate
+                  cmake --build build --target check-ttlang-mlir
 
             - name: Run ttlang Python bindings tests
               run: |
-                source build/env/activate
-                cmake --build build --target check-ttlang-python-bindings
+                  source build/env/activate
+                  cmake --build build --target check-ttlang-python-bindings
 
             - name: Python lit tests
               run: |
-                source build/env/activate
-                cmake --build build --target check-ttlang-python-lit
+                  source build/env/activate
+                  cmake --build build --target check-ttlang-python-lit
 
             - name: Build documentation
               if: inputs.build_docs
               run: |
-                source build/env/activate
-                cmake --build build --target ttlang-docs
+                  source build/env/activate
+                  cmake --build build --target ttlang-docs
 
             - name: Upload documentation artifact
               if: inputs.build_docs
               uses: actions/upload-pages-artifact@v3
               with:
-                path: ./build/docs/sphinx/_build/html
+                  path: ./build/docs/sphinx/_build/html
 
             - name: Archive build artifacts
               run: |
@@ -262,7 +261,6 @@ jobs:
                   path: ${{ env.ARTIFACT_NAME }}
                   if-no-files-found: error
                   retention-days: 1
-
 
     test-hardware:
         needs: build-tt-lang
