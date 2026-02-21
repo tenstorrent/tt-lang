@@ -29,17 +29,17 @@ except ImportError:
 @ttl.kernel(grid=(1, 1))
 def fused_chain_kernel(a, b, c, out):
     """Kernel with 20 chained ops - deep fusion test."""
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
-        av = a_cb.wait()
-        bv = b_cb.wait()
-        cv = c_cb.wait()
-        o = out_cb.reserve()
+        av = a_dfb.wait()
+        bv = b_dfb.wait()
+        cv = c_dfb.wait()
+        o = out_dfb.reserve()
         # 20 ops: sequential chain to avoid multiple uses of intermediates
         # Start with a: 5 unary ops
         v = ttl.math.sigmoid(av)  # 1
@@ -73,24 +73,24 @@ def fused_chain_kernel(a, b, c, out):
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
+        a_blk = a_dfb.reserve()
         tx_a = ttl.copy(a[0, 0], a_blk)
         tx_a.wait()
         a_blk.push()
 
-        b_blk = b_cb.reserve()
+        b_blk = b_dfb.reserve()
         tx_b = ttl.copy(b[0, 0], b_blk)
         tx_b.wait()
         b_blk.push()
 
-        c_blk = c_cb.reserve()
+        c_blk = c_dfb.reserve()
         tx_c = ttl.copy(c[0, 0], c_blk)
         tx_c.wait()
         c_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -135,7 +135,7 @@ def fused_chain_kernel(a, b, c, out):
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
 
-# Reserve output CB
+# Reserve output DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(3),
 
 # DST register lifecycle

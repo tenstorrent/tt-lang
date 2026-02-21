@@ -47,9 +47,9 @@ graph TB
     end
 
     DRAM -->|reads from| DM1
-    DM1 -->|writes to| CB1["Circular Buffer<br/>(🔔 Ingredients ready)"]
+    DM1 -->|writes to| CB1["Dataflow Buffer<br/>(🔔 Ingredients ready)"]
     CB1 -->|provides data| CT
-    CT -->|writes to| CB2["Circular Buffer<br/>(🔔 Course ready)"]
+    CT -->|writes to| CB2["Dataflow Buffer<br/>(🔔 Course ready)"]
     CB2 -->|provides data| DM2
     DM2 -->|writes to| DRAM2["DRAM/L1<br/>(🍱 Ready to eat course)"]
     DRAM2 -->|returns results| Host

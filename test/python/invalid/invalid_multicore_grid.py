@@ -23,20 +23,20 @@ import ttl
 @ttl.kernel(grid=(2, 2))
 def invalid_core_dims_kernel(lhs, rhs, out):
     """This kernel should fail because core(dims=3) is not supported."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        with lhs_cb.wait() as lhs_tile, rhs_cb.wait() as rhs_tile:
-            with out_cb.reserve() as out_tile:
+        with lhs_dfb.wait() as lhs_tile, rhs_dfb.wait() as rhs_tile:
+            with out_dfb.reserve() as out_tile:
                 result = lhs_tile + rhs_tile
                 out_tile.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        with lhs_cb.reserve() as lhs_blk, rhs_cb.reserve() as rhs_blk:
+        with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
             # This should fail - dims=3 not supported
             x, y, z = ttl.core(dims=3)
             tx_lhs = ttl.copy(lhs[y, x], lhs_blk)
@@ -46,7 +46,7 @@ def invalid_core_dims_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             x, y = ttl.core(dims=2)
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()

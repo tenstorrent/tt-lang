@@ -54,99 +54,99 @@ def norm_qkv_kernel(x, w_q, w_k, w_v, scaler, q_out, k_out, v_out):
     """
     RMSNorm(x) then project to Q, K, V.
     """
-    x_cb = ttl.make_circular_buffer_like(
+    x_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    w_q_cb = ttl.make_circular_buffer_like(
+    w_q_dfb = ttl.make_dataflow_buffer_like(
         w_q, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
     )
-    w_k_cb = ttl.make_circular_buffer_like(
+    w_k_dfb = ttl.make_dataflow_buffer_like(
         w_k, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
     )
-    w_v_cb = ttl.make_circular_buffer_like(
+    w_v_dfb = ttl.make_dataflow_buffer_like(
         w_v, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
     )
-    scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
-    q_cb = ttl.make_circular_buffer_like(
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    q_dfb = ttl.make_dataflow_buffer_like(
         q_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    k_cb = ttl.make_circular_buffer_like(
+    k_dfb = ttl.make_dataflow_buffer_like(
         k_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    v_cb = ttl.make_circular_buffer_like(
+    v_dfb = ttl.make_dataflow_buffer_like(
         v_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
     # RMSNorm intermediates
-    sq_cb = ttl.make_circular_buffer_like(
+    sq_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    sum_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    bcast_cb = ttl.make_circular_buffer_like(
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    normed_cb = ttl.make_circular_buffer_like(
+    normed_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
     @ttl.compute()
     def compute():
         # RMSNorm
-        with x_cb.wait() as xv, scaler_cb.wait() as sc:
+        with x_dfb.wait() as xv, scaler_dfb.wait() as sc:
             # Square
-            with sq_cb.reserve() as sq:
+            with sq_dfb.reserve() as sq:
                 sq.store(xv * xv)
             # Row-wise sum
-            with sq_cb.wait() as sqv, sum_cb.reserve() as sm:
+            with sq_dfb.wait() as sqv, sum_dfb.reserve() as sm:
                 sm.store(ttl.math.reduce_sum(sqv, sc, sm, dims=[0]))
             # Rsqrt
-            with sum_cb.wait() as smv, sum_cb.reserve() as rsq:
+            with sum_dfb.wait() as smv, sum_dfb.reserve() as rsq:
                 rsq.store(ttl.math.rsqrt(smv))
             # Broadcast
-            with sum_cb.wait() as rsqv, bcast_cb.reserve() as bc:
+            with sum_dfb.wait() as rsqv, bcast_dfb.reserve() as bc:
                 bc.store(ttl.math.broadcast(rsqv, bc, dims=[1]))
-            # Normalize and store to CB
-            with bcast_cb.wait() as bcv, normed_cb.reserve() as nm:
+            # Normalize and store to DFB
+            with bcast_dfb.wait() as bcv, normed_dfb.reserve() as nm:
                 nm.store(xv * bcv)
 
         # Q, K, V projections - keep normed in scope for all three
-        with normed_cb.wait() as nmv:
-            with w_q_cb.wait() as wq, q_cb.reserve() as qo:
+        with normed_dfb.wait() as nmv:
+            with w_q_dfb.wait() as wq, q_dfb.reserve() as qo:
                 qo.store(ttl.math.matmul(nmv, wq, qo))
 
-            with w_k_cb.wait() as wk, k_cb.reserve() as ko:
+            with w_k_dfb.wait() as wk, k_dfb.reserve() as ko:
                 ko.store(ttl.math.matmul(nmv, wk, ko))
 
-            with w_v_cb.wait() as wv, v_cb.reserve() as vo:
+            with w_v_dfb.wait() as wv, v_dfb.reserve() as vo:
                 vo.store(ttl.math.matmul(nmv, wv, vo))
 
     @ttl.datamovement()
     def dm_read():
-        with x_cb.reserve() as blk:
+        with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with w_q_cb.reserve() as blk:
+        with w_q_dfb.reserve() as blk:
             tx = ttl.copy(w_q[0:EMBD_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with w_k_cb.reserve() as blk:
+        with w_k_dfb.reserve() as blk:
             tx = ttl.copy(w_k[0:EMBD_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with w_v_cb.reserve() as blk:
+        with w_v_dfb.reserve() as blk:
             tx = ttl.copy(w_v[0:EMBD_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with scaler_cb.reserve() as blk:
+        with scaler_dfb.reserve() as blk:
             tx = ttl.copy(scaler[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with q_cb.wait() as blk:
+        with q_dfb.wait() as blk:
             tx = ttl.copy(blk, q_out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
-        with k_cb.wait() as blk:
+        with k_dfb.wait() as blk:
             tx = ttl.copy(blk, k_out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
-        with v_cb.wait() as blk:
+        with v_dfb.wait() as blk:
             tx = ttl.copy(blk, v_out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
 
@@ -160,19 +160,19 @@ def rotary_qk_kernel(q_in, k_in, cos, q_out, k_out):
     Apply rotary embeddings to Q and K (simplified - just multiply by cos).
     Real RoPE would split dimension and use sin too.
     """
-    q_cb = ttl.make_circular_buffer_like(
+    q_dfb = ttl.make_dataflow_buffer_like(
         q_in, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    k_cb = ttl.make_circular_buffer_like(
+    k_dfb = ttl.make_dataflow_buffer_like(
         k_in, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    cos_cb = ttl.make_circular_buffer_like(
+    cos_dfb = ttl.make_dataflow_buffer_like(
         cos, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    qo_cb = ttl.make_circular_buffer_like(
+    qo_dfb = ttl.make_dataflow_buffer_like(
         q_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    ko_cb = ttl.make_circular_buffer_like(
+    ko_dfb = ttl.make_dataflow_buffer_like(
         k_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
@@ -180,31 +180,31 @@ def rotary_qk_kernel(q_in, k_in, cos, q_out, k_out):
     def compute():
         # For simplified rotary: q_rot = q * cos, k_rot = k * cos
         # Keep cos in scope for both Q and K
-        with cos_cb.wait() as cv:
-            with q_cb.wait() as qv, qo_cb.reserve() as qo:
+        with cos_dfb.wait() as cv:
+            with q_dfb.wait() as qv, qo_dfb.reserve() as qo:
                 qo.store(qv * cv)
 
-            with k_cb.wait() as kv, ko_cb.reserve() as ko:
+            with k_dfb.wait() as kv, ko_dfb.reserve() as ko:
                 ko.store(kv * cv)
 
     @ttl.datamovement()
     def dm_read():
-        with q_cb.reserve() as blk:
+        with q_dfb.reserve() as blk:
             tx = ttl.copy(q_in[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with k_cb.reserve() as blk:
+        with k_dfb.reserve() as blk:
             tx = ttl.copy(k_in[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with cos_cb.reserve() as blk:
+        with cos_dfb.reserve() as blk:
             tx = ttl.copy(cos[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with qo_cb.wait() as blk:
+        with qo_dfb.wait() as blk:
             tx = ttl.copy(blk, q_out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
-        with ko_cb.wait() as blk:
+        with ko_dfb.wait() as blk:
             tx = ttl.copy(blk, k_out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
 
@@ -215,114 +215,114 @@ def rotary_qk_kernel(q_in, k_in, cos, q_out, k_out):
 @ttl.kernel(grid=(1, 1))
 def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
     """Single-head scaled dot-product attention."""
-    q_cb = ttl.make_circular_buffer_like(
+    q_dfb = ttl.make_dataflow_buffer_like(
         q, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    k_cb = ttl.make_circular_buffer_like(
+    k_dfb = ttl.make_dataflow_buffer_like(
         k, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    v_cb = ttl.make_circular_buffer_like(
+    v_dfb = ttl.make_dataflow_buffer_like(
         v, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    scale_cb = ttl.make_circular_buffer_like(scale, shape=(1, 1), buffer_factor=1)
-    mask_cb = ttl.make_circular_buffer_like(
+    scale_dfb = ttl.make_dataflow_buffer_like(scale, shape=(1, 1), buffer_factor=1)
+    mask_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=1
     )
-    scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
-    out_cb = ttl.make_circular_buffer_like(
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
-    k_t_cb = ttl.make_circular_buffer_like(
+    k_t_dfb = ttl.make_dataflow_buffer_like(
         k, shape=(EMBD_TILES, SEQ_TILES), buffer_factor=2
     )
-    scores_cb = ttl.make_circular_buffer_like(
+    scores_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
-    scale_bcast_cb = ttl.make_circular_buffer_like(
+    scale_bcast_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
-    scaled_masked_cb = ttl.make_circular_buffer_like(
+    scaled_masked_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
-    max_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    max_bcast_cb = ttl.make_circular_buffer_like(
+    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    max_bcast_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
-    exp_cb = ttl.make_circular_buffer_like(
+    exp_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
-    sum_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    sum_bcast_cb = ttl.make_circular_buffer_like(
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    sum_bcast_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
-    softmax_cb = ttl.make_circular_buffer_like(
+    softmax_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
 
     @ttl.compute()
     def compute():
-        with k_cb.wait() as kv, k_t_cb.reserve() as kt:
+        with k_dfb.wait() as kv, k_t_dfb.reserve() as kt:
             kt.store(ttl.transpose(kv, kt))
 
-        with q_cb.wait() as qv, k_t_cb.wait() as ktv:
-            with scores_cb.reserve() as sc:
+        with q_dfb.wait() as qv, k_t_dfb.wait() as ktv:
+            with scores_dfb.reserve() as sc:
                 sc.store(ttl.math.matmul(qv, ktv, sc))
 
         with (
-            scores_cb.wait() as scv,
-            scale_cb.wait() as scalev,
-            mask_cb.wait() as maskv,
+            scores_dfb.wait() as scv,
+            scale_dfb.wait() as scalev,
+            mask_dfb.wait() as maskv,
         ):
-            with scale_bcast_cb.reserve() as sb:
+            with scale_bcast_dfb.reserve() as sb:
                 sb.store(ttl.math.broadcast(scalev, sb, dims=[0, 1]))
-            with scale_bcast_cb.wait() as sbv, scaled_masked_cb.reserve() as sm:
+            with scale_bcast_dfb.wait() as sbv, scaled_masked_dfb.reserve() as sm:
                 sm.store(scv * sbv + maskv)
 
-        with scaler_cb.wait() as scaler_v, scaled_masked_cb.wait() as smv:
-            with max_cb.reserve() as mx:
+        with scaler_dfb.wait() as scaler_v, scaled_masked_dfb.wait() as smv:
+            with max_dfb.reserve() as mx:
                 mx.store(ttl.math.reduce_max(smv, scaler_v, mx, dims=[0]))
-            with max_cb.wait() as mxv, max_bcast_cb.reserve() as mxb:
+            with max_dfb.wait() as mxv, max_bcast_dfb.reserve() as mxb:
                 mxb.store(ttl.math.broadcast(mxv, mxb, dims=[1]))
-            with max_bcast_cb.wait() as mxbv:
+            with max_bcast_dfb.wait() as mxbv:
                 shifted = smv - mxbv
-                with exp_cb.reserve() as ex:
+                with exp_dfb.reserve() as ex:
                     ex.store(ttl.math.exp(shifted))
-                with exp_cb.wait() as exv, sum_cb.reserve() as sm:
+                with exp_dfb.wait() as exv, sum_dfb.reserve() as sm:
                     sm.store(ttl.math.reduce_sum(exv, scaler_v, sm, dims=[0]))
-                with sum_cb.wait() as smv2, sum_bcast_cb.reserve() as smb:
+                with sum_dfb.wait() as smv2, sum_bcast_dfb.reserve() as smb:
                     smb.store(ttl.math.broadcast(smv2, smb, dims=[1]))
-                with sum_bcast_cb.wait() as smbv, softmax_cb.reserve() as sfm:
+                with sum_bcast_dfb.wait() as smbv, softmax_dfb.reserve() as sfm:
                     sfm.store(ttl.math.exp(shifted) / smbv)
 
-        with softmax_cb.wait() as sfmv, v_cb.wait() as vv:
-            with out_cb.reserve() as o:
+        with softmax_dfb.wait() as sfmv, v_dfb.wait() as vv:
+            with out_dfb.reserve() as o:
                 o.store(ttl.math.matmul(sfmv, vv, o))
 
     @ttl.datamovement()
     def dm_read():
-        with q_cb.reserve() as blk:
+        with q_dfb.reserve() as blk:
             tx = ttl.copy(q[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with k_cb.reserve() as blk:
+        with k_dfb.reserve() as blk:
             tx = ttl.copy(k[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with v_cb.reserve() as blk:
+        with v_dfb.reserve() as blk:
             tx = ttl.copy(v[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with scale_cb.reserve() as blk:
+        with scale_dfb.reserve() as blk:
             tx = ttl.copy(scale[0, 0], blk)
             tx.wait()
-        with mask_cb.reserve() as blk:
+        with mask_dfb.reserve() as blk:
             tx = ttl.copy(causal_mask[0:SEQ_TILES, 0:SEQ_TILES], blk)
             tx.wait()
-        with scaler_cb.reserve() as blk:
+        with scaler_dfb.reserve() as blk:
             tx = ttl.copy(scaler[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
 
@@ -333,50 +333,50 @@ def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
 @ttl.kernel(grid=(1, 1))
 def proj_residual_kernel(attn_out, x_residual, w_proj, out):
     """Output projection and residual add: out = x_residual + attn_out @ w_proj"""
-    attn_cb = ttl.make_circular_buffer_like(
+    attn_dfb = ttl.make_dataflow_buffer_like(
         attn_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    res_cb = ttl.make_circular_buffer_like(
+    res_dfb = ttl.make_dataflow_buffer_like(
         x_residual, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    w_cb = ttl.make_circular_buffer_like(
+    w_dfb = ttl.make_dataflow_buffer_like(
         w_proj, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
-    proj_cb = ttl.make_circular_buffer_like(
+    proj_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
     @ttl.compute()
     def compute():
         # Project
-        with attn_cb.wait() as av, w_cb.wait() as wv:
-            with proj_cb.reserve() as pj:
+        with attn_dfb.wait() as av, w_dfb.wait() as wv:
+            with proj_dfb.reserve() as pj:
                 pj.store(ttl.math.matmul(av, wv, pj))
 
         # Residual add
-        with proj_cb.wait() as pjv, res_cb.wait() as rv:
-            with out_cb.reserve() as o:
+        with proj_dfb.wait() as pjv, res_dfb.wait() as rv:
+            with out_dfb.reserve() as o:
                 o.store(pjv + rv)
 
     @ttl.datamovement()
     def dm_read():
-        with attn_cb.reserve() as blk:
+        with attn_dfb.reserve() as blk:
             tx = ttl.copy(attn_out[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with res_cb.reserve() as blk:
+        with res_dfb.reserve() as blk:
             tx = ttl.copy(x_residual[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with w_cb.reserve() as blk:
+        with w_dfb.reserve() as blk:
             tx = ttl.copy(w_proj[0:EMBD_TILES, 0:EMBD_TILES], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
 
@@ -387,98 +387,98 @@ def proj_residual_kernel(attn_out, x_residual, w_proj, out):
 @ttl.kernel(grid=(1, 1))
 def norm_mlp_residual_kernel(x, x_residual, w_fc, w_proj, scaler, out):
     """RMSNorm(x) -> MLP (relu²) -> + residual"""
-    x_cb = ttl.make_circular_buffer_like(
+    x_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    res_cb = ttl.make_circular_buffer_like(
+    res_dfb = ttl.make_dataflow_buffer_like(
         x_residual, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    w_fc_cb = ttl.make_circular_buffer_like(
+    w_fc_dfb = ttl.make_dataflow_buffer_like(
         w_fc, shape=(EMBD_TILES, MLP_TILES), buffer_factor=1
     )
-    w_proj_cb = ttl.make_circular_buffer_like(
+    w_proj_dfb = ttl.make_dataflow_buffer_like(
         w_proj, shape=(MLP_TILES, EMBD_TILES), buffer_factor=1
     )
-    scaler_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
-    out_cb = ttl.make_circular_buffer_like(
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
     # Intermediates
-    sq_cb = ttl.make_circular_buffer_like(
+    sq_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    sum_cb = ttl.make_circular_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    bcast_cb = ttl.make_circular_buffer_like(
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    normed_cb = ttl.make_circular_buffer_like(
+    normed_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
-    hidden_cb = ttl.make_circular_buffer_like(
+    hidden_dfb = ttl.make_dataflow_buffer_like(
         w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2
     )
-    act_cb = ttl.make_circular_buffer_like(
+    act_dfb = ttl.make_dataflow_buffer_like(
         w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2
     )
-    mlp_out_cb = ttl.make_circular_buffer_like(
+    mlp_out_dfb = ttl.make_dataflow_buffer_like(
         x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
     )
 
     @ttl.compute()
     def compute():
         # RMSNorm
-        with x_cb.wait() as xv, scaler_cb.wait() as sc:
-            with sq_cb.reserve() as sq:
+        with x_dfb.wait() as xv, scaler_dfb.wait() as sc:
+            with sq_dfb.reserve() as sq:
                 sq.store(xv * xv)
-            with sq_cb.wait() as sqv, sum_cb.reserve() as sm:
+            with sq_dfb.wait() as sqv, sum_dfb.reserve() as sm:
                 sm.store(ttl.math.reduce_sum(sqv, sc, sm, dims=[0]))
-            with sum_cb.wait() as smv, sum_cb.reserve() as rsq:
+            with sum_dfb.wait() as smv, sum_dfb.reserve() as rsq:
                 rsq.store(ttl.math.rsqrt(smv))
-            with sum_cb.wait() as rsqv, bcast_cb.reserve() as bc:
+            with sum_dfb.wait() as rsqv, bcast_dfb.reserve() as bc:
                 bc.store(ttl.math.broadcast(rsqv, bc, dims=[1]))
-            with bcast_cb.wait() as bcv, normed_cb.reserve() as nm:
+            with bcast_dfb.wait() as bcv, normed_dfb.reserve() as nm:
                 nm.store(xv * bcv)
 
         # MLP: fc -> relu² -> proj
-        with normed_cb.wait() as nmv, w_fc_cb.wait() as wfc:
-            with hidden_cb.reserve() as h:
+        with normed_dfb.wait() as nmv, w_fc_dfb.wait() as wfc:
+            with hidden_dfb.reserve() as h:
                 h.store(ttl.math.matmul(nmv, wfc, h))
 
-        with hidden_cb.wait() as hv, act_cb.reserve() as a:
+        with hidden_dfb.wait() as hv, act_dfb.reserve() as a:
             relu_out = ttl.math.relu(hv)
             a.store(relu_out * relu_out)
 
-        with act_cb.wait() as av, w_proj_cb.wait() as wpr:
-            with mlp_out_cb.reserve() as mo:
+        with act_dfb.wait() as av, w_proj_dfb.wait() as wpr:
+            with mlp_out_dfb.reserve() as mo:
                 mo.store(ttl.math.matmul(av, wpr, mo))
 
         # Residual add
-        with mlp_out_cb.wait() as mov, res_cb.wait() as rv:
-            with out_cb.reserve() as o:
+        with mlp_out_dfb.wait() as mov, res_dfb.wait() as rv:
+            with out_dfb.reserve() as o:
                 o.store(mov + rv)
 
     @ttl.datamovement()
     def dm_read():
-        with x_cb.reserve() as blk:
+        with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with res_cb.reserve() as blk:
+        with res_dfb.reserve() as blk:
             tx = ttl.copy(x_residual[0:SEQ_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with w_fc_cb.reserve() as blk:
+        with w_fc_dfb.reserve() as blk:
             tx = ttl.copy(w_fc[0:EMBD_TILES, 0:MLP_TILES], blk)
             tx.wait()
-        with w_proj_cb.reserve() as blk:
+        with w_proj_dfb.reserve() as blk:
             tx = ttl.copy(w_proj[0:MLP_TILES, 0:EMBD_TILES], blk)
             tx.wait()
-        with scaler_cb.reserve() as blk:
+        with scaler_dfb.reserve() as blk:
             tx = ttl.copy(scaler[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0:SEQ_TILES, 0:EMBD_TILES])
             tx.wait()
 

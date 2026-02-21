@@ -42,13 +42,13 @@ def matmul_1d(
     write_tiles = (granularity_n * granularity_m) * Mb * Nb
 
     bf = 2
-    a_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(granularity_m, granularity_k), buffer_factor=bf
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(granularity_k, granularity_n), buffer_factor=bf
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity_m, granularity_n), buffer_factor=bf
     )
 
@@ -65,9 +65,9 @@ def matmul_1d(
                 for local_nb in range(nb_per_core):
                     nb = local_nb + core_index * nb_per_core
                     if nb < Nb:
-                        with out_cb.reserve() as out_blk:
+                        with out_dfb.reserve() as out_blk:
                             for kb in range(Kb):
-                                with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+                                with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                                     out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
@@ -79,7 +79,7 @@ def matmul_1d(
                     nb = local_nb + core_index * nb_per_core
                     if nb < Nb:
                         for kb in range(Kb):
-                            with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                            with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                                 ttl.copy(
                                     b[
                                         block_slice(kb, granularity_k),
@@ -114,7 +114,7 @@ def matmul_1d(
                     nb = block_n + core_index * nb_per_core
                     if nb < Nb:
 
-                        with out_cb.wait() as out_blk:
+                        with out_dfb.wait() as out_blk:
                             ttl.copy(
                                 out_blk,
                                 out[

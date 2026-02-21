@@ -25,15 +25,15 @@ from ttlang_test_utils import to_dram, to_l1
 @ttl.kernel(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
     """Simple add kernel for cache testing."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         o.store(l + r)
         l.pop()
         r.pop()
@@ -41,19 +41,19 @@ def add_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_blk = lhs_cb.reserve()
+        lhs_blk = lhs_dfb.reserve()
         tx = ttl.copy(lhs[0, 0], lhs_blk)
         tx.wait()
         lhs_blk.push()
 
-        rhs_blk = rhs_cb.reserve()
+        rhs_blk = rhs_dfb.reserve()
         tx = ttl.copy(rhs[0, 0], rhs_blk)
         tx.wait()
         rhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -62,15 +62,15 @@ def add_kernel(lhs, rhs, out):
 @ttl.kernel(grid=(1, 1))
 def mul_kernel(lhs, rhs, out):
     """Multiply kernel - separate from add_kernel for cache isolation test."""
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         o.store(l * r)
         l.pop()
         r.pop()
@@ -78,19 +78,19 @@ def mul_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        lhs_blk = lhs_cb.reserve()
+        lhs_blk = lhs_dfb.reserve()
         tx = ttl.copy(lhs[0, 0], lhs_blk)
         tx.wait()
         lhs_blk.push()
 
-        rhs_blk = rhs_cb.reserve()
+        rhs_blk = rhs_dfb.reserve()
         tx = ttl.copy(rhs[0, 0], rhs_blk)
         tx.wait()
         rhs_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()

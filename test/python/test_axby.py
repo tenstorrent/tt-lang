@@ -44,17 +44,22 @@ def axby_fused_kernel(a, x, b, y, out):
     This tests proper DST register allocation across multiple
     binary operations with distinct operands.
     """
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    y_cb = ttl.make_circular_buffer_like(y, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        with a_cb.wait() as av, x_cb.wait() as xv, b_cb.wait() as bv, y_cb.wait() as yv:
-            with out_cb.reserve() as o:
-                # Each operand from a different CB
+        with (
+            a_dfb.wait() as av,
+            x_dfb.wait() as xv,
+            b_dfb.wait() as bv,
+            y_dfb.wait() as yv,
+        ):
+            with out_dfb.reserve() as o:
+                # Each operand from a different DFB
                 term1 = av * xv
                 term2 = bv * yv
                 result = term1 + term2
@@ -62,22 +67,22 @@ def axby_fused_kernel(a, x, b, y, out):
 
     @ttl.datamovement()
     def dm_read():
-        with a_cb.reserve() as blk:
+        with a_dfb.reserve() as blk:
             tx = ttl.copy(a[0, 0], blk)
             tx.wait()
-        with x_cb.reserve() as blk:
+        with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0, 0], blk)
             tx.wait()
-        with b_cb.reserve() as blk:
+        with b_dfb.reserve() as blk:
             tx = ttl.copy(b[0, 0], blk)
             tx.wait()
-        with y_cb.reserve() as blk:
+        with y_dfb.reserve() as blk:
             tx = ttl.copy(y[0, 0], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as blk:
+        with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
 

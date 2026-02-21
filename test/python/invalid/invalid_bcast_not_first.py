@@ -6,9 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: bcast input must be CB-attached, not an elementwise result.
+Validation test: bcast input must be DFB-attached, not an elementwise result.
 
-Bcast reads directly from CB, so its input cannot be a DST value (like an
+Bcast reads directly from DFB, so its input cannot be a DST value (like an
 elementwise result). The DSL catches this early with a clear error.
 """
 
@@ -27,32 +27,32 @@ import ttl
 # CHECK:    |                      ^
 @ttl.kernel(grid=(1, 1))
 def invalid_bcast_kernel(a, b, out):
-    """INVALID: bcast on elementwise result (not CB-attached)."""
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    """INVALID: bcast on elementwise result (not DFB-attached)."""
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with a_cb.wait() as a_tile, b_cb.wait() as b_tile, out_cb.reserve() as o:
+        with a_dfb.wait() as a_tile, b_dfb.wait() as b_tile, out_dfb.reserve() as o:
             ab = a_tile * b_tile
             result = ttl.math.broadcast(ab, o, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
+        a_blk = a_dfb.reserve()
         tx_a = ttl.copy(a[0, 0], a_blk)
         tx_a.wait()
         a_blk.push()
-        b_blk = b_cb.reserve()
+        b_blk = b_dfb.reserve()
         tx_b = ttl.copy(b[0, 0], b_blk)
         tx_b.wait()
         b_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()

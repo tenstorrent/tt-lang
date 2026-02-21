@@ -235,19 +235,21 @@ def test_demo_one_deadlock_detection(capsys: pytest.CaptureFixture[str]) -> None
     import tempfile
 
     # Read the original tutorial/multicore_grid_auto.py
-    source_file = EXAMPLES_DIR / "tutorial/multicore_grid_auto.py"
+    source_file = EXAMPLES_DIR / "tutorial/multicore_grid_auto_test.py"
     with open(source_file) as f:
         content = f.read()
 
-    # Introduce the error: change y_cb.reserve() to y_cb.wait()
+    # Introduce the error: change y_dfb.reserve() to y_dfb.wait()
+    # This creates a deadlock where compute waits for y_dfb that it should be writing to
     modified_content = content.replace(
-        "y_cb.reserve() as y_blk,", "y_cb.wait() as y_blk,"
+        "y_dfb.reserve() as y_blk,", "y_dfb.wait() as y_blk,"
     )
 
     assert (
         modified_content != content
-    ), "Failed to modify tutorial/multicore_grid_auto.py content"
+    ), "Failed to modify tutorial/multicore_grid.py content"
 
+    # Create a temporary file with the modified content
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
         tmp.write(modified_content)
         tmp_path = Path(tmp.name)
@@ -262,12 +264,37 @@ def test_demo_one_deadlock_detection(capsys: pytest.CaptureFixture[str]) -> None
         # Detailed per-location info is printed to stdout before the raise
         out = capsys.readouterr().out
         assert (
-            "CircularBuffer(y_cb)" in out
-        ), f"Expected y_cb in deadlock output:\n{out}"
-        assert "blocked on wait()" in out, f"Expected 'blocked on wait()' in:\n{out}"
+            "Deadlock detected: all generators blocked" in out
+        ), f"Expected deadlock detection message not found in output:\n{out}"
+
+        # Check that it identifies the blocked buffer and operations
+        assert (
+            "CircularBuffer(y_dfb)" in out
+        ), f"Expected to see y_dfb in deadlock output:\n{out}"
+        assert (
+            "blocked on wait()" in out
+        ), f"Expected to see 'blocked on wait()' in deadlock output:\n{out}"
         assert (
             "blocked on reserve()" in out
         ), f"Expected 'blocked on reserve()' in:\n{out}"
+
+        # Check that reported line numbers point to actual wait()/reserve() calls
+        import re
+
+        line_number_pattern = r"-->\s+.*?:(\d+):\d+"
+        reported_line_numbers = {int(n) for n in re.findall(line_number_pattern, out)}
+        assert (
+            reported_line_numbers
+        ), f"No source locations found in deadlock output:\n{out}"
+
+        tmp_lines = tmp_path.read_text().splitlines()
+        for line_num in reported_line_numbers:
+            assert line_num <= len(tmp_lines), f"Reported line {line_num} out of range"
+            line_content = tmp_lines[line_num - 1]
+            assert "wait()" in line_content or "reserve()" in line_content, (
+                f"Line {line_num} does not contain wait() or reserve(): "
+                f"{line_content.strip()}"
+            )
 
     finally:
         tmp_path.unlink()

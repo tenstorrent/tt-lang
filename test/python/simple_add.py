@@ -10,7 +10,7 @@
 """
 Simple add kernel - verifies Python DSL lowers to correct TTL ops and C++ code.
 
-Tests CB operations, add compute, and data movement patterns.
+Tests DFB operations, add compute, and data movement patterns.
 """
 
 import os
@@ -23,15 +23,15 @@ import ttl
 
 @ttl.kernel(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
-    lhs_cb = ttl.make_circular_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_cb = ttl.make_circular_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
-        l = lhs_cb.wait()
-        r = rhs_cb.wait()
-        o = out_cb.reserve()
+        l = lhs_dfb.wait()
+        r = rhs_dfb.wait()
+        o = out_dfb.reserve()
         result = l + r
         o.store(result)
         l.pop()
@@ -40,13 +40,13 @@ def add_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # Reserve CB space before reading into it
-        lhs_blk = lhs_cb.reserve()
+        # Reserve DFB space before reading into it
+        lhs_blk = lhs_dfb.reserve()
         tx_lhs = ttl.copy(lhs[0, 0], lhs_blk)
         tx_lhs.wait()
         lhs_blk.push()
 
-        rhs_blk = rhs_cb.reserve()
+        rhs_blk = rhs_dfb.reserve()
         tx_rhs = ttl.copy(rhs[0, 0], rhs_blk)
         tx_rhs.wait()
         rhs_blk.push()
@@ -54,7 +54,7 @@ def add_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_write():
         # Wait for data to be ready, then write out
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -85,14 +85,14 @@ def add_kernel(lhs, rhs, out):
 # CHECK: %[[R:.+]] = ttl.cb_wait %[[CB1]]
 # CHECK: ttl.attach_cb %[[R]], %[[CB1]]
 
-# Reserve output CB
+# Reserve output DFB
 # CHECK: ttl.cb_reserve %[[CB2]]
 # CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # Add operation (from l + r dunder method)
 # CHECK: ttl.add
 
-# Store result to output CB (explicit from Python)
+# Store result to output DFB (explicit from Python)
 # CHECK: ttl.store
 # CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
@@ -132,7 +132,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Wait for output CB, slice, copy to device, pop
+# Wait for output DFB, slice, copy to device, pop
 # CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: ttl.cb_wait %[[CB2]]
 # CHECK: %[[SLICE2:.+]] = ttl.tensor_slice %arg0
@@ -151,7 +151,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 
-# Reserve output CB
+# Reserve output DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
 # DST register lifecycle
@@ -189,7 +189,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_read
 # CHECK-CPP: void kernel_main()
 
-# First input: reserve CB, read tile, push CB
+# First input: reserve DFB, read tile, push DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<3, 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
@@ -198,7 +198,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: noc_async_read_barrier();
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(0),
 
-# Second input: reserve CB, read tile, push CB
+# Second input: reserve DFB, read tile, push DFB
 # TensorAccessorArgs<CTA, CRTA>: CTA indexes static tensor metadata (is_sharded,
 # is_dram, etc.) in compile-time args shared by all kernels. CTA layout is
 # [3 CBs, then TAs], so tensor 1's metadata is at index 3+1=4. CRTA indexes
@@ -218,7 +218,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: // dm_write
 # CHECK-CPP: void kernel_main()
 
-# Wait for output CB, write tile, pop CB
+# Wait for output DFB, write tile, pop DFB
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(2),
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<5, 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(

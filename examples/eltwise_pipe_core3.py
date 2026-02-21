@@ -41,16 +41,16 @@ def eltwise_pipe_core3(
     )
 
     # Create circular buffers
-    a_in_cb = ttl.make_circular_buffer_like(
+    a_in_dfb = ttl.make_dataflow_buffer_like(
         a_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    b_in_cb = ttl.make_circular_buffer_like(
+    b_in_dfb = ttl.make_dataflow_buffer_like(
         b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
-    c_in_cb = ttl.make_circular_buffer_like(
+    c_in_dfb = ttl.make_dataflow_buffer_like(
         c_expanded, shape=(1, 1), buffer_factor=buffer_factor
     )
-    out_cb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 
@@ -69,7 +69,7 @@ def eltwise_pipe_core3(
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
-        c_block = c_in_cb.wait()  # blocking
+        c_block = c_in_dfb.wait()  # blocking
 
         for ct in range(start_col_tile, end_col_tile):
             # Reuse C across rows of A, B
@@ -79,19 +79,19 @@ def eltwise_pipe_core3(
                     "Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}"
                 )
                 # again, these return Block pointers:
-                a_block = a_in_cb.wait()  # blocking
-                b_block = b_in_cb.wait()  # blocking
+                a_block = a_in_dfb.wait()  # blocking
+                b_block = b_in_dfb.wait()  # blocking
                 # NOTE: Please consider making non-approx the default for eltwise unary, but leave the option for the user to specify approx=True
-                out_block = out_cb.reserve()  # blocking
+                out_block = out_dfb.reserve()  # blocking
 
                 # Use store() to properly populate the Block with computed results
                 # Broadcast c_block along dimension 0 (rows) to match a_block/b_block shape
                 result = a_block * b_block + ttl.math.broadcast(c_block, dims=[0])
                 out_block.store(result)
 
-                # finalize push, this advances the cb pointers, the writing happened at the line above
+                # finalize push, this advances the dfb pointers, the writing happened at the line above
                 out_block.push()
-                # finalize pop, this advances the cb pointers, essentially freeing the memory
+                # finalize pop, this advances the dfb pointers, essentially freeing the memory
                 # After poping, the corresponding Block(a_block) points to stale data. Should probably make it an error to access it at that point
                 a_block.pop()
                 # ditto
@@ -106,7 +106,7 @@ def eltwise_pipe_core3(
         core_num = ttl.core(dims=1)  # linear core index
 
         # Pipe communication setup - must happen before main loop
-        with c_in_cb.reserve() as c_block:
+        with c_in_dfb.reserve() as c_block:
 
             def pipe_src(pipe_id):
                 print(f"dm0 (C multicast SRC): core={core_num}")
@@ -132,12 +132,12 @@ def eltwise_pipe_core3(
                 print("dm0: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
-                # Write the cbs just as above
-                a_block = a_in_cb.reserve()
+                # Write the dfbs just as above
+                a_block = a_in_dfb.reserve()
                 tx = ttl.copy(a_in[row_slice, col_slice], a_block)
                 tx.wait()
                 a_block.push()
-                b_block = b_in_cb.reserve()
+                b_block = b_in_dfb.reserve()
                 tx = ttl.copy(b_in[row_slice, col_slice], b_block)
                 tx.wait()
                 b_block.push()
@@ -156,7 +156,7 @@ def eltwise_pipe_core3(
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
 
-                out_block = out_cb.wait()
+                out_block = out_dfb.wait()
 
                 tx = ttl.copy(out_block, out[row_slice, col_slice])
                 tx.wait()

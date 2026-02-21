@@ -62,25 +62,25 @@ def expected_bcast_result(value: float, dtype=torch.bfloat16):
 @ttl.kernel(grid=(1, 1))
 def bcast_row_kernel(inp, out):
     """Broadcast row tile to full tile (bcast as first op in compute)."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
+        inp_blk = inp_dfb.reserve()
         tx = ttl.copy(inp[0, 0], inp_blk)
         tx.wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -89,25 +89,25 @@ def bcast_row_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_col_kernel(inp, out):
     """Broadcast column tile to full tile."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
+        inp_blk = inp_dfb.reserve()
         tx = ttl.copy(inp[0, 0], inp_blk)
         tx.wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -116,25 +116,25 @@ def bcast_col_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_scalar_kernel(inp, out):
     """Broadcast scalar tile to full tile."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[0, 1])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
+        inp_blk = inp_dfb.reserve()
         tx = ttl.copy(inp[0, 0], inp_blk)
         tx.wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -150,32 +150,32 @@ def bcast_scalar_kernel(inp, out):
 def mul_add_bcast_kernel(a, b, c, out):
     """Compute (a * b) + bcast(c) where c is a row-broadcast tile.
 
-    This tests the composition pattern where bcast reads from CB first,
+    This tests the composition pattern where bcast reads from DFB first,
     then we do DST-to-DST ops (mul, add).
 
-    NOTE: Currently we need two stages because bcast reads from CB while
-    add/mul read from DST. It would be trivial to allow CB-reading ops
+    NOTE: Currently we need two stages because bcast reads from DFB while
+    add/mul read from DST. It would be trivial to allow DFB-reading ops
     (bcast, reduce, transpose) as the FIRST op only in a fused compute block.
     """
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    c_bcast_cb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        # Stage 1: Bcast c and store to intermediate CB
-        with c_cb.wait() as c_tile, c_bcast_cb.reserve() as c_out:
+        # Stage 1: Bcast c and store to intermediate DFB
+        with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
             c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
         with (
-            a_cb.wait() as a_tile,
-            b_cb.wait() as b_tile,
-            c_bcast_cb.wait() as c_bcast_tile,
-            out_cb.reserve() as o,
+            a_dfb.wait() as a_tile,
+            b_dfb.wait() as b_tile,
+            c_bcast_dfb.wait() as c_bcast_tile,
+            out_dfb.reserve() as o,
         ):
             ab = a_tile * b_tile
             result = ab + c_bcast_tile
@@ -183,24 +183,24 @@ def mul_add_bcast_kernel(a, b, c, out):
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
+        a_blk = a_dfb.reserve()
         tx_a = ttl.copy(a[0, 0], a_blk)
         tx_a.wait()
         a_blk.push()
 
-        b_blk = b_cb.reserve()
+        b_blk = b_dfb.reserve()
         tx_b = ttl.copy(b[0, 0], b_blk)
         tx_b.wait()
         b_blk.push()
 
-        c_blk = c_cb.reserve()
+        c_blk = c_dfb.reserve()
         tx_c = ttl.copy(c[0, 0], c_blk)
         tx_c.wait()
         c_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0, 0])
         tx.wait()
         out_blk.pop()
@@ -262,25 +262,25 @@ def expected_multitile_bcast_result(values, dtype=torch.bfloat16):
 @ttl.kernel(grid=(1, 1))
 def bcast_row_multitile_kernel(inp, out):
     """Broadcast row tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
+        inp_blk = inp_dfb.reserve()
         tx = ttl.copy(inp[0:2, 0:2], inp_blk)
         tx.wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
         out_blk.pop()
@@ -289,25 +289,25 @@ def bcast_row_multitile_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_col_multitile_kernel(inp, out):
     """Broadcast col tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
+        inp_blk = inp_dfb.reserve()
         tx = ttl.copy(inp[0:2, 0:2], inp_blk)
         tx.wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
         out_blk.pop()
@@ -316,25 +316,25 @@ def bcast_col_multitile_kernel(inp, out):
 @ttl.kernel(grid=(1, 1))
 def bcast_scalar_multitile_kernel(inp, out):
     """Broadcast scalar tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_cb.wait() as i, out_cb.reserve() as o:
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
             result = ttl.math.broadcast(i, o, dims=[0, 1])
             o.store(result)
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
+        inp_blk = inp_dfb.reserve()
         tx = ttl.copy(inp[0:2, 0:2], inp_blk)
         tx.wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
+        out_blk = out_dfb.wait()
         tx = ttl.copy(out_blk, out[0:2, 0:2])
         tx.wait()
         out_blk.pop()
@@ -617,28 +617,28 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
     """Compute (a * b) + bcast(c) on 2x2 tile grid.
 
     Uses two-stage pattern:
-    - Stage 1: bcast c to intermediate CB
+    - Stage 1: bcast c to intermediate DFB
     - Stage 2: compute (a * b) + c_bcast
     """
-    a_cb = ttl.make_circular_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(2, 2), buffer_factor=2)
-    c_cb = ttl.make_circular_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    c_bcast_cb = ttl.make_circular_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        # Stage 1: Bcast c and store to intermediate CB
-        with c_cb.wait() as c_tile, c_bcast_cb.reserve() as c_out:
+        # Stage 1: Bcast c and store to intermediate DFB
+        with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
             c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[0])
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
         with (
-            a_cb.wait() as a_tile,
-            b_cb.wait() as b_tile,
-            c_bcast_cb.wait() as c_bcast_tile,
-            out_cb.reserve() as o,
+            a_dfb.wait() as a_tile,
+            b_dfb.wait() as b_tile,
+            c_bcast_dfb.wait() as c_bcast_tile,
+            out_dfb.reserve() as o,
         ):
             ab = a_tile * b_tile
             result = ab + c_bcast_tile
@@ -646,21 +646,21 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
 
     @ttl.datamovement()
     def dm_read():
-        with a_cb.reserve() as a_blk:
+        with a_dfb.reserve() as a_blk:
             tx_a = ttl.copy(a[0:2, 0:2], a_blk)
             tx_a.wait()
 
-        with b_cb.reserve() as b_blk:
+        with b_dfb.reserve() as b_blk:
             tx_b = ttl.copy(b[0:2, 0:2], b_blk)
             tx_b.wait()
 
-        with c_cb.reserve() as c_blk:
+        with c_dfb.reserve() as c_blk:
             tx_c = ttl.copy(c[0:2, 0:2], c_blk)
             tx_c.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[0:2, 0:2])
             tx.wait()
 

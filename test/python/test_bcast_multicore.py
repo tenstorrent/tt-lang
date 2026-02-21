@@ -14,11 +14,11 @@ Features:
 - 2MB DRAM tensors (1024x1024): a, b, out1, out2 - 4x4 tiles per core
 - 128KB L1 tensors (256x256): c, out3 - 1x1 tile per core
 - 8x8 multicore grid with dynamic indexing via core(dims=2)
-- 1x1 CB shapes for all CBs (shapes match in binary ops)
+- 1x1 DFB shapes for all CBs (shapes match in binary ops)
 - L1 tile 'c' held in outer scope, reused across 16 DRAM iterations
 - 20 fused ops across 3 outputs
 
-Also tests varying CB granularity (1x1, 2x2) with ttl.math.broadcast op.
+Also tests varying DFB granularity (1x1, 2x2) with ttl.math.broadcast op.
 """
 
 import pytest
@@ -62,27 +62,27 @@ def bcast_kernel(a, b, c, out1, out2, out3):
     iterations. This tests scoping-based broadcast with different tensor sizes.
     """
     # All CBs use 1x1 shape - broadcast achieved via scoping
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_cb = ttl.make_circular_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out1_cb = ttl.make_circular_buffer_like(out1, shape=(1, 1), buffer_factor=2)
-    out2_cb = ttl.make_circular_buffer_like(out2, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(1, 1), buffer_factor=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(1, 1), buffer_factor=2)
 
     # L1 CBs: 1x1 tile
-    c_cb = ttl.make_circular_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out3_cb = ttl.make_circular_buffer_like(out3, shape=(1, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
         # Wait for L1 tile once - it will be broadcast across all DRAM iterations
-        with c_cb.wait() as cv:
+        with c_dfb.wait() as cv:
             # Process DRAM tiles (4x4 = 16 iterations), broadcasting cv
             for _ in range(4):
                 for _ in range(4):
                     with (
-                        a_cb.wait() as av,
-                        b_cb.wait() as bv,
-                        out1_cb.reserve() as o1,
-                        out2_cb.reserve() as o2,
+                        a_dfb.wait() as av,
+                        b_dfb.wait() as bv,
+                        out1_dfb.reserve() as o1,
+                        out2_dfb.reserve() as o2,
                     ):
                         # out1 = f(a, b): 7 ops (pure DRAM)
                         v1 = ttl.math.sigmoid(av)  # 1
@@ -104,7 +104,7 @@ def bcast_kernel(a, b, c, out1, out2, out3):
                         o2.store(v2)
 
             # Process L1 output (cv still in scope from outer with)
-            with out3_cb.reserve() as o3:
+            with out3_dfb.reserve() as o3:
                 # out3 = h(c): 7 ops (pure L1)
                 v3 = ttl.math.relu(cv)  # 14
                 v3 = ttl.math.sigmoid(v3)  # 15
@@ -120,14 +120,14 @@ def bcast_kernel(a, b, c, out1, out2, out3):
         x, y = ttl.core(dims=2)
 
         # Read L1 tile FIRST (so it's available for broadcast)
-        with c_cb.reserve() as c_blk:
+        with c_dfb.reserve() as c_blk:
             tx_c = ttl.copy(c[y, x], c_blk)
             tx_c.wait()
 
         # Read DRAM tiles (4x4 per core)
         for local_r in range(4):
             for local_c in range(4):
-                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                     dram_row = y * 4 + local_r
                     dram_col = x * 4 + local_c
                     tx_a = ttl.copy(a[dram_row, dram_col], a_blk)
@@ -142,7 +142,7 @@ def bcast_kernel(a, b, c, out1, out2, out3):
         # Write DRAM tiles (4x4 per core)
         for local_r in range(4):
             for local_c in range(4):
-                with out1_cb.wait() as o1_blk, out2_cb.wait() as o2_blk:
+                with out1_dfb.wait() as o1_blk, out2_dfb.wait() as o2_blk:
                     dram_row = y * 4 + local_r
                     dram_col = x * 4 + local_c
                     tx1 = ttl.copy(o1_blk, out1[dram_row, dram_col])
@@ -151,7 +151,7 @@ def bcast_kernel(a, b, c, out1, out2, out3):
                     tx2.wait()
 
         # Write L1 tile (1 per core)
-        with out3_cb.wait() as o3_blk:
+        with out3_dfb.wait() as o3_blk:
             tx3 = ttl.copy(o3_blk, out3[y, x])
             tx3.wait()
 
@@ -249,9 +249,9 @@ def test_bcast_multicore(device):
 
 
 def make_bcast_granularity_kernel(granularity: int):
-    """Factory to create broadcast kernels with different CB granularities.
+    """Factory to create broadcast kernels with different DFB granularities.
 
-    Tests ttl.math.broadcast with varying CB block sizes on multicore grid.
+    Tests ttl.math.broadcast with varying DFB block sizes on multicore grid.
     Uses row broadcast (dims=[0]) pattern.
     """
 
@@ -265,10 +265,10 @@ def make_bcast_granularity_kernel(granularity: int):
         rows_per_core = inp.shape[0] // TILE_SIZE // grid_x // block_rows
         cols_per_core = inp.shape[1] // TILE_SIZE // grid_y // block_cols
 
-        inp_cb = ttl.make_circular_buffer_like(
+        inp_dfb = ttl.make_dataflow_buffer_like(
             inp, shape=(block_rows, block_cols), buffer_factor=2
         )
-        out_cb = ttl.make_circular_buffer_like(
+        out_dfb = ttl.make_dataflow_buffer_like(
             out, shape=(block_rows, block_cols), buffer_factor=2
         )
 
@@ -276,7 +276,7 @@ def make_bcast_granularity_kernel(granularity: int):
         def compute_fn():
             for _ in range(rows_per_core):
                 for _ in range(cols_per_core):
-                    with inp_cb.wait() as i, out_cb.reserve() as o:
+                    with inp_dfb.wait() as i, out_dfb.reserve() as o:
                         result = ttl.math.broadcast(i, o, dims=[0])
                         o.store(result)
 
@@ -291,7 +291,7 @@ def make_bcast_granularity_kernel(granularity: int):
                     col = core_y * cols_per_core + core_col
                     start_col = col * block_cols
                     end_col = (col + 1) * block_cols
-                    with inp_cb.reserve() as blk:
+                    with inp_dfb.reserve() as blk:
                         tx = ttl.copy(inp[start_row:end_row, start_col:end_col], blk)
                         tx.wait()
 
@@ -306,7 +306,7 @@ def make_bcast_granularity_kernel(granularity: int):
                     col = core_y * cols_per_core + core_col
                     start_col = col * block_cols
                     end_col = (col + 1) * block_cols
-                    with out_cb.wait() as blk:
+                    with out_dfb.wait() as blk:
                         tx = ttl.copy(blk, out[start_row:end_row, start_col:end_col])
                         tx.wait()
 
@@ -341,9 +341,9 @@ _bcast_kernel_g2 = make_bcast_granularity_kernel(2)
     ids=["granularity_1x1", "granularity_2x2"],
 )
 def test_bcast_multicore_granularity(device, granularity, kernel):
-    """Test ttl.math.broadcast with different CB granularities on 8x8 grid.
+    """Test ttl.math.broadcast with different DFB granularities on 8x8 grid.
 
-    Validates that broadcast works correctly with varying CB block sizes:
+    Validates that broadcast works correctly with varying DFB block sizes:
     - granularity=1: 1x1 tile blocks (baseline)
     - granularity=2: 2x2 tile blocks (4 tiles per block)
 

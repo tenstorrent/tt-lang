@@ -7,7 +7,7 @@
 # Output is saved to /tmp/ttlang_test_output.log on the remote (silent mode).
 # Use -v to stream output to terminal AND enable verbose MLIR passes.
 # Use --emit-runner to generate C++ kernels and Python runner in /tmp/$USER/.
-# Use --perf to enable NOC profiling, CB flow graph, and pipe graph dumps.
+# Use --perf to enable NOC profiling, DFB flow graph, and pipe graph dumps.
 #
 # Examples:
 #   ./run-test.sh test/python/test_add.py              # Run in simulator (default)
@@ -87,7 +87,7 @@ if [ $# -eq 0 ] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo "  -v, --verbose    Stream output to terminal + enable verbose MLIR passes"
     echo "                   (default: silent mode, output saved to log)"
     echo "  --emit-runner    Emit C++ kernels and Python runner to /tmp/\$USER/"
-    echo "  --perf           Enable NOC profiling, CB flow graph, and pipe graph dumps"
+    echo "  --perf           Enable NOC profiling, DFB flow graph, and pipe graph dumps"
     echo "  --auto-profile   Enable --perf + per-line cycle profiling (auto-profiler)"
     echo ""
     echo "Examples:"
@@ -150,7 +150,7 @@ else
     echo "Output: /tmp/ttlang_test_output.log"
 fi
 if [ -n "$PERF" ]; then
-    echo "Perf:   enabled (NOC events + CB flow + pipe graph)"
+    echo "Perf:   enabled (NOC events + DFB flow + pipe graph)"
 fi
 echo "========================================"
 

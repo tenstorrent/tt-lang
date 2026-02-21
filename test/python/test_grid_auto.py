@@ -22,25 +22,25 @@ TILE_SIZE = 32
 @ttl.kernel(grid="auto")
 def auto_grid_kernel(a, out):
     """Simple kernel using automatic grid sizing."""
-    a_cb = ttl.make_circular_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with a_cb.wait() as a_tile, out_cb.reserve() as out_tile:
+        with a_dfb.wait() as a_tile, out_dfb.reserve() as out_tile:
             out_tile.store(a_tile + a_tile)
 
     @ttl.datamovement()
     def dm_read():
         x, y = ttl.core(dims=2)
-        with a_cb.reserve() as a_blk:
+        with a_dfb.reserve() as a_blk:
             tx = ttl.copy(a[y, x], a_blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.core(dims=2)
-        with out_cb.wait() as out_blk:
+        with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 

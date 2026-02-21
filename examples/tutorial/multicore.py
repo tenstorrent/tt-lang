@@ -31,16 +31,16 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
     rows_per_core = a.shape[0] // TILE_SIZE // row_tiles_per_block // grid_rows
     cols_per_core = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_rows
 
-    a_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    c_cb = ttl.make_circular_buffer_like(
+    c_dfb = ttl.make_dataflow_buffer_like(
         c, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
-    y_cb = ttl.make_circular_buffer_like(
+    y_dfb = ttl.make_dataflow_buffer_like(
         y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 
@@ -49,10 +49,10 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
         for _ in range(rows_per_core):
             for _ in range(cols_per_core):
                 with (
-                    a_cb.wait() as a_blk,
-                    b_cb.wait() as b_blk,
-                    c_cb.wait() as c_blk,
-                    y_cb.reserve() as y_blk,
+                    a_dfb.wait() as a_blk,
+                    b_dfb.wait() as b_blk,
+                    c_dfb.wait() as c_blk,
+                    y_dfb.reserve() as y_blk,
                 ):
                     y_blk.store(a_blk * b_blk + c_blk)
 
@@ -71,9 +71,9 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                 end_col_tile = (col + 1) * col_tiles_per_block
 
                 with (
-                    a_cb.reserve() as a_blk,
-                    b_cb.reserve() as b_blk,
-                    c_cb.reserve() as c_blk,
+                    a_dfb.reserve() as a_blk,
+                    b_dfb.reserve() as b_blk,
+                    c_dfb.reserve() as c_blk,
                 ):
                     tx_a = ttl.copy(
                         a[
@@ -115,7 +115,7 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                 start_col_tile = col * col_tiles_per_block
                 end_col_tile = (col + 1) * col_tiles_per_block
 
-                with y_cb.wait() as y_blk:
+                with y_dfb.wait() as y_blk:
                     tx = ttl.copy(
                         y_blk,
                         y[

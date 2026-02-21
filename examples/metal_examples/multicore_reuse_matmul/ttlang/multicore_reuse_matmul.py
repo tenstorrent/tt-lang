@@ -43,14 +43,14 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
     ), "number of total blocks must be less than or equal to num cores"
 
     buffering_factor = 2
-    a_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(per_core_M, K_block_size), buffer_factor=buffering_factor
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(K_block_size, per_core_N), buffer_factor=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_cb = ttl.make_circular_buffer_like(
+    out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(per_core_M, per_core_N), buffer_factor=1
     )
 
@@ -60,11 +60,11 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         out_row = per_core_M * core_y
         out_col = per_core_N * core_x
         if (out_row < Mt) and (out_col < Nt):
-            with out_cb.reserve() as out_blk:  # per_core_M * per_core_N
+            with out_dfb.reserve() as out_blk:  # per_core_M * per_core_N
                 for _ in range(Kt // K_block_size):
                     with (
-                        a_cb.wait() as a_blk,
-                        b_cb.wait() as b_blk,
+                        a_dfb.wait() as a_blk,
+                        b_dfb.wait() as b_blk,
                     ):  # a per_core_M x K_block_size, b K_block_size x per_core_N
                         out_blk.store(a_blk @ b_blk, acc=True)
 
@@ -76,7 +76,7 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         if (out_row < Mt) and (out_col < Nt):
             for block in range(Kt // K_block_size):
                 k = block * K_block_size
-                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                     a_wr = ttl.copy(
                         a[out_row : (out_row + per_core_M), k : (k + K_block_size)],
                         a_blk,
@@ -95,7 +95,7 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         out_row = per_core_M * core_y
         out_col = per_core_N * core_x
         if (out_row < Mt) and (out_col < Nt):
-            with out_cb.wait() as out_blk:
+            with out_dfb.wait() as out_blk:
                 out_wr = ttl.copy(
                     out_blk,
                     out[
@@ -140,14 +140,14 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert num_cores_y >= Mt
 
     buffering_factor = 2
-    a_cb = ttl.make_circular_buffer_like(
+    a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(1, 1), buffer_factor=buffering_factor
     )
-    b_cb = ttl.make_circular_buffer_like(
+    b_dfb = ttl.make_dataflow_buffer_like(
         b, shape=(1, 1), buffer_factor=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=1)
 
     @ttl.compute()
     def mm_compute():
@@ -155,9 +155,9 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out_row = core_y
         out_col = core_x
         if (out_row < Mt) and (out_col < Nt):
-            with out_cb.reserve() as out_blk:
+            with out_dfb.reserve() as out_blk:
                 for _ in range(Kt):
-                    with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+                    with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                         out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
@@ -167,7 +167,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out_col = core_x
         if (out_row < Mt) and (out_col < Nt):
             for k in range(Kt):
-                with a_cb.reserve() as a_blk, b_cb.reserve() as b_blk:
+                with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                     a_wr = ttl.copy(a[out_row, k], a_blk)
                     b_wr = ttl.copy(b[k, out_col], b_blk)
                     a_wr.wait()
@@ -180,7 +180,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out_row = core_y
         out_col = core_x
         if (out_row < Mt) and (out_col < Nt):
-            with out_cb.wait() as out_blk:
+            with out_dfb.wait() as out_blk:
                 out_wr = ttl.copy(
                     out_blk,
                     out[out_row, out_col],

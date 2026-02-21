@@ -39,16 +39,16 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def tile_loop_kernel(inp, bias, out):
     """Kernel that loops over all tiles, adding bias to each."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    bias_cb = ttl.make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    bias_dfb = ttl.make_dataflow_buffer_like(bias, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def add_compute():
         for _ in range({tile_rows}):
             for _ in range({tile_cols}):
-                with inp_cb.wait() as inp_tile, bias_cb.wait() as bias_tile:
-                    with out_cb.reserve() as out_tile:
+                with inp_dfb.wait() as inp_tile, bias_dfb.wait() as bias_tile:
+                    with out_dfb.reserve() as out_tile:
                         result = inp_tile + bias_tile
                         out_tile.store(result)
 
@@ -56,7 +56,7 @@ def tile_loop_kernel(inp, bias, out):
     def dm_read():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with inp_cb.reserve() as inp_blk, bias_cb.reserve() as bias_blk:
+                with inp_dfb.reserve() as inp_blk, bias_dfb.reserve() as bias_blk:
                     tx_inp = ttl.copy(inp[r, c], inp_blk)
                     tx_bias = ttl.copy(bias[r, c], bias_blk)
                     tx_inp.wait()
@@ -66,7 +66,7 @@ def tile_loop_kernel(inp, bias, out):
     def dm_write():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with out_cb.wait() as out_blk:
+                with out_dfb.wait() as out_blk:
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 
@@ -78,16 +78,16 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def fused_kernel(inp, bias, out):
     """Kernel that computes ttl.math.exp(inp) + ttl.math.sqrt(bias) - fuses 3 ops."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    bias_cb = ttl.make_circular_buffer_like(bias, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    bias_dfb = ttl.make_dataflow_buffer_like(bias, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fused_compute():
         for _ in range({tile_rows}):
             for _ in range({tile_cols}):
-                with inp_cb.wait() as inp_tile, bias_cb.wait() as bias_tile:
-                    with out_cb.reserve() as out_tile:
+                with inp_dfb.wait() as inp_tile, bias_dfb.wait() as bias_tile:
+                    with out_dfb.reserve() as out_tile:
                         result = ttl.math.exp(inp_tile) + ttl.math.sqrt(bias_tile)
                         out_tile.store(result)
 
@@ -95,7 +95,7 @@ def fused_kernel(inp, bias, out):
     def dm_read():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with inp_cb.reserve() as inp_blk, bias_cb.reserve() as bias_blk:
+                with inp_dfb.reserve() as inp_blk, bias_dfb.reserve() as bias_blk:
                     tx_inp = ttl.copy(inp[r, c], inp_blk)
                     tx_bias = ttl.copy(bias[r, c], bias_blk)
                     tx_inp.wait()
@@ -105,7 +105,7 @@ def fused_kernel(inp, bias, out):
     def dm_write():
         for r in range({tile_rows}):
             for c in range({tile_cols}):
-                with out_cb.wait() as out_blk:
+                with out_dfb.wait() as out_blk:
                     tx = ttl.copy(out_blk, out[r, c])
                     tx.wait()
 

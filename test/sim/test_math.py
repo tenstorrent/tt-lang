@@ -252,7 +252,7 @@ def test_all_broadcast_forms():
     # Form 2: Explicit broadcast with dims
     result2 = block_a * ttl.math.broadcast(block_b, dims=[1])
 
-    # Form 3: Explicit broadcast with unused output hint (None since we can't create a CB here)
+    # Form 3: Explicit broadcast with unused output hint (None since we can't create a DFB here)
     result3 = block_a * ttl.math.broadcast(block_b, None, dims=[1])
 
     # Form 4: Store broadcast result first, then use it
