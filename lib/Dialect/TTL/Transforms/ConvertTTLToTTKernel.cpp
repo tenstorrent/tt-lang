@@ -972,8 +972,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
   // tile ops lowering phase.
-  target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
-                    TileRegsWaitOp, TileRegsReleaseOp>();
+  target.addLegalOp<InitSFPUOp, InitBinaryOp, TileRegsAcquireOp,
+                    TileRegsCommitOp, TileRegsWaitOp, TileRegsReleaseOp>();
 
   // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
   target.addLegalOp<SignpostOp>();
@@ -1057,8 +1057,8 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
           return false;
         }
         // DST lifecycle ops are illegal.
-        if (isa<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-                TileRegsReleaseOp>(op)) {
+        if (isa<InitSFPUOp, InitBinaryOp, TileRegsAcquireOp, TileRegsCommitOp,
+                TileRegsWaitOp, TileRegsReleaseOp>(op)) {
           return false;
         }
         // All other TTL ops are legal (ComputeOp, YieldOp, AttachCBOp).

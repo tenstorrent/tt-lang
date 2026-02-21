@@ -103,13 +103,20 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         auto bcastOp = cast<ttk::UnaryBcastTileOp>(computeOp);
         // Bcast init needs in_cb and out_cb. The compute op only has in_cb.
-        // The out_cb comes from the init_sfpu op. We search for it.
+        // The out_cb comes from init_sfpu or binary_op_init_common.
         auto funcOp = computeOp->getParentOfType<func::FuncOp>();
         Value outCB;
         if (funcOp) {
-          funcOp->walk([&](ttk::InitSFPUOp initOp) {
-            outCB = initOp.getOcb();
-            return WalkResult::interrupt();
+          funcOp->walk([&](Operation *op) {
+            if (auto sfpu = dyn_cast<ttk::InitSFPUOp>(op)) {
+              outCB = sfpu.getOcb();
+              return WalkResult::interrupt();
+            }
+            if (auto binary = dyn_cast<ttk::BinaryOpInitCommonOp>(op)) {
+              outCB = binary.getOutCb();
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
           });
         }
         if (outCB) {
@@ -152,9 +159,8 @@ static InitKey computeInitKey(Operation *op) {
   // For UnaryBcast: key includes in_cb AND bcast_type.
   // Different bcast types (COL/ROW/SCALAR) require different inits.
   if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(op)) {
-    return {typeId,
-            {bcast.getInCb()},
-            static_cast<int64_t>(bcast.getBcastType())};
+    return {
+        typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
   }
 
   // For all other ops (SFPU unary/binary, CopyDst): key is just the TypeID.

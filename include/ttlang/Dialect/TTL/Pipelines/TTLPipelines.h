@@ -26,6 +26,9 @@ struct TTLToTTKernelPipelineOptions
       *this, "consolidate-inits",
       llvm::cl::desc("Consolidate init ops (one per compute op group)."),
       llvm::cl::init(true)};
+  Option<bool> enableFPUBinaryOps{
+      *this, "enable-fpu-binary-ops",
+      llvm::cl::desc("Use FPU for binary add/sub/mul."), llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

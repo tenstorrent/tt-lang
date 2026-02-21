@@ -44,9 +44,13 @@ def compile_ttl_to_ttkernel(
     device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
 
     # Build function-level passes.
+    assign_dst_pass = "ttl-assign-dst"
+    if not opts.enable_fpu_binary_ops:
+        assign_dst_pass = "ttl-assign-dst{enable-fpu-binary-ops=0}"
+
     func_passes = [
         "convert-ttl-to-compute",
-        "ttl-assign-dst",
+        assign_dst_pass,
     ]
     if opts.maximize_dst:
         func_passes.append("ttl-subblock-compute-for-dst")

@@ -25,7 +25,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createTTLConvertTTLToCompute());
   pm.addPass(createTTLSetComputeKernelConfig());
-  pm.addPass(createTTLAssignDST());
+  {
+    TTLAssignDSTOptions assignDstOpts;
+    assignDstOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
+    pm.addPass(createTTLAssignDST(assignDstOpts));
+  }
   if (options.maximizeDST) {
     pm.addPass(createTTLSubblockComputeForDST());
   }

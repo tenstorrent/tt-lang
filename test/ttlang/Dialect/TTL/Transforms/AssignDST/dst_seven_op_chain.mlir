@@ -1,6 +1,7 @@
 // Summary: Seven-operation fused chain to verify DST allocation handles long chains.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-insert-tile-regs-sync))' | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1},ttl-insert-tile-regs-sync))' | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 enable-fpu-binary-ops=0},ttl-insert-tile-regs-sync))' | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -19,7 +20,7 @@
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
 // CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, buffer_factor = 1}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
-// CHECK:           ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK:           ttl.init_binary(%[[CB0]], %[[CB1]], %[[CB2]])
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK:             ttl.tile_regs_acquire
@@ -34,6 +35,33 @@
 // CHECK-NEXT:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] {dst_idx = 0 : i32}
 // SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 2 : i32}
+//
+// SFPU path: init_sfpu instead of init_binary, copy_tile for both add operands
+// SFPU-LABEL:   func.func @seven_op_chain
+// SFPU:           %[[CB0S:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
+// SFPU:           %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
+// SFPU:           ttl.init_sfpu(%[[CB0S]], %[[CB2S]])
+// SFPU:           ttl.compute
+// SFPU:             ttl.tile_regs_acquire
+// SFPU-NOT:         fpu_binary
+// copy A and B for SFPU add
+// SFPU:             ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
+// SFPU:             ttl.tile_add {{.*}} {dst_idx = 0 : i32}
+// sub, mul reuse the B copy (dst_tile_1 at slot 1)
+// SFPU:             ttl.tile_sub {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.tile_mul {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.tile_log {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.tile_neg {{.*}} {dst_idx = 0 : i32}
+// SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.cb_reserve %[[CB2S]]
+// SFPU:             ttl.tile_regs_commit
+// SFPU-NEXT:        ttl.tile_regs_wait
+// SFPU:             ttl.tile_store %[[SQRTS]]
+// SFPU-NEXT:        ttl.tile_regs_release
+// SFPU-NEXT:        ttl.yield %[[SQRTS]]
+//
 // CHECK:             %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK:             ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait

@@ -152,6 +152,30 @@ struct TTLInitSFPUToTTKernel : OpConversionPattern<InitSFPUOp> {
   }
 };
 
+struct TTLInitBinaryToTTKernel : OpConversionPattern<InitBinaryOp> {
+  using OpConversionPattern<InitBinaryOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(InitBinaryOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto in0cb = utils::convertTTLCBToTTKernel(adaptor.getIn0Cb(), rewriter,
+                                               loc, getTypeConverter());
+    auto in1cb = utils::convertTTLCBToTTKernel(adaptor.getIn1Cb(), rewriter,
+                                               loc, getTypeConverter());
+    auto ocb = utils::convertTTLCBToTTKernel(adaptor.getOutCb(), rewriter, loc,
+                                             getTypeConverter());
+    if (failed(in0cb) || failed(in1cb) || failed(ocb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
+    }
+
+    rewriter.replaceOpWithNewOp<ttk::BinaryOpInitCommonOp>(op, *in0cb, *in1cb,
+                                                           *ocb);
+    return success();
+  }
+};
+
 struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
   using OpConversionPattern<TileRegsAcquireOp>::OpConversionPattern;
 
@@ -669,11 +693,19 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
                                     rewriter, loc);
     if (failed(outCB)) {
       // After loop lowering in fused blocks, the output operand traces to
-      // iter_args. Find the output CB from the init_sfpu op in the function.
-      funcOp->walk([&](InitSFPUOp initOp) {
-        outCB = utils::convertTTLCBToTTKernel(initOp.getOcb(), rewriter, loc,
-                                              typeConverter);
-        return WalkResult::interrupt();
+      // iter_args. Find the output CB from init_sfpu or init_binary.
+      funcOp->walk([&](Operation *initOp) {
+        if (auto sfpu = dyn_cast<InitSFPUOp>(initOp)) {
+          outCB = utils::convertTTLCBToTTKernel(sfpu.getOcb(), rewriter, loc,
+                                                typeConverter);
+          return WalkResult::interrupt();
+        }
+        if (auto binary = dyn_cast<InitBinaryOp>(initOp)) {
+          outCB = utils::convertTTLCBToTTKernel(binary.getOutCb(), rewriter,
+                                                loc, typeConverter);
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
       });
       if (failed(outCB)) {
         return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
@@ -758,8 +790,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
-  // Control ops (init_sfpu needs type converter for CB conversion).
-  patterns.add<TTLInitSFPUToTTKernel>(*typeConverter, ctx);
+  // Control ops (init_sfpu/init_binary need type converter for CB conversion).
+  patterns.add<TTLInitSFPUToTTKernel, TTLInitBinaryToTTKernel>(*typeConverter,
+                                                               ctx);
   patterns.add<TTLTileRegsAcquireToTTKernel, TTLTileRegsCommitToTTKernel,
                TTLTileRegsWaitToTTKernel, TTLTileRegsReleaseToTTKernel>(ctx);
 

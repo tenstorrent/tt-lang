@@ -72,7 +72,10 @@ def TTLAssignDST
            "For single-buffering mode (dst_full_sync_en=true), use: "
            "f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8.">,
     Option<"separateOutputRegion", "separate-output-region", "bool", "false",
-           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
+           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">,
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "Use FPU for binary add/sub/mul when both operands come from CBs. "
+           "When disabled, binary ops use the SFPU path instead.">
   ];
 
   let dependentDialects = [

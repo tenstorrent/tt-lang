@@ -2,6 +2,9 @@
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-consolidate-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-consolidate-inits, canonicalize, cse)' \
+// RUN:   | FileCheck %s --check-prefix=SFPU
 
 // Purpose: ensure copy_tile + fused math ops lower to ttkernel with no TTL ops left.
 // After conversion, attach_cb ops are removed (replaced with their tensor operands).
@@ -17,7 +20,7 @@
 // CHECK:       %[[CB2_TTK:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK:       ttkernel.cb_wait_front(%[[CB0_TTK]],
 // CHECK:       ttkernel.cb_wait_front(%[[CB1_TTK]],
-// CHECK:       ttkernel.init_sfpu(%[[CB0_TTK]], %[[CB2_TTK]])
+// CHECK:       ttkernel.binary_op_init_common(%[[CB0_TTK]], %[[CB1_TTK]], %[[CB2_TTK]])
 // CHECK:       scf.for %[[I:.*]] = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:         scf.for %[[J:.*]] = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:           %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
@@ -43,6 +46,37 @@
 // CHECK:       return
 // CHECK-NOT:   ttl.attach_cb
 // CHECK-NOT:   ttl.copy_tile
+//
+// SFPU path: init_sfpu instead of binary_op_init_common, copy_tile for add operands,
+// add_binary_tile instead of add_tiles
+// SFPU-LABEL: func.func @fused_chain_lowering
+// SFPU-DAG:   %[[C0:.*]] = arith.constant 0 : index
+// SFPU-DAG:   %[[C1:.*]] = arith.constant 1 : index
+// SFPU:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// SFPU:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// SFPU:       %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// SFPU:       ttkernel.cb_wait_front(%[[CB0]],
+// SFPU:       ttkernel.cb_wait_front(%[[CB1]],
+// SFPU:       ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// SFPU:       scf.for
+// SFPU:         scf.for
+// copy both operands for SFPU binary add
+// SFPU:           ttkernel.tile_regs_acquire
+// SFPU:           ttkernel.copy_tile_init(%[[CB0]])
+// SFPU:           ttkernel.copy_tile(%[[CB0]],
+// SFPU:           ttkernel.copy_tile_init(%[[CB1]])
+// SFPU:           ttkernel.copy_tile(%[[CB1]],
+// SFPU:           ttkernel.add_binary_tile_init()
+// SFPU:           ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
+// SFPU:           ttkernel.mul_binary_tile_init()
+// SFPU:           ttkernel.mul_binary_tile(
+// SFPU:           ttkernel.exp_tile_init()
+// SFPU:           ttkernel.exp_tile(
+// SFPU:           ttkernel.tile_regs_commit
+// SFPU:           ttkernel.tile_regs_wait
+// SFPU:           ttkernel.pack_tile({{.*}}, %[[CB2]], {{.*}}, true)
+// SFPU:           ttkernel.tile_regs_release
+// SFPU-NOT:   ttl.attach_cb
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {

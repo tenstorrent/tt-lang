@@ -311,6 +311,27 @@ def TTL_InitSFPUOp : TTL_Op<"init_sfpu",
   let assemblyFormat = "`(` $icb `,` $ocb `)` attr-dict `:` type($icb) `,` type($ocb)";
 }
 
+def TTL_InitBinaryOp : TTL_Op<"init_binary",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Initialize UNPACK/PACK for FPU binary operations.";
+  let description = [{
+    Configures the unpacker A, unpacker B, and packer hardware for FPU binary
+    operations (add_tiles, sub_tiles, mul_tiles) based on the data formats of
+    two input circular buffers and one output circular buffer. Must be called
+    once before FPU binary computations.
+
+    Maps to `binary_op_init_common(in0_cb, in1_cb, out_cb)` in the TTKernel
+    dialect. Unlike `init_sfpu` (which configures a single UNPACK channel),
+    this configures both UNPACK A and UNPACK B channels.
+  }];
+  let arguments = (ins
+    TTL_CircularBuffer:$in0_cb,
+    TTL_CircularBuffer:$in1_cb,
+    TTL_CircularBuffer:$out_cb
+  );
+  let assemblyFormat = "`(` $in0_cb `,` $in1_cb `,` $out_cb `)` attr-dict `:` type($in0_cb) `,` type($in1_cb) `,` type($out_cb)";
+}
+
 def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Acquire the DST register lock.";

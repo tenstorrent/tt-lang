@@ -4,6 +4,14 @@
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
+//
+// SFPU path: FPU binary ops disabled
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst{enable-fpu-binary-ops=0},ttl-subblock-compute-for-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-schedule-operations,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-consolidate-inits,canonicalize,cse,lower-affine)' \
+// RUN:   -o %t.sfpu.ttkernel.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.sfpu.ttkernel.mlir -o %t.sfpu.emitc.mlir
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.sfpu.cpp %t.sfpu.emitc.mlir
+// RUN: FileCheck %s --input-file=%t.sfpu.cpp --check-prefix=SFPU
 
 // Purpose: Complete example with reader, compute, and writer threads.
 // Pattern: reader (NOC) → CBs → compute (MATH) → CB → writer (NOC)
@@ -104,7 +112,7 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK:   cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
 // CHECK-NEXT:   cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
 // CHECK-NEXT:   cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
-// CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// CHECK-NEXT:   binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 // CHECK-NEXT:   tile_regs_acquire();
 //
 // With scheduling + consolidation: ops are grouped by kind.
@@ -131,6 +139,32 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK-NEXT:   tile_regs_release();
 // CHECK-NEXT:   cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 // CHECK-NEXT:   return;
+//
+// SFPU path: compute kernel uses init_sfpu, copy_tile + add_binary_tile
+// SFPU-LABEL: // compute_fused
+// SFPU: void kernel_main() {
+// SFPU-DAG:   int32_t [[TILES:.*]] = 4
+// SFPU:   cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
+// SFPU-NEXT:   cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
+// SFPU-NEXT:   cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// SFPU-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// SFPU-NEXT:   tile_regs_acquire();
+// copy_tile for both add operands
+// SFPU:        copy_tile_init(get_compile_time_arg_val(0));
+// SFPU:        copy_tile(get_compile_time_arg_val(0),
+// SFPU:        copy_tile_init(get_compile_time_arg_val(1));
+// SFPU:        copy_tile(get_compile_time_arg_val(1),
+// add_binary_tile (SFPU) instead of add_tiles (FPU)
+// SFPU:        add_binary_tile_init();
+// SFPU:        add_binary_tile(
+// exp_tile
+// SFPU:        exp_tile_init();
+// SFPU:        exp_tile(
+// SFPU:   tile_regs_commit();
+// SFPU-NEXT:   tile_regs_wait();
+// SFPU:   tile_regs_release();
+// SFPU:   cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// SFPU-NOT:   add_tiles(
 
 // Compute kernel: reads from CB0, CB1, computes f(A+B), writes to CB2
 func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,

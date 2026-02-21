@@ -57,9 +57,14 @@ struct TTLInsertTileRegsSyncPass
     WalkResult result = funcOp.walk([&](ComputeOp computeOp) -> WalkResult {
       Operation *computeOperation = computeOp.getOperation();
 
-      Value icb = getAttachedCB(computeOp.getInputs().front());
       Value ocb = getAttachedCB(computeOp.getOutputs().front());
       Location loc = computeOp.getLoc();
+
+      // Check if the compute body contains FPU binary ops. If so, we need
+      // init_binary (binary_op_init_common) instead of init_sfpu.
+      bool hasFPUBinary = llvm::any_of(
+          computeOp.getRegion().front().without_terminator(),
+          [](Operation &op) { return op.hasAttr(kFPUBinaryAttrName); });
 
       // Find existing sync ops preceding this compute. Stop at another compute
       // op since each compute has its own lifecycle ops.
@@ -68,15 +73,28 @@ struct TTLInsertTileRegsSyncPass
           findPrecedingOp<TileRegsAcquireOp>(computeOperation, stopAtCompute);
       InitSFPUOp existingInitSfpu =
           findPrecedingOp<InitSFPUOp>(computeOperation, stopAtCompute);
+      InitBinaryOp existingInitBinary =
+          findPrecedingOp<InitBinaryOp>(computeOperation, stopAtCompute);
 
       OpBuilder builder(computeOp);
 
-      // Insert init_sfpu before acquire (or before compute if no acquire).
-      if (!existingInitSfpu) {
+      // Insert the appropriate init op before acquire (or before compute).
+      if (!existingInitSfpu && !existingInitBinary) {
         Operation *insertBefore =
             existingAcquire ? existingAcquire : computeOperation;
         builder.setInsertionPoint(insertBefore);
-        builder.create<InitSFPUOp>(loc, icb, ocb);
+        if (hasFPUBinary) {
+          // FPU binary path: configure UNPACK A+B and PACK.
+          Value in0cb = getAttachedCB(computeOp.getInputs()[0]);
+          Value in1cb = computeOp.getInputs().size() > 1
+                            ? getAttachedCB(computeOp.getInputs()[1])
+                            : in0cb;
+          builder.create<InitBinaryOp>(loc, in0cb, in1cb, ocb);
+        } else {
+          // SFPU path: configure single UNPACK channel and PACK.
+          Value icb = getAttachedCB(computeOp.getInputs().front());
+          builder.create<InitSFPUOp>(loc, icb, ocb);
+        }
       }
 
       // Check if this compute was processed by the subblocking pass.
