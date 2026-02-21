@@ -1,4 +1,5 @@
 // RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-consolidate-inits %s | FileCheck %s
+// RUN: ttlang-opt --ttkernel-consolidate-inits %s | FileCheck %s --check-prefix=FPU
 // Summary: Tests for ttkernel-consolidate-inits pass in isolation.
 //
 // Verifies that consecutive same-type compute ops share a single init op,
@@ -88,4 +89,36 @@ func.func @mixed_binary(
   %m1 = ttl.tile_mul %a, %b {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
   %s0 = ttl.tile_add %m0, %m1 {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
   func.return %s0 : !ttcore.tile<32x32, f32>
+}
+
+// Test 5: FPU binary ops (add_tiles, mul_tiles) -> one init per group
+// Uses TTKernel ops directly (second RUN line with --ttkernel-consolidate-inits only).
+// 2 add_tiles then 2 mul_tiles -> 1 add_tiles_init + 1 mul_tiles_init
+// FPU-LABEL: func.func @fpu_binary_consolidation
+// FPU-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
+// FPU-DAG: %[[C1:.*]] = arith.constant 1 : index
+// FPU-DAG: %[[C2:.*]] = arith.constant 2 : index
+// FPU-DAG: %[[C3:.*]] = arith.constant 3 : index
+// FPU: ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
+// FPU-NEXT: ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]])
+// FPU-NOT: ttkernel.add_tiles_init
+// FPU: ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[C1]], %[[C1]], %[[C1]])
+// FPU: ttkernel.mul_tiles_init(%[[CB0]], %[[CB1]])
+// FPU-NEXT: ttkernel.mul_tiles(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C2]])
+// FPU-NOT: ttkernel.mul_tiles_init
+// FPU: ttkernel.mul_tiles(%[[CB0]], %[[CB1]], %[[C1]], %[[C1]], %[[C3]])
+func.func @fpu_binary_consolidation() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  ttkernel.add_tiles(%cb0, %cb1, %c0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.add_tiles(%cb0, %cb1, %c1, %c1, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.mul_tiles(%cb0, %cb1, %c0, %c0, %c2) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.mul_tiles(%cb0, %cb1, %c1, %c1, %c3) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  func.return
 }

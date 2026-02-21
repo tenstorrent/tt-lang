@@ -125,7 +125,7 @@ func.func @mixed_fpu_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>, %c_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     // FPU: both block args
     %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    // SFPU: one operand is computed (add result)
+    // One operand is computed (add result), so this stays SFPU
     %mul = ttl.tile_mul %add, %c_tile : !ttcore.tile<32x32, f32>
     ttl.yield %mul : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
