@@ -47,7 +47,7 @@ jobs:
     # even if downstream tt-lang build/test steps fail.
     build-tt-mlir:
         name: build-tt-mlir (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
-        runs-on: ${{ inputs.linux_runner || 'mlir-large-runner-lang' }}
+        runs-on: 'mlir-large-runner-lang'
         timeout-minutes: 120
 
         container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
