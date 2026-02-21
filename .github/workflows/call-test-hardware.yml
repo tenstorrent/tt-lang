@@ -110,6 +110,12 @@ jobs:
           ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
           find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
 
+      - name: Add ttnn runtime to PYTHONPATH
+        run: |
+          # ttnn runtime lives inside the ttrt package in tt-mlir-install.
+          # This is only needed for HW tests that import ttnn directly.
+          echo "PYTHONPATH=$(pwd)/tt-mlir-install/python_packages/ttrt/runtime/ttnn:$PYTHONPATH" >> $GITHUB_ENV
+
       - name: Install test dependencies
         run: |
           source build/env/activate
