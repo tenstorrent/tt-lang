@@ -606,15 +606,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
       }
 
       Block &body = computeOp.getBody().front();
-      if (body.empty() || !body.mightHaveTerminator()) {
-        return rewriter.notifyMatchFailure(op,
-                                           "compute body has no terminator");
-      }
-      auto yieldOp = dyn_cast<YieldOp>(body.getTerminator());
-      if (!yieldOp) {
-        return rewriter.notifyMatchFailure(
-            op, "compute body terminator is not a YieldOp");
-      }
+      auto yieldOp = cast<YieldOp>(body.getTerminator());
       rewriter.setInsertionPoint(yieldOp);
       rewriter.create<TileStoreOp>(op.getLoc(), yieldOp.getValues().front(),
                                    reserveView);
