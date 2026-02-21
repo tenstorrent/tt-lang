@@ -51,11 +51,37 @@ jobs:
             - id: read
               run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
 
-    # Job 1: Build and cache tt-mlir independently.
+    # Job 1: Determine tt-mlir commit and check if it's already cached.
+    # Runs on a cheap runner to avoid occupying a large runner just for a cache lookup.
+    check-ttmlir-cache:
+        needs: [get-mlir-tag]
+        runs-on: ubuntu-latest
+        outputs:
+            ttmlir-commit: ${{ steps.ttmlir-commit.outputs.commit }}
+            cache-hit: ${{ steps.cache-ttmlir.outputs.cache-hit }}
+        steps:
+            - name: Checkout tt-lang
+              uses: actions/checkout@v4
+
+            - name: Determine tt-mlir commit
+              id: ttmlir-commit
+              run: |
+                  bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
+
+            - name: Check tt-mlir cache
+              id: cache-ttmlir
+              uses: actions/cache@v4
+              with:
+                  path: tt-mlir-install
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
+                  lookup-only: true
+
+    # Job 2: Build tt-mlir via FetchContent (only on cache miss).
     # This ensures the expensive tt-mlir build (~60-90 min) is always cached,
     # even if downstream tt-lang build/test steps fail.
     build-tt-mlir:
-        needs: [get-mlir-tag]
+        needs: [get-mlir-tag, check-ttmlir-cache]
+        if: needs.check-ttmlir-cache.outputs.cache-hit != 'true'
         name: build-tt-mlir (mlir-large-runner-lang)
         runs-on: mlir-large-runner-lang
         timeout-minutes: 120
@@ -71,9 +97,6 @@ jobs:
             TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
             CMAKE_BUILD_PARALLEL_LEVEL: 2
 
-        outputs:
-            ttmlir-commit: ${{ steps.ttmlir-commit.outputs.commit }}
-
         steps:
             - name: Maximize space
               uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
@@ -83,62 +106,30 @@ jobs:
               with:
                   fetch-depth: 0
 
-            - name: Determine tt-mlir commit
-              id: ttmlir-commit
-              shell: bash
-              run: |
-                  df -h
-                  bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
-                  echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
-
-            - name: Cache tt-mlir installation
-              id: cache-ttmlir
-              uses: actions/cache@v4
-              with:
-                  # Cache normalized tt-mlir-install (self-contained, no symlinks)
-                  path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}
-                  lookup-only: false
-
-            - name: Check if tt-mlir was restored from cache
-              id: check-ttmlir-cache
-              run: |
-                  # Check if cache was restored with complete installation
-                  if [ -d "${{ env.TT_MLIR_DIR }}" ] && \
-                     [ -f "${{ env.TT_MLIR_DIR }}/lib/cmake/ttmlir/TTMLIRConfig.cmake" ] && \
-                     [ -d "${{ env.TT_MLIR_DIR }}/python_packages/builder/ttnn" ]; then
-                      echo "restored=true" >> $GITHUB_OUTPUT
-                      echo "✓ tt-mlir installation restored from cache at ${{ env.TT_MLIR_DIR }}"
-                      ls -lh "${{ env.TT_MLIR_DIR }}" | head -10
-                  else
-                      echo "restored=false" >> $GITHUB_OUTPUT
-                      echo "✗ tt-mlir not cached, will build via FetchContent (~60-90 min)"
-                  fi
+            - name: Set TT_MLIR_DIR
+              run: echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
 
             # On cache miss: cmake configure triggers FetchContent build of tt-mlir.
             # This is the same approach used by build-and-install.sh in the Docker build.
             - name: Configure tt-lang (builds tt-mlir via FetchContent)
-              if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
-                  echo "Configuring tt-lang with tt-mlir commit: ${{ steps.ttmlir-commit.outputs.commit }}"
+                  echo "Configuring tt-lang with tt-mlir commit: ${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}"
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DCMAKE_CXX_COMPILER=clang++-17 \
                       -DCMAKE_C_COMPILER=clang-17 \
                       -DTTMLIR_CMAKE_BUILD_TYPE=Release \
                       -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
-                      -DTTMLIR_GIT_TAG=${{ steps.ttmlir-commit.outputs.commit }} \
+                      -DTTMLIR_GIT_TAG=${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }} \
                       -DTTLANG_ENABLE_PERF_TRACE=ON
 
             # Build tt-lang to complete the FetchContent install
             - name: Build tt-lang (completes tt-mlir install)
-              if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
                   source build/env/activate
                   cmake --build build
 
             - name: Copy ttrt runtime (contains ttnn Python package) to tt-mlir-install
-              if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
                   set -x
                   # TODO: Remove when tt-mlir install is fixed to install the runtime python packages
@@ -147,14 +138,20 @@ jobs:
                       tt-mlir-install/python_packages/ttrt/runtime/
 
             - name: Normalize tt-mlir installation
-              if: steps.check-ttmlir-cache.outputs.restored != 'true'
               run: |
                   .github/scripts/normalize-ttmlir-install.sh tt-mlir-install
 
-    # Job 2: Build and test tt-lang using cached tt-mlir.
+            - name: Save tt-mlir cache
+              uses: actions/cache/save@v4
+              with:
+                  path: tt-mlir-install
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
+
+    # Job 3: Build and test tt-lang using cached tt-mlir.
     build-tt-lang:
         name: build-tt-lang (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
-        needs: [get-mlir-tag, build-tt-mlir]
+        needs: [get-mlir-tag, check-ttmlir-cache, build-tt-mlir]
+        if: always() && !failure() && !cancelled()
         runs-on: ${{ inputs.linux_runner || 'mlir-large-runner-lang' }}
         timeout-minutes: 60
 
@@ -181,13 +178,13 @@ jobs:
               uses: actions/cache/restore@v4
               with:
                   path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.build-tt-mlir.outputs.ttmlir-commit }}
+                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
                   fail-on-cache-miss: true
 
             - name: Setup ccache for tt-lang
               uses: hendrikmuhs/ccache-action@v1.2
               with:
-                  key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ needs.build-tt-mlir.outputs.ttmlir-commit }}
+                  key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
                   max-size: 200M
 
             - name: Configure tt-lang with pre-installed tt-mlir
