@@ -296,6 +296,7 @@ jobs:
 
     test-hardware:
         needs: build-tt-lang
+        if: always() && needs.build-tt-lang.result == 'success'
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
