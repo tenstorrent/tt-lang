@@ -19,8 +19,8 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from python.sim import TILE_SHAPE, copy, ttl, ttnn
-from python.sim.program import _make_cell  # type: ignore[reportPrivateUsage]
-from python.sim.program import Program, rebind_func_with_ctx
+from python.sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
+from python.sim.program import Program
 
 
 class TestBasicExecution:
