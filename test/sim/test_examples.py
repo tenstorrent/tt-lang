@@ -229,27 +229,35 @@ def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
     ), f"Expected error message not found in: {error_msg}"
 
 
-@requires_ttnn
-def test_demo_one_deadlock_detection(capsys: pytest.CaptureFixture[str]) -> None:
-    """Test deadlock detection with multicore_grid_auto.py modified to cause a deadlock."""
+def test_eltwise_add_deadlock_detection() -> None:
+    """Test deadlock detection in eltwise_add.py with reserve() changed to wait().
+
+    Replacing a_dfb.reserve() with a_dfb.wait() in the read DM thread causes a
+    deadlock: read blocks waiting for data that only it was supposed to produce,
+    compute also blocks waiting on a_dfb, and write blocks waiting on out_dfb.
+    """
+    import re
     import tempfile
 
-    # Read the original tutorial/multicore_grid_auto.py
-    source_file = EXAMPLES_DIR / "tutorial/multicore_grid_auto_test.py"
+    source_file = EXAMPLES_DIR / "eltwise_add.py"
     with open(source_file) as f:
         content = f.read()
 
-    # Introduce the error: change y_dfb.reserve() to y_dfb.wait()
-    # This creates a deadlock where compute waits for y_dfb that it should be writing to
-    modified_content = content.replace(
-        "y_dfb.reserve() as y_blk,", "y_dfb.wait() as y_blk,"
-    )
+    original = "with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:"
+    modified = "with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:"
+    modified_content = content.replace(original, modified)
 
     assert (
         modified_content != content
-    ), "Failed to modify tutorial/multicore_grid.py content"
+    ), "Failed to modify eltwise_add.py: pattern not found"
 
-    # Create a temporary file with the modified content
+    # Find line number of the modified line to verify it appears in the deadlock output
+    modified_line_num = next(
+        i
+        for i, line in enumerate(modified_content.splitlines(), start=1)
+        if modified in line
+    )
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
         tmp.write(modified_content)
         tmp_path = Path(tmp.name)
@@ -258,34 +266,29 @@ def test_demo_one_deadlock_detection(capsys: pytest.CaptureFixture[str]) -> None
         with pytest.raises(RuntimeError) as exc_info:
             run_example(tmp_path)
 
-        # The exception carries the brief header
-        assert "Deadlock detected: all generators blocked" in str(exc_info.value)
+        error_msg = str(exc_info.value)
 
-        # Detailed per-location info is printed to stdout before the raise
-        out = capsys.readouterr().out
         assert (
-            "Deadlock detected: all generators blocked" in out
-        ), f"Expected deadlock detection message not found in output:\n{out}"
+            "Deadlock detected: all generators blocked" in error_msg
+        ), f"Expected deadlock message:\n{error_msg}"
+        assert (
+            "CircularBuffer(a_dfb)" in error_msg
+        ), f"Expected to see a_dfb in deadlock output:\n{error_msg}"
+        assert (
+            "blocked on wait()" in error_msg
+        ), f"Expected 'blocked on wait()' in deadlock output:\n{error_msg}"
 
-        # Check that it identifies the blocked buffer and operations
-        assert (
-            "CircularBuffer(y_dfb)" in out
-        ), f"Expected to see y_dfb in deadlock output:\n{out}"
-        assert (
-            "blocked on wait()" in out
-        ), f"Expected to see 'blocked on wait()' in deadlock output:\n{out}"
-        assert (
-            "blocked on reserve()" in out
-        ), f"Expected 'blocked on reserve()' in:\n{out}"
-
-        # Check that reported line numbers point to actual wait()/reserve() calls
-        import re
-
-        line_number_pattern = r"-->\s+.*?:(\d+):\d+"
-        reported_line_numbers = {int(n) for n in re.findall(line_number_pattern, out)}
-        assert (
-            reported_line_numbers
-        ), f"No source locations found in deadlock output:\n{out}"
+        # Check that reported source locations point to actual wait()/reserve() calls
+        # and that the modified line is among them
+        line_number_pattern = r"at .*?:(\d+)"
+        reported_line_numbers = {
+            int(n) for n in re.findall(line_number_pattern, error_msg)
+        }
+        assert reported_line_numbers, f"No source locations found in:\n{error_msg}"
+        assert modified_line_num in reported_line_numbers, (
+            f"Expected line {modified_line_num} (the wait() call) in reported "
+            f"locations {reported_line_numbers}.\nError:\n{error_msg}"
+        )
 
         tmp_lines = tmp_path.read_text().splitlines()
         for line_num in reported_line_numbers:
