@@ -187,46 +187,6 @@ jobs:
                   key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
                   max-size: 200M
 
-            # TEMPORARY: Debug tt-mlir-install layout to diagnose nanobind conflicts.
-            # Remove once the duplicate ttnn registration issue is resolved.
-            - name: Inspect tt-mlir-install layout
-              run: |
-                  echo "=== Top-level directories ==="
-                  ls -la tt-mlir-install/
-                  echo ""
-                  echo "=== python_packages/ ==="
-                  ls -la tt-mlir-install/python_packages/
-                  echo ""
-                  echo "=== python_packages/ttrt/ (if exists) ==="
-                  find tt-mlir-install/python_packages/ttrt -maxdepth 3 -type f -name "*.so" -o -name "__init__.py" 2>/dev/null || echo "not found"
-                  echo ""
-                  echo "=== ttrt/ at root (if exists, created by normalize) ==="
-                  find tt-mlir-install/ttrt -maxdepth 3 -type f -name "*.so" -o -name "__init__.py" 2>/dev/null || echo "not found"
-                  echo ""
-                  echo "=== All _ttnn.so locations ==="
-                  find tt-mlir-install -name "_ttnn.so" 2>/dev/null || echo "none"
-                  echo ""
-                  echo "=== All ttnn __init__.py locations ==="
-                  find tt-mlir-install -path "*/ttnn/__init__.py" 2>/dev/null || echo "none"
-                  echo ""
-                  echo "=== Symlinks remaining ==="
-                  find tt-mlir-install -type l 2>/dev/null | head -20 || echo "none"
-                  echo ""
-                  echo "=== builder/ttnn (should be gone) ==="
-                  ls -la tt-mlir-install/python_packages/builder/ttnn/ 2>/dev/null || echo "not found (good)"
-
-            # TEMPORARY: Remove duplicate top-level dirs created by normalize script.
-            # These are copies of python_packages/ subdirs that cause nanobind conflicts.
-            # Remove once the cache is rebuilt with the fixed normalize script.
-            - name: Fix stale tt-mlir-install layout
-              run: |
-                  for dir in builder golden op_by_op_infra ttmlir ttnn_jit ttrt; do
-                      if [ -d "tt-mlir-install/$dir" ] && [ -d "tt-mlir-install/python_packages/$dir" ]; then
-                          echo "Removing duplicate: tt-mlir-install/$dir"
-                          rm -rf "tt-mlir-install/$dir"
-                      fi
-                  done
-
             - name: Configure tt-lang with pre-installed tt-mlir
               run: |
                   cmake -G Ninja -B build \
