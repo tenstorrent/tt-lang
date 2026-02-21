@@ -17,7 +17,7 @@ from typing import Any, Callable, List, Optional
 
 import torch
 
-from .block import Block, BlockAcquisition, ThreadType
+from .cb import Block, BlockAcquisition, ThreadType
 from .ttnnsim import Tensor
 
 

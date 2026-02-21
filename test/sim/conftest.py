@@ -6,7 +6,7 @@
 
 import pytest
 from greenlet import greenlet
-from python.sim.block import ThreadType, set_current_thread_type
+from python.sim.cb import ThreadType, set_current_thread_type
 from python.sim.greenlet_scheduler import (
     GreenletScheduler,
     set_scheduler,

@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from sim import ttl
-from sim.block import Block
+from sim.cb import Block
 from sim.ttnnsim import Tensor
 
 

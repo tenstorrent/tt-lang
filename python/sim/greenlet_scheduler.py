@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from greenlet import greenlet
 
-from .block import ThreadType
+from .blockstate import ThreadType
 
 
 # Global scheduler algorithm selection
@@ -337,7 +337,7 @@ class GreenletScheduler:
         one block_if_needed check). Threads that blocked on their first check
         keep ts=0, giving them priority in fair scheduling.
         """
-        from .block import set_current_thread_type, clear_current_thread_type
+        from .blockstate import set_current_thread_type, clear_current_thread_type
 
         for name in list(self._active.keys()):
             g, blocking_obj, _, thread_type, _ = self._active[name]
@@ -449,7 +449,10 @@ class GreenletScheduler:
                 self._current_name = name
 
                 # Run thread until it blocks or completes
-                from .block import set_current_thread_type, clear_current_thread_type
+                from .blockstate import (
+                    set_current_thread_type,
+                    clear_current_thread_type,
+                )
 
                 set_current_thread_type(thread_type)
                 try:
@@ -537,7 +540,7 @@ class GreenletScheduler:
         if obj is None:
             return ""
 
-        from .block import Block
+        from .cb import Block
         from .cb import CircularBuffer
         from .pipe import Pipe
         from .ttnnsim import Tensor

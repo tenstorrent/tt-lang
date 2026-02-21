@@ -11,7 +11,7 @@ operations within the simulation framework.
 from types import FunctionType
 from typing import Any, Callable, Dict, List
 
-from .block import ThreadType
+from .blockstate import ThreadType
 from .program import BindableTemplate, rebind_func_with_ctx
 
 # Thread registry for automatic collection of @compute and @datamovement threads

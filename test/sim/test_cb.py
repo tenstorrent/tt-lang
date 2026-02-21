@@ -14,6 +14,7 @@ import time
 from typing import List, Tuple
 
 import pytest
+import torch
 from test_utils import (
     make_full_tensor,
     make_ones_tensor,
@@ -26,8 +27,14 @@ from test_utils import (
 )
 
 from python.sim import TILE_SHAPE, copy, ttnn
-from python.sim.block import ThreadType, set_current_thread_type
-from python.sim.cb import CBAPI, CircularBuffer
+from python.sim.cb import (
+    CBAPI,
+    Block,
+    CircularBuffer,
+    ThreadType,
+    set_current_thread_type,
+)
+from python.sim.ttnnsim import Tensor
 from python.sim.cbstate import CBSlot
 from python.sim.errors import CBContractError, CBTimeoutError
 from python.sim.typedefs import CBID
@@ -169,7 +176,7 @@ def test_copy_operations_with_dm_context(api: CBAPI) -> None:
 
     This replaces the old test_copy_operations that was disabled due to lack of thread context.
     """
-    from python.sim.block import (
+    from python.sim.cb import (
         set_current_thread_type,
         clear_current_thread_type,
         ThreadType,
@@ -258,7 +265,7 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
     - DM thread: copy data into CBs (reserve + copy + push)
     - Switch to COMPUTE thread for consumption (wait + read + pop)
     """
-    from python.sim.block import (
+    from python.sim.cb import (
         set_current_thread_type,
         clear_current_thread_type,
         ThreadType,
@@ -344,7 +351,7 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
 
 def test_single_pending_reserve_constraint(api: CBAPI) -> None:
     """Test that only one reserve() is allowed before push()."""
-    from python.sim.block import set_current_thread_type, ThreadType
+    from python.sim.cb import set_current_thread_type, ThreadType
     from python.sim.copy import copy
 
     set_current_thread_type(ThreadType.DM)
@@ -380,14 +387,14 @@ def test_single_pending_reserve_constraint(api: CBAPI) -> None:
         tx.wait()
         block2.push()
     finally:
-        from python.sim.block import clear_current_thread_type
+        from python.sim.cb import clear_current_thread_type
 
         clear_current_thread_type()
 
 
 def test_single_pending_wait_constraint(api: CBAPI) -> None:
     """Test that only one wait() is allowed before pop()."""
-    from python.sim.block import set_current_thread_type, ThreadType
+    from python.sim.cb import set_current_thread_type, ThreadType
     from python.sim.copy import copy
 
     set_current_thread_type(ThreadType.COMPUTE)
@@ -442,7 +449,7 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
         out_block2.push()
         data2.pop()
     finally:
-        from python.sim.block import clear_current_thread_type
+        from python.sim.cb import clear_current_thread_type
 
         clear_current_thread_type()
 
@@ -949,7 +956,7 @@ def test_block_state_machine_restrictions(api: CBAPI) -> None:
 
 def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
     """Test that copy operations set blocks to NA (No Access) state."""
-    from python.sim.block import (
+    from python.sim.cb import (
         Block,
         BlockAcquisition,
         ThreadType,
@@ -999,7 +1006,7 @@ def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
         # Block indexing is not allowed regardless of state
     finally:
         # Clean up thread context
-        from python.sim.block import clear_current_thread_type
+        from python.sim.cb import clear_current_thread_type
 
         clear_current_thread_type()
 
@@ -1012,7 +1019,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
     This test verifies that push() can only be called on reserve() blocks
     (not wait() blocks) and only when PUSH is in the expected operations.
     """
-    from python.sim.block import (
+    from python.sim.cb import (
         Block,
         BlockAcquisition,
         ThreadType,
@@ -1060,7 +1067,7 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
 
         print("Push validates expected state test passed!")
     finally:
-        from python.sim.block import clear_current_thread_type
+        from python.sim.cb import clear_current_thread_type
 
         clear_current_thread_type()
 
@@ -1402,8 +1409,94 @@ def test_default_api_heterogeneous():
         set_current_thread_type(None)
 
 
+# ---------------------------------------------------------------------------
+# Block tests
+# ---------------------------------------------------------------------------
+
+
+def test_matmul_1x4_times_4x1_shape():
+    """Test matmul with (1,4) @ (4,1) produces (1,1) result, not (4,4).
+
+    This is a regression test for a bug where Block.__matmul__ was using
+    broadcasting logic (result_shape = (max(1,4), max(4,1)) = (4,4))
+    instead of matmul logic (result_shape = (1,1)).
+    """
+    a_block = Block.from_list(
+        [Tensor(torch.ones((32, 32))) for _ in range(4)], shape=(1, 4)
+    )
+    b_block = Block.from_list(
+        [Tensor(torch.ones((32, 32))) for _ in range(4)], shape=(4, 1)
+    )
+    result = a_block @ b_block
+    assert result.shape == (1, 1), f"Expected (1,1) but got {result.shape}"
+    assert (
+        len(result.to_list()) == 1
+    ), f"Expected 1 tile but got {len(result.to_list())}"
+
+
+def test_matmul_2x3_times_3x2_shape():
+    """Test matmul with (2,3) @ (3,2) produces (2,2) result."""
+    a_block = Block.from_list(
+        [Tensor(torch.ones((32, 32))) for _ in range(6)], shape=(2, 3)
+    )
+    b_block = Block.from_list(
+        [Tensor(torch.ones((32, 32))) for _ in range(6)], shape=(3, 2)
+    )
+    result = a_block @ b_block
+    assert result.shape == (2, 2), f"Expected (2,2) but got {result.shape}"
+    assert (
+        len(result.to_list()) == 4
+    ), f"Expected 4 tiles but got {len(result.to_list())}"
+
+
+def test_matmul_1x1_times_1x4_shape():
+    """Test matmul with (1,1) @ (1,4) produces (1,4) result."""
+    a_block = Block.from_list([Tensor(torch.ones((32, 32)))], shape=(1, 1))
+    b_block = Block.from_list(
+        [Tensor(torch.ones((32, 32))) for _ in range(4)], shape=(1, 4)
+    )
+    result = a_block @ b_block
+    assert result.shape == (1, 4), f"Expected (1,4) but got {result.shape}"
+    assert (
+        len(result.to_list()) == 4
+    ), f"Expected 4 tiles but got {len(result.to_list())}"
+
+
+def test_matmul_4x1_times_1x4_shape():
+    """Test matmul with (4,1) @ (1,4) produces (4,4) result."""
+    a_block = Block.from_list(
+        [Tensor(torch.ones((32, 32))) for _ in range(4)], shape=(4, 1)
+    )
+    b_block = Block.from_list(
+        [Tensor(torch.ones((32, 32))) for _ in range(4)], shape=(1, 4)
+    )
+    result = a_block @ b_block
+    assert result.shape == (4, 4), f"Expected (4,4) but got {result.shape}"
+    assert (
+        len(result.to_list()) == 16
+    ), f"Expected 16 tiles but got {len(result.to_list())}"
+
+
+def test_matmul_1x4_times_4x1_values():
+    """Test matmul correctness for (1,4) @ (4,1) grid."""
+    a_block = Block.from_list(
+        [Tensor(torch.full((32, 32), float(i + 1))) for i in range(4)], shape=(1, 4)
+    )
+    b_block = Block.from_list(
+        [Tensor(torch.full((32, 32), float(i + 1))) for i in range(4)], shape=(4, 1)
+    )
+    result = a_block @ b_block
+    assert result.shape == (1, 1)
+
+    # Each matmul tile: sum(i^2 * 32 for i in [1,2,3,4]) = 32 * 30 = 960
+    result_tensor = result.to_list()[0].to_torch()
+    expected_value = 32.0 * (1 * 1 + 2 * 2 + 3 * 3 + 4 * 4)
+    assert torch.allclose(
+        result_tensor, torch.full((32, 32), expected_value)
+    ), f"Expected all values to be {expected_value}, got {result_tensor[0, 0]}"
+
+
 if __name__ == "__main__":
-    import pytest as _pytest
     import sys
 
-    sys.exit(_pytest.main([__file__, "-v"]))
+    sys.exit(pytest.main([__file__, "-v"]))

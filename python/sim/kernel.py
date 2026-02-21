@@ -12,7 +12,7 @@ import inspect
 from typing import Any, Callable, List, Union, cast
 import types
 
-from .block import ThreadType
+from .blockstate import ThreadType
 from .typedefs import CoreCoord, Index, Shape, Size
 
 # Default grid size when grid='auto' is specified

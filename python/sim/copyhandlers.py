@@ -26,7 +26,7 @@ from typing import (
     Union,
 )
 
-from .block import Block
+from .cb import Block
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (

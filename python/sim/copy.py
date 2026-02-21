@@ -9,7 +9,7 @@ enabling data transfer operations between tensors and Blocks in the
 CircularBuffer system.
 """
 
-from .block import Block
+from .cb import Block
 from .copyhandlers import (
     CopyEndpoint,
     CopyEndpointType,
