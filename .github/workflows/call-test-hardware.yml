@@ -110,47 +110,40 @@ jobs:
           ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
           find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
 
-      - name: Add ttnn runtime to PYTHONPATH
-        run: |
-          # ttnn runtime lives inside the ttrt package in tt-mlir-install.
-          # This is only needed for HW tests that import ttnn directly.
-          # Use a separate var so it doesn't conflict with activate's PYTHONPATH.
-          echo "TTNN_RUNTIME_PYTHONPATH=$(pwd)/tt-mlir-install/python_packages/ttrt/runtime/ttnn" >> $GITHUB_ENV
-
       - name: Install test dependencies
         run: |
-          source build/env/activate && export PYTHONPATH="$TTNN_RUNTIME_PYTHONPATH:$PYTHONPATH"
+          source build/env/activate
           pip install -r dev-requirements.txt
 
       - name: Smoketest
         run: |
-          source build/env/activate && export PYTHONPATH="$TTNN_RUNTIME_PYTHONPATH:$PYTHONPATH"
+          source build/env/activate
           python3 test/python/smoketest.py
 
       - name: Single test (just python)
         run: |
-          source build/env/activate && export PYTHONPATH="$TTNN_RUNTIME_PYTHONPATH:$PYTHONPATH"
+          source build/env/activate
           python test/python/simple_add.py
 
       - name: Python lit tests
         run: |
-          source build/env/activate && export PYTHONPATH="$TTNN_RUNTIME_PYTHONPATH:$PYTHONPATH"
+          source build/env/activate
           cmake --build build --target check-ttlang-python-lit
 
       - name: ME2E tests (MLIR input end-to-end tests)
         run: |
-          source build/env/activate && export PYTHONPATH="$TTNN_RUNTIME_PYTHONPATH:$PYTHONPATH"
+          source build/env/activate
           python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
 
       - name: Pytests (Python DSL end-to-end tests)
         run: |
-          source build/env/activate && export PYTHONPATH="$TTNN_RUNTIME_PYTHONPATH:$PYTHONPATH"
+          source build/env/activate
           # Run pytest directly instead of through ninja
           python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
       - name: Simulator tests
         run: |
-          source build/env/activate && export PYTHONPATH="$TTNN_RUNTIME_PYTHONPATH:$PYTHONPATH"
+          source build/env/activate
           python3 -m pytest test/sim -v --tb=short --junitxml=build/test/sim-report.xml
 
       - name: Upload test reports
