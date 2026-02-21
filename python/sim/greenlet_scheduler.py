@@ -544,7 +544,7 @@ class GreenletScheduler:
         from .cb import CircularBuffer
         from .pipe import Pipe
         from .ttnnsim import Tensor
-        from .typedefs import AnyPipe
+        from .pipe import AnyPipe
 
         match obj:
             case Block():

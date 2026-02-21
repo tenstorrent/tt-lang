@@ -29,7 +29,7 @@ from python.sim.copyhandlers import (
     TensorToBlockHandler,
     handler_registry,
 )
-from python.sim.typedefs import Pipe
+from python.sim.pipe import Pipe
 
 if TYPE_CHECKING:
     pass

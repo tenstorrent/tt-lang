@@ -23,7 +23,7 @@ from python.sim.cb import Block, BlockAcquisition, Span, ThreadType
 from python.sim.cb import CBAPI
 from python.sim.cbstate import CBSlot
 from python.sim.copy import CopyTransaction, copy
-from python.sim.typedefs import Pipe
+from python.sim.pipe import Pipe
 
 
 @pytest.fixture

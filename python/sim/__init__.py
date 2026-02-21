@@ -12,10 +12,10 @@ from .constants import MAX_CBS, TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
 from .kernel import core, kernel
-from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
+from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
 from .ttnnsim import TTNN_AVAILABLE
-from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape
+from .typedefs import CoreCoord, CoreRange, Shape
 
 
 # Create ttl.math namespace object
@@ -54,9 +54,9 @@ class _TTLNamespace:
         from .decorators import compute, datamovement
         from .kernel import core, grid_size, kernel
         from . import math as math_module
-        from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
+        from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
-        from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape, Size
+        from .typedefs import CoreCoord, CoreRange, Shape, Size
 
         self.kernel = kernel
         self.grid_size = grid_size

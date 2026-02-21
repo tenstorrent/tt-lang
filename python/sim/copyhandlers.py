@@ -36,7 +36,8 @@ from .stats import (
     record_pipe_write,
 )
 from .ttnnsim import Tensor
-from .typedefs import AnyDst, AnyPipe, CoreCoord, Count, Pipe, Shape
+from .pipe import AnyDst, AnyPipe, Pipe
+from .typedefs import CoreCoord, Count, Shape
 
 if TYPE_CHECKING:
     from .pipe import SrcPipeIdentity

@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from .ttnnsim import Tensor
 
 from .constants import TILE_SHAPE
-from .typedefs import AnyPipe, CoreCoord, CoreRange
+from .pipe import AnyPipe
+from .typedefs import CoreCoord, CoreRange
 
 # Statistics collection state
 _stats_enabled = False
