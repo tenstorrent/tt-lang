@@ -21,7 +21,7 @@ from test_utils import (
 
 from python.sim import ttnn
 from python.sim.block import Block
-from python.sim.cbapi import CBAPI
+from python.sim.cb import CBAPI
 from python.sim.copyhandlers import (
     BlockToPipeHandler,
     BlockToTensorHandler,

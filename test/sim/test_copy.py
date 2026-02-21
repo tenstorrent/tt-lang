@@ -20,7 +20,7 @@ from test_utils import (
 )
 
 from python.sim.block import Block, BlockAcquisition, Span, ThreadType
-from python.sim.cbapi import CBAPI
+from python.sim.cb import CBAPI
 from python.sim.cbstate import CBSlot
 from python.sim.copy import CopyTransaction, copy
 from python.sim.typedefs import Pipe

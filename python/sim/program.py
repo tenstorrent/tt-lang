@@ -15,8 +15,7 @@ from types import CellType, FunctionType
 from typing import Any, Callable, Dict, List, Protocol
 
 from .block import ThreadType
-from .cb import CircularBuffer
-from .cbapi import CBAPI
+from .cb import CBAPI, CircularBuffer
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
 from .typedefs import Shape

@@ -7,7 +7,7 @@ sim package: simulation components for TT-Lang including circular buffers, tenso
 """
 
 from . import ttnnsim as ttnn
-from .cbapi import CBAPI, CBStats
+from .cb import CBAPI, CBStats
 from .constants import MAX_CBS, TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
