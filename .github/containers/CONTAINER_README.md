@@ -51,7 +51,7 @@ docker run -it \
   --device=/dev/tenstorrent/0:/dev/tenstorrent/0 \
   -v /dev/hugepages:/dev/hugepages \
   -v /dev/hugepages-1G:/dev/hugepages-1G \
-  ghcr.io/tenstorrent/tt-lang/tt-lang-ci-ubuntu-22-04:latest
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest
 ```
 
 Your code will be in `~/my-code`.
@@ -60,12 +60,10 @@ Your code will be in `~/my-code`.
 
 **Remote (from ghcr.io):**
 - `ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest` - Pre-built tt-lang for users (recommended)
-- `ghcr.io/tenstorrent/tt-lang/tt-lang-ci-ubuntu-22-04:latest` - tt-mlir toolchain for CI workflows
 - `ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest` - Development tools for building tt-lang
 
 **Local (if built locally):**
 - `tt-lang-dist-ubuntu-22-04:latest` - Pre-built tt-lang (recommended for users)
-- `tt-lang-ci-ubuntu-22-04:latest` - tt-mlir toolchain (for building tt-lang)
 - `tt-lang-ird-ubuntu-22-04:latest` - Development image
 
 ## Notes
