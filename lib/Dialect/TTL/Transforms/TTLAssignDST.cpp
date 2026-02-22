@@ -15,10 +15,10 @@
 //   - Insert ttl.copy_dst for all but the last consumer
 //   - Prevents unary ops from clobbering values needed by other consumers
 //
-// Phase 2: Build Live Intervals with Unary Merging
+// Phase 2: Build Live Intervals with In-Place Merging
 //   - Assign operation indices in block order
 //   - Build lifetime intervals [start, end] for each tile value
-//   - Merge intervals for unary ops (input and output share DST)
+//   - Merge intervals for in-place ops (input and output share DST)
 //   - Use union-find to track merged equivalence classes
 //
 // Phase 3: Linear Scan Allocation
@@ -362,7 +362,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 }
 
 //===----------------------------------------------------------------------===//
-// Phase 2: Build Live Intervals with Unary Merging
+// Phase 2: Build Live Intervals with In-Place Merging
 //===----------------------------------------------------------------------===//
 
 /// Build live intervals for all tile values in the compute body.
@@ -421,7 +421,12 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     yieldedValues.insert(v);
   }
 
-  // Merge intervals for in-place ops (input and output share DST slot)
+  // Merge intervals for in-place ops (input and output share DST slot).
+  // In-place ops (exp_tile, abs_tile, etc.) read from and write to the same
+  // DST register — this is a hardware constraint. The merge is unconditional:
+  // regardless of what downstream ops consume the result, the input and output
+  // must share the same DST index so the lowered instruction (e.g.,
+  // exp_tile(dst_idx)) operates on the correct register.
   for (Operation &op : *body) {
     if (!isInPlaceOp(&op)) {
       continue;
@@ -434,27 +439,15 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
       continue;
     }
 
-    // Check if output is yielded or all uses are unary
-    bool shouldMerge = yieldedValues.contains(output);
-    if (!shouldMerge) {
-      // Check if all uses are in-place
-      shouldMerge = llvm::all_of(output.getUsers(), [](Operation *user) {
-        return isInPlaceOp(user) || isa<YieldOp>(user);
-      });
+    auto itA = merged.findLeader(merged.insert(input));
+    auto itB = merged.findLeader(merged.insert(output));
+    if (itA != itB) {
+      merged.unionSets(itA, itB);
     }
 
-    if (shouldMerge) {
-      auto itA = merged.findLeader(merged.insert(input));
-      auto itB = merged.findLeader(merged.insert(output));
-      if (itA != itB) {
-        merged.unionSets(itA, itB);
-      }
-
-      LLVM_DEBUG({
-        llvm::dbgs() << "Phase 2: Merged " << input << " and " << output
-                     << "\n";
-      });
-    }
+    LLVM_DEBUG({
+      llvm::dbgs() << "Phase 2: Merged " << input << " and " << output << "\n";
+    });
   }
 
   // Propagate merged intervals: all values in a merged set get the same

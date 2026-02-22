@@ -321,6 +321,122 @@ def test_unary_chain_branch(device):
     assert_allclose(result_add.float(), expected_add.float(), rtol=1e-2, atol=1e-2)
 
 
+# =============================================================================
+# In-place DST merge regression tests
+# =============================================================================
+# These test the pattern where an in-place op's output feeds a non-in-place op.
+# The allocator must unconditionally merge in-place input/output intervals so
+# exp_tile reads from the correct DST register.
+
+
+@ttl.kernel(grid=(1, 1))
+def exp_add_inplace_kernel(a, b, out):
+    """exp(a) + b: in-place exp feeds non-in-place add."""
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
+            with out_dfb.reserve() as o:
+                result = ttl.math.exp(av) + bv
+                o.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
+            ta = ttl.copy(a[0, 0], a_blk)
+            tb = ttl.copy(b[0, 0], b_blk)
+            ta.wait()
+            tb.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0, 0])
+            tx.wait()
+
+
+def test_inplace_feeds_non_inplace(device):
+    """Regression: exp(a) + b — in-place op output feeds non-in-place binary."""
+    a_torch = torch.tensor(
+        [[0.5, 1.0, -0.5, -1.0, 0.0, 0.25] + [0.1] * 26] * 32,
+        dtype=torch.bfloat16,
+    )
+    b_torch = torch.tensor(
+        [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0] + [1.0] * 26] * 32,
+        dtype=torch.bfloat16,
+    )
+
+    expected = (torch.exp(a_torch.float()) + b_torch.float()).to(torch.bfloat16)
+
+    a_t = to_dram(a_torch, device)
+    b_t = to_dram(b_torch, device)
+    out_t = to_dram(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    exp_add_inplace_kernel(a_t, b_t, out_t)
+
+    result = ttnn.to_torch(out_t)
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+@ttl.kernel(grid=(1, 1))
+def inplace_chain_binary_kernel(a, b, out):
+    """abs(exp(a)) * b: chain of in-place ops feeds non-in-place mul."""
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
+            with out_dfb.reserve() as o:
+                exp_a = ttl.math.exp(av)
+                abs_exp = ttl.math.abs(exp_a)
+                result = abs_exp * bv
+                o.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
+            ta = ttl.copy(a[0, 0], a_blk)
+            tb = ttl.copy(b[0, 0], b_blk)
+            ta.wait()
+            tb.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0, 0])
+            tx.wait()
+
+
+def test_inplace_chain_feeds_non_inplace(device):
+    """Regression: abs(exp(a)) * b — in-place chain feeds non-in-place binary."""
+    a_torch = torch.tensor(
+        [[-0.5, 0.0, 0.5, 1.0, -1.0, 0.25] + [0.1] * 26] * 32,
+        dtype=torch.bfloat16,
+    )
+    b_torch = torch.tensor(
+        [[2.0, 3.0, 1.0, 0.5, 4.0, 2.0] + [1.5] * 26] * 32,
+        dtype=torch.bfloat16,
+    )
+
+    expected = (torch.abs(torch.exp(a_torch.float())) * b_torch.float()).to(
+        torch.bfloat16
+    )
+
+    a_t = to_dram(a_torch, device)
+    b_t = to_dram(b_torch, device)
+    out_t = to_dram(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+
+    inplace_chain_binary_kernel(a_t, b_t, out_t)
+
+    result = ttnn.to_torch(out_t)
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
 if __name__ == "__main__":
     import sys
 
