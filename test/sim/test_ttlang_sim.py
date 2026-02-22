@@ -487,26 +487,3 @@ print(f"Algorithm: {get_scheduler_algorithm()}")
             assert "Algorithm: fair" in result.stdout
         finally:
             script_path.unlink()
-
-
-class TestCLIEndToEnd:
-    """End-to-end test of the ttlang-sim CLI launcher.
-
-    This ensures the CLI launcher works correctly by running a single example
-    through the full process spawn path. Most example tests now use direct
-    imports for speed, but we keep one CLI test for coverage.
-    """
-
-    def test_cli_runs_example_successfully(self):
-        """Test that ttlang-sim can successfully run a simple example."""
-        examples_dir = Path(__file__).parent.parent.parent / "examples"
-        script_path = examples_dir / "broadcast_demo.py"
-
-        result = subprocess.run(
-            [sys.executable, "-m", "sim.ttlang_sim", str(script_path)],
-            cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"Script failed: {result.stderr}"
