@@ -5,12 +5,28 @@
 # Configure, build, install, and cleanup tt-lang in a single script.
 # This is called from Dockerfile to keep everything in one layer,
 # avoiding Docker layer bloat from the large build directory.
+#
+# Usage:
+#   build-and-install.sh [--toolchain-only]
+#
+# Options:
+#   --toolchain-only  Only configure (which builds and installs tt-mlir via
+#                     FetchContent) without building or installing tt-lang.
+#                     Used by the IRD container target.
 
 set -e
+
+TOOLCHAIN_ONLY=false
+if [ "$1" = "--toolchain-only" ]; then
+    TOOLCHAIN_ONLY=true
+fi
 
 TTMLIR_TOOLCHAIN_DIR="${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}"
 
 echo "=== Configuring tt-lang ==="
+if [ "$TOOLCHAIN_ONLY" = true ]; then
+    echo "    (toolchain-only mode: will skip tt-lang build and install)"
+fi
 TTMLIR_COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
 cmake -G Ninja -B build \
     -DCMAKE_BUILD_TYPE=Release \
@@ -25,7 +41,6 @@ cmake -G Ninja -B build \
 echo "=== Disk space after configure ==="
 df -BM
 
-echo "=== Building tt-lang ==="
 source build/env/activate
 
 echo "=== Installing Python runtime dependencies into toolchain venv ==="
@@ -33,13 +48,16 @@ echo "=== Installing Python runtime dependencies into toolchain venv ==="
 # the toolchain venv is isolated and does not inherit system site-packages.
 pip install -r requirements.txt --no-cache-dir
 
-cmake --build build
+if [ "$TOOLCHAIN_ONLY" = false ]; then
+    echo "=== Building tt-lang ==="
+    cmake --build build
 
-echo "=== Disk space after build ==="
-df -BM
+    echo "=== Disk space after build ==="
+    df -BM
 
-echo "=== Installing tt-lang ==="
-cmake --install build --prefix "$TTMLIR_TOOLCHAIN_DIR"
+    echo "=== Installing tt-lang ==="
+    cmake --install build --prefix "$TTMLIR_TOOLCHAIN_DIR"
+fi
 
 echo "=== Copying Python packages ==="
 mkdir -p "$TTMLIR_TOOLCHAIN_DIR/python_packages/ttrt/runtime"
@@ -68,4 +86,8 @@ rm -rf build
 echo "=== Disk space after cleanup ==="
 df -BM
 
-echo "=== Build complete ==="
+if [ "$TOOLCHAIN_ONLY" = true ]; then
+    echo "=== Toolchain build complete ==="
+else
+    echo "=== Build complete ==="
+fi

@@ -47,23 +47,29 @@ Orchestrates building images with proper tagging and optional registry push.
 
 ```
 tt-mlir-base-ubuntu-22-04 (upstream)     tt-mlir-ci-ubuntu-22-04 (upstream)
-             |                                         |
-             v                                         v
-  tt-lang-base-ubuntu-22-04                       build stage
-      (Python deps)                            (compiles tt-lang)
-             |                                         |
-             +--------------------+--------------------+
-                                  |
-                       +----------+----------+
-                       |                     |
-                      dist                  ird
-               (full tt-lang)       (toolchain only,
-                                     + dev tools)
+             |                                    |
+             v                           +--------+--------+
+  tt-lang-base-ubuntu-22-04              |                 |
+      (Python deps)            build-toolchain           build
+             |                (configure only;      (full tt-lang
+             |                 installs tt-mlir)     build+install)
+             |                        |                    |
+             +----------+-------------+                    |
+             |          |                                  |
+            ird        ...                                 |
+     (toolchain only,                                      |
+      + dev tools)                                         |
+             +---------------------------------------------+
+             |
+            dist
+     (full tt-lang)
 ```
 
-Both `dist` and `ird` are final stages in `Dockerfile` sharing the same `build`
-stage. `dist` keeps all tt-lang artifacts; `ird` strips them and adds dev
-tooling.
+`dist` and `ird` use separate build stages. `build-toolchain` only runs cmake
+configure (which builds tt-mlir via FetchContent) without building tt-lang.
+`build` does the full configure + build + install. Docker only executes stages
+in the dependency chain of the requested target, so `--target ird` never builds
+tt-lang and `--target dist` never runs `build-toolchain`.
 
 ## CI Job Flow
 
@@ -83,12 +89,12 @@ check-if-images-already-exist (ubuntu-latest)
                         ↓
          ┌──────────────┴──────────────────────┐
          ↓                                     ↓
-build-image-dist                       build-image-ird
+build-image-ird                        build-image-dist
 (mlir-large-runner-lang)               (mlir-large-runner-lang)
   FRESH runner + Docker daemon           SEPARATE fresh runner + Docker daemon
-  docker build --target dist             docker build --target ird
-    build stage + dist stage only          build stage + ird stage only
-  push tt-lang-dist-ubuntu-22-04:$TAG    push tt-lang-ird-ubuntu-22-04:$TAG
+  docker build --target ird              docker build --target dist
+    build-toolchain + ird stages           build + dist stages
+  push tt-lang-ird-ubuntu-22-04:$TAG    push tt-lang-dist-ubuntu-22-04:$TAG
          └──────────────┬────────────────────┘
                         ↓ (on push to main only)
                   set-latest-tag
@@ -116,7 +122,8 @@ docker run -it \
 ## Files
 
 - `Dockerfile.base` — base image with Python dependencies
-- `Dockerfile` — multi-stage build (`dist` and `ird` targets)
+- `Dockerfile` — multi-stage build (`ird` and `dist` targets, with separate build stages)
+- `build-and-install.sh` — cmake configure/build/install; `--toolchain-only` skips tt-lang build
 - `entrypoint.sh` — activates tt-lang environment on container start
 - `activate-install.sh` — environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` — build/push script with `--image-type` filter
