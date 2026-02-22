@@ -761,12 +761,10 @@ class Block:
                 return self._binary_op(other, _op.pow)
 
     def __matmul__(self, other: "Block") -> "Block":
-        # Matrix multiplication is not a broadcasting operation
-        # It has its own shape rules: (M, K) @ (K, N) -> (M, N)
-        # Delegate to the dedicated matmul implementation in math.py
-        from . import math as sim_math
-
-        return sim_math.matmul(self, other)
+        # Matrix multiplication is not a broadcasting operation.
+        # It has its own shape rules: (M, K) @ (K, N) -> (M, N).
+        # matmul is defined later in this module (after Block and CircularBuffer).
+        return matmul(self, other)
 
     @property
     def acquisition(self) -> BlockAcquisition:
@@ -1408,3 +1406,92 @@ def make_circular_buffer_like(
         x_cb = make_circular_buffer_like(x, shape=(2, 2), buffer_factor=2)
     """
     return CircularBuffer(element=element, shape=shape, buffer_factor=buffer_factor)
+
+
+def _track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
+    """Track source wait() blocks for proper state management.
+
+    Adds input wait() blocks to the result block's _source_blocks list so that
+    when the result is stored, the sources can be marked as consumed.
+
+    Args:
+        result_block: The result block to track sources for
+        *input_blocks: Input blocks that contributed to the result
+    """
+    for block in input_blocks:
+        is_temporary = getattr(block, "_is_temporary", None)
+        if is_temporary is None:
+            continue
+
+        if (
+            not is_temporary
+            and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
+            and getattr(block, "thread_type", None) == ThreadType.COMPUTE
+        ):
+            source_blocks = getattr(result_block, "_source_blocks", None)
+            if source_blocks is not None:
+                source_blocks.append(block)
+        elif is_temporary:
+            actual_source = getattr(block, "_source_blocks", None)
+            result_source = getattr(result_block, "_source_blocks", None)
+            if actual_source is not None and result_source is not None:
+                result_source.extend(actual_source)
+
+
+def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
+    """Matrix multiplication of two blocks.
+
+    Performs matrix multiplication across the tile grid. If block a has shape (M, K)
+    and block b has shape (K, N), the result will have shape (M, N).
+
+    Each output tile [i, j] is computed as the sum of torch.matmul(a[i, k], b[k, j])
+    for all k from 0 to K-1.
+
+    Args:
+        a: First input block with shape (M, K)
+        b: Second input block with shape (K, N)
+        _output_hint: Optional output block hint (unused in simulator)
+
+    Returns:
+        Block with shape (M, N) containing the matrix multiplication result
+
+    Note:
+        This is equivalent to the @ operator. In the spec, matmul is BlockExpr.__matmul__,
+        but this function is provided for convenience in the simulator.
+    """
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+
+    if len(a_shape) != 2 or len(b_shape) != 2:
+        raise ValueError(
+            f"matmul requires 2D blocks, got shapes {a_shape} and {b_shape}"
+        )
+
+    M, K = a_shape
+    K_b, N = b_shape
+
+    if K != K_b:
+        raise ValueError(
+            f"Inner dimensions must match for matmul: {a_shape} @ {b_shape}"
+        )
+
+    a_tensors = a.to_list()
+    b_tensors = b.to_list()
+
+    # Output tile [i, j] = sum over k of (a[i, k] @ b[k, j])
+    result_tensors: List[Tensor] = []
+    for i in range(M):
+        for j in range(N):
+            acc: Optional[torch.Tensor] = None
+            for k in range(K):
+                a_tile = a_tensors[i * K + k].to_torch()
+                b_tile = b_tensors[k * N + j].to_torch()
+                partial = torch.matmul(a_tile, b_tile)
+                acc = partial if acc is None else acc + partial
+
+            assert acc is not None, "K must be > 0 for matmul"
+            result_tensors.append(Tensor(acc))
+
+    result_block = Block.from_list(result_tensors, shape=(M, N))
+    _track_source_blocks(result_block, a, b)
+    return result_block

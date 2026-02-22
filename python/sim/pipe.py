@@ -13,7 +13,7 @@ This module provides:
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, List, TypeVar, Union
 
-from .kernel import core, flatten_core_index, grid_size
+from .corecontext import core, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange
 
 # Type variable for Pipe destination type

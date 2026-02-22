@@ -467,7 +467,7 @@ class PipeToBlockHandler:
 
                 # Get current core ID for tracking which messages this core has received
                 try:
-                    from .kernel import core
+                    from .corecontext import core
 
                     core_id = core(dims=1)
                     core_id_available = True

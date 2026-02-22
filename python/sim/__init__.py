@@ -11,7 +11,8 @@ from .cb import CBAPI, CBStats
 from .constants import MAX_CBS, TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
-from .kernel import core, kernel
+from .corecontext import core
+from .kernel import kernel
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
 from .ttnnsim import TTNN_AVAILABLE
@@ -52,7 +53,8 @@ class _TTLNamespace:
         from .constants import TILE_SHAPE
         from .copy import copy
         from .decorators import compute, datamovement
-        from .kernel import core, grid_size, kernel
+        from .corecontext import core, grid_size
+        from .kernel import kernel
         from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program

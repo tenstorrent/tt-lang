@@ -9,7 +9,7 @@ yield transformations. Each thread (compute/DM) runs in its own greenlet,
 and blocking operations (wait/reserve) switch back to the scheduler.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from greenlet import greenlet
 
@@ -540,29 +540,20 @@ class GreenletScheduler:
         if obj is None:
             return ""
 
-        from .cb import Block
-        from .cb import CircularBuffer
-        from .pipe import Pipe
-        from .ttnnsim import Tensor
-        from .pipe import AnyPipe
-
-        match obj:
-            case Block():
+        class_name = type(obj).__name__
+        match class_name:
+            case "Block":
                 return " on Block"
-            case CircularBuffer() if hasattr(obj, "_name"):
-                name = getattr(obj, "_name", "unknown")
-                return f" on CircularBuffer({name})"
-            case CircularBuffer():
-                return " on CircularBuffer"
-            case Pipe():
-                pipe = cast(AnyPipe, obj)
-                return f" on Pipe({pipe.src_core}->{pipe.dst_core_range})"
-            case Tensor():
+            case "CircularBuffer":
+                name = getattr(obj, "_name", None)
+                return f" on CircularBuffer({name})" if name else " on CircularBuffer"
+            case "Pipe":
+                src = getattr(obj, "src_core", "?")
+                dst = getattr(obj, "dst_core_range", "?")
+                return f" on Pipe({src}->{dst})"
+            case "Tensor":
                 return " on Tensor"
             case _:
-                class_name = (
-                    obj.__class__.__name__ if hasattr(obj, "__class__") else str(obj)
-                )
                 return f" on {class_name}"
 
 
