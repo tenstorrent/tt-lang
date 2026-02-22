@@ -35,10 +35,8 @@ from .blockstate import (
     BlockAcquisition,
     ExpectedOp,
     ThreadType,
-    _STATE_TRANSITIONS,
-    clear_current_thread_type,
+    STATE_TRANSITIONS,
     get_current_thread_type,
-    set_current_thread_type,
 )
 from .cbstate import CBSlot, CBState
 from .constants import CB_DEFAULT_TIMEOUT, MAX_CBS, TILE_SHAPE
@@ -266,7 +264,7 @@ class Block:
 
         # Look up transitions for this acquisition/thread_type combination
         context_key = (self._acquisition, self._thread_type)
-        context_transitions = _STATE_TRANSITIONS.get(context_key)
+        context_transitions = STATE_TRANSITIONS.get(context_key)
 
         if context_transitions is None:
             raise RuntimeError(
@@ -1408,7 +1406,7 @@ def make_circular_buffer_like(
     return CircularBuffer(element=element, shape=shape, buffer_factor=buffer_factor)
 
 
-def _track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
+def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
     """Track source wait() blocks for proper state management.
 
     Adds input wait() blocks to the result block's _source_blocks list so that
@@ -1493,5 +1491,5 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
             result_tensors.append(Tensor(acc))
 
     result_block = Block.from_list(result_tensors, shape=(M, N))
-    _track_source_blocks(result_block, a, b)
+    track_source_blocks(result_block, a, b)
     return result_block

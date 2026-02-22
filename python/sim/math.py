@@ -18,8 +18,10 @@ from typing import Any, Callable, List, Optional
 import torch
 
 from .blockstate import BlockAcquisition, ThreadType
-from .cb import Block, _track_source_blocks, matmul  # noqa: F401
+from .cb import Block, track_source_blocks, matmul
 from .ttnnsim import Tensor
+
+_ = matmul
 
 
 def broadcast(
@@ -119,7 +121,7 @@ def _create_unary_op_wrapper(
 
         result_list: List[Tensor] = [Tensor(t) for t in result_torch]
         result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
-        _track_source_blocks(result_block, block)
+        track_source_blocks(result_block, block)
         return result_block
 
     wrapper.__name__ = name
@@ -200,7 +202,7 @@ def _apply_binary_op(
     result_list: List[Tensor] = [Tensor(t) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
-    _track_source_blocks(result_block, a, b)
+    track_source_blocks(result_block, a, b)
     return result_block
 
 
@@ -221,7 +223,7 @@ def _apply_unary_with_params(
     result_list: List[Tensor] = [Tensor(t) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
-    _track_source_blocks(result_block, block)
+    track_source_blocks(result_block, block)
     return result_block
 
 
@@ -504,7 +506,7 @@ def reduce_max(
             result_tensors.append(Tensor(result_tile))
 
     result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    _track_source_blocks(result_block, block, scaler)
+    track_source_blocks(result_block, block, scaler)
     return result_block
 
 
@@ -598,7 +600,7 @@ def reduce_sum(
             result_tensors.append(Tensor(result_tile))
 
     result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    _track_source_blocks(result_block, block, scaler)
+    track_source_blocks(result_block, block, scaler)
     return result_block
 
 
@@ -635,5 +637,5 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
             reordered_tiles.append(transposed_tiles[i * N + j])
 
     result_block = Block.from_list(reordered_tiles, shape=(N, M))
-    _track_source_blocks(result_block, block)
+    track_source_blocks(result_block, block)
     return result_block

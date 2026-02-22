@@ -107,7 +107,7 @@ class ExpectedOp(Enum):
 # State machine transition table
 # Organized by (acquisition, thread_type) -> {(operation, access_state): (new_access_state, new_expected_ops)}
 # This structure makes it easy to see all transitions for a particular acquisition/thread combination
-_STATE_TRANSITIONS: Dict[
+STATE_TRANSITIONS: Dict[
     Tuple[BlockAcquisition, ThreadType],
     Dict[
         Tuple[str, AccessState],

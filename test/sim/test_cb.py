@@ -31,8 +31,12 @@ from python.sim.cb import (
     CBAPI,
     Block,
     CircularBuffer,
-    ThreadType,
+)
+from python.sim.blockstate import (
     set_current_thread_type,
+    clear_current_thread_type,
+    ThreadType,
+    BlockAcquisition,
 )
 from python.sim.ttnnsim import Tensor
 from python.sim.cbstate import CBSlot
@@ -176,11 +180,6 @@ def test_copy_operations_with_dm_context(api: CBAPI) -> None:
 
     This replaces the old test_copy_operations that was disabled due to lack of thread context.
     """
-    from python.sim.cb import (
-        set_current_thread_type,
-        clear_current_thread_type,
-        ThreadType,
-    )
 
     # Set DM thread context (required for copy operations)
     set_current_thread_type(ThreadType.DM)
@@ -265,11 +264,6 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
     - DM thread: copy data into CBs (reserve + copy + push)
     - Switch to COMPUTE thread for consumption (wait + read + pop)
     """
-    from python.sim.cb import (
-        set_current_thread_type,
-        clear_current_thread_type,
-        ThreadType,
-    )
 
     try:
         # Create tensors
@@ -351,7 +345,6 @@ def test_copy_in_dm_thread_context(api: CBAPI) -> None:
 
 def test_single_pending_reserve_constraint(api: CBAPI) -> None:
     """Test that only one reserve() is allowed before push()."""
-    from python.sim.cb import set_current_thread_type, ThreadType
     from python.sim.copy import copy
 
     set_current_thread_type(ThreadType.DM)
@@ -387,14 +380,12 @@ def test_single_pending_reserve_constraint(api: CBAPI) -> None:
         tx.wait()
         block2.push()
     finally:
-        from python.sim.cb import clear_current_thread_type
 
         clear_current_thread_type()
 
 
 def test_single_pending_wait_constraint(api: CBAPI) -> None:
     """Test that only one wait() is allowed before pop()."""
-    from python.sim.cb import set_current_thread_type, ThreadType
     from python.sim.copy import copy
 
     set_current_thread_type(ThreadType.COMPUTE)
@@ -449,8 +440,6 @@ def test_single_pending_wait_constraint(api: CBAPI) -> None:
         out_block2.push()
         data2.pop()
     finally:
-        from python.sim.cb import clear_current_thread_type
-
         clear_current_thread_type()
 
 
@@ -956,12 +945,6 @@ def test_block_state_machine_restrictions(api: CBAPI) -> None:
 
 def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
     """Test that copy operations set blocks to NA (No Access) state."""
-    from python.sim.cb import (
-        Block,
-        BlockAcquisition,
-        ThreadType,
-        set_current_thread_type,
-    )
     from python.sim.typedefs import Span
     import torch
     from python.sim import ttnn
@@ -1006,7 +989,6 @@ def test_copy_sets_block_to_na_state(api: CBAPI) -> None:
         # Block indexing is not allowed regardless of state
     finally:
         # Clean up thread context
-        from python.sim.cb import clear_current_thread_type
 
         clear_current_thread_type()
 
@@ -1019,13 +1001,6 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
     This test verifies that push() can only be called on reserve() blocks
     (not wait() blocks) and only when PUSH is in the expected operations.
     """
-    from python.sim.cb import (
-        Block,
-        BlockAcquisition,
-        ThreadType,
-        ExpectedOp,
-        set_current_thread_type,
-    )
 
     set_current_thread_type(ThreadType.COMPUTE)
 
@@ -1067,7 +1042,6 @@ def test_push_validates_expected_state(api: CBAPI) -> None:
 
         print("Push validates expected state test passed!")
     finally:
-        from python.sim.cb import clear_current_thread_type
 
         clear_current_thread_type()
 

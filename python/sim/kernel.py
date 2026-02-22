@@ -13,7 +13,6 @@ import types
 from typing import Any, Callable, Union, cast
 
 from .blockstate import ThreadType
-from .corecontext import core, flatten_core_index, grid_size  # noqa: F401
 from .typedefs import Shape
 
 # Default grid size when grid='auto' is specified
