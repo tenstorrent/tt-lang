@@ -432,3 +432,48 @@ func.func @unary_prime_skip(%a: tensor<11x!ttcore.tile<32x32, bf16>>,
   }
   return
 }
+
+// -----
+
+// Test: Hypothetical post-DSE user-defined accumulation loop.
+// Represents a user loop over M=4 independent output tiles, each accumulating
+// K=2 inputs (K unrolled into the body). CB lifecycle ops are outside the loop
+// (in a 'with' scope). The pass operates at SCF level and is agnostic to
+// whether the loop came from tiling or user code.
+//
+// dstPerIter=3 (binary add), capacity=8, maxBatch=8/3=2.
+// largestDivisor(4,2)=2. Partial unroll by 2. 2 sync cycles.
+
+// CHECK-LABEL: func.func @user_loop_accum_subblock
+// CHECK: scf.for
+// CHECK: ttl.tile_regs_acquire
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 3 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 4 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 5 : i32}
+// CHECK: ttl.tile_regs_commit
+// CHECK: ttl.tile_regs_wait
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 0 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 1 : i64}
+// CHECK: ttl.tile_regs_release
+func.func @user_loop_accum_subblock(%a: tensor<4x2x!ttcore.tile<32x32, bf16>>,
+                                     %view: tensor<4x!ttcore.tile<32x32, bf16>>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %m = %c0 to %c4 step %c1 {
+    %ext0 = tensor.extract %a[%m, %c0] : tensor<4x2x!ttcore.tile<32x32, bf16>>
+    %ext1 = tensor.extract %a[%m, %c1] : tensor<4x2x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_acquire
+    %tok0, %t0 = ttl.copy_tile %ext0, %m, %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    %tok1, %t1 = ttl.copy_tile %ext1, %m, %c1 {dst_idx = 1 : i32} : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    %sum = ttl.tile_add %t0, %t1 {dst_idx = 2 : i32} : !ttcore.tile<32x32, bf16>
+    ttl.tile_regs_commit
+    ttl.tile_regs_wait
+    ttl.tile_store %sum, %view : !ttcore.tile<32x32, bf16>, tensor<4x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_release
+  }
+  return
+}
