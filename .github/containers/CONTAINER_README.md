@@ -13,6 +13,7 @@ python $TTMLIR_TOOLCHAIN_DIR/examples/tutorial/multicore_grid_auto.py
 - **Toolchain**: `$TTMLIR_TOOLCHAIN_DIR` (`/opt/ttmlir-toolchain`)
 - **Examples**: `$TTMLIR_TOOLCHAIN_DIR/examples`
 - **Tests**: `$TTMLIR_TOOLCHAIN_DIR/test`
+- **Simulator**: `ttlang-sim` (run `ttlang-sim <script.py>` to simulate without hardware)
 - **Python packages**: `$TTMLIR_TOOLCHAIN_DIR/python_packages`
 
 ## Available Tools
