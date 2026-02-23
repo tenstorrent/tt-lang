@@ -18,7 +18,7 @@ from typing import Any, Callable, List, Optional
 import torch
 
 from .blockstate import BlockAcquisition, ThreadType
-from .cb import Block, track_source_blocks, matmul
+from .dfb import Block, track_source_blocks, matmul
 from .ttnnsim import Tensor
 
 _ = matmul

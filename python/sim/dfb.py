@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Block, circular buffer API, and high-level CircularBuffer interface.
+Block, circular buffer API, and high-level DataflowBuffer interface.
 
 This module provides:
 - Block: a logically contiguous window into a ring buffer with state machine enforcement
-- CBStats: statistics snapshot for a circular buffer
-- CBAPI: low-level circular buffer simulator API
-- CircularBuffer: high-level tensor-aware circular buffer wrapper
+- DFBStats: statistics snapshot for a circular buffer
+- DFBAPI: low-level circular buffer simulator API
+- DataflowBuffer: high-level tensor-aware circular buffer wrapper
 """
 
 import operator as _op
@@ -38,20 +38,20 @@ from .blockstate import (
     STATE_TRANSITIONS,
     get_current_thread_type,
 )
-from .cbstate import CBSlot, CBState
-from .constants import CB_DEFAULT_TIMEOUT, MAX_CBS, TILE_SHAPE
-from .errors import CBContractError, CBTimeoutError
-from .stats import record_cb_reserve, record_cb_wait
+from .dfbstate import DFBSlot, DFBState
+from .constants import DFB_DEFAULT_TIMEOUT, MAX_DFBS, TILE_SHAPE
+from .errors import DFBContractError, DFBTimeoutError
+from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import Tensor
-from .typedefs import CBID, Index, Shape, Size, Span
+from .typedefs import DFBID, Index, Shape, Size, Span
 
 
 # Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not
 # necessarily make sense in a python context. So we need something that can
-# access the elements of the cb (as a pointer would) from the position the
+# access the elements of the dfb (as a pointer would) from the position the
 # pointer points. To hide needless index arithmetic, we also add the ability to
 # wrap around. Notice also that it handles a list and a capacity, instead of a
-# _CBState, a deliberate choice to make it closer in spirit to a pointer and
+# _DFBState, a deliberate choice to make it closer in spirit to a pointer and
 # minimizing the state that is exposed.
 class Block:
     """A logically contiguous window into the ring, possibly wrapping.
@@ -77,7 +77,7 @@ class Block:
         "_expected_ops",
         "_is_temporary",
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
-        "cb",  # Reference to CircularBuffer for context manager cleanup
+        "dfb",  # Reference to DataflowBuffer for context manager cleanup
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -88,14 +88,14 @@ class Block:
     # @validate_call
     def __init__(
         self,
-        buf: List[CBSlot],
+        buf: List[DFBSlot],
         capacity: Size,
         span: Span,
         shape: Shape,
         acquisition: BlockAcquisition,
         thread_type: ThreadType,
         is_temporary: bool = False,
-        cb: Optional["CircularBuffer"] = None,
+        dfb: Optional["DataflowBuffer"] = None,
     ):
         self._buf = buf
         self._capacity = capacity
@@ -103,7 +103,7 @@ class Block:
         self._shape = shape
         self._is_temporary = is_temporary
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
-        self.cb = cb  # Reference to CircularBuffer for context manager cleanup
+        self.dfb = dfb  # Reference to DataflowBuffer for context manager cleanup
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
@@ -164,33 +164,33 @@ class Block:
     ) -> None:
         """Context manager exit - automatically calls push() or pop() based on acquisition type.
 
-        Only works for Blocks that came from CircularBuffer wait()/reserve().
+        Only works for Blocks that came from DataflowBuffer wait()/reserve().
         Temporary blocks (from arithmetic operations) don't have cleanup actions.
 
         If an exception occurred in the with block, cleanup is skipped to preserve
         the exception and avoid state machine errors.
         """
         # Only perform cleanup if no exception occurred
-        if exc_type is None and self.cb is not None:
-            # Block came from CB - perform appropriate cleanup
+        if exc_type is None and self.dfb is not None:
+            # Block came from DFB - perform appropriate cleanup
             if self._acquisition == BlockAcquisition.RESERVE:
                 self.push()
             elif self._acquisition == BlockAcquisition.WAIT:
                 self.pop()
 
     def pop(self) -> None:
-        if self.cb is None:
+        if self.dfb is None:
             raise RuntimeError(
-                "Block.pop() is only valid for blocks acquired from a CircularBuffer."
+                "Block.pop() is only valid for blocks acquired from a DataflowBuffer."
             )
-        self.cb.pop_block()
+        self.dfb.pop_block()
 
     def push(self) -> None:
-        if self.cb is None:
+        if self.dfb is None:
             raise RuntimeError(
-                "Block.push() is only valid for blocks acquired from a CircularBuffer."
+                "Block.push() is only valid for blocks acquired from a DataflowBuffer."
             )
-        self.cb.push_block()
+        self.dfb.push_block()
 
     @classmethod
     def from_list(
@@ -200,10 +200,10 @@ class Block:
     ) -> "Block":
         """Create a temporary Block from a list of tensors (computation result).
 
-        Temporary blocks are not backed by CB storage and don't support wrap-around.
+        Temporary blocks are not backed by DFB storage and don't support wrap-around.
         """
         return cls(
-            buf=cast(List[CBSlot], tensors),
+            buf=cast(List[DFBSlot], tensors),
             capacity=len(tensors),
             span=Span(0, len(tensors)),
             shape=shape,
@@ -379,7 +379,7 @@ class Block:
 
     @property
     def is_temporary(self) -> bool:
-        """Check if this Block is a temporary computation result (not CB-backed)."""
+        """Check if this Block is a temporary computation result (not DFB-backed)."""
         return self._is_temporary
 
     def _check_can_read(self) -> None:
@@ -761,7 +761,7 @@ class Block:
     def __matmul__(self, other: "Block") -> "Block":
         # Matrix multiplication is not a broadcasting operation.
         # It has its own shape rules: (M, K) @ (K, N) -> (M, N).
-        # matmul is defined later in this module (after Block and CircularBuffer).
+        # matmul is defined later in this module (after Block and DataflowBuffer).
         return matmul(self, other)
 
     @property
@@ -786,11 +786,11 @@ class Block:
 
     @property
     def shape(self) -> Shape:
-        """Get the shape (rows, cols in tiles) of this block from its associated CB."""
+        """Get the shape (rows, cols in tiles) of this block from its associated DFB."""
         return self._shape
 
 
-class CBStats(NamedTuple):
+class DFBStats(NamedTuple):
     """Statistics for a circular buffer."""
 
     capacity: int
@@ -802,227 +802,231 @@ class CBStats(NamedTuple):
     list: List[Optional[object]]
 
 
-class CBAPI:
-    """Circular buffer simulator API interface with its own state pool.
+class DFBAPI:
+    """Dataflow buffer simulator API interface with its own state pool.
     The simulator is based on the following API:
     https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
 
-    CBAPI is not generic to allow heterogeneous CBState instances with different element types.
-    Each CBState in the pool can have a different CBElemTypeVar parameter.
+    DFBAPI is not generic to allow heterogeneous DFBState instances with different element types.
+    Each DFBState in the pool can have a different DFBElemTypeVar parameter.
     """
 
-    def __init__(self, timeout: Optional[float] = CB_DEFAULT_TIMEOUT):
+    def __init__(self, timeout: Optional[float] = DFB_DEFAULT_TIMEOUT):
         """Initialize simulator with optional per-instance timeout (seconds)."""
 
-        self._pool: List[object] = [None] * MAX_CBS
+        self._pool: List[object] = [None] * MAX_DFBS
         self._timeout: Optional[float] = timeout
-        self._next_cb_id: CBID = 0
-        self._cb_allocator_lock = threading.Lock()
+        self._next_dfb_id: DFBID = 0
+        self._dfb_allocator_lock = threading.Lock()
 
-    def allocate_cb_id(self) -> CBID:
-        """Allocate a unique CB ID from this API instance. Thread-safe."""
-        with self._cb_allocator_lock:
-            cb_id = self._next_cb_id
-            self._next_cb_id += 1
-            if self._next_cb_id > MAX_CBS:
+    def allocate_dfb_id(self) -> DFBID:
+        """Allocate a unique DFB ID from this API instance. Thread-safe."""
+        with self._dfb_allocator_lock:
+            dfb_id = self._next_dfb_id
+            self._next_dfb_id += 1
+            if self._next_dfb_id > MAX_DFBS:
                 raise RuntimeError(
-                    f"Maximum number of circular buffers exceeded: {MAX_CBS}"
+                    f"Maximum number of circular buffers exceeded: {MAX_DFBS}"
                 )
-            return cb_id
+            return dfb_id
 
     @validate_call
-    def host_configure_cb(
-        self, cb_id: CBID, capacity_tiles: Size, shape: Shape
+    def host_configure_dfb(
+        self, dfb_id: DFBID, capacity_tiles: Size, shape: Shape
     ) -> None:
-        # Lazily create CBState if not already created
-        if self._pool[int(cb_id)] is None:
-            self._pool[int(cb_id)] = CBState()
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.cap = capacity_tiles
-            cb_state.shape = shape
-            cb_state.reset()
+        # Lazily create DFBState if not already created
+        if self._pool[int(dfb_id)] is None:
+            self._pool[int(dfb_id)] = DFBState()
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.cap = capacity_tiles
+            dfb_state.shape = shape
+            dfb_state.reset()
 
     @validate_call
-    def host_reset_cb(self, cb_id: CBID) -> None:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            if not cb_state.configured:
-                raise CBContractError("CB not configured; cannot reset")
-            cb_state.reset()
+    def host_reset_dfb(self, dfb_id: DFBID) -> None:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            if not dfb_state.configured:
+                raise DFBContractError("DFB not configured; cannot reset")
+            dfb_state.reset()
 
     @validate_call
-    def cb_stats(self, cb_id: CBID) -> CBStats:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.require_configured()
-            return CBStats(
-                capacity=cb_state.cap,
-                visible=cb_state.visible,
-                reserved=cb_state.reserved,
-                free=cb_state.free(),
-                step=cb_state.step,
-                head=cb_state.head,
-                list=list(cb_state.buf),
+    def dfb_stats(self, dfb_id: DFBID) -> DFBStats:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.require_configured()
+            return DFBStats(
+                capacity=dfb_state.cap,
+                visible=dfb_state.visible,
+                reserved=dfb_state.reserved,
+                free=dfb_state.free(),
+                step=dfb_state.step,
+                head=dfb_state.head,
+                list=list(dfb_state.buf),
             )
 
     @validate_call
-    def cb_pages_available_at_front(self, cb_id: CBID, num_tiles: Size) -> bool:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.require_configured()
-            cb_state.check_num_tiles(num_tiles)
-            return cb_state.visible >= num_tiles
+    def dfb_pages_available_at_front(self, dfb_id: DFBID, num_tiles: Size) -> bool:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.require_configured()
+            dfb_state.check_num_tiles(num_tiles)
+            return dfb_state.visible >= num_tiles
 
     @validate_call
-    def cb_pages_reservable_at_back(self, cb_id: CBID, num_tiles: Size) -> bool:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.require_configured()
-            cb_state.check_num_tiles(num_tiles)
-            return cb_state.free() >= num_tiles
+    def dfb_pages_reservable_at_back(self, dfb_id: DFBID, num_tiles: Size) -> bool:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.require_configured()
+            dfb_state.check_num_tiles(num_tiles)
+            return dfb_state.free() >= num_tiles
 
     @validate_call
-    def cb_wait_front(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.can_consume:
-            cb_state.require_configured()
-            cb_state.check_num_tiles(num_tiles)
+    def dfb_wait_front(self, dfb_id: DFBID, num_tiles: Size) -> None:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.can_consume:
+            dfb_state.require_configured()
+            dfb_state.check_num_tiles(num_tiles)
             thread = threading.current_thread()
-            if (cb_state.consumer_waiting is not None) and (
-                cb_state.consumer_waiting != thread
+            if (dfb_state.consumer_waiting is not None) and (
+                dfb_state.consumer_waiting != thread
             ):
-                raise CBContractError(
+                raise DFBContractError(
                     "Only one consumer thread may wait on a DFB at a time"
                 )
-            cb_state.consumer_waiting = thread
-            if cb_state.step is None:
-                cb_state.step = num_tiles
+            dfb_state.consumer_waiting = thread
+            if dfb_state.step is None:
+                dfb_state.step = num_tiles
             else:
-                if num_tiles != cb_state.last_wait_target + cb_state.step:
-                    raise CBContractError(
-                        "cb_wait_front must be cumulative with an increment of the initial number of tiles"
+                if num_tiles != dfb_state.last_wait_target + dfb_state.step:
+                    raise DFBContractError(
+                        "dfb_wait_front must be cumulative with an increment of the initial number of tiles"
                         " requested until a pop occurs"
                     )
-            ok = cb_state.can_consume.wait_for(
-                lambda: cb_state.visible >= num_tiles, timeout=self._timeout
+            ok = dfb_state.can_consume.wait_for(
+                lambda: dfb_state.visible >= num_tiles, timeout=self._timeout
             )
             if not ok:
-                raise CBTimeoutError(f"cb_wait_front timed out after {self._timeout}s")
-            cb_state.last_wait_target = num_tiles
+                raise DFBTimeoutError(
+                    f"dfb_wait_front timed out after {self._timeout}s"
+                )
+            dfb_state.last_wait_target = num_tiles
 
     @validate_call
-    def cb_reserve_back(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.can_produce:
-            cb_state.require_configured()
-            cb_state.check_num_tiles(num_tiles)
+    def dfb_reserve_back(self, dfb_id: DFBID, num_tiles: Size) -> None:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.can_produce:
+            dfb_state.require_configured()
+            dfb_state.check_num_tiles(num_tiles)
             thread = threading.current_thread()
-            if (cb_state.producer_reserving is not None) and (
-                cb_state.producer_reserving != thread
+            if (dfb_state.producer_reserving is not None) and (
+                dfb_state.producer_reserving != thread
             ):
-                raise CBContractError(
+                raise DFBContractError(
                     "Only one producer thread may reserve on a DFB at a time"
                 )
-            cb_state.producer_reserving = thread
-            if num_tiles < cb_state.reserved:
-                raise CBContractError("reserve target cannot regress within epoch")
-            ok = cb_state.can_produce.wait_for(
-                lambda: cb_state.free() >= num_tiles, timeout=self._timeout
+            dfb_state.producer_reserving = thread
+            if num_tiles < dfb_state.reserved:
+                raise DFBContractError("reserve target cannot regress within epoch")
+            ok = dfb_state.can_produce.wait_for(
+                lambda: dfb_state.free() >= num_tiles, timeout=self._timeout
             )
             if not ok:
-                raise CBTimeoutError(
-                    f"cb_reserve_back timed out after {self._timeout}s"
+                raise DFBTimeoutError(
+                    f"dfb_reserve_back timed out after {self._timeout}s"
                 )
-            cb_state.reserved = num_tiles
-            cb_state.last_reserve_target = num_tiles
+            dfb_state.reserved = num_tiles
+            dfb_state.last_reserve_target = num_tiles
 
     @validate_call
-    def cb_push_back(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.require_configured()
-            cb_state.check_num_tiles(num_tiles)
-            if num_tiles > cb_state.reserved:
-                raise CBContractError(
-                    f"cb_push_back({num_tiles}) exceeds reserved={cb_state.reserved}"
+    def dfb_push_back(self, dfb_id: DFBID, num_tiles: Size) -> None:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.require_configured()
+            dfb_state.check_num_tiles(num_tiles)
+            if num_tiles > dfb_state.reserved:
+                raise DFBContractError(
+                    f"dfb_push_back({num_tiles}) exceeds reserved={dfb_state.reserved}"
                 )
-            cb_state.reserved -= num_tiles
-            cb_state.visible += num_tiles
-            if cb_state.reserved == 0:
-                cb_state.producer_reserving = None
-            with cb_state.can_consume:
-                cb_state.can_consume.notify_all()
+            dfb_state.reserved -= num_tiles
+            dfb_state.visible += num_tiles
+            if dfb_state.reserved == 0:
+                dfb_state.producer_reserving = None
+            with dfb_state.can_consume:
+                dfb_state.can_consume.notify_all()
 
     @validate_call
-    def cb_pop_front(self, cb_id: CBID, num_tiles: Size) -> None:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.require_configured()
-            cb_state.check_num_tiles(num_tiles)
-            if num_tiles > cb_state.visible:
-                raise CBContractError(
-                    f"cb_pop_front({num_tiles}) exceeds visible={cb_state.visible}"
+    def dfb_pop_front(self, dfb_id: DFBID, num_tiles: Size) -> None:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.require_configured()
+            dfb_state.check_num_tiles(num_tiles)
+            if num_tiles > dfb_state.visible:
+                raise DFBContractError(
+                    f"dfb_pop_front({num_tiles}) exceeds visible={dfb_state.visible}"
                 )
-            span = cb_state.front_span(num_tiles)
+            span = dfb_state.front_span(num_tiles)
             thread_type = get_current_thread_type()
             view = Block(
-                cb_state.buf,
-                cb_state.cap,
+                dfb_state.buf,
+                dfb_state.cap,
                 span,
-                cb_state.shape,
+                dfb_state.shape,
                 BlockAcquisition.WAIT,
                 thread_type,
             )
             for i in range(len(view)):
                 view.pop_idx(i)
-            cb_state.head = (cb_state.head + num_tiles) % cb_state.cap
-            cb_state.visible -= num_tiles
-            cb_state.last_wait_target = 0
-            if cb_state.visible == 0:
-                cb_state.consumer_waiting = None
-            with cb_state.can_produce:
-                cb_state.can_produce.notify_all()
+            dfb_state.head = (dfb_state.head + num_tiles) % dfb_state.cap
+            dfb_state.visible -= num_tiles
+            dfb_state.last_wait_target = 0
+            if dfb_state.visible == 0:
+                dfb_state.consumer_waiting = None
+            with dfb_state.can_produce:
+                dfb_state.can_produce.notify_all()
 
     @validate_call
-    def get_read_ptr(self, cb_id: CBID) -> Block:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.require_configured()
-            if cb_state.last_wait_target <= 0:
-                raise CBContractError("get_read_ptr requires prior cb_wait_front")
-            if cb_state.visible < cb_state.last_wait_target:
-                raise CBContractError(
-                    "read window invalidated; call cb_wait_front again"
+    def get_read_ptr(self, dfb_id: DFBID) -> Block:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.require_configured()
+            if dfb_state.last_wait_target <= 0:
+                raise DFBContractError("get_read_ptr requires prior dfb_wait_front")
+            if dfb_state.visible < dfb_state.last_wait_target:
+                raise DFBContractError(
+                    "read window invalidated; call dfb_wait_front again"
                 )
-            span = cb_state.front_span(cb_state.last_wait_target)
+            span = dfb_state.front_span(dfb_state.last_wait_target)
             thread_type = get_current_thread_type()
             block = Block(
-                cb_state.buf,
-                cb_state.cap,
+                dfb_state.buf,
+                dfb_state.cap,
                 span,
-                cb_state.shape,
+                dfb_state.shape,
                 BlockAcquisition.WAIT,
                 thread_type,
             )
             return block
 
     @validate_call
-    def get_write_ptr(self, cb_id: CBID) -> Block:
-        cb_state: CBState = self._pool[int(cb_id)]  # type: ignore[assignment]
-        with cb_state.lock:
-            cb_state.require_configured()
-            if cb_state.last_reserve_target <= 0:
-                raise CBContractError("get_write_ptr requires prior cb_reserve_back")
-            if cb_state.reserved < cb_state.last_reserve_target:
-                raise CBContractError("write window invalidated; call cb_reserve again")
-            span = cb_state.back_span(cb_state.last_reserve_target)
+    def get_write_ptr(self, dfb_id: DFBID) -> Block:
+        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
+        with dfb_state.lock:
+            dfb_state.require_configured()
+            if dfb_state.last_reserve_target <= 0:
+                raise DFBContractError("get_write_ptr requires prior dfb_reserve_back")
+            if dfb_state.reserved < dfb_state.last_reserve_target:
+                raise DFBContractError(
+                    "write window invalidated; call dfb_reserve_back again"
+                )
+            span = dfb_state.back_span(dfb_state.last_reserve_target)
             thread_type = get_current_thread_type()
             block = Block(
-                cb_state.buf,
-                cb_state.cap,
+                dfb_state.buf,
+                dfb_state.cap,
                 span,
-                cb_state.shape,
+                dfb_state.shape,
                 BlockAcquisition.RESERVE,
                 thread_type,
             )
@@ -1039,27 +1043,27 @@ class CBAPI:
 
 
 # TODO: Should this class now be private?
-class CircularBuffer:
+class DataflowBuffer:
     """
     High-level circular buffer interface for tensor operations.
 
-    This class provides a convenient wrapper around the low-level CBAPI,
-    handling CB allocation and providing tensor-aware operations.
+    This class provides a convenient wrapper around the low-level DFBAPI,
+    handling DFB allocation and providing tensor-aware operations.
 
-    The CircularBuffer manages a fixed-size circular buffer with space for
+    The DataflowBuffer manages a fixed-size circular buffer with space for
     a configurable number of tiles. Operations like wait() and reserve()
     work with a fixed number of tiles determined by the shape parameter.
 
     Example:
-        cb = CircularBuffer(shape=(2, 3), buffer_factor=2)
+        dfb = DataflowBuffer(shape=(2, 3), buffer_factor=2)
 
         # Producer workflow
-        write_view = cb.reserve()  # Reserve space for 6 tiles
+        write_view = dfb.reserve()  # Reserve space for 6 tiles
         # ... write data to write_view ...
         write_view.push()  # Make data visible
 
         # Consumer workflow
-        read_view = cb.wait()  # Wait for 6 tiles
+        read_view = dfb.wait()  # Wait for 6 tiles
         # ... read data from read_view ...
         read_view.pop()  # Free consumed tiles
     """
@@ -1069,20 +1073,20 @@ class CircularBuffer:
         element: Tensor,
         shape: Shape,
         buffer_factor: Size = 2,
-        api: Optional[CBAPI] = None,
+        api: Optional[DFBAPI] = None,
     ):
         """
-        Initialize a CircularBuffer.
+        Initialize a DataflowBuffer.
 
         Args:
             element: A tensor used to determine the dtype for zero-initialized tensors in reserved blocks
             shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
             buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
-            api: Optional CBAPI instance to use. If None, uses the shared default instance.
+            api: Optional DFBAPI instance to use. If None, uses the shared default instance.
 
         Raises:
             ValueError: If shape or buffer_factor are invalid
-            RuntimeError: If CB allocation fails
+            RuntimeError: If DFB allocation fails
         """
         if len(shape) != 2:
             raise ValueError(f"Shape must be a 2-tuple, got {shape}")
@@ -1092,7 +1096,7 @@ class CircularBuffer:
         self._buffer_factor = buffer_factor
 
         # Store API instance (may be None)
-        self._api: Optional[CBAPI] = api
+        self._api: Optional[DFBAPI] = api
 
         # Track pending blocks for state machine completion
         # At most one pending reserved block and one pending waited block at a time
@@ -1104,31 +1108,35 @@ class CircularBuffer:
         self._capacity_tiles = self._tiles_per_operation * buffer_factor
 
         # Only allocate and configure if API is provided
-        # If None, this will be done when the CB is copied by Program
+        # If None, this will be done when the DFB is copied by Program
         if self._api is not None:
-            self._cb_id: Optional[CBID] = self._api.allocate_cb_id()
-            self._api.host_configure_cb(self._cb_id, self._capacity_tiles, self._shape)
+            self._dfb_id: Optional[DFBID] = self._api.allocate_dfb_id()
+            self._api.host_configure_dfb(
+                self._dfb_id, self._capacity_tiles, self._shape
+            )
             # Reset the buffer to initialize with zero entries
-            self._api.host_reset_cb(self._cb_id)
+            self._api.host_reset_dfb(self._dfb_id)
         else:
-            self._cb_id: Optional[CBID] = None  # Placeholder until properly initialized
+            self._dfb_id: Optional[DFBID] = (
+                None  # Placeholder until properly initialized
+            )
 
-    def _ensure_initialized(self) -> Tuple[CBAPI, CBID]:
-        """Verify that the CircularBuffer has been properly initialized with an API.
+    def _ensure_initialized(self) -> Tuple[DFBAPI, DFBID]:
+        """Verify that the DataflowBuffer has been properly initialized with an API.
 
         Returns:
-            Tuple of (api, cb_id) for use in operations
+            Tuple of (api, dfb_id) for use in operations
 
         Raises:
-            RuntimeError: If the CB was not initialized with an API instance
+            RuntimeError: If the DFB was not initialized with an API instance
         """
-        if self._api is None or self._cb_id is None:
+        if self._api is None or self._dfb_id is None:
             raise RuntimeError(
-                "CircularBuffer was not properly initialized with a CBAPI instance. "
+                "DataflowBuffer was not properly initialized with a DFBAPI instance. "
                 "This likely means it was created outside of a kernel context. "
-                "CircularBuffers must be created within @ttl.kernel decorated functions."
+                "DataflowBuffers must be created within @ttl.kernel decorated functions."
             )
-        return self._api, self._cb_id
+        return self._api, self._dfb_id
 
     def wait(self) -> Block:
         """Wait for data to be available and return a read view.
@@ -1138,7 +1146,7 @@ class CircularBuffer:
         that provides access to the available data.
 
         Usage:
-            blk = cb.wait()
+            blk = dfb.wait()
             data = blk[0]
             blk.pop()  # manual pop required
 
@@ -1146,17 +1154,17 @@ class CircularBuffer:
             Block providing read access to the available tiles
 
         Raises:
-            CBTimeoutError: If the wait times out
-            CBContractError: If called incorrectly (e.g., multiple concurrent waits)
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            DFBTimeoutError: If the wait times out
+            DFBContractError: If called incorrectly (e.g., multiple concurrent waits)
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
-        api, cb_id = self._ensure_initialized()
+        api, dfb_id = self._ensure_initialized()
 
         # Enforce: at most one pending wait() operation at a time
         if self._pending_waited_block is not None:
             raise RuntimeError(
                 "Cannot call wait() again before pop(): "
-                "CircularBuffer already has a pending waited block. "
+                "DataflowBuffer already has a pending waited block. "
                 "You must call pop() before calling wait() again."
             )
 
@@ -1165,13 +1173,13 @@ class CircularBuffer:
 
         block_if_needed(self, "wait")
 
-        api.cb_wait_front(cb_id, self._tiles_per_operation)
-        block = api.get_read_ptr(cb_id)
-        block.cb = self  # Set CB reference for context manager support
+        api.dfb_wait_front(dfb_id, self._tiles_per_operation)
+        block = api.get_read_ptr(dfb_id)
+        block.dfb = self  # Set DFB reference for context manager support
         self._pending_waited_block = block
 
         # Record wait statistics
-        record_cb_wait(self, self._tiles_per_operation)
+        record_dfb_wait(self, self._tiles_per_operation)
 
         return block
 
@@ -1183,10 +1191,10 @@ class CircularBuffer:
             True if sufficient data is available for wait(), False otherwise
 
         Raises:
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
-        api, cb_id = self._ensure_initialized()
-        stats = api.cb_stats(cb_id)
+        api, dfb_id = self._ensure_initialized()
+        stats = api.dfb_stats(dfb_id)
         return stats.visible >= self._tiles_per_operation
 
     def reserve(self) -> Block:
@@ -1201,7 +1209,7 @@ class CircularBuffer:
         TILE_SHAPE dimensions and the element's dtype before being returned.
 
         Usage:
-            blk = cb.reserve()
+            blk = dfb.reserve()
             blk.store(data)
             blk.push()  # manual push required
 
@@ -1209,17 +1217,17 @@ class CircularBuffer:
             Block providing write access to the reserved space
 
         Raises:
-            CBTimeoutError: If the reservation times out
-            CBContractError: If called incorrectly (e.g., multiple concurrent reserves)
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            DFBTimeoutError: If the reservation times out
+            DFBContractError: If called incorrectly (e.g., multiple concurrent reserves)
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
-        api, cb_id = self._ensure_initialized()
+        api, dfb_id = self._ensure_initialized()
 
         # Enforce: at most one pending reserve() operation at a time
         if self._pending_reserved_block is not None:
             raise RuntimeError(
                 "Cannot call reserve() again before push(): "
-                "CircularBuffer already has a pending reserved block. "
+                "DataflowBuffer already has a pending reserved block. "
                 "You must call push() before calling reserve() again."
             )
 
@@ -1228,9 +1236,9 @@ class CircularBuffer:
 
         block_if_needed(self, "reserve")
 
-        api.cb_reserve_back(cb_id, self._tiles_per_operation)
-        block = api.get_write_ptr(cb_id)
-        block.cb = self  # Set CB reference for context manager support
+        api.dfb_reserve_back(dfb_id, self._tiles_per_operation)
+        block = api.get_write_ptr(dfb_id)
+        block.dfb = self  # Set DFB reference for context manager support
 
         # Initialize the reserved block with zero tensors
         zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
@@ -1240,7 +1248,7 @@ class CircularBuffer:
         self._pending_reserved_block = block
 
         # Record reserve statistics
-        record_cb_reserve(self, self._tiles_per_operation)
+        record_dfb_reserve(self, self._tiles_per_operation)
 
         return block
 
@@ -1252,10 +1260,10 @@ class CircularBuffer:
             True if sufficient space is available for reserve(), False otherwise
 
         Raises:
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
-        api, cb_id = self._ensure_initialized()
-        stats = api.cb_stats(cb_id)
+        api, dfb_id = self._ensure_initialized()
+        stats = api.dfb_stats(dfb_id)
         return stats.free >= self._tiles_per_operation
 
     def push_block(self) -> None:
@@ -1263,45 +1271,45 @@ class CircularBuffer:
         Finalize a write operation, making reserved data visible to consumers.
 
         This method must be called after reserve() and writing data to the
-        returned Block. It advances the CB pointers and makes the written
+        returned Block. It advances the DFB pointers and makes the written
         data available for consumers to read via wait().
 
         Raises:
-            CBContractError: If called without a prior reserve() or if the
+            DFBContractError: If called without a prior reserve() or if the
                            push amount exceeds what was reserved
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
         # Update state machine for the pending reserved block
         if self._pending_reserved_block is not None:
             self._pending_reserved_block.mark_push_complete()
             self._pending_reserved_block = None
 
-        api, cb_id = self._ensure_initialized()
-        api.cb_push_back(cb_id, self._tiles_per_operation)
+        api, dfb_id = self._ensure_initialized()
+        api.dfb_push_back(dfb_id, self._tiles_per_operation)
 
     def pop_block(self) -> None:
         """
         Finalize a read operation, freeing consumed data.
 
         This method must be called after wait() and reading data from the
-        returned Block. It advances the CB pointers and frees the consumed
+        returned Block. It advances the DFB pointers and frees the consumed
         tiles, making space available for producers.
 
         After calling pop(), the Block returned by the corresponding wait()
         points to stale data and should not be accessed.
 
         Raises:
-            CBContractError: If called without a prior wait() or if the
+            DFBContractError: If called without a prior wait() or if the
                            pop amount exceeds what is visible
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
         # Update state machine for the pending waited block
         if self._pending_waited_block is not None:
             self._pending_waited_block.mark_pop_complete()
             self._pending_waited_block = None
 
-        api, cb_id = self._ensure_initialized()
-        api.cb_pop_front(cb_id, self._tiles_per_operation)
+        api, dfb_id = self._ensure_initialized()
+        api.dfb_pop_front(dfb_id, self._tiles_per_operation)
 
     @property
     def shape(self) -> Tuple[Size, Size]:
@@ -1319,27 +1327,27 @@ class CircularBuffer:
         return self._buffer_factor
 
     @property
-    def cb_id(self) -> Optional[CBID]:
-        """Get the internal CB ID (for debugging/advanced use)."""
-        return self._cb_id
+    def dfb_id(self) -> Optional[DFBID]:
+        """Get the internal DFB ID (for debugging/advanced use)."""
+        return self._dfb_id
 
     def stats(self):
         """Get current buffer statistics.
 
         Raises:
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
-        api, cb_id = self._ensure_initialized()
-        return api.cb_stats(cb_id)
+        api, dfb_id = self._ensure_initialized()
+        return api.dfb_stats(dfb_id)
 
     def reset(self) -> None:
         """Reset the circular buffer to initial state.
 
         Raises:
-            RuntimeError: If CircularBuffer was not properly initialized with an API
+            RuntimeError: If DataflowBuffer was not properly initialized with an API
         """
-        api, cb_id = self._ensure_initialized()
-        api.host_reset_cb(cb_id)
+        api, dfb_id = self._ensure_initialized()
+        api.host_reset_dfb(dfb_id)
 
     def validate_no_pending_blocks(self) -> None:
         """Validate that there are no pending blocks.
@@ -1372,38 +1380,38 @@ class CircularBuffer:
 
         if errors:
             raise RuntimeError(
-                f"CircularBuffer {self} has incomplete blocks at end of execution:\n"
+                f"DataflowBuffer {self} has incomplete blocks at end of execution:\n"
                 + "\n".join(f"  - {err}" for err in errors)
             )
 
     def __repr__(self) -> str:
         return (
-            f"CircularBuffer(cb_id={self._cb_id}, shape={self._shape}, "
+            f"DataflowBuffer(dfb_id={self._dfb_id}, shape={self._shape}, "
             f"capacity_tiles={self._capacity_tiles}, buffer_factor={self._buffer_factor})"
         )
 
 
-def make_circular_buffer_like(
+def make_dataflow_buffer_like(
     element: Tensor,
     shape: Shape,
     buffer_factor: Size = 2,
-) -> CircularBuffer:
+) -> DataflowBuffer:
     """
-    Create a CircularBuffer with the same dtype as the element.
+    Create a DataflowBuffer with the same dtype as the element.
 
     Args:
-        element: A tensor used to determine the CircularBuffer's dtype
+        element: A tensor used to determine the DataflowBuffer's dtype
         shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
         buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
 
     Returns:
-        A CircularBuffer with dtype matching the element
+        A DataflowBuffer with dtype matching the element
 
     Example:
         x = ttnn.zeros((32, 32), dtype=ttnn.float32)
-        x_cb = make_circular_buffer_like(x, shape=(2, 2), buffer_factor=2)
+        x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), buffer_factor=2)
     """
-    return CircularBuffer(element=element, shape=shape, buffer_factor=buffer_factor)
+    return DataflowBuffer(element=element, shape=shape, buffer_factor=buffer_factor)
 
 
 def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:

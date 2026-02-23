@@ -293,7 +293,7 @@ def test_eltwise_add_deadlock_detection() -> None:
             "Deadlock detected: all generators blocked" in out
         ), f"Expected deadlock message:\n{out}"
         assert (
-            "CircularBuffer(a_dfb)" in out
+            "DataflowBuffer(a_dfb)" in out
         ), f"Expected to see a_dfb in deadlock output:\n{out}"
         assert (
             "blocked on wait()" in out

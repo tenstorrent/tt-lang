@@ -116,7 +116,7 @@ class GreenletScheduler:
         to the scheduler.
 
         Args:
-            blocking_obj: Object being waited on (CircularBuffer or CopyTransaction)
+            blocking_obj: Object being waited on (DataflowBuffer or CopyTransaction)
             operation: Operation name ("wait" or "reserve")
         """
         if self._current_name is None:
@@ -544,9 +544,9 @@ class GreenletScheduler:
         match class_name:
             case "Block":
                 return " on Block"
-            case "CircularBuffer":
+            case "DataflowBuffer":
                 name = getattr(obj, "_name", None)
-                return f" on CircularBuffer({name})" if name else " on CircularBuffer"
+                return f" on DataflowBuffer({name})" if name else " on DataflowBuffer"
             case "Pipe":
                 src = getattr(obj, "src_core", "?")
                 dst = getattr(obj, "dst_core_range", "?")

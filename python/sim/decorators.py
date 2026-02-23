@@ -42,7 +42,7 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     Create a new function from `func` but with:
       - globals = func.__globals__ + ctx
       - closure cells rebuilt from ctx when possible
-    so that names like `out_cb` that were captured will now point to the per-core objects.
+    so that names like `out_dfb` that were captured will now point to the per-core objects.
     """
     freevars = func.__code__.co_freevars
     orig_closure = func.__closure__ or ()

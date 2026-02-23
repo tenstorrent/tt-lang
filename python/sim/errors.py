@@ -3,25 +3,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Custom exception classes for cbsim.
+Custom exception classes for dfbsim.
 """
 
 
-class CBError(RuntimeError):
+class DFBError(RuntimeError):
     pass
 
 
-class CBContractError(CBError):
+class DFBContractError(DFBError):
     pass
 
 
-class CBNotConfigured(CBError):
+class DFBNotConfigured(DFBError):
     pass
 
 
-class CBOutOfRange(CBError):
+class DFBOutOfRange(DFBError):
     pass
 
 
-class CBTimeoutError(CBError):
+class DFBTimeoutError(DFBError):
     pass

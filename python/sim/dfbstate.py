@@ -3,23 +3,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-_CState and related internal state management for cbsim.
+_CState and related internal state management for dfbsim.
 """
 
 from threading import Condition, RLock, Thread
 from typing import List, Optional
 
-from .errors import CBContractError, CBNotConfigured
+from .errors import DFBContractError, DFBNotConfigured
 from .ttnnsim import Tensor
 from .typedefs import Count, Index, Shape, Size, Span
 
 # Type alias for circular buffer slots
-CBSlot = Optional[Tensor]
+DFBSlot = Optional[Tensor]
 
 
 # It is a deliberate design choice to use any generic type here to avoid dealing
 # with byte arrays as would be the case in the C++ API.
-class CBState:
+class DFBState:
     __slots__ = (
         "cap",
         "buf",
@@ -40,7 +40,7 @@ class CBState:
 
     def __init__(self):
         self.cap: Size = 1
-        self.buf: List[CBSlot] = []
+        self.buf: List[DFBSlot] = []
         self.head: Index = 0
         self.visible: Count = 0
         self.reserved: Count = 0
@@ -57,13 +57,13 @@ class CBState:
 
     def require_configured(self) -> None:
         if not self.configured:
-            raise CBNotConfigured("CB not configured; call host_configure_cb")
+            raise DFBNotConfigured("DFB not configured; call host_configure_dfb")
 
     def check_num_tiles(self, num_tiles: Size) -> None:
         if num_tiles > self.cap:
-            raise CBContractError("num_tiles must be <= capacity")
+            raise DFBContractError("num_tiles must be <= capacity")
         if self.cap % num_tiles != 0:
-            raise CBContractError(
+            raise DFBContractError(
                 f"First num_tiles={num_tiles} must evenly divide capacity={self.cap}"
             )
 

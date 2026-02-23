@@ -34,8 +34,8 @@ CoreCoord = Union[Index, Tuple[Index, ...]]
 CoreRange = Tuple[Union[Index, slice], ...]
 
 Shape = Tuple[Size, ...]
-_MAX_CBS: Size = 32  # Fixed pool of circular buffers
-CBID = Annotated[NaturalInt, Field(ge=0, lt=_MAX_CBS)]
+_MAX_DFBS: Size = 32  # Fixed pool of circular buffers
+DFBID = Annotated[NaturalInt, Field(ge=0, lt=_MAX_DFBS)]
 
 
 @dataclass(frozen=True)
