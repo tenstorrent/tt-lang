@@ -8,6 +8,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLDumpCBFlowGraph.cpp
   TTLInsertTileRegsSync.cpp
   TTLAssignDST.cpp
+  TTLBatchDSTSync.cpp
   TTLSetComputeKernelConfig.cpp
 
   DEPENDS
@@ -21,6 +22,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRLinalgDialect
   MLIRMathDialect
   MLIRSCFDialect
+  MLIRSCFUtils
   MLIRPass
   MLIRTensorDialect
   MLIRTTKernelDialect

@@ -96,40 +96,64 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 
 # =============================================================================
-# C++ Kernel Checks - Verify loops are generated for multi-tile
+# C++ Kernel Checks - Verify batched DST sync for 2x2 multi-tile
 # =============================================================================
+#
+# batch-dst-sync unrolls the 2x2 tile loop and emits a single
+# acquire/commit/wait/release cycle for all 4 tiles. DST register reuse
+# (add result overwrites lhs copy) gives dstPerIter=2, so 4*2=8 fits in
+# DST capacity 8.
 
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
 
-# Loop bound constant for 2x2 tile grid
-# CHECK-CPP: size_t [[BOUND:v[0-9]+]] = 2;
+# Tile count for 2x2 grid
+# CHECK-CPP: int32_t [[NTILES:v[0-9]+]] = 4;
 
-# DFB operations before loops
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
+# DFB operations before compute (tile count = 4 for 2x2)
+# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0), [[NTILES]]);
+# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1), [[NTILES]]);
+# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2), [[NTILES]]);
 
-# Nested loops for 2x2 tile grid
-# CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[BOUND]]; [[I]] += {{.*}}) {
-# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
+# Single acquire for all 4 tiles
+# CHECK-CPP: tile_regs_acquire();
 
-# Linearized index calculation: i * 2 + j
-# CHECK-CPP: size_t [[COLS:v[0-9]+]] = 2;
-# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
-# CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
+# Tile 0 (CB index 0): copy lhs→DST[A0], copy rhs→DST[B0], add→DST[A0]
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[CB0:v[0-9]+]], [[A0:v[0-9]+]]);
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[CB0]], [[B0:v[0-9]+]]);
+# CHECK-CPP: add_binary_tile([[A0]], [[B0]], [[A0]]);
 
-# Copy tiles using linearized index (at first use: CB0 then CB1)
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[LIN_IDX]],
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[LIN_IDX]],
+# Tile 1 (CB index 1): copy lhs→DST[A1], copy rhs→DST[B1], add→DST[A1]
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[CB1:v[0-9]+]], [[A1:v[0-9]+]]);
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[CB1]], [[B1:v[0-9]+]]);
+# CHECK-CPP: add_binary_tile([[A1]], [[B1]], [[A1]]);
 
-# Add operation
-# CHECK-CPP: add_binary_tile_init();
-# CHECK-CPP: add_binary_tile(
+# Tile 2 (CB index 2): copy lhs→DST[A2], copy rhs→DST[B2], add→DST[A2]
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[CB2:v[0-9]+]], [[A2:v[0-9]+]]);
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[CB2]], [[B2:v[0-9]+]]);
+# CHECK-CPP: add_binary_tile([[A2]], [[B2]], [[A2]]);
 
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),
+# Tile 3 (CB index 3): copy lhs→DST[A3], copy rhs→DST[B3], add→DST[A3]
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(0), [[CB3:v[0-9]+]], [[A3:v[0-9]+]]);
+# CHECK-CPP: copy_tile(get_compile_time_arg_val(1), [[CB3]], [[B3:v[0-9]+]]);
+# CHECK-CPP: add_binary_tile([[A3]], [[B3]], [[A3]]);
+
+# Single commit/wait for all tiles
+# CHECK-CPP: tile_regs_commit();
+# CHECK-CPP: tile_regs_wait();
+
+# Pack results: DST[A_n] → CB2[CB_n]
+# CHECK-CPP: pack_tile<true>([[A0]], get_compile_time_arg_val(2), [[CB0]]);
+# CHECK-CPP: pack_tile<true>([[A1]], get_compile_time_arg_val(2), [[CB1]]);
+# CHECK-CPP: pack_tile<true>([[A2]], get_compile_time_arg_val(2), [[CB2]]);
+# CHECK-CPP: pack_tile<true>([[A3]], get_compile_time_arg_val(2), [[CB3]]);
+
+# Single release
+# CHECK-CPP: tile_regs_release();
+
+# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0), [[NTILES]]);
+# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1), [[NTILES]]);
+# CHECK-CPP: cb_push_back(get_compile_time_arg_val(2), [[NTILES]]);
 
 
 if __name__ == "__main__":

@@ -1015,6 +1015,7 @@ def _compile_kernel(
             "func.func(ttl-assign-dst)",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
+            "func.func(ttl-batch-dst-sync)",
             "func.func(ttl-annotate-cb-associations)",
         ]
 

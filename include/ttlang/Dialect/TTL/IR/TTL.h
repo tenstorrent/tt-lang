@@ -29,6 +29,7 @@ class TTLTileOpTrait
 /// Attribute names.
 inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
 inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
+inline constexpr llvm::StringRef kTileOffsetAttrName = "ttl.tile_offset";
 
 /// Runtime configuration attributes
 inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";

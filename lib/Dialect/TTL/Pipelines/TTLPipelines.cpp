@@ -28,6 +28,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLAssignDST());
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLLowerToLoops());
+  pm.addPass(createTTLBatchDSTSync());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createCanonicalizerPass());

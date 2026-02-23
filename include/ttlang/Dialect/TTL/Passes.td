@@ -161,6 +161,31 @@ def TTLLowerToLoops
   ];
 }
 
+def TTLBatchDSTSync
+    : Pass<"ttl-batch-dst-sync", "::mlir::func::FuncOp"> {
+  let summary = "Batch DST synchronization for fully-unrollable tile loops";
+  let description = [{
+    When all tile iterations fit in DST capacity, fully unrolls the tile loop
+    nest and rewrites per-tile acquire/commit/wait/release to a single batched
+    sync cycle. Patches dst_idx attributes and copy_tile dst_index operands to
+    use distinct DST slots per tile. Sets ttl.tile_offset on tile_store ops so
+    downstream CB index computation remains correct without enclosing loops.
+
+    Skips loop nests that contain CB-input ops (bcast, reduce) or CB lifecycle
+    ops, or where total trip count exceeds DST capacity.
+  }];
+
+  let options = [
+    Option<"dstCapacity", "dst-capacity", "uint32_t", "0",
+           "Override DST register capacity (0 = auto-compute from tile types).">
+  ];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
 def TTLAnnotateCBAssociations
     : Pass<"ttl-annotate-cb-associations", "::mlir::func::FuncOp"> {
   let summary = "Annotate ttl.compute block args with CB index associations";

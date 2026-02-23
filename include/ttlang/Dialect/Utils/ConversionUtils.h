@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/Twine.h"
@@ -75,7 +76,16 @@ inline Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
            "computeCBTileIndexFromLoops: expected step of 1");
   }
 
-  return linearizeLoopIndices(builder, op->getLoc(), loops);
+  Value result = linearizeLoopIndices(builder, op->getLoc(), loops);
+
+  if (auto tileOffset =
+          op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName)) {
+    Value offsetVal = builder.create<arith::ConstantIndexOp>(
+        op->getLoc(), tileOffset.getInt());
+    result = builder.create<arith::AddIOp>(op->getLoc(), result, offsetVal);
+  }
+
+  return result;
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.
