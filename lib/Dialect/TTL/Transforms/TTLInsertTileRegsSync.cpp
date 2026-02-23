@@ -79,16 +79,40 @@ struct TTLInsertTileRegsSyncPass
       OpBuilder builder(computeOp);
 
       // Insert the appropriate init op before acquire (or before compute).
+      // TODO: This inserts one init per compute, but a compute with both
+      // SFPU and FPU binary ops needs both init_sfpu and init_binary.
+      // In tt-metal, mixed kernels call e.g.:
+      //   add_tiles_init(cb0, cb1)  -- configure UNPACK + FPU
+      //   init_sfpu(cb_in, cb_out)  -- reconfigure UNPACK + PACK for SFPU
+      // Fixing this requires init_short ops in TTKernel (add_tiles_init_short,
+      // etc.) so the consolidation pass can emit cheap re-inits when switching
+      // between FPU and SFPU within the same sync region.
       if (!existingInitSfpu && !existingInitBinary) {
         Operation *insertBefore =
             existingAcquire ? existingAcquire : computeOperation;
         builder.setInsertionPoint(insertBefore);
         if (hasFPUBinary) {
           // FPU binary path: configure UNPACK A+B and PACK.
-          Value in0cb = getAttachedCB(computeOp.getInputs()[0]);
-          Value in1cb = computeOp.getInputs().size() > 1
-                            ? getAttachedCB(computeOp.getInputs()[1])
-                            : in0cb;
+          // Derive the actual CB operands from the FPU binary op's operands,
+          // TTLAssignDST only marks ops as FPU binary when both operands
+          // are BlockArguments, so the cast below is safe.
+          auto getInputCB = [&](Value operand) -> Value {
+            unsigned idx = cast<BlockArgument>(operand).getArgNumber();
+            assert(idx < computeOp.getInputs().size() &&
+                   "FPU binary operand must be an input block arg");
+            return getAttachedCB(computeOp.getInputs()[idx]);
+          };
+          Value in0cb, in1cb;
+          for (Operation &bodyOp :
+               computeOp.getRegion().front().without_terminator()) {
+            if (!bodyOp.hasAttr(kFPUBinaryAttrName)) {
+              continue;
+            }
+            in0cb = getInputCB(bodyOp.getOperand(0));
+            in1cb = getInputCB(bodyOp.getOperand(1));
+            break;
+          }
+          assert(in0cb && in1cb && "FPU binary op must have CB-backed operands");
           builder.create<InitBinaryOp>(loc, in0cb, in1cb, ocb);
         } else {
           // SFPU path: configure single UNPACK channel and PACK.

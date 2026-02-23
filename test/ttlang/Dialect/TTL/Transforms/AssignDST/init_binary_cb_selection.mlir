@@ -1,0 +1,52 @@
+// Summary: FPU binary init must derive CBs from the actual FPU binary op's
+// operands, not from hardcoded compute input indices [0] and [1]. A 3-input
+// compute where the FPU binary uses inputs 0 and 2 (skipping 1) verifies
+// that init_binary references the correct CBs.
+
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}, ttl-insert-tile-regs-sync))' \
+// RUN:   | FileCheck %s
+
+#map = affine_map<(d0, d1) -> (d0, d1)>
+
+// 3-input compute: tile_add(%a, %c) is FPU binary using inputs 0 and 2.
+// Input 1 (%b) is consumed by an SFPU mul (one operand is computed).
+// The init_binary must use cb0 and cb2, NOT cb0 and cb1.
+
+// CHECK-LABEL: func.func @init_binary_skips_middle_input
+// Capture the CB SSA values from bind_cb ops.
+// CHECK-DAG: %[[CB0:.*]] = ttl.bind_cb{cb_index = 0
+// CHECK-DAG: %[[CB1:.*]] = ttl.bind_cb{cb_index = 1
+// CHECK-DAG: %[[CB2:.*]] = ttl.bind_cb{cb_index = 2
+// CHECK-DAG: %[[CB16:.*]] = ttl.bind_cb{cb_index = 16
+// init_binary must use cb0 and cb2 (the FPU binary operand CBs), not cb0, cb1.
+// CHECK: ttl.init_binary(%[[CB0]], %[[CB2]], %[[CB16]])
+// CHECK: ttl.compute
+func.func @init_binary_skips_middle_input(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %c: tensor<2x2x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb16 = ttl.bind_cb {cb_index = 16, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %c_cb = ttl.attach_cb %c, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb16 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %result = ttl.compute
+      ins(%a_cb, %b_cb, %c_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [#map, #map, #map, #map], iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
+       %c_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    // FPU binary: uses inputs 0 (a) and 2 (c), both block args -> FPU path
+    %add = ttl.tile_add %a_tile, %c_tile : !ttcore.tile<32x32, f32>
+    // SFPU binary: one operand is computed (add result), so b needs copy_tile
+    %mul = ttl.tile_mul %add, %b_tile : !ttcore.tile<32x32, f32>
+    ttl.yield %mul : !ttcore.tile<32x32, f32>
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
+}

@@ -14,6 +14,14 @@
 // when the key changes between consecutive compute ops. Tracking resets at
 // sync boundaries (tile_regs_acquire/commit/wait/release).
 //
+// TODO: Consecutive same-type ops still get a full init (e.g., add_tiles_init)
+// on every type switch. tt-metal exposes init_short variants
+// (add_tiles_init_short, mul_tiles_init_short) that reconfigure UNPACK+MATH
+// without touching PACK, but TTKernel only models mm_init_short /
+// mm_block_init_short (matmul). Adding the elementwise init_short ops to
+// TTKernel would let this pass emit cheaper re-inits when only the op type
+// changes but the output CB stays the same.
+//
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -103,25 +111,38 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         auto bcastOp = cast<ttk::UnaryBcastTileOp>(computeOp);
         // Bcast init needs in_cb and out_cb. The compute op only has in_cb.
-        // The out_cb comes from init_sfpu or binary_op_init_common.
+        // Derive out_cb from pack_tile (always present when bcast result is
+        // packed to output), falling back to init_sfpu/binary_op_init_common.
         auto funcOp = computeOp->getParentOfType<func::FuncOp>();
         Value outCB;
         if (funcOp) {
-          funcOp->walk([&](Operation *op) {
-            if (auto sfpu = dyn_cast<ttk::InitSFPUOp>(op)) {
-              outCB = sfpu.getOcb();
-              return WalkResult::interrupt();
-            }
-            if (auto binary = dyn_cast<ttk::BinaryOpInitCommonOp>(op)) {
-              outCB = binary.getOutCb();
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
+          // Primary: derive from pack_tile (works for bcast-only functions).
+          funcOp->walk([&](ttk::PackTileOp pack) {
+            outCB = pack.getOutCb();
+            return WalkResult::interrupt();
           });
+          // Fallback: derive from existing init ops.
+          if (!outCB) {
+            funcOp->walk([&](Operation *op) {
+              if (auto sfpu = dyn_cast<ttk::InitSFPUOp>(op)) {
+                outCB = sfpu.getOcb();
+                return WalkResult::interrupt();
+              }
+              if (auto binary = dyn_cast<ttk::BinaryOpInitCommonOp>(op)) {
+                outCB = binary.getOutCb();
+                return WalkResult::interrupt();
+              }
+              return WalkResult::advance();
+            });
+          }
         }
         if (outCB) {
           b.create<ttk::UnaryBcastInitOp>(l, bcastOp.getInCb(), outCB,
                                           bcastOp.getBcastTypeAttr());
+        } else {
+          computeOp->emitWarning(
+              "cannot derive output CB for unary_bcast_init; "
+              "no pack_tile, init_sfpu, or binary_op_init_common found");
         }
       }};
 
