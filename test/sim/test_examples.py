@@ -301,7 +301,7 @@ def test_eltwise_add_deadlock_detection() -> None:
 
         # Check that reported source locations point to actual wait()/reserve() calls
         # and that the modified line is among them
-        line_number_pattern = r"at .*?:(\d+)"
+        line_number_pattern = r"-->\s+.*?:(\d+):\d+"
         reported_line_numbers = {int(n) for n in re.findall(line_number_pattern, out)}
         assert reported_line_numbers, f"No source locations found in:\n{out}"
         assert modified_line_num in reported_line_numbers, (

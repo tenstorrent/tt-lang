@@ -173,6 +173,56 @@ See [docs/auto-profiler-examples/](https://github.com/tenstorrent/tt-lang/tree/m
 
 > **Warning:** Each core supports only 125 signposts. Kernels with many operations in tight loops may overflow this buffer, causing later signposts to be silently dropped and mismatched cycle counts. See [#268](https://github.com/tenstorrent/tt-lang/issues/268) for details.
 
+## Docker Containers
+
+Pre-built Docker images are available for running tt-lang on Tenstorrent hardware.
+
+**Available images:**
+- `ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest` - Pre-built tt-lang (recommended)
+- `ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest` - Development image (build tt-lang yourself)
+
+**Starting a container:**
+
+Replace "dist" with "ird" for the development image. To map a different TT device, change the `--device` argument, e.g., `--device=/dev/tenstorrent/1:/dev/tenstorrent/0`.
+
+```bash
+docker run -it --name $USER-dist \
+  --device=/dev/tenstorrent/0:/dev/tenstorrent/0 \
+  -v /dev/hugepages:/dev/hugepages \
+  -v /dev/hugepages-1G:/dev/hugepages-1G \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  /bin/bash
+```
+
+To forward your SSH agent (for git clone/push inside the container), add:
+```bash
+  -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent
+```
+
+**Working with a running container:**
+```bash
+# Open a shell
+docker exec -it $USER-dist /bin/bash
+
+# Copy files in
+docker cp /path/to/files $USER-dist:/root/
+```
+
+**Using the TT IRD machine pool:**
+
+Reserve a machine with the tt-lang container pre-loaded:
+```bash
+# Wormhole
+ird reserve \
+  --docker-image ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  --timeout 720 wormhole_b0 --machine $(hostname) --num-pcie-chips 1 --model x2
+
+# Blackhole
+ird reserve \
+  --docker-image ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  --timeout 720 blackhole --machine $(hostname) --num-pcie-chips 1
+```
+
 ## Testing
 
 Run tests using CMake targets:
