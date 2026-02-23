@@ -76,7 +76,7 @@ RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
 # Install Python dev dependencies (black, sphinx, etc.) into the toolchain venv
 COPY dev-requirements.txt /tmp/dev-requirements.txt
-RUN $TTMLIR_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt --no-cache-dir && \
+RUN $TTMLIR_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
     rm /tmp/dev-requirements.txt && \
     rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y \
@@ -94,6 +94,7 @@ COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /root
+COPY .github/containers/IRD_README.md /root/README.md
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -112,10 +113,11 @@ COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 # Set write permissions
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
-# Install text editors and SSH
+# Install text editors, SSH, and tt-smi
 RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /run/sshd
+    mkdir -p /run/sshd && \
+    $TTMLIR_TOOLCHAIN_DIR/venv/bin/python -m pip install tt-smi --no-cache-dir
 
 # Auto-activate tt-lang environment on login (works even when entrypoint is overridden)
 # Add to /etc/profile.d for login shells and /etc/bash.bashrc for interactive shells

@@ -78,12 +78,16 @@ add_custom_target(check-ttlang
 )
 
 # Pytest tests (test/python/test_*.py files).
+set(TTLANG_PYTEST_DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS})
+if(TARGET install-dev-deps)
+  list(APPEND TTLANG_PYTEST_DEPENDS install-dev-deps)
+endif()
 add_custom_target(check-ttlang-pytest
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
-  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  DEPENDS ${TTLANG_PYTEST_DEPENDS}
   COMMENT "Running ttlang pytest tests"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
   USES_TERMINAL

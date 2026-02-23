@@ -69,6 +69,23 @@ if [ -d "build/_deps/tt-mlir-build/python_packages/ttmlir" ]; then
         "$TTMLIR_TOOLCHAIN_DIR/python_packages/ttmlir/" 2>/dev/null || true
 fi
 
+# Copy Tracy profiler tools (tt-mlir does not install them)
+PROFILER_BIN="build/_deps/tt-mlir-src/third_party/tt-metal/src/tt-metal/build/tools/profiler/bin"
+if [ -d "$PROFILER_BIN" ]; then
+    mkdir -p "$TTMLIR_TOOLCHAIN_DIR/bin"
+    cp -p "$PROFILER_BIN/capture-release" "$TTMLIR_TOOLCHAIN_DIR/bin/" 2>/dev/null || true
+    cp -p "$PROFILER_BIN/csvexport-release" "$TTMLIR_TOOLCHAIN_DIR/bin/" 2>/dev/null || true
+    echo "Copied Tracy profiler tools"
+fi
+
+# Copy Tracy Python module (tt-mlir does not install it)
+TT_METAL_SRC="build/_deps/tt-mlir-src/third_party/tt-metal/src/tt-metal"
+if [ -d "$TT_METAL_SRC/tools/tracy" ]; then
+    mkdir -p "$TTMLIR_TOOLCHAIN_DIR/python_packages/tracy"
+    cp -pr "$TT_METAL_SRC/tools/tracy/"*.py "$TTMLIR_TOOLCHAIN_DIR/python_packages/tracy/"
+    echo "Copied Tracy Python module"
+fi
+
 echo "=== Normalizing and cleaning up toolchain ==="
 bash /tmp/normalize-ttmlir-install.sh "$TTMLIR_TOOLCHAIN_DIR"
 bash /tmp/cleanup-toolchain.sh "$TTMLIR_TOOLCHAIN_DIR"
