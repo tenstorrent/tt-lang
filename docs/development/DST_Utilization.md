@@ -429,14 +429,11 @@ scf.for %iv = ... {   // outer loop over subblocks
 }
 ```
 
-The pass also emits the appropriate init op before each compute:
-
-- **`ttl.init_binary`** when the compute body contains any op with the
-  `ttl.fpu_binary` attribute. This op takes 3 CB args (in0, in1, out)
-  and lowers to `ttkernel.binary_op_init_common`, which configures
-  UNPACK A+B, MATH, and PACK for FPU binary operations.
-- **`ttl.init_sfpu`** otherwise. This op takes 2 CB args (in, out) and
-  configures single-channel UNPACK for SFPU operations.
+Init ops (common inits like `binary_op_init_common` / `init_sfpu`, and
+per-op inits like `exp_tile_init`) are not emitted by the sync pass.
+They are inserted later by the consolidation pass (component 13) at the
+TTKernel level, after conversion. This keeps sync insertion focused on
+DST lifecycle management.
 
 Sync insertion does not need to run after lowering. It operates on
 `ttl.compute` ops (before lowering), and the commit/wait placement
@@ -485,14 +482,25 @@ Full-init operations (broadcast `unary_bcast_init`, reduce
 `reduce_init`) configure UNPACK + MATH + PACK and must appear before
 any short-init operations to avoid clobbering PACK configuration.
 
-`TTKernelConsolidateInits` implements this as a separate pass after
-`convert-ttl-to-ttkernel`. The conversion pass does not emit init ops;
-the consolidation pass inserts them afterward. It maintains an init key
-`(TypeID, operands, discriminator)` for each compute op and inserts an
-init only when the key changes between consecutive ops. Tracking resets
-at sync boundaries (tile_regs_acquire/commit/wait/release). The grouping
-pass (component 12) must provide the ordering guarantees that make init
-consolidation maximally effective.
+`TTKernelConsolidateInits` is the single source of truth for all init
+ops. The conversion pass does not emit init ops; the consolidation pass
+inserts them in two phases:
+
+- **Phase 1 (common inits)**: For each sync region
+  (`tile_regs_acquire` ... `tile_regs_release`), inserts
+  `binary_op_init_common(in0_cb, in1_cb, out_cb)` if FPU binary ops are
+  present, or `init_sfpu(in_cb, out_cb)` otherwise. CB operands are
+  derived from the ops in the region (CopyTile/FPU binary for inputs,
+  PackTile for output). Common inits are hoisted above enclosing
+  compiler-generated loops (`ttl.tile_loop`, `ttl.subblock_stride`) but
+  not past unmarked loops.
+- **Phase 2 (per-op inits)**: Maintains an init key `(TypeID, operands,
+  discriminator)` for each compute op and inserts an init only when the
+  key changes between consecutive ops. Tracking resets at sync
+  boundaries.
+
+The grouping pass (component 12) must provide the ordering guarantees
+that make per-op init consolidation maximally effective.
 
 ### 14. DST Spilling
 
@@ -591,8 +599,8 @@ attributes are needed by all compute lowering.
 Phase 0 of `TTLAssignDST` is skipped. Binary add/sub/mul ops are not
 marked with `ttl.fpu_binary` and use the SFPU path (copy_tile for both
 operands, `add_binary_tile`/`sub_binary_tile`/`mul_binary_tile` instead
-of `add_tiles`/`sub_tiles`/`mul_tiles`). The sync pass emits
-`ttl.init_sfpu` instead of `ttl.init_binary`.
+of `add_tiles`/`sub_tiles`/`mul_tiles`). The consolidation pass emits
+`init_sfpu` instead of `binary_op_init_common`.
 
 ### Why This Matters
 

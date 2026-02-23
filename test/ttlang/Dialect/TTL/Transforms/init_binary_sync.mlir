@@ -1,11 +1,10 @@
 // Tests for init_binary: parse/print roundtrip and sync insertion behavior.
-// Verifies init_binary parses correctly and that TTLInsertTileRegsSync emits
-// init_binary for FPU binary computes, init_sfpu for SFPU-only computes,
-// and init_sfpu for binary ops without ttl.fpu_binary attribute.
+// Verifies init_binary parses correctly and that TTLInsertTileRegsSync does
+// NOT emit init ops (init ops are handled by ttkernel-consolidate-inits).
 //
 // Parse/print roundtrip:
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s --check-prefix=PARSE
-// Sync insertion:
+// Sync insertion (no init ops expected):
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(ttl-insert-tile-regs-sync))' | FileCheck %s
 
 // =============================================================================
@@ -47,14 +46,10 @@ func.func @init_binary_different_types() attributes {ttl.kernel_thread = #ttkern
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 3: FPU binary add -> init_binary emitted by sync pass
+// Test 3: FPU binary add -> sync pass does NOT emit init ops
 // =============================================================================
 // CHECK-LABEL: func.func @fpu_binary_gets_init_binary
-// CHECK:         %[[CB0:.*]] = ttl.bind_cb{{.*}}cb_index = 0
-// CHECK:         %[[CB1:.*]] = ttl.bind_cb{{.*}}cb_index = 1
-// CHECK:         %[[CB2:.*]] = ttl.bind_cb{{.*}}cb_index = 16
-// init_binary with in0_cb, in1_cb, out_cb:
-// CHECK:         ttl.init_binary(%[[CB0]], %[[CB1]], %[[CB2]])
+// CHECK-NOT:     ttl.init_binary
 // CHECK-NOT:     ttl.init_sfpu
 // CHECK:         ttl.compute
 func.func @fpu_binary_gets_init_binary(
@@ -85,12 +80,10 @@ func.func @fpu_binary_gets_init_binary(
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 4: SFPU-only (exp) -> init_sfpu emitted, NOT init_binary
+// Test 4: SFPU-only (exp) -> sync pass does NOT emit init ops
 // =============================================================================
 // CHECK-LABEL: func.func @sfpu_only_gets_init_sfpu
-// CHECK:         %[[CB:.*]] = ttl.bind_cb{{.*}}cb_index = 0
-// CHECK:         %[[CB2:.*]] = ttl.bind_cb{{.*}}cb_index = 16
-// CHECK:         ttl.init_sfpu(%[[CB]], %[[CB2]])
+// CHECK-NOT:     ttl.init_sfpu
 // CHECK-NOT:     ttl.init_binary
 // CHECK:         ttl.compute
 func.func @sfpu_only_gets_init_sfpu(
@@ -119,14 +112,10 @@ func.func @sfpu_only_gets_init_sfpu(
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 5: Mixed FPU + SFPU compute -> init_binary emitted (FPU takes priority)
+// Test 5: Mixed FPU + SFPU compute -> sync pass does NOT emit init ops
 // =============================================================================
 // CHECK-LABEL: func.func @mixed_fpu_sfpu_gets_init_binary
-// CHECK:         %[[CB0:.*]] = ttl.bind_cb{{.*}}cb_index = 0
-// CHECK:         %[[CB1:.*]] = ttl.bind_cb{{.*}}cb_index = 1
-// CHECK:         %[[CB2:.*]] = ttl.bind_cb{{.*}}cb_index = 16
-// FPU binary present -> init_binary emitted
-// CHECK:         ttl.init_binary(%[[CB0]], %[[CB1]], %[[CB2]])
+// CHECK-NOT:     ttl.init_binary
 // CHECK-NOT:     ttl.init_sfpu
 // CHECK:         ttl.compute
 func.func @mixed_fpu_sfpu_gets_init_binary(
@@ -160,14 +149,12 @@ func.func @mixed_fpu_sfpu_gets_init_binary(
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 6: Binary add WITHOUT fpu_binary (SFPU path) -> init_sfpu emitted
+// Test 6: Binary add WITHOUT fpu_binary -> sync pass does NOT emit init ops
 // =============================================================================
 // This simulates the output of ttl-assign-dst{enable-fpu-binary-ops=0} where
 // binary ops use copy_tile instead of FPU CB reads.
 // CHECK-LABEL: func.func @sfpu_binary_add_gets_init_sfpu
-// CHECK:         %[[CB0:.*]] = ttl.bind_cb{{.*}}cb_index = 0
-// CHECK:         %[[CB2:.*]] = ttl.bind_cb{{.*}}cb_index = 16
-// CHECK:         ttl.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-NOT:     ttl.init_sfpu
 // CHECK-NOT:     ttl.init_binary
 // CHECK:         ttl.compute
 func.func @sfpu_binary_add_gets_init_sfpu(

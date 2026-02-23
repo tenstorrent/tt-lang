@@ -10,6 +10,10 @@
 // ops to enforce the MATH/PACK thread synchronization protocol required by
 // the hardware DST register bank.
 //
+// This pass only inserts sync ops (acquire/commit/wait/release). Common init
+// ops (init_sfpu, binary_op_init_common) and per-op init ops are inserted
+// later by the ttkernel-consolidate-inits pass after conversion to TTKernel.
+//
 // Two modes of sync placement:
 //
 // 1. Subblocked computes (has ttl.full_linearization_strides):
@@ -56,70 +60,15 @@ struct TTLInsertTileRegsSyncPass
 
     WalkResult result = funcOp.walk([&](ComputeOp computeOp) -> WalkResult {
       Operation *computeOperation = computeOp.getOperation();
-
-      Value ocb = getAttachedCB(computeOp.getOutputs().front());
       Location loc = computeOp.getLoc();
 
-      // Check if the compute body contains FPU binary ops. If so, we need
-      // init_binary (binary_op_init_common) instead of init_sfpu.
-      bool hasFPUBinary = llvm::any_of(
-          computeOp.getRegion().front().without_terminator(),
-          [](Operation &op) { return op.hasAttr(kFPUBinaryAttrName); });
-
-      // Find existing sync ops preceding this compute. Stop at another compute
+      // Find existing acquire preceding this compute. Stop at another compute
       // op since each compute has its own lifecycle ops.
       auto stopAtCompute = [](Operation *op) { return isa<ComputeOp>(op); };
       TileRegsAcquireOp existingAcquire =
           findPrecedingOp<TileRegsAcquireOp>(computeOperation, stopAtCompute);
-      InitSFPUOp existingInitSfpu =
-          findPrecedingOp<InitSFPUOp>(computeOperation, stopAtCompute);
-      InitBinaryOp existingInitBinary =
-          findPrecedingOp<InitBinaryOp>(computeOperation, stopAtCompute);
 
       OpBuilder builder(computeOp);
-
-      // Insert the appropriate init op before acquire (or before compute).
-      // TODO: This inserts one init per compute, but a compute with both
-      // SFPU and FPU binary ops needs both init_sfpu and init_binary.
-      // In tt-metal, mixed kernels call e.g.:
-      //   add_tiles_init(cb0, cb1)  -- configure UNPACK + FPU
-      //   init_sfpu(cb_in, cb_out)  -- reconfigure UNPACK + PACK for SFPU
-      // Fixing this requires init_short ops in TTKernel (add_tiles_init_short,
-      // etc.) so the consolidation pass can emit cheap re-inits when switching
-      // between FPU and SFPU within the same sync region.
-      if (!existingInitSfpu && !existingInitBinary) {
-        Operation *insertBefore =
-            existingAcquire ? existingAcquire : computeOperation;
-        builder.setInsertionPoint(insertBefore);
-        if (hasFPUBinary) {
-          // FPU binary path: configure UNPACK A+B and PACK.
-          // Derive the actual CB operands from the FPU binary op's operands,
-          // TTLAssignDST only marks ops as FPU binary when both operands
-          // are BlockArguments, so the cast below is safe.
-          auto getInputCB = [&](Value operand) -> Value {
-            unsigned idx = cast<BlockArgument>(operand).getArgNumber();
-            assert(idx < computeOp.getInputs().size() &&
-                   "FPU binary operand must be an input block arg");
-            return getAttachedCB(computeOp.getInputs()[idx]);
-          };
-          Value in0cb, in1cb;
-          for (Operation &bodyOp :
-               computeOp.getRegion().front().without_terminator()) {
-            if (!bodyOp.hasAttr(kFPUBinaryAttrName)) {
-              continue;
-            }
-            in0cb = getInputCB(bodyOp.getOperand(0));
-            in1cb = getInputCB(bodyOp.getOperand(1));
-            break;
-          }
-          assert(in0cb && in1cb && "FPU binary op must have CB-backed operands");
-          builder.create<InitBinaryOp>(loc, in0cb, in1cb, ocb);
-        } else {
-          // SFPU path: configure single UNPACK channel and PACK.
-          Value icb = getAttachedCB(computeOp.getInputs().front());
-          builder.create<InitSFPUOp>(loc, icb, ocb);
-        }
-      }
 
       // Check if this compute was processed by the subblocking pass.
       // If so, place sync outside (one cycle per subblock). Otherwise,

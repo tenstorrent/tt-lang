@@ -1,9 +1,12 @@
 // RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-consolidate-inits %s | FileCheck %s
 // RUN: ttlang-opt --ttkernel-consolidate-inits %s | FileCheck %s --check-prefix=FPU
-// Summary: Tests for ttkernel-consolidate-inits pass in isolation.
+// RUN: ttlang-opt --ttkernel-consolidate-inits %s | FileCheck %s --check-prefix=COMMON
+// Summary: Tests for ttkernel-consolidate-inits pass.
 //
-// Verifies that consecutive same-type compute ops share a single init op,
-// while type switches get separate inits.
+// Phase 1 (common init): Inserts init_sfpu or binary_op_init_common before
+// each sync region (tile_regs_acquire ... tile_regs_release).
+// Phase 2 (per-op init): Consecutive same-type compute ops share a single
+// init op, while type switches get separate inits.
 
 // Test 1: 4 consecutive exp ops -> only 1 init
 // CHECK-LABEL: func.func @four_consecutive_exp
@@ -120,5 +123,138 @@ func.func @fpu_binary_consolidation() {
   ttkernel.add_tiles(%cb0, %cb1, %c1, %c1, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
   ttkernel.mul_tiles(%cb0, %cb1, %c0, %c0, %c2) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
   ttkernel.mul_tiles(%cb0, %cb1, %c1, %c1, %c3) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  func.return
+}
+
+// =============================================================================
+// Phase 1 tests: common init insertion before sync regions
+// =============================================================================
+
+// Test 6: SFPU sync region -> init_sfpu inserted before acquire
+// COMMON-LABEL: func.func @common_init_sfpu
+// COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON-NEXT: ttkernel.tile_regs_acquire
+// COMMON: ttkernel.copy_tile(%[[CB0]],
+// COMMON: ttkernel.exp_tile(
+// COMMON: ttkernel.pack_tile({{.*}}, %[[CB2]],
+// COMMON: ttkernel.tile_regs_release
+// No duplicate init_sfpu
+// COMMON-NOT: ttkernel.init_sfpu
+func.func @common_init_sfpu() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%cb0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  ttkernel.exp_tile(%c0) : (index) -> ()
+  ttkernel.pack_tile(%c0, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Test 7: FPU binary sync region -> binary_op_init_common inserted before acquire
+// COMMON-LABEL: func.func @common_init_fpu_binary
+// COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// COMMON-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// COMMON: ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB2]])
+// COMMON-NEXT: ttkernel.tile_regs_acquire
+// COMMON: ttkernel.add_tiles(%[[CB0]], %[[CB1]],
+// COMMON: ttkernel.pack_tile({{.*}}, %[[CB2]],
+// COMMON: ttkernel.tile_regs_release
+// No duplicate binary_op_init_common
+// COMMON-NOT: ttkernel.binary_op_init_common
+func.func @common_init_fpu_binary() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.add_tiles(%cb0, %cb1, %c0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.pack_tile(%c0, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Test 8: Two sync regions -> each gets its own common init
+// COMMON-LABEL: func.func @two_sync_regions_two_inits
+// COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// First region
+// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON-NEXT: ttkernel.tile_regs_acquire
+// COMMON: ttkernel.tile_regs_release
+// Second region
+// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON-NEXT: ttkernel.tile_regs_acquire
+// COMMON: ttkernel.tile_regs_release
+func.func @two_sync_regions_two_inits() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  // First sync region
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%cb0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  ttkernel.exp_tile(%c0) : (index) -> ()
+  ttkernel.pack_tile(%c0, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  // Second sync region
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%cb0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  ttkernel.log_tile(%c0) : (index) -> ()
+  ttkernel.pack_tile(%c0, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Test 9: Compiler-generated loop (ttl.tile_loop) -> common init hoisted above
+// COMMON-LABEL: func.func @common_init_hoisted_above_compiler_loop
+// COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON-NEXT: scf.for
+// COMMON: ttkernel.tile_regs_acquire
+// COMMON: ttkernel.exp_tile(
+// COMMON: ttkernel.tile_regs_release
+func.func @common_init_hoisted_above_compiler_loop() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.copy_tile(%cb0, %i, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+    ttkernel.exp_tile(%c0) : (index) -> ()
+    ttkernel.pack_tile(%c0, %cb2, %i, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.tile_loop = 1 : index}
+  func.return
+}
+
+// Test 10: Unmarked loop -> init NOT hoisted (stays inside loop).
+// Only compiler-marked loops are safe to hoist through.
+// COMMON-LABEL: func.func @common_init_not_hoisted_past_unmarked_loop
+// COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// COMMON: scf.for
+// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON-NEXT: ttkernel.tile_regs_acquire
+// COMMON: ttkernel.tile_regs_release
+func.func @common_init_not_hoisted_past_unmarked_loop() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.copy_tile(%cb0, %i, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+    ttkernel.exp_tile(%c0) : (index) -> ()
+    ttkernel.pack_tile(%c0, %cb2, %i, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  }
   func.return
 }

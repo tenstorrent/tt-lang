@@ -6,13 +6,19 @@
 // TTKernel Init Consolidation Pass
 //===----------------------------------------------------------------------===//
 //
-// Walks TTKernel IR and inserts the minimal set of init ops before compute ops.
-// After convert-ttl-to-ttkernel (which no longer emits inits), this pass
-// inserts one init op per consecutive group of same-type compute ops.
+// Single source of truth for all init ops in the TTKernel pipeline.
+// Inserts both common inits (init_sfpu, binary_op_init_common) that configure
+// UNPACK + PACK data format routing, and per-op inits (exp_tile_init,
+// add_tiles_init, etc.) that configure the MATH pipeline.
 //
-// The init key is (init op TypeID, operand values). An init is inserted only
-// when the key changes between consecutive compute ops. Tracking resets at
-// sync boundaries (tile_regs_acquire/commit/wait/release).
+// Two phases:
+//   1. Common inits: one per sync region, hoisted above enclosing loops.
+//      Scans each tile_regs_acquire -> tile_regs_release region to determine
+//      the compute category (FPU binary vs SFPU/copy/bcast) and derives
+//      input/output CBs from compute and pack ops.
+//   2. Per-op inits: one per consecutive group of same-type compute ops.
+//      The init key is (init op TypeID, operand values). An init is inserted
+//      only when the key changes. Tracking resets at sync boundaries.
 //
 // TODO: Consecutive same-type ops still get a full init (e.g., add_tiles_init)
 // on every type switch. tt-metal exposes init_short variants
@@ -24,6 +30,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -32,6 +39,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelTraits.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 
 #define DEBUG_TYPE "ttkernel-consolidate-inits"
@@ -195,6 +203,102 @@ static bool isSyncBoundary(Operation *op) {
 }
 
 //===----------------------------------------------------------------------===//
+// Common init insertion
+//===----------------------------------------------------------------------===//
+
+/// Scan a sync region (acquire -> release) including nested regions to find
+/// input CBs, output CBs, and determine the compute category.
+/// Returns true if FPU binary ops are present in the region.
+static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
+                              Value &in0CB, Value &in1CB, Value &outputCB) {
+  Block *block = acquireOp->getBlock();
+  bool hasFPUBinary = false;
+
+  for (auto it = std::next(acquireOp->getIterator()); it != block->end();
+       ++it) {
+    if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+      break;
+    }
+
+    // Walk this op and all nested regions (e.g., scf.for bodies).
+    (&*it)->walk([&](Operation *inner) {
+      if (auto copy = dyn_cast<ttk::CopyTileOp>(inner)) {
+        if (!inputCB) {
+          inputCB = copy.getCb0();
+        }
+      } else if (isa<ttk::AddTilesOp, ttk::SubTilesOp, ttk::MulTilesOp>(
+                     inner)) {
+        hasFPUBinary = true;
+        if (!in0CB) {
+          in0CB = inner->getOperand(0);
+          in1CB = inner->getOperand(1);
+        }
+      } else if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(inner)) {
+        if (!inputCB) {
+          inputCB = bcast.getInCb();
+        }
+      }
+      if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
+        if (!outputCB) {
+          outputCB = pack.getOutCb();
+        }
+      }
+    });
+  }
+
+  return hasFPUBinary;
+}
+
+/// Find the outermost enclosing insertion point by walking up through
+/// compiler-generated loops (marked with ttl.tile_loop or
+/// ttl.subblock_stride). These loops have invariant CB configuration across
+/// iterations, so hoisting the common init above them is always safe.
+/// Stops at unmarked loops to avoid hoisting past user loops that could
+/// contain multiple sync regions with different init types.
+///
+/// TODO: A more aggressive strategy would analyze all sync regions inside an
+/// unmarked loop and hoist if they all need the same init type. This would
+/// allow hoisting through user loops that wrap compiler loops (e.g., the
+/// streaming pattern in test_large_dram_streaming.py).
+static Operation *hoistAboveCompilerLoops(Operation *op) {
+  Operation *insertBefore = op;
+  while (auto *parentOp = insertBefore->getParentOp()) {
+    if (isa<scf::ForOp>(parentOp) &&
+        (parentOp->hasAttr(kTileLoopAttrName) ||
+         parentOp->hasAttr(kSubblockStrideAttrName))) {
+      insertBefore = parentOp;
+    } else {
+      break;
+    }
+  }
+  return insertBefore;
+}
+
+/// Insert common init ops (init_sfpu or binary_op_init_common) before each
+/// sync region. These configure UNPACK + PACK data format routing.
+static void insertCommonInits(ModuleOp moduleOp) {
+  moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
+    Value inputCB, in0CB, in1CB, outputCB;
+    bool hasFPUBinary =
+        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
+
+    if (!outputCB) {
+      return;
+    }
+
+    Operation *insertBefore = hoistAboveCompilerLoops(acquireOp);
+    OpBuilder builder(insertBefore);
+    Location loc = acquireOp->getLoc();
+
+    if (hasFPUBinary && in0CB && in1CB) {
+      builder.create<ttk::BinaryOpInitCommonOp>(loc, in0CB, in1CB, outputCB);
+    } else if (inputCB) {
+      builder.create<ttk::InitSFPUOp>(loc, inputCB, outputCB);
+    }
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
@@ -203,6 +307,11 @@ struct TTKernelConsolidateInitsPass
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
+
+    // Phase 1: Insert common inits (init_sfpu / binary_op_init_common).
+    insertCommonInits(moduleOp);
+
+    // Phase 2: Insert per-op inits for compute ops.
     auto computeToInit = buildComputeToInitMap();
 
     // Walk all blocks (including nested ones inside scf.for loops).

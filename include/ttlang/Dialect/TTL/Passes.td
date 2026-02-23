@@ -139,6 +139,10 @@ def TTLInsertTileRegsSync
     - Inside ttl.compute: tile_regs_acquire at entry, tile_regs_commit before yield.
     - Around ttl.compute: tile_regs_wait and tile_regs_release immediately after
       the compute op in the parent block.
+
+    This pass only inserts sync ops. Common init ops (init_sfpu,
+    binary_op_init_common) and per-op init ops are inserted by the
+    ttkernel-consolidate-inits pass after conversion to TTKernel.
   }];
 
   let dependentDialects = [
@@ -231,13 +235,15 @@ def TTKernelConsolidateInits
     : Pass<"ttkernel-consolidate-inits", "::mlir::ModuleOp"> {
   let summary = "Insert minimal init ops before TTKernel compute ops";
   let description = [{
-    Walks TTKernel IR and inserts one init op per consecutive group of
-    same-type compute ops. Assumes conversion templates did NOT emit
-    inits. Uses a compute-op-to-init map built from x-macros.
+    Single source of truth for all init ops. Inserts both common inits
+    (init_sfpu, binary_op_init_common) that configure UNPACK + PACK data
+    format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.)
+    that configure the MATH pipeline.
 
-    Init tracking resets at sync boundaries (tile_regs_acquire/commit/
-    wait/release). Within a sync region, an init op is inserted only
-    when the compute op type or its CB operands change.
+    Common inits are placed once per sync region, hoisted above enclosing
+    loops. Per-op inits are placed per consecutive group of same-type
+    compute ops. Init tracking resets at sync boundaries
+    (tile_regs_acquire/commit/wait/release).
   }];
 
   let dependentDialects = [

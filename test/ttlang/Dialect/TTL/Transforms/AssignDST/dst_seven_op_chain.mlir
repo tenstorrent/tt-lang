@@ -20,7 +20,6 @@
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
 // CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, buffer_factor = 1}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
-// CHECK:           ttl.init_binary(%[[CB0]], %[[CB1]], %[[CB2]])
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK:             ttl.tile_regs_acquire
@@ -40,7 +39,6 @@
 // SFPU-LABEL:   func.func @seven_op_chain
 // SFPU:           %[[CB0S:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
 // SFPU:           %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
-// SFPU:           ttl.init_sfpu(%[[CB0S]], %[[CB2S]])
 // SFPU:           ttl.compute
 // SFPU:             ttl.tile_regs_acquire
 // SFPU-NOT:         fpu_binary
